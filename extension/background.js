@@ -1,4 +1,4 @@
-// Safari Harness background service worker.
+// Safari Harness background page (MV3 non-persistent background script).
 // Maintains a WebSocket to the local daemon (ws://127.0.0.1:PORT) and
 // relays daemon requests to content scripts in the target tab.
 // Tab management (open/close/navigate/list) is handled here directly.

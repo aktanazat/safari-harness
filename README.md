@@ -57,6 +57,12 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
    ```
    (the checked-in project already has `DEVELOPMENT_TEAM = AAVB324H37` and
    matching bundle ids; the converter's default casing breaks embedding)
+
+   Copy the built app to `/Applications` and move the build product out of
+   DerivedData (`xcodebuild -showBuildSettings | grep BUILT_PRODUCTS_DIR`).
+   Safari loads every registered copy; two copies each open the extension
+   socket and keep replacing each other, so every call fails with
+   `extension disconnected`.
 3. Launch "Safari Harness.app" once, then in Safari:
    Settings ▸ Extensions ▸ enable **Safari Harness**.
    That GUI toggle is the only manual step; no Develop-menu or
@@ -95,8 +101,10 @@ Attach to `ws://127.0.0.1:37333/devtools/browser` (or a page id like
 captureScreenshot/getFrameTree/getNavigationHistory`, `Runtime.evaluate/
 `Network.enable` + `Log.enable` (polled from the content-script capture, so
 requests are those the page actually made after enabling; no request bodies,
-no interception). Anything else answers `-32000 not supported` — never a
-fake success.
+no interception). Common setup calls (`DOM/CSS/Debugger/Profiler/
+Performance.enable`, `Emulation.setDeviceMetricsOverride`, …) get empty
+acks so clients can attach; the methods behind them, and anything else
+unlisted, answer `-32000 not supported` — never a fake result.
 
 ## Known Safari limits (vs Chrome/Aside)
 
@@ -106,6 +114,10 @@ fake success.
 - content scripts don't pierce closed shadow DOM
 - the extension socket is single-client: one daemon owns Safari; CDP clients
   share it through the shim
+- the background is a non-persistent MV3 page, not a service worker: as a
+  service worker Safari starts it but it never opens its socket, and its
+  console cannot be inspected. The page held its socket through a full test
+  session; if Safari unloads it, the `alarms` keepalive reconnects it
 
 ## Tests
 
