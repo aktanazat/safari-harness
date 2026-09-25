@@ -145,7 +145,7 @@ async function main() {
     return;
   }
 
-  const positional = rest.filter((a) => !a.startsWith("--") && !isFlagValue(a, rest));
+  const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = cmd;
   let args: Record<string, unknown> = { ...tabArg(rest) };
 
@@ -164,10 +164,10 @@ async function main() {
     }
     case "click": args.ref = positional[0]; break;
     case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
-    case "type": args.ref = positional[0]; args.text = rest.slice(rest.indexOf(positional[1])).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
+    case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
     case "press": args.key = positional[0]; break;
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
-    case "eval": args.expression = rest.filter((a) => !a.startsWith("--tab")).join(" "); break;
+    case "eval": args.expression = positional.join(" "); break;
     case "extract": {
       const sel = flag("selector", rest);
       if (sel) args.selector = sel;
@@ -220,9 +220,12 @@ async function main() {
   print(res.value);
 }
 
-function isFlagValue(a: string, argv: string[]): boolean {
-  const i = argv.indexOf(a);
-  return i > 0 && argv[i - 1].startsWith("--") && !argv[i - 1].includes("=");
+// Flags that take no value; the word after them is positional.
+const BOOLEAN_FLAGS = new Set(["bg", "append"]);
+
+function isFlagValue(i: number, argv: string[]): boolean {
+  const prev = argv[i - 1];
+  return i > 0 && prev.startsWith("--") && !prev.includes("=") && !BOOLEAN_FLAGS.has(prev.slice(2));
 }
 
 main();
