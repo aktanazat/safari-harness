@@ -2,6 +2,7 @@
 // (omp, Claude Code, Cursor, ...). One JSON-RPC message per line.
 
 import { TOOLS, formatResult, inputSchema } from "./tools.ts";
+import { IMESSAGE_TOOLS } from "./imessage.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
@@ -25,12 +26,13 @@ async function rpc(tool: string, args: Record<string, unknown>): Promise<unknown
   return body.value;
 }
 
+// Messages tools run here, not in the daemon: reading chat.db needs Full Disk
+// Access, which this process inherits from the terminal that started it.
 function toolDefs() {
-  return Object.entries(TOOLS).map(([name, t]) => ({
-    name,
-    description: `[Safari] ${t.desc}`,
-    inputSchema: inputSchema(t),
-  }));
+  return [
+    ...Object.entries(TOOLS).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}`, inputSchema: inputSchema(t) })),
+    ...Object.entries(IMESSAGE_TOOLS).map(([name, t]) => ({ name, description: `[Messages] ${t.desc}`, inputSchema: inputSchema(t) })),
+  ];
 }
 
 type RpcMsg = { jsonrpc?: string; id?: number | string; method?: string; params?: Record<string, unknown> };
@@ -60,7 +62,8 @@ async function handle(msg: RpcMsg) {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});
       try {
-        const value = await rpc(name, args);
+        const local = IMESSAGE_TOOLS[name];
+        const value = local ? await local.run(args) : await rpc(name, args);
         return reply(msg.id, {
           content: [{ type: "text", text: formatResult(value).slice(0, 100_000) }],
         });

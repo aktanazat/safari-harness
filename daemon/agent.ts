@@ -3,6 +3,7 @@
 // (Ollama locally by default; any frontier API works via env).
 
 import { TOOLS, formatResult, inputSchema } from "./tools.ts";
+import { IMESSAGE_READ_TOOLS } from "./imessage.ts";
 
 export type AgentEvent =
   | { type: "plan"; text: string }
@@ -30,11 +31,15 @@ Rules:
 - Prefer extract for reading article text; eval for structured data (JSON from the DOM).
 - Do one thing per step. Never invent refs you have not seen in a snapshot.
 - If a page needs login the user is already logged into, use their existing session; do not ask for credentials.
+- If a sign-in asks for a code sent by text, call imessage_wait_code and type the code in; never repeat it in your reply.
 - When the task is done, reply with a short final answer and no tool call.
 - If you cannot do something (Safari has no equivalent of a Chrome capability), say exactly what blocked you.`;
 
+// The loop runs unattended, so it gets the Messages read tools but not send.
+const ALL_TOOLS = { ...TOOLS, ...IMESSAGE_READ_TOOLS };
+
 function toolSchemas() {
-  return Object.entries(TOOLS).map(([name, t]) => ({
+  return Object.entries(ALL_TOOLS).map(([name, t]) => ({
     type: "function" as const,
     function: { name, description: t.desc, parameters: inputSchema(t) },
   }));
@@ -122,14 +127,14 @@ export async function runAgent(task: string, cfg: AgentConfig, opts: { tab?: num
         const name = call.function.name;
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; } catch { /* tolerate */ }
-        const tool = TOOLS[name];
+        const tool = ALL_TOOLS[name];
         if (!tool) {
           cfg.onEvent({ type: "tool", name, args, ok: false, error: "unknown tool" });
           messages.push({ role: "tool", tool_call_id: call.id, content: `error: unknown tool ${name}` });
           continue;
         }
         try {
-          const value = cfg.rpcUrl ? await runToolOverRpc(cfg.rpcUrl, name, args) : await tool.run(args);
+          const value = cfg.rpcUrl && !IMESSAGE_READ_TOOLS[name] ? await runToolOverRpc(cfg.rpcUrl, name, args) : await tool.run(args);
           const text = formatResult(value);
           cfg.onEvent({ type: "tool", name, args, ok: true, result: value });
           messages.push({ role: "tool", tool_call_id: call.id, content: text.slice(0, 30_000) });

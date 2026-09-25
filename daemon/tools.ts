@@ -199,7 +199,7 @@ type Param = {
   enum?: string[];
   items?: { type: "string" };
 };
-type Tool = {
+export type Tool = {
   desc: string;
   params: Record<string, Param>;
   required?: string[];
