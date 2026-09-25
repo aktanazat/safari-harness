@@ -14,7 +14,9 @@
 //
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { runAgent } from "../daemon/agent.ts";
+import { formatResult } from "../daemon/tools.ts";
 import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList, routineRemove, routineRun } from "./launchd.ts";
 
 
@@ -29,14 +31,24 @@ const USAGE = `safari — drive Safari from the terminal
   safari tabs                                list tabs
   safari open <url> [--bg]                   open a tab
   safari goto <url> [--tab N]                navigate
+  safari back|forward|reload [--tab N]       history
   safari close <tab>                         close a tab
   safari focus <tab>                         activate a tab
-  safari snapshot [--tab N] [--root sel]     aria snapshot with [ref]s
+  safari snapshot [--tab N] [--query text] [--root sel]
+                                             page outline with [ref]s
   safari click <ref> [--tab N]               click by snapshot ref
   safari clickat <x> <y> [--tab N]           click by coordinates
   safari type <ref> <text> [--tab N]         type by ref
-  safari press <key> [--tab N]               press a key
+  safari press <key> [--ref R] [--tab N]     press a key
+  safari select <ref> <option> [--tab N]     choose a dropdown option
+  safari hover <ref> [--tab N]               hover an element
+  safari upload <file>... [--ref R] [--tab N]
+                                             attach files to a file input
   safari scroll <dy> [--tab N]               scroll
+
+  Actions (open goto back forward reload click clickat type press select
+  hover upload) take --snapshot to print the resulting page too.
+
   safari eval <js-expression> [--tab N]      evaluate JS, print JSON
   safari extract [--tab N] [--selector s]    readable text
   safari info [--tab N]                      url/title/scroll
@@ -70,8 +82,7 @@ async function rpc(tool: string, args: Record<string, unknown> = {}): Promise<Rp
 }
 
 function print(value: unknown) {
-  if (typeof value === "string") { console.log(value); return; }
-  console.log(JSON.stringify(value, null, 1));
+  console.log(formatResult(value));
 }
 
 function flag(name: string, argv: string[]): string | undefined {
@@ -148,7 +159,7 @@ async function main() {
       const res = await fetch(`${HTTP}/health`);
       print(await res.json());
     } catch {
-      console.log(`daemon not reachable at ${HTTP} — run: safari serve`);
+      console.log(`daemon not reachable at ${HTTP} — run: safari daemon install`);
       process.exit(1);
     }
     return;
@@ -190,25 +201,41 @@ async function main() {
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest) };
+  let args: Record<string, unknown> = { ...tabArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
     case "tabs": break;
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
+    case "back": case "forward": case "reload": tool = "history"; args.go = cmd; break;
     case "close": tool = "close"; args.tab = Number(positional[0]); break;
     case "focus": tool = "activate"; args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);
       if (root) args.root = root;
+      const query = flag("query", rest);
+      if (query) args.query = query;
       const max = flag("max", rest);
       if (max) args.maxNodes = Number(max);
       break;
     }
     case "click": args.ref = positional[0]; break;
-    case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
+    case "clickat": tool = "click"; args.x = Number(positional[0]); args.y = Number(positional[1]); break;
     case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
-    case "press": args.key = positional[0]; break;
+    case "press": {
+      args.key = positional[0];
+      const ref = flag("ref", rest);
+      if (ref) args.ref = ref;
+      break;
+    }
+    case "select": args.ref = positional[0]; args.option = positional.slice(1).join(" "); break;
+    case "hover": args.ref = positional[0]; break;
+    case "upload": {
+      args.paths = positional.map((p) => resolve(p));
+      const ref = flag("ref", rest);
+      if (ref) args.ref = ref;
+      break;
+    }
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
     case "eval": args.expression = positional.join(" "); break;
     case "extract": {
@@ -256,23 +283,11 @@ async function main() {
     console.error(`error: ${res.error}`);
     process.exit(1);
   }
-  // snapshot: print the human tree, not JSON
-  if (cmd === "snapshot" && res.value && typeof res.value === "object" && "snapshot" in (res.value as Record<string, unknown>)) {
-    const v = res.value as { url: string; title: string; snapshot: string; truncated?: boolean; nodes: number };
-    console.log(`# ${v.title} — ${v.url} (${v.nodes} nodes${v.truncated ? ", TRUNCATED" : ""})`);
-    console.log(v.snapshot);
-    return;
-  }
-  if (cmd === "extract" && res.value && typeof res.value === "object" && "text" in (res.value as Record<string, unknown>)) {
-    const v = res.value as { title: string; text: string };
-    console.log(`# ${v.title}\n\n${v.text}`);
-    return;
-  }
   print(res.value);
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "append"]);
+const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

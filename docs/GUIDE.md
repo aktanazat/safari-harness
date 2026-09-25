@@ -24,6 +24,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   every later call. A call without `tab` acts on the front tab, which is
   usually the user's.
 - Close your tab with `close` when the task ends, on success or failure.
+- A click can open another tab (many shops open items in a new tab). The
+  click result then carries `newTab` with its id: continue there, and close
+  it too. If the user's tab was in front, it stays in front.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
@@ -36,7 +39,12 @@ Always read with `snapshot` first.
   on carries a ref like `[12]`.
 - Refs belong to one snapshot. After any click, typing, or navigation, take a
   new snapshot before using refs again. Never guess a ref.
+- `query` returns only the lines containing some text, such as a button label
+  or a product name: the cheapest way to find one element on a long page.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
+- Link addresses are shortened: tracking codes become `?…`. Click the ref;
+  it opens the full address.
+- A dropdown shows its value and option count, not each option. Use `select`.
 
 Escalate in this order:
 
@@ -50,10 +58,20 @@ Escalate in this order:
 
 - `click` a ref, `type` text into a ref (`append: true` keeps existing text),
   `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your tab.
-- `clickat` with x/y only when a ref cannot reach the target.
+- `select` picks a dropdown option by its label. A wrong label returns the
+  list of options.
+- `hover` opens menus that appear on mouse-over.
+- `upload` attaches local files (absolute paths) to a file input. File inputs
+  are usually hidden: pass the upload area's ref, or no ref when the page has
+  one file input.
+- `history` goes `back`, `forward`, or `reload`s.
+- `click` with x/y only when a ref cannot reach the target.
 - `scroll` is rarely needed: snapshots include off-screen elements, and
   clicks scroll to their target.
-- Treat an action as unconfirmed until a fresh snapshot shows the result.
+- Every action reports what it caused: `navigated` (this tab loaded a new
+  page) or `newTab`. Pass `snapshot: true` to get the resulting page in the
+  same call; that is the fastest way to act and then read.
+- Treat an action as unconfirmed until a snapshot shows the result.
 
 ## Waiting
 
@@ -61,8 +79,10 @@ Wait for the page, not the clock.
 
 - `wait` with `text` or `selector` polls until it appears. `ms` is the
   timeout (default 10000, max 30000). The result says `found: true|false`.
-- `open` and `goto` wait for the page to load. `click` returns as soon as the
-  click lands, so after clicking a link, `wait` for text on the next page.
+- `open`, `goto`, `history`, and any action that loads a page return once the
+  new page is readable, without waiting for its ads and trackers.
+- A page that fills in after loading (search results, feeds) still needs a
+  `wait` for the text you expect.
 - `wait` with only `ms` is a plain sleep. Use it only when nothing on the page
   signals the change.
 
@@ -117,6 +137,9 @@ safari routine remove price-watch
 - Screenshots cover the whole Safari window, not a single element, and need
   Safari's window on screen (not minimized).
 - No reach inside closed shadow DOM.
+- `hover` fires mouse events; menus that open purely through CSS `:hover`
+  do not respond. Click the menu's button instead.
+- `eval` sees the page's DOM but not its own script variables.
 - One extension connection. The daemon owns it, and every client shares it.
 
 ## Troubleshooting

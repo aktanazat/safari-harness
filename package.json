@@ -10,6 +10,7 @@
     "serve": "bun daemon/main.ts serve",
     "mcp": "bun daemon/main.ts mcp",
     "build-ext": "bun scripts/build-extension.ts",
-    "winshot": "swiftc -O scripts/winshot.swift -o scripts/winshot"
+    "winshot": "swiftc -O scripts/winshot.swift -o scripts/winshot",
+    "check": "bun scripts/check-live.ts"
   }
 }

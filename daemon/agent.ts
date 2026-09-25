@@ -2,7 +2,7 @@
 // OpenAI-compatible /chat/completions endpoint with tool calling
 // (Ollama locally by default; any frontier API works via env).
 
-import { TOOLS } from "./tools.ts";
+import { TOOLS, formatResult, inputSchema } from "./tools.ts";
 
 export type AgentEvent =
   | { type: "plan"; text: string }
@@ -36,32 +36,7 @@ Rules:
 function toolSchemas() {
   return Object.entries(TOOLS).map(([name, t]) => ({
     type: "function" as const,
-    function: {
-      name,
-      description: t.desc,
-      parameters: {
-        type: "object",
-        properties: {
-          tab: { type: "number", description: "tab id (omit for the front tab)" },
-          url: { type: "string" },
-          ref: { description: "snapshot ref" },
-          text: { type: "string" },
-          expression: { type: "string", description: "JS expression, must be serializable to JSON" },
-          key: { type: "string" },
-          selector: { type: "string" },
-          ms: { type: "number" },
-          x: { type: "number" },
-          y: { type: "number" },
-          dx: { type: "number" },
-          dy: { type: "number" },
-          append: { type: "boolean" },
-          background: { type: "boolean" },
-          maxNodes: { type: "number" },
-          maxBytes: { type: "number" },
-        },
-        additionalProperties: true,
-      },
-    },
+    function: { name, description: t.desc, parameters: inputSchema(t) },
   }));
 }
 
@@ -155,7 +130,7 @@ export async function runAgent(task: string, cfg: AgentConfig, opts: { tab?: num
         }
         try {
           const value = cfg.rpcUrl ? await runToolOverRpc(cfg.rpcUrl, name, args) : await tool.run(args);
-          const text = typeof value === "string" ? value : JSON.stringify(value, null, 1);
+          const text = formatResult(value);
           cfg.onEvent({ type: "tool", name, args, ok: true, result: value });
           messages.push({ role: "tool", tool_call_id: call.id, content: text.slice(0, 30_000) });
         } catch (e) {

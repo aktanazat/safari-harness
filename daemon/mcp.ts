@@ -1,7 +1,7 @@
 // MCP server over stdio: exposes every harness tool to any MCP client
 // (omp, Claude Code, Cursor, ...). One JSON-RPC message per line.
 
-import { TOOLS } from "./tools.ts";
+import { TOOLS, formatResult, inputSchema } from "./tools.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
@@ -28,30 +28,8 @@ async function rpc(tool: string, args: Record<string, unknown>): Promise<unknown
 function toolDefs() {
   return Object.entries(TOOLS).map(([name, t]) => ({
     name,
-    description: `[Safari] ${t.desc} (args: ${t.args || "none"})`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        tab: { type: "number", description: "tab id (defaults to front tab)" },
-        url: { type: "string" },
-        ref: { description: "snapshot ref of the element" },
-        text: { type: "string" },
-        expression: { type: "string" },
-        key: { type: "string" },
-        selector: { type: "string" },
-        ms: { type: "number" },
-        out: { type: "string" },
-        x: { type: "number" },
-        y: { type: "number" },
-        dx: { type: "number" },
-        dy: { type: "number" },
-        append: { type: "boolean" },
-        background: { type: "boolean" },
-        maxNodes: { type: "number" },
-        maxBytes: { type: "number" },
-      },
-      additionalProperties: true,
-    },
+    description: `[Safari] ${t.desc}`,
+    inputSchema: inputSchema(t),
   }));
 }
 
@@ -84,7 +62,7 @@ async function handle(msg: RpcMsg) {
       try {
         const value = await rpc(name, args);
         return reply(msg.id, {
-          content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 1).slice(0, 100_000) }],
+          content: [{ type: "text", text: formatResult(value).slice(0, 100_000) }],
         });
       } catch (e) {
         return reply(msg.id, {
