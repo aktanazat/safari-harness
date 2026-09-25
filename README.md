@@ -5,13 +5,13 @@ client — without WebKit's remote-inspection toggle.
 
 Safari web extensions cannot use `chrome.debugger` (it does not exist there),
 so this harness is built the way Safari allows: a signed Safari Web Extension
-whose background worker keeps a WebSocket to a local daemon. The daemon exposes
+whose background page keeps a WebSocket to a local daemon. The daemon exposes
 the same tool surface Aside's daemon does, plus a CDP shim and an MCP server.
 
 ## Pieces
 
 ```
-extension/          Safari MV3 web extension (background worker + content script)
+extension/          Safari MV3 web extension (background page + content script)
   background.js     ws client to the daemon; tab/window/cookie ops; relays DOM
                     ops to the content script (executeScript fallback included)
   content.js        aria snapshot with [ref]s, click/type/press/scroll,
@@ -27,6 +27,8 @@ daemon/
   mcp.ts            MCP stdio server (thin client over /rpc)
   agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API)
 cli/safari.ts       the `safari` command
+cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
+docs/GUIDE.md       usage guide for agents and people (`safari guide`)
 scripts/
   winshot.swift     helper: prints the CGWindowID of Safari's front window
                     (build: swiftc -O scripts/winshot.swift -o scripts/winshot)
@@ -47,7 +49,8 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 
 ## Setup
 
-1. Start the daemon: `safari serve` (or `bun daemon/main.ts`).
+1. Start the daemon and keep it on: `safari daemon install` (a launchd agent;
+   `safari serve` runs it in the foreground instead).
 2. Build + install the app once:
    ```
    xcrun safari-web-extension-converter "$PWD/extension" \
@@ -69,22 +72,48 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
    "Allow remote automation" toggle is needed for this path.
 4. `safari status` should show the extension connected.
 
+After a rebuild: unregister the build copy (`pluginkit -r` on its appex,
+`lsregister -u` on its app), `rsync -a --delete` it over
+`/Applications/Safari Harness.app`, move the build folder to the Trash, then
+run `pluginkit -a` on the installed appex. If `safari status` still shows no
+extension after 30 seconds, run `pluginkit -a` once more; Safari then reloads
+the new code without a settings toggle.
+
 ## Use
+
+`safari guide` is the full usage guide: tab discipline, snapshot-first
+reading, waiting, secrets, confirmation, and routines. The omp skill
+`safari` points agents at it.
 
 ```
 safari open https://example.com
 safari snapshot                 # [ref]s for click/type
 safari click 2
+safari wait --text "Welcome"    # poll until it is on the page
 safari extract
 safari eval "JSON.stringify(performance.timing)"
 safari net start; safari goto https://…; safari net read
-safari shot --out page.png               # window-level capture (winshot + screencapture)
+safari shot --out page.png      # window-level capture (winshot + screencapture)
 safari do "find the price of X on example.com"
 ```
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,
 `gemma4:12b-mlx`); point it anywhere with `SAFARI_MODEL_BASE`,
-`SAFARI_MODEL`, `SAFARI_MODEL_KEY`.
+`SAFARI_MODEL`, `SAFARI_MODEL_KEY`. From omp, use the MCP tools instead.
+
+### Routines
+
+```
+safari routine add morning-inbox --at 08:00 "List today's unread Gmail senders and subjects."
+safari routine list
+safari routine run morning-inbox
+safari routine remove morning-inbox
+```
+
+A routine is a prompt file in `~/.local/share/safari-harness/routines/` plus a
+launchd agent `at.aktan.safari-harness.routine.<name>` that runs
+`omp -p --auto-approve` with it. Output goes to
+`~/Library/Logs/safari-harness/routines/`.
 
 ### MCP
 

@@ -13,14 +13,18 @@
 //   safari serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { runAgent } from "../daemon/agent.ts";
+import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList, routineRemove, routineRun } from "./launchd.ts";
 
 
 const HTTP = process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 
 const USAGE = `safari — drive Safari from the terminal
 
-  safari serve [--ws 37333] [--http 37334]   start the daemon (Safari extension connects)
+  safari guide                               how to use this for browsing and automations
+  safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
+  safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
   safari tabs                                list tabs
   safari open <url> [--bg]                   open a tab
@@ -37,12 +41,17 @@ const USAGE = `safari — drive Safari from the terminal
   safari extract [--tab N] [--selector s]    readable text
   safari info [--tab N]                      url/title/scroll
   safari wait <ms> [--tab N]                 sleep in the page
+  safari wait [--selector s] [--text t] [--ms timeout] [--tab N]
+                                             wait until it is on the page
   safari net start|stop|read [--tab N]       fetch/XHR capture
   safari console start|read [--tab N]        console capture
   safari cookies [--tab N]                   cookies for the page
   safari shot [--tab N] [--out file.png]     screenshot the Safari window
-  safari do "<task>" [--tab N] [--steps 30]  run the agent loop
+  safari do "<task>" [--tab N] [--steps 30]  run the agent loop (local model)
   safari mcp                                 run the MCP stdio server (thin client)
+  safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
+  safari routine list | run <name> | remove <name>
+                                             scheduled tasks run through omp
 `;
 
 type Rpc = { ok: boolean; value?: unknown; error?: string };
@@ -56,7 +65,7 @@ async function rpc(tool: string, args: Record<string, unknown> = {}): Promise<Rp
     });
     return (await res.json()) as Rpc;
   } catch (e) {
-    return { ok: false, error: `daemon not reachable at ${HTTP} — run: safari serve` };
+    return { ok: false, error: `daemon not reachable at ${HTTP} — run: safari daemon install (or safari serve)` };
   }
 }
 
@@ -97,6 +106,40 @@ async function main() {
     });
     process.on("SIGINT", () => child.kill("SIGINT"));
     child.on("exit", (code) => process.exit(code ?? 0));
+    return;
+  }
+
+  if (cmd === "guide") {
+    console.log(await readFile(new URL("../docs/GUIDE.md", import.meta.url), "utf8"));
+    return;
+  }
+
+  if (cmd === "daemon") {
+    const sub = rest[0];
+    if (sub === "install") console.log(await daemonInstall());
+    else if (sub === "uninstall") console.log(await daemonUninstall());
+    else { console.error("usage: safari daemon install|uninstall"); process.exit(2); }
+    return;
+  }
+
+  if (cmd === "routine") {
+    const [sub, ...r] = rest;
+    const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
+    if (sub === "add") {
+      const schedule = parseSchedule(flag("at", r), flag("every", r));
+      console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+    } else if (sub === "list") {
+      print(await routineList());
+    } else if (sub === "run") {
+      const { code, log } = await routineRun(pos[0]);
+      console.log(`exit ${code}; log: ${log}`);
+      process.exit(code);
+    } else if (sub === "remove") {
+      console.log(await routineRemove(pos[0]));
+    } else {
+      console.error("usage: safari routine add|list|run|remove");
+      process.exit(2);
+    }
     return;
   }
 
@@ -174,7 +217,15 @@ async function main() {
       break;
     }
     case "info": break;
-    case "wait": args.ms = Number(positional[0]); break;
+    case "wait": {
+      const ms = positional[0] ?? flag("ms", rest);
+      if (ms !== undefined) args.ms = Number(ms);
+      const sel = flag("selector", rest);
+      if (sel) args.selector = sel;
+      const text = flag("text", rest);
+      if (text) args.text = text;
+      break;
+    }
     case "net": {
       const sub = positional[0];
       tool = sub === "start" ? "net_start" : sub === "stop" ? "net_stop" : "net_read";
