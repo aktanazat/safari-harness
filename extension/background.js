@@ -80,22 +80,40 @@ function pingLoop() {
 
 function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 
+// Ops that change the page. If the page navigates while one is pending, the
+// action caused it: report that instead of re-sending (never act twice).
+const ACTIONS = new Set(["click", "clickAt", "type", "press"]);
+
 async function toTab(tabId, op, args, timeoutMs = 30000) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
-  // content script may not be injected yet (e.g. added after page load):
-  // try sendMessage, fall back to scripting.executeScript then retry.
+  await waitLoaded(tabId, 15000);
   try {
-    return await withTimeout(api.tabs.sendMessage(tabId, msg), timeoutMs);
+    return await sendUntilNavigation(tabId, msg, timeoutMs);
   } catch (e) {
+    if (e.navigated) {
+      if (ACTIONS.has(op)) return { value: { ok: true, navigated: true } };
+      await waitLoaded(tabId, 15000);
+      return await sendUntilNavigation(tabId, msg, timeoutMs);
+    }
+    // content script may not be injected yet (e.g. added after page load)
     await ensureContent(tabId);
-    return await withTimeout(api.tabs.sendMessage(tabId, msg), timeoutMs);
+    return await sendUntilNavigation(tabId, msg, timeoutMs);
   }
 }
 
-function withTimeout(p, ms) {
+// Safari never settles a message whose page unloads mid-request, so race it
+// against the tab starting a new load.
+function sendUntilNavigation(tabId, msg, ms) {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`tab ${ms}ms timeout`)), ms);
-    p.then((v) => { clearTimeout(t); resolve(v); }, (err) => { clearTimeout(t); reject(err); });
+    const stop = () => { clearTimeout(t); api.tabs.onUpdated.removeListener(onNav); };
+    const onNav = (id, info) => {
+      if (id !== tabId || info.status !== "loading") return;
+      stop();
+      reject(Object.assign(new Error("page navigated"), { navigated: true }));
+    };
+    const t = setTimeout(() => { stop(); reject(new Error(`tab ${ms}ms timeout`)); }, ms);
+    api.tabs.onUpdated.addListener(onNav);
+    api.tabs.sendMessage(tabId, msg).then((v) => { stop(); resolve(v); }, (err) => { stop(); reject(err); });
   });
 }
 

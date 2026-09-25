@@ -97,9 +97,12 @@ export async function tabInfo(opts: { tab?: number } = {}) {
   return relay(tab, "tabInfo");
 }
 
-export async function wait(opts: { tab?: number; ms: number }) {
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "wait", [num(opts.ms, "ms")], num(opts.ms, "ms") + 10000);
+  const until = opts.selector !== undefined || opts.text !== undefined;
+  if (!until && opts.ms === undefined) throw new Error("wait needs ms, selector, or text");
+  const ms = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
+  return relay(tab, "wait", [ms, opts.selector ?? null, opts.text ?? null], ms + 10000);
 }
 
 export async function netStart(opts: { tab?: number } = {}) {
@@ -137,20 +140,28 @@ export async function cookies(opts: { tab?: number; url?: string } = {}) {
 // Safari window itself via screencapture, located by CGWindowID.
 const WINSHOT = join(import.meta.dir, "..", "scripts", "winshot");
 
+// The capture shows whatever tab is in front, so bring the requested tab to
+// the front, wait until it has painted, capture, then give the window back
+// the tab that was showing before.
 export async function screenshot(opts: { tab?: number; out?: string } = {}) {
   const tab = await resolveTab(opts.tab);
   const tabs = await listTabs();
   const t = tabs.find((x) => x.id === tab);
-  if (t && t.windowId !== undefined) {
-    await bridge.request("windows.focus", [t.windowId]);
+  if (!t) throw new Error(`no tab ${tab}`);
+  const previous = tabs.find((x) => x.windowId === t.windowId && x.active && x.id !== tab);
+  await activateTab(tab);
+  try {
+    await relay(tab, "painted", [], 3000);
+    const { stdout } = await execFileAsync(WINSHOT, [], { timeout: 5000 });
+    const winId = stdout.trim().split("\n")[0];
+    if (!winId) throw new Error("no Safari window found to capture");
+    const out = opts.out ?? join(await mkdtemp(join(tmpdir(), "safari-shot-")), "shot.png");
+    await execFileAsync("screencapture", ["-x", "-o", "-l", winId, out], { timeout: 10000 });
+    await writeFile(out + ".json", JSON.stringify({ tab, windowId: Number(winId) }));
+    return { path: out };
+  } finally {
+    if (previous) await activateTab(previous.id);
   }
-  const { stdout } = await execFileAsync(WINSHOT, [], { timeout: 5000 });
-  const winId = stdout.trim().split("\n")[0];
-  if (!winId) throw new Error("no Safari window found to capture");
-  const out = opts.out ?? join(await mkdtemp(join(tmpdir(), "safari-shot-")), "shot.png");
-  await execFileAsync("screencapture", ["-x", "-o", "-l", winId, out], { timeout: 10000 });
-  await writeFile(out + ".json", JSON.stringify({ tab, windowId: Number(winId) }));
-  return { path: out };
 }
 
 export const TOOLS: Record<string, { desc: string; args: string; run: (a: Record<string, unknown>) => Promise<unknown> }> = {
@@ -167,7 +178,7 @@ export const TOOLS: Record<string, { desc: string; args: string; run: (a: Record
   eval: { desc: "evaluate a JS expression in the page, returns JSON", args: "tab?, expression", run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression") }) },
   extract: { desc: "extract readable text from the page", args: "tab?, selector?, maxBytes?", run: (a) => extract(a as { tab?: number; selector?: string; maxBytes?: number }) },
   info: { desc: "url/title/scroll of a tab", args: "tab?", run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
-  wait: { desc: "wait milliseconds", args: "tab?, ms", run: (a) => wait({ tab: a.tab as number | undefined, ms: num(a.ms, "ms") }) },
+  wait: { desc: "sleep ms, or wait until a CSS selector and/or text is on the page (ms = timeout, default 10000); returns found", args: "tab?, ms?, selector?, text?", run: (a) => wait(a as { tab?: number; ms?: number; selector?: string; text?: string }) },
   net_start: { desc: "start capturing fetch/XHR", args: "tab?", run: (a) => netStart({ tab: a.tab as number | undefined }) },
   net_stop: { desc: "stop capturing fetch/XHR", args: "tab?", run: (a) => netStop({ tab: a.tab as number | undefined }) },
   net_read: { desc: "read captured requests", args: "tab?", run: (a) => netRead({ tab: a.tab as number | undefined }) },

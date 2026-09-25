@@ -245,8 +245,9 @@
   async function click(ref) {
     const el = resolve(ref);
     if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    // Reading the position below forces layout, so no frame wait is needed;
+    // background tabs never run requestAnimationFrame, so waiting on one hangs.
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    await new Promise((r) => requestAnimationFrame(r));
     const { x, y } = centerOf(el);
     const target = document.elementFromPoint(x, y) || el;
     fireMouse(target, "pointerdown", x, y);
@@ -406,10 +407,31 @@
     netRead: () => ({ entries: netLog.slice(-100) }),
     console: (on) => { consoleOn = !!on; if (on) consoleLog.length = 0; return { ok: true }; },
     consoleRead: () => ({ entries: consoleLog.slice(-100) }),
-    wait: async (ms) => { await new Promise((r) => setTimeout(r, Math.min(ms || 0, 30000))); return { ok: true }; },
+    wait: waitFor,
+    // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
+    painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
     clickAt,
     setFiles,
   };
+
+  // Sleep for ms, or, given a selector or text, poll until it is present
+  // (ms is then the timeout). Resolves either way; `found` says which.
+  async function waitFor(ms, selector, text) {
+    const limit = Math.min(ms ?? 10000, 30000);
+    const present = () =>
+      (!selector || document.querySelector(selector) !== null) &&
+      (!text || (document.body?.innerText ?? "").includes(text));
+    if (!selector && !text) {
+      await new Promise((r) => setTimeout(r, limit));
+      return { ok: true };
+    }
+    const start = Date.now();
+    while (!present()) {
+      if (Date.now() - start >= limit) return { ok: true, found: false, waitedMs: Date.now() - start };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return { ok: true, found: true, waitedMs: Date.now() - start };
+  }
 
   function clickAt(x, y) {
     const el = document.elementFromPoint(x, y);
