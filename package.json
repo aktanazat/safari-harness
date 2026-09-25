@@ -1,0 +1,15 @@
+{
+  "name": "safari-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "safari": "cli/safari.ts"
+  },
+  "scripts": {
+    "serve": "bun daemon/main.ts serve",
+    "mcp": "bun daemon/main.ts mcp",
+    "build-ext": "bun scripts/build-extension.ts",
+    "winshot": "swiftc -O scripts/winshot.swift -o scripts/winshot"
+  }
+}
