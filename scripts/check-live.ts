@@ -52,11 +52,12 @@ const front = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
 // ---------- actions ----------
 
 const FORM = '<label>Size <select id=s><option value="">pick</option><option value="7">US 7</option><option value="8">US 8</option></select></label>' +
-  "<div id=h role=button tabindex=0>Menu</div><div id=hout></div>" +
+  "<div id=h role=button tabindex=0>Menu</div><div id=hout></div><div id=kout></div>" +
   "<label>Photo <input type=file id=f></label><div id=fout></div>" +
   '<a href="https://example.org/">Next page</a> <a href="https://example.org/" target=_blank>Elsewhere</a>';
 const FORM_JS = `
   document.getElementById("h").addEventListener("mouseenter", () => { document.getElementById("hout").textContent = "hovered"; });
+  document.addEventListener("keydown", (e) => { document.getElementById("kout").textContent = "key " + e.key + " " + e.code + " shift=" + e.shiftKey + " alt=" + e.altKey + " meta=" + e.metaKey; });
   document.getElementById("s").addEventListener("change", (e) => { document.title = "size " + e.target.value; });
   document.getElementById("f").addEventListener("change", async (e) => {
     const f = e.target.files[0];
@@ -86,6 +87,10 @@ await withPage(FORM, FORM_JS, async (tab) => {
 
   await call("hover", { tab, ref: refOf(snap, /"Menu"/) });
   check("hover fires mouseenter", (await call("wait", { tab, text: "hovered", ms: 3000 })).found === true, "no hover text");
+
+  await call("press", { tab, key: "Shift+Option+C" });
+  const keyed = (await call("eval", { tab, expression: 'document.getElementById("kout").textContent' })).result;
+  check("a key combo arrives as its key with the modifiers held", keyed === "key C KeyC shift=true alt=true meta=false", keyed);
 
   const file = "/private/var/tmp/safari-harness-upload-check.txt";
   await Bun.write(file, "hello from safari harness\n");

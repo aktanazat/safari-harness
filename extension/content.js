@@ -385,16 +385,40 @@
     return { ok: true, value: (el.value ?? el.textContent ?? "").slice(0, 200) };
   }
 
-  function pressKey(ref, key) {
+  // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
+  // a known combo ("+", "Enter") is sent as is.
+  const MODIFIERS = { shift: "shiftKey", option: "altKey", alt: "altKey", cmd: "metaKey", command: "metaKey", meta: "metaKey", ctrl: "ctrlKey", control: "ctrlKey" };
+  function parseKey(spec) {
+    const parts = spec.split("+");
+    const flags = {};
+    if (parts.length < 2 || parts[parts.length - 1] === "") return { key: spec, flags };
+    for (const p of parts.slice(0, -1)) {
+      const flag = MODIFIERS[p.trim().toLowerCase()];
+      if (!flag) return { key: spec, flags: {} };
+      flags[flag] = true;
+    }
+    let key = parts[parts.length - 1];
+    if (key.length === 1) key = flags.shiftKey ? key.toUpperCase() : key.toLowerCase();
+    return { key, flags };
+  }
+
+  function keyCode(key) {
+    if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^\d$/.test(key)) return `Digit${key}`;
+    return { "/": "Slash", "?": "Slash", ".": "Period", ",": "Comma", " ": "Space" }[key] ?? key;
+  }
+
+  function pressKey(ref, spec) {
     const el = resolve(ref) || document.activeElement || document.body;
-    const common = { bubbles: true, cancelable: true, key };
+    const { key, flags } = parseKey(spec);
+    const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
     el.dispatchEvent(new KeyboardEvent("keydown", common));
     el.dispatchEvent(new KeyboardEvent("keyup", common));
-    if (key === "Enter" && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    if (key === "Enter" && !Object.keys(flags).length && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
       const form = el.closest("form");
       if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
     }
-    return { ok: true };
+    return { ok: true, key, ...flags };
   }
 
   function scrollBy(dx, dy) {

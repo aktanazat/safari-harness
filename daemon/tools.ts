@@ -266,7 +266,7 @@ export const TOOLS: Record<string, Tool> = {
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean })),
   },
   press: {
-    desc: "Press a key (Enter, Tab, Escape, ArrowDown…) on an element by ref, or on the focused element. Enter in a field submits its form.",
+    desc: "Press a key (Enter, Tab, Escape, ArrowDown, /, g…) or a combo (Shift+Option+C, Cmd+K) on an element by ref, or on the focused element. Enter in a field submits its form. Sites that ignore simulated keys will not react.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     required: ["key"],
     run: action((a) => press(a as { tab: number; ref?: string; key: string })),
