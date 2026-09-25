@@ -12,15 +12,17 @@
 
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { TOOLS, callTool } from "./tools.ts";
-import { handleCdp, stopPump, stopAllPumps, type CdpMsg } from "./cdp.ts";
+import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
 
 type SocketScope =
   | { kind: "extension" }
-  | { kind: "browser" }
-  | { kind: "page"; tabId: number };
+  | { kind: "browser"; connId: number }
+  | { kind: "page"; tabId: number; connId: number };
+
+let connSeq = 0;
 
 function safeParse(s: string): Record<string, unknown> | null {
   try {
@@ -37,9 +39,10 @@ const server = Bun.serve<SocketScope>({
     const url = new URL(req.url);
     if (url.pathname.startsWith("/devtools/")) {
       const pageMatch = url.pathname.match(/^\/devtools\/page\/(\d+)/);
+      const connId = ++connSeq;
       const scope: SocketScope = pageMatch
-        ? { kind: "page", tabId: Number(pageMatch[1]) }
-        : { kind: "browser" };
+        ? { kind: "page", tabId: Number(pageMatch[1]), connId }
+        : { kind: "browser", connId };
       return srv.upgrade(req, { data: scope }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/") {
@@ -59,12 +62,12 @@ const server = Bun.serve<SocketScope>({
       }
       const msg = safeParse(text);
       if (!msg) return;
-      const scope = ws.data.kind === "page" ? ws.data : { kind: "browser" as const };
-      handleCdp((obj) => ws.send(JSON.stringify(obj)), msg as CdpMsg, scope);
+      const scope = ws.data.kind === "extension" ? null : ws.data;
+      if (scope) handleCdp((obj) => ws.send(JSON.stringify(obj)), msg as CdpMsg, scope);
     },
     close(ws) {
       if (ws.data.kind === "extension") bridge.detach();
-      else if (ws.data.kind === "page") stopPump(ws.data.tabId);
+      else stopConnPumps(ws.data.connId);
     },
   },
 });

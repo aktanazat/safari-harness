@@ -39,8 +39,8 @@ type EventPump = {
 
 const pumps: Record<string, EventPump> = {};
 
-function startPump(send: Send, tabId: number) {
-  const key = String(tabId);
+function startPump(send: Send, tabId: number, connId: number) {
+  const key = `${connId}:${tabId}`;
   if (pumps[key]) return pumps[key];
   const pump: EventPump = {
     tabId,
@@ -109,13 +109,15 @@ function startPump(send: Send, tabId: number) {
     }, 800),
   };
   pumps[key] = pump;
+  return pump;
 }
-
-export function stopPump(tabId: number) {
-  const p = pumps[String(tabId)];
-  if (p) {
-    clearInterval(p.timer);
-    delete pumps[String(tabId)];
+// pumps are keyed per (connection, tab) so a dead socket's send is never
+// reused by a later attach to the same tab
+export function stopConnPumps(connId: number) {
+  for (const key of Object.keys(pumps)) {
+    if (!key.startsWith(`${connId}:`)) continue;
+    clearInterval(pumps[key].timer);
+    delete pumps[key];
   }
 }
 
@@ -128,9 +130,13 @@ export function stopAllPumps() {
 
 // ---------- dispatch ----------
 
-export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser" | "page"; tabId?: number }) {
+export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser" | "page"; tabId?: number; connId: number }) {
   const { id, method } = msg;
   const params = msg.params ?? {};
+  // page sockets pin their tab; browser sockets can address one via the
+  // sessionId handed out by Target.attachToTarget
+  const sessionTab = msg.sessionId?.startsWith("s-") ? Number(msg.sessionId.slice(2)) : undefined;
+  const effTab = scope.tabId ?? (Number.isFinite(sessionTab) ? sessionTab : undefined);
   try {
     switch (method) {
       // ----- Target -----
@@ -167,36 +173,36 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
         return send(ok(id, {}));
       }
       case "Target.getTargetInfo": {
-        const tabId = scope.tabId ?? (params.targetId ? tabFromTarget(String(params.targetId)) : await tools.resolveTab());
+        const tabId = effTab ?? (params.targetId ? tabFromTarget(String(params.targetId)) : await tools.resolveTab());
         const info = (await tools.tabInfo({ tab: tabId })) as { url: string; title: string };
         return send(ok(id, { targetInfo: { targetId: targetId(tabId), type: "page", title: info.title, url: info.url, attached: true, canAccessOpener: false } }));
       }
 
       // ----- Page -----
       case "Page.navigate": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const r = await tools.navigate(tabId, String(params.url));
         return send(ok(id, { frameId: "1", loaderId: `l${Date.now()}`, url: (r as { url?: string }).url }));
       }
       case "Page.captureScreenshot": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const { path } = await tools.screenshot({ tab: tabId });
         const file = Bun.file(path);
         const buf = await file.bytes();
         return send(ok(id, { data: Buffer.from(buf).toString("base64") }));
       }
       case "Page.getFrameTree": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const info = (await tools.tabInfo({ tab: tabId })) as { url: string };
         return send(ok(id, { frameTree: { frame: { id: "1", loaderId: "l1", url: info.url, domainAndRegistry: "", securityOrigin: new URL(info.url || "about:blank").origin, mimeType: "text/html", secureContext: true, crossOriginIsolatedContextType: "NotIsolated" } } }));
       }
       case "Page.getNavigationHistory": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const info = (await tools.tabInfo({ tab: tabId })) as { url: string; title: string };
         return send(ok(id, { currentIndex: 0, entries: [{ id: 0, url: info.url, title: info.title }] }));
       }
       case "Page.reload": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const info = (await tools.tabInfo({ tab: tabId })) as { url: string };
         await tools.navigate(tabId, info.url);
         return send(ok(id, {}));
@@ -207,7 +213,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
 
       // ----- Runtime -----
       case "Runtime.evaluate": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const r = (await tools.evaluate({ tab: tabId, expression: String(params.expression ?? "") })) as { ok?: boolean; result?: unknown };
         const value = r?.result;
         return send(ok(id, {
@@ -219,15 +225,15 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
         }));
       }
       case "Runtime.callFunctionOn": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const fn = String(params.functionDeclaration ?? "function(){}");
         const argJson = JSON.stringify((params.arguments as unknown[] | undefined)?.[0]?.value ?? null);
         const r = (await tools.evaluate({ tab: tabId, expression: `(${fn})(${argJson})` })) as { result?: unknown };
         return send(ok(id, { result: { type: "string", value: JSON.stringify(r?.result ?? null) } }));
       }
       case "Runtime.enable": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
-        const pump = startPump(send, tabId);
+        const tabId = effTab ?? (await tools.resolveTab());
+        const pump = startPump(send, tabId, scope.connId);
         pump.consoleOn = true;
         return send(ok(id, {}));
       }
@@ -236,7 +242,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
 
       // ----- Input -----
       case "Input.dispatchMouseEvent": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const type = String(params.type);
         const x = Number(params.x ?? 0);
         const y = Number(params.y ?? 0);
@@ -247,7 +253,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
         return send(ok(id, {}));
       }
       case "Input.dispatchKeyEvent": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const type = String(params.type);
         if (type === "keyUp") return send(ok(id, {}));
         const key = String(params.key ?? params.text ?? "");
@@ -255,7 +261,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
         return send(ok(id, r));
       }
       case "Input.insertText": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         const r = await tools.evaluate({ tab: tabId, expression: `(() => { const el = document.activeElement; if (!el) return "no focus"; if (el.isContentEditable) { document.execCommand("insertText", false, ${JSON.stringify(String(params.text ?? ""))}); return "editable"; } if ("value" in el) { const s = Object.getOwnPropertyDescriptor(el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value").set; s.call(el, (el.value || "") + ${JSON.stringify(String(params.text ?? ""))}); el.dispatchEvent(new InputEvent("input", { bubbles: true })); return "input"; } return "not editable"; })()` });
         return send(ok(id, r));
       }
@@ -264,22 +270,22 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
 
       // ----- Network / Log -----
       case "Network.enable": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         await tools.netStart({ tab: tabId });
-        const pump = startPump(send, tabId);
+        const pump = startPump(send, tabId, scope.connId);
         pump.netOn = true;
         return send(ok(id, {}));
       }
       case "Network.disable": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
+        const tabId = effTab ?? (await tools.resolveTab());
         await tools.netStop({ tab: tabId });
-        const p = pumps[String(tabId)];
+        const p = pumps[`${scope.connId}:${tabId}`];
         if (p) p.netOn = false;
         return send(ok(id, {}));
       }
       case "Log.enable": {
-        const tabId = scope.tabId ?? (await tools.resolveTab());
-        const pump = startPump(send, tabId);
+        const tabId = effTab ?? (await tools.resolveTab());
+        const pump = startPump(send, tabId, scope.connId);
         pump.consoleOn = true;
         return send(ok(id, {}));
       }
@@ -299,7 +305,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
       case "Network.getCookies": {
         if (method === "Page.addScriptToEvaluateOnNewDocument") return send(ok(id, { identifier: String(Date.now()) }));
         if (method === "Network.getCookies") {
-          const tabId = scope.tabId ?? (await tools.resolveTab());
+          const tabId = effTab ?? (await tools.resolveTab());
           return send(ok(id, { cookies: await tools.cookies({ tab: tabId, url: params.urls ? String((params.urls as string[])[0]) : undefined }) }));
         }
         return send(ok(id, {}));
