@@ -90,8 +90,22 @@
     return true;
   }
 
+  // Roles whose accessible name comes from their text (ARIA "name from content").
+  const NAME_FROM_CONTENT = new Set(["button", "link", "heading", "tab", "menuitem", "menuitemcheckbox",
+    "menuitemradio", "option", "checkbox", "radio", "switch", "treeitem", "cell", "gridcell",
+    "columnheader", "rowheader", "tooltip"]);
+
   function textOf(el, max = 120) {
-    let t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    let t;
+    if (el.querySelector("select")) {
+      // a label wrapping its dropdown: leave out the option list
+      const copy = el.cloneNode(true);
+      for (const s of copy.querySelectorAll("select")) s.remove();
+      t = copy.textContent;
+    } else {
+      t = el.innerText || el.textContent || "";
+    }
+    t = t.replace(/\s+/g, " ").trim();
     if (t.length > max) t = t.slice(0, max) + "…";
     return t;
   }
@@ -116,8 +130,12 @@
       if (name) return name.trim();
     }
     if (el.tagName === "BUTTON" || el.tagName === "A" || /^H[1-6]$/.test(el.tagName) ||
-        el.tagName === "LABEL" || el.tagName === "SUMMARY") {
-      return textOf(el, 80);
+        el.tagName === "LABEL" || el.tagName === "SUMMARY" || NAME_FROM_CONTENT.has(el.getAttribute("role"))) {
+      const t = textOf(el, 80);
+      if (t) return t;
+      // image-only links and icon buttons: name them by their picture's label
+      const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]");
+      if (inner) return (inner.getAttribute("aria-label") || inner.getAttribute("alt")).trim().slice(0, 80);
     }
     const title = el.getAttribute("title");
     if (title) return title.trim();
@@ -131,18 +149,32 @@
     if (el.getAttribute("aria-checked") === "true" || el.checked === true) s.push("checked");
     if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-      s.push("focused=" + (document.activeElement === el));
+      if (document.activeElement === el) s.push("focused");
       const v = el.value;
       if (v) s.push(`value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
       const sel = el.selectedOptions[0];
       if (sel) s.push(`value="${textOf(sel, 40)}"`);
+      s.push(`${el.options.length} options`);
     }
     if (el.href) {
-      try { s.push("url=" + new URL(el.href, location.href).href); } catch {}
+      const u = shortUrl(el.href);
+      if (u) s.push("url=" + u);
     }
     return s;
+  }
+
+  // Link targets cost most of a snapshot's bytes, mostly tracking queries.
+  // Same-site links show their path, long queries collapse to "?…", and
+  // links to this same page are omitted. The ref still clicks the full URL.
+  function shortUrl(href) {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.protocol === "javascript:") return null;
+    if (u.origin === location.origin && u.pathname === location.pathname && u.search === location.search) return null;
+    const base = u.origin === location.origin ? u.pathname : u.origin + u.pathname;
+    return base + (u.search.length > 41 ? "?…" : u.search);
   }
 
   // ---------- snapshot ----------
@@ -165,12 +197,15 @@
     }
   }
 
+  // opts.query: keep only lines containing this text (case-insensitive), as a
+  // flat list, so an agent can find one element without reading the page.
   function snapshot(opts = {}) {
     pruneRefs();
     const root = opts.root ? document.querySelector(opts.root) : document.body;
     if (!root) return { error: "root not found" };
     const lines = [];
     const maxNodes = opts.maxNodes || 600;
+    const query = opts.query ? String(opts.query).toLowerCase() : null;
     let count = 0;
 
     const interesting = (el) => {
@@ -187,14 +222,11 @@
     const walk = (el, depth) => {
       if (count >= maxNodes) return;
       if (!isVisible(el)) return;
-      const role = getExplicitRole(el);
-      const name = accessibleName(el);
       const keep = interesting(el);
       if (keep) {
-        count += 1;
-        const ref = ensureRef(el);
-        const parts = ["  ".repeat(depth), `[${ref}] `];
-        parts.push(role || el.tagName.toLowerCase());
+        const role = getExplicitRole(el);
+        const name = accessibleName(el);
+        const parts = [role || el.tagName.toLowerCase()];
         if (name) parts.push(` "${name}"`);
         const st = stateOf(el);
         if (st.length) parts.push(` {${st.join(", ")}}`);
@@ -202,8 +234,14 @@
           const t = textOf(el, 160);
           if (t) parts.push(` "${t}"`);
         }
-        lines.push(parts.join(""));
+        const body = parts.join("");
+        if (!query || body.toLowerCase().includes(query)) {
+          count += 1;
+          lines.push(`${query ? "" : "  ".repeat(depth)}[${ensureRef(el)}] ${body}`);
+        }
       }
+      // a <select> lists its option count; pick one with the select tool
+      if (el.tagName === "SELECT") return;
       const childDepth = keep ? depth + 1 : depth;
       for (const child of el.children) walk(child, childDepth);
     };
@@ -242,23 +280,85 @@
     }));
   }
 
-  async function click(ref) {
+  function fireClick(el, x, y) {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) fireMouse(el, type, x, y);
+  }
+
+  function click(ref) {
     const el = resolve(ref);
     if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
     // Reading the position below forces layout, so no frame wait is needed;
     // background tabs never run requestAnimationFrame, so waiting on one hangs.
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const { x, y } = centerOf(el);
-    const target = document.elementFromPoint(x, y) || el;
-    fireMouse(target, "pointerdown", x, y);
-    fireMouse(target, "mousedown", x, y);
-    fireMouse(target, "pointerup", x, y);
-    fireMouse(target, "mouseup", x, y);
-    target.dispatchEvent(new MouseEvent("click", {
-      bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0,
-    }));
-    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) target.focus();
-    return { ok: true, at: { x, y }, tag: target.tagName };
+    // The topmost element at that point gets the click only when it is part
+    // of the target (an overlay inside a link); anything else is a cover
+    // that would swallow the click, so click the target itself.
+    const hit = document.elementFromPoint(x, y);
+    const target = hit && el.contains(hit) ? hit : el;
+    fireClick(target, x, y);
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
+    return { ok: true };
+  }
+
+  function hover(ref) {
+    const el = resolve(ref);
+    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const { x, y } = centerOf(el);
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"]) fireMouse(el, type, x, y);
+    return { ok: true };
+  }
+
+  function selectOption(ref, choice) {
+    const el = resolve(ref);
+    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
+    const options = [...el.options];
+    const want = String(choice).trim().toLowerCase();
+    const opt = options.find((o) => o.label.trim().toLowerCase() === want || o.value.toLowerCase() === want) ??
+      options.find((o) => o.label.toLowerCase().includes(want));
+    if (!opt) return { error: `no option "${choice}"; options: ${options.slice(0, 40).map((o) => o.label.trim()).join(" | ")}` };
+    // the native setter, so framework value trackers see a real change
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, opt.value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, value: opt.label.trim() };
+  }
+
+  // files: [{ name, type, data (base64) }]. File inputs are usually hidden
+  // behind a styled button, so the ref may be that button's container; with
+  // no ref, the page's only file input is used.
+  function upload(ref, files) {
+    let input;
+    if (ref !== null && ref !== undefined) {
+      const el = resolve(ref);
+      if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+      input = el.matches("input[type=file]") ? el : el.querySelector("input[type=file]");
+      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
+    } else {
+      const all = document.querySelectorAll("input[type=file]");
+      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
+      input = all[0];
+    }
+    if (files.length > 1 && !input.multiple) return { error: "this input takes one file" };
+    const dt = new DataTransfer();
+    for (const f of files) {
+      const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+      dt.items.add(new File([bytes], f.name, { type: f.type }));
+    }
+    input.files = dt.files;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, files: [...input.files].map((f) => f.name) };
+  }
+
+  function historyGo(to) {
+    if (to === "back") history.back();
+    else if (to === "forward") history.forward();
+    else if (to === "reload") location.reload();
+    else return { error: `go must be back, forward, or reload` };
+    return { ok: true };
   }
 
   async function typeText(ref, text, opts = {}) {
@@ -302,15 +402,39 @@
     return { ok: true, scrollY: Math.round(window.scrollY), maxY: Math.round(document.documentElement.scrollHeight - innerHeight) };
   }
 
+  // innerText, minus text drawn in boxes of at most one pixel. Pages hide
+  // decoys that way (ebay interleaves random letters into item labels and
+  // parks them off-screen); innerText keeps them because they do render.
+  function visibleText(root) {
+    const text = root.innerText || "";
+    const decoys = [];
+    for (const el of root.querySelectorAll("*")) {
+      if (decoys.length && decoys[decoys.length - 1].contains(el)) continue;
+      const rects = el.getClientRects();
+      if (!rects.length) continue; // not rendered, so not in innerText either
+      const r = el.getBoundingClientRect();
+      if (r.width <= 1 && r.height <= 1 && el.textContent.trim()) decoys.push(el);
+    }
+    // Cut each decoy at its next occurrence, in document order.
+    let out = "";
+    let at = 0;
+    for (const el of decoys) {
+      const t = el.innerText;
+      const i = t ? text.indexOf(t, at) : -1;
+      if (i < 0) continue;
+      out += text.slice(at, i);
+      at = i + t.length;
+    }
+    return out + text.slice(at);
+  }
+
   function extract(opts = {}) {
     const mode = opts.selector ? "selector" : "main";
     let root = null;
     if (mode === "selector") root = document.querySelector(opts.selector);
     else root = document.querySelector("main, article, [role=main]") || document.body;
     if (!root) return { error: "no content root" };
-    const clone = root.cloneNode(true);
-    clone.querySelectorAll("script,style,noscript,svg,canvas,template").forEach((n) => n.remove());
-    const text = (clone.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    const text = visibleText(root).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
     const limit = opts.maxBytes || 20000;
     return {
       url: location.href,
@@ -411,7 +535,10 @@
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
     clickAt,
-    setFiles,
+    hover,
+    select: selectOption,
+    upload,
+    history: historyGo,
   };
 
   // Sleep for ms, or, given a selector or text, poll until it is present
@@ -436,19 +563,9 @@
   function clickAt(x, y) {
     const el = document.elementFromPoint(x, y);
     if (!el) return { error: "no element at point" };
-    fireMouse(el, "pointerdown", x, y);
-    fireMouse(el, "mousedown", x, y);
-    fireMouse(el, "pointerup", x, y);
-    fireMouse(el, "mouseup", x, y);
-    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 }));
+    fireClick(el, x, y);
     return { ok: true, tag: el.tagName };
   }
-
-  function setFiles(ref, names) {
-    const el = resolve(ref);
-    if (!el || el.type !== "file") return { error: "ref is not a file input" };
-    return { ok: true, staged: names, accept: el.accept || "*" };
-  };
 
   function safeClone(v) {
     try {
@@ -465,6 +582,11 @@
     if (!msg || msg.__safariHarness !== 1) return;
     const fn = handlers[msg.op];
     if (!fn) return Promise.resolve({ id: msg.id, error: `unknown op ${msg.op}` });
+    // Handlers report expected failures (stale ref, no such option) as
+    // { error }; send those as errors so callers never mistake them for success.
+    const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
+      ? { id: msg.id, error: value.error }
+      : { id: msg.id, value };
     let out;
     try {
       out = fn(...(msg.args || []));
@@ -472,11 +594,12 @@
       return Promise.resolve({ id: msg.id, error: String(e && e.message || e) });
     }
     if (out && typeof out.then === "function") {
-      return out.then(
-        (value) => ({ id: msg.id, value }),
-        (err) => ({ id: msg.id, error: String(err && err.message || err) })
-      );
+      return out.then(settle, (err) => ({ id: msg.id, error: String(err && err.message || err) }));
     }
-    return Promise.resolve({ id: msg.id, value: out });
+    return Promise.resolve(settle(out));
   });
+
+  // Tell the extension this document can take requests; this lands well
+  // before the tab's "complete", which also waits on ads and trackers.
+  api.runtime.sendMessage({ __safariHarnessReady: 1 }).catch(() => {});
 })();

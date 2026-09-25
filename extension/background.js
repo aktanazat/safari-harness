@@ -80,24 +80,71 @@ function pingLoop() {
 
 function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 
-// Ops that change the page. If the page navigates while one is pending, the
+// Ops that act on the page. If the page navigates while one is pending, the
 // action caused it: report that instead of re-sending (never act twice).
-const ACTIONS = new Set(["click", "clickAt", "type", "press"]);
+const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover"]);
+// Actions that commonly load a page or open a tab a moment after they run.
+const MAY_NAVIGATE = new Set(["click", "clickAt", "press", "select", "history"]);
+const SETTLE_MS = 400;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function toTab(tabId, op, args, timeoutMs = 30000) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
-  await waitLoaded(tabId, 15000);
+  await waitReady(tabId, 15000);
   try {
     return await sendUntilNavigation(tabId, msg, timeoutMs);
   } catch (e) {
     if (e.navigated) {
-      if (ACTIONS.has(op)) return { value: { ok: true, navigated: true } };
-      await waitLoaded(tabId, 15000);
+      if (ACTIONS.has(op)) return { value: { ok: true } };
+      await waitReady(tabId, 15000);
       return await sendUntilNavigation(tabId, msg, timeoutMs);
     }
     // content script may not be injected yet (e.g. added after page load)
     await ensureContent(tabId);
     return await sendUntilNavigation(tabId, msg, timeoutMs);
+  }
+}
+
+// Run an action and report what it caused: a new page in this tab
+// (`navigated`) or a new tab (`newTab`), each once readable. A new tab that
+// jumps in front while the agent works in a background tab is sent behind
+// the user's tab again.
+async function act(tabId, op, args) {
+  const source = await api.tabs.get(tabId);
+  const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
+  let opened = null;
+  let navigated = false;
+  const onCreated = (t) => {
+    if (opened === null && (t.openerTabId === undefined || t.openerTabId === tabId)) opened = t.id;
+  };
+  // Safari repeats the unchanged url in some updates (e.g. load complete), so
+  // only a new load or a different address counts as navigating.
+  const onUpdated = (id, info) => {
+    if (id === tabId && (info.status === "loading" || (info.url && info.url !== source.url))) navigated = true;
+  };
+  api.tabs.onCreated.addListener(onCreated);
+  api.tabs.onUpdated.addListener(onUpdated);
+  try {
+    const res = await toTab(tabId, op, args);
+    if (res && res.error) return res;
+    if (opened === null && !navigated && MAY_NAVIGATE.has(op)) await sleep(SETTLE_MS);
+    const value = { ...(res && res.value) };
+    if (navigated) {
+      await waitReady(tabId, 20000);
+      const t = await api.tabs.get(tabId);
+      value.navigated = { url: t.url, title: t.title };
+    }
+    if (opened !== null) {
+      if (front && !source.active) await api.tabs.update(front.id, { active: true });
+      await waitReady(opened, 20000);
+      const t = await api.tabs.get(opened);
+      value.newTab = { id: t.id, url: t.url, title: t.title };
+    }
+    return { value };
+  } finally {
+    api.tabs.onCreated.removeListener(onCreated);
+    api.tabs.onUpdated.removeListener(onUpdated);
   }
 }
 
@@ -142,18 +189,32 @@ async function handle(msg) {
     case "tabs.open": {
       const [url, background] = args;
       const tab = await api.tabs.create({ url: url || "about:blank", active: !background });
-      await waitLoaded(tab.id, 15000);
-      return { id: tab.id, url: tab.url, title: tab.title };
+      if (ready.get(tab.id) !== true) ready.set(tab.id, false);
+      await waitReady(tab.id, 15000);
+      const t = await api.tabs.get(tab.id);
+      return { id: t.id, url: t.url, title: t.title };
     }
     case "tabs.close": {
       const [tabId] = args;
-      await api.tabs.remove(tabId);
+      // resolve once Safari has dropped the tab, so a following list omits it
+      let onRemoved;
+      const gone = new Promise((resolve) => {
+        onRemoved = (id) => { if (id === tabId) resolve(); };
+        api.tabs.onRemoved.addListener(onRemoved);
+      });
+      try {
+        await api.tabs.remove(tabId);
+        await gone;
+      } finally {
+        api.tabs.onRemoved.removeListener(onRemoved);
+      }
       return { ok: true };
     }
     case "tabs.navigate": {
       const [tabId, url] = args;
+      ready.set(tabId, false);
       await api.tabs.update(tabId, { url });
-      await waitLoaded(tabId, 20000);
+      await waitReady(tabId, 20000);
       const t = await api.tabs.get(tabId);
       return { id: t.id, url: t.url, title: t.title };
     }
@@ -164,16 +225,9 @@ async function handle(msg) {
       await api.tabs.update(tabId, { active: true });
       return { ok: true };
     }
-    case "tabs.createWindow": {
-      const [url] = args;
-      const w = await api.windows.create({ url: url || "about:blank", focused: true });
-      const tab = w.tabs && w.tabs[0];
-      if (tab) await waitLoaded(tab.id, 15000);
-      return { windowId: w.id, tabId: tab && tab.id };
-    }
     case "relay": {
       const [tabId, domOp, domArgs] = args;
-      const res = await toTab(tabId, domOp, domArgs);
+      const res = ACTIONS.has(domOp) ? await act(tabId, domOp, domArgs) : await toTab(tabId, domOp, domArgs);
       if (res && res.error) throw new Error(res.error);
       return res && res.value;
     }
@@ -209,25 +263,50 @@ if (api.alarms) {
   api.alarms.create("sh-keepalive", { periodInMinutes: 0.5 });
   api.alarms.onAlarm.addListener((a) => { if (a.name === "sh-keepalive") connect(); });
 }
-function waitLoaded(tabId, ms) {
+
+// ---------- page readiness ----------
+// A tab is ready once its document's content script has reported in, or the
+// tab reports "complete" (pages where content scripts cannot run). Waiting
+// for "complete" alone also waits on ads and trackers: seconds more.
+const ready = new Map(); // tabId -> true once the current document is ready
+const readyWaiters = new Map(); // tabId -> Set of resolvers
+
+function markReady(tabId) {
+  ready.set(tabId, true);
+  const waiters = readyWaiters.get(tabId);
+  if (!waiters) return;
+  readyWaiters.delete(tabId);
+  for (const w of waiters) w();
+}
+
+api.tabs.onUpdated.addListener((id, info) => {
+  if (info.status === "loading") ready.set(id, false);
+  else if (info.status === "complete") markReady(id);
+});
+api.tabs.onRemoved.addListener((id) => {
+  markReady(id);
+  ready.delete(id);
+});
+api.runtime.onMessage.addListener((m, sender) => {
+  if (m && m.__safariHarnessReady === 1 && sender.tab) markReady(sender.tab.id);
+});
+
+// Resolves when the tab is ready, or after ms regardless.
+function waitReady(tabId, ms) {
+  if (ready.get(tabId) === true) return Promise.resolve();
   return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      api.tabs.onUpdated.removeListener(listener);
+    const done = () => {
       clearTimeout(timer);
+      readyWaiters.get(tabId)?.delete(done);
       resolve();
     };
-    const listener = (id, info) => { if (id === tabId && info.status === "complete") finish(); };
-    api.tabs.onUpdated.addListener(listener);
-    api.tabs.get(tabId).then((t) => { if (t.status === "complete") finish(); }, () => finish());
-    const timer = setTimeout(finish, ms);
+    const timer = setTimeout(done, ms);
+    if (!readyWaiters.has(tabId)) readyWaiters.set(tabId, new Set());
+    readyWaiters.get(tabId).add(done);
+    // tabs that loaded before this background page started have no entry yet
+    if (!ready.has(tabId)) api.tabs.get(tabId).then((t) => { if (t.status === "complete") markReady(tabId); }, done);
   });
 }
 
 connect();
 pingLoop();
-
-// also respond to direct messages (for future popup UI)
-api.runtime.onMessage.addListener(() => {});
