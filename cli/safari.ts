@@ -13,10 +13,11 @@
 //   safari serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runAgent } from "../daemon/agent.ts";
 import { formatResult } from "../daemon/tools.ts";
+import { IMESSAGE_TOOLS } from "../daemon/imessage.ts";
 import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList, routineRemove, routineRun } from "./launchd.ts";
 
 
@@ -64,6 +65,23 @@ const USAGE = `safari — drive Safari from the terminal
   safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
   safari routine list | run <name> | remove <name>
                                              scheduled tasks run through omp
+
+  safari guide sites                         sites with a usage guide
+  safari guide <site|host>                   one site's guide (e.g. amazon, x.com)
+
+  safari imessage chats [--limit N]          recent conversations
+  safari imessage history <chat> [--limit N] [--since rowid]
+                                             one conversation (id, phone, email, or name)
+  safari imessage search [text] [--from who] [--days 90]
+                                             search messages
+  safari imessage code [--seconds 30] [--since rowid]
+                                             wait for a sign-in code by text
+  safari imessage send <to> <text> [--approved]
+                                             draft a text; sends only with --approved
+  safari contacts <name>                     phones and emails for a contact
+
+  Messages commands run in this terminal (they need its Full Disk Access),
+  not in the daemon.
 `;
 
 type Rpc = { ok: boolean; value?: unknown; error?: string };
@@ -121,7 +139,43 @@ async function main() {
   }
 
   if (cmd === "guide") {
-    console.log(await readFile(new URL("../docs/GUIDE.md", import.meta.url), "utf8"));
+    const which = rest.find((a) => !a.startsWith("--"));
+    if (!which) {
+      console.log(await readFile(new URL("../docs/GUIDE.md", import.meta.url), "utf8"));
+      return;
+    }
+    const text = await siteGuide(which);
+    if (text === null) {
+      console.error(`no guide for ${which}; see: safari guide sites`);
+      process.exit(1);
+    }
+    console.log(text);
+    return;
+  }
+
+  if (cmd === "imessage" || cmd === "contacts") {
+    const pos = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
+    const numFlag = (name: string) => (flag(name, rest) === undefined ? undefined : Number(flag(name, rest)));
+    const sub = cmd === "contacts" ? "contacts" : pos.shift();
+    const calls: Record<string, [string, Record<string, unknown>]> = {
+      contacts: ["contacts", { name: pos.join(" ") }],
+      chats: ["imessage_chats", { limit: numFlag("limit") }],
+      history: ["imessage_history", { chat: pos.join(" "), limit: numFlag("limit"), since: numFlag("since") }],
+      search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), days: numFlag("days"), limit: numFlag("limit") }],
+      code: ["imessage_wait_code", { seconds: numFlag("seconds"), since: numFlag("since") }],
+      send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), approved: hasFlag("approved", rest) }],
+    };
+    const call = sub ? calls[sub] : undefined;
+    if (!call) {
+      console.error("usage: safari imessage chats|history|search|code|send …, or safari contacts <name>");
+      process.exit(2);
+    }
+    try {
+      print(await IMESSAGE_TOOLS[call[0]].run(call[1]));
+    } catch (e) {
+      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
     return;
   }
 
@@ -287,7 +341,35 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot"]);
+const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot", "approved"]);
+
+// docs/sites/<slug>.md, each opening with `name:` and `hosts:` front matter.
+// A hosts entry is a domain, optionally with a path prefix (docs.google.com/
+// spreadsheets); subdomains match, and the longest matching entry wins.
+async function siteGuide(which: string): Promise<string | null> {
+  const dir = new URL("../docs/sites/", import.meta.url);
+  const files = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort();
+  const guides = await Promise.all(files.map(async (f) => {
+    const text = await readFile(new URL(f, dir), "utf8");
+    const hosts = (/^hosts:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, text };
+  }));
+  if (which === "sites") return guides.map((g) => `${g.slug.padEnd(18)} ${g.hosts.join(", ")}`).join("\n");
+  const q = which.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+  const named = guides.find((g) => g.slug === q || g.name.toLowerCase() === q);
+  if (named) return named.text;
+  const slash = q.indexOf("/");
+  const [host, path] = slash < 0 ? [q, "/"] : [q.slice(0, slash), q.slice(slash)];
+  let best: { text: string; score: number } | null = null;
+  for (const g of guides) {
+    for (const entry of g.hosts) {
+      const cut = entry.indexOf("/");
+      const [h, p] = cut < 0 ? [entry, ""] : [entry.slice(0, cut), entry.slice(cut)];
+      if ((host === h || host.endsWith(`.${h}`)) && path.startsWith(p) && (!best || entry.length > best.score)) best = { text: g.text, score: entry.length };
+    }
+  }
+  return best?.text ?? null;
+}
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

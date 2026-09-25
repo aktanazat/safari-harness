@@ -25,11 +25,17 @@ daemon/
                     cookies shot. Actions report `navigated` and `newTab`.
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
-  mcp.ts            MCP stdio server (thin client over /rpc)
-  agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API)
+  mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
+                    tools itself)
+  imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
+                    and draft-then-approve sending (chat.db read-only,
+                    AddressBook, osascript)
+  agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API;
+                    gets the Messages read tools, not send)
 cli/safari.ts       the `safari` command
 cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
 docs/GUIDE.md       usage guide for agents and people (`safari guide`)
+docs/sites/         per-site guides (`safari guide <site>`)
 scripts/
   winshot.swift     helper: prints the CGWindowID of Safari's front window
                     (build: swiftc -O scripts/winshot.swift -o scripts/winshot)
@@ -102,6 +108,10 @@ safari eval "JSON.stringify(performance.timing)"
 safari net start; safari goto https://…; safari net read
 safari shot --out page.png      # window-level capture (winshot + screencapture)
 safari do "find the price of X on example.com"
+safari guide amazon             # direct URLs, snapshot roots, signed-in check
+safari imessage chats           # recent conversations
+safari imessage code            # wait for a sign-in code by text
+safari imessage send "+1…" "hi" # prints a draft; add --approved to send
 ```
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,
@@ -154,8 +164,14 @@ unlisted, answer `-32000 not supported` — never a fake result.
   service worker Safari starts it but it never opens its socket, and its
   console cannot be inspected. The page held its socket through a full test
   session; if Safari unloads it, the `alarms` keepalive reconnects it
+- Apple Passwords is out of reach: macOS kills its browser helper
+  (`SIGKILL (Code Signature Invalid)`) unless a real browser starts it, so
+  passwords come from Safari's own AutoFill with the user's Touch ID
+- Messages reads need Full Disk Access, which the launchd daemon lacks, so
+  those tools run in the calling process (terminal or MCP server)
 
 ## Tests
 
 `bun scripts/fake-extension.ts` (with the daemon up) exercises CLI, CDP shim,
-MCP, and the agent loop without Safari.
+MCP, and the agent loop without Safari. `bun test` covers sign-in code
+detection; `bun run check` runs the live checks in real Safari.
