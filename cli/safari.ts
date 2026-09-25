@@ -230,7 +230,7 @@ async function main() {
 
   if (cmd === "do") {
     const task = rest[0];
-    if (!task) { console.error("usage: safari do \"<task>\""); process.exit(2); }
+    if (!task || task.startsWith("-")) { console.error("usage: safari do \"<task>\" [--tab N] [--steps N]"); process.exit(2); }
     const baseUrl = process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1";
     const model = process.env.SAFARI_MODEL ?? "gemma4:12b-mlx";
     const apiKey = process.env.SAFARI_MODEL_KEY;
