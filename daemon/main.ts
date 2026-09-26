@@ -33,10 +33,26 @@ function safeParse(s: string): Record<string, unknown> | null {
   }
 }
 
+// Web pages can reach localhost too: a plain http page's own script POSTed to
+// /rpc and opened a tab. Browsers put the page's Origin on every POST and every
+// WebSocket handshake. The CLI, the MCP server and CDP tools send none. The
+// extension sends its safari-web-extension:// origin, and only it may take the
+// extension socket, because attaching drops the current one.
+function allowed(req: Request, extensionSocket: boolean): boolean {
+  const origin = req.headers.get("origin");
+  return extensionSocket ? (origin?.startsWith("safari-web-extension://") ?? false) : origin === null;
+}
+
+function refuse(req: Request, url: URL): Response {
+  console.log(`[safari-harness] refused ${req.method} ${url.pathname} from origin ${req.headers.get("origin") ?? "(none)"}`);
+  return new Response("forbidden", { status: 403 });
+}
+
 const server = Bun.serve<SocketScope>({
   port: wsPort,
   fetch(req, srv) {
     const url = new URL(req.url);
+    if (!allowed(req, url.pathname === "/")) return refuse(req, url);
     if (url.pathname.startsWith("/devtools/")) {
       const pageMatch = url.pathname.match(/^\/devtools\/page\/(\d+)/);
       const connId = ++connSeq;
@@ -76,6 +92,7 @@ const rpcServer = Bun.serve({
   port: httpPort,
   async fetch(req) {
     const url = new URL(req.url);
+    if (!allowed(req, false)) return refuse(req, url);
     if (url.pathname === "/health") {
       return Response.json({ ok: true, extension: bridge.connected ? (bridge.extensionInfo ?? { connected: true }) : null, tools: Object.keys(TOOLS) });
     }
@@ -91,7 +108,7 @@ const rpcServer = Bun.serve({
         return Response.json({ ok: false, error: String(e instanceof Error ? e.message : e) });
       }
     }
-    if (url.pathname === "/shutdown") {
+    if (url.pathname === "/shutdown" && req.method === "POST") {
       setTimeout(() => { stopAllPumps(); bridge.detach(); server.stop(); rpcServer.stop(); process.exit(0); }, 50);
       return Response.json({ ok: true });
     }

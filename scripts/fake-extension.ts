@@ -2,7 +2,8 @@
 // so the daemon, CLI, CDP shim, and MCP server can be tested end-to-end
 // without Safari. Answers relay ops with canned content-script results.
 
-const ws = new WebSocket("ws://127.0.0.1:37333/");
+// The daemon gives the extension socket only to an extension origin.
+const ws = new WebSocket("ws://127.0.0.1:37333/", { headers: { Origin: "safari-web-extension://fake-extension" } });
 const tabs = new Map<number, { id: number; url: string; title: string; active: boolean; windowId: number }>([
   [101, { id: 101, url: "https://example.com/", title: "Example Domain", active: true, windowId: 1 }],
 ]);
