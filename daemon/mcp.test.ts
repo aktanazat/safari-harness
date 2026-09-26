@@ -8,7 +8,8 @@ type Call = { tool: string; args: Record<string, unknown> };
 // for itself by saving whole turns. Targets by selector or text (90) and an
 // extract query (96) save the look-first turn; Apple Passwords (700) brought
 // it to 12,111. Telling close that background tabs close with the session
-// (114) saves the turn agents spent on close.
+// (114) saves the turn agents spent on close. Telling eval that a selector
+// remembered from training may be gone (73) saves the retry after one misses.
 const TOOL_LIST_MAX_BYTES = 12_300;
 
 async function toolList(): Promise<unknown> {

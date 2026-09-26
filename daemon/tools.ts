@@ -351,7 +351,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM, not the page's script variables.",
+    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM, not the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
     params: { tab: TAB, expression: { type: "string", description: "JS expression" } },
     required: ["expression"],
     run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression") }),
