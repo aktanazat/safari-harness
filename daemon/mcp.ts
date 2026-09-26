@@ -63,7 +63,7 @@ async function closeOwned() {
 }
 
 const SESSION_NOTES: Record<string, string> = {
-  open: " A background tab closes itself when this session ends, so a finished task need not close it.",
+  close: " Not needed once you have the answer: background tabs close themselves when this session ends. Reply instead.",
 };
 
 // Messages tools run here, not in the daemon: reading chat.db needs Full Disk
