@@ -146,7 +146,15 @@ safari window 390 844 --tab 7   # a phone-width window for your tab
 safari history-search invoice   # Safari browsing history
 safari call snapshot '{"diff":true}'  # any tool with its MCP arguments
 safari do "find the price of X on example.com"
+safari session list             # agent runs; resume, steer, queue, stop, delete
+safari repl "const p = await openTab('https://example.com'); console.log((await snapshot(p)).tree)"
+safari repl --session work "console.log(await gmail.search(0, 'from:bank', {limit: 5}))"
+safari fill address --tab 7     # name, address, email, phone from your Contacts card
+safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
+safari --host studio tabs       # another Mac's Safari, through ssh
+safari host use studio          # make it the default; `host use local` goes back
 safari guide amazon             # direct URLs, snapshot roots, signed-in check
+safari guide repl               # the REPL's API and recovery steps
 safari imessage chats           # recent conversations
 safari imessage code            # wait for a sign-in code by text
 safari imessage send "+1…" "hi" # prints a draft; add --approved to send
@@ -154,7 +162,28 @@ safari imessage send "+1…" "hi" # prints a draft; add --approved to send
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,
 `gemma4:12b-mlx`); point it anywhere with `SAFARI_MODEL_BASE`,
-`SAFARI_MODEL`, `SAFARI_MODEL_KEY`. From omp, use the MCP tools instead.
+`SAFARI_MODEL`, `SAFARI_MODEL_KEY`. Each run is a session kept in
+`~/.local/share/safari-harness/sessions/`: `safari session steer <id>`
+talks to it while it runs, `resume` goes on after it answers. Its agent can
+search engram memory and read the site guides. From omp, use the MCP tools
+instead.
+
+### safari repl
+
+A Playwright-style JavaScript session over the same tools: `openTab`,
+`snapshot`, locators, downloads, `page.pdf()`, cookie-bearing `fetch`, plus
+site globals that read signed-in sites through their own APIs (`slack`,
+`gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
+`googleSearch`, `youtube`, `x`/`twitter`, `imessage`). A named session
+(`--session`) runs in its own process, reachable from any terminal or agent
+through a user-only unix socket, and ends after 30 minutes unused. The MCP
+server exposes it as the `repl` tool. `docs/REPL.md` is the reference.
+
+### Another Mac
+
+`--host <ssh-host>` (or `safari host use`) forwards a local port over ssh
+to that Mac's daemon, so the daemon still listens on 127.0.0.1 only. Tools
+that need Full Disk Access run on that Mac through its own CLI over ssh.
 
 ### Routines
 
@@ -196,7 +225,9 @@ unlisted, answer `-32000 not supported` — never a fake result.
   no `postData`
 - no `downloads` API: files are caught in the page (links, page-built
   files) and fetched with its cookies; a server-only download goes to
-  ~/Downloads through Safari itself
+  ~/Downloads through Safari itself, where `safari repl` watches for it
+- no `bookmarks`, `topSites`, or `tabGroups` APIs in Safari web extensions,
+  so there are no tools for them
 - screenshots use `tabs.captureVisibleTab`, so a background tab comes to the
   front of its window for the capture
 - content scripts don't pierce closed shadow DOM

@@ -34,6 +34,18 @@ Safari is the user's everyday browser, so treat his tabs as his.
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
 
+## Scripts: safari repl
+
+For work that takes more than a few clicks (a loop over pages, a download, a
+PDF, a signed-in site's own API), write one script instead of many tool
+calls. `safari repl "<code>"` (the `repl` tool over MCP) runs Playwright-style
+JavaScript: `openTab`, `snapshot`, `page.locator(ref).click()`,
+`page.waitForEvent('download')`, `page.pdf()`, cookie-bearing `fetch`, and
+site globals for Slack, Gmail, Notion, Google Docs and Sheets, Google
+search, YouTube, X, and Messages. `--session <name>` keeps bindings and tabs
+between calls. `safari guide repl` has the whole API and what to do when a
+run goes wrong.
+
 ## Several steps in one call
 
 Every tool call costs a model turn of a few seconds. `run` does several tools
@@ -184,6 +196,16 @@ which part of the page to snapshot (`root`), how to tell the user is signed
 in, keyboard shortcuts, and its limits on sending. Read it before working on
 that site.
 
+### Sign-in recipes that are not obvious
+
+- One Medical: sign in through Amazon ("Sign in with Amazon"), not a
+  One Medical password.
+- X: open `x.com/home`; if it shows the wrong account, use the account
+  switcher at the bottom of the left column instead of signing out.
+- eBay: signed in when the header greets the user by name ("Hi <name>!").
+- Poshmark: signs in with Apple (the "Continue with Apple" button), which
+  asks for Touch ID on the Mac.
+
 ## Logged-in sites and secrets
 
 The tabs carry the user's real sessions. Never print passwords, one-time codes,
@@ -217,6 +239,35 @@ Signing in:
 - A code sent by text: call `imessage_wait_code` right after asking the site to
   send it, then type the returned `code` into the field. On `timeout`, call
   again with its `since` to keep waiting. Never repeat the code in a reply.
+- Bitwarden: `safari fill login --bitwarden --tab N` (the `bitwarden` tool,
+  through `safari call` or the REPL) fills the vault's login for the tab's
+  site through the `bw` CLI. The user unlocks the vault in his terminal
+  first (`bw login`, then `export BW_SESSION=$(bw unlock --raw)`); until then
+  it says the vault is locked. Like Apple Passwords, it reports which fields
+  it filled, never the password.
+- Addresses: `safari fill address --tab N` fills a checkout or signup form's
+  empty name, address, email, and phone fields from the user's own card in
+  Contacts (`--label work` picks another address on the card). It never
+  touches card-number fields and never submits.
+
+## Captchas and pages that need eyes
+
+- `shot --annotate` draws each ref's number on the screenshot, so you can
+  pick a control by what it looks like (an image grid, an icon-only
+  button). Look, then click by ref.
+- A captcha checkbox or a slider that ignores scripted clicks: use
+  `real_input` (the real mouse), which brings the tab forward for a moment.
+  Image puzzles are the user's to solve: ask him, and wait.
+- To find a picture, search Google Images in your own tab and read the
+  results with `shot --annotate` and `extract`, or read the image's own
+  address from a snapshot.
+
+## What you know about the user
+
+Before asking the user for a fact about himself (his address, an account, a
+preference, an earlier decision), look in his notes: `mem-find "<question>"`
+searches engram memory, and `browsing_history` finds pages he visited.
+`safari do` gives its agent both, as `memory_search` and `browsing_history`.
 
 ## Messages
 
@@ -272,10 +323,42 @@ safari routine remove price-watch
 - A daily routine missed while the Mac slept runs when it wakes.
 - Routines need the daemon always on: `safari daemon install`.
 
+## safari do: sessions you can talk to
+
+`safari do "<task>"` runs a small agent loop against a model of your
+choosing (`SAFARI_MODEL_BASE`, `SAFARI_MODEL`, `SAFARI_MODEL_KEY`; by
+default the local Ollama). It prints a session id, and keeps the whole
+conversation on disk.
+
+```bash
+safari session list                         # newest first, with status
+safari session show <id>                    # the transcript
+safari session steer <id> "use the work account"   # cuts in before its next step
+safari session queue <id> "then check the calendar" # its next task, after it answers
+safari session stop <id>
+safari session resume <id> "and now compare prices"
+safari session delete <id>
+```
+
+Its agent can read the site guides (`site_guide`) and the user's notes
+(`memory_search`, `memory_read`) besides the browser tools.
+
+## Another Mac's Safari
+
+Every command takes `--host <ssh-host>` to drive the Safari on another Mac
+that runs this helper; `safari host use <ssh-host>` makes it the default
+(`safari host use local` goes back), and `safari host list` shows the
+choices. It goes through an ssh tunnel to that Mac's daemon, so nothing new
+listens on the network; the ssh login needs a key (no password prompt).
+Messages, Contacts, history, and fill commands run on that Mac too, through
+its own `safari` command.
+
 ## Limits compared to Chrome
 
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
   or request bodies.
+- No bookmarks, top sites, download list, or tab groups: Safari gives its
+  web extensions no API for them.
 - Screenshots need the tab's window on screen (not minimized).
 - No reach inside closed shadow DOM.
 - `hover` fires mouse events; menus that open purely through CSS `:hover`
