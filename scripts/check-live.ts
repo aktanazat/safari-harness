@@ -190,17 +190,21 @@ await withPage(TARGETS, TARGETS_JS, async (tab) => {
 
 // ---------- no fixed pause after an action ----------
 
-// The button's script retitles the page 150 ms after the click. An action
+// Each control's script retitles the page 150 ms after the click. An action
 // that starts no load returns at once, so the page it returns still has the
-// old title; a fixed pause after clicks (it used to be 400 ms) would show
-// the new one. The order of two events, not a time budget.
+// old title; a fixed pause after clicks (it used to be 400 ms), or a wait for
+// a load that never comes, would show the new one. The order of two events,
+// not a time budget. The link's scheme has no handler, so no app opens.
 const LATER_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
-  { textContent: 'document.getElementById("later").onclick = () => setTimeout(() => { document.title = "retitled"; }, 150)' }))`;
+  { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => setTimeout(() => { document.title = id + " retitled"; }, 150)' }))`;
 
-await withPage("<button id=later>Later</button>", LATER_JS, async (tab) => {
+await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:abc">App link</a>', LATER_JS, async (tab) => {
   const r = await call("click", { tab, ref: "#later", snapshot: true });
   check("a click that starts no load returns before the page's later script runs",
     r.page?.title === "Example Domain" && r.navigated === undefined, { title: r.page?.title, navigated: r.navigated });
+  const app = await call("click", { tab, ref: "#app", snapshot: true });
+  check("a click on an app link (mailto:, tel:) does not wait for a page load",
+    app.page?.title !== "app retitled" && app.navigated === undefined, { title: app.page?.title, navigated: app.navigated });
 });
 
 // ---------- page text in the outline ----------

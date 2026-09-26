@@ -384,7 +384,8 @@
     if (!a || a.hasAttribute("download")) return null;
     if (e.defaultPrevented) return "script";
     const to = new URL(a.href, location.href);
-    if (to.protocol === "javascript:") return null;
+    // mailto:, tel:, and app links hand off to another app; the tab stays.
+    if (to.protocol !== "https:" && to.protocol !== "http:") return null;
     if (to.href.split("#")[0] === location.href.split("#")[0] && to.hash) return null;
     const target = a.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
     return opensTab(target) ? "tab" : "load";
