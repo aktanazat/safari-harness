@@ -278,7 +278,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
-    desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to later calls (a call without tab acts on the user's front tab), and close the tab when done.",
+    desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to later calls (a call without tab acts on the user's front tab).",
     params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {

@@ -24,6 +24,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   every later call. A call without `tab` acts on the front tab, which is
   usually the user's.
 - Close your tab with `close` when the task ends, on success or failure.
+  Through MCP, background tabs your session opened (and tabs they opened)
+  also close when the session ends, so a one-shot task can finish with its
+  answer instead of a `close` call.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.

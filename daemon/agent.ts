@@ -32,7 +32,7 @@ Rules:
 - Do one thing per step. Never invent refs you have not seen in a snapshot.
 - If a page needs login the user is already logged into, use their existing session; do not ask for credentials.
 - If a sign-in asks for a code sent by text, call imessage_wait_code and type the code in; never repeat it in your reply.
-- When the task is done, reply with a short final answer and no tool call.
+- Close the tabs you opened, then reply with a short final answer and no tool call.
 - If you cannot do something (Safari has no equivalent of a Chrome capability), say exactly what blocked you.`;
 
 // The loop runs unattended, so it gets the Messages read tools but not send.
