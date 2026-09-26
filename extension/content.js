@@ -636,61 +636,6 @@
     };
   }
 
-  // ---------- network capture ----------
-
-  const netLog = [];
-  let netOn = false;
-
-  function record(entry) {
-    if (!netOn) return;
-    netLog.push({ ...entry, t: Date.now() });
-    if (netLog.length > 500) netLog.shift();
-  }
-
-  const origFetch = window.fetch;
-  window.fetch = async function (input, init) {
-    const url = typeof input === "string" ? input : (input && input.url) || String(input);
-    const method = (init && init.method) || (input && input.method) || "GET";
-    const start = Date.now();
-    try {
-      const res = await origFetch.apply(this, arguments);
-      record({ kind: "fetch", url, method, status: res.status, ms: Date.now() - start });
-      return res;
-    } catch (e) {
-      record({ kind: "fetch", url, method, error: String(e), ms: Date.now() - start });
-      throw e;
-    }
-  };
-
-  const origOpen = XMLHttpRequest.prototype.open;
-  const origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    this.__sh = { method, url };
-    return origOpen.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function () {
-    const xhr = this;
-    xhr.addEventListener("loadend", () => {
-      record({ kind: "xhr", url: xhr.__sh && xhr.__sh.url, method: xhr.__sh && xhr.__sh.method, status: xhr.status, ms: Date.now() });
-    });
-    return origSend.apply(this, arguments);
-  };
-
-  // ---------- console capture ----------
-
-  const consoleLog = [];
-  let consoleOn = false;
-  for (const level of ["log", "warn", "error"]) {
-    const orig = console[level];
-    console[level] = function (...args) {
-      if (consoleOn) {
-        consoleLog.push({ level, text: args.map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 500), t: Date.now() });
-        if (consoleLog.length > 500) consoleLog.shift();
-      }
-      return orig.apply(this, args);
-    };
-  }
-
   // ---------- wait ----------
   // Resolves once the selector or text is on the page. It listens for DOM
   // changes instead of polling: Safari stops a content script's timers in a
@@ -738,10 +683,6 @@
       }
       return { ok: true, result: safeClone(result) };
     },
-    net: (on) => { netOn = !!on; if (on) netLog.length = 0; return { ok: true }; },
-    netRead: () => ({ entries: netLog.slice(-100) }),
-    console: (on) => { consoleOn = !!on; if (on) consoleLog.length = 0; return { ok: true }; },
-    consoleRead: () => ({ entries: consoleLog.slice(-100) }),
     wait: waitFor,
     waitStop: () => { pendingWait?.(false); return { ok: true }; },
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.

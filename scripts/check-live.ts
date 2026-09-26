@@ -237,6 +237,30 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
   check("wait sees text the page shows for only an instant", r.found === true, r);
 });
 
+// ---------- network and console capture ----------
+
+// The page's own script makes these calls. Its fetch, XHR, and console are
+// not the content script's copies, which is all the capture once patched.
+const PAGE_CALLS_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'document.getElementById("go").onclick = () => { fetch("/?page-fetch", { method: "POST" }).then((r) => console.log("page fetch", r.status)); const x = new XMLHttpRequest(); x.open("GET", "/?page-xhr"); x.send(); }' }))`;
+
+await withPage("<button id=go>Load</button><p id=out></p>", PAGE_CALLS_JS, async (tab) => {
+  await call("net", { tab, do: "start" });
+  await call("console", { tab, do: "start" });
+  await call("click", { tab, ref: "#go" });
+  let net: { kind: string; url: string; method: string }[] = [];
+  let logs: { text: string }[] = [];
+  for (let i = 0; i < 20 && (net.length < 2 || logs.length < 1); i++) {
+    await Bun.sleep(100);
+    net = (await call("net", { tab, do: "read" })).entries;
+    logs = (await call("console", { tab, do: "read" })).entries;
+  }
+  const seen = net.map((e) => `${e.kind} ${e.method} ${new URL(e.url, "https://example.com/").search}`).sort();
+  check("net and console record the page's own requests and logs",
+    JSON.stringify(seen) === JSON.stringify(["fetch POST ?page-fetch", "xhr GET ?page-xhr"]) && /^page fetch \d+$/.test(logs[0]?.text ?? ""),
+    { net, logs });
+});
+
 // ---------- snapshot size ----------
 
 // A shop-like listing: every card links twice with a long tracking query,

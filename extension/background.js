@@ -192,6 +192,72 @@ async function ensureContent(tabId) {
   }
 }
 
+// ---------- network and console capture ----------
+// These run in the page's own world. The content script's fetch, XHR, and
+// console are its own copies, so patching them there saw only the harness's
+// requests. The patches go in on the first start, so a page carries them
+// only when asked.
+const CAPTURE = { net: "net", netRead: "net", console: "console", consoleRead: "console" };
+
+async function capture(tabId, op, args) {
+  const cmd = op.endsWith("Read") ? "read" : args && args[0] ? "start" : "stop";
+  const [res] = await api.scripting.executeScript({ target: { tabId }, world: "MAIN", func: pageCapture, args: [CAPTURE[op], cmd] });
+  return res && res.result;
+}
+
+// Runs in the page, so it must be self-contained.
+function pageCapture(kind, cmd) {
+  const key = Symbol.for("safari-harness.capture");
+  let s = window[key];
+  if (!s) {
+    s = window[key] = { net: { on: false, log: [] }, console: { on: false, log: [] } };
+    const add = (c, e) => {
+      if (!c.on) return;
+      c.log.push({ ...e, t: Date.now() });
+      if (c.log.length > 500) c.log.shift();
+    };
+    const origFetch = window.fetch;
+    window.fetch = async function (input, init) {
+      const url = typeof input === "string" ? input : (input && input.url) || String(input);
+      const method = (init && init.method) || (input && input.method) || "GET";
+      const start = Date.now();
+      try {
+        const res = await origFetch.apply(this, arguments);
+        add(s.net, { kind: "fetch", url, method, status: res.status, ms: Date.now() - start });
+        return res;
+      } catch (e) {
+        add(s.net, { kind: "fetch", url, method, error: String(e), ms: Date.now() - start });
+        throw e;
+      }
+    };
+    const sent = new WeakMap();
+    const origOpen = XMLHttpRequest.prototype.open;
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      sent.set(this, { method, url: String(url) });
+      return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function () {
+      const req = sent.get(this);
+      const start = Date.now();
+      if (req) this.addEventListener("loadend", () => add(s.net, { kind: "xhr", ...req, status: this.status, ms: Date.now() - start }));
+      return origSend.apply(this, arguments);
+    };
+    for (const level of ["log", "warn", "error"]) {
+      const orig = console[level];
+      console[level] = function (...args) {
+        add(s.console, { level, text: args.map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 500) });
+        return orig.apply(this, args);
+      };
+    }
+  }
+  const c = s[kind];
+  if (cmd === "read") return { entries: c.log.slice(-100) };
+  c.on = cmd === "start";
+  if (c.on) c.log.length = 0;
+  return { ok: true };
+}
+
 // ---------- handlers ----------
 
 async function handle(msg) {
@@ -244,6 +310,7 @@ async function handle(msg) {
     }
     case "relay": {
       const [tabId, domOp, domArgs, timeoutMs] = args;
+      if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);
       const res = ACTIONS.has(domOp) ? await act(tabId, domOp, domArgs, timeoutMs) : await toTab(tabId, domOp, domArgs, timeoutMs);
       if (res && res.error) throw new Error(res.error);
       return res && res.value;
