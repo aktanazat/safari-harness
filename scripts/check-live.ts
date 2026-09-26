@@ -114,6 +114,19 @@ await withPage(FORM, FORM_JS, async (tab) => {
   check("snapshot: true returns the page the action led to", /heading "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
 });
 
+// ---------- waiting in a hidden tab ----------
+
+// Safari stops a content script's timers in a hidden tab about two seconds
+// after it opens, while the page's own timers keep running. The page script
+// below shows text 6 s in, well after that point.
+const LATE_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'setTimeout(() => { document.getElementById("late").textContent = "arrived late"; }, 6000)' }))`;
+
+await withPage(`<p id="late">waiting</p>`, LATE_JS, async (tab) => {
+  const r = await call("wait", { tab, text: "arrived late", ms: 15000 });
+  check("wait in a hidden tab sees text the page adds after several seconds", r.found === true && r.waitedMs < 10000, r);
+});
+
 // ---------- snapshot size ----------
 
 // A shop-like listing: every card links twice with a long tracking query,
