@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { runAgent } from "../daemon/agent.ts";
 import { formatResult } from "../daemon/tools.ts";
 import { IMESSAGE_TOOLS } from "../daemon/imessage.ts";
+import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList, routineRemove, routineRun } from "./launchd.ts";
 
 
@@ -325,6 +326,16 @@ async function main() {
       process.exit(2);
   }
 
+  const local = CALLER_TOOLS[tool];
+  if (local) {
+    try {
+      print(await local.run(args));
+    } catch (e) {
+      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    return;
+  }
   const res = await rpc(tool, args);
   if (!res.ok) {
     console.error(`error: ${res.error}`);

@@ -2,29 +2,13 @@
 // (omp, Claude Code, Cursor, ...). One JSON-RPC message per line.
 
 import { TOOLS, formatResult, inputSchema } from "./tools.ts";
-import { IMESSAGE_TOOLS } from "./imessage.ts";
+import { CALLER_GROUPS, CALLER_TOOLS } from "./caller.ts";
+import { rpc } from "./rpc.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
 // The daemon owns the extension bridge; MCP mode is a thin client that
 // talks to the daemon over its HTTP RPC port instead of holding the socket.
-const DAEMON_HTTP = process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
-
-async function rpc(tool: string, args: Record<string, unknown>): Promise<unknown> {
-  let res: Response;
-  try {
-    res = await fetch(`${DAEMON_HTTP}/rpc`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tool, args }),
-    });
-  } catch {
-    throw new Error(`safari daemon not reachable at ${DAEMON_HTTP}; run: safari daemon install`);
-  }
-  const body = (await res.json()) as { ok: boolean; value?: unknown; error?: string };
-  if (!body.ok) throw new Error(body.error ?? "rpc failed");
-  return body.value;
-}
 
 // Background tabs this session opened, and tabs they opened in turn. The
 // user never saw them, so they close when the session ends, and an agent
@@ -66,12 +50,12 @@ const SESSION_NOTES: Record<string, string> = {
   close: " Not needed once you have the answer: background tabs close themselves when this session ends. Reply instead.",
 };
 
-// Messages tools run here, not in the daemon: reading chat.db needs Full Disk
-// Access, which this process inherits from the terminal that started it.
+// Caller tools run here, not in the daemon: this process inherits the
+// terminal's permissions (see caller.ts).
 function toolDefs() {
   return [
     ...Object.entries(TOOLS).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: inputSchema(t) })),
-    ...Object.entries(IMESSAGE_TOOLS).map(([name, t]) => ({ name, description: `[Messages] ${t.desc}`, inputSchema: inputSchema(t) })),
+    ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: inputSchema(t) }))),
   ];
 }
 
@@ -102,7 +86,7 @@ async function handle(msg: RpcMsg) {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});
       try {
-        const local = IMESSAGE_TOOLS[name];
+        const local = CALLER_TOOLS[name];
         const value = local ? await local.run(args) : await rpc(name, args);
         track(name, args, value);
         return reply(msg.id, {
