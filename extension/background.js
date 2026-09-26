@@ -341,15 +341,15 @@ function pageCapture(kind, cmd) {
 // code goes through a policy of our own; a page whose policy forbids eval
 // outright, or names the only policies it allows, still refuses it.
 async function pageEval(src) {
-  const code = `(${src})`;
+  const code = `return (${src})`;
   try {
     let v;
     try {
-      v = await (0, eval)(code);
+      v = await new Function(code)();
     } catch (e) {
       if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
       const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
-      v = await (0, eval)(policy.createScript(code));
+      v = await new Function(policy.createScript(code))();
     }
     if (v === undefined) return { ok: true, result: null };
     try { JSON.stringify(v); return { ok: true, result: v }; } catch { return { ok: true, result: String(v) }; }
