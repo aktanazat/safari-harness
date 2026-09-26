@@ -106,7 +106,10 @@
     return t;
   }
 
-  function accessibleName(el) {
+  // The name an element states itself: aria-labelledby, aria-label, an
+  // image's alt, or a field's label. null when its name comes from its
+  // content or title.
+  function ownName(el) {
     const labelledby = el.getAttribute("aria-labelledby");
     if (labelledby) {
       const parts = labelledby.split(/\s+/)
@@ -120,24 +123,32 @@
     if (el.tagName === "IMG") return (el.getAttribute("alt") || "").trim();
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
       if (el.labels && el.labels.length) return textOf(el.labels[0], 80);
-      const ph = el.getAttribute("placeholder");
-      if (ph) return ph.trim();
-      const name = el.getAttribute("name");
-      if (name) return name.trim();
+      return (el.getAttribute("placeholder") || el.getAttribute("name") || el.getAttribute("title") || "").trim();
     }
-    if (el.tagName === "BUTTON" || el.tagName === "A" || /^H[1-6]$/.test(el.tagName) ||
-        el.tagName === "LABEL" || el.tagName === "SUMMARY" || NAME_FROM_CONTENT.has(el.getAttribute("role"))) {
-      // A heading is page text, and pages put instructions in them: give it
-      // a paragraph's length, not a control label's.
-      const t = textOf(el, /^H[1-6]$/.test(el.tagName) ? 160 : 80);
+    return null;
+  }
+
+  // Names from content: a heading is page text, and pages put instructions
+  // in them, so it gets a paragraph's length, not a control label's.
+  const NAME_MAX = 80;
+  const TEXT_MAX = 160;
+  const TEXT_NAMED_TAGS = /^(A|BUTTON|H[1-6]|LABEL|SUMMARY)$/;
+
+  function namedByContent(el) {
+    return TEXT_NAMED_TAGS.test(el.tagName) || NAME_FROM_CONTENT.has(el.getAttribute("role"));
+  }
+
+  function accessibleName(el) {
+    const own = ownName(el);
+    if (own !== null) return own;
+    if (namedByContent(el)) {
+      const t = textOf(el, /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX);
       if (t) return t;
       // image-only links and icon buttons: name them by their picture's label
       const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]");
-      if (inner) return (inner.getAttribute("aria-label") || inner.getAttribute("alt")).trim().slice(0, 80);
+      if (inner) return (inner.getAttribute("aria-label") || inner.getAttribute("alt")).trim().slice(0, NAME_MAX);
     }
-    const title = el.getAttribute("title");
-    if (title) return title.trim();
-    return "";
+    return (el.getAttribute("title") || "").trim();
   }
 
   // A field whose value is a secret: its value is never printed, only
@@ -201,63 +212,198 @@
     }
   }
 
-  // opts.query: keep only lines containing this text (case-insensitive), as a
-  // flat list, so an agent can find one element without reading the page.
+  // One walk over the page. What an agent can act on prints with a ref;
+  // headings, landmarks, and the page's own text print without one, each
+  // run of text once, where it sits. Names come from the text gathered on
+  // the way, so no element's text is read twice and nothing forces layout.
+  //   article
+  //     h3 [54] link "A Light in the Attic" /catalogue/a-light-in-the-attic_1000/index.html
+  //     £51.77 · In stock
+  //     [55] button "Add to basket"
+  // opts.query keeps only lines containing that text (case-insensitive), as
+  // a flat list, so an agent can find one element without reading the page.
+  const ACTION_ROLES = new Set(["button", "link", "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio",
+    "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "spinbutton"]);
+  const BREAK = 0; // a block edge: the text on each side prints on its own line
+  const CELL = 1; // a table cell's edge: joined with " | "
+
+  const norm = (t) => t.replace(/\s+/g, " ").trim();
+  const clip = (t, max) => { t = norm(t); return t.length > max ? t.slice(0, max) + "…" : t; };
+
   function snapshot(opts = {}) {
     pruneRefs();
     const root = opts.root ? document.querySelector(opts.root) : document.body;
     if (!root) return { error: "root not found" };
-    const lines = [];
-    const maxNodes = opts.maxNodes || 600;
+    const maxLines = opts.maxNodes || 600;
     const query = opts.query ? String(opts.query).toLowerCase() : null;
-    let count = 0;
 
-    const interesting = (el) => {
+    // Pass 1: the kept elements as a tree, with loose text and block edges
+    // in page order. `named` holds the ancestors naming themselves by their
+    // text; each gathers the text inside it.
+    const top = { kids: [] };
+    const walk = (el, parent, named, inItem) => {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) return;
+      if (style.position === "fixed" && el.getClientRects().length === 0) return;
       const role = getExplicitRole(el);
-      if (role && NAMED_ROLES.has(role)) return true;
-      if (isInteractive(el)) return true;
-      if (el.tagName === "P" || el.tagName === "LI") {
-        const t = textOf(el, 200);
-        return t.length > 0;
-      }
-      return false;
-    };
-
-    const walk = (el, depth) => {
-      if (count >= maxNodes) return;
-      if (!isVisible(el)) return;
-      const keep = interesting(el);
-      if (keep) {
-        const role = getExplicitRole(el);
-        const name = accessibleName(el);
-        const parts = [role || el.tagName.toLowerCase()];
-        if (name) parts.push(` "${name}"`);
-        const st = stateOf(el);
-        if (st.length) parts.push(` {${st.join(", ")}}`);
-        if ((el.tagName === "P" || el.tagName === "LI") && !name) {
-          const t = textOf(el, 160);
-          if (t) parts.push(` "${t}"`);
+      const actionable = ACTION_ROLES.has(role) || isInteractive(el);
+      let node = parent;
+      if (actionable || (role && NAMED_ROLES.has(role))) {
+        node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
+        parent.kids.push(node);
+        if (node.name === null && namedByContent(el)) {
+          node.text = [];
+          named = [...named, node];
         }
-        const body = parts.join("");
-        if (!query || body.toLowerCase().includes(query)) {
-          count += 1;
-          lines.push(`${query ? "" : "  ".repeat(depth)}[${ensureRef(el)}] ${body}`);
-        }
+      } else if ((el.tagName === "UL" || el.tagName === "OL") && inItem) {
+        node = { group: true, kids: [] };
+        parent.kids.push(node);
       }
-      // a <select> lists its option count; pick one with the select tool
-      if (el.tagName === "SELECT") return;
-      const childDepth = keep ? depth + 1 : depth;
-      for (const child of el.children) walk(child, childDepth);
+      const pic = el.tagName === "IMG" ? el.getAttribute("alt") : node.el !== el ? el.getAttribute("aria-label") : null;
+      if (pic) for (const n of named) n.pic ??= pic.trim();
+      const add = (x) => { node.kids.push(x); for (const n of named) n.text.push(typeof x === "string" ? x : " "); };
+      if (!/^(SELECT|TEXTAREA|IMG|svg|INPUT)$/.test(el.tagName)) {
+        const d = style.display;
+        const block = !d.startsWith("inline") && d !== "contents";
+        const edge = d === "table-cell" ? CELL : BREAK;
+        if (block) add(edge);
+        for (const child of el.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) add(child.nodeValue);
+          else if (child.nodeType === Node.ELEMENT_NODE) {
+            if (child.tagName === "BR") add(BREAK);
+            else walk(child, node, named, inItem || el.tagName === "LI");
+          }
+        }
+        if (block) add(edge);
+      }
+      if (node.el !== el) return;
+      if (node.text) {
+        const full = norm(node.text.join(""));
+        const cap = /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX;
+        if (full) {
+          node.fromText = true;
+          node.long = full.length > cap;
+          node.name = node.long ? null : full;
+        } else if (node.pic) {
+          node.fromPic = true;
+          node.name = node.pic.slice(0, NAME_MAX);
+        } else node.name = (el.getAttribute("title") || "").trim();
+        delete node.text;
+        // a title cut short on screen ("A Light in the ...") with the whole
+        // title in the title attribute
+        const title = el.getAttribute("title");
+        if (node.name && title && /(\.\.\.|…)$/.test(node.name) && title.startsWith(node.name.replace(/\s*(\.\.\.|…)$/, ""))) node.name = title.trim();
+      } else if (node.name === null) node.name = (el.getAttribute("title") || "").trim();
     };
+    walk(root, top, [], false);
 
-    walk(root, 0);
-    return {
-      url: location.href,
-      title: document.title,
-      nodes: count,
-      truncated: count >= maxNodes,
-      snapshot: lines.join("\n"),
+    // Pass 2: print. A ref is given only to a line that is printed.
+    const lines = [];
+    let truncated = false;
+    const push = (depth, text, n) => {
+      if (query && !text.toLowerCase().includes(query)) return;
+      if (lines.length >= maxLines) { truncated = true; return; }
+      const line = n ? `[${ensureRef(n.el)}] ${text}` : text;
+      lines.push(query ? line : "  ".repeat(depth) + line);
     };
+    const hrefOf = (n) => (n.el && n.el.href) || null;
+    const tag = (n) => (n.role === "heading" && /^H[1-6]$/.test(n.el.tagName) ? n.el.tagName.toLowerCase() : n.role);
+    // A line's text after its ref: role, name, bare URL, then states. A
+    // stated name or title can run to a whole commit message: one line of it.
+    const head = (n) => {
+      const st = stateOf(n.el);
+      const i = st.findIndex((s) => s.startsWith("url="));
+      const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
+      const name = n.name ? clip(n.name, TEXT_MAX) : "";
+      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}`;
+    };
+    // The text items from kids[from] up to the next element.
+    const textItems = (kids, from) => {
+      const items = [];
+      let run = "";
+      // Text between inline links arrives in pieces: drop the separators and
+      // the unmatched bracket each piece starts or ends with ("(", ") · 291 points by").
+      const flush = () => {
+        const t = clip(run, TEXT_MAX).replace(/^[\s)\]|·•,;]+|[\s([|·•,;]+$/g, "").replace(/(\| ){2,}/g, "| ");
+        if (t) items.push(t);
+        run = "";
+      };
+      let i = from;
+      for (; i < kids.length; i++) {
+        const c = kids[i];
+        if (typeof c === "string") run += c;
+        else if (c === CELL) run += " | ";
+        else if (c === BREAK) flush();
+        else break;
+      }
+      flush();
+      return { items, next: i };
+    };
+    const elementKids = (n) => n.kids.filter((k) => typeof k === "object");
+    const allText = (n) => {
+      const r = [];
+      for (let i = 0; i < n.kids.length;) {
+        if (typeof n.kids[i] === "object") { i++; continue; }
+        const { items, next } = textItems(n.kids, i);
+        r.push(...items);
+        i = next;
+      }
+      return r;
+    };
+    const short = (t) => t.length <= 24 && !t.includes(" | ");
+    const render = (node, depth) => {
+      const kids = node.kids;
+      // links that only show a picture, when a text link in the same block
+      // goes to the same place
+      const textHrefs = new Set();
+      const scan = (n, d) => {
+        for (const k of elementKids(n)) {
+          if (k.actionable && k.fromText && hrefOf(k)) textHrefs.add(hrefOf(k));
+          if (d < 2 && !k.actionable) scan(k, d + 1);
+        }
+      };
+      scan(node, 0);
+      for (let i = 0; i < kids.length;) {
+        const c = kids[i];
+        if (typeof c !== "object") {
+          let { items, next } = textItems(kids, i);
+          i = next;
+          if (node.fromText && !node.long) continue; // already the name
+          // text a stated name already carries (aria-label ".cargo, (Directory)" over ".cargo")
+          if (node.name && !node.fromText) items = items.filter((t) => !node.name.toLowerCase().includes(t.toLowerCase()));
+          // short neighbours share a line ("£51.77 · In stock"); table rows and long text keep their own
+          let line = "";
+          for (const it of items) {
+            if (line && !(short(it) && short(line.split(" · ").pop()) && line.length + it.length < TEXT_MAX)) { push(depth, line); line = ""; }
+            line = line ? `${line} · ${it}` : it;
+          }
+          if (line) push(depth, line);
+          continue;
+        }
+        i++;
+        if (c.group) { render(c, depth + 1); continue; }
+        if (!c.actionable && !c.name && (c.role === "form" || c.role === "region")) { render(c, depth); continue; }
+        if (!c.actionable && c.role === "img" && node.actionable) continue;
+        if (c.actionable && c.fromPic && hrefOf(c) && textHrefs.has(hrefOf(c))) continue;
+        const ek = elementKids(c);
+        const texts = allText(c);
+        // a heading that only holds a link: one line
+        if (c.role === "heading" && ek.length === 1 && ek[0].actionable && texts.length <= 1) {
+          push(depth, `${tag(c)} [${ensureRef(ek[0].el)}] ${head(ek[0])}`);
+          render(ek[0], depth + 1);
+          continue;
+        }
+        // a nameless box holding one text: "alert: Warning! …"
+        if (!c.actionable && !c.name && ek.length === 0) {
+          if (texts.length === 0) continue;
+          if (texts.length === 1) { push(depth, `${tag(c)}: ${texts[0]}`); continue; }
+        }
+        push(depth, head(c), c.actionable ? c : null);
+        render(c, depth + 1);
+      }
+    };
+    render(top, 0);
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n") };
   }
 
   // ---------- actions ----------

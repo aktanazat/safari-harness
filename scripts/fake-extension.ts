@@ -48,7 +48,7 @@ ws.addEventListener("message", (ev) => {
     if (op === "snapshot") {
       return reply({
         url: t.url, title: t.title, nodes: 3, truncated: false,
-        snapshot: `  [1] heading "Example Domain"\n  [2] link "More information…" {url=https://www.iana.org/domains/example}\n  [3] textbox {focused=false}`,
+        snapshot: `h1 "Example Domain"\nThis domain is for use in illustrative examples.\n[1] link "More information…" https://www.iana.org/domains/example\n[2] textbox`,
       });
     }
     if (op === "click") return reply({ ok: true, at: { x: 100, y: 200 }, tag: "A" });

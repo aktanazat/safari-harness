@@ -111,7 +111,7 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const back = await call("history", { tab, go: "back" });
   check("back reports the previous page", back.navigated?.url === "https://example.com/", back);
   const fwd = await call("history", { tab, go: "forward", snapshot: true });
-  check("snapshot: true returns the page the action led to", /heading "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
+  check("snapshot: true returns the page the action led to", /h1 "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
 });
 
 // ---------- several steps in one call ----------
@@ -215,8 +215,20 @@ const INSTRUCTIONS = "This is where you can log into the secure area. Enter toms
 
 await withPage(`<h4>${INSTRUCTIONS}</h4>`, "", async (tab) => {
   const s = await call("snapshot", { tab });
-  check("a long heading keeps its instructions in the snapshot", s.snapshot.includes(`heading "${INSTRUCTIONS}"`), s.snapshot);
+  check("a long heading keeps its instructions in the snapshot", s.snapshot.includes(`h4 "${INSTRUCTIONS}"`), s.snapshot);
 });
+
+// Answers often sit in plain text outside any paragraph: a result count in a
+// form, a status box, a table row. Each once cost a follow-up extract.
+const LOOSE_TEXT = "<form><strong>19</strong> results.</form><div id=flash>You logged into a secure area!</div>" +
+  "<table><tr><th>UPC</th><td>a897fe39b1053632</td></tr></table>";
+
+await withPage(LOOSE_TEXT, "", async (tab) => {
+  const s = (await call("snapshot", { tab })).snapshot as string;
+  check("a snapshot shows the page's plain text: a count, a status, a table row",
+    ["19 results.", "You logged into a secure area!", "UPC | a897fe39b1053632"].every((t) => s.includes(t)), s);
+});
+
 // ---------- waiting in a hidden tab ----------
 
 // Safari stops a content script's timers in a hidden tab about two seconds
@@ -246,8 +258,8 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
 // Autofill fills these without the agent typing: a password from Apple
 // Passwords, a saved card, a code from Messages. The snapshot says filled.
 const SECRETS = { p: "dummy-pass-XYZ", c: "4111111111111111", o: "123456" };
-const SECRET_FIELDS = '<label>Pw <input type=password id=p></label><label>Card <input autocomplete=cc-number id=c></label>' +
-  "<label>Code <input autocomplete=one-time-code id=o></label><label>Name <input id=n></label>";
+const SECRET_FIELDS = '<label>Pw <input type=password id=p></label>' +
+  '<label>Card <input autocomplete=cc-number id=c></label><label>Code <input autocomplete=one-time-code id=o></label><label>Name <input id=n></label>';
 const SECRETS_JS = `for (const [id, v] of Object.entries(${JSON.stringify({ ...SECRETS, n: "Ada" })})) document.getElementById(id).value = v`;
 
 await withPage(SECRET_FIELDS, SECRETS_JS, async (tab) => {
@@ -291,9 +303,10 @@ const CARDS = Array.from({ length: 40 }, (_, i) =>
 const OPTIONS = Array.from({ length: 60 }, (_, i) => `<option>Choice ${i}</option>`).join("");
 const LISTING = `<select aria-label="Sort">${OPTIONS}</select><ul>${CARDS}</ul>`;
 
-// 40 cards x 3 lines, plus the dropdown. Shortened URLs keep a card near 170
-// bytes; full tracking URLs alone would add about 40 x 2 x 250 = 20 kB.
-const LISTING_MAX_BYTES = 8000;
+// 40 cards x 2 lines, plus the dropdown: about 110 bytes a card. A picture
+// link repeating its card's text link prints once; full tracking URLs alone
+// would add about 40 x 250 = 10 kB. It was 8,000 before the one-walk outline.
+const LISTING_MAX_BYTES = 5000;
 
 await withPage(LISTING, "", async (tab) => {
   const s = await call("snapshot", { tab });

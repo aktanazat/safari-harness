@@ -54,8 +54,10 @@ except `close`, so a failed run never leaves its tab open. A step without
 
 Read with `snapshot` when you do not yet know what is on the page.
 
-- `snapshot` returns a compact accessibility outline. Each element you can act
-  on carries a ref like `[12]`.
+- `snapshot` returns a compact outline of the page. Each element you can act
+  on carries a ref like `[12]`; headings (`h1`…`h6`), landmarks, and the
+  page's own text print without one, each piece of text once, where it
+  sits. A link's address follows its name. Table cells join with ` | `.
 - Refs belong to one snapshot. After any click, typing, or navigation, take a
   new snapshot before using refs again. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
