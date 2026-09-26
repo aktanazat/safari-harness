@@ -81,8 +81,9 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
      --project-location . --macos-only --swift --no-open --no-prompt
    cd "Safari Harness" && xcodebuild -scheme "Safari Harness" -allowProvisioningUpdates build
    ```
-   (the checked-in project already has `DEVELOPMENT_TEAM = AAVB324H37` and
-   matching bundle ids; the converter's default casing breaks embedding)
+   (the checked-in project carries a `DEVELOPMENT_TEAM` and matching bundle
+   ids: set the team to your own, and keep the bundle ids as they are, since
+   the converter's default casing breaks embedding)
 
    Copy the built app to `/Applications` and move the build product out of
    DerivedData (`xcodebuild -showBuildSettings | grep BUILT_PRODUCTS_DIR`).
