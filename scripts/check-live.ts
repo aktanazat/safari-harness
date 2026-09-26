@@ -237,6 +237,21 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
   check("wait sees text the page shows for only an instant", r.found === true, r);
 });
 
+// ---------- secrets in the outline ----------
+
+// Autofill fills these without the agent typing: a password from Apple
+// Passwords, a saved card, a code from Messages. The snapshot says filled.
+const SECRETS = { p: "dummy-pass-XYZ", c: "4111111111111111", o: "123456" };
+const SECRET_FIELDS = '<label>Pw <input type=password id=p></label><label>Card <input autocomplete=cc-number id=c></label>' +
+  "<label>Code <input autocomplete=one-time-code id=o></label><label>Name <input id=n></label>";
+const SECRETS_JS = `for (const [id, v] of Object.entries(${JSON.stringify({ ...SECRETS, n: "Ada" })})) document.getElementById(id).value = v`;
+
+await withPage(SECRET_FIELDS, SECRETS_JS, async (tab) => {
+  const s = (await call("snapshot", { tab })).snapshot as string;
+  check("a snapshot never prints a password, card number, or one-time code",
+    Object.values(SECRETS).every((v) => !s.includes(v)) && (s.match(/\{filled\}/g) ?? []).length === 3 && s.includes('value="Ada"'), s);
+});
+
 // ---------- network and console capture ----------
 
 // The page's own script makes these calls. Its fetch, XHR, and console are

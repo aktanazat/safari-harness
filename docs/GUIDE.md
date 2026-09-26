@@ -136,6 +136,8 @@ that site.
 The tabs carry the user's real sessions. Never print passwords, one-time codes,
 session cookies, or tokens. The `cookies` tool returns cookie values: use it
 only when the task needs one, and never put the values in a reply or a file.
+Snapshots show a password, card number, or one-time-code field only as
+`filled`, so an autofilled secret stays off the transcript.
 
 Signing in:
 

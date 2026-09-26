@@ -140,6 +140,12 @@
     return "";
   }
 
+  // A field whose value is a secret: its value is never printed, only
+  // whether it is filled. Autofill puts these in without the agent typing.
+  function secretField(el) {
+    return el.type === "password" || /\b(cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+  }
+
   function stateOf(el) {
     const s = [];
     if (el.hasAttribute("disabled")) s.push("disabled");
@@ -149,7 +155,7 @@
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       if (document.activeElement === el) s.push("focused");
       const v = el.value;
-      if (v) s.push(`value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
+      if (v) s.push(secretField(el) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
       const sel = el.selectedOptions[0];
@@ -487,7 +493,7 @@
     } else {
       return { error: "element is not editable" };
     }
-    if (el.type === "password") return { ok: true };
+    if (secretField(el)) return { ok: true };
     return { ok: true, value: (el.value ?? el.textContent ?? "").slice(0, 200) };
   }
 
