@@ -19,10 +19,10 @@ extension/          Safari MV3 web extension (background page + content script)
 daemon/
   main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health)
   bridge.ts         request/response plumbing to the extension socket
-  tools.ts          25 tools, each with its own input schema: tabs open close
+  tools.ts          22 tools, each with its own input schema: tabs open close
                     goto activate snapshot click type press select hover upload
-                    history scroll eval extract info wait net_* console_*
-                    cookies shot. Actions report `navigated` and `newTab`.
+                    history scroll eval extract info wait net console cookies
+                    shot. Actions report `navigated` and `newTab`.
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
@@ -179,4 +179,5 @@ unlisted, answer `-32000 not supported` — never a fake result.
 
 `bun scripts/fake-extension.ts` (with the daemon up) exercises CLI, CDP shim,
 MCP, and the agent loop without Safari. `bun test` covers sign-in code
-detection; `bun run check` runs the live checks in real Safari.
+detection and keeps the MCP tool list under its size ceiling; `bun run check`
+runs the live checks in real Safari.

@@ -307,16 +307,9 @@ async function main() {
       if (text) args.text = text;
       break;
     }
-    case "net": {
-      const sub = positional[0];
-      tool = sub === "start" ? "net_start" : sub === "stop" ? "net_stop" : "net_read";
+    case "net": case "console":
+      if (positional[0]) args.do = positional[0];
       break;
-    }
-    case "console": {
-      const sub = positional[0];
-      tool = sub === "start" ? "console_start" : "console_read";
-      break;
-    }
     case "cookies": {
       const u = flag("url", rest);
       if (u) args.url = u;

@@ -219,9 +219,9 @@ export type Tool = {
   run: (a: Record<string, unknown>) => Promise<unknown>;
 };
 
-const TAB: Param = { type: "number", description: "tab id from open or tabs; omit for the front tab, which is usually the user's" };
-const REF: Param = { description: "element ref from the latest snapshot, e.g. 12" };
-const PAGE: Param = { type: "boolean", description: "also return the resulting page as a snapshot (of the new tab, if the action opened one)" };
+const TAB: Param = { type: "number", description: "tab id from open" };
+const REF: Param = { description: "ref from the latest snapshot" };
+const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
 
 // With `snapshot: true` an action also returns the page it led to, saving
 // the agent a separate snapshot call.
@@ -238,10 +238,18 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
   };
 }
 
+// net and console take do: start, read (the default), or stop.
+type Capture = (o: { tab?: number }) => Promise<unknown>;
+function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Promise<unknown> {
+  const key = a.do === undefined ? "read" : String(a.do);
+  if (!Object.hasOwn(ops, key)) throw new Error(`do must be ${Object.keys(ops).join(", ")}`);
+  return ops[key]({ tab: a.tab as number | undefined });
+}
+
 export const TOOLS: Record<string, Tool> = {
-  tabs: { desc: "List Safari tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
+  tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
-    desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call, and close the tab when done.",
+    desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to later calls (a call without tab acts on the user's front tab), and close the tab when done.",
     params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {
@@ -258,97 +266,102 @@ export const TOOLS: Record<string, Tool> = {
   },
   activate: { desc: "Bring a tab to the front.", params: { tab: TAB }, required: ["tab"], run: (a) => activateTab(num(a.tab, "tab")) },
   snapshot: {
-    desc: "Read the page as an outline of elements with [ref]s for click, type, select, and hover. Refs last until the page changes: take a new snapshot after acting. Link URLs are shortened.",
+    desc: "Page outline with [ref]s for click, type, select, and hover. Refs expire when the page changes: snapshot again after acting.",
     params: {
       tab: TAB,
-      query: { type: "string", description: "return only lines containing this text, e.g. a button label" },
-      root: { type: "string", description: "CSS selector: read only this region, e.g. a dialog" },
+      query: { type: "string", description: "only lines containing this text" },
+      root: { type: "string", description: "CSS selector of the region to read" },
       maxNodes: { type: "number", description: "line limit, default 600" },
     },
     run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number }),
   },
   click: {
-    desc: "Click an element by ref (or at x/y). Reports navigated if the page changed, or newTab if a tab opened; a newTab is yours to close.",
-    params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, only without ref" }, y: { type: "number", description: "page y, only without ref" }, snapshot: PAGE },
+    desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
+    params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
     run: action((a) => click(a as { tab: number; ref?: string; x?: number; y?: number })),
   },
   type: {
-    desc: "Set the text of a field by ref; replaces its text unless append.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "add to the existing text" }, snapshot: PAGE },
+    desc: "Set a field's text by ref; replaces it unless append.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, snapshot: PAGE },
     required: ["ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean })),
   },
   press: {
-    desc: "Press a key (Enter, Tab, Escape, ArrowDown, /, g…) or a combo (Shift+Option+C, Cmd+K) on an element by ref, or on the focused element. Enter in a field submits its form. Sites that ignore simulated keys will not react.",
+    desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     required: ["key"],
     run: action((a) => press(a as { tab: number; ref?: string; key: string })),
   },
   select: {
-    desc: "Choose an option in a dropdown (<select>) by its label or value. An unknown option returns the list of options.",
+    desc: "Choose a dropdown option by label or value; an unknown option returns the list.",
     params: { tab: TAB, ref: REF, option: { type: "string", description: "option label or value" }, snapshot: PAGE },
     required: ["ref", "option"],
     run: action((a) => select(a as { tab: number; ref: string; option: string })),
   },
   hover: {
-    desc: "Move the pointer over an element by ref, for menus that open on hover. Menus driven purely by CSS :hover do not respond.",
+    desc: "Hover a ref, for menus that open on mouse-over (not ones driven only by CSS :hover).",
     params: { tab: TAB, ref: REF, snapshot: PAGE },
     required: ["ref"],
     run: action((a) => hover(a as { tab: number; ref: string })),
   },
   upload: {
-    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has a single file input.",
+    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input.",
     params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, snapshot: PAGE },
     required: ["paths"],
     run: action((a) => upload(a as { tab: number; ref?: string; paths: string[] })),
   },
   history: {
-    desc: "Go back, go forward, or reload the page.",
+    desc: "Go back, go forward, or reload.",
     params: { tab: TAB, go: { type: "string", enum: ["back", "forward", "reload"], description: "direction" }, snapshot: PAGE },
     required: ["go"],
     run: action((a) => history(a as { tab: number; go: string })),
   },
   scroll: {
-    desc: "Scroll the page. Snapshots already include off-screen elements; scroll only to make a page load more.",
+    desc: "Scroll the page. Rarely needed: snapshots include off-screen elements.",
     params: { tab: TAB, dx: { type: "number", description: "pixels right" }, dy: { type: "number", description: "pixels down, default 600" } },
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run a JavaScript expression in the page and return its JSON value. It sees the DOM but not the page's own script variables.",
-    params: { tab: TAB, expression: { type: "string", description: "a JS expression; a promise is awaited" } },
+    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM, not the page's script variables.",
+    params: { tab: TAB, expression: { type: "string", description: "JS expression" } },
     required: ["expression"],
     run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression") }),
   },
   extract: {
-    desc: "Readable text of the page's main content (or of a CSS selector), for reading long pages.",
+    desc: "Readable text of the main content (or a CSS selector), for long pages.",
     params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, maxBytes: { type: "number", description: "default 20000" } },
     run: (a) => extract(a as { tab?: number; selector?: string; maxBytes?: number }),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait until text and/or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
-    params: { tab: TAB, text: { type: "string", description: "visible text to wait for" }, selector: { type: "string", description: "CSS selector to wait for" }, ms: { type: "number", description: "timeout, or sleep length" } },
+    desc: "Wait until text or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
+    params: { tab: TAB, text: { type: "string", description: "visible text" }, selector: { type: "string", description: "CSS selector" }, ms: { type: "number", description: "timeout, or sleep length" } },
     run: (a) => wait(a as { tab?: number; ms?: number; selector?: string; text?: string }),
   },
-  net_start: { desc: "Start recording the page's fetch/XHR requests.", params: { tab: TAB }, run: (a) => netStart({ tab: a.tab as number | undefined }) },
-  net_stop: { desc: "Stop recording requests.", params: { tab: TAB }, run: (a) => netStop({ tab: a.tab as number | undefined }) },
-  net_read: { desc: "Requests recorded since net_start: url, method, status, time.", params: { tab: TAB }, run: (a) => netRead({ tab: a.tab as number | undefined }) },
-  console_start: { desc: "Start recording the page's console messages.", params: { tab: TAB }, run: (a) => consoleStart({ tab: a.tab as number | undefined }) },
-  console_read: { desc: "Console messages recorded since console_start.", params: { tab: TAB }, run: (a) => consoleRead({ tab: a.tab as number | undefined }) },
+  net: {
+    desc: "Record the page's fetch/XHR requests: start, then read (url, method, status, time); stop ends it.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" } },
+    run: (a) => capture({ start: netStart, read: netRead, stop: netStop }, a),
+  },
+  console: {
+    desc: "Record the page's console messages: start, then read.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read"], description: "default read" } },
+    run: (a) => capture({ start: consoleStart, read: consoleRead }, a),
+  },
   cookies: {
     desc: "Cookies for the tab's site. Values are secrets: never repeat them.",
     params: { tab: TAB, url: { type: "string", description: "another site's URL" } },
     run: (a) => cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined }),
   },
   shot: {
-    desc: "Screenshot the Safari window showing this tab; returns a PNG path. Briefly brings the tab to the front, then restores the user's tab.",
+    desc: "Screenshot the Safari window showing this tab; returns a PNG path. Brings the tab to the front for a moment.",
     params: { tab: TAB, out: { type: "string", description: "PNG path to write" } },
     run: (a) => screenshot({ tab: a.tab as number | undefined, out: a.out as string | undefined }),
   },
 };
 
 export function inputSchema(tool: Tool) {
-  return { type: "object", properties: tool.params, required: tool.required ?? [] };
+  return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
 type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string };

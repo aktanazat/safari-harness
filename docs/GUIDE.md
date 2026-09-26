@@ -88,9 +88,9 @@ Wait for the page, not the clock.
 
 ## Network and console
 
-`net_start` then `net_read` returns the fetch/XHR requests the page made after
-capture started (URL, method, status, time). `console_start` then
-`console_read` does the same for console messages. Neither sees request bodies
+`net` with `do: "start"`, then `do: "read"`, returns the fetch/XHR requests the
+page made after capture started (URL, method, status, time); `do: "stop"` ends
+it. `console` does the same for console messages. Neither sees request bodies
 or requests made before capture started.
 
 ## Site guides
