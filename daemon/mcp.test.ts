@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 
 // MCP clients put the whole tool list in front of the model on every turn, so
 // each byte here is paid on every step of every browsing task. The list was
-// 13,569 bytes before it was trimmed to 10,573.
-const TOOL_LIST_MAX_BYTES = 11_000;
+// 13,569 bytes before it was trimmed to 10,573; run then added 651, and pays
+// for itself by saving whole turns.
+const TOOL_LIST_MAX_BYTES = 11_500;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

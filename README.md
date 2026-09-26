@@ -19,10 +19,11 @@ extension/          Safari MV3 web extension (background page + content script)
 daemon/
   main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health)
   bridge.ts         request/response plumbing to the extension socket
-  tools.ts          22 tools, each with its own input schema: tabs open close
-                    goto activate snapshot click type press select hover upload
-                    history scroll eval extract info wait net console cookies
-                    shot. Actions report `navigated` and `newTab`.
+  tools.ts          23 tools, each with its own input schema: run (several
+                    tools in one call) tabs open close goto activate snapshot
+                    click type press select hover upload history scroll eval
+                    extract info wait net console cookies shot. Actions report
+                    `navigated` and `newTab`.
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages

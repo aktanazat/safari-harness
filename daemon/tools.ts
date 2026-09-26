@@ -210,7 +210,7 @@ type Param = {
   type?: "string" | "number" | "boolean" | "array";
   description: string;
   enum?: string[];
-  items?: { type: "string" };
+  items?: { type: "string" } | { type: "object"; properties: Record<string, { type: "string" | "object" }>; required: string[] };
 };
 export type Tool = {
   desc: string;
@@ -247,6 +247,12 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
 }
 
 export const TOOLS: Record<string, Tool> = {
+  run: {
+    desc: 'Run several of these tools in one call, in order, stopping at the first error; each call saved is a model turn saved. A step without tab uses the tab an earlier open step made. Open, read, and close in one call: [{"tool":"open","args":{"url":"https://example.com","background":true}},{"tool":"extract"},{"tool":"close"}]',
+    params: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" } }, required: ["tool"] }, description: "{tool, args} objects; args as that tool takes them" } },
+    required: ["steps"],
+    run: (a) => runSteps(a.steps),
+  },
   tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
     desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to later calls (a call without tab acts on the user's front tab), and close the tab when done.",
@@ -372,7 +378,7 @@ type Extract = { url: string; title: string; text: string };
 export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract> & { page?: unknown };
+    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${v.snapshot}`;
@@ -382,6 +388,11 @@ export function formatResult(value: unknown): string {
       const { page, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${formatResult(page)}`;
     }
+    if (Array.isArray(v.steps)) {
+      const lines = v.steps.map((s, i) => `[${i + 1} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
+      if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
+      return lines.join("\n");
+    }
   }
   return JSON.stringify(value, null, 1);
 }
@@ -390,4 +401,37 @@ export async function callTool(name: string, args: Record<string, unknown> = {})
   const tool = TOOLS[name];
   if (!tool) throw new Error(`unknown tool ${name}`);
   return tool.run(args);
+}
+
+type Step = { tool: string; value?: unknown; error?: string };
+type Steps = { steps: Step[]; notRun: number };
+
+function stepOf(step: unknown): { tool: string; args: Record<string, unknown> } {
+  if (!step || typeof step !== "object" || !("tool" in step) || typeof step.tool !== "string") throw new Error('each step needs a tool: {"tool": "open", "args": {…}}');
+  const args = "args" in step && step.args && typeof step.args === "object" ? step.args : {};
+  return { tool: step.tool, args: args as Record<string, unknown> };
+}
+
+// run: several tools in one call, so an agent can open, act, read, and close
+// without a model turn between steps. A step without tab uses the tab the
+// latest open step made. Later steps usually depend on earlier ones, so the
+// first error stops the run.
+async function runSteps(steps: unknown): Promise<Steps> {
+  if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
+  const done: Step[] = [];
+  let opened: number | undefined;
+  for (const raw of steps as unknown[]) {
+    let tool = "?";
+    try {
+      const step = stepOf(raw);
+      tool = step.tool;
+      const value = await callTool(tool, opened === undefined || step.args.tab !== undefined ? step.args : { ...step.args, tab: opened });
+      if (tool === "open" && value && typeof value === "object" && "id" in value && typeof value.id === "number") opened = value.id;
+      done.push({ tool, value });
+    } catch (e) {
+      done.push({ tool, error: e instanceof Error ? e.message : String(e) });
+      break;
+    }
+  }
+  return { steps: done, notRun: steps.length - done.length };
 }

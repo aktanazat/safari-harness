@@ -31,6 +31,20 @@ Safari is the user's everyday browser, so treat his tabs as his.
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
 
+## Several steps in one call
+
+Every tool call costs a model turn of a few seconds. `run` does several tools
+in one call, in order, and stops at the first error. A step without `tab` uses
+the tab an earlier `open` step made.
+
+- Read a page in one call: `open` (with `background: true`), then `extract`,
+  `eval`, or `snapshot` with a `query`, then `close`.
+- Act on a page in two calls: `open` with `snapshot: true` to see the refs,
+  then one `run` that types, clicks, waits, reads, and closes.
+- A step cannot use a ref from a snapshot taken in the same `run`. `wait`,
+  `extract`, and `eval` take CSS selectors instead.
+- `run` covers the Safari tools, not the Messages tools.
+
 ## Reading a page
 
 Always read with `snapshot` first.

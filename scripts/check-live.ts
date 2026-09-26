@@ -114,6 +114,32 @@ await withPage(FORM, FORM_JS, async (tab) => {
   check("snapshot: true returns the page the action led to", /heading "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
 });
 
+// ---------- several steps in one call ----------
+
+const tabsBefore = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const read = await call("run", { steps: [
+  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "eval", args: { expression: 'document.querySelector("h1").textContent' } },
+  { tool: "close" },
+] });
+const leftover = ((await call("tabs")) as Tab[]).filter((t) => !tabsBefore.has(t.id));
+for (const t of leftover) await call("close", { tab: t.id });
+check("run opens, reads, and closes its own tab in one call",
+  read.steps.length === 3 && read.steps[1].value?.result === "Example Domain" && leftover.length === 0, { read, leftover });
+
+// After a failing step, later steps must not act on the page.
+const stopped = await call("run", { steps: [
+  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "click", args: { ref: "999" } },
+  { tool: "eval", args: { expression: 'document.title = "later step ran"' } },
+] });
+const stoppedTab = stopped.steps[0].value?.id;
+const stoppedTitle = stoppedTab === undefined ? undefined : (await call("info", { tab: stoppedTab })).title;
+if (stoppedTab !== undefined) await call("close", { tab: stoppedTab });
+check("run stops at the first failing step and says so",
+  stopped.steps.length === 2 && /^stale ref 999/.test(stopped.steps[1].error ?? "") && stopped.notRun === 1 && stoppedTitle === "Example Domain",
+  { stopped, stoppedTitle });
+
 // ---------- waiting in a hidden tab ----------
 
 // Safari stops a content script's timers in a hidden tab about two seconds

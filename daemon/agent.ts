@@ -36,7 +36,8 @@ Rules:
 - If you cannot do something (Safari has no equivalent of a Chrome capability), say exactly what blocked you.`;
 
 // The loop runs unattended, so it gets the Messages read tools but not send.
-const ALL_TOOLS = { ...TOOLS, ...IMESSAGE_READ_TOOLS };
+// Its small local model takes one step per turn (see the rules), so no run.
+const ALL_TOOLS = { ...Object.fromEntries(Object.entries(TOOLS).filter(([name]) => name !== "run")), ...IMESSAGE_READ_TOOLS };
 
 function toolSchemas() {
   return Object.entries(ALL_TOOLS).map(([name, t]) => ({
