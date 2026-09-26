@@ -211,15 +211,32 @@ export async function cookies(opts: { tab?: number; url?: string } = {}) {
 }
 
 // Sets one cookie for the tab's site (or url). Safari will not set an
-// HttpOnly cookie from an extension.
+// HttpOnly cookie from an extension. Its cookie API stores a cookie at once
+// but hands it to the open page late or not until a later load (5 of 6
+// tries unseen by the page after 1.5 s), so a cookie for the tab's own site
+// goes in through the page, the way the site's own script sets one.
 export async function setCookie(opts: { tab?: number; url?: string; name: string; value: string; domain?: string; path?: string; expires?: number }) {
   const tab = await resolveTab(opts.tab);
-  const url = opts.url ?? ((await relay(tab, "tabInfo")) as { url?: string }).url;
+  const page = ((await relay(tab, "tabInfo")) as { url?: string }).url;
+  const url = opts.url ?? page;
   if (!url || !/^https?:/.test(url)) throw new Error("set needs a web page or a url");
-  const cookie: Record<string, unknown> = { url, name: str(opts.name, "name"), value: str(opts.value, "value"), path: opts.path ?? "/" };
+  const name = str(opts.name, "name");
+  const value = str(opts.value, "value");
+  const path = opts.path ?? "/";
+  const expires = opts.expires === undefined ? undefined : num(opts.expires, "expires");
+  const secure = url.startsWith("https:");
+  if (page && /^https?:/.test(page) && new URL(url).origin === new URL(page).origin) {
+    if (/[;\s]/.test(`${name}${value}`) || name.includes("=")) throw new Error("a cookie name or value cannot hold ;, =, or spaces");
+    const attrs = [`${name}=${value}`, `path=${path}`];
+    if (opts.domain !== undefined) attrs.push(`domain=${opts.domain}`);
+    if (expires !== undefined) attrs.push(`expires=${new Date(expires * 1000).toUTCString()}`);
+    if (secure) attrs.push("secure");
+    await relay(tab, "eval", [`document.cookie = ${JSON.stringify(attrs.join("; "))}`], 30000);
+    return { ok: true, name, domain: opts.domain ?? new URL(url).hostname, path };
+  }
+  const cookie: Record<string, unknown> = { url, name, value, path, secure };
   if (opts.domain !== undefined) cookie.domain = opts.domain;
-  if (opts.expires !== undefined) cookie.expirationDate = num(opts.expires, "expires");
-  if (url.startsWith("https:")) cookie.secure = true;
+  if (expires !== undefined) cookie.expirationDate = expires;
   return bridge.request("cookies.set", [cookie]);
 }
 
