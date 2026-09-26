@@ -34,20 +34,22 @@ Safari is the user's everyday browser, so treat his tabs as his.
 ## Several steps in one call
 
 Every tool call costs a model turn of a few seconds. `run` does several tools
-in one call, in order, and stops at the first error. A step without `tab` uses
-the tab an earlier `open` step made.
+in one call, in order. After the first error it skips the remaining steps
+except `close`, so a failed run never leaves its tab open. A step without
+`tab` uses the tab an earlier `open` step made.
 
-- Read a page in one call: `open` (with `background: true`), then `extract`,
-  `eval`, or `snapshot` with a `query`, then `close`.
-- Act on a page in two calls: `open` with `snapshot: true` to see the refs,
-  then one `run` that types, clicks, waits, reads, and closes.
-- A step cannot use a ref from a snapshot taken in the same `run`. `wait`,
-  `extract`, and `eval` take CSS selectors instead.
+- Read a page in one call: `open` (with `background: true`), then `extract`
+  (with a `query` for just the lines you need), `eval`, or `snapshot` with a
+  `query`, then `close`.
+- Act on a page in one call when you know the labels: `open`, `click`
+  `{ref: "Poetry"}`, `wait` for the text you expect, `extract`, `close`.
+- A step cannot use a ref number from a snapshot taken in the same `run`; use
+  the element's visible text or a CSS selector instead.
 - `run` covers the Safari tools, not the Messages tools.
 
 ## Reading a page
 
-Always read with `snapshot` first.
+Read with `snapshot` when you do not yet know what is on the page.
 
 - `snapshot` returns a compact accessibility outline. Each element you can act
   on carries a ref like `[12]`.
@@ -70,8 +72,14 @@ Escalate in this order:
 
 ## Acting
 
-- `click` a ref, `type` text into a ref (`append: true` keeps existing text),
-  `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your tab.
+- Every action's `ref` takes a snapshot ref (`12`), a CSS selector
+  (`#login`, `input[name=q]`), or the element's visible text (`Sign in`, or a
+  field's label such as `Email`). Text matches the visible control whose name
+  is exactly that text first, then the innermost element with that text, then
+  a partial name. Use a snapshot ref when several elements share a label.
+- `click` a target, `type` text into one (`append: true` keeps existing
+  text), `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your
+  tab.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
 - `hover` opens menus that appear on mouse-over.
@@ -125,10 +133,20 @@ Signing in:
 
 - Check for an existing session first (the site guide says how). Most sites
   the user uses are already signed in.
-- Passwords come only from Safari's own AutoFill, which the user unlocks with
-  Touch ID. You cannot read Apple Passwords: macOS kills its helper for any
-  program that is not a real browser. If a page needs a password, stop and ask
-  the user to fill it; never type one from memory or chat.
+- Saved logins come from the user's Apple Passwords through the `passwords`
+  tool. Pairing takes the user's code once per daemon run:
+  1. `passwords {do: "pair"}` makes the Mac show a 6-digit code.
+  2. Ask the user for the code, then `passwords {do: "unlock", code}`. A wrong
+     code cannot be retried: pair again for a new one.
+  3. `passwords {do: "logins", tab}` lists the usernames saved for the tab's
+     site; `passwords {do: "fill", tab}` fills the sign-in form (pass
+     `username` when several are saved). The result names the fields filled,
+     never the password, and the password may prompt for Touch ID.
+  4. `passwords {do: "lock"}` forgets the pairing and quits the hidden browser
+     that talks to Apple's helper (about 330 MB while it runs).
+- The site comes from the tab's own address and must be https, so a login
+  only ever reaches the site it was saved for. Never type a password from
+  memory or chat.
 - A code sent by text: call `imessage_wait_code` right after asking the site to
   send it, then type the returned `code` into the field. On `timeout`, call
   again with its `since` to keep waiting. Never repeat the code in a reply.

@@ -432,6 +432,47 @@
     return { ok: true, value: (el.value ?? el.textContent ?? "").slice(0, 200) };
   }
 
+  // ---------- Apple Passwords fill ----------
+
+  // The sign-in fields on this page: the current-password field (never a
+  // new-password one, so a sign-up form is left alone) and the username
+  // field before it. A username-first page (Google, Apple) has only the
+  // latter, which must then say it is a username or email field.
+  function loginFields() {
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
+    const password = [...document.querySelectorAll("input[type=password]")]
+      .find((el) => usable(el) && el.getAttribute("autocomplete") !== "new-password") ?? null;
+    const scope = password?.form ?? document;
+    const texts = [...scope.querySelectorAll("input:not([type]), input[type=text], input[type=email], input[type=tel]")].filter(usable);
+    const tagged = texts.find((el) => /\b(username|email)\b/.test(el.getAttribute("autocomplete") ?? ""));
+    const username = tagged ?? (password
+      ? texts.filter((el) => el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING).pop()
+      : texts.find((el) => el.type === "email" || /user|login|email|account|identifier/i.test(`${el.name} ${el.id}`)));
+    return { username: username ?? null, password };
+  }
+
+  // The daemon passes the hostname the login is saved for; a page that has
+  // moved elsewhere gets nothing. The reply never carries what was typed.
+  function loginForm(host) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; try again` };
+    const f = loginFields();
+    return { username: f.username !== null, password: f.password !== null };
+  }
+
+  function fillLogin(host, username, password) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const f = loginFields();
+    const filled = [];
+    for (const [field, value, name] of [[f.username, username, "username"], [f.password, password, "password"]]) {
+      if (!field || !value) continue;
+      field.focus();
+      setValue(field, value, value);
+      filled.push(name);
+    }
+    if (!filled.length) return { error: "the login form is gone; nothing was filled" };
+    return { ok: true, filled };
+  }
+
   // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
   // a known combo ("+", "Enter") is sent as is.
   const MODIFIERS = { shift: "shiftKey", option: "altKey", alt: "altKey", cmd: "metaKey", command: "metaKey", meta: "metaKey", ctrl: "ctrlKey", control: "ctrlKey" };
@@ -623,6 +664,8 @@
     select: selectOption,
     upload,
     history: historyGo,
+    loginForm,
+    fillLogin,
   };
 
   function clickAt(x, y) {

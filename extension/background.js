@@ -82,7 +82,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 
 // Ops that act on the page. If the page navigates while one is pending, the
 // action caused it: report that instead of re-sending (never act twice).
-const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover"]);
+const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover", "fillLogin"]);
 // Actions that commonly load a page or open a tab a moment after they run.
 const MAY_NAVIGATE = new Set(["click", "clickAt", "press", "select", "history"]);
 const SETTLE_MS = 400;

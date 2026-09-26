@@ -2,6 +2,7 @@
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
 import { bridge } from "./bridge.ts";
+import { fill, loginsFor, passwords } from "./passwords.ts";
 import { writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -246,6 +247,25 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
   return ops[key]({ tab: a.tab as number | undefined });
 }
 
+// passwords: pair and unlock take no tab; logins and fill act on the tab's
+// own site.
+async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
+  switch (a.do) {
+    case "pair":
+      await passwords.pair();
+      return { codeShown: true, next: 'ask the user for the 6-digit code on their Mac, then call passwords with do: "unlock" and code' };
+    case "unlock":
+      return passwords.unlock(str(a.code, "code"));
+    case "logins":
+      return loginsFor(await resolveTab(a.tab as number | undefined));
+    case "fill":
+      return fill(await resolveTab(a.tab as number | undefined), a.username === undefined ? undefined : str(a.username, "username"));
+    case "lock":
+      return passwords.lock();
+    default:
+      throw new Error("do must be pair, unlock, logins, fill, or lock");
+  }
+}
 
 export const TOOLS: Record<string, Tool> = {
   run: {
@@ -364,6 +384,12 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Screenshot the Safari window showing this tab; returns a PNG path. Brings the tab to the front for a moment.",
     params: { tab: TAB, out: { type: "string", description: "PNG path to write" } },
     run: (a) => screenshot({ tab: a.tab as number | undefined, out: a.out as string | undefined }),
+  },
+  passwords: {
+    desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. logins lists saved usernames; lock ends access.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "logins", "fill", "lock"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
+    required: ["do"],
+    run: applePasswords,
   },
 };
 

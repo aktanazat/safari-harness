@@ -4,8 +4,9 @@ import { expect, test } from "bun:test";
 // each byte here is paid on every step of every browsing task. The list was
 // 13,569 bytes before it was trimmed to 10,573; run then added 651, and pays
 // for itself by saving whole turns. Targets by selector or text (90) and an
-// extract query (96) save the look-first turn.
-const TOOL_LIST_MAX_BYTES = 11_500;
+// extract query (96) save the look-first turn; Apple Passwords (700) brought
+// it to 12,111.
+const TOOL_LIST_MAX_BYTES = 12_300;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
