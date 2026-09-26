@@ -54,7 +54,7 @@ const SESSION_NOTES: Record<string, string> = {
 // terminal's permissions (see caller.ts).
 function toolDefs() {
   return [
-    ...Object.entries(TOOLS).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: inputSchema(t) })),
+    ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: inputSchema(t) })),
     ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: inputSchema(t) }))),
   ];
 }

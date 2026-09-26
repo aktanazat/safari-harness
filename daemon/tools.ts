@@ -3,13 +3,10 @@
 
 import { bridge } from "./bridge.ts";
 import { fill, loginsFor, passwords } from "./passwords.ts";
-import { writeFile, mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { renderPdf, pdfText } from "./pdf.ts";
+import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, extname, join } from "node:path";
 
 export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number };
 
@@ -55,9 +52,37 @@ export async function activateTab(tab: number): Promise<unknown> {
   return bridge.request("tabs.activate", [num(tab, "tab")]);
 }
 
-export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number } = {}) {
+// The latest whole-page snapshot of each tab, for diff.
+const lastSnapshot = new Map<number, string>();
+
+export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes }]);
+  const snap = (await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes }])) as Snapshot;
+  if (opts.root !== undefined || opts.query !== undefined) return snap;
+  const before = lastSnapshot.get(tab);
+  lastSnapshot.set(tab, snap.snapshot);
+  if (!opts.diff || before === undefined) return snap;
+  return { ...snap, snapshot: lineDiff(before.split("\n"), snap.snapshot.split("\n")) || "(no change)" };
+}
+
+// The lines only in `a` ("- ") and only in `b` ("+ "), in page order, from
+// their longest common subsequence.
+export function lineDiff(a: string[], b: string[]): string {
+  const n = a.length;
+  const m = b.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { i++; j++; }
+    else if (i < n && (j === m || lcs[i + 1][j] >= lcs[i][j + 1])) out.push(`- ${a[i++]}`);
+    else out.push(`+ ${b[j++]}`);
+  }
+  return out.join("\n");
 }
 
 export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number }) {
@@ -112,8 +137,11 @@ export async function history(opts: { tab?: number; go: string }) {
   return relay(tab, "history", [opts.go]);
 }
 
-export async function evaluate(opts: { tab?: number; expression: string }) {
+// page: true runs it in the page's own world, where its script variables
+// are; a page whose security policy forbids eval refuses that.
+export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; frame?: string }) {
   const tab = await resolveTab(opts.tab);
+  if (opts.page) return bridge.request("evalPage", [tab, str(opts.expression, "expression"), opts.frame ?? null], 30000);
   return relay(tab, "eval", [str(opts.expression, "expression")], 30000);
 }
 
@@ -181,32 +209,130 @@ export async function cookies(opts: { tab?: number; url?: string } = {}) {
   return bridge.request("cookies", [opts.url ?? info.url ?? ""]);
 }
 
-// screenshot: Safari exposes no capture API to web extensions, so grab the
-// Safari window itself via screencapture, located by CGWindowID.
-const WINSHOT = join(import.meta.dir, "..", "scripts", "winshot");
-
-// The capture shows whatever tab is in front, so bring the requested tab to
-// the front, wait until it has painted, capture, then give the window back
-// the tab that was showing before.
-export async function screenshot(opts: { tab?: number; out?: string } = {}) {
+// Sets one cookie for the tab's site (or url). Safari will not set an
+// HttpOnly cookie from an extension.
+export async function setCookie(opts: { tab?: number; url?: string; name: string; value: string; domain?: string; path?: string; expires?: number }) {
   const tab = await resolveTab(opts.tab);
-  const tabs = await listTabs();
-  const t = tabs.find((x) => x.id === tab);
-  if (!t) throw new Error(`no tab ${tab}`);
-  const previous = tabs.find((x) => x.windowId === t.windowId && x.active && x.id !== tab);
-  await activateTab(tab);
-  try {
-    await relay(tab, "painted", [], 3000);
-    const { stdout } = await execFileAsync(WINSHOT, [], { timeout: 5000 });
-    const winId = stdout.trim().split("\n")[0];
-    if (!winId) throw new Error("no Safari window found to capture");
-    const out = opts.out ?? join(await mkdtemp(join(tmpdir(), "safari-shot-")), "shot.png");
-    await execFileAsync("screencapture", ["-x", "-o", "-l", winId, out], { timeout: 10000 });
-    await writeFile(out + ".json", JSON.stringify({ tab, windowId: Number(winId) }));
-    return { path: out };
-  } finally {
-    if (previous) await activateTab(previous.id);
+  const url = opts.url ?? ((await relay(tab, "tabInfo")) as { url?: string }).url;
+  if (!url || !/^https?:/.test(url)) throw new Error("set needs a web page or a url");
+  const cookie: Record<string, unknown> = { url, name: str(opts.name, "name"), value: str(opts.value, "value"), path: opts.path ?? "/" };
+  if (opts.domain !== undefined) cookie.domain = opts.domain;
+  if (opts.expires !== undefined) cookie.expirationDate = num(opts.expires, "expires");
+  if (url.startsWith("https:")) cookie.secure = true;
+  return bridge.request("cookies.set", [cookie]);
+}
+
+export async function pageFetch(opts: { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number }) {
+  const tab = await resolveTab(opts.tab);
+  return relay(tab, "fetch", [str(opts.url, "url"), { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes }], 60000);
+}
+
+async function scratchFile(prefix: string, name: string): Promise<string> {
+  return join(await mkdtemp(join(tmpdir(), prefix)), name);
+}
+
+type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean };
+
+// What the tab shows, as base64 PNG (Safari's own capture: no window
+// chrome, no screen-recording permission). ref crops to one element;
+// annotate draws the snapshot's refs on the page for the capture; fullPage
+// scrolls and stitches (sticky headers repeat).
+export async function captureTab(tab: number, opts: ShotOpts = {}) {
+  return (await bridge.request("shot", [tab, { ref: opts.ref, annotate: !!opts.annotate, fullPage: !!opts.fullPage }], 60000)) as { data: string; screens?: number; cut?: boolean };
+}
+
+export async function screenshot(opts: ShotOpts & { tab?: number; out?: string } = {}) {
+  const r = await captureTab(await resolveTab(opts.tab), opts);
+  const out = opts.out ?? await scratchFile("safari-shot-", "shot.png");
+  await writeFile(out, Buffer.from(r.data, "base64"));
+  return { path: out, ...(r.screens ? { screens: r.screens } : {}), ...(r.cut ? { cut: "page longer than 12 screens; the rest is not in the image" } : {}) };
+}
+
+// ---------- downloads ----------
+type FilePayload = { name: string; type: string; size: number; data: string; disposition?: string | null; url?: string };
+
+const DOWNLOADS = join(homedir(), "Downloads");
+
+function nameOf(f: FilePayload, fallbackUrl: string): string {
+  const fromHeader = f.disposition ? /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(f.disposition)?.[1] : undefined;
+  let name = f.name || (fromHeader ? decodeURIComponent(fromHeader) : "");
+  if (!name) {
+    try { name = decodeURIComponent(basename(new URL(f.url ?? fallbackUrl).pathname)); } catch { name = ""; }
   }
+  name = name.replace(/[/\\:\0]/g, "_").replace(/^\.+/, "").trim();
+  return name || "download";
+}
+
+// A path in dir for name that does not overwrite anything: "a.pdf", "a (1).pdf", ...
+async function freePath(dir: string, name: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const taken = new Set(await readdir(dir));
+  const ext = extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  let candidate = name;
+  for (let i = 1; taken.has(candidate); i++) candidate = `${stem} (${i})${ext}`;
+  return join(dir, candidate);
+}
+
+async function saveFile(f: FilePayload, url: string, out?: string) {
+  const path = out ?? await freePath(DOWNLOADS, nameOf(f, url));
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, Buffer.from(f.data, "base64"));
+  return { path, name: basename(path), size: f.size, type: f.type };
+}
+
+// A file by url, fetched with the page's cookies (the extension's own
+// fetch when the page may not read that site), or the file a ref's link or
+// button downloads. Saved in ~/Downloads unless out says where.
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }) {
+  const tab = await resolveTab(opts.tab);
+  if (opts.url !== undefined) {
+    const url = str(opts.url, "url");
+    const f = (await relay(tab, "fetchFile", [url, ""], 120000).catch(() => bridge.request("fetchFile", [url], 120000))) as FilePayload;
+    return saveFile(f, url, opts.out);
+  }
+  if (opts.ref === undefined) throw new Error("download needs ref or url");
+  const ref = String(opts.ref);
+  const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
+  try {
+    const f = (await relay(tab, "download", [ref], 120000)) as FilePayload;
+    return saveFile(f, "", opts.out);
+  } finally {
+    clearTimeout(stop);
+  }
+}
+
+// ---------- PDF ----------
+// save prints the page (its current HTML, against its own address) to a
+// PDF; read gives a PDF's text: a local path, or the PDF the tab shows.
+export async function pdf(opts: { tab?: number; do?: string; path?: string; out?: string; maxBytes?: number }) {
+  if (opts.do === "read") {
+    if (opts.path !== undefined) return pdfText(str(opts.path, "path"), opts.maxBytes);
+    const tab = await resolveTab(opts.tab);
+    const url = ((await listTabs()).find((t) => t.id === tab)?.url) ?? "";
+    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const file = await scratchFile("safari-pdf-", "page.pdf");
+    await writeFile(file, Buffer.from(f.data, "base64"));
+    return { url, ...(await pdfText(file, opts.maxBytes)) };
+  }
+  if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
+  const tab = await resolveTab(opts.tab);
+  const page = (await relay(tab, "eval", ["({ html: document.documentElement.outerHTML, url: location.href, title: document.title })"])) as { result: { html: string; url: string; title: string } };
+  const { html, url, title } = page.result;
+  const out = opts.out ?? await scratchFile("safari-pdf-", `${(title || "page").replace(/[/\\:\0]/g, "_").slice(0, 80)}.pdf`);
+  return renderPdf(html, url, out);
+}
+
+export async function viewport(opts: { tab: number; width: number; height: number }) {
+  return bridge.request("window", [num(opts.tab, "tab"), { width: num(opts.width, "width"), height: num(opts.height, "height") }]);
+}
+
+export async function dialogs(opts: { tab?: number; do?: string; text?: string }) {
+  const tab = await resolveTab(opts.tab);
+  const act = opts.do ?? "read";
+  if (act !== "read" && act !== "accept" && act !== "dismiss") throw new Error("do must be read, accept, or dismiss");
+  const policy = act === "read" ? null : { accept: act === "accept", text: opts.text ?? null };
+  return bridge.request("dialogs", [tab, policy]);
 }
 
 type Param = {
@@ -219,6 +345,8 @@ export type Tool = {
   desc: string;
   params: Record<string, Param>;
   required?: string[];
+  // reached by name over RPC, never listed to a model (the real-input tools use it)
+  hidden?: true;
   run: (a: Record<string, unknown>) => Promise<unknown>;
 };
 
@@ -295,14 +423,15 @@ export const TOOLS: Record<string, Tool> = {
   },
   activate: { desc: "Bring a tab to the front.", params: { tab: TAB }, required: ["tab"], run: (a) => activateTab(num(a.tab, "tab")) },
   snapshot: {
-    desc: "Page outline with [ref]s for click, type, select, and hover. Refs expire when the page changes: snapshot again after acting.",
+    desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs expire when the page changes: snapshot again after acting.",
     params: {
       tab: TAB,
       query: { type: "string", description: "only lines containing this text" },
       root: { type: "string", description: "CSS selector of the region to read" },
       maxNodes: { type: "number", description: "line limit, default 600" },
+      diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
     },
-    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number }),
+    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean }),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
@@ -351,10 +480,26 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM, not the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
-    params: { tab: TAB, expression: { type: "string", description: "JS expression" } },
+    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
+    params: { tab: TAB, expression: { type: "string", description: "JS expression" }, page: { type: "boolean", description: "run in the page's own world" } },
     required: ["expression"],
-    run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression") }),
+    run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
+  },
+  fetch: {
+    desc: "Request a URL with the page's cookies; returns status, type, and text.",
+    params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" } },
+    required: ["url"],
+    run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; body?: string; maxBytes?: number }),
+  },
+  download: {
+    desc: "Save the file a ref's link or button downloads, or a url, into ~/Downloads; returns its path.",
+    params: { tab: TAB, ref: REF, url: { type: "string", description: "instead of ref" }, out: { type: "string", description: "path to write" } },
+    run: (a) => download(a as { tab?: number; ref?: string; url?: string; out?: string }),
+  },
+  dialog: {
+    desc: "Alerts, confirms, and prompts come back with the action that raised them; confirm and prompt are dismissed unless you accept. read lists recent ones.",
+    params: { tab: TAB, do: { type: "string", enum: ["read", "accept", "dismiss"], description: "accept or dismiss from now on" }, text: { type: "string", description: "prompt answer" } },
+    run: (a) => dialogs(a as { tab?: number; do?: string; text?: string }),
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
@@ -378,14 +523,40 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => capture({ start: consoleStart, read: consoleRead }, a),
   },
   cookies: {
-    desc: "Cookies for the tab's site. Values are secrets: never repeat them.",
-    params: { tab: TAB, url: { type: "string", description: "another site's URL" } },
-    run: (a) => cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined }),
+    desc: "Cookies for the tab's site. Values are secrets: never repeat them. do: set adds one (not HttpOnly).",
+    params: { tab: TAB, url: { type: "string", description: "another site's URL" }, do: { type: "string", enum: ["read", "set"], description: "default read" }, name: { type: "string", description: "to set" }, value: { type: "string", description: "to set" } },
+    run: (a) => a.do === "set"
+      ? setCookie(a as { tab?: number; url?: string; name: string; value: string })
+      : cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined }),
   },
   shot: {
-    desc: "Screenshot the Safari window showing this tab; returns a PNG path. Brings the tab to the front for a moment.",
-    params: { tab: TAB, out: { type: "string", description: "PNG path to write" } },
-    run: (a) => screenshot({ tab: a.tab as number | undefined, out: a.out as string | undefined }),
+    desc: "Screenshot the tab's page; returns a PNG path. ref crops to it; annotate labels refs; fullPage stitches the whole page.",
+    params: { tab: TAB, ref: REF, annotate: { type: "boolean", description: "draw ref labels" }, fullPage: { type: "boolean", description: "whole page" }, out: { type: "string", description: "PNG path" } },
+    run: (a) => screenshot(a as { tab?: number; ref?: string; annotate?: boolean; fullPage?: boolean; out?: string }),
+  },
+  pdf: {
+    desc: "save prints the page to PDF; read returns a PDF's text (path, or the tab's PDF).",
+    params: { tab: TAB, do: { type: "string", enum: ["save", "read"], description: "default save" }, path: { type: "string", description: "PDF to read" }, out: { type: "string", description: "PDF path" } },
+    run: (a) => pdf(a as { tab?: number; do?: string; path?: string; out?: string }),
+  },
+  window: {
+    desc: "Put a tab in its own window of this size, e.g. a phone-width page.",
+    params: { tab: TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" } },
+    required: ["tab", "width", "height"],
+    run: (a) => viewport(a as { tab: number; width: number; height: number }),
+  },
+  locate: {
+    desc: "An element's box in the top page's viewport, scrolled into view.",
+    params: { tab: TAB, ref: REF },
+    required: ["ref"],
+    hidden: true,
+    // A tab just brought to the front may not have drawn yet; a real click
+    // before it has lands on the tab shown before.
+    run: async (a) => {
+      const tab = await resolveTab(a.tab as number | undefined);
+      await relay(tab, "painted", [], 3000).catch(() => {});
+      return relay(tab, "locate", [str(String(a.ref), "ref")]);
+    },
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. logins lists saved usernames; lock ends access.",
@@ -412,7 +583,12 @@ export function formatResult(value: unknown): string {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${v.snapshot}`;
     }
-    if (typeof v.text === "string" && typeof v.url === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
+    if (typeof v.text === "string") {
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
+      // fetch and pdf read: their other fields, then the text as it is
+      const { text, ...rest } = v;
+      return `${JSON.stringify(rest)}\n\n${text}`;
+    }
     if (v.page !== undefined) {
       const { page, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${formatResult(page)}`;

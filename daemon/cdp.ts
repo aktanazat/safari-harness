@@ -186,10 +186,8 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
       }
       case "Page.captureScreenshot": {
         const tabId = effTab ?? (await tools.resolveTab());
-        const { path } = await tools.screenshot({ tab: tabId });
-        const file = Bun.file(path);
-        const buf = await file.bytes();
-        return send(ok(id, { data: Buffer.from(buf).toString("base64") }));
+        const { data } = await tools.captureTab(tabId);
+        return send(ok(id, { data }));
       }
       case "Page.getFrameTree": {
         const tabId = effTab ?? (await tools.resolveTab());

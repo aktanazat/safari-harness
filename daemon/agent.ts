@@ -37,7 +37,7 @@ Rules:
 
 // The loop runs unattended, so it gets the Messages read tools but not send.
 // Its small local model takes one step per turn (see the rules), so no run.
-const ALL_TOOLS = { ...Object.fromEntries(Object.entries(TOOLS).filter(([name]) => name !== "run")), ...IMESSAGE_READ_TOOLS };
+const ALL_TOOLS = { ...Object.fromEntries(Object.entries(TOOLS).filter(([name, t]) => name !== "run" && !t.hidden)), ...IMESSAGE_READ_TOOLS };
 
 function toolSchemas() {
   return Object.entries(ALL_TOOLS).map(([name, t]) => ({

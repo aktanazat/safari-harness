@@ -36,7 +36,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari back|forward|reload [--tab N]       history
   safari close <tab>                         close a tab
   safari focus <tab>                         activate a tab
-  safari snapshot [--tab N] [--query text] [--root sel]
+  safari snapshot [--tab N] [--query text] [--root sel] [--diff]
                                              page outline with [ref]s
   safari click <ref> [--tab N]               click by snapshot ref
   safari clickat <x> <y> [--tab N]           click by coordinates
@@ -51,7 +51,8 @@ const USAGE = `safari — drive Safari from the terminal
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
-  safari eval <js-expression> [--tab N]      evaluate JS, print JSON
+  safari eval <js-expression> [--tab N] [--page]
+                                             evaluate JS, print JSON
   safari extract [--tab N] [--selector s]    readable text
   safari info [--tab N]                      url/title/scroll
   safari wait <ms> [--tab N]                 sleep in the page
@@ -60,7 +61,18 @@ const USAGE = `safari — drive Safari from the terminal
   safari net start|stop|read [--tab N]       fetch/XHR capture
   safari console start|read [--tab N]        console capture
   safari cookies [--tab N]                   cookies for the page
-  safari shot [--tab N] [--out file.png]     screenshot the Safari window
+  safari shot [--tab N] [--out file.png] [--ref R] [--annotate] [--full]
+                                             screenshot what the tab shows
+  safari download <ref|url> [--out file] [--tab N]
+                                             save a file into ~/Downloads
+  safari dialog [read|accept|dismiss] [text] [--tab N]
+                                             how the tab answers alerts and confirms
+  safari fetch <url> [--tab N]               request a URL with the page's cookies
+  safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
+                                             print the page to PDF, or read a PDF
+  safari window <width> <height> --tab N     give a tab its own window at that size
+  safari history-search [text]               search Safari browsing history
+  safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari do "<task>" [--tab N] [--steps 30]  run the agent loop (local model)
   safari mcp                                 run the MCP stdio server (thin client)
   safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
@@ -272,6 +284,7 @@ async function main() {
       if (query) args.query = query;
       const max = flag("max", rest);
       if (max) args.maxNodes = Number(max);
+      if (hasFlag("diff", rest)) args.diff = true;
       break;
     }
     case "click": args.ref = positional[0]; break;
@@ -292,7 +305,7 @@ async function main() {
       break;
     }
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
-    case "eval": args.expression = positional.join(" "); break;
+    case "eval": args.expression = positional.join(" "); args.page = hasFlag("page", rest); break;
     case "extract": {
       const sel = flag("selector", rest);
       if (sel) args.selector = sel;
@@ -319,6 +332,43 @@ async function main() {
     case "shot": {
       const out = flag("out", rest);
       if (out) args.out = out;
+      const ref = flag("ref", rest);
+      if (ref) args.ref = ref;
+      args.annotate = hasFlag("annotate", rest);
+      args.fullPage = hasFlag("full", rest);
+      break;
+    }
+    case "download": {
+      const target = positional[0] ?? "";
+      if (/^https?:/.test(target)) args.url = target;
+      else args.ref = target;
+      const out = flag("out", rest);
+      if (out) args.out = resolve(out);
+      break;
+    }
+    case "dialog":
+      if (positional[0]) args.do = positional[0];
+      if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
+      break;
+    case "fetch": args.url = positional[0]; break;
+    case "pdf": {
+      args.do = positional[0] ?? "save";
+      if (positional[1]) args.path = resolve(positional[1]);
+      const out = flag("out", rest);
+      if (out) args.out = resolve(out);
+      break;
+    }
+    case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
+    case "history-search": tool = "browsing_history"; args = { text: positional.join(" ") || undefined }; break;
+    case "call": {
+      tool = positional[0] ?? "";
+      const json = positional.slice(1).join(" ");
+      try {
+        args = { ...args, ...(json ? JSON.parse(json) as Record<string, unknown> : {}) };
+      } catch {
+        console.error("usage: safari call <tool> '<json args>'");
+        process.exit(2);
+      }
       break;
     }
     default:
@@ -345,7 +395,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot", "approved"]);
+const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot", "approved", "diff", "page", "annotate", "full"]);
 
 // docs/sites/<slug>.md, each opening with `name:` and `hosts:` front matter.
 // A hosts entry is a domain, optionally with a path prefix (docs.google.com/
