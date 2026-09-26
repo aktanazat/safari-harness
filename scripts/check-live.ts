@@ -371,7 +371,12 @@ await withPage("<p>page</p>", PAGE_VAR_JS, async (tab) => {
   check("eval page: true sees the page's own variables", isolated === "undefined" && page === 42, { isolated, page });
   await call("cookies", { tab, do: "set", name: "sh_check", value: "1", expires: Math.floor(Date.now() / 1000) + 60 });
   const names = ((await call("cookies", { tab })) as { name: string }[]).map((c) => c.name);
-  const seen = (await call("eval", { tab, expression: "document.cookie" })).result as string;
+  // Safari hands a new cookie to the page's process a moment after the set.
+  let seen = "";
+  for (let i = 0; i < 20 && !seen.includes("sh_check=1"); i++) {
+    if (i) await Bun.sleep(50);
+    seen = (await call("eval", { tab, expression: "document.cookie" })).result as string;
+  }
   check("cookies set adds a cookie the page sees", names.includes("sh_check") && seen.includes("sh_check=1"), { names, seen });
   await call("window", { tab, width: 480, height: 700 });
   const width = (await call("eval", { tab, expression: "innerWidth" })).result as number;
