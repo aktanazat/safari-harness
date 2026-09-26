@@ -10,7 +10,11 @@ type Call = { tool: string; args: Record<string, unknown> };
 // it to 12,111. Telling close that background tabs close with the session
 // (114) saves the turn agents spent on close. Telling eval that a selector
 // remembered from training may be gone (73) saves the retry after one misses.
-const TOOL_LIST_MAX_BYTES = 12_300;
+// Closing the gaps with Aside's Chrome tools (3,930) brought it to 16,228:
+// fetch, download, dialog, pdf, window, browsing_history, and real_input,
+// plus snapshot diff and frames, page-world eval, cookie set, and element
+// and full-page shots. Each is a task an agent could not finish before.
+const TOOL_LIST_MAX_BYTES = 16_300;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

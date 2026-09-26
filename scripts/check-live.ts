@@ -7,6 +7,8 @@
 // Pages are built inside example.com with eval, so the checks do not depend on
 // any site's markup changing.
 
+import { CALLER_TOOLS } from "../daemon/caller.ts";
+
 const HTTP = "http://127.0.0.1:37334/rpc";
 
 type Tab = { id: number; active: boolean };
@@ -292,6 +294,133 @@ await withPage("<button id=go>Load</button><p id=out></p>", PAGE_CALLS_JS, async
     JSON.stringify(seen) === JSON.stringify(["fetch POST ?page-fetch", "xhr GET ?page-xhr"]) && /^page fetch \d+$/.test(logs[0]?.text ?? ""),
     { net, logs });
 });
+
+// ---------- frames ----------
+
+// A srcdoc frame gets no extension script in Safari, so the page reads it
+// inline; a cross-origin frame runs its own copy, and its lines come back
+// under the <iframe> with refs naming the frame.
+const FRAMES = `<iframe id=inner srcdoc="<button onclick='this.textContent=&quot;inner clicked&quot;'>Inner button</button>" style="width:300px;height:80px"></iframe>` +
+  '<iframe id=outer src="https://example.org/" style="width:500px;height:300px;margin-left:40px"></iframe>';
+
+await withPage(FRAMES, "", async (tab) => {
+  let s = "";
+  for (let i = 0; i < 30 && !/\[f\d+:\d+\] link "Learn more"/.test(s); i++) {
+    await Bun.sleep(200);
+    s = (await call("snapshot", { tab })).snapshot;
+  }
+  check("a snapshot includes a same-origin frame's content", /^  \[\d+\] button "Inner button"$/m.test(s), s);
+  check("a snapshot includes a cross-origin frame's content with frame refs", /\[f\d+:\d+\] link "Learn more"/.test(s), s);
+  await call("click", { tab, ref: "Inner button" });
+  const after = (await call("snapshot", { tab, diff: true })).snapshot;
+  check("click by text reaches a button inside a frame, and diff shows only the change",
+    after === '-   [2] button "Inner button"\n+   [2] button "inner clicked"', after);
+  const ref = s.match(/\[(f\d+:\d+)\] link "Learn more"/)![1];
+  const box = await call("locate", { tab, ref });
+  const frame = await call("eval", { tab, expression: "(() => { const r = document.getElementById('outer').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()" });
+  const f = frame.result as { x: number; y: number; w: number; h: number };
+  check("locate places a cross-origin frame's element inside that frame's box",
+    box.x > f.x && box.y > f.y && box.x + box.width < f.x + f.w && box.y + box.height < f.y + f.h, { box, frame: f });
+});
+
+// ---------- dialogs ----------
+
+const DIALOG = `<button id=ask onclick="document.getElementById('o').textContent = String(confirm('Sure?')) + ' ' + prompt('Name?')">Ask</button><p id=o></p>`;
+
+await withPage(DIALOG, "", async (tab) => {
+  const first = await call("click", { tab, ref: "#ask" });
+  const out1 = (await call("eval", { tab, expression: "document.getElementById('o').textContent" })).result;
+  check("a confirm and a prompt are dismissed and reported with the click",
+    out1 === "false null" && first.dialogs?.map((d: { type: string }) => d.type).join() === "confirm,prompt", { out1, first });
+  await call("dialog", { tab, do: "accept", text: "Ada" });
+  await call("click", { tab, ref: "#ask" });
+  const out2 = (await call("eval", { tab, expression: "document.getElementById('o').textContent" })).result;
+  check("after dialog accept, a confirm is accepted and a prompt gets the text", out2 === "true Ada", out2);
+});
+
+// ---------- files ----------
+
+// Inline handlers see document.URL as URL, hence window.URL.
+const FILES = '<a id=dl download="hello.txt" href="data:text/plain,hello%20world">Get file</a>' +
+  `<button id=blob onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['blob body'], { type: 'text/plain' })); a.download = 'made.txt'; a.click()">Make file</button>`;
+const FILE_DIR = `/private/var/tmp/safari-harness-check-${process.pid}`;
+
+await withPage(FILES, "", async (tab) => {
+  const link = await call("download", { tab, ref: "#dl", out: `${FILE_DIR}/hello.txt` });
+  const blob = await call("download", { tab, ref: "#blob", out: `${FILE_DIR}/made.txt` });
+  const url = await call("download", { tab, url: "https://example.com/", out: `${FILE_DIR}/page.html` });
+  check("download saves a data link, a file the page builds on click, and a url",
+    await Bun.file(link.path).text() === "hello world" && await Bun.file(blob.path).text() === "blob body" &&
+    (await Bun.file(url.path).text()).includes("<title>Example Domain</title>"), { link, blob, url });
+  const got = await call("fetch", { tab, url: "/", maxBytes: 100 });
+  check("fetch returns the page's response, clipped", got.status === 200 && got.truncated === true && got.text.startsWith("<!doctype html>"), got);
+  const pdfOut = `${FILE_DIR}/page.pdf`;
+  const saved = await call("pdf", { tab, out: pdfOut });
+  const read = await call("pdf", { do: "read", path: pdfOut });
+  check("pdf prints the page and reads its text back", saved.pages === 1 && read.text.includes("Get file"), { saved, read });
+});
+await Bun.$`mv ${FILE_DIR} ${process.env.HOME}/.Trash/`.quiet().nothrow();
+
+// ---------- page world, cookies, window ----------
+
+const PAGE_VAR_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: "window.fromPage = 42" }))`;
+
+await withPage("<p>page</p>", PAGE_VAR_JS, async (tab) => {
+  const isolated = (await call("eval", { tab, expression: "typeof window.fromPage" })).result;
+  const page = (await call("eval", { tab, expression: "window.fromPage", page: true })).result;
+  check("eval page: true sees the page's own variables", isolated === "undefined" && page === 42, { isolated, page });
+  await call("cookies", { tab, do: "set", name: "sh_check", value: "1", expires: Math.floor(Date.now() / 1000) + 60 });
+  const names = ((await call("cookies", { tab })) as { name: string }[]).map((c) => c.name);
+  const seen = (await call("eval", { tab, expression: "document.cookie" })).result as string;
+  check("cookies set adds a cookie the page sees", names.includes("sh_check") && seen.includes("sh_check=1"), { names, seen });
+  await call("window", { tab, width: 480, height: 700 });
+  const width = (await call("eval", { tab, expression: "innerWidth" })).result as number;
+  check("window gives the tab a narrow viewport", width > 300 && width <= 480, width);
+});
+
+// ---------- screenshots ----------
+
+function pngSize(bytes: Uint8Array): { w: number; h: number } {
+  const v = new DataView(bytes.buffer, bytes.byteOffset);
+  return { w: v.getUint32(16), h: v.getUint32(20) };
+}
+
+await withPage('<button id=b style="width:200px;height:50px">Shot</button><div style="height:4000px"></div><p>end</p>', "", async (tab) => {
+  const view = pngSize(await Bun.file((await call("shot", { tab })).path).bytes());
+  const one = pngSize(await Bun.file((await call("shot", { tab, ref: "#b" })).path).bytes());
+  const full = await call("shot", { tab, fullPage: true });
+  const whole = pngSize(await Bun.file(full.path).bytes());
+  check("shot of a ref is that element's size", Math.abs(one.w / one.h - 4) < 0.3 && one.w < view.w, { view, one });
+  check("shot fullPage is taller than the viewport", whole.h > view.h * 2 && whole.w === view.w, { view, whole, full });
+  await call("shot", { tab, annotate: true });
+  const left = (await call("eval", { tab, expression: "document.getElementById('__safari_harness_annotate') === null" })).result;
+  check("annotate leaves nothing on the page", left === true, left);
+});
+
+// ---------- real input ----------
+
+// Brings Safari to the front for about a second, then gives back the app
+// and tab that were in front.
+const TRUST = `<button id=b onclick="this.dataset.trusted = event.isTrusted">Real</button><input id=f>`;
+
+await withPage(TRUST, "", async (tab) => {
+  await call("click", { tab, ref: "#b" });
+  const scripted = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
+  await CALLER_TOOLS.real_input.run({ tab, do: "click", ref: "#b" });
+  const real = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
+  check("real_input click is a trusted event where click is not", scripted === "false" && real === "true", { scripted, real });
+  await CALLER_TOOLS.real_input.run({ tab, do: "type", ref: "#f", text: "abc" });
+  await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
+  const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;
+  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+  check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === front, { typed, nowFront, front });
+});
+
+// ---------- browsing history ----------
+
+// Runs in this process: reading History.db needs the terminal's Full Disk Access.
+const visits = (await CALLER_TOOLS.browsing_history.run({ text: "example.com", days: 1 })) as { url: string }[];
+check("browsing_history finds the page these checks just opened", visits.some((v) => v.url.startsWith("https://example.com/")), visits.slice(0, 3));
 
 // ---------- snapshot size ----------
 

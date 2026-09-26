@@ -16,7 +16,7 @@ for f in "$ROOT"/extension/*.js; do node --check "$f"; done
 
 until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 DD="$(mktemp -d /private/var/tmp/sh-build.XXXXXX)"
-trap 'rm -rf "$DD"; rmdir "$LOCK"' EXIT
+trap 'mv "$DD" ~/.Trash/ 2>/dev/null; rmdir "$LOCK"' EXIT
 
 cd "$ROOT/Safari Harness"
 if ! xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$DD" -allowProvisioningUpdates build >"$DD/build.log" 2>&1; then

@@ -66,14 +66,25 @@ Read with `snapshot` when you do not yet know what is on the page.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
 - A dropdown shows its value and option count, not each option. Use `select`.
+- Embedded frames print under their `iframe` line. Refs inside a frame from
+  another site look like `f3:12`; use them like any ref. Text and selector
+  targets also reach into frames.
+- `diff: true` returns only the lines that changed since your last snapshot
+  of that tab (`- ` gone, `+ ` new): the cheap way to see what an action did.
 
 Escalate in this order:
 
 1. `snapshot`
 2. `extract` for the readable text of a long page (`selector` to narrow it)
-3. `shot` for visual proof. It returns a PNG path of the Safari window. It
-   brings your tab to the front for a moment, then puts the user's tab back.
-4. `eval` only when you know the exact expression you need
+3. `shot` for visual proof. It returns a PNG path of what the tab shows,
+   without Safari's toolbar. `ref` crops to one element, `annotate: true`
+   draws each snapshot ref as a numbered box, and `fullPage: true` scrolls
+   and stitches the whole page (up to 12 screens; a sticky header repeats).
+   A tab behind another comes to the front of its window for a moment, then
+   the user's tab comes back.
+4. `eval` only when you know the exact expression you need. It sees the
+   DOM; `page: true` runs it in the page's own world, where the site's
+   script variables and functions are.
 
 ## Acting
 
@@ -92,6 +103,11 @@ Escalate in this order:
   are usually hidden: pass the upload area's ref, or no ref when the page has
   one file input.
 - `history` goes `back`, `forward`, or `reload`s.
+- Alerts, confirms, and prompts never block the page. Each one comes back
+  in the result of the action that raised it (`dialogs`), with how it was
+  answered. A confirm or prompt is dismissed unless you first call `dialog`
+  with `do: "accept"` (and `text` for a prompt's answer); `do: "dismiss"`
+  goes back. The same page leaving with unsaved changes does not ask.
 - `click` with x/y only when a ref cannot reach the target.
 - `scroll` is rarely needed: snapshots include off-screen elements, and
   clicks scroll to their target.
@@ -103,6 +119,18 @@ Escalate in this order:
   waits for. A link or form the page's script takes over gets a short wait
   in case it moves. A page that changes later is caught by the next call.
 - Treat an action as unconfirmed until a snapshot shows the result.
+- `real_input` uses the real mouse and keyboard, so the page sees trusted
+  events: `do: "click"` a ref (`count: 2` double-clicks, `button: "right"`),
+  `do: "type"` text at a ref or where the caret is, `do: "key"` a key or
+  combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it only when `click`, `type`,
+  or `press` did nothing: captcha checkboxes and sites that ignore scripted
+  events. Each call brings Safari and the tab to the front for about half a
+  second, then gives back the user's tab, app, and pointer. It waits until
+  the page has received every key before giving the tab back, so nothing
+  lands in the user's tab; the page sees one extra press of F20, a key no
+  Mac keyboard has. Keys go only to a page with keyboard focus: if Safari's
+  address or find bar has it, the call fails and nothing is typed. The app
+  running the MCP server or CLI needs Accessibility permission.
 
 ## Waiting
 
@@ -124,6 +152,28 @@ Wait for the page, not the clock.
 page made after capture started (URL, method, status, time); `do: "stop"` ends
 it. `console` does the same for console messages. Neither sees request bodies
 or requests made before capture started.
+
+## Files, PDFs, and requests
+
+- `download` saves a file into `~/Downloads` and returns its path: pass the
+  `ref` of a download link or of a button that makes a file, or a `url`.
+  It fetches with the page's cookies, so a signed-in file works. A name
+  already taken gets ` (1)`. A download only the server starts, after a
+  click the page cannot see, lands in `~/Downloads` through Safari itself.
+- `fetch` requests a URL from the page with its cookies and returns status,
+  type, and the text (50 KB unless `maxBytes`): an API read without
+  opening a page. `method` and `body` send a POST.
+- `pdf` saves the page as a PDF (letter pages, like Export as PDF, from the
+  page's current HTML) and returns its path; `do: "read"` returns a PDF's
+  text page by page: a local `path`, or the PDF the tab shows.
+- `cookies` with `do: "set"` adds a cookie for the tab's site (`name`,
+  `value`); an extension cannot set an HttpOnly one.
+- `window` gives your tab its own window of a given size, so the page lays
+  out as it would on a phone or small laptop. Use it only on your own tab.
+- `browsing_history` searches Safari's history by title or address, newest
+  first, one row per address with its last visit and visit count (30 days
+  by default). It reads Safari's history file, so the terminal needs Full
+  Disk Access.
 
 ## Site guides
 
@@ -221,12 +271,10 @@ safari routine remove price-watch
 
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
   or request bodies.
-- Screenshots cover the whole Safari window, not a single element, and need
-  Safari's window on screen (not minimized).
+- Screenshots need the tab's window on screen (not minimized).
 - No reach inside closed shadow DOM.
 - `hover` fires mouse events; menus that open purely through CSS `:hover`
-  do not respond. Click the menu's button instead.
-- `eval` sees the page's DOM but not its own script variables.
+  do not respond. Click the menu's button instead, or `real_input`.
 - One extension connection. The daemon owns it, and every client shares it.
 
 ## Troubleshooting

@@ -20,11 +20,21 @@ extension/          Safari MV3 web extension (background page + content script)
 daemon/
   main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health)
   bridge.ts         request/response plumbing to the extension socket
-  tools.ts          24 tools, each with its own input schema: run (several
-                    tools in one call) tabs open close goto activate snapshot
-                    click type press select hover upload history scroll eval
-                    extract info wait net console cookies shot passwords.
-                    Actions report `navigated` and `newTab`.
+  dialogs.js        page-world script: answers alerts, confirms, and prompts
+                    so they never block, and catches downloads the page makes
+  tools.ts          the Safari tools, each with its own input schema: run
+                    (several tools in one call) tabs open close goto activate
+                    snapshot click type press select hover upload history
+                    scroll eval fetch download dialog extract info wait net
+                    console cookies shot pdf window passwords. Actions report
+                    `navigated`, `newTab`, and any `dialogs`; snapshots take
+                    in embedded frames
+  caller.ts         tools that run in the calling process, which holds the
+                    terminal's permissions (Messages, browsing history)
+  pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
+  safari-history.ts browsing_history over Safari's History.db (read-only)
+  input.ts          real_input: the real mouse and keyboard through
+                    scripts/input, for pages that ignore scripted events
   passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
                     Mac shows (SRP), then asks it for logins over AES-GCM. The
                     helper runs only under a real browser, so a hidden Helium
@@ -45,8 +55,12 @@ cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless 
 docs/GUIDE.md       usage guide for agents and people (`safari guide`)
 docs/sites/         per-site guides (`safari guide <site>`)
 scripts/
-  winshot.swift     helper: prints the CGWindowID of Safari's front window
-                    (build: swiftc -O scripts/winshot.swift -o scripts/winshot)
+  pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
+                    reads PDF text (PDFKit); `bun run helpers` builds it
+  input.swift       helper: posts real clicks and keys (CGEvent) into
+                    Safari's page area; needs Accessibility permission
+  dev-install.sh    rebuild the app and extension, install it over
+                    /Applications, and wait for the extension to reconnect
   fake-extension.ts test double that speaks the extension protocol
   check-live.ts     live checks against real Safari in its own background
                     tabs (`bun run check`); includes a snapshot-size guard
@@ -72,8 +86,9 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 
 ## Setup
 
-1. Start the daemon and keep it on: `safari daemon install` (a launchd agent;
-   `safari serve` runs it in the foreground instead).
+1. Build the Swift helpers (`bun run helpers`), then start the daemon and
+   keep it on: `safari daemon install` (a launchd agent; `safari serve` runs
+   it in the foreground instead).
 2. Build + install the app once:
    ```
    xcrun safari-web-extension-converter "$PWD/extension" \
@@ -121,7 +136,14 @@ safari wait --text "Welcome"    # returns the moment it is on the page
 safari extract
 safari eval "JSON.stringify(performance.timing)"
 safari net start; safari goto https://…; safari net read
-safari shot --out page.png      # window-level capture (winshot + screencapture)
+safari shot --out page.png      # what the tab shows; --ref R, --annotate, --full
+safari download "Export CSV"    # the file that button makes, into ~/Downloads
+safari pdf --out page.pdf       # the page as PDF; safari pdf read file.pdf
+safari fetch /api/me            # a request with the page's cookies
+safari dialog accept            # answer confirms with OK from now on
+safari window 390 844 --tab 7   # a phone-width window for your tab
+safari history-search invoice   # Safari browsing history
+safari call snapshot '{"diff":true}'  # any tool with its MCP arguments
 safari do "find the price of X on example.com"
 safari guide amazon             # direct URLs, snapshot roots, signed-in check
 safari imessage chats           # recent conversations
@@ -171,7 +193,11 @@ unlisted, answer `-32000 not supported` — never a fake result.
 
 - no `chrome.debugger`: no CPU profiling, no request interception/blocking,
   no `postData`
-- screenshots are window-level via `screencapture`, not element-level
+- no `downloads` API: files are caught in the page (links, page-built
+  files) and fetched with its cookies; a server-only download goes to
+  ~/Downloads through Safari itself
+- screenshots use `tabs.captureVisibleTab`, so a background tab comes to the
+  front of its window for the capture
 - content scripts don't pierce closed shadow DOM
 - the extension socket is single-client: one daemon owns Safari; CDP clients
   share it through the shim
@@ -183,8 +209,9 @@ unlisted, answer `-32000 not supported` — never a fake result.
   (`SIGKILL (Code Signature Invalid)`) unless an allow-listed browser starts
   it. Helium must be installed in /Applications, and the pairing lasts until
   the daemon restarts or `passwords {do: "lock"}`
-- Messages reads need Full Disk Access, which the launchd daemon lacks, so
-  those tools run in the calling process (terminal or MCP server)
+- Messages and browsing history need Full Disk Access, and real input
+  needs Accessibility; the launchd daemon has neither, so those tools run in
+  the calling process (terminal or MCP server)
 
 ## Tests
 
