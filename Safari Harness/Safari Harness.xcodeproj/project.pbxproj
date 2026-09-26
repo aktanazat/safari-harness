@@ -20,6 +20,7 @@
 		8854B8B630666DB500E7A747 /* background.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B330666DB500E7A747 /* background.js */; };
 		8854B8B730666DB500E7A747 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B430666DB500E7A747 /* manifest.json */; };
 		8854B8B830666DB500E7A747 /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B530666DB500E7A747 /* content.js */; };
+		8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B930666DB500E7A747 /* toolbar-icon.svg */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +62,7 @@
 		8854B8B330666DB500E7A747 /* background.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = background.js; path = ../../extension/background.js; sourceTree = "<group>"; };
 		8854B8B430666DB500E7A747 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = manifest.json; path = ../../extension/manifest.json; sourceTree = "<group>"; };
 		8854B8B530666DB500E7A747 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = content.js; path = ../../extension/content.js; sourceTree = "<group>"; };
+		8854B8B930666DB500E7A747 /* toolbar-icon.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = "toolbar-icon.svg"; path = "../../extension/toolbar-icon.svg"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +137,7 @@
 				8854B8B330666DB500E7A747 /* background.js */,
 				8854B8B430666DB500E7A747 /* manifest.json */,
 				8854B8B530666DB500E7A747 /* content.js */,
+				8854B8B930666DB500E7A747 /* toolbar-icon.svg */,
 			);
 			name = Resources;
 			path = "Safari Harness Extension";
@@ -233,6 +236,7 @@
 				8854B8B830666DB500E7A747 /* content.js in Resources */,
 				8854B8B730666DB500E7A747 /* manifest.json in Resources */,
 				8854B8B630666DB500E7A747 /* background.js in Resources */,
+				8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
