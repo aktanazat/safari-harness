@@ -2,6 +2,7 @@
   "name": "safari-harness",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "bin": {
     "safari": "cli/safari.ts"
