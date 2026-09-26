@@ -93,17 +93,23 @@ async function toTab(tabId, op, args, timeoutMs = 30000) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
   await waitReady(tabId, 15000);
   try {
-    return await sendUntilNavigation(tabId, msg, timeoutMs);
+    const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+    if (res !== undefined) return res;
   } catch (e) {
     if (e.navigated) {
       if (ACTIONS.has(op)) return { value: { ok: true } };
       await waitReady(tabId, 15000);
-      return await sendUntilNavigation(tabId, msg, timeoutMs);
+      const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+      if (res !== undefined) return res;
     }
-    // content script may not be injected yet (e.g. added after page load)
-    await ensureContent(tabId);
-    return await sendUntilNavigation(tabId, msg, timeoutMs);
   }
+  // The page has no content script (Safari skipped injecting it, e.g. after a
+  // redirect): the send rejects, or resolves undefined because no listener
+  // answered. Inject it and ask once more.
+  await ensureContent(tabId);
+  const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+  if (res === undefined) throw new Error("the page did not answer; reload it with goto and retry");
+  return res;
 }
 
 // Run an action and report what it caused: a new page in this tab
