@@ -383,6 +383,14 @@ await withPage("<p>page</p>", PAGE_VAR_JS, async (tab) => {
   check("window gives the tab a narrow viewport", width > 300 && width <= 480, width);
 });
 
+// YouTube and Google demand Trusted Types, which refuse a plain string of code.
+const TRUSTED_TYPES_JS = `document.head.appendChild(Object.assign(document.createElement("meta"), { httpEquiv: "Content-Security-Policy", content: "require-trusted-types-for 'script'" }))`;
+
+await withPage("<p>page</p>", `${PAGE_VAR_JS}; ${TRUSTED_TYPES_JS}`, async (tab) => {
+  const r = (await call("eval", { tab, page: true, expression: `(() => { try { eval("1"); return "plain eval allowed"; } catch { return window.fromPage; } })()` })).result;
+  check("eval page: true runs on a page that demands Trusted Types", r === 42, r);
+});
+
 // ---------- screenshots ----------
 
 function pngSize(bytes: Uint8Array): { w: number; h: number } {

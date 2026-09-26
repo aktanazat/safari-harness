@@ -336,11 +336,21 @@ function pageCapture(kind, cmd) {
   return { ok: true };
 }
 
-// Runs in the page's own world, so it must be self-contained. A page whose
-// security policy forbids eval refuses it.
+// Runs in the page's own world, so it must be self-contained. A page that
+// demands Trusted Types (YouTube, Google) refuses a plain string, so the
+// code goes through a policy of our own; a page whose policy forbids eval
+// outright, or names the only policies it allows, still refuses it.
 async function pageEval(src) {
+  const code = `(${src})`;
   try {
-    const v = await new Function(`return (${src})`)();
+    let v;
+    try {
+      v = await (0, eval)(code);
+    } catch (e) {
+      if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
+      const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
+      v = await (0, eval)(policy.createScript(code));
+    }
     if (v === undefined) return { ok: true, result: null };
     try { JSON.stringify(v); return { ok: true, result: v }; } catch { return { ok: true, result: String(v) }; }
   } catch (e) {

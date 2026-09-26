@@ -138,7 +138,8 @@ export async function history(opts: { tab?: number; go: string }) {
 }
 
 // page: true runs it in the page's own world, where its script variables
-// are; a page whose security policy forbids eval refuses that.
+// are. A page that demands Trusted Types still runs it; one whose security
+// policy forbids eval outright refuses it.
 export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; frame?: string }) {
   const tab = await resolveTab(opts.tab);
   if (opts.page) return bridge.request("evalPage", [tab, str(opts.expression, "expression"), opts.frame ?? null], 30000);

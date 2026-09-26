@@ -84,7 +84,8 @@ Escalate in this order:
    the user's tab comes back.
 4. `eval` only when you know the exact expression you need. It sees the
    DOM; `page: true` runs it in the page's own world, where the site's
-   script variables and functions are.
+   script variables and functions are (YouTube and Google included); a page
+   whose security policy forbids eval outright refuses it.
 
 ## Acting
 
