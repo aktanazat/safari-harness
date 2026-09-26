@@ -14,7 +14,11 @@ type Call = { tool: string; args: Record<string, unknown> };
 // fetch, download, dialog, pdf, window, browsing_history, and real_input,
 // plus snapshot diff and frames, page-world eval, cookie set, and element
 // and full-page shots. Each is a task an agent could not finish before.
-const TOOL_LIST_MAX_BYTES = 16_300;
+// The repl tool (665) brought it to 16,893: one call runs a whole script, a
+// loop over pages or a download or a signed-in site's own API, that would
+// otherwise cost a turn per step; the address and Bitwarden fill tools stay
+// off the list, reached through repl and the CLI.
+const TOOL_LIST_MAX_BYTES = 16_950;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

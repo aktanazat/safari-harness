@@ -1,0 +1,129 @@
+// Filling forms from what the user already keeps: their address from the
+// Contacts card marked as theirs, and logins from Bitwarden. Both run in the
+// caller: reading Contacts needs the terminal's Full Disk Access, and the
+// Bitwarden vault is unlocked in the terminal's own environment. Neither
+// reply carries what was filled, only which fields got it.
+
+import { Database } from "bun:sqlite";
+import type { Tool } from "./tools.ts";
+import { addressBooks } from "./imessage.ts";
+import { rpc } from "./rpc.ts";
+
+type Labeled = { label: string; primary: boolean };
+type Postal = Labeled & { street: string; city: string; state: string; zip: string; country: string; countryCode: string };
+
+// "_$!<Home>!$_" -> "home"; a custom label stays as typed, lowercased.
+const labelOf = (raw: string | null) => (raw ?? "").replace(/^_\$!</, "").replace(/>!\$_$/, "").toLowerCase();
+
+function pick<T extends Labeled>(rows: T[], label?: string): T | undefined {
+  return (label ? rows.find((r) => r.label === label.toLowerCase()) : undefined) ?? rows.find((r) => r.primary) ?? rows[0];
+}
+
+// The card Contacts marks as the user's own ("My Card"), across every
+// account's address book, as autocomplete token -> value.
+export function myCard(label?: string): Record<string, string> {
+  let name: { f: string | null; m: string | null; l: string | null; o: string | null } | undefined;
+  const postal: Postal[] = [];
+  const phones: (Labeled & { v: string })[] = [];
+  const emails: (Labeled & { v: string })[] = [];
+  for (const path of addressBooks()) {
+    let db: Database;
+    try { db = new Database(path, { readonly: true }); } catch { continue; }
+    try {
+      const me = db.query("SELECT Z_PK id, ZFIRSTNAME f, ZMIDDLENAME m, ZLASTNAME l, ZORGANIZATION o FROM ZABCDRECORD WHERE ZCONTAINERWHERECONTACTISME IS NOT NULL").all() as { id: number; f: string | null; m: string | null; l: string | null; o: string | null }[];
+      for (const p of me) {
+        if (!name && (p.f || p.l)) name = p;
+        const own = { $id: p.id };
+        for (const r of db.query("SELECT ZSTREET s, ZCITY c, ZSTATE st, ZZIPCODE z, ZCOUNTRYNAME cn, ZCOUNTRYCODE cc, ZLABEL lb, ZISPRIMARY pr FROM ZABCDPOSTALADDRESS WHERE ZOWNER = $id").all(own) as { s: string | null; c: string | null; st: string | null; z: string | null; cn: string | null; cc: string | null; lb: string | null; pr: number | null }[]) {
+          postal.push({ street: r.s ?? "", city: r.c ?? "", state: r.st ?? "", zip: r.z ?? "", country: r.cn ?? "", countryCode: (r.cc ?? "").toUpperCase(), label: labelOf(r.lb), primary: r.pr === 1 });
+        }
+        for (const r of db.query("SELECT ZFULLNUMBER v, ZLABEL lb, ZISPRIMARY pr FROM ZABCDPHONENUMBER WHERE ZOWNER = $id AND ZFULLNUMBER IS NOT NULL").all(own) as { v: string; lb: string | null; pr: number | null }[]) phones.push({ v: r.v, label: labelOf(r.lb), primary: r.pr === 1 });
+        for (const r of db.query("SELECT ZADDRESS v, ZLABEL lb, ZISPRIMARY pr FROM ZABCDEMAILADDRESS WHERE ZOWNER = $id AND ZADDRESS IS NOT NULL").all(own) as { v: string; lb: string | null; pr: number | null }[]) emails.push({ v: r.v, label: labelOf(r.lb), primary: r.pr === 1 });
+      }
+    } finally {
+      db.close();
+    }
+  }
+  if (!name && postal.length === 0) throw new Error("Contacts has no card marked as yours: in Contacts, choose your card, then Card > Make This My Card");
+  const out: Record<string, string> = {};
+  const set = (token: string, v: string | null | undefined) => { if (v) out[token] = v; };
+  set("given-name", name?.f);
+  set("additional-name", name?.m);
+  set("family-name", name?.l);
+  set("name", [name?.f, name?.m, name?.l].filter(Boolean).join(" "));
+  set("organization", name?.o);
+  const addr = pick(postal, label);
+  if (label && postal.length && addr?.label !== label.toLowerCase()) throw new Error(`your card has no ${label} address; it has: ${postal.map((p) => p.label || "unlabeled").join(", ")}`);
+  if (addr) {
+    const lines = addr.street.split("\n");
+    set("street-address", addr.street);
+    set("address-line1", lines[0]);
+    set("address-line2", lines.slice(1).join(", "));
+    set("address-level2", addr.city);
+    set("address-level1", addr.state);
+    set("postal-code", addr.zip);
+    set("country", addr.countryCode || addr.country);
+    set("country-name", addr.country);
+  }
+  set("tel", pick(phones, label)?.v);
+  set("email", pick(emails, label)?.v);
+  return out;
+}
+
+async function bw(args: string[]): Promise<string> {
+  let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  try {
+    proc = Bun.spawn(["bw", ...args, "--nointeraction"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  } catch {
+    throw new Error("the Bitwarden CLI is not installed: brew install bitwarden-cli");
+  }
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  if (code !== 0) throw new Error(`bw ${args[0]}: ${err.trim() || `exited ${code}`}`);
+  return out;
+}
+
+const BW_LOCKED: Record<string, string> = {
+  unauthenticated: "Bitwarden is signed out: run `bw login` once in a terminal, then `export BW_SESSION=$(bw unlock --raw)` in the terminal (or MCP client) that runs safari",
+  locked: "Bitwarden is locked: run `export BW_SESSION=$(bw unlock --raw)` in the terminal (or MCP client) that runs safari, then try again",
+};
+
+type BwItem = { id: string; name: string; type: number; login?: { username?: string | null; password?: string | null } };
+
+// The tab's site comes from the tab, never from the caller, so a login only
+// reaches the site whose address Bitwarden has saved for it.
+async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
+  const status = (JSON.parse(await bw(["status"])) as { status: string }).status;
+  if (BW_LOCKED[status]) throw new Error(BW_LOCKED[status]);
+  if (a.tab === undefined) throw new Error("bitwarden needs tab");
+  const tab = Number(a.tab);
+  const info = (await rpc("info", { tab })) as { url: string };
+  const url = URL.parse(info.url);
+  if (!url || url.protocol !== "https:") throw new Error("Bitwarden logins are filled only on https pages");
+  const items = (JSON.parse(await bw(["list", "items", "--url", url.origin])) as BwItem[]).filter((i) => i.type === 1 && i.login);
+  const usernames = items.map((i) => i.login?.username ?? "").filter(Boolean);
+  if ((a.do ?? "fill") === "logins") return { site: url.hostname, usernames };
+  const wanted = a.username === undefined ? undefined : String(a.username);
+  const chosen = wanted === undefined ? (items.length === 1 ? items[0] : undefined) : items.find((i) => i.login?.username === wanted);
+  if (!chosen) {
+    throw new Error(items.length === 0 ? `Bitwarden has no login saved for ${url.hostname}` : wanted === undefined ? `several Bitwarden logins for ${url.hostname}; pass username: ${usernames.join(", ")}` : `no Bitwarden login ${wanted} for ${url.hostname}; saved: ${usernames.join(", ")}`);
+  }
+  const res = (await rpc("login_fill", { tab, site: url.hostname, username: chosen.login?.username ?? null, password: chosen.login?.password ?? null })) as { filled?: string[] };
+  return { filled: res.filled ?? [], username: chosen.login?.username ?? "", site: url.hostname };
+}
+
+export const FILL_TOOLS: Record<string, Tool> = {
+  fill_address: {
+    desc: "Fill the page's empty address, name, email, and phone fields from the user's own Contacts card; card-number fields are left alone. Returns which fields were filled, not what.",
+    params: { tab: { type: "number", description: "tab id" }, label: { type: "string", description: "which address on the card, e.g. home or work; default the primary one" }, root: { type: "string", description: "CSS selector of the form, when the page has several" } },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => rpc("autofill", { tab: a.tab, values: myCard(a.label === undefined ? undefined : String(a.label)), root: a.root }),
+  },
+  bitwarden: {
+    desc: "Fill the tab's sign-in form with the login Bitwarden saved for its site; you never see the password. logins lists the saved usernames.",
+    params: { do: { type: "string", enum: ["fill", "logins"], description: "default fill" }, tab: { type: "number", description: "tab id" }, username: { type: "string", description: "which saved login, when there are several" } },
+    required: ["tab"],
+    hidden: true,
+    run: bitwarden,
+  },
+};

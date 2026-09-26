@@ -1,0 +1,98 @@
+// Plumbing shared by the REPL's site globals (slack, gmail, notion, ...).
+// Each site works through a background tab of its own on that site, opened
+// on first use and closed with the REPL session, so its requests carry the
+// owner's Safari session the way the site's own page would, and no tab the
+// owner is using is touched. Anything that sends or posts goes through
+// draftOrSend: it returns the exact draft until the owner approves it.
+
+import type { Invoke } from "../call.ts";
+
+export class NotSignedIn extends Error {
+  constructor(readonly site: string, detail = "") {
+    super(`not signed in to ${site} in Safari${detail ? ` (${detail})` : ""}; sign in there, then try again`);
+    this.name = "NotSignedIn";
+  }
+}
+
+export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number };
+export type FetchResult = { status: number; url: string; type: string | null; text: string; truncated: boolean };
+
+export class SiteKit {
+  private tabs = new Map<string, Promise<number>>();
+  private lastRequest = new Map<string, number>();
+
+  // owned is told about each tab opened, so the REPL can close it with the
+  // session even if close() is never reached.
+  constructor(readonly invoke: Invoke, private owned: (tab: number) => void = () => {}) {}
+
+  // A background tab on origin ("https://app.slack.com"), opened at url on
+  // first use and reused after. Requests go out from its page.
+  tab(origin: string, url = `${origin}/`): Promise<number> {
+    let tab = this.tabs.get(origin);
+    if (!tab) {
+      tab = this.invoke("open", { url, background: true }).then((t) => {
+        const id = (t as { id: number }).id;
+        this.owned(id);
+        return id;
+      });
+      this.tabs.set(origin, tab);
+      tab.catch(() => this.tabs.delete(origin));
+    }
+    return tab;
+  }
+
+  // A request from the site's own page, with its cookies.
+  async fetch(origin: string, url: string, init: FetchInit = {}): Promise<FetchResult> {
+    const tab = await this.tab(origin);
+    return (await this.invoke("fetch", { tab, url, method: init.method, headers: init.headers, body: init.body, maxBytes: init.maxBytes ?? 20_000_000 })) as FetchResult;
+  }
+
+  // fetch, parsed as JSON. 401 and 403 mean the session is gone.
+  async json<T = unknown>(origin: string, url: string, init: FetchInit = {}, site = new URL(origin).hostname): Promise<T> {
+    const res = await this.fetch(origin, url, init);
+    if (res.status === 401 || res.status === 403) throw new NotSignedIn(site, `HTTP ${res.status}`);
+    if (res.status < 200 || res.status >= 300) throw new Error(`${site} answered HTTP ${res.status}: ${res.text.slice(0, 300)}`);
+    if (res.truncated) throw new Error(`${site} sent more than ${init.maxBytes ?? 20_000_000} bytes`);
+    try {
+      return JSON.parse(res.text) as T;
+    } catch {
+      throw new Error(`${site} did not answer with JSON: ${res.text.slice(0, 200)}`);
+    }
+  }
+
+  // An expression evaluated in the site's tab; page: true runs it in the
+  // page's own world, where the site's script variables are.
+  async eval<T = unknown>(origin: string, expression: string, opts: { page?: boolean } = {}): Promise<T> {
+    const tab = await this.tab(origin);
+    const r = (await this.invoke("eval", { tab, expression, page: !!opts.page })) as { result?: T };
+    return r.result as T;
+  }
+
+  // Waits until ms have passed since the last request under key, for sites
+  // that flag bursts of requests.
+  async pace(key: string, ms: number): Promise<void> {
+    const wait = (this.lastRequest.get(key) ?? 0) + ms - Date.now();
+    if (wait > 0) await Bun.sleep(wait);
+    this.lastRequest.set(key, Date.now());
+  }
+
+  async close(): Promise<void> {
+    const tabs = await Promise.allSettled(this.tabs.values());
+    this.tabs.clear();
+    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.invoke("close", { tab: t.value }).catch(() => {}) : undefined)));
+  }
+}
+
+export type Draft = { status: "draft"; site: string; action: string; to?: string; text: string; note: string };
+export type Sent<T> = { status: "sent"; site: string; action: string; to?: string; result: T };
+
+// Anything that sends, posts, or changes the owner's account: without
+// approved it sends nothing and returns the exact draft for the owner to
+// read; called again with approved: true after they say yes, it sends.
+export async function draftOrSend<T>(opts: { site: string; action: string; to?: string; text: string; approved?: boolean; send: () => Promise<T> }): Promise<Draft | Sent<T>> {
+  const { site, action, to, text } = opts;
+  if (opts.approved !== true) {
+    return { status: "draft", site, action, ...(to === undefined ? {} : { to }), text, note: "nothing was sent; show the owner this exact text, and call again with { approved: true } only after they approve it" };
+  }
+  return { status: "sent", site, action, ...(to === undefined ? {} : { to }), result: await opts.send() };
+}

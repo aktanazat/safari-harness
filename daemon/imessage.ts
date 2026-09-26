@@ -65,7 +65,7 @@ function handleKey(handle: string): string {
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
 
-function addressBooks(): string[] {
+export function addressBooks(): string[] {
   const dbs = [join(ADDRESS_BOOK, "AddressBook-v22.abcddb")];
   const sources = join(ADDRESS_BOOK, "Sources");
   if (existsSync(sources)) for (const s of readdirSync(sources)) dbs.push(join(sources, s, "AddressBook-v22.abcddb"));

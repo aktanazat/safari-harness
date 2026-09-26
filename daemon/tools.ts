@@ -55,9 +55,9 @@ export async function activateTab(tab: number): Promise<unknown> {
 // The latest whole-page snapshot of each tab, for diff.
 const lastSnapshot = new Map<number, string>();
 
-export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean } = {}) {
+export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
-  const snap = (await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes }])) as Snapshot;
+  const snap = (await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }])) as Snapshot;
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
@@ -240,9 +240,9 @@ export async function setCookie(opts: { tab?: number; url?: string; name: string
   return bridge.request("cookies.set", [cookie]);
 }
 
-export async function pageFetch(opts: { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number }) {
+export async function pageFetch(opts: { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "fetch", [str(opts.url, "url"), { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes }], 60000);
+  return relay(tab, "fetch", [str(opts.url, "url"), { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes, base64: !!opts.base64 }], 60000);
 }
 
 async function scratchFile(prefix: string, name: string): Promise<string> {
@@ -451,7 +451,7 @@ export const TOOLS: Record<string, Tool> = {
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
     },
-    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean }),
+    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
@@ -509,7 +509,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
     params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" } },
     required: ["url"],
-    run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; body?: string; maxBytes?: number }),
+    run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }),
   },
   download: {
     desc: "Save the file a ref's link or button downloads, or a url, into ~/Downloads; returns its path.",
@@ -577,6 +577,37 @@ export const TOOLS: Record<string, Tool> = {
       await relay(tab, "painted", [], 3000).catch(() => {});
       return relay(tab, "locate", [str(String(a.ref), "ref")]);
     },
+  },
+  // One fact about an element (text, inner HTML, value, attribute, box,
+  // count), for the REPL's locators.
+  element: {
+    desc: "One fact about the element a ref, selector, or text names.",
+    params: { tab: TAB, ref: REF, what: { type: "string", enum: ["text", "innerText", "html", "value", "checked", "attr", "box", "count", "visible"], description: "which fact" }, name: { type: "string", description: "attribute name, for attr" } },
+    required: ["ref", "what"],
+    hidden: true,
+    run: async (a) => {
+      const tab = await resolveTab(a.tab as number | undefined);
+      const res = (await relay(tab, "element", [str(String(a.ref), "ref"), str(a.what, "what"), a.name ?? null])) as { value: unknown };
+      return res.value;
+    },
+  },
+  // The page's empty address fields, filled from values keyed by
+  // autocomplete token that the caller read from the user's Contacts card.
+  autofill: {
+    desc: "Fill the page's empty address fields from values keyed by autocomplete token.",
+    params: { tab: TAB, values: { description: "autocomplete token to value" }, root: { type: "string", description: "CSS selector of the form" } },
+    required: ["values"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab as number | undefined), "fillAddress", [a.values, a.root ?? null]),
+  },
+  // A login the caller read from a password manager (Bitwarden), filled
+  // only while the page is on the site it was saved for.
+  login_fill: {
+    desc: "Fill a login into the tab's sign-in form, only while the tab is on site.",
+    params: { tab: TAB, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
+    required: ["tab", "site"],
+    hidden: true,
+    run: async (a) => relay(Number(a.tab), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null]),
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. code fills the site's saved verification code the same way. logins lists saved usernames; lock ends access.",

@@ -1,11 +1,22 @@
 // MCP server over stdio: exposes every harness tool to any MCP client
 // (omp, Claude Code, Cursor, ...). One JSON-RPC message per line.
 
-import { TOOLS, formatResult, inputSchema } from "./tools.ts";
-import { CALLER_GROUPS, CALLER_TOOLS } from "./caller.ts";
+import { join } from "node:path";
+import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
+import { CALLER_GROUPS } from "./caller.ts";
+import { invoke } from "./call.ts";
 import { rpc } from "./rpc.ts";
+import { connectHost } from "./host.ts";
+import { ReplSession } from "./repl.ts";
+import { REPL_DIR, runInSession } from "./repl-host.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
+
+// The Mac whose Safari this drives: SAFARI_HARNESS_HOST (safari mcp
+// --host), else the saved default (safari host use). Tool calls wait for
+// the tunnel; listing tools does not.
+const hostReady = connectHost(process.env.SAFARI_HARNESS_HOST);
+hostReady.catch(() => {});
 
 // The daemon owns the extension bridge; MCP mode is a thin client that
 // talks to the daemon over its HTTP RPC port instead of holding the socket.
@@ -41,10 +52,29 @@ function track(tool: string, args: Record<string, unknown>, value: unknown) {
   }
 }
 
+// This connection's own REPL session: its bindings last as long as the
+// connection, and its tabs close with it.
+let repl: ReplSession | undefined;
+
 async function closeOwned() {
   await Promise.all([...owned].map((tab) => rpc("close", { tab }).catch(() => {})));
   owned.clear();
+  await repl?.close();
 }
+
+const REPL_TOOL: Tool = {
+  desc: "Run Playwright-style JavaScript against Safari: openTab(url), snapshot(page), page.locator(ref).click(), page.pdf(), cookie-bearing fetch, and site globals (slack, gmail, notion, youtube, x, imessage...). Bindings persist; console.log returns values; 120 s limit. API: safari guide repl.",
+  params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
+  required: ["code"],
+  run: async (a) => {
+    const code = String(a.code ?? "");
+    const r = a.session === undefined
+      ? await (repl ??= new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)
+      : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
+    if (r.error) throw new Error(`${r.output ? `${r.output}\n` : ""}${r.error}`);
+    return r.output || "(no output; console.log what you want back)";
+  },
+};
 
 const SESSION_NOTES: Record<string, string> = {
   close: " Not needed once you have the answer: background tabs close themselves when this session ends. Reply instead.",
@@ -55,7 +85,8 @@ const SESSION_NOTES: Record<string, string> = {
 function toolDefs() {
   return [
     ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: inputSchema(t) })),
-    ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: inputSchema(t) }))),
+    { name: "repl", description: `[Safari] ${REPL_TOOL.desc}`, inputSchema: inputSchema(REPL_TOOL) },
+    ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: inputSchema(t) }))),
   ];
 }
 
@@ -86,8 +117,8 @@ async function handle(msg: RpcMsg) {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});
       try {
-        const local = CALLER_TOOLS[name];
-        const value = local ? await local.run(args) : await rpc(name, args);
+        await hostReady;
+        const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args);
         track(name, args, value);
         return reply(msg.id, {
           content: [{ type: "text", text: formatResult(value).slice(0, 100_000) }],

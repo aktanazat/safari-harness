@@ -350,8 +350,12 @@
     const top = { kids: [] };
     const walk = (el, parent, named, inItem) => {
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) return;
-      if (style.position === "fixed" && el.getClientRects().length === 0) return;
+      // showHidden keeps what the page hides (a collapsed menu, a closed
+      // dialog), for reading; such an element cannot be clicked until shown.
+      if (!opts.showHidden) {
+        if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) return;
+        if (style.position === "fixed" && el.getClientRects().length === 0) return;
+      }
       const role = getExplicitRole(el);
       const actionable = ACTION_ROLES.has(role) || isInteractive(el) || el.tagName === "IFRAME" || el.tagName === "FRAME";
       let node = parent;
@@ -758,6 +762,7 @@
 
   // ---------- page fetch and downloads ----------
   // Requests from here carry the page's cookies, as the page's own would.
+  // base64 returns the body's bytes (a PDF, an image) instead of its text.
   async function pageFetch(url, opts = {}) {
     const res = await fetch(new URL(url, location.href), {
       method: opts.method || "GET",
@@ -766,11 +771,15 @@
       credentials: "include",
     });
     const limit = opts.maxBytes || 50000;
+    const head = { status: res.status, url: res.url, type: res.headers.get("content-type") };
+    if (opts.base64) {
+      const blob = await res.blob();
+      const kept = blob.size > limit ? blob.slice(0, limit) : blob;
+      return { ...head, headers: [...res.headers], data: await base64Of(kept), truncated: blob.size > limit };
+    }
     const text = await res.text();
     return {
-      status: res.status,
-      url: res.url,
-      type: res.headers.get("content-type"),
+      ...head,
       text: text.length > limit ? text.slice(0, limit) : text,
       truncated: text.length > limit,
     };
@@ -982,6 +991,78 @@
     return { ok: true, filled: ["code"] };
   }
 
+  // ---------- address fill ----------
+
+  // What an address field wants: the last word of its autocomplete ("section-a
+  // shipping postal-code"), else what its name, id, label, or placeholder
+  // says. Card fields (cc-*, "card number", CVC, expiry) are never matched.
+  const ADDRESS_HINTS = [
+    ["postal-code", /zip|postal|post.?code/i],
+    ["address-line2", /address.?(line)?.?2|apt|apartment|suite|\bunit\b/i],
+    ["address-level2", /city|town|locality/i],
+    ["address-level1", /state|province|region|county/i],
+    ["country", /country/i],
+    ["address-line1", /address|street/i],
+    ["given-name", /first.?name|given.?name|fname/i],
+    ["family-name", /last.?name|surname|family.?name|lname/i],
+    ["organization", /company|organi[sz]ation/i],
+    ["email", /e.?mail/i],
+    ["tel", /phone|\btel\b|mobile/i],
+    ["name", /full.?name|^name$|your.?name/i],
+  ];
+  const CARD_FIELD = /\bcc-|card|cvv|cvc|csc|expir|security.?code/i;
+
+  function addressToken(el) {
+    const auto = (el.getAttribute("autocomplete") ?? "").trim().toLowerCase().split(/\s+/).pop() ?? "";
+    if (auto.startsWith("cc-")) return "card";
+    if (auto && auto !== "on" && auto !== "off") return auto;
+    const label = [el.name, el.id, el.getAttribute("aria-label"), el.placeholder, el.labels?.[0]?.textContent].filter(Boolean).join(" ");
+    if (CARD_FIELD.test(label)) return "card";
+    return ADDRESS_HINTS.find(([, re]) => re.test(label))?.[0] ?? null;
+  }
+
+  function chooseOption(select, wanted) {
+    const norm = (s) => String(s ?? "").trim().toLowerCase();
+    for (const want of wanted.filter(Boolean).map(norm)) {
+      const opt = [...select.options].find((o) => norm(o.value) === want || norm(o.textContent) === want);
+      if (opt) return opt;
+    }
+    return null;
+  }
+
+  // Fills the page's empty address fields from values keyed by autocomplete
+  // token, and chooses select options that match. The reply names the
+  // fields, never what went in them.
+  function fillAddress(values, root) {
+    const scope = root ? document.querySelector(root) : document;
+    if (!scope) return missing(root);
+    const filled = [];
+    const kept = [];
+    let cards = 0;
+    for (const el of scope.querySelectorAll("input, select, textarea")) {
+      if (el.disabled || el.readOnly || !shown(el) || secretField(el) || /^(hidden|submit|button|checkbox|radio|file|image|reset)$/.test(el.type)) continue;
+      const token = addressToken(el);
+      if (token === "card") { cards++; continue; }
+      if (!token) continue;
+      if (el.tagName === "SELECT") {
+        const opt = chooseOption(el, [values[token], token === "country" ? values["country-name"] : undefined]);
+        if (!opt) continue;
+        el.value = opt.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        filled.push(token);
+        continue;
+      }
+      const value = token === "country" && !el.getAttribute("autocomplete") ? values["country-name"] : values[token];
+      if (!value) continue;
+      if (el.value) { kept.push(token); continue; }
+      el.focus();
+      setValue(el, value, value);
+      filled.push(token);
+    }
+    return { filled, kept, cardFieldsLeftAlone: cards };
+  }
+
   // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
   // a known combo ("+", "Enter") is sent as is.
   const MODIFIERS = { shift: "shiftKey", option: "altKey", alt: "altKey", cmd: "metaKey", command: "metaKey", meta: "metaKey", ctrl: "ctrlKey", control: "ctrlKey" };
@@ -1115,6 +1196,36 @@
     });
   }
 
+  // One fact about the element a target names (ref, selector, or text, as
+  // actions take them), for the REPL's locators. count and visible answer
+  // for a target that matches nothing; the rest report it missing.
+  function elementInfo(target, what, name) {
+    const key = String(target).trim();
+    if (what === "count") {
+      if (/^\d+$/.test(key)) return { value: resolve(key) ? 1 : 0 };
+      if (CSS_HINT.test(key)) {
+        try { return { value: document.querySelectorAll(key).length }; } catch { /* not a selector: count by text */ }
+      }
+      return { value: resolve(key) ? 1 : 0 };
+    }
+    const el = resolve(key);
+    if (what === "visible") return { value: !!el && shown(el) };
+    if (!el) return missing(target);
+    switch (what) {
+      case "text": return { value: el.textContent };
+      case "innerText": return { value: el.innerText ?? el.textContent };
+      case "html": return { value: el.innerHTML };
+      case "value": return secretField(el) ? { error: "that is a password field; its value stays in the page" } : { value: "value" in el ? String(el.value ?? "") : null };
+      case "checked": return { value: !!el.checked };
+      case "attr": return { value: el.getAttribute(String(name)) };
+      case "box": {
+        const r = el.getBoundingClientRect();
+        return { value: { x: r.x, y: r.y, width: r.width, height: r.height } };
+      }
+      default: return { error: `unknown element fact ${what}` };
+    }
+  }
+
   // ---------- message dispatch ----------
 
   const handlers = {
@@ -1146,6 +1257,7 @@
     fillLogin,
     codeField,
     fillCode,
+    fillAddress,
     locate,
     rect: rectOf,
     annotate,
@@ -1154,6 +1266,7 @@
     fetchFile,
     download,
     downloadStop: () => { pendingDownload?.(null); return { ok: true }; },
+    element: elementInfo,
   };
   // Ops that may raise a dialog; the page's dialogs are armed while they run.
   const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download"]);
