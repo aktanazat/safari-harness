@@ -93,13 +93,18 @@ Escalate in this order:
 - Every action reports what it caused: `navigated` (this tab loaded a new
   page) or `newTab`. Pass `snapshot: true` to get the resulting page in the
   same call; that is the fastest way to act and then read.
+- An action returns as soon as it has run, unless it started a load or a
+  tab (a link, a form submit, the page's own script moving it), which it
+  waits for. A link or form the page's script takes over gets a short wait
+  in case it moves. A page that changes later is caught by the next call.
 - Treat an action as unconfirmed until a snapshot shows the result.
 
 ## Waiting
 
 Wait for the page, not the clock.
 
-- `wait` with `text` or `selector` polls until it appears. `ms` is the
+- `wait` with `text` or `selector` returns the moment it appears, even in a
+  background tab, and catches text that shows only briefly. `ms` is the
   timeout (default 10000, max 30000). The result says `found: true|false`.
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers.

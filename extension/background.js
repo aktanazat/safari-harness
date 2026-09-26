@@ -83,11 +83,10 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // Ops that act on the page. If the page navigates while one is pending, the
 // action caused it: report that instead of re-sending (never act twice).
 const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover", "fillLogin"]);
-// Actions that commonly load a page or open a tab a moment after they run.
-const MAY_NAVIGATE = new Set(["click", "clickAt", "press", "select", "history"]);
-const SETTLE_MS = 400;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// How long an action's predicted change may take to start (see withOutcome
+// in content.js): a load or tab it surely began, or a move the page's script
+// may make. Anything else returns at once.
+const START_MS = { load: 3000, tab: 3000, script: 400 };
 
 async function toTab(tabId, op, args, timeoutMs = 30000) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
@@ -116,26 +115,38 @@ async function toTab(tabId, op, args, timeoutMs = 30000) {
 // (`navigated`) or a new tab (`newTab`), each once readable. A new tab that
 // jumps in front while the agent works in a background tab is sent behind
 // the user's tab again.
-async function act(tabId, op, args) {
+async function act(tabId, op, args, timeoutMs) {
   const source = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
   let opened = null;
   let navigated = false;
+  let wake = () => {};
+  // A new tab reads "complete" while still blank, so it is not ready until
+  // its page reports in (as for tabs.open).
   const onCreated = (t) => {
-    if (opened === null && (t.openerTabId === undefined || t.openerTabId === tabId)) opened = t.id;
+    if (opened !== null || (t.openerTabId !== undefined && t.openerTabId !== tabId)) return;
+    opened = t.id;
+    if (ready.get(t.id) !== true) ready.set(t.id, false);
+    wake();
   };
   // Safari repeats the unchanged url in some updates (e.g. load complete), so
   // only a new load or a different address counts as navigating.
   const onUpdated = (id, info) => {
-    if (id === tabId && (info.status === "loading" || (info.url && info.url !== source.url))) navigated = true;
+    if (id === tabId && (info.status === "loading" || (info.url && info.url !== source.url))) { navigated = true; wake(); }
   };
   api.tabs.onCreated.addListener(onCreated);
   api.tabs.onUpdated.addListener(onUpdated);
   try {
-    const res = await toTab(tabId, op, args);
+    const res = await toTab(tabId, op, args, timeoutMs);
     if (res && res.error) return res;
-    if (opened === null && !navigated && MAY_NAVIGATE.has(op)) await sleep(SETTLE_MS);
-    const value = { ...(res && res.value) };
+    const { expect, ...value } = (res && res.value) || {};
+    const ms = START_MS[expect];
+    if (ms && opened === null && !navigated) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        wake = () => { clearTimeout(timer); resolve(); };
+      });
+    }
     if (navigated) {
       await waitReady(tabId, 20000);
       const t = await api.tabs.get(tabId);
@@ -232,8 +243,8 @@ async function handle(msg) {
       return { ok: true };
     }
     case "relay": {
-      const [tabId, domOp, domArgs] = args;
-      const res = ACTIONS.has(domOp) ? await act(tabId, domOp, domArgs) : await toTab(tabId, domOp, domArgs);
+      const [tabId, domOp, domArgs, timeoutMs] = args;
+      const res = ACTIONS.has(domOp) ? await act(tabId, domOp, domArgs, timeoutMs) : await toTab(tabId, domOp, domArgs, timeoutMs);
       if (res && res.error) throw new Error(res.error);
       return res && res.value;
     }

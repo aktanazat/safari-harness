@@ -106,9 +106,11 @@ export class Bridge {
     return promise;
   }
 
-  // relay a DOM op into the content script of a specific tab
+  // relay a DOM op into the content script of a specific tab. The extension
+  // gets the time limit too, and times out first, so it never re-sends an op
+  // the daemon has given up on.
   tab(tabId: number, op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {
-    return this.request("relay", [tabId, op, args], timeoutMs);
+    return this.request("relay", [tabId, op, args, timeoutMs], timeoutMs + 2000);
   }
 }
 

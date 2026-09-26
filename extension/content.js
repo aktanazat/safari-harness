@@ -127,7 +127,9 @@
     }
     if (el.tagName === "BUTTON" || el.tagName === "A" || /^H[1-6]$/.test(el.tagName) ||
         el.tagName === "LABEL" || el.tagName === "SUMMARY" || NAME_FROM_CONTENT.has(el.getAttribute("role"))) {
-      const t = textOf(el, 80);
+      // A heading is page text, and pages put instructions in them: give it
+      // a paragraph's length, not a control label's.
+      const t = textOf(el, /^H[1-6]$/.test(el.tagName) ? 160 : 80);
       if (t) return t;
       // image-only links and icon buttons: name them by their picture's label
       const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]");
@@ -327,6 +329,61 @@
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) fireMouse(el, type, x, y);
   }
 
+  // What an action set in motion, read right after it ran, so the extension
+  // waits for a load or a tab only when one is coming:
+  //   "load"    this tab is loading another document
+  //   "tab"     another tab is opening
+  //   "script"  a link or form the page's script took over; it may move soon
+  // Safari fires no navigate event for a synthetic link click, so links and
+  // forms are read from their click and submit events; the page's own
+  // location changes do fire navigate, synchronously.
+  function withOutcome(act) {
+    let nav = null;
+    let submit = null;
+    let clicked = null;
+    const onNav = (e) => { nav ??= e; };
+    const onSubmit = (e) => { submit ??= e; };
+    const onClick = (e) => { clicked ??= e; };
+    navigation.addEventListener("navigate", onNav);
+    addEventListener("submit", onSubmit, true);
+    addEventListener("click", onClick, true);
+    let res;
+    try {
+      res = act();
+    } finally {
+      navigation.removeEventListener("navigate", onNav);
+      removeEventListener("submit", onSubmit, true);
+      removeEventListener("click", onClick, true);
+    }
+    if (!res || res.error) return res;
+    const expect = nav ? (nav.destination.sameDocument ? null : "load")
+      : submit ? submitOutcome(submit)
+      : clicked ? linkOutcome(clicked)
+      : null;
+    return expect ? { ...res, expect } : res;
+  }
+
+  function opensTab(target) {
+    return target !== "" && !["_self", "_top", "_parent"].includes(target.toLowerCase());
+  }
+
+  function submitOutcome(e) {
+    if (e.defaultPrevented) return "script";
+    const target = e.submitter?.getAttribute("formtarget") ?? e.target.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
+    return opensTab(target) ? "tab" : "load";
+  }
+
+  function linkOutcome(e) {
+    const a = e.target instanceof Element ? e.target.closest("a[href], area[href]") : null;
+    if (!a || a.hasAttribute("download")) return null;
+    if (e.defaultPrevented) return "script";
+    const to = new URL(a.href, location.href);
+    if (to.protocol === "javascript:") return null;
+    if (to.href.split("#")[0] === location.href.split("#")[0] && to.hash) return null;
+    const target = a.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
+    return opensTab(target) ? "tab" : "load";
+  }
+
   function click(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
@@ -396,12 +453,14 @@
     return { ok: true, files: [...input.files].map((f) => f.name) };
   }
 
+  // A traversal may stay in this document, so it is only a maybe; a reload
+  // always loads.
   function historyGo(to) {
     if (to === "back") history.back();
     else if (to === "forward") history.forward();
     else if (to === "reload") location.reload();
     else return { error: `go must be back, forward, or reload` };
-    return { ok: true };
+    return { ok: true, expect: to === "reload" ? "load" : "script" };
   }
 
   // The native setter, so framework value trackers (React) see a real edit.
@@ -506,7 +565,8 @@
       const form = el.closest("form");
       if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
     }
-    return { ok: true, key, ...flags };
+    // Enter outside a form usually runs the page's own search or send.
+    return key === "Enter" ? { ok: true, key, ...flags, expect: "script" } : { ok: true, key, ...flags };
   }
 
   function scrollBy(dx, dy) {
@@ -631,13 +691,42 @@
     };
   }
 
+  // ---------- wait ----------
+  // Resolves once the selector or text is on the page. It listens for DOM
+  // changes instead of polling: Safari stops a content script's timers in a
+  // hidden tab, and runs that tab's own work in late batches, but a change
+  // the page makes wakes an observer in the same task. The daemon owns the
+  // time limit and ends a wait early with waitStop; a newer wait ends an
+  // older one.
+  let pendingWait = null;
+
+  function present(selector, text) {
+    return (!selector || document.querySelector(selector) !== null) &&
+      (!text || (document.body?.innerText ?? "").includes(text));
+  }
+
+  function waitFor(selector, text) {
+    pendingWait?.(false);
+    if (present(selector, text)) return { found: true };
+    return new Promise((resolve) => {
+      const observer = new MutationObserver(() => { if (present(selector, text)) done(true); });
+      const done = (found) => {
+        observer.disconnect();
+        if (pendingWait === done) pendingWait = null;
+        resolve({ found });
+      };
+      pendingWait = done;
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true });
+    });
+  }
+
   // ---------- message dispatch ----------
 
   const handlers = {
     snapshot,
-    click,
+    click: (ref) => withOutcome(() => click(ref)),
     type: (ref, text, opts) => typeText(ref, text, opts),
-    press: pressKey,
+    press: (ref, spec) => withOutcome(() => pressKey(ref, spec)),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
     tabInfo,
@@ -653,15 +742,13 @@
     netRead: () => ({ entries: netLog.slice(-100) }),
     console: (on) => { consoleOn = !!on; if (on) consoleLog.length = 0; return { ok: true }; },
     consoleRead: () => ({ entries: consoleLog.slice(-100) }),
-    present: (selector, text) => ({
-      found: (!selector || document.querySelector(selector) !== null) &&
-        (!text || (document.body?.innerText ?? "").includes(text)),
-    }),
+    wait: waitFor,
+    waitStop: () => { pendingWait?.(false); return { ok: true }; },
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
-    clickAt,
+    clickAt: (x, y) => withOutcome(() => clickAt(x, y)),
     hover,
-    select: selectOption,
+    select: (ref, choice) => withOutcome(() => selectOption(ref, choice)),
     upload,
     history: historyGo,
     loginForm,

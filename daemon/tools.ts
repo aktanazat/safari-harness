@@ -127,9 +127,10 @@ export async function tabInfo(opts: { tab?: number } = {}) {
   return relay(tab, "tabInfo");
 }
 
-// Sleep for ms, or, given a selector or text, poll until it is present (ms is
-// then the timeout, max 30000). The loop runs here, not in the page: Safari
-// stops a content script's timers in a hidden tab, which froze in-page polls.
+// Sleep for ms, or, given a selector or text, wait until it is present (ms is
+// then the timeout, max 30000). The page reports the change the moment it
+// happens (waitFor in content.js); the time limit is kept here, because
+// Safari stops a content script's timers in a hidden tab.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string }) {
   const tab = await resolveTab(opts.tab);
   const until = opts.selector !== undefined || opts.text !== undefined;
@@ -140,11 +141,12 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     return { ok: true };
   }
   const start = Date.now();
-  for (;;) {
-    const { found } = (await relay(tab, "present", [opts.selector ?? null, opts.text ?? null])) as { found: boolean };
-    const waitedMs = Date.now() - start;
-    if (found || waitedMs >= limit) return { ok: true, found, waitedMs };
-    await Bun.sleep(Math.min(200, limit - waitedMs));
+  const stop = setTimeout(() => { relay(tab, "waitStop").catch(() => {}); }, limit);
+  try {
+    const { found } = (await relay(tab, "wait", [opts.selector ?? null, opts.text ?? null], limit + 5000)) as { found: boolean };
+    return { ok: true, found, waitedMs: Date.now() - start };
+  } finally {
+    clearTimeout(stop);
   }
 }
 

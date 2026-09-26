@@ -187,6 +187,32 @@ await withPage(TARGETS, TARGETS_JS, async (tab) => {
   const whole = await call("extract", { tab });
   check("extract reads the whole page when it has several articles and no main", /card one[\s\S]*card two/.test(whole.text), whole.text);
 });
+
+// ---------- no fixed pause after an action ----------
+
+// The button's script retitles the page 150 ms after the click. An action
+// that starts no load returns at once, so the page it returns still has the
+// old title; a fixed pause after clicks (it used to be 400 ms) would show
+// the new one. The order of two events, not a time budget.
+const LATER_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'document.getElementById("later").onclick = () => setTimeout(() => { document.title = "retitled"; }, 150)' }))`;
+
+await withPage("<button id=later>Later</button>", LATER_JS, async (tab) => {
+  const r = await call("click", { tab, ref: "#later", snapshot: true });
+  check("a click that starts no load returns before the page's later script runs",
+    r.page?.title === "Example Domain" && r.navigated === undefined, { title: r.page?.title, navigated: r.navigated });
+});
+
+// ---------- page text in the outline ----------
+
+// Pages put instructions in headings; the login benchmark lost a turn when
+// its credentials fell past an 80-character cut.
+const INSTRUCTIONS = "This is where you can log into the secure area. Enter tomsmith for the username and SuperSecretPassword! for the password.";
+
+await withPage(`<h4>${INSTRUCTIONS}</h4>`, "", async (tab) => {
+  const s = await call("snapshot", { tab });
+  check("a long heading keeps its instructions in the snapshot", s.snapshot.includes(`heading "${INSTRUCTIONS}"`), s.snapshot);
+});
 // ---------- waiting in a hidden tab ----------
 
 // Safari stops a content script's timers in a hidden tab about two seconds
@@ -198,6 +224,17 @@ const LATE_JS = `document.head.appendChild(Object.assign(document.createElement(
 await withPage(`<p id="late">waiting</p>`, LATE_JS, async (tab) => {
   const r = await call("wait", { tab, text: "arrived late", ms: 15000 });
   check("wait in a hidden tab sees text the page adds after several seconds", r.found === true && r.waitedMs < 10000, r);
+});
+
+// Text that is on the page for one instant: the page adds it and takes it
+// away in the next microtask. The page reports the change as it happens, so
+// wait sees it; polling the page, however often, never could.
+const FLASH_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'setTimeout(() => { const p = document.getElementById("flash"); p.textContent = "saved"; queueMicrotask(() => { p.textContent = ""; }); }, 800)' }))`;
+
+await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
+  const r = await call("wait", { tab, text: "saved", ms: 5000 });
+  check("wait sees text the page shows for only an instant", r.found === true, r);
 });
 
 // ---------- snapshot size ----------

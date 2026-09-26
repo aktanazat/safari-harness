@@ -116,7 +116,7 @@ safari click 2 --snapshot       # click, then print the page it led to
 safari select 5 "US 8"          # dropdown option by label
 safari upload ~/photo.jpg       # the page's file input
 safari back
-safari wait --text "Welcome"    # poll until it is on the page
+safari wait --text "Welcome"    # returns the moment it is on the page
 safari extract
 safari eval "JSON.stringify(performance.timing)"
 safari net start; safari goto https://…; safari net read
