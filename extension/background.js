@@ -88,25 +88,25 @@ const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload"
 // may make. Anything else returns at once.
 const START_MS = { load: 3000, tab: 3000, script: 400 };
 
-async function toTab(tabId, op, args, timeoutMs = 30000) {
+async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
   await waitReady(tabId, 15000);
   try {
-    const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+    const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
     if (res !== undefined) return res;
   } catch (e) {
     if (e.navigated) {
       if (ACTIONS.has(op)) return { value: { ok: true } };
       await waitReady(tabId, 15000);
-      const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+      const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
       if (res !== undefined) return res;
     }
   }
   // The page has no content script (Safari skipped injecting it, e.g. after a
   // redirect): the send rejects, or resolves undefined because no listener
   // answered. Inject it and ask once more.
-  await ensureContent(tabId);
-  const res = await sendUntilNavigation(tabId, msg, timeoutMs);
+  await ensureContent(tabId, frameId);
+  const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
   if (res === undefined) throw new Error("the page did not answer; reload it with goto and retry");
   return res;
 }
@@ -115,7 +115,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000) {
 // (`navigated`) or a new tab (`newTab`), each once readable. A new tab that
 // jumps in front while the agent works in a background tab is sent behind
 // the user's tab again.
-async function act(tabId, op, args, timeoutMs) {
+async function act(tabId, op, args, timeoutMs, frameId = 0) {
   const source = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
   let opened = null;
@@ -137,7 +137,7 @@ async function act(tabId, op, args, timeoutMs) {
   api.tabs.onCreated.addListener(onCreated);
   api.tabs.onUpdated.addListener(onUpdated);
   try {
-    const res = await toTab(tabId, op, args, timeoutMs);
+    const res = await toTab(tabId, op, args, timeoutMs, frameId);
     if (res && res.error) return res;
     const { expect, ...value } = (res && res.value) || {};
     const ms = START_MS[expect];
@@ -154,6 +154,7 @@ async function act(tabId, op, args, timeoutMs) {
     }
     if (opened !== null) {
       if (front && !source.active) await api.tabs.update(front.id, { active: true });
+      if (await ownsTab(tabId)) await ownTab(opened);
       await waitReady(opened, 20000);
       const t = await api.tabs.get(opened);
       value.newTab = { id: t.id, url: t.url, title: t.title };
@@ -167,7 +168,7 @@ async function act(tabId, op, args, timeoutMs) {
 
 // Safari never settles a message whose page unloads mid-request, so race it
 // against the tab starting a new load.
-function sendUntilNavigation(tabId, msg, ms) {
+function sendUntilNavigation(tabId, msg, ms, frameId = 0) {
   return new Promise((resolve, reject) => {
     const stop = () => { clearTimeout(t); api.tabs.onUpdated.removeListener(onNav); };
     const onNav = (id, info) => {
@@ -177,19 +178,96 @@ function sendUntilNavigation(tabId, msg, ms) {
     };
     const t = setTimeout(() => { stop(); reject(new Error(`tab ${ms}ms timeout`)); }, ms);
     api.tabs.onUpdated.addListener(onNav);
-    api.tabs.sendMessage(tabId, msg).then((v) => { stop(); resolve(v); }, (err) => { stop(); reject(err); });
+    api.tabs.sendMessage(tabId, msg, { frameId }).then((v) => { stop(); resolve(v); }, (err) => { stop(); reject(err); });
   });
 }
 
-async function ensureContent(tabId) {
+async function ensureContent(tabId, frameId = 0) {
   try {
     await api.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, frameIds: [frameId] },
       files: ["content.js"],
     });
   } catch (e) {
     log("inject failed", String(e));
   }
+}
+
+// ---------- embedded frames ----------
+// A ref from an embedded frame reads "f<frameId>:<ref>"; actions on it go to
+// that frame. A selector or text the top page lacks is looked for in each
+// frame in turn.
+const FRAME_REF = /^f(\d+):(.+)$/;
+
+function frameOf(args) {
+  const m = Array.isArray(args) && typeof args[0] === "string" ? FRAME_REF.exec(args[0]) : null;
+  return m ? { frameId: Number(m[1]), args: [m[2], ...args.slice(1)] } : { frameId: 0, args };
+}
+
+// Frame id -> the token its content script printed into its parent's snapshot.
+async function frameTokens(tabId) {
+  const results = await api.scripting.executeScript({ target: { tabId, allFrames: true }, func: () => window.__safariHarnessFrame || null });
+  const byToken = new Map();
+  for (const r of results) if (r.frameId !== 0 && typeof r.result === "string") byToken.set(r.result, r.frameId);
+  return byToken;
+}
+
+const MARK = / @@frame:([a-z0-9]+)@@$/;
+
+// Puts each embedded frame's own snapshot under its <iframe> line, with
+// its refs prefixed by the frame's id. Frames nest, so this recurses.
+async function stitchFrames(tabId, snap, opts, tokens, depth) {
+  const lines = snap.snapshot.split("\n");
+  if (!lines.some((l) => MARK.test(l))) return snap;
+  tokens ??= await frameTokens(tabId);
+  const out = [];
+  let truncated = snap.truncated;
+  const limit = opts.maxNodes || 600;
+  for (const line of lines) {
+    const m = MARK.exec(line);
+    if (!m) { out.push(line); continue; }
+    const head = line.replace(MARK, "");
+    const frameId = tokens.get(m[1]);
+    let inner = [];
+    if (frameId !== undefined && depth < 4 && out.length < limit) {
+      try {
+        const res = await toTab(tabId, "snapshot", [{ ...opts, root: undefined, refPrefix: `f${frameId}:`, maxNodes: Math.max(50, limit - out.length) }], 10000, frameId);
+        if (res && res.value && typeof res.value.snapshot === "string") {
+          const child = await stitchFrames(tabId, res.value, opts, tokens, depth + 1);
+          truncated ||= child.truncated;
+          inner = child.snapshot ? child.snapshot.split("\n") : [];
+        }
+      } catch (e) {
+        log("frame snapshot failed", frameId, String(e));
+      }
+    }
+    // with a query, the frame's line stood in for its matches
+    if (!opts.query || head.toLowerCase().includes(String(opts.query).toLowerCase())) out.push(head);
+    const indent = opts.query ? "" : head.match(/^ */)[0] + "  ";
+    for (const l of inner) out.push(indent + l);
+  }
+  return { ...snap, snapshot: out.join("\n"), nodes: out.length, truncated };
+}
+
+const MISS = /^nothing on the page matches /;
+
+// Runs a DOM op in the frame its ref names; a text or selector the top page
+// lacks is tried in each embedded frame.
+async function relayOp(tabId, domOp, domArgs, timeoutMs) {
+  const { frameId, args } = frameOf(domArgs);
+  const send = (id) => ACTIONS.has(domOp) ? act(tabId, domOp, args, timeoutMs, id) : toTab(tabId, domOp, args, timeoutMs, id);
+  const res = await send(frameId);
+  if (domOp === "snapshot" && res && res.value && typeof res.value.snapshot === "string") {
+    return { value: await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0) };
+  }
+  if (frameId === 0 && res && typeof res.error === "string" && MISS.test(res.error)) {
+    const tokens = await frameTokens(tabId).catch(() => new Map());
+    for (const id of tokens.values()) {
+      const r = await send(id).catch(() => null);
+      if (r && !(typeof r.error === "string" && MISS.test(r.error))) return r;
+    }
+  }
+  return res;
 }
 
 // ---------- network and console capture ----------
@@ -258,6 +336,93 @@ function pageCapture(kind, cmd) {
   return { ok: true };
 }
 
+// Runs in the page's own world, so it must be self-contained. A page whose
+// security policy forbids eval refuses it.
+async function pageEval(src) {
+  try {
+    const v = await new Function(`return (${src})`)();
+    if (v === undefined) return { ok: true, result: null };
+    try { JSON.stringify(v); return { ok: true, result: v }; } catch { return { ok: true, result: String(v) }; }
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+}
+
+// ---------- screenshots ----------
+// Safari captures only a window's visible tab: a tab behind another comes
+// to the front for the capture and the tab that was there goes back. A tab
+// in its own window (the window tool) is captured where it is.
+async function dataUrlBitmap(url) {
+  return createImageBitmap(await (await fetch(url)).blob());
+}
+
+async function pngOf(canvas) {
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function pageValue(tabId, op, args) {
+  const res = await toTab(tabId, op, args, 10000);
+  if (res && res.error) throw new Error(res.error);
+  return res && res.value;
+}
+
+const FULL_PAGE_MAX = 12; // screens
+
+async function screenshot(tabId, opts) {
+  const t = await api.tabs.get(tabId);
+  const [front] = await api.tabs.query({ active: true, windowId: t.windowId });
+  const flip = front && front.id !== tabId;
+  if (flip) await api.tabs.update(tabId, { active: true });
+  try {
+    await toTab(tabId, "painted", [], 3000).catch(() => {});
+    const grab = () => api.tabs.captureVisibleTab(t.windowId, { format: "png" });
+    const box = opts.ref ? await relayOp(tabId, "rect", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
+    if (opts.annotate) await pageValue(tabId, "annotate", [true]);
+    let shots;
+    let page = null;
+    try {
+      if (opts.fullPage && !box) {
+        page = await pageValue(tabId, "eval", ["({ h: document.documentElement.scrollHeight, y: scrollY, ih: innerHeight, iw: innerWidth })"]).then((v) => v.result);
+        shots = [];
+        for (let y = 0; y < page.h && shots.length < FULL_PAGE_MAX; y += page.ih) {
+          await pageValue(tabId, "eval", [`(scrollTo(0, ${y}), scrollY)`]);
+          await toTab(tabId, "painted", [], 3000).catch(() => {});
+          shots.push({ y: (await pageValue(tabId, "eval", ["scrollY"])).result, url: await grab() });
+        }
+        await pageValue(tabId, "eval", [`(scrollTo(0, ${page.y}), 1)`]);
+      } else shots = [{ y: 0, url: await grab() }];
+    } finally {
+      if (opts.annotate) await pageValue(tabId, "annotate", [false]).catch(() => {});
+    }
+    if (!box && shots.length === 1) return { data: shots[0].url.replace(/^data:[^,]*,/, "") };
+    const first = await dataUrlBitmap(shots[0].url);
+    if (box) {
+      const scale = first.width / box.innerWidth;
+      const x = Math.max(0, Math.floor(box.x * scale));
+      const y = Math.max(0, Math.floor(box.y * scale));
+      const w = Math.max(1, Math.min(first.width - x, Math.ceil(box.width * scale)));
+      const h = Math.max(1, Math.min(first.height - y, Math.ceil(box.height * scale)));
+      const c = new OffscreenCanvas(w, h);
+      c.getContext("2d").drawImage(first, x, y, w, h, 0, 0, w, h);
+      return { data: await pngOf(c) };
+    }
+    const scale = first.width / page.iw;
+    const height = Math.min(Math.ceil(page.h * scale), Math.ceil((shots[shots.length - 1].y + page.ih) * scale));
+    const c = new OffscreenCanvas(first.width, height);
+    const ctx = c.getContext("2d");
+    for (const s of shots) ctx.drawImage(s === shots[0] ? first : await dataUrlBitmap(s.url), 0, Math.round(s.y * scale));
+    return { data: await pngOf(c), screens: shots.length, cut: shots.length === FULL_PAGE_MAX && page.h > FULL_PAGE_MAX * page.ih };
+  } finally {
+    if (flip) await api.tabs.update(front.id, { active: true });
+  }
+}
+
 // ---------- handlers ----------
 
 async function handle(msg) {
@@ -273,6 +438,7 @@ async function handle(msg) {
       const [url, background] = args;
       const tab = await api.tabs.create({ url: url || "about:blank", active: !background });
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
+      if (background) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
       const t = await api.tabs.get(tab.id);
       return { id: t.id, url: t.url, title: t.title };
@@ -311,7 +477,7 @@ async function handle(msg) {
     case "relay": {
       const [tabId, domOp, domArgs, timeoutMs] = args;
       if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);
-      const res = ACTIONS.has(domOp) ? await act(tabId, domOp, domArgs, timeoutMs) : await toTab(tabId, domOp, domArgs, timeoutMs);
+      const res = await relayOp(tabId, domOp, domArgs, timeoutMs);
       if (res && res.error) throw new Error(res.error);
       return res && res.value;
     }
@@ -333,6 +499,55 @@ async function handle(msg) {
       if (!url || url.startsWith("about:")) return [];
       const all = await api.cookies.getAll({ url });
       return all.map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly, expirationDate: c.expirationDate }));
+    }
+    case "cookies.set": {
+      const [cookie] = args;
+      const c = await api.cookies.set(cookie);
+      if (!c) throw new Error("Safari refused the cookie; check its url, domain, and secure flag");
+      return { ok: true, name: c.name, domain: c.domain, path: c.path };
+    }
+    case "dialogs": {
+      const [tabId, policy] = args;
+      if (policy) await store.set({ [`dialogs:${tabId}`]: policy });
+      const res = await toTab(tabId, "dialogs", [policy || null]);
+      if (res && res.error) throw new Error(res.error);
+      return res && res.value;
+    }
+    case "evalPage": {
+      const [tabId, src, ref] = args;
+      const { frameId } = frameOf([ref || ""]);
+      const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
+      if (!r) throw new Error("the page did not run it");
+      if (r.result && r.result.error) throw new Error(r.result.error);
+      return r.result;
+    }
+    case "fetchFile": {
+      const [url] = args;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+      const blob = await res.blob();
+      const data = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
+      return { name: "", type: blob.type, size: blob.size, disposition: res.headers.get("content-disposition"), url: res.url, data };
+    }
+    case "shot":
+      return screenshot(args[0], args[1] || {});
+    case "window": {
+      const [tabId, size] = args;
+      const t = await api.tabs.get(tabId);
+      const alone = (await api.tabs.query({ windowId: t.windowId })).length === 1;
+      const dims = { width: Math.round(size.width), height: Math.round(size.height) };
+      if (alone) await api.windows.update(t.windowId, { ...dims, state: "normal" });
+      else {
+        const w = await api.windows.create({ tabId, focused: false, ...dims });
+        await api.windows.update(w.id, dims);
+      }
+      const r = await toTab(tabId, "tabInfo", []);
+      return { ok: true, windowId: (await api.tabs.get(tabId)).windowId, viewport: r && r.value && r.value.viewport };
     }
     case "ping":
       return "pong";
@@ -370,10 +585,34 @@ api.tabs.onUpdated.addListener((id, info) => {
 api.tabs.onRemoved.addListener((id) => {
   markReady(id);
   ready.delete(id);
+  store.remove(`dialogs:${id}`).catch(() => {});
 });
+// Embedded frames report too; only the top document makes the tab ready.
+// Each gets back how to answer dialogs, if the harness owns its tab.
 api.runtime.onMessage.addListener((m, sender) => {
-  if (m && m.__safariHarnessReady === 1 && sender.tab) markReady(sender.tab.id);
+  if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
+  if (!sender.frameId) markReady(sender.tab.id);
+  return policyOf(sender.tab.id).then((dialogs) => ({ dialogs }));
 });
+
+// ---------- owned tabs ----------
+// A tab the harness opened in the background, and any tab it opened in
+// turn, answers its own dialogs (dismissing them unless the dialog tool
+// says accept). The answer is kept per tab, so each new page in it gets it.
+const store = api.storage.session || api.storage.local;
+
+async function policyOf(tabId) {
+  const key = `dialogs:${tabId}`;
+  return (await store.get(key))[key] || null;
+}
+
+async function ownsTab(tabId) {
+  return (await policyOf(tabId)) !== null;
+}
+
+async function ownTab(tabId) {
+  if (!(await ownsTab(tabId))) await store.set({ [`dialogs:${tabId}`]: { accept: false, text: null } });
+}
 
 // Resolves when the tab is ready, or after ms regardless.
 function waitReady(tabId, ms) {

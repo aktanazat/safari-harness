@@ -188,6 +188,8 @@
     let u;
     try { u = new URL(href, location.href); } catch { return null; }
     if (u.protocol === "javascript:") return null;
+    // a file made in the page: its address is a long opaque string
+    if (u.protocol === "data:" || u.protocol === "blob:") return `${u.protocol}…`;
     if (u.origin === location.origin && u.pathname === location.pathname && u.search === location.search) return null;
     const base = u.origin === location.origin ? u.pathname : u.origin + u.pathname;
     return base + (u.search.length > 41 ? "?…" : u.search);
@@ -211,6 +213,107 @@
     for (const [ref, el] of refMap) {
       if (!el.isConnected) refMap.delete(ref);
     }
+  }
+
+  // ---------- embedded frames ----------
+  // Every frame runs this script. Each frame's copy has a token and tells
+  // its parent frame; the parent maps the <iframe> element to that token and
+  // prints it in the snapshot (FRAME_MARK), and the extension, which knows
+  // each frame's token and id, puts the frame's own snapshot there. The
+  // parent also says hello to frames loaded before it, so either may start
+  // first.
+  const FRAME_MARK = "@@frame:";
+  const frameToken = Math.random().toString(36).slice(2, 10);
+  window.__safariHarnessFrame = frameToken;
+  const childToken = new WeakMap(); // <iframe> -> its document's token
+  const offsetWaiters = new Map(); // request id -> resolve
+
+  function frameElementOf(source) {
+    for (const f of document.querySelectorAll("iframe, frame")) if (f.contentWindow === source) return f;
+    return null;
+  }
+
+  // Where this frame's viewport sits in the top page's viewport, and the
+  // top viewport's size; each ancestor adds its <iframe>'s content box.
+  function frameOffset() {
+    if (window === window.top) return Promise.resolve({ x: 0, y: 0, innerWidth, innerHeight });
+    return new Promise((resolve) => {
+      const id = Math.random().toString(36).slice(2);
+      offsetWaiters.set(id, resolve);
+      parent.postMessage({ __shOffset: id }, "*");
+      setTimeout(() => { if (offsetWaiters.delete(id)) resolve(null); }, 3000);
+    });
+  }
+
+  addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || typeof d !== "object") return;
+    if (typeof d.__shFrame === "string") {
+      const f = frameElementOf(e.source);
+      if (f) childToken.set(f, d.__shFrame);
+    } else if (d.__shHello === 1 && e.source === parent) {
+      parent.postMessage({ __shFrame: frameToken }, "*");
+    } else if (typeof d.__shOffset === "string") {
+      const f = frameElementOf(e.source);
+      if (!f) return;
+      f.scrollIntoView({ block: "nearest", behavior: "instant" });
+      const r = f.getBoundingClientRect();
+      const cs = getComputedStyle(f);
+      frameOffset().then((o) => {
+        if (!o) return;
+        e.source.postMessage({
+          __shOffsetReply: d.__shOffset,
+          x: o.x + r.left + f.clientLeft + parseFloat(cs.paddingLeft),
+          y: o.y + r.top + f.clientTop + parseFloat(cs.paddingTop),
+          innerWidth: o.innerWidth,
+          innerHeight: o.innerHeight,
+        }, "*");
+      });
+    } else if (typeof d.__shOffsetReply === "string" && e.source === parent) {
+      const resolve = offsetWaiters.get(d.__shOffsetReply);
+      if (!resolve) return;
+      offsetWaiters.delete(d.__shOffsetReply);
+      resolve({ x: d.x, y: d.y, innerWidth: d.innerWidth, innerHeight: d.innerHeight });
+    }
+  });
+  if (window !== window.top) parent.postMessage({ __shFrame: frameToken }, "*");
+  for (const f of document.querySelectorAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
+
+  // The element's box in the top page's viewport, in CSS pixels, scrolled
+  // into view: where a real mouse click must land.
+  async function locate(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    const o = await frameOffset();
+    if (!o) return { error: "could not place this frame on the page" };
+    let x = r.x + o.x, y = r.y + o.y;
+    // an element of a frame read inline: add each <iframe>'s content box
+    for (let w = el.ownerDocument.defaultView; w && w !== window; w = w.parent) {
+      const f = w.frameElement;
+      if (!f) break;
+      const fr = f.getBoundingClientRect();
+      x += fr.left + f.clientLeft;
+      y += fr.top + f.clientTop;
+    }
+    return { x, y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
+  }
+
+  // Safari runs no extension script in srcdoc and about:blank frames, so
+  // such a frame never reports. It shares this page's origin, so this copy
+  // reads its document directly, as part of the page.
+  function inlineDoc(f) {
+    if (childToken.has(f)) return null;
+    try { return f.contentDocument?.body ? f.contentDocument : null; } catch { return null; }
+  }
+  function inlineBodies() {
+    const out = [];
+    for (const f of document.querySelectorAll("iframe, frame")) {
+      const d = inlineDoc(f);
+      if (d) out.push(d.body);
+    }
+    return out;
   }
 
   // One walk over the page. What an agent can act on prints with a ref;
@@ -237,17 +340,20 @@
     if (!root) return { error: "root not found" };
     const maxLines = opts.maxNodes || 600;
     const query = opts.query ? String(opts.query).toLowerCase() : null;
+    // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
+    // the extension knows which frame an action goes to.
+    const prefix = opts.refPrefix || "";
 
     // Pass 1: the kept elements as a tree, with loose text and block edges
     // in page order. `named` holds the ancestors naming themselves by their
     // text; each gathers the text inside it.
     const top = { kids: [] };
     const walk = (el, parent, named, inItem) => {
-      const style = window.getComputedStyle(el);
+      const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
       if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) return;
       if (style.position === "fixed" && el.getClientRects().length === 0) return;
       const role = getExplicitRole(el);
-      const actionable = ACTION_ROLES.has(role) || isInteractive(el);
+      const actionable = ACTION_ROLES.has(role) || isInteractive(el) || el.tagName === "IFRAME" || el.tagName === "FRAME";
       let node = parent;
       if (actionable || (role && NAMED_ROLES.has(role))) {
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
@@ -277,6 +383,10 @@
         }
         if (block) add(edge);
       }
+      if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
+        const d = inlineDoc(el);
+        if (d) walk(d.body, node, [], false);
+      }
       if (node.el !== el) return;
       if (node.text) {
         const full = norm(node.text.join(""));
@@ -302,9 +412,11 @@
     const lines = [];
     let truncated = false;
     const push = (depth, text, n) => {
-      if (query && !text.toLowerCase().includes(query)) return;
+      // an embedded frame's line stays, whatever the query: the extension
+      // puts the frame's own matching lines in its place
+      if (query && !text.toLowerCase().includes(query) && !text.includes(FRAME_MARK)) return;
       if (lines.length >= maxLines) { truncated = true; return; }
-      const line = n ? `[${ensureRef(n.el)}] ${text}` : text;
+      const line = n ? `[${prefix}${ensureRef(n.el)}] ${text}` : text;
       lines.push(query ? line : "  ".repeat(depth) + line);
     };
     const hrefOf = (n) => (n.el && n.el.href) || null;
@@ -316,7 +428,8 @@
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
       const name = n.name ? clip(n.name, TEXT_MAX) : "";
-      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}`;
+      const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
+      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
     };
     // The text items from kids[from] up to the next element.
     const textItems = (kids, from) => {
@@ -390,7 +503,7 @@
         const texts = allText(c);
         // a heading that only holds a link: one line
         if (c.role === "heading" && ek.length === 1 && ek[0].actionable && texts.length <= 1) {
-          push(depth, `${tag(c)} [${ensureRef(ek[0].el)}] ${head(ek[0])}`);
+          push(depth, `${tag(c)} [${prefix}${ensureRef(ek[0].el)}] ${head(ek[0])}`);
           render(ek[0], depth + 1);
           continue;
         }
@@ -445,7 +558,7 @@
   function byText(text) {
     const want = text.replace(/\s+/g, " ").trim().toLowerCase();
     if (!want) return null;
-    const all = document.body.querySelectorAll("*");
+    const all = [document.body, ...inlineBodies()].flatMap((b) => [...b.querySelectorAll("*")]);
     let partial = null;
     let found = null;
     for (const el of all) {
@@ -615,6 +728,158 @@
     else if (to === "reload") location.reload();
     else return { error: `go must be back, forward, or reload` };
     return { ok: true, expect: to === "reload" ? "load" : "script" };
+  }
+
+  // ---------- dialogs ----------
+  // dialogs.js runs in the page's own world and, once armed, answers
+  // alert, confirm, prompt, and print itself instead of showing them, and
+  // keeps beforeunload from holding a navigation. A tab the harness opened
+  // is armed for good; any other tab only while an action runs, so a dialog
+  // the user meets later still shows. Each dialog is reported to this world
+  // and returned with the action that raised it.
+  const dialogLog = [];
+  let dialogPolicy = null; // { accept, text } once the extension armed this tab
+  document.addEventListener("__sh_dialog_seen", (e) => {
+    if (typeof e.detail !== "string") return;
+    try { dialogLog.push(JSON.parse(e.detail)); } catch {}
+    if (dialogLog.length > 50) dialogLog.shift();
+  });
+  function armDialogs(armed, policy) {
+    const detail = JSON.stringify({ armed, accept: !!(policy && policy.accept), text: policy && typeof policy.text === "string" ? policy.text : null });
+    document.dispatchEvent(new CustomEvent("__sh_dialog_policy", { detail }));
+  }
+  function setDialogs(policy) {
+    if (policy) {
+      dialogPolicy = policy;
+      armDialogs(true, policy);
+    }
+    return { dialogs: dialogLog.slice(-20), answer: dialogPolicy && dialogPolicy.accept ? "accept" : "dismiss" };
+  }
+
+  // ---------- page fetch and downloads ----------
+  // Requests from here carry the page's cookies, as the page's own would.
+  async function pageFetch(url, opts = {}) {
+    const res = await fetch(new URL(url, location.href), {
+      method: opts.method || "GET",
+      headers: opts.headers || undefined,
+      body: opts.body ?? undefined,
+      credentials: "include",
+    });
+    const limit = opts.maxBytes || 50000;
+    const text = await res.text();
+    return {
+      status: res.status,
+      url: res.url,
+      type: res.headers.get("content-type"),
+      text: text.length > limit ? text.slice(0, limit) : text,
+      truncated: text.length > limit,
+    };
+  }
+
+  function base64Of(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+  }
+
+  const DOWNLOAD_MAX = 100 * 1024 * 1024;
+  function nameFrom(disposition, url) {
+    const m = disposition && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+    }
+    try {
+      const u = new URL(url);
+      if (u.protocol === "http:" || u.protocol === "https:") return decodeURIComponent(u.pathname.split("/").pop() || "") || u.hostname;
+    } catch {}
+    return "";
+  }
+
+  // The file at url, fetched with the page's cookies: { name, type, size, data (base64) }.
+  async function fetchFile(url, name) {
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) return { error: `download failed: HTTP ${res.status}` };
+    const blob = await res.blob();
+    if (blob.size > DOWNLOAD_MAX) return { error: `file is ${blob.size} bytes; the limit is ${DOWNLOAD_MAX}` };
+    return { name: name || nameFrom(res.headers.get("content-disposition"), res.url), type: blob.type, size: blob.size, data: await base64Of(blob) };
+  }
+
+  // A download the page makes from script (a blob or data link it clicks,
+  // or a window it opens) is caught in the page's own world (dialogs.js)
+  // and handed here; the page's own save is cancelled so Safari does not
+  // save a second copy. The daemon owns the time limit (downloadStop).
+  let pendingDownload = null;
+  let caughtDownload = null;
+  document.addEventListener("__sh_download_seen", (e) => {
+    if (typeof e.detail !== "string") return;
+    try { caughtDownload = JSON.parse(e.detail); } catch { return; }
+    pendingDownload?.(caughtDownload);
+  });
+  function catchDownloads(on) {
+    document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
+  }
+
+  async function download(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    const link = el.closest("a[href], area[href]");
+    if (link && !link.href.startsWith("javascript:")) return fetchFile(link.href, link.getAttribute("download") || "");
+    caughtDownload = null;
+    catchDownloads(true);
+    try {
+      const clicked = withOutcome(() => click(ref));
+      if (clicked && clicked.error) return clicked;
+      const caught = caughtDownload ?? await new Promise((resolve) => { pendingDownload = resolve; });
+      if (!caught) return { error: "the click started no download the page could see; it may be a server download: check ~/Downloads", clicked };
+      return fetchFile(caught.url, caught.name);
+    } finally {
+      pendingDownload = null;
+      catchDownloads(false);
+    }
+  }
+
+  // ---------- annotated screenshots ----------
+  // Draws each ref from the latest snapshot that is in view as a numbered
+  // box, for one capture; clear removes them.
+  const ANNOTATE_ID = "__safari_harness_annotate";
+  function annotate(on) {
+    document.getElementById(ANNOTATE_ID)?.remove();
+    if (!on) return { ok: true };
+    const layer = document.createElement("div");
+    layer.id = ANNOTATE_ID;
+    layer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+    let shown = 0;
+    for (const [ref, el] of refMap) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) continue;
+      const box = document.createElement("div");
+      box.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;outline:2px solid #e5484d;box-sizing:border-box`;
+      const tag = document.createElement("span");
+      tag.textContent = ref;
+      tag.style.cssText = "position:absolute;left:-2px;top:-16px;background:#e5484d;color:#fff;font:bold 11px/14px -apple-system,sans-serif;padding:0 3px;border-radius:2px;white-space:nowrap";
+      // A short row in a list: above would cover the row before it, so the
+      // label sits to the left, where list markers and margins usually are.
+      if (r.height < 30 && r.left > 8 * ref.length + 8) { tag.style.left = "auto"; tag.style.right = "calc(100% + 2px)"; tag.style.top = "0"; }
+      else if (r.top < 16) tag.style.top = "0";
+      box.append(tag);
+      layer.append(box);
+      shown++;
+    }
+    document.documentElement.append(layer);
+    return { ok: true, shown, dpr: devicePixelRatio, innerWidth, innerHeight };
+  }
+
+  // The element's box in this viewport, for cropping a screenshot.
+  function rectOf(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    el.scrollIntoView({ block: "nearest", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: devicePixelRatio, innerWidth, innerHeight };
   }
 
   // The native setter, so framework value trackers (React) see a real edit.
@@ -848,7 +1113,37 @@
     history: historyGo,
     loginForm,
     fillLogin,
+    locate,
+    rect: rectOf,
+    annotate,
+    dialogs: setDialogs,
+    fetch: pageFetch,
+    fetchFile,
+    download,
+    downloadStop: () => { pendingDownload?.(null); return { ok: true }; },
   };
+  // Ops that may raise a dialog; the page's dialogs are armed while they run.
+  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download"]);
+
+  // Runs an op with dialogs armed, and returns the dialogs it raised with
+  // its result.
+  function withDialogs(run) {
+    const seen = dialogLog.length;
+    if (!dialogPolicy) armDialogs(true, null);
+    const done = (value) => {
+      if (!dialogPolicy) armDialogs(false, null);
+      const raised = dialogLog.slice(seen);
+      return raised.length && value && typeof value === "object" && typeof value.error !== "string" ? { ...value, dialogs: raised } : value;
+    };
+    let out;
+    try {
+      out = run();
+    } catch (e) {
+      done(null);
+      throw e;
+    }
+    return out && typeof out.then === "function" ? out.then(done, (e) => { done(null); throw e; }) : done(out);
+  }
 
   function clickAt(x, y) {
     const el = document.elementFromPoint(x, y);
@@ -879,7 +1174,7 @@
       : { id: msg.id, value };
     let out;
     try {
-      out = fn(...(msg.args || []));
+      out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
     } catch (e) {
       return Promise.resolve({ id: msg.id, error: String(e && e.message || e) });
     }
@@ -890,6 +1185,7 @@
   });
 
   // Tell the extension this document can take requests; this lands well
-  // before the tab's "complete", which also waits on ads and trackers.
-  api.runtime.sendMessage({ __safariHarnessReady: 1 }).catch(() => {});
+  // before the tab's "complete", which also waits on ads and trackers. A tab
+  // the harness owns gets back how to answer its dialogs.
+  api.runtime.sendMessage({ __safariHarnessReady: 1 }).then((r) => { if (r && r.dialogs) setDialogs(r.dialogs); }, () => {});
 })();
