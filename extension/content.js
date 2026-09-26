@@ -152,9 +152,10 @@
   }
 
   // A field whose value is a secret: its value is never printed, only
-  // whether it is filled. Autofill puts these in without the agent typing.
+  // whether it is filled. Autofill puts these in without the agent typing,
+  // and a show-password toggle turns a password field into a text field.
   function secretField(el) {
-    return el.type === "password" || /\b(cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+    return el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
   }
 
   function stateOf(el) {

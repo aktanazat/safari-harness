@@ -256,16 +256,17 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
 // ---------- secrets in the outline ----------
 
 // Autofill fills these without the agent typing: a password from Apple
-// Passwords, a saved card, a code from Messages. The snapshot says filled.
-const SECRETS = { p: "dummy-pass-XYZ", c: "4111111111111111", o: "123456" };
-const SECRET_FIELDS = '<label>Pw <input type=password id=p></label>' +
+// Passwords, a saved card, a code from Messages. A show-password toggle
+// leaves a password in a text field. The snapshot says filled.
+const SECRETS = { p: "dummy-pass-XYZ", s: "dummy-shown-XYZ", c: "4111111111111111", o: "123456" };
+const SECRET_FIELDS = '<label>Pw <input type=password id=p></label><label>Shown <input autocomplete=current-password id=s></label>' +
   '<label>Card <input autocomplete=cc-number id=c></label><label>Code <input autocomplete=one-time-code id=o></label><label>Name <input id=n></label>';
 const SECRETS_JS = `for (const [id, v] of Object.entries(${JSON.stringify({ ...SECRETS, n: "Ada" })})) document.getElementById(id).value = v`;
 
 await withPage(SECRET_FIELDS, SECRETS_JS, async (tab) => {
   const s = (await call("snapshot", { tab })).snapshot as string;
   check("a snapshot never prints a password, card number, or one-time code",
-    Object.values(SECRETS).every((v) => !s.includes(v)) && (s.match(/\{filled\}/g) ?? []).length === 3 && s.includes('value="Ada"'), s);
+    Object.values(SECRETS).every((v) => !s.includes(v)) && (s.match(/\{filled\}/g) ?? []).length === 4 && s.includes('value="Ada"'), s);
 });
 
 // ---------- network and console capture ----------
