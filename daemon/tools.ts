@@ -2,7 +2,7 @@
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
 import { bridge } from "./bridge.ts";
-import { fill, loginsFor, passwords } from "./passwords.ts";
+import { fill, fillCode, loginsFor, passwords } from "./passwords.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -390,10 +390,12 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
       return loginsFor(await resolveTab(a.tab as number | undefined));
     case "fill":
       return fill(await resolveTab(a.tab as number | undefined), a.username === undefined ? undefined : str(a.username, "username"));
+    case "code":
+      return fillCode(await resolveTab(a.tab as number | undefined), a.username === undefined ? undefined : str(a.username, "username"));
     case "lock":
       return passwords.lock();
     default:
-      throw new Error("do must be pair, unlock, logins, fill, or lock");
+      throw new Error("do must be pair, unlock, logins, fill, code, or lock");
   }
 }
 
@@ -559,8 +561,8 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   passwords: {
-    desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. logins lists saved usernames; lock ends access.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "logins", "fill", "lock"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
+    desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. code fills the site's saved verification code the same way. logins lists saved usernames; lock ends access.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "logins", "fill", "code", "lock"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
     required: ["do"],
     run: applePasswords,
   },

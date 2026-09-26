@@ -16,6 +16,7 @@ const N = BigInt(
 const G = 5n;
 const CODE = "482913";
 const SECRET = "correct horse battery staple";
+const OTP = "731904";
 const SITE = "login.example.com";
 const USER = "aktan@example.com";
 
@@ -74,7 +75,10 @@ function fakeHelper() {
       d.setAuthTag(data.subarray(data.length - 32, data.length - 16));
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
       queries.push(`${m.cmd} ${q.URL}`);
-      const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] } : { STATUS: 0, Entries: [{ USR: q.USR, PWD: SECRET }] };
+      // A code query answers with Entry_N keys, as the helper does for codes.
+      const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] }
+        : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
+        : { STATUS: 0, Entries: [{ USR: q.USR, PWD: SECRET }] };
       const iv = randomBytes(16);
       const c = createCipheriv("aes-128-gcm", key, iv);
       const sealed = Buffer.concat([iv, c.update(JSON.stringify(out)), c.final(), c.getAuthTag()]);
@@ -96,7 +100,7 @@ function fakeHelper() {
 
 // The Safari tab: a sign-in page whose fields record what was typed.
 function fakeTab(url: string) {
-  const page: { username?: string; password?: string } = {};
+  const page: { username?: string; password?: string; code?: string } = {};
   bridge.attach({
     send(data: string) {
       const { id, args } = JSON.parse(data);
@@ -104,6 +108,8 @@ function fakeTab(url: string) {
       const value = op === "tabInfo" ? { url }
         : op === "loginForm" ? { username: true, password: true }
         : op === "fillLogin" ? (Object.assign(page, { username: opArgs[1], password: opArgs[2] }), { ok: true, filled: ["username", "password"] })
+        : op === "codeField" ? { found: true }
+        : op === "fillCode" ? (Object.assign(page, { code: opArgs[1] }), { ok: true, filled: ["code"] })
         : null;
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
     },
@@ -121,6 +127,16 @@ test("the code on the Mac unlocks, and fill types the password into the page but
   expect(page).toEqual({ username: USER, password: SECRET });
   expect(result).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(JSON.stringify(await callTool("passwords", { do: "logins", tab: 7 }))).not.toContain(SECRET);
+});
+
+test("code types the site's verification code into the page but never returns it", async () => {
+  fakeHelper();
+  const page = fakeTab(`https://${SITE}/verify`);
+  await callTool("passwords", { do: "pair" });
+  await callTool("passwords", { do: "unlock", code: CODE });
+  const result = await callTool("passwords", { do: "code", tab: 7 });
+  expect(page).toEqual({ code: OTP });
+  expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
 });
 
 test("a wrong code is refused and cannot be retried with the right one", async () => {

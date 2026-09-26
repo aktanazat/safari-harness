@@ -107,7 +107,7 @@ function open(key: Buffer, data: Buffer): unknown {
 
 // ---------- helper link ----------
 
-const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, DISABLED: 9, RELOGIN: 10, CAPABILITIES: 14 } as const;
+const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, DISABLED: 9, RELOGIN: 10, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
 const STATUS_OK = 0;
 const STATUS_NONE = 3;
 
@@ -307,6 +307,24 @@ export class ApplePasswords {
     });
   }
 
+  // The current code from a verification-code setup saved for the site, for
+  // username when given. The helper may ask for Touch ID first.
+  oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
+    return this.serial(async () => {
+      const res = await this.query(Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }, 120000,
+        "the Mac asked the user to approve with Touch ID and nobody did within 2 minutes; ask the user to approve, then try again");
+      if (res.STATUS === STATUS_NONE) throw new Error(`no verification code saved for ${host}`);
+      if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
+      // Entries come as a list, or as Entry_0, Entry_1, ... keys.
+      const listed: unknown[] = Array.isArray(res.Entries) ? res.Entries : Object.keys(res).filter((k) => k.startsWith("Entry_")).map((k) => res[k]);
+      const codes = listed.flatMap((e) => e && typeof e === "object" && "code" in e && typeof e.code === "string"
+        ? [{ code: e.code, username: "username" in e && typeof e.username === "string" ? e.username : "" }] : []);
+      const pick = username === undefined ? codes[0] : codes.find((c) => c.username === username);
+      if (!pick) throw new Error(codes.length ? `no verification code for ${username} on ${host}; saved for: ${codes.map((c) => c.username).join(", ")}` : `no verification code saved for ${host}`);
+      return pick;
+    });
+  }
+
   // Forget the pairing and quit the hidden Helium (it holds about 330 MB).
   lock(): { locked: true } {
     this.state = { kind: "idle" };
@@ -388,5 +406,19 @@ export async function fill(tab: number, username?: string): Promise<{ filled: st
   const res = await bridge.tab(tab, "fillLogin", [site, login, secret]);
   const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
   if (filled.length === 0) throw new Error("the page changed before the login was filled");
+  return { filled, username: login, site };
+}
+
+// Types the site's current verification code into the tab's code field.
+// The result never carries the code.
+export async function fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
+  if (!passwords.unlocked) throw new Error(NOT_UNLOCKED);
+  const site = await siteOf(tab);
+  const form = await bridge.tab(tab, "codeField", [site]);
+  if (!form || typeof form !== "object" || !("found" in form) || form.found !== true) throw new Error("no verification code field on this page");
+  const { code, username: login } = await passwords.oneTimeCode(site, username);
+  const res = await bridge.tab(tab, "fillCode", [site, code]);
+  const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
+  if (filled.length === 0) throw new Error("the page changed before the code was filled");
   return { filled, username: login, site };
 }

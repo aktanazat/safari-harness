@@ -204,6 +204,10 @@ Signing in:
      site; `passwords {do: "fill", tab}` fills the sign-in form (pass
      `username` when several are saved). The result names the fields filled,
      never the password, and the password may prompt for Touch ID.
+     `passwords {do: "code", tab}` does the same for a verification code
+     the user keeps in Apple Passwords (an authenticator setup): it types
+     the current code into the page's code field, one digit per box when
+     the page splits it, and never returns it.
   4. `passwords {do: "lock"}` forgets the pairing and quits the hidden browser
      that talks to Apple's helper (about 330 MB while it runs).
 - The site comes from the tab's own address and must be https, so a login

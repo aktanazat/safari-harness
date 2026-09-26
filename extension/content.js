@@ -951,6 +951,37 @@
     return { ok: true, filled };
   }
 
+  // A verification-code field: the one marked one-time-code, one named like
+  // a code, or a row of one-character boxes (one digit each).
+  function codeFields() {
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
+    const inputs = [...document.querySelectorAll("input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]")].filter(usable);
+    const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
+    if (marked) return [marked];
+    const boxes = inputs.filter((el) => el.maxLength === 1);
+    if (boxes.length >= 4 && boxes.length <= 8) return boxes;
+    const named = inputs.find((el) => /otp|one.?time|totp|2fa|mfa|verif|security.?code|auth.?code|\bcode\b/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") ?? ""} ${el.placeholder}`));
+    return named ? [named] : [];
+  }
+
+  function codeField(host) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; try again` };
+    return { found: codeFields().length > 0 };
+  }
+
+  function fillCode(host, code) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const fields = codeFields();
+    if (!fields.length) return { error: "the code field is gone; nothing was filled" };
+    const parts = fields.length === 1 ? [code] : [...code];
+    fields.forEach((field, i) => {
+      if (parts[i] === undefined) return;
+      field.focus();
+      setValue(field, parts[i], parts[i]);
+    });
+    return { ok: true, filled: ["code"] };
+  }
+
   // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
   // a known combo ("+", "Enter") is sent as is.
   const MODIFIERS = { shift: "shiftKey", option: "altKey", alt: "altKey", cmd: "metaKey", command: "metaKey", meta: "metaKey", ctrl: "ctrlKey", control: "ctrlKey" };
@@ -1113,6 +1144,8 @@
     history: historyGo,
     loginForm,
     fillLogin,
+    codeField,
+    fillCode,
     locate,
     rect: rectOf,
     annotate,

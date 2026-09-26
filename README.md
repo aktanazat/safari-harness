@@ -36,9 +36,10 @@ daemon/
   input.ts          real_input: the real mouse and keyboard through
                     scripts/input, for pages that ignore scripted events
   passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
-                    Mac shows (SRP), then asks it for logins over AES-GCM. The
-                    helper runs only under a real browser, so a hidden Helium
-                    with passwords-bridge/ relays the encrypted messages
+                    Mac shows (SRP), then asks it for logins and verification
+                    codes over AES-GCM. The helper runs only under a real
+                    browser, so a hidden Helium with passwords-bridge/ relays
+                    the encrypted messages
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages

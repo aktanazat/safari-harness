@@ -82,7 +82,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 
 // Ops that act on the page. If the page navigates while one is pending, the
 // action caused it: report that instead of re-sending (never act twice).
-const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover", "fillLogin"]);
+const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover", "fillLogin", "fillCode"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
