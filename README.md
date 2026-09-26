@@ -174,7 +174,7 @@ A Playwright-style JavaScript session over the same tools: `openTab`,
 `snapshot`, locators, downloads, `page.pdf()`, cookie-bearing `fetch`, plus
 site globals that read signed-in sites through their own APIs (`slack`,
 `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
-`googleSearch`, `youtube`, `x`/`twitter`, `imessage`). A named session
+`googleSearch`, `youtube`, `x`/`twitter`, `linkedin`, `imessage`). A named session
 (`--session`) runs in its own process, reachable from any terminal or agent
 through a user-only unix socket, and ends after 30 minutes unused. The MCP
 server exposes it as the `repl` tool. `docs/REPL.md` is the reference.

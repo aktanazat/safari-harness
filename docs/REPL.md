@@ -68,7 +68,7 @@ signed in to <site> in Safari" when it is not. Methods that send or change
 anything return a draft until called with `approved: true`.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
-`googleSearch`, `youtube`, `x` (also `twitter`), `imessage`. `safari guide
+`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`, `imessage`. `safari guide
 <site>` lists each one's methods under "In safari repl".
 
 ## Files and helpers

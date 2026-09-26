@@ -10,6 +10,7 @@ import { gmail, googleAccounts, googleDocs, googleSheets } from "./google.ts";
 import { googleSearch } from "./google-search.ts";
 import { youtube } from "./youtube.ts";
 import { x } from "./x.ts";
+import { linkedin } from "./linkedin.ts";
 
 export const SITE_GLOBALS: Record<string, (kit: SiteKit) => object> = {
   slack,
@@ -21,6 +22,7 @@ export const SITE_GLOBALS: Record<string, (kit: SiteKit) => object> = {
   googleSearch,
   youtube,
   x,
+  linkedin,
   imessage,
 };
 

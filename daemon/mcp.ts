@@ -63,7 +63,7 @@ async function closeOwned() {
 }
 
 const REPL_TOOL: Tool = {
-  desc: "Run Playwright-style JavaScript against Safari: openTab(url), snapshot(page), page.locator(ref).click(), page.pdf(), cookie-bearing fetch, and site globals (slack, gmail, notion, youtube, x, imessage...). Bindings persist; console.log returns values; 120 s limit. API: safari guide repl.",
+  desc: "Run Playwright-style JavaScript against Safari: openTab(url), snapshot(page), page.locator(ref).click(), page.pdf(), cookie-bearing fetch, and site globals (slack, gmail, notion, youtube, x, linkedin, imessage...). Bindings persist; console.log returns values; 120 s limit. API: safari guide repl.",
   params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
   required: ["code"],
   run: async (a) => {
