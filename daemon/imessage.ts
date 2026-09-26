@@ -265,6 +265,11 @@ export function findCode(text: string): string | null {
   return best?.code ?? null;
 }
 
+// A poll is one read by row id: about a microsecond on a 160,000-message
+// database, so a 90-second wait costs about 2 ms of CPU. At 1.5 s a code sat
+// unseen for 0.75 s on average.
+const CODE_POLL_MS = 100;
+
 export async function waitCode(opts: { seconds?: number; since?: number } = {}) {
   const seconds = Math.min(Math.max(Number(opts.seconds ?? 30), 1), 90);
   const deadline = Date.now() + seconds * 1000;
@@ -287,7 +292,7 @@ export async function waitCode(opts: { seconds?: number; since?: number } = {}) 
         const max = (db.query("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get() as { n: number }).n;
         return { status: "timeout", since: Math.max(cursor, max) };
       }
-      await Bun.sleep(1500);
+      await Bun.sleep(CODE_POLL_MS);
     }
   } finally {
     db.close();
