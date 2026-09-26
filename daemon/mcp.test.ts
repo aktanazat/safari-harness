@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 // MCP clients put the whole tool list in front of the model on every turn, so
 // each byte here is paid on every step of every browsing task. The list was
 // 13,569 bytes before it was trimmed to 10,573; run then added 651, and pays
-// for itself by saving whole turns.
+// for itself by saving whole turns. Targets by selector or text (90) and an
+// extract query (96) save the look-first turn.
 const TOOL_LIST_MAX_BYTES = 11_500;
 
 async function toolList(): Promise<unknown> {

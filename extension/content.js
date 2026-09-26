@@ -80,13 +80,9 @@
   }
 
   function isVisible(el) {
-    if (!el.getClientRects || el.getClientRects().length === 0) {
-      const style = window.getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden") return false;
-      if (style.position === "fixed" && el.getClientRects().length === 0) return false;
-    }
     const style = window.getComputedStyle(el);
     if (style.visibility === "hidden" || parseFloat(style.opacity) === 0) return false;
+    if (el.getClientRects().length === 0 && (style.display === "none" || style.position === "fixed")) return false;
     return true;
   }
 
@@ -258,14 +254,61 @@
 
   // ---------- actions ----------
 
-  function resolve(ref) {
-    const el = refMap.get(String(ref));
-    if (!el || !el.isConnected) {
-      const dom = document.querySelector(`[${REF_ATTR}="${ref}"]`);
-      if (dom) { refMap.set(String(ref), dom); return dom; }
-      return null;
+  // A target is a ref from the latest snapshot ("12"), a CSS selector
+  // ("#email"), or an element's visible text or label ("Sign in"), so an
+  // action can run without a snapshot first. A bare word is tried as text
+  // before CSS: "Menu" should reach the button, not the <menu> element.
+  const CSS_HINT = /[#.[\]:>*=~^$|+()]/;
+  function resolve(target) {
+    const key = String(target).trim();
+    if (/^\d+$/.test(key)) {
+      const el = refMap.get(key);
+      if (el && el.isConnected) return el;
+      const dom = document.querySelector(`[${REF_ATTR}="${key}"]`);
+      if (dom) refMap.set(key, dom);
+      return dom;
     }
-    return el;
+    return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
+  }
+
+  // isVisible alone passes the children of a display:none parent, because
+  // the snapshot never walks into one; a target found by search must also
+  // have a box on the page.
+  function shown(el) {
+    return el.getClientRects().length > 0 && isVisible(el);
+  }
+
+  function bySelector(selector) {
+    let all;
+    try { all = [...document.querySelectorAll(selector)]; } catch { return null; }
+    return all.find(shown) ?? all[0] ?? null;
+  }
+
+  // Controls whose name is the text win, then any element whose own text it
+  // is (the innermost), then controls whose name contains it. A label stands
+  // for its field.
+  function byText(text) {
+    const want = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!want) return null;
+    const all = document.body.querySelectorAll("*");
+    let partial = null;
+    let found = null;
+    for (const el of all) {
+      if (!isInteractive(el)) continue;
+      const name = accessibleName(el).replace(/\s+/g, " ").toLowerCase();
+      if (name === want && shown(el)) { found = el; break; }
+      if (!partial && name.includes(want) && shown(el)) partial = el;
+    }
+    for (const el of found ? [] : all) {
+      if (found && !found.contains(el)) break;
+      if (textOf(el, want.length + 1).toLowerCase() === want && shown(el)) found = el;
+    }
+    found ??= partial;
+    return found && found.tagName === "LABEL" && found.control ? found.control : found;
+  }
+
+  function missing(target) {
+    return { error: /^\d+$/.test(String(target).trim()) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
   }
 
   function centerOf(el) {
@@ -286,7 +329,7 @@
 
   function click(ref) {
     const el = resolve(ref);
-    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    if (!el) return missing(ref);
     // Reading the position below forces layout, so no frame wait is needed;
     // background tabs never run requestAnimationFrame, so waiting on one hangs.
     el.scrollIntoView({ block: "center", behavior: "instant" });
@@ -303,7 +346,7 @@
 
   function hover(ref) {
     const el = resolve(ref);
-    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const { x, y } = centerOf(el);
     for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"]) fireMouse(el, type, x, y);
@@ -312,7 +355,7 @@
 
   function selectOption(ref, choice) {
     const el = resolve(ref);
-    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    if (!el) return missing(ref);
     if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
     const options = [...el.options];
     const want = String(choice).trim().toLowerCase();
@@ -333,7 +376,7 @@
     let input;
     if (ref !== null && ref !== undefined) {
       const el = resolve(ref);
-      if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+      if (!el) return missing(ref);
       input = el.matches("input[type=file]") ? el : el.querySelector("input[type=file]");
       if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
     } else {
@@ -361,9 +404,17 @@
     return { ok: true };
   }
 
+  // The native setter, so framework value trackers (React) see a real edit.
+  function setValue(el, value, data) {
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
   async function typeText(ref, text, opts = {}) {
     const el = resolve(ref);
-    if (!el) return { error: `stale ref ${ref}; re-run snapshot` };
+    if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
     if (el.isContentEditable) {
@@ -373,15 +424,11 @@
       document.execCommand("insertText", false, text);
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
     } else if ("value" in el) {
-      const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
-      const before = opts.append ? String(el.value || "") : "";
-      setter.call(el, before + text);
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      setValue(el, (opts.append ? String(el.value || "") : "") + text, text);
     } else {
       return { error: "element is not editable" };
     }
+    if (el.type === "password") return { ok: true };
     return { ok: true, value: (el.value ?? el.textContent ?? "").slice(0, 200) };
   }
 
@@ -409,7 +456,7 @@
   }
 
   function pressKey(ref, spec) {
-    const el = resolve(ref) || document.activeElement || document.body;
+    const el = (ref === null || ref === undefined ? null : resolve(ref)) || document.activeElement || document.body;
     const { key, flags } = parseKey(spec);
     const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
     el.dispatchEvent(new KeyboardEvent("keydown", common));
@@ -452,13 +499,23 @@
     return out + text.slice(at);
   }
 
+  // Default root: the page's main region, or its only article; otherwise the
+  // whole body (the first of many articles is a card, not the content).
+  // query keeps the lines containing it, searched across the whole body.
   function extract(opts = {}) {
-    const mode = opts.selector ? "selector" : "main";
-    let root = null;
-    if (mode === "selector") root = document.querySelector(opts.selector);
-    else root = document.querySelector("main, article, [role=main]") || document.body;
+    let root;
+    if (opts.selector) root = document.querySelector(opts.selector);
+    else if (opts.query) root = document.body;
+    else {
+      const articles = document.querySelectorAll("article");
+      root = document.querySelector("main, [role=main]") || (articles.length === 1 ? articles[0] : document.body);
+    }
     if (!root) return { error: "no content root" };
-    const text = visibleText(root).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    let text = visibleText(root).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if (opts.query) {
+      const q = String(opts.query).toLowerCase();
+      text = text.split("\n").filter((line) => line.toLowerCase().includes(q)).join("\n");
+    }
     const limit = opts.maxBytes || 20000;
     return {
       url: location.href,

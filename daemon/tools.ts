@@ -116,9 +116,9 @@ export async function evaluate(opts: { tab?: number; expression: string }) {
   return relay(tab, "eval", [str(opts.expression, "expression")], 30000);
 }
 
-export async function extract(opts: { tab?: number; selector?: string; maxBytes?: number }) {
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "extract", [{ selector: opts.selector, maxBytes: opts.maxBytes }]);
+  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes }]);
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -220,7 +220,7 @@ export type Tool = {
 };
 
 const TAB: Param = { type: "number", description: "tab id from open" };
-const REF: Param = { description: "ref from the latest snapshot" };
+const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
 const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
 
 // With `snapshot: true` an action also returns the page it led to, saving
@@ -245,6 +245,7 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
   if (!Object.hasOwn(ops, key)) throw new Error(`do must be ${Object.keys(ops).join(", ")}`);
   return ops[key]({ tab: a.tab as number | undefined });
 }
+
 
 export const TOOLS: Record<string, Tool> = {
   run: {
@@ -335,8 +336,8 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, maxBytes: { type: "number", description: "default 20000" } },
-    run: (a) => extract(a as { tab?: number; selector?: string; maxBytes?: number }),
+    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" } },
+    run: (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number }),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -389,7 +390,7 @@ export function formatResult(value: unknown): string {
       return `${JSON.stringify(rest)}\n\n${formatResult(page)}`;
     }
     if (Array.isArray(v.steps)) {
-      const lines = v.steps.map((s, i) => `[${i + 1} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
+      const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
       if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
       return lines.join("\n");
     }
@@ -403,7 +404,7 @@ export async function callTool(name: string, args: Record<string, unknown> = {})
   return tool.run(args);
 }
 
-type Step = { tool: string; value?: unknown; error?: string };
+type Step = { step: number; tool: string; value?: unknown; error?: string };
 type Steps = { steps: Step[]; notRun: number };
 
 function stepOf(step: unknown): { tool: string; args: Record<string, unknown> } {
@@ -415,22 +416,26 @@ function stepOf(step: unknown): { tool: string; args: Record<string, unknown> } 
 // run: several tools in one call, so an agent can open, act, read, and close
 // without a model turn between steps. A step without tab uses the tab the
 // latest open step made. Later steps usually depend on earlier ones, so the
-// first error stops the run.
+// first error stops the run, except that close steps still run: a failed run
+// must not leave its tab behind.
 async function runSteps(steps: unknown): Promise<Steps> {
   if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
   const done: Step[] = [];
   let opened: number | undefined;
-  for (const raw of steps as unknown[]) {
+  let failed = false;
+  for (const [i, raw] of (steps as unknown[]).entries()) {
     let tool = "?";
     try {
       const step = stepOf(raw);
       tool = step.tool;
+      if (failed && tool !== "close") continue;
       const value = await callTool(tool, opened === undefined || step.args.tab !== undefined ? step.args : { ...step.args, tab: opened });
       if (tool === "open" && value && typeof value === "object" && "id" in value && typeof value.id === "number") opened = value.id;
-      done.push({ tool, value });
+      done.push({ step: i + 1, tool, value });
     } catch (e) {
-      done.push({ tool, error: e instanceof Error ? e.message : String(e) });
-      break;
+      if (failed && tool !== "close") continue;
+      done.push({ step: i + 1, tool, error: e instanceof Error ? e.message : String(e) });
+      failed = true;
     }
   }
   return { steps: done, notRun: steps.length - done.length };

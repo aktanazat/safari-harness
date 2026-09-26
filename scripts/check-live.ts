@@ -140,6 +140,53 @@ check("run stops at the first failing step and says so",
   stopped.steps.length === 2 && /^stale ref 999/.test(stopped.steps[1].error ?? "") && stopped.notRun === 1 && stoppedTitle === "Example Domain",
   { stopped, stoppedTitle });
 
+// A failed run must not leave its tab open: close steps still run.
+const before2 = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const cleaned = await call("run", { steps: [
+  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "click", args: { ref: "999" } },
+  { tool: "eval", args: { expression: "1" } },
+  { tool: "close" },
+] });
+const left2 = ((await call("tabs")) as Tab[]).filter((t) => !before2.has(t.id));
+for (const t of left2) await call("close", { tab: t.id });
+check("a failed run still runs its close step",
+  left2.length === 0 && cleaned.notRun === 1 && cleaned.steps.at(-1)?.tool === "close" && cleaned.steps.at(-1)?.step === 4 && cleaned.steps.at(-1)?.error === undefined,
+  { cleaned, left2 });
+
+// ---------- acting without a snapshot ----------
+
+// A hidden copy of the button comes first, and a <menu> element shares the
+// button's text as its tag name; neither may take the click.
+const TARGETS = '<div style="display:none"><button onclick="document.title=\'hidden copy\'">Menu</button></div>' +
+  "<menu><li>list</li></menu><label>Email <input id=em></label><label>Secret <input id=pw type=password></label>" +
+  "<button id=go>Menu</button><article>card one</article><article>card two</article><form>19 results</form>";
+const TARGETS_JS = 'document.getElementById("go").onclick = () => { document.title = "clicked " + document.getElementById("em").value; }';
+
+await withPage(TARGETS, TARGETS_JS, async (tab) => {
+  const r = await call("run", { steps: [
+    { tool: "type", args: { tab, ref: "Email", text: "a@b.c" } },
+    { tool: "click", args: { tab, ref: "Menu" } },
+    { tool: "info", args: { tab } },
+  ] });
+  check("type by label and click by text act on the visible control, without a snapshot",
+    r.steps[2]?.value?.title === "clicked a@b.c", r);
+
+  await call("type", { tab, ref: "#em", text: "by css" });
+  const byCss = (await call("eval", { tab, expression: 'document.getElementById("em").value' })).result;
+  check("type by CSS selector reaches the field", byCss === "by css", byCss);
+
+  const none = await call("click", { tab, ref: "Nowhere to be found" }).then((v) => `resolved: ${JSON.stringify(v)}`, (e: Error) => e.message);
+  check("a target that matches nothing is an error", none.includes("nothing on the page matches Nowhere to be found"), none);
+
+  const typed = await call("type", { tab, ref: "Secret", text: "hunter2" });
+  check("typing into a password field does not echo it", !JSON.stringify(typed).includes("hunter2"), typed);
+
+  const q = await call("extract", { tab, query: "results" });
+  check("extract query keeps only the matching lines, from anywhere on the page", q.text === "19 results", q.text);
+  const whole = await call("extract", { tab });
+  check("extract reads the whole page when it has several articles and no main", /card one[\s\S]*card two/.test(whole.text), whole.text);
+});
 // ---------- waiting in a hidden tab ----------
 
 // Safari stops a content script's timers in a hidden tab about two seconds
