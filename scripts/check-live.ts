@@ -386,6 +386,15 @@ await withPage("<p>page</p>", `${PAGE_VAR_JS}; ${TRUSTED_TYPES_JS}`, async (tab)
   check("eval page: true runs on a page that demands Trusted Types", r === 42, r);
 });
 
+// Safari passes results on as JSON and aborts the whole browser on a NaN or
+// Infinity; a result holding them must come back, with Safari still up.
+await withPage("<p>page</p>", "", async (tab) => {
+  for (const page of [false, true]) {
+    const r = (await call("eval", { tab, page, expression: "({ a: NaN, b: [Infinity, 1] })" })).result;
+    check(`eval${page ? " page: true" : ""} returns NaN and Infinity as null without crashing Safari`, JSON.stringify(r) === '{"a":null,"b":[null,1]}', r);
+  }
+});
+
 // ---------- screenshots ----------
 
 function pngSize(bytes: Uint8Array): { w: number; h: number } {

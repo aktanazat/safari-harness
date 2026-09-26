@@ -1298,11 +1298,15 @@
     return { ok: true, tag: el.tagName };
   }
 
+  // Safari hands every reply to its native side as JSON, and a NaN or
+  // Infinity anywhere in it aborts the whole browser (Foundation throws in
+  // _writeJSONNumber), so replies go out as plain JSON: a non-finite number
+  // on its own becomes its name, and one inside an object becomes null.
   function safeClone(v) {
+    if (v === undefined) return null;
+    if (typeof v === "number" && !Number.isFinite(v)) return String(v);
     try {
-      if (v === undefined) return null;
-      JSON.stringify(v);
-      return v;
+      return JSON.parse(JSON.stringify(v));
     } catch {
       return String(v);
     }
@@ -1317,7 +1321,7 @@
     // { error }; send those as errors so callers never mistake them for success.
     const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
       ? { id: msg.id, error: value.error }
-      : { id: msg.id, value };
+      : { id: msg.id, value: safeClone(value) };
     let out;
     try {
       out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));

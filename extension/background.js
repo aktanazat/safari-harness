@@ -351,8 +351,11 @@ async function pageEval(src) {
       const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
       v = await new Function(policy.createScript(code))();
     }
+    // Safari passes this result on as JSON and aborts the whole browser on a
+    // NaN or Infinity anywhere in it, so it leaves as plain JSON.
     if (v === undefined) return { ok: true, result: null };
-    try { JSON.stringify(v); return { ok: true, result: v }; } catch { return { ok: true, result: String(v) }; }
+    if (typeof v === "number" && !Number.isFinite(v)) return { ok: true, result: String(v) };
+    try { return { ok: true, result: JSON.parse(JSON.stringify(v)) }; } catch { return { ok: true, result: String(v) }; }
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
