@@ -9,6 +9,7 @@ This is the user's pharmacy account: prescriptions, stores, and payment. Show th
 ## Signed in or not
 - Load `https://www.cvs.com/pharmacy/rx/prescriptions`. Signed in, it lists the prescriptions; signed out, the page sends the tab to `https://www.cvs.com/`.
 - Signed in, the sign-in page (`/account-login/look-up`) also sends the tab to the home page. In a background tab that redirect waits until the tab comes to the front, so a sign-in form that sat still in the background and vanished on `activate` or `real_input` means the account is already signed in. Check the prescriptions page before signing in.
+- "Keep me signed in" does not hold for long: on 2026-09-27 the account was signed out a few hours after an order. Entering the email and `Continue` then showed a "Passkey not recognized" dialog; `Sign in another way` led to the one-time-code page, which went to the home page once the tab came to the front, and the prescription list loaded. No code came by text, but that session ended within 10 minutes, and the same email step 10 minutes later brought Akamai's challenge and "It looks like you're having problems connecting". Do not sign in from an unattended routine; a sign-in the user completes himself (passkey or texted code) held for days in September.
 
 ## Signing in
 - Email first, then a one-time code or a passkey; there is no password step. The code comes by text from 63641 ("Your CVS account verification code is ..."): read it with `imessage_wait_code` and never repeat it. A passkey prompt is the user's to approve.

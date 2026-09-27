@@ -314,6 +314,10 @@ safari routine remove price-watch
 - Each run writes its full output to
   `~/Library/Logs/safari-harness/routines/<name>-<time>.log`. `routine list`
   shows the latest run and its exit code.
+- A watch that should speak only when something changes keeps its last
+  reading in a file the prompt names (for example
+  `~/.local/share/safari-harness/state/<name>.json`), compares, and alerts
+  only on a difference. The prompt says how to alert.
 - A daily routine missed while the Mac slept runs when it wakes.
 - Routines need the daemon always on: `safari daemon install`.
 
