@@ -100,7 +100,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              scheduled tasks run through omp
 
   safari guide sites                         sites with a usage guide
-  safari guide <site|host>                   one site's guide (e.g. amazon, x.com)
+  safari guide <site|host>                   one site's guide (e.g. slack, x.com)
   safari guide repl                          the REPL's API and recipes
 
   safari imessage chats [--limit N]          recent conversations

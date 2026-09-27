@@ -4,6 +4,8 @@ hosts: gmail.com, mail.google.com
 ---
 # Gmail
 
+Signed out, or on an account Gmail wants to re-check, the global throws "not signed in to Gmail in Safari". Ask the user to open Gmail in Safari and sign in, then run it again.
+
 ## In safari repl
 
 The `gmail` global reads mail through the signed-in Safari session, in a background tab of its own. `account` is the `/u/<n>/` index (from `googleAccounts.list()`) or the account's email; thread ids come from search results.

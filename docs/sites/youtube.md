@@ -4,6 +4,8 @@ hosts: youtube.com, www.youtube.com, m.youtube.com, youtu.be
 ---
 # YouTube
 
+No sign-in is needed: the global reads YouTube as a signed-out visitor.
+
 ## In safari repl
 The `youtube` global reads YouTube through the page's own data calls from a background tab of its own, without the account signature the page adds, so YouTube answers as signed out: searches and lookups never land in the owner's search or watch history, and the player is never started. All methods are reads; a video may be given as an id, a watch, Shorts, live, or embed URL, or a `youtu.be` link.
 

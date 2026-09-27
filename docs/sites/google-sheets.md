@@ -4,6 +4,8 @@ hosts: docs.google.com/spreadsheets
 ---
 # Google Sheets
 
+Spreadsheets are read through their export links, so the editor never opens and nothing changes in the sheet.
+
 ## In safari repl
 
 The `googleSheets` global reads a spreadsheet through its export endpoints with the signed-in Safari session; the grid is never opened in the editor.

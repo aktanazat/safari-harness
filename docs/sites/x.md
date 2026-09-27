@@ -4,6 +4,8 @@ hosts: x.com, twitter.com, www.x.com, mobile.twitter.com
 ---
 # X
 
+Signed out, the global throws "not signed in to x.com in Safari". If Safari is on the wrong account, the user switches accounts from the account menu at the bottom of the left column on `x.com/home` instead of signing out.
+
 ## In safari repl
 The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state.
 - `x.getMe()`: the signed-in account: id, handle, name, bio, follower and following counts.

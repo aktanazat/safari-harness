@@ -54,7 +54,7 @@ passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
 cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
 docs/GUIDE.md       usage guide for agents and people (`safari guide`)
-docs/sites/         per-site guides (`safari guide <site>`)
+docs/sites/         one guide per repl site global (`safari guide <site>`)
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it

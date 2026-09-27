@@ -4,6 +4,10 @@ hosts: slack.com, app.slack.com, www.slack.com
 ---
 # Slack
 
+A workspace host like `<workspace>.slack.com` matches this guide too.
+
+Signed out, the global throws "not signed in to Slack in Safari". A workspace whose stored session has expired says it needs a fresh sign-in. Ask the user to sign in to Slack in Safari, then run it again.
+
 ## In safari repl
 The `slack` global reads Slack through the session in Safari, from one background tab of its own; it boots the Slack client only when the stored workspaces are missing. Reading this way marks nothing as read.
 - `slack.listWorkspaces()`: the workspaces signed in: team id, name, domain, url, your user id, and which was used last.

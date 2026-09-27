@@ -4,6 +4,14 @@ hosts: linkedin.com, www.linkedin.com
 ---
 # LinkedIn
 
+This is the user's real account, and LinkedIn restricts accounts that act in bursts. Read in small batches, and confirm the full list with the user before anything that sends more than one message or invitation.
+
+The global stops with an error instead of retrying when LinkedIn pushes back:
+- signed out or sent to a sign-in page: "not signed in to LinkedIn in Safari"; the user signs in again.
+- HTTP 429: rate-limited; wait a few minutes.
+- HTTP 999: blocked; stop for at least a minute.
+- a redirect to a checkpoint page: the account is being challenged; stop and let the user sign in by hand.
+
 ## In safari repl
 The `linkedin` global reads LinkedIn through the session in Safari, from one background tab of its own, with the same requests the LinkedIn web app makes. Requests are paced 1 to 1.75 s apart on their own. Reading the inbox or a conversation this way marks nothing as read.
 - `linkedin.getMe()`: the signed-in member: name, headline, public id, profile url.

@@ -4,6 +4,8 @@ hosts: docs.google.com/document
 ---
 # Google Docs
 
+Documents are read through their export links, so the editor never opens and nothing changes in the document.
+
 ## In safari repl
 
 The `googleDocs` global reads a document through its export endpoints with the signed-in Safari session; nothing is opened in the editor.

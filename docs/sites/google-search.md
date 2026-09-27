@@ -4,6 +4,8 @@ hosts: google.com, www.google.com
 ---
 # Google Search
 
+No sign-in is needed. If Google shows its "unusual traffic" check, only the user can pass it, in Safari.
+
 ## In safari repl
 The `googleSearch` global loads the results page in a background tab of its own and reads the organic results off it, so Google sees the owner's normal Safari session. It is a read; nothing is clicked or changed. Searches go out one at a time, at least three seconds apart, and a query that lands on Google's "unusual traffic" page throws an error naming that page: the owner passes the check in Safari, then the search is run again.
 

@@ -190,21 +190,10 @@ or requests made before capture started.
 
 ## Site guides
 
-`safari guide sites` lists the sites with a guide; `safari guide amazon` or
-`safari guide x.com` prints one. A guide gives the site's direct addresses,
-which part of the page to snapshot (`root`), how to tell the user is signed
-in, keyboard shortcuts, and its limits on sending. Read it before working on
-that site.
-
-### Sign-in recipes that are not obvious
-
-- One Medical: sign in through Amazon ("Sign in with Amazon"), not a
-  One Medical password.
-- X: open `x.com/home`; if it shows the wrong account, use the account
-  switcher at the bottom of the left column instead of signing out.
-- eBay: signed in when the header greets the user by name ("Hi <name>!").
-- Poshmark: signs in with Apple (the "Continue with Apple" button), which
-  asks for Touch ID on the Mac.
+`safari guide sites` lists the sites with a guide; `safari guide slack` or
+`safari guide x.com` prints one. There is a guide for each site `safari repl`
+has a global for: what signed out looks like, the site's limits, and the
+global's methods. Read it before working on that site.
 
 ## Logged-in sites and secrets
 
@@ -216,8 +205,8 @@ Snapshots show a password, card number, or one-time-code field only as
 
 Signing in:
 
-- Check for an existing session first (the site guide says how). Most sites
-  the user uses are already signed in.
+- Check for an existing session first: open the site and snapshot it. Most
+  sites the user uses are already signed in.
 - Saved logins come from the user's Apple Passwords through the `passwords`
   tool. Pairing takes the user's code once per daemon run:
   1. `passwords {do: "pair"}` makes the Mac show a 6-digit code.

@@ -55,7 +55,7 @@ Rules:
 - After every click or type, call snapshot (or info + extract) to observe the result before acting again.
 - Prefer extract for reading article text; eval for structured data (JSON from the DOM).
 - Do one thing per step. Never invent refs you have not seen in a snapshot.
-- Before working on a site, call site_guide with its domain: it gives the site's known addresses, what to read, and its traps.
+- Before working on a site, call site_guide with its domain: it says what signed out looks like and the site's limits.
 - For facts about the user (their address, accounts, preferences, past decisions), call memory_search, then memory_read for a whole record; browsing_history finds pages they visited. Put what you learn from these into a page only when the task needs it.
 - If a page needs login the user is already logged into, use their existing session; do not ask for credentials.
 - If a sign-in asks for a code sent by text, call imessage_wait_code and type the code in; never repeat it in your reply.
@@ -108,7 +108,7 @@ const CONTEXT_TOOLS: Record<string, Tool> = {
     run: memoryRead,
   },
   site_guide: {
-    desc: "The usage guide for a site: its known addresses, what to read and click, and its traps. Pass a domain or name, e.g. amazon.com or gmail; sites lists every guide.",
+    desc: "The usage guide for a site: what signed out looks like, its limits, and the repl global that reads it. Pass a domain or name, e.g. x.com or gmail; sites lists every guide.",
     params: { site: { type: "string", description: "domain, address, or site name" } },
     required: ["site"],
     run: async (a) => (await siteGuide(String(a.site ?? ""))) ?? `no guide for ${String(a.site)}; site_guide {site: "sites"} lists them`,

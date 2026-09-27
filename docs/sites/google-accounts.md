@@ -4,6 +4,8 @@ hosts: accounts.google.com
 ---
 # Google Accounts
 
+This guide covers which Google accounts Safari is signed in to. Gmail, Docs, and Sheets pick an account by its `/u/<n>/` index or its email.
+
 ## In safari repl
 
 The `googleAccounts` global names the accounts Safari is signed in to, from the account menu Google apps show.

@@ -4,6 +4,8 @@ hosts: notion.so, www.notion.so, notion.site, notion.com, www.notion.com
 ---
 # Notion
 
+The web app lives at `app.notion.com`. Signed out, the global throws "not signed in to Notion in Safari". Ask the user to sign in there, then run it again.
+
 ## In safari repl
 The `notion` global reads Notion through the session in Safari, from one background tab of its own. Nothing in it writes.
 - `notion.listAccounts()`: the accounts signed in, each with its user id, name, email, and spaces.
