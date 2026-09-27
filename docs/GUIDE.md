@@ -158,6 +158,11 @@ Wait for the page, not the clock.
   `wait` for the text you expect.
 - `wait` with only `ms` is a plain sleep. Use it only when nothing on the page
   signals the change.
+- A background tab runs the page's own timers slowly, so a web app may
+  redirect or fill in only once its tab comes to the front. A page that sat
+  still in the background and changed on `activate`, `shot`, or
+  `real_input` is usually the site's own script catching up, not a reaction
+  to the harness: a signed-in site leaving its sign-in page, for example.
 
 ## Network and console
 
