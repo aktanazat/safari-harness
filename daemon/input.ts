@@ -7,54 +7,20 @@
 // port. Real input lands on whatever is on screen, so the tab comes to the
 // front for the moment it takes.
 
-import { execFile } from "node:child_process";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { inFront, input, type TabOps } from "./front.ts";
 import { rpc } from "./rpc.ts";
 import type { TabInfo, Tool } from "./tools.ts";
 
-const execFileAsync = promisify(execFile);
-const INPUT = join(import.meta.dir, "..", "scripts", "input");
-const SAFARI = "com.apple.Safari";
-
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
-
-// Runs the helper and parses its one JSON line; failures carry its stderr.
-async function input(args: string[], timeout = 10000): Promise<unknown> {
-  try {
-    const { stdout } = await execFileAsync(INPUT, args, { timeout });
-    return JSON.parse(stdout);
-  } catch (e) {
-    const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
-    throw new Error(`input ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
-  }
-}
 
 function tabOf(a: Record<string, unknown>): number {
   if (typeof a.tab !== "number" || !Number.isInteger(a.tab)) throw new Error("tab must be a tab id from open");
   return a.tab;
 }
 
-// Brings the tab to the front of its window and Safari to the front of the
-// screen, runs act, then gives back the tab and the app the user had in
-// front. Restoring is best effort: act has already happened, and an error
-// here would invite a retry that repeats it.
-async function inFront<T>(tab: number, act: () => Promise<T>): Promise<T> {
-  const { bundleId } = (await input(["front"])) as { bundleId: string };
-  const tabs = (await rpc("tabs")) as TabInfo[];
-  const target = tabs.find((t) => t.id === tab);
-  if (!target) throw new Error(`no tab ${tab}`);
-  const previous = tabs.find((t) => t.windowId === target.windowId && t.active && t.id !== tab);
-  try {
-    await rpc("activate", { tab });
-    await input(["activate", SAFARI]);
-    return await act();
-  } finally {
-    if (previous) await rpc("activate", { tab: previous.id }).catch(() => {});
-    if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
-  }
-}
+// Real input reaches tabs through the daemon's RPC port.
+const VIA_RPC: TabOps = { tabs: async () => (await rpc("tabs")) as TabInfo[], activate: (tab) => rpc("activate", { tab }) };
 
 type PageState = { marks: number; focus: boolean };
 
@@ -140,13 +106,13 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     if (count !== 1 && count !== 2 && count !== 3) throw new Error("count must be 1, 2, or 3");
     const button = a.button ?? "left";
     if (button !== "left" && button !== "right") throw new Error("button must be left or right");
-    const at = await inFront(tab, () => clickRef(tab, a.ref, count, button));
+    const at = await inFront(tab, VIA_RPC, () => clickRef(tab, a.ref, count, button));
     return { ok: true, at };
   },
   type: async (tab, a) => {
     const text = a.text;
     if (typeof text !== "string") throw new Error("type needs text");
-    await inFront(tab, async () => {
+    await inFront(tab, VIA_RPC, async () => {
       if (a.ref !== undefined) await clickRef(tab, a.ref, 1, "left");
       // A character takes about 25 ms; allow twice that.
       await post(tab, ["type", text], true, 10000 + text.length * 50);
@@ -156,7 +122,7 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
   key: async (tab, a) => {
     const key = a.key;
     if (typeof key !== "string") throw new Error("key needs key");
-    await inFront(tab, () => post(tab, ["key", key], true));
+    await inFront(tab, VIA_RPC, () => post(tab, ["key", key], true));
     return { ok: true };
   },
 };

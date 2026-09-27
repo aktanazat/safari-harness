@@ -58,8 +58,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari extract [--tab N] [--selector s]    readable text
   safari info [--tab N]                      url/title/scroll
   safari wait <ms> [--tab N]                 sleep in the page
-  safari wait [--selector s] [--text t] [--ms timeout] [--tab N]
-                                             wait until it is on the page
+  safari wait [--selector s] [--text t] [--ms timeout] [--tab N] [--front]
+                                             wait until it is on the page; --front
+                                             holds the tab on screen meanwhile
   safari net start|stop|read [--tab N]       fetch/XHR capture
   safari console start|read [--tab N]        console capture
   safari cookies [--tab N]                   cookies for the page
@@ -453,6 +454,7 @@ async function main() {
       if (sel) args.selector = sel;
       const text = flag("text", rest);
       if (text) args.text = text;
+      if (hasFlag("front", rest)) args.front = true;
       break;
     }
     case "net": case "console":

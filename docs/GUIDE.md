@@ -163,6 +163,11 @@ Wait for the page, not the clock.
   still in the background and changed on `activate`, `shot`, or
   `real_input` is usually the site's own script catching up, not a reaction
   to the harness: a signed-in site leaving its sign-in page, for example.
+- `wait` with `front: true` holds the tab on screen until the text appears
+  or `ms` runs out (with only `ms`, for that long), then gives back the
+  user's tab and app. Use it for a page that stalls while hidden. It takes
+  the screen from the user for that time, so keep `ms` short. It needs no
+  Accessibility permission, so it works in a routine.
 
 ## Network and console
 

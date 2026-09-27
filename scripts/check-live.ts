@@ -433,6 +433,20 @@ await withPage(TRUST, "", async (tab) => {
   check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === front, { typed, nowFront, front });
 });
 
+// The daemon runs wait's front itself, under launchd, where only the helper
+// verbs that need no Accessibility permission work. This covers bringing the
+// tab forward in its window; Safari coming to the front matters only when
+// another app covers Safari's window, which a check cannot arrange.
+const SHOWN = `<p id=out></p>`;
+const SHOWN_JS = `document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") document.getElementById("out").textContent = "Now visible"; })`;
+
+await withPage(SHOWN, SHOWN_JS, async (tab) => {
+  const hidden = await call("wait", { tab, text: "Now visible", ms: 1500 });
+  const shown = await call("wait", { tab, text: "Now visible", ms: 5000, front: true });
+  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+  check("wait front shows a hidden tab until its text appears, then gives the front tab back", !hidden.found && shown.found && nowFront === front, { hidden, shown, nowFront, front });
+});
+
 // ---------- browsing history ----------
 
 // Runs in this process: reading History.db needs the terminal's Full Disk Access.

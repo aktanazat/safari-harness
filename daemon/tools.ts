@@ -3,6 +3,7 @@
 
 import { bridge } from "./bridge.ts";
 import { fill, fillCode, loginsFor, passwords } from "./passwords.ts";
+import { inFront } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -529,8 +530,11 @@ export const TOOLS: Record<string, Tool> = {
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
     desc: "Wait until text or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
-    params: { tab: TAB, text: { type: "string", description: "visible text" }, selector: { type: "string", description: "CSS selector" }, ms: { type: "number", description: "timeout, or sleep length" } },
-    run: (a) => wait(a as { tab?: number; ms?: number; selector?: string; text?: string }),
+    params: { tab: TAB, text: { type: "string", description: "visible text" }, selector: { type: "string", description: "CSS selector" }, ms: { type: "number", description: "timeout, or sleep length" }, front: { type: "boolean", description: "keep the tab on screen meanwhile" } },
+    run: (a) => {
+      const o = a as { tab?: number; ms?: number; selector?: string; text?: string; front?: boolean };
+      return o.front ? inFront(num(o.tab, "tab"), { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
+    },
   },
   net: {
     desc: "Record the page's fetch/XHR requests: start, then read (url, method, status, time); stop ends it.",

@@ -17,8 +17,10 @@ type Call = { tool: string; args: Record<string, unknown> };
 // The repl tool (665) brought it to 16,893: one call runs a whole script, a
 // loop over pages or a download or a signed-in site's own API, that would
 // otherwise cost a turn per step; the address and Bitwarden fill tools stay
-// off the list, reached through repl and the CLI.
-const TOOL_LIST_MAX_BYTES = 16_950;
+// off the list, reached through repl and the CLI. Holding a tab on screen
+// during wait (76) brought it to 16,979: a routine can finish a sign-in
+// page that stalls in a hidden tab without Accessibility permission.
+const TOOL_LIST_MAX_BYTES = 16_979;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
