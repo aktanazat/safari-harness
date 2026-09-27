@@ -10,7 +10,6 @@
   "scripts": {
     "serve": "bun daemon/main.ts serve",
     "mcp": "bun daemon/main.ts mcp",
-    "build-ext": "bun scripts/build-extension.ts",
     "helpers": "swiftc -O scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O scripts/input.swift -o scripts/input",
     "check": "bun scripts/check-live.ts"
   }
