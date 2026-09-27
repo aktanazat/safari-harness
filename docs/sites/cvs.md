@@ -23,6 +23,12 @@ This is the user's pharmacy account: prescriptions, stores, and payment. Show th
 - `Check out` shows the review. `Place order` places the order and lands on the orders page with "Thanks for your order"; the order reads "Order received" at the chosen store.
 - For a store refill the cart and checkout offered only pickup (September 2026). The "Ship to me" choice sits in an "Avoid Delays" box that CVS shows for an item the store cannot fill.
 
+## Insurance
+- `https://www.cvs.com/account/profile/insurance` lists the card types on file ("Insurance card on file for: Prescriptions", a date) but not the plan or member ID. After an order is rejected as "Pharmacy not in network", this page does not say which plan was billed.
+- `Add insurance` goes to `/account/profile/insurance/add`, which asks for pictures of the card's front and back. The three file inputs sit inside the shadow roots of `cvs-file-upload` elements, so `snapshot` lists none of them and `upload` cannot reach them. Set `input.files` from `eval` with a `DataTransfer` and dispatch `change`; the box then reads "Front of card image is uploaded".
+- `Next` sends the pictures to CVS, which reads them. The next page, `/insurance/review`, comes back filled in: relationship "Self", plan name, member ID. For a California Medi-Cal card it read "California Medicaid (Medi-Cal)" and the right ID.
+- On 2026-09-27 the review page's `Next` failed every time for a Medi-Cal card with "Please try that again / Something went wrong on our end", and nothing was saved. It failed after a fresh sign-in, after a clean second upload, and with a `real_input` click. If it fails the same way again, the card has to go to the store: at the counter or by phone.
+
 ## Page behavior
 - In a background tab the pages finish their own work slowly: the prescription list took about 7 s to appear. `wait` for the text you expect ("Place order", the drug name) rather than sleeping.
 - The page keeps many closed, empty dialogs in the DOM ("Loading modal", "Prior authorization modal"); snapshots list them, and they can be ignored.
