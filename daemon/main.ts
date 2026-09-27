@@ -60,7 +60,10 @@ function refuse(req: Request, url: URL): Response {
   return new Response("forbidden", { status: 403 });
 }
 
+// Both servers bind 127.0.0.1: Bun's default is every interface, which let
+// anyone on the same network drive Safari. Remote use goes over ssh (host.ts).
 const server = Bun.serve<SocketScope>({
+  hostname: "127.0.0.1",
   port: wsPort,
   fetch(req, srv) {
     const url = new URL(req.url);
@@ -106,6 +109,7 @@ const server = Bun.serve<SocketScope>({
 });
 
 const rpcServer = Bun.serve({
+  hostname: "127.0.0.1",
   port: httpPort,
   async fetch(req) {
     const url = new URL(req.url);
