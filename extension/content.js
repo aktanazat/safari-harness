@@ -997,17 +997,38 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // A rich editor (ProseMirror, Lexical, Draft.js, Slate) keeps its own
+  // model of the text and redraws the element from it, so an edit reaches it
+  // only as input events: clearing the element's text behind its back left
+  // the old text in the model. execCommand edits as typing does. Where it
+  // does nothing, the edit is offered as a beforeinput the editor may take
+  // over, and made by hand only if it does not.
+  function replaceEditable(el, text, append) {
+    if (append && !text) return;
+    const selection = getSelection();
+    selection.selectAllChildren(el);
+    if (append) selection.collapseToEnd();
+    if (document.execCommand(text ? "insertText" : "delete", false, text)) return;
+    const inputType = text ? "insertText" : "deleteContent";
+    const data = text || null;
+    if (!el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType, data }))) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    if (append) range.collapse(false);
+    range.deleteContents();
+    if (text) range.insertNode(document.createTextNode(text));
+    selection.selectAllChildren(el);
+    selection.collapseToEnd();
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+  }
+
   async function typeText(ref, text, opts = {}) {
     const el = resolve(ref);
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
     if (el.isContentEditable) {
-      if (!opts.append) {
-        el.textContent = "";
-      }
-      document.execCommand("insertText", false, text);
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      replaceEditable(el, text, opts.append);
     } else if ("value" in el) {
       setValue(el, (opts.append ? String(el.value || "") : "") + text, text);
     } else {

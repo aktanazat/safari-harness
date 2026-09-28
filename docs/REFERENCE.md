@@ -179,6 +179,9 @@ again to a file instead of fetching it twice.
 - `click` a target, `type` text into one (`append: true` keeps existing
   text), `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your
   tab.
+- `type` in a rich editor (a contenteditable chat box or document) goes
+  through the editor's own editing events, so the editor keeps the text;
+  `append: true` adds at the end.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
 - `hover` opens menus that appear on mouse-over.
