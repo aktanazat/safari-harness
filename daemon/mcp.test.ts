@@ -59,8 +59,11 @@ import { expect, test } from "bun:test";
 // still works, so an agent acts on it without another snapshot. Private
 // tabs, texted codes typed unseen, and pairing on the Mac (289) brought it
 // to 21,541: an agent gets its own tabs and a count of his, where it once
-// listed his whole Safari six times over, and never sees a code.
-const TOOL_LIST_MAX_BYTES = 21_541;
+// listed his whole Safari six times over, and never sees a code. Action
+// receipts and settle-aware waits (403) brought it to 21,944: a click the
+// page ignored says so in its own answer, and a wait ends on the first of
+// several texts, text gone, an address, or a quiet page, not a sleep.
+const TOOL_LIST_MAX_BYTES = 21_944;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

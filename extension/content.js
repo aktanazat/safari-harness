@@ -1012,6 +1012,7 @@
   function click(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
+    watchTarget(el);
     // Reading the position below forces layout, so no frame wait is needed;
     // background tabs never run requestAnimationFrame, so waiting on one hangs.
     el.scrollIntoView({ block: "center", behavior: "instant" });
@@ -1038,6 +1039,7 @@
   function selectOption(ref, choice) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
+    watchTarget(el);
     if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
     const options = [...el.options];
     const want = String(choice).trim().toLowerCase();
@@ -1533,6 +1535,7 @@
       while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
     }
     el ??= document.body;
+    watchTarget(el);
     const { key, flags } = parseKey(spec);
     const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
     el.dispatchEvent(new KeyboardEvent("keydown", common));
@@ -1795,8 +1798,268 @@
     };
   }
 
+  // ---------- action receipts ----------
+  // After a click, a key, or an option, the page is watched until it
+  // settles, and the action answers with what changed: its receipt, which
+  // receipt.ts in the daemon makes the action's effect. A click the page
+  // ignored then says so in its own answer, instead of in a snapshot a turn
+  // later. An action that loads another page or opens a tab is not
+  // watched: the extension reports where it led, as before.
+  //
+  // The watch lasts RECEIPT_SPAN.min at least, then until the page has held
+  // still for RECEIPT_SPAN.quiet, and RECEIPT_SPAN.max at most; a page still
+  // waiting on a request to its own site is watched to max.
+  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800 };
+  // wait's quiet: no change for 500 ms, for as long as the wait lasts
+  const QUIET_SPAN = { min: 0, quiet: 500, max: Infinity };
+  // Parts of a page that change by themselves (a clock, a progress bar, a
+  // playing video) and tags that draw nothing: changes there are no sign of
+  // an action, and neither are the harness's own marks (data-sh-ref).
+  const RESTLESS = "[role=timer], [role=marquee], [role=progressbar], progress, video, audio, canvas";
+  const UNDRAWN = /^(SCRIPT|STYLE|LINK|META|NOSCRIPT|TEMPLATE)$/;
+  const DIALOG_BOXES = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal="true"]';
+  let watched = null; // [{ el, before }] while an action is watched
+
+  // site, keepRequest, and urlMatch have the same bodies in
+  // daemon/receipt.ts, which reports requests and checks a wait's url with
+  // them; receipt.test.ts runs this block, and those, on its tables.
+  // ---- tested with daemon/receipt.test.ts: begin ----
+  function site(host) {
+    if (/^[\d.]+$/.test(host) || host.includes(":")) return host;
+    const labels = host.split(".");
+    const n = labels.length > 2 && labels[labels.length - 1].length === 2 && labels[labels.length - 2].length <= 3 ? 3 : 2;
+    return labels.slice(-n).join(".");
+  }
+
+  const BEACON = /^(collect|analytics|log|beacon|track|pixel)(\.\w+)?$/i;
+
+  function keepRequest(entry, page) {
+    const to = URL.parse(entry.url);
+    const from = URL.parse(page);
+    if (!to || !from || site(to.hostname) !== site(from.hostname)) return false;
+    if (entry.method !== "GET" && entry.method !== "POST") return true;
+    return !to.pathname.split("/").some((segment) => BEACON.test(segment));
+  }
+
+  function urlMatch(href, pattern) {
+    const re = /^\/(.+)\/([dgimsuvy]*)$/.exec(pattern);
+    return re ? new RegExp(re[1], re[2]).test(href) : href.includes(pattern);
+  }
+
+  // When a watch of the page ends: span.min after its start at the
+  // earliest, then once the page has held still for span.quiet since its
+  // last change (the start, when nothing changed), and span.max after the
+  // start at the latest. A page with requests still out (busy) is watched
+  // to span.max.
+  function settleAt(start, last, busy, span) {
+    return busy ? start + span.max : Math.min(start + span.max, Math.max(start + span.min, last + span.quiet));
+  }
+
+  // Whether the page's text shows want, case and spacing aside: "M240i"
+  // finds "M240 i", and a name the page breaks over two lines is found.
+  function shows(page, want) {
+    const squash = (t) => String(t).toLowerCase().replace(/\s+/g, "");
+    return squash(page).includes(squash(want));
+  }
+  // ---- tested with daemon/receipt.test.ts: end ----
+
+  // The element a change happened in: a text's parent, a shadow root's host.
+  const holder = (n) => (n.nodeType === Node.ELEMENT_NODE ? n : n.parentElement ?? n.getRootNode().host ?? null);
+  // Whether a node put in or taken out counts: an element that draws, or text.
+  const countable = (n) => (n.nodeType === Node.ELEMENT_NODE ? !UNDRAWN.test(n.tagName) : n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "");
+
+  function madeByPage(r) {
+    const at = holder(r.target);
+    if (!at || at.closest(RESTLESS)) return false;
+    if (r.type === "attributes") return !r.attributeName.startsWith("data-sh-");
+    return r.type === "characterData" || [...r.addedNodes, ...r.removedNodes].some(countable);
+  }
+
+  // Watches the page, shadow roots included, and hands seen each batch of
+  // the changes the page made (madeByPage).
+  function watchPage(seen) {
+    const opts = { childList: true, subtree: true, characterData: true, attributes: true };
+    // a change inside a shadow root reaches only an observer on that root
+    const watch = () => { for (const r of shadowRoots()) observer.observe(r, opts); };
+    const observer = new MutationObserver((records) => {
+      watch();
+      seen(records.filter(madeByPage));
+    });
+    observer.observe(document.documentElement, opts);
+    watch();
+    return observer;
+  }
+
+  // An element as a snapshot names it: button "Menu".
+  function named(el) {
+    const role = getExplicitRole(el) || el.localName;
+    const name = accessibleName(el);
+    return name ? `${role} "${name}"` : role;
+  }
+
+  function focusedNow() {
+    let el = document.activeElement;
+    while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  }
+
+  // What the page's world (dialogs.js) saw since `since`: the requests the
+  // page made, those still out, and the errors it did not catch. It answers
+  // within the ask. A page open since before the extension was has no
+  // dialogs.js, and answers nothing.
+  function hear(since) {
+    let heard = null;
+    const take = (e) => {
+      if (heard !== null || typeof e.detail !== "string") return;
+      try { heard = JSON.parse(e.detail); } catch {}
+    };
+    document.addEventListener("__sh_receipt_answer", take);
+    document.dispatchEvent(new CustomEvent("__sh_receipt_ask", { detail: JSON.stringify({ since }) }));
+    document.removeEventListener("__sh_receipt_answer", take);
+    return heard;
+  }
+
+  // The control an action is about to use, and those whose state it
+  // drives: the one around it that says whether it is expanded, the field a
+  // label clicks, and whatever these control (aria-controls). Their states
+  // now, to set beside their states once the page settles. A click that
+  // download makes is not watched.
+  function watchTarget(el) {
+    if (!watched) return;
+    const near = [el, el.closest("[aria-expanded], [aria-controls]"), el.tagName === "LABEL" ? el.control : null].filter(Boolean);
+    const controlled = near.flatMap((n) => (n.getAttribute("aria-controls") ?? "").split(/\s+/).filter(Boolean).map((id) => n.getRootNode().getElementById(id)));
+    for (const n of [...near, ...controlled]) if (n && !watched.some((w) => w.el === n)) watched.push({ el: n, before: stateOf(n) });
+  }
+
+  // Runs an action (withOutcome's) and answers once the page settles, with
+  // its receipt. Safari stops a content script's timers in a hidden tab: a
+  // tab the harness owns wakes the watch on its ticks (takeTicks), and any
+  // other hidden tab on a loop of messages, which Safari does not slow; the
+  // loop lasts only as long as the watch.
+  function withReceipt(run) {
+    const start = Date.now();
+    const url = location.href;
+    const focus = focusedNow();
+    const boxes = deepQueryAll(DIALOG_BOXES).filter(isVisible);
+    const raised = dialogLog.length;
+    let added = 0;
+    let removed = 0;
+    const changed = new Set();
+    let last = start;
+    let busy = false;
+    let wake = () => {};
+    // An element counts with all it holds; text put in or taken out
+    // changes the element it is in.
+    const count = (nodes, parent) => {
+      let n = 0;
+      for (const node of nodes) {
+        if (!countable(node)) continue;
+        if (node.nodeType === Node.ELEMENT_NODE) n += 1 + node.getElementsByTagName("*").length;
+        else changed.add(holder(parent));
+      }
+      return n;
+    };
+    const tally = (records) => {
+      for (const r of records) {
+        if (r.type !== "childList") changed.add(holder(r.target));
+        else {
+          added += count(r.addedNodes, r.target);
+          removed += count(r.removedNodes, r.target);
+        }
+      }
+    };
+    const observer = watchPage((records) => {
+      if (records.length) {
+        tally(records);
+        last = Date.now();
+        busy = false;
+      }
+      wake();
+    });
+    watched = [];
+    let res;
+    let targets;
+    try {
+      res = run();
+    } catch (e) {
+      observer.disconnect();
+      throw e;
+    } finally {
+      targets = watched;
+      watched = null;
+    }
+    if (!res || res.error || res.expect === "load" || res.expect === "tab") {
+      observer.disconnect();
+      return res;
+    }
+    return new Promise((resolve) => {
+      let open = true;
+      let away = false;
+      let timer = null;
+      const spin = document.hidden && !tickPort ? new MessageChannel() : null;
+      const check = () => {
+        const now = Date.now();
+        if (!busy && now >= settleAt(start, last, false, RECEIPT_SPAN)) busy = (hear(start)?.pending ?? []).some((e) => keepRequest(e, location.href));
+        const at = settleAt(start, last, busy, RECEIPT_SPAN);
+        if (now >= at) return finish();
+        clearTimeout(timer);
+        timer = setTimeout(check, at - now);
+      };
+      // Another document is on its way: the extension waits for it and
+      // reports where the action led, instead of a receipt.
+      const onNav = (e) => {
+        if (e.destination.sameDocument) return;
+        away = true;
+        finish();
+      };
+      const finish = () => {
+        if (!open) return;
+        open = false;
+        clearTimeout(timer);
+        spin?.port1.close();
+        document.removeEventListener("__sh_tick", check);
+        navigation.removeEventListener("navigate", onNav);
+        tally(observer.takeRecords().filter(madeByPage));
+        observer.disconnect();
+        if (away) return resolve({ ...res, expect: "load" });
+        const heard = hear(start);
+        const now = focusedNow();
+        const box = deepQueryAll(DIALOG_BOXES).find((b) => isVisible(b) && !boxes.includes(b));
+        resolve({
+          ...res,
+          receipt: {
+            added,
+            removed,
+            changed: changed.size,
+            url: location.href === url ? null : location.href,
+            focus: now === focus ? null : now && now !== document.body && now !== document.documentElement ? named(now) : "page",
+            states: targets.filter((t) => t.el.isConnected)
+              .map((t) => ({ who: named(t.el), before: t.before, after: stateOf(t.el) }))
+              .filter((s) => s.before.join("\n") !== s.after.join("\n")),
+            dialog: dialogLog.length > raised ? dialogLog[dialogLog.length - 1].type : box ? named(box) : null,
+            page: location.href,
+            requests: heard?.requests ?? null,
+            pending: heard?.pending ?? null,
+            errors: heard?.errors ?? [],
+          },
+        });
+      };
+      document.addEventListener("__sh_tick", check);
+      navigation.addEventListener("navigate", onNav);
+      if (spin) {
+        spin.port1.onmessage = () => {
+          check();
+          if (open) spin.port2.postMessage(null);
+        };
+        spin.port2.postMessage(null);
+      }
+      wake = check;
+      check();
+    });
+  }
+
   // ---------- wait ----------
-  // Resolves once the selector or text is on the page. It listens for DOM
+  // Resolves once the page shows what the wait asks for. It listens for DOM
   // changes instead of polling: Safari stops a content script's timers in a
   // hidden tab, and runs that tab's own work in late batches, but a change
   // the page makes wakes an observer in the same task. The extension asks
@@ -1805,30 +2068,72 @@
   // an older one.
   let pendingWait = null; // { id, done }
 
-  // Text matches as a click's target does: case and spacing aside.
-  function present(selector, text) {
-    if (selector && deepQuery(selector) === null) return false;
-    if (!text) return true;
-    const want = norm(text).toLowerCase();
-    return [document.body, ...inlineBodies()].some((b) => b && norm(readText(b, (el) => el.innerText ?? "")).toLowerCase().includes(want));
+  // The text of the page and of the frames in it that share its origin.
+  function pageText() {
+    return [document.body, ...inlineBodies()].map((b) => (b ? readText(b, (el) => el.innerText ?? "") : "")).join("\n");
   }
 
-  function waitFor(selector, text, id = null) {
+  // spec (wait in tools.ts), all of whose parts must hold:
+  //   text   the page shows it         any   it shows one of these (which)
+  //   gone   it no longer shows it     url   the address has this part, or
+  //   quiet  the page made no change          matches this /regex/
+  //          for 500 ms (QUIET_SPAN)
+  // Text matches case and spacing aside (shows). gone, url, and quiet are
+  // the top page's to decide: an embedded frame answers at once that it has
+  // not seen them. quiet comes with time, so it also wakes on a timer, and
+  // on an owned tab's ticks where Safari holds the timer.
+  function waitFor(selector, spec, id = null) {
     pendingWait?.done(false);
-    if (present(selector, text)) return { found: true };
+    const want = spec ?? {};
+    if (window !== window.top && (want.gone != null || want.url != null || want.quiet)) return { found: false };
+    const start = Date.now();
+    let last = start;
+    const met = () => {
+      if (selector && deepQuery(selector) === null) return null;
+      if (want.url != null && !urlMatch(location.href, want.url)) return null;
+      if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
+      if (want.text == null && want.gone == null && want.any == null) return { found: true };
+      const page = pageText();
+      if (want.text != null && !shows(page, want.text)) return null;
+      if (want.gone != null && shows(page, want.gone)) return null;
+      if (want.any == null) return { found: true };
+      const which = want.any.find((t) => shows(page, t));
+      return which === undefined ? null : { found: true, which };
+    };
+    const now = met();
+    if (now) return now;
     return new Promise((resolve) => {
-      const opts = { childList: true, subtree: true, characterData: true, attributes: true };
-      // a change inside a shadow root reaches only an observer on that root
-      const watch = () => { for (const r of shadowRoots()) observer.observe(r, opts); };
-      const observer = new MutationObserver(() => { watch(); if (present(selector, text)) done(true); });
-      const done = (found) => {
-        observer.disconnect();
-        if (pendingWait?.done === done) pendingWait = null;
-        resolve({ found });
+      let timer = null;
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(check, settleAt(start, last, false, QUIET_SPAN) - Date.now());
       };
-      pendingWait = { id, done };
-      observer.observe(document.documentElement, opts);
-      watch();
+      const check = () => {
+        const m = met();
+        if (m) done(m);
+        else if (want.quiet) arm();
+      };
+      const tick = () => { if (Date.now() >= settleAt(start, last, false, QUIET_SPAN)) check(); };
+      const observer = watchPage((records) => {
+        if (records.length) last = Date.now();
+        check();
+      });
+      const done = (answer) => {
+        observer.disconnect();
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", tick);
+        navigation.removeEventListener("currententrychange", check);
+        if (pendingWait === mine) pendingWait = null;
+        resolve(answer);
+      };
+      const mine = { id, done: (found) => done({ found }) };
+      pendingWait = mine;
+      // the address can change with no change to the page (pushState)
+      if (want.url != null) navigation.addEventListener("currententrychange", check);
+      if (want.quiet) {
+        document.addEventListener("__sh_tick", tick);
+        arm();
+      }
     });
   }
 
@@ -2222,9 +2527,9 @@
 
   const handlers = {
     snapshot,
-    click: (ref) => withOutcome(() => click(ref)),
+    click: (ref) => withReceipt(() => withOutcome(() => click(ref))),
     type: (ref, text, opts) => typeText(ref, text, opts),
-    press: (ref, spec) => withOutcome(() => pressKey(ref, spec)),
+    press: (ref, spec) => withReceipt(() => withOutcome(() => pressKey(ref, spec))),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
     data: pageData,
@@ -2249,9 +2554,9 @@
     waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
-    clickAt: (x, y) => withOutcome(() => clickAt(x, y)),
+    clickAt: (x, y) => withReceipt(() => withOutcome(() => clickAt(x, y))),
     hover,
-    select: (ref, choice) => withOutcome(() => selectOption(ref, choice)),
+    select: (ref, choice) => withReceipt(() => withOutcome(() => selectOption(ref, choice))),
     upload,
     history: historyGo,
     fillLogin,
@@ -2295,6 +2600,7 @@
   function clickAt(x, y) {
     const el = deepPoint(x, y);
     if (!el) return { error: "no element at point" };
+    watchTarget(el);
     fireClick(el, x, y);
     return { ok: true, tag: el.tagName };
   }

@@ -171,7 +171,7 @@ benchRows("content.js in WebKit", [
     page: "wait.html",
     steps: [
       { op: "click", args: ["Search"] }, // adds "Results are ready" 300 ms later
-      { op: "wait", args: [null, "results are ready"], answer: { value: { found: true } } },
+      { op: "wait", args: [null, { text: "results are ready" }], answer: { value: { found: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Results are ready") } } },
     ],
   },
