@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { inspect } from "node:util";
 import { invoke as defaultInvoke, type Invoke } from "./call.ts";
 import { lineDiff } from "./tools.ts";
+import { addressedNote } from "./injection.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
 
@@ -624,12 +625,13 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 5000, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean };
+    const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 5000, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
     page.note(snap.url, snap.title);
     const lines = snap.snapshot.split("\n");
     const body = opts.interactive ? lines.filter((l) => HAS_REF.test(l)).map((l) => l.trimStart()) : lines;
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
-    const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...body, ...cut].join("\n");
+    const warn = snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : [];
+    const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...body, ...cut].join("\n");
     const key = `${page.id}|${root ?? ""}|${opts.interactive ? 1 : 0}|${opts.showHidden ? 1 : 0}`;
     const before = this.#trees.get(key);
     this.#trees.set(key, tree);

@@ -10,6 +10,7 @@ import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf } from "./navigated.ts";
+import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -191,7 +192,7 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
   // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
-  const snap = await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
+  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
@@ -287,7 +288,8 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
 
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes }]);
+  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes }])) as Extract;
+  return shieldExtract(page);
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -658,7 +660,8 @@ const PAGE: Param = { type: "boolean", description: "also return the page after 
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   if (!want) return result;
   const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
-  return { ...(result as object), page: await relay(opened ?? tab, "snapshot", [{}]) };
+  const page = (await relay(opened ?? tab, "snapshot", [{}])) as Snapshot;
+  return { ...(result as object), page: shieldSnapshot(page) };
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
@@ -958,8 +961,8 @@ export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge };
-type Extract = { url: string; title: string; text: string };
+type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge };
+type Extract = Shielded & { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
@@ -967,13 +970,14 @@ export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
+    const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${v.snapshot}`;
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${v.snapshot}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${text}`;
