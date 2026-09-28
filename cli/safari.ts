@@ -138,6 +138,12 @@ const USAGE = `safari — drive Safari from the terminal
                       --selector CSS | --text REGEX | --eval JS | --replay <recording>
                                              a watch: no model; texts your phone when the
                                              value it reads off the page changes
+  safari record list | show <name> | rm <name>
+                                             tasks recorded with the toolbar button
+                                             (teach mode), newest first
+  safari replay <name> [--tab N] [--vars '{"field":"text"}'] [--json]
+                                             do a recording again in a background tab;
+                                             exits 1 when a step fails
 
   safari guide sites                         sites with a usage guide
   safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
@@ -205,7 +211,7 @@ function saveArg(argv: string[]): Record<string, unknown> {
 }
 
 // The tool a command runs, where its name differs.
-const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history" };
+const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings" };
 
 const toolDef = (cmd: string): Tool | undefined => TOOLS[ALIAS[cmd] ?? cmd] ?? CALLER_TOOLS[ALIAS[cmd] ?? cmd];
 
@@ -472,6 +478,20 @@ async function main() {
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
 
+  // replay prints one result whether or not it went through (--json: one
+  // line, which watch.ts reads) and exits 0 only when every step did.
+  if (cmd === "replay") {
+    let r: unknown;
+    try {
+      const vars = flag("vars", rest);
+      r = await invoke("replay", { name: rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)), ...tabArg(rest), ...(vars === undefined ? {} : { vars: JSON.parse(vars) }) }, true);
+    } catch (e) {
+      r = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    print(r);
+    process.exit(r && typeof r === "object" && "ok" in r && r.ok === true ? 0 : 1);
+  }
+
   // status: the daemon, its extension, and what happened to them lately,
   // one event a line (--json: the whole health answer).
   if (cmd === "status") {
@@ -645,6 +665,7 @@ async function main() {
     case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
     case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
+    case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");

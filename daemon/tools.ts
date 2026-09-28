@@ -24,6 +24,8 @@ import { inLane } from "./lanes.ts";
 import { urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
+import { recordingsTool } from "./recordings.ts";
+import { replay } from "./replay.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -1171,6 +1173,27 @@ export const TOOLS: Record<string, Tool> = {
     params: { site: { type: "string", description: "host or address" }, fact: { type: "string", description: "max 300 chars" }, forget: { type: "number", description: "note number" } },
     required: ["site"],
     run: learn,
+  },
+  replay: {
+    desc: "Replay a task the user recorded with the toolbar button, in a background tab. Returns value (the last text it read) or the step that failed.",
+    params: { name: { type: "string", description: "from recordings" }, tab: TAB, vars: { description: "text to enter instead, by field name or label" } },
+    required: ["name"],
+    // Its steps are the harness's, as map's are: looking for a target
+    // again while the page draws is no loop (guard.ts).
+    run: (a) => replay(a, (tool, args) => callTool(tool, args, false)),
+  },
+  recordings: {
+    desc: "Tasks the user recorded with the toolbar button: list, show, or rm.",
+    params: { do: { type: "string", enum: ["list", "show", "rm"], description: "default list" }, name: { type: "string", description: "for show and rm" } },
+    run: recordingsTool,
+  },
+  // The elements that look like a replay step's target, each with a ref.
+  lookalikes: {
+    desc: "Elements that look like a fingerprint's target, with refs.",
+    params: { tab: TAB, target: { description: "fingerprint" } },
+    required: ["tab", "target"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "lookalikes", [a.target]),
   },
 };
 

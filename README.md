@@ -50,6 +50,10 @@ daemon/
                     replies told apart from the harness's own lines
   watch.ts          watch routines: one value read off a page on a schedule,
                     texted when it changes, with no model
+  recordings.ts     teach mode's recordings, saved for the user alone (0600),
+                    each typed secret kept only as its kind
+  replay.ts         a recording done again in a background tab, each step's
+                    target found by its fingerprint
   save.ts           save on extract, snapshot, eval, and fetch: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
