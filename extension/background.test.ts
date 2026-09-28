@@ -115,6 +115,7 @@ async function start() {
       onRemoved: hook(),
       onCreated: hook(),
       onAttached: hook(),
+      onReplaced: hook(),
       get: async (id: number) => ({ id, windowId: 1, url: tabOf(id).doc.url, title: "", status: "complete", active: false }),
       query: async () => [],
       // A message no copy took settles undefined; one to a held page, never.
