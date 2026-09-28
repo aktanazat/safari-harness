@@ -9,6 +9,7 @@ import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
+import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -627,6 +628,7 @@ export const TAB: Param = { description: 'tab id from open, or "front"' };
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 export const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
 const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
+const SAVE: Param = { description: "true, or an absolute file path: write the whole output there; returns its path, size, and first 500 characters" };
 
 // With `snapshot: true` an action also returns the page it led to, saving
 // the agent a separate snapshot call.
@@ -644,6 +646,18 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     const from = harnessTabs.get(tab);
     if (opened !== undefined && from) own(opened, from.owner);
     return withPage(result, tab, a.snapshot);
+  };
+}
+
+// save on a read writes its whole output to a file and answers with the
+// file's path, size, and first 500 characters (save.ts). The target is
+// checked first, so a bad one sends the page no request.
+function saving(kind: SaveKind, run: (a: Record<string, unknown>) => Promise<unknown>) {
+  return async (a: Record<string, unknown>) => {
+    if (a.save === undefined || a.save === false) return run(a);
+    const target = targetOf(a.save, "file");
+    const tab = await resolveTab(a.tab);
+    return saveOutput(kind, await run({ ...withLimit(kind, a), tab }), target, async () => (await listTabs()).find((t) => t.id === tab)?.url ?? "");
   };
 }
 
@@ -716,9 +730,10 @@ export const TOOLS: Record<string, Tool> = {
       root: { type: "string", description: "CSS selector of the region to read" },
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
+      save: SAVE,
     },
     required: ["tab"],
-    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }),
+    run: saving("snapshot", (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean })),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
@@ -770,15 +785,15 @@ export const TOOLS: Record<string, Tool> = {
   },
   eval: {
     desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
-    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" } },
+    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, save: SAVE },
     required: ["tab", "expression"],
-    run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
+    run: saving("eval", (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page })),
   },
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
-    params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" } },
+    params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" }, save: SAVE },
     required: ["tab", "url"],
-    run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }),
+    run: saving("fetch", (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean })),
   },
   download: {
     desc: "Save the file a ref's link or button downloads, or a url, into ~/Downloads; returns its path.",
@@ -794,9 +809,9 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" } },
+    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, save: SAVE },
     required: ["tab"],
-    run: (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number }),
+    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number })),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {

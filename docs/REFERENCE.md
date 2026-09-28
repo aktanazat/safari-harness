@@ -152,8 +152,32 @@ Escalate in this order:
 
 A public page that needs no sign-in reads faster and cheaper without Safari:
 use `read`, `web_search`, or Iris first, and open Safari only when those are
-blocked or the page needs the user's session. Save long text you will need
-again to a file instead of fetching it twice.
+blocked or the page needs the user's session. Keep long text you will need
+again with `save` (next section) instead of fetching it twice.
+
+## Saving a read to a file
+
+`extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
+to a file, and the answer is only `{saved, bytes, head}`: the file's path, its
+size in bytes, and its first 500 characters. Read the parts you need from the
+file (grep it, or read a range) instead of carrying the page in context.
+
+- `save: true` writes a new file,
+  `~/.local/share/safari-harness/saved/<host>-<time>.<ext>`. `save:
+  "/abs/file"` writes that file, replacing one already there. A relative path
+  is refused: the daemon's folder is not yours.
+- A saved read is not cut at a reply's limit: `extract` and `fetch` read up to
+  2,000,000 characters, and `snapshot` up to 10,000 lines, unless you set
+  `maxBytes` or `maxNodes`. A read cut even there adds `truncated: true`, and a
+  snapshot's bot-check note stays.
+- The file holds `extract`'s text (`.txt`), `snapshot`'s outline (`.txt`),
+  `fetch`'s body as the server sent it (`.json`, `.html`, or `.txt`, from its
+  type), and `eval`'s value: a string as it is (`.txt`), anything else as JSON
+  (`.json`).
+- An error the page answers with (a `selector` that matches nothing) comes
+  back as it is, and nothing is written.
+- CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
+  path.
 
 ## Acting
 

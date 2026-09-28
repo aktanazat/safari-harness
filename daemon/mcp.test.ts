@@ -36,8 +36,10 @@ import { expect, test } from "bun:test";
 // after the user's Touch ID, and a session lets go of the pairing when done.
 // Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
-// one open for the user.
-const TOOL_LIST_MAX_BYTES = 18_030;
+// one open for the user. Saving a read to a file (544: save on extract,
+// snapshot, eval, and fetch) brought it to 18,574: a long page costs the
+// model its path and first 500 characters instead of its whole text.
+const TOOL_LIST_MAX_BYTES = 18_574;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

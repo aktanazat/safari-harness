@@ -61,6 +61,10 @@ const USAGE = `safari — drive Safari from the terminal
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
+  Reads (snapshot eval extract fetch) take --save to write the whole output
+  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>,
+  and print only its path, size, and first 500 characters.
+
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
   safari extract --tab N [--selector s]      readable text
   safari info --tab N                        url/title/scroll
@@ -158,6 +162,15 @@ function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
   return { tab: t === "front" ? t : Number(t) };
+}
+
+// --save writes a read's whole output to a new file in the saved folder;
+// --save=<path> names the file. A relative path is the terminal's, not the
+// daemon's.
+function saveArg(argv: string[]): Record<string, unknown> {
+  if (hasFlag("save", argv)) return { save: true };
+  const path = flag("save", argv);
+  return path === undefined ? {} : { save: resolve(path) };
 }
 
 // The tool a command runs, where its name differs.
@@ -460,7 +473,7 @@ async function main() {
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = ALIAS[cmd] ?? cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
+  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
     case "tabs": break;
@@ -578,7 +591,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
