@@ -41,7 +41,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              that pauses or stops them
   safari doctor                              check every part the harness needs on this
                                              Mac, with the fix for each that fails
-  safari tabs                                list tabs
+  safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
+                                             --site lists his on one site, --all every tab
   safari open <url> [--bg] [--keep]          open a tab; prints its id
   safari goto <url> --tab N                  navigate
   safari back|forward|reload --tab N         history
@@ -51,7 +52,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              page outline with [ref]s
   safari click <ref> --tab N                 click by snapshot ref
   safari clickat <x> <y> --tab N             click by coordinates
-  safari type <ref> <text> --tab N           type by ref
+  safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
+                                             code texted to him (--secret passwords: his saved one)
   safari press <key> [--ref R] --tab N       press a key
   safari select <ref> <option> --tab N       choose a dropdown option
   safari hover <ref> --tab N                 hover an element
@@ -548,7 +550,8 @@ async function main() {
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
-    case "tabs": break;
+    // --site, since --host names another Mac
+    case "tabs": args.host = flag("site", rest) ?? null; break;
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
@@ -671,7 +674,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

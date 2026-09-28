@@ -54,6 +54,13 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `activate`, and `window`
   take only a tab id.
+- `tabs` lists your own tabs (those you opened, and any tab in your
+  windows), then his front tab as `{id, windowId, active, front}`, then one
+  line: `the user has N other tabs; pass host: "github.com" to see those on
+  a site, or all: true`. `host` (CLI `--site github.com`) lists his tabs on
+  that site and its subdomains; `all` (CLI `--all`) lists every tab. His
+  tabs never show a query string or fragment. The user at his own
+  terminal, and a caller with no agent behind it, get the full list.
 - Every tab you open goes into a Safari window of your own, opened behind
   his without taking focus, never into his windows or tab groups. `group` on
   `open` (CLI `--group trip`) gives one task a window of its own; without it
@@ -375,6 +382,15 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `type` in a rich editor (a contenteditable chat box or document) goes
   through the editor's own editing events, so the editor keeps the text;
   `append: true` adds at the end.
+- `type` answers `{ok, kept, typed: "N chars"}`, never the text. `kept` is
+  false when the page changed or cut what you typed (a phone field adds
+  dashes, a length limit drops the rest): snapshot to see it.
+- A one-time code the site texted the user: write `{{code}}` where it
+  goes, `type {tab, ref, text: "{{code}}"}`. The harness waits up to 30 s
+  for the text, types the code, and answers `typed: "code, 6 chars"`; the
+  field then reads `filled` in snapshots. `secret: "passwords"` types the
+  code his Apple Passwords keeps for the site instead, as
+  `passwords {do: "code"}` does. An emailed code has no route yet.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
 - `type` and `select` on a label's ref act on the field it labels.
@@ -576,6 +592,11 @@ session cookies, or tokens. The `cookies` tool returns cookie values: use it
 only when the task needs one, and never put the values in a reply or a file.
 Snapshots show a password, card number, or one-time-code field only as
 `filled`, so an autofilled secret stays off the transcript.
+Every answer cuts the value of an address parameter named `code`, `state`,
+`token`, `access_token`, `id_token`, `refresh_token`, `sig`, `signature`,
+`session`, `auth`, `password`, or `otp`, in any case, to `...`: in tabs,
+`info`, `browsing_history`, `net`, snapshot links, and where `open`,
+`goto`, or an action went. `order=7` stays as it is.
 
 Signing in, in this order:
 
@@ -600,11 +621,14 @@ Signing in, in this order:
 3. When the vault is locked, `logins`, `fill`, `code`, and `pair` first ask
    the user to approve with Touch ID (the prompt names the site), then pair,
    read the 6-digit code off the Mac's window, and go on; reading it needs
-   the calling terminal's Accessibility permission. Where that cannot
-   happen, the call answers `{codeShown: true, next}`: ask the user for the
-   code in the same message, then `passwords {do: "unlock", code}`. A wrong
-   code cannot be retried: pair again for a new one. If the user declines
-   Touch ID, the call fails: ask before trying again. Do not route around
+   the calling terminal's Accessibility permission. Where it cannot be
+   read, a prompt on the Mac asks him to type the code, hidden as he types,
+   and the digits go straight to the harness: the answer is
+   `{paired: true}`, or `{paired: false, why}` when he cancels or 3 minutes
+   pass, never the code. Never ask for the code in the chat. While he is
+   away from the Mac the call says he must come to it: the code shows only
+   there. If the user declines Touch ID, the call fails: ask before
+   trying again. Do not route around
    the lock; the locked error says why (never paired since the hidden
    helper started, the helper restarted, every session was done with it,
    or Apple Passwords was turned off or asked to sign in again).

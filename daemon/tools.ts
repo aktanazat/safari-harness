@@ -21,6 +21,8 @@ import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { checkCall, fromModel, guard } from "./guard.ts";
 import { inLane } from "./lanes.ts";
+import { redacted } from "./redact.ts";
+import { tabsView } from "./tabs-view.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -283,9 +285,17 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
   throw new Error("click needs ref or x+y");
 }
 
-export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean }) {
+// The page's answer says whether the field kept the text, never the text:
+// an agent's own typing, or a code the caller filled in (secret.ts), stays
+// out of the transcript. An extension Safari has not reloaded since still
+// sends the value, so it is dropped here too.
+export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "type", [opts.ref, str(opts.text, "text"), { append: !!opts.append }]);
+  const text = str(opts.text, "text");
+  if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new Error("a code is filled in by the safari CLI or MCP tools, not over the daemon's port: call type through them");
+  const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true }]);
+  if (!answer || typeof answer !== "object" || !("ok" in answer)) return answer;
+  return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
 }
 
 export async function press(opts: { tab?: number; ref?: number | string; key: string }) {
@@ -839,7 +849,11 @@ export const TOOLS: Record<string, Tool> = {
     required: ["steps"],
     run: (a) => runSteps(a.steps),
   },
-  tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
+  tabs: {
+    desc: "List your tabs, the user's front tab, and a count of his others.",
+    params: { host: { type: "string", description: "list his tabs on this site" }, all: { type: "boolean", description: "list every tab" } },
+    run: async (a) => tabsView(await listTabs(), new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), a),
+  },
   open: {
     desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
     params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open after you exit" }, snapshot: PAGE },
@@ -887,10 +901,10 @@ export const TOOLS: Record<string, Tool> = {
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
   type: {
-    desc: "Set a field's text by ref; replaces it unless append.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, snapshot: PAGE },
+    desc: "Set a field's text by ref; replaces it unless append. Never returns the text. {{code}} in text types a code texted to the user, unseen.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "passwords"], description: "code source: his texts, or Apple Passwords" }, snapshot: PAGE },
     required: ["tab", "ref", "text"],
-    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean })),
+    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
@@ -1110,7 +1124,7 @@ export const TOOLS: Record<string, Tool> = {
     ),
   },
   passwords: {
-    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first ask the user for Touch ID and pair (as pair does); if one answers codeShown, ask the user for the 6-digit code on their Mac and call unlock with it. Call done when finished; status says why it is locked.",
+    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first pair: he approves with Touch ID and types the Mac's code into a prompt there; you get paired or why not. Call done when finished; status says why it is locked.",
     params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
     required: ["do"],
     run: applePasswords,
@@ -1183,10 +1197,11 @@ export function formatResult(value: unknown): string {
 }
 
 // A model's call (its own, or a step of its run) is checked and watched
-// (guard.ts); an acting call waits its turn on the tab (lanes.ts).
+// (guard.ts); an acting call waits its turn on the tab (lanes.ts). Every
+// answer has the secrets in its addresses cut (redact.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel()): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
-  return guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => withTabNews(call.args.tab, () => TOOLS[call.tool].run(call.args))));
+  return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => withTabNews(call.args.tab, () => TOOLS[call.tool].run(call.args)))));
 }
 
 type Step = { step: number; tool: string; value?: unknown; error?: string };

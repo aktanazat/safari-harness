@@ -232,9 +232,11 @@
 
   // A field whose value is a secret: its value is never printed, only
   // whether it is filled. Autofill puts these in without the agent typing,
-  // and a show-password toggle turns a password field into a text field.
+  // and a show-password toggle turns a password field into a text field. A
+  // field the harness typed a code into (type's secret) is one too.
+  const secretFilled = new WeakSet();
   function secretField(el) {
-    return el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+    return secretFilled.has(el) || el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
   }
 
   function stateOf(el) {
@@ -1296,15 +1298,20 @@
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
+    const before = el.isContentEditable ? "" : String(el.value || "");
     if (el.isContentEditable) {
       replaceEditable(el, text, opts.append);
     } else if ("value" in el) {
-      setValue(el, (opts.append ? String(el.value || "") : "") + text, text);
+      setValue(el, (opts.append ? before : "") + text, text);
     } else {
       return { error: "element is not editable" };
     }
-    if (secretField(el)) return { ok: true };
-    return { ok: true, value: (el.value ?? el.textContent ?? "").slice(0, 200) };
+    if (opts.secret) secretFilled.add(el);
+    // Whether the field holds the text now: a page may reformat it (a phone
+    // field adds dashes) or cut it (a length limit). The text itself never
+    // comes back: type once echoed a one-time code into the transcript.
+    const kept = el.isContentEditable ? (el.textContent ?? "").includes(text) : el.value === (opts.append ? before : "") + text;
+    return { ok: true, kept };
   }
 
   // ---------- Apple Passwords fill ----------
