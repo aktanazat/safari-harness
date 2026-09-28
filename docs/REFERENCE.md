@@ -423,11 +423,23 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - An action or `eval` whose page leaves before it answers (a submit, a
   redirect) still answers, with `ok: true` and the page it loaded as
   `navigated`. It is never sent twice.
-- An action returns as soon as it has run, unless it started a load or a
-  tab (a link, a form submit, the page's own script moving it), which it
-  waits for. A link or form the page's script takes over gets a short wait
-  in case it moves. A page that changes later is caught by the next call.
-- Treat an action as unconfirmed until a snapshot shows the result.
+- An action that starts a load or a tab (a link, a form submit, the page's
+  own script moving it) waits for it and reports `navigated` or `newTab`.
+  A link or form the page's script takes over gets a short wait in case it
+  moves.
+- Any other `click`, `press`, or `select` watches the page until it
+  settles (300 ms at least, then 150 ms without a change, 800 ms at most;
+  800 ms while the page waits on its own site) and reports its `effect`:
+  nodes `added`, `removed`, and `changed`; a new `url`; where `focus` went;
+  the `states` of the control and what it controls (`button "Menu": now
+  expanded`); a `dialog` that opened; and `net`, the page's requests to its
+  own site, failed ones first (`failed: POST /api/cart 500`), analytics
+  beacons left out. A tab no agent works in keeps no request log, so its
+  effect has no `net`. Errors the page threw come as `pageErrors`.
+- `effect: "none"` means the page did not react, and `next` says what to
+  try: a real click (`real_input`), a child or parent of the control, or a
+  moment for a busy page. An effect shows the page moved, not that it did
+  what you meant: confirm what matters with a `wait` or a snapshot.
 - One acting call runs on a tab at a time: `click`, `type`, `press`,
   `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`,
   `login_fill`, `autofill`, and `dialog` or `passwords` when they act.
@@ -455,9 +467,18 @@ Wait for the page, not the clock.
 
 - `wait` with `text` or `selector` returns the moment it appears, even in a
   background tab, and catches text that shows only briefly. Text matches in
-  any case, in the page and in its embedded frames. `ms` is the timeout
-  (default 10000, max 30000); the call ends then even if the page is too
-  busy to answer. The result says `found: true|false`.
+  any case and spacing ("M240i" finds "M240 i"), in the page and in its
+  embedded frames. `ms` is the timeout (default 10000, max 30000); the call
+  ends then even if the page is too busy to answer. The result says
+  `found: true|false`.
+- `any: ["Order placed", "Payment declined"]` ends on the first shown and
+  says `which`. `gone: "Loading"` waits for text to leave, `url` for a part
+  of the address or a `/regex/` (pushState included), and `quiet: true`
+  for 500 ms without a change to the page (clocks, progress bars, and video
+  aside). Given together, all must hold. `gone`, `url`, and `quiet` read
+  the top page, not its frames.
+- A whole-page `snapshot` that finds nothing on the page yet reads it again
+  for up to 2 s.
 - Wait for the page's exact words. A site's email and its page often word
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.
