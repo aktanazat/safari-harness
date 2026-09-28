@@ -36,8 +36,10 @@ import { expect, test } from "bun:test";
 // after the user's Touch ID, and a session lets go of the pairing when done.
 // Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
-// one open for the user.
-const TOOL_LIST_MAX_BYTES = 18_030;
+// one open for the user. Letting upload find the user's file (135) brought
+// it to 18,165: an agent asked him for an insurance card photo that was
+// already in his iCloud Drive.
+const TOOL_LIST_MAX_BYTES = 18_165;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

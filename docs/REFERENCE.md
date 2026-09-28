@@ -171,6 +171,15 @@ again to a file instead of fetching it twice.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
   one file input.
+- `upload` with `find` instead of `paths` looks for the user's own file
+  when he did not give a path (`find: "insurance card"`, CLI
+  `safari upload --find "insurance card" --tab N`). It searches with
+  Spotlight in iCloud Drive, Documents, Desktop, and Downloads only, and
+  returns up to 8 files, those named for more of the words first, then the
+  newest: `path`, `name`, `kind`, `modified`, and `size`. It attaches
+  nothing and reads no file's contents. Pick one, asking the user when more
+  than one could be right, then call `upload` with its path. The first
+  search may make macOS ask the user to let the harness read those folders.
 - `history` with `do: "back"`, `"forward"`, or `"reload"` (CLI `safari back`,
   `safari forward`, `safari reload`, or `safari history --do back`).
 - Alerts, confirms, and prompts never block the page. Each one comes back

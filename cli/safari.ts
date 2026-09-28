@@ -51,6 +51,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari hover <ref> --tab N                 hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
+  safari upload --find <words> --tab N       list the user's files that match, to pick
+                                             one (iCloud Drive, Documents, Desktop,
+                                             Downloads); attaches nothing
   safari scroll <dy> --tab N                 scroll
 
   Page commands need --tab N, the id open printed, or --tab front for the
@@ -490,7 +493,7 @@ async function main() {
     case "select": args.ref = positional[0]; args.option = positional.slice(1).join(" "); break;
     case "hover": args.ref = positional[0]; break;
     case "upload": {
-      args.paths = positional.map((p) => resolve(p));
+      if (positional.length) args.paths = positional.map((p) => resolve(p));
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;

@@ -6,6 +6,7 @@ import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
+import { findFiles } from "./finder.ts";
 import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
@@ -251,9 +252,12 @@ export async function hover(opts: { tab?: number; ref: number | string }) {
   return relay(tab, "hover", [opts.ref]);
 }
 
-export async function upload(opts: { tab?: number; ref?: number | string; paths: string[] }) {
+// find looks for the file in his own folders (finder.ts) and attaches
+// nothing; the agent calls again with the path it picked.
+export async function upload(opts: { tab?: number; ref?: number | string; paths?: string[]; find?: string }) {
   const tab = await resolveTab(opts.tab);
-  if (!Array.isArray(opts.paths) || opts.paths.length === 0) throw new Error("upload needs paths: [\"/abs/file\", ...]");
+  if (opts.find !== undefined) return findFiles(str(opts.find, "find"));
+  if (!Array.isArray(opts.paths) || opts.paths.length === 0) throw new Error("upload needs paths: [\"/abs/file\", ...], or find: \"words\" to look for the file");
   const files = await Promise.all(opts.paths.map(async (p) => {
     const f = Bun.file(str(p, "path"));
     if (!(await f.exists())) throw new Error(`no such file: ${p}`);
@@ -751,10 +755,10 @@ export const TOOLS: Record<string, Tool> = {
     run: action((a) => hover(a as { tab: number; ref: string })),
   },
   upload: {
-    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input.",
-    params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, snapshot: PAGE },
-    required: ["tab", "paths"],
-    run: action((a) => upload(a as { tab: number; ref?: string; paths: string[] })),
+    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input. find lists the user's matching files to pick from; it attaches nothing.",
+    params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, find: { type: "string", description: "words to search his files for" }, snapshot: PAGE },
+    required: ["tab"],
+    run: action((a) => upload(a as { tab: number; ref?: string; paths?: string[]; find?: string })),
   },
   history: {
     desc: "Go back, go forward, or reload.",
