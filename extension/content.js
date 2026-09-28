@@ -1081,17 +1081,38 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // A rich editor (ProseMirror, Lexical, Draft.js, Slate) keeps its own
+  // model of the text and redraws the element from it, so an edit reaches it
+  // only as input events: clearing the element's text behind its back left
+  // the old text in the model. execCommand edits as typing does. Where it
+  // does nothing, the edit is offered as a beforeinput the editor may take
+  // over, and made by hand only if it does not.
+  function replaceEditable(el, text, append) {
+    if (append && !text) return;
+    const selection = getSelection();
+    selection.selectAllChildren(el);
+    if (append) selection.collapseToEnd();
+    if (document.execCommand(text ? "insertText" : "delete", false, text)) return;
+    const inputType = text ? "insertText" : "deleteContent";
+    const data = text || null;
+    if (!el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType, data }))) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    if (append) range.collapse(false);
+    range.deleteContents();
+    if (text) range.insertNode(document.createTextNode(text));
+    selection.selectAllChildren(el);
+    selection.collapseToEnd();
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+  }
+
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
     if (el.isContentEditable) {
-      if (!opts.append) {
-        el.textContent = "";
-      }
-      document.execCommand("insertText", false, text);
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      replaceEditable(el, text, opts.append);
     } else if ("value" in el) {
       setValue(el, (opts.append ? String(el.value || "") : "") + text, text);
     } else {
@@ -1649,6 +1670,168 @@
     }
   }
 
+  // ---------- the page's own data ----------
+  // What the page declares about itself for machines, as the data tool
+  // reads it: JSON-LD, microdata, meta tags, JSON in script tags (Next.js
+  // and Nuxt keep their state there), and JSON in data- attributes of its
+  // main region. background.js adds the state frameworks leave in page
+  // globals, and the daemon shapes the whole (daemon/pagedata.ts). One
+  // answer must stay well under the 16 MB a message to the daemon may hold,
+  // so a source past what is left of DATA_BUDGET characters is only measured.
+  const DATA_BUDGET = 4e6;
+  const DATA_MAX_ITEMS = 50;
+
+  function pageData() {
+    const found = {
+      jsonld: jsonLd(),
+      microdata: [...document.querySelectorAll("[itemscope]:not([itemprop])")].slice(0, DATA_MAX_ITEMS).map((el) => microItem(el, 0)),
+      meta: metaTags(),
+      next: parseJson(document.getElementById("__NEXT_DATA__")?.textContent),
+      nuxt: parseJson(document.getElementById("__NUXT_DATA__")?.textContent),
+      scripts: jsonScripts(),
+      attrs: jsonAttributes(),
+    };
+    const out = { url: location.href, title: document.title, tooBig: {} };
+    let room = DATA_BUDGET;
+    for (const [name, value] of Object.entries(found)) {
+      if (value === undefined) continue;
+      const json = JSON.stringify(value);
+      if (json.length > room) {
+        out.tooBig[name] = new Blob([json]).size;
+      } else {
+        out[name] = value;
+        room -= json.length;
+      }
+    }
+    return out;
+  }
+
+  // A missing or malformed one reads as nothing.
+  function parseJson(text) {
+    try {
+      return text ? JSON.parse(text) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // The page's JSON-LD blocks, a block that holds a list as its items.
+  function jsonLd() {
+    return [...document.querySelectorAll('script[type="application/ld+json"]')].flatMap((s) => {
+      const v = parseJson(s.textContent);
+      return v === undefined ? [] : Array.isArray(v) ? v : [v];
+    });
+  }
+
+  // Meta tags by name or property (og:, twitter:, product:), one given more
+  // than once as a list, and the canonical address.
+  function metaTags() {
+    const out = new Map();
+    const add = (key, value) => {
+      if (key && value !== null) out.set(key, out.has(key) ? [].concat(out.get(key), value) : value);
+    };
+    for (const m of document.querySelectorAll("meta[property], meta[name]")) add(m.getAttribute("property") || m.getAttribute("name"), m.getAttribute("content"));
+    add("canonical", document.querySelector("link[rel=canonical]")?.href ?? null);
+    return Object.fromEntries(out);
+  }
+
+  // One microdata item: its type and properties, a nested item's as an item
+  // of its own, and a property given more than once as a list.
+  function microItem(item, depth) {
+    const props = new Map();
+    for (const p of item.querySelectorAll("[itemprop]")) {
+      // a property of a nested item belongs to that item
+      if (p.parentElement.closest("[itemscope]") !== item) continue;
+      const value = !p.hasAttribute("itemscope") ? microValue(p) : depth < 5 ? microItem(p, depth + 1) : null;
+      for (const name of p.getAttribute("itemprop").split(/\s+/).filter(Boolean)) {
+        props.set(name, props.has(name) ? [].concat(props.get(name), [value]) : value);
+      }
+    }
+    const type = item.getAttribute("itemtype");
+    return { ...(type ? { type } : {}), props: Object.fromEntries(props) };
+  }
+
+  // Where a microdata property keeps its value, by tag (the HTML standard's
+  // list); any other element's is its text, or the content attribute some
+  // pages add for the value their text only shows ("$19.99" as "19.99").
+  const MICRO_VALUE = { META: "content", AUDIO: "src", EMBED: "src", IFRAME: "src", IMG: "src", SOURCE: "src", TRACK: "src", VIDEO: "src", A: "href", AREA: "href", LINK: "href", OBJECT: "data", DATA: "value", METER: "value", TIME: "datetime" };
+
+  function microValue(el) {
+    const at = Object.hasOwn(MICRO_VALUE, el.tagName) ? MICRO_VALUE[el.tagName] : null;
+    // an address reads resolved, as the page would follow it
+    const v = at === "src" || at === "href" || at === "data" ? el[at] : at && el.getAttribute(at);
+    return String(v || el.getAttribute("content") || norm(el.textContent)).slice(0, 2000);
+  }
+
+  // JSON a page keeps in script tags of its own (a store's product, a
+  // framework's settings), with the tag's id where it has one.
+  function jsonScripts() {
+    return [...document.querySelectorAll('script[type="application/json"]')]
+      .filter((s) => s.id !== "__NEXT_DATA__" && s.id !== "__NUXT_DATA__")
+      .slice(0, DATA_MAX_ITEMS)
+      .flatMap((s) => {
+        const value = parseJson(s.textContent);
+        return value === undefined ? [] : [s.id ? { id: s.id, value } : { value }];
+      });
+  }
+
+  // JSON in data- attributes of the page's main region (a product card's
+  // data-product), each with the element that holds it.
+  function jsonAttributes() {
+    const root = document.querySelector("main, [role=main]") || document.body;
+    const out = [];
+    if (!root) return out;
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      for (const a of el.attributes) {
+        if (!a.name.startsWith("data-") || !/^\s*[[{]/.test(a.value)) continue;
+        const value = parseJson(a.value);
+        if (value === undefined) continue;
+        const classes = [...el.classList].slice(0, 2).map((c) => `.${c}`).join("");
+        out.push({ el: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${classes}`, [a.name]: value });
+        if (out.length >= DATA_MAX_ITEMS) return out;
+      }
+    }
+    return out;
+  }
+
+  // ---------- eval's helpers ----------
+  // eval's code finds these as sh, in the extension's world only (page: true
+  // runs it in the page's, which has no sh): q and qa query into shadow
+  // roots, text reads what the user sees of an element or selector, jsonld
+  // reads the page's JSON-LD, and wait sleeps.
+  const SH = Object.freeze({
+    q: deepQuery,
+    qa: deepQueryAll,
+    text: (target = document.body) => {
+      const root = typeof target === "string" ? deepQuery(target) : target;
+      return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
+    },
+    jsonld: jsonLd,
+    wait: sleep,
+  });
+
+  // Safari stops a content script's timers in a hidden tab, so a sleep there
+  // also ends on the ticks an owned tab gets (takeTicks). It lasts at most
+  // 25 s, inside eval's 30.
+  function sleep(ms) {
+    const until = Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 25000);
+    return new Promise((resolve) => {
+      const check = () => { if (Date.now() >= until) done(); };
+      const done = () => {
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", check);
+        resolve();
+      };
+      const timer = setTimeout(done, until - Date.now());
+      document.addEventListener("__sh_tick", check);
+    });
+  }
+
+  // A page whose security policy forbids eval refuses to build the code. The
+  // daemon then runs it in the page's own world (evaluate in tools.ts),
+  // where it may be allowed, and says this if it is refused there too.
+  const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+
   // ---------- message dispatch ----------
 
   const handlers = {
@@ -1658,10 +1841,19 @@
     press: (ref, spec) => withOutcome(() => pressKey(ref, spec)),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
+    data: pageData,
     tabInfo,
     eval: (src) => {
-      // eslint-disable-next-line no-new-func
-      const result = new Function(`return (${src})`)();
+      let run;
+      try {
+        // eslint-disable-next-line no-new-func
+        run = new Function("sh", `return (${src})`);
+      } catch (e) {
+        // bad code is the caller's to fix; any other refusal is the page's policy
+        if (e instanceof SyntaxError) throw e;
+        return { error: EVAL_BLOCKED };
+      }
+      const result = run(SH);
       if (result && typeof result.then === "function") {
         return result.then((v) => ({ ok: true, result: safeClone(v) }));
       }

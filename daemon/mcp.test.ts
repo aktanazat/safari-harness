@@ -50,8 +50,12 @@ import { expect, test } from "bun:test";
 // away gets his answer or his skip from his phone instead of stalling until
 // he is back. Letting upload find the user's file (135) brought it to
 // 20,738: an agent asked him for an insurance card photo that was already
-// in his iCloud Drive.
-const TOOL_LIST_MAX_BYTES = 20_738;
+// in his iCloud Drive. The data tool (440) brought it to 21,178: a shop,
+// recipe, or article page's own JSON (price, stock, author) comes back in
+// one call, where a snapshot and a guessed eval took several. Naming eval's
+// sh helpers (70) brought it to 21,248: code reaches into shadow roots and
+// reads JSON-LD without walking the page by hand.
+const TOOL_LIST_MAX_BYTES = 21_248;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

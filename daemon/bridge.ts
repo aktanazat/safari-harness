@@ -8,6 +8,9 @@
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
 //   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
 //   extension -> daemon  {op:"note", kind, ...}  an event for the journal
+//   extension -> daemon  {op:"tab", kind:"replaced", from, to}  Safari swapped a tab
+//   extension -> daemon  {op:"tab", kind:"popup", tab, opener, url}  an owned
+//                        tab's page opened another outside an action
 
 import { note } from "./journal.ts";
 
@@ -41,6 +44,11 @@ type WireMessage = {
   role?: string;
   on?: boolean;
   kind?: unknown;
+  from?: unknown;
+  to?: unknown;
+  tab?: unknown;
+  opener?: unknown;
+  url?: unknown;
 };
 
 function asWire(raw: string): WireMessage | null {
@@ -51,6 +59,16 @@ function asWire(raw: string): WireMessage | null {
   } catch {
     return null;
   }
+}
+
+// A change to the agents' tabs the extension saw (see continuity.ts).
+export type TabEvent = { kind: "replaced"; from: number; to: number } | { kind: "popup"; tab: number; opener: number; url: string };
+
+function tabEvent(m: WireMessage): TabEvent | null {
+  const isId = (v: unknown): v is number => Number.isSafeInteger(v);
+  if (m.kind === "replaced" && isId(m.from) && isId(m.to)) return { kind: "replaced", from: m.from, to: m.to };
+  if (m.kind === "popup" && isId(m.tab) && isId(m.opener)) return { kind: "popup", tab: m.tab, opener: m.opener, url: typeof m.url === "string" ? m.url : "" };
+  return null;
 }
 
 type Pending = {
@@ -68,6 +86,7 @@ export class Bridge {
   private ticker: Timer | undefined;
   private waiting = new Set<() => void>(); // requests waiting for a socket
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
+  public onTab: (event: TabEvent) => void = () => {};
 
   get connected(): boolean {
     return this.sock !== null;
@@ -114,6 +133,11 @@ export class Bridge {
     }
     if (msg.op === "note" && typeof msg.kind === "string") {
       note(msg.kind, Object.fromEntries(Object.entries(msg).filter(([k]) => k !== "op" && k !== "kind")));
+      return;
+    }
+    if (msg.op === "tab") {
+      const event = tabEvent(msg);
+      if (event) this.onTab(event);
       return;
     }
     if (msg.id === undefined) return;
