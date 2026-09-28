@@ -68,11 +68,21 @@ function launchctl(...args: string[]): { code: number; out: string } {
   return { code: r.status ?? 1, out: `${r.stdout}${r.stderr}`.trim() };
 }
 
+// bootout returns while the old job's process may still be finishing its
+// calls in flight (main.ts drains for up to 60 s on SIGTERM); a bootstrap
+// of the label before launchd lets go of it fails with "5: Input/output
+// error", so wait for the label to go first.
+async function bootout(label: string): Promise<void> {
+  const target = `gui/${uid()}/${label}`;
+  launchctl("bootout", target);
+  for (let i = 0; i < 140 && launchctl("print", target).code === 0; i++) await Bun.sleep(500);
+}
+
 async function load(label: string, body: string): Promise<void> {
   await mkdir(AGENTS, { recursive: true });
   await mkdir(LOGS, { recursive: true });
   const path = join(AGENTS, `${label}.plist`);
-  launchctl("bootout", `gui/${uid()}/${label}`);
+  await bootout(label);
   await writeFile(path, body);
   const r = launchctl("bootstrap", `gui/${uid()}`, path);
   if (r.code !== 0) throw new Error(`launchctl bootstrap ${label} failed: ${r.out}`);
@@ -80,7 +90,7 @@ async function load(label: string, body: string): Promise<void> {
 
 async function unload(label: string): Promise<boolean> {
   const path = join(AGENTS, `${label}.plist`);
-  launchctl("bootout", `gui/${uid()}/${label}`);
+  await bootout(label);
   if (!existsSync(path)) return false;
   await unlink(path);
   return true;
