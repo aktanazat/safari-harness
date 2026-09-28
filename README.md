@@ -55,6 +55,8 @@ daemon/
                     and first 500 characters
   map.ts            map: one read of each of up to 20 pages, a few at a time,
                     each in a background tab that closes after
+  mission.ts        the live page each agent window opens on, and /agents:
+                    what each agent did, with Pause, Stop, and Let me drive
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame

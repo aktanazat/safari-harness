@@ -23,6 +23,7 @@ import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } fr
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
+import type { Overview } from "../daemon/mission.ts";
 
 // Commands beyond the tools (guide, repl, session, do, daemon, routine)
 // import their own modules when they run: imported here, those modules
@@ -35,6 +36,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
+  safari agents                              agents using Safari now, and the page
+                                             that pauses or stops them
   safari tabs                                list tabs
   safari open <url> [--bg] [--keep]          open a tab; prints its id
   safari goto <url> --tab N                  navigate
@@ -454,6 +457,24 @@ async function main() {
     console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
     console.log(h.extension ? `extension connected${h.extension.connectedAt ? ` since ${at(h.extension.connectedAt)}` : ""}` : "extension not connected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions");
     for (const { t, kind, ...rest } of h.journal ?? []) console.log(`${at(t)}  ${kind}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ""}`);
+    return;
+  }
+
+  // agents: every agent that used Safari in the last hour, its last call,
+  // and the pages that show it and let the user pause or stop it (--json:
+  // the whole answer).
+  if (cmd === "agents") {
+    const o = await fetch(`${daemonHttp()}/agents.json`).then((r) => r.json() as Promise<Overview>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    if (json) return print(o);
+    for (const a of o.agents) {
+      const tabs = a.tabs === null ? "" : `, ${a.tabs} tab${a.tabs === 1 ? "" : "s"}`;
+      console.log(`${a.owner === null ? "no agent" : `agent ${a.owner}${a.process ? ` (${a.process})` : ""}`}: ${a.status}${tabs}`);
+      for (const t of a.tasks) console.log(`  ${t.name}  ${daemonHttp()}/space?id=${t.id}&name=${encodeURIComponent(t.name)}`);
+      const c = a.last;
+      if (c) console.log(`  last: ${new Date(c.t).toLocaleTimeString("sv")} ${c.tool} ${c.args}  ${c.error ?? c.outcome ?? (c.held ? "held" : "running")}`);
+    }
+    if (o.agents.length === 0) console.log("no agent has used Safari in the last hour");
+    console.log(`watch, pause, or stop them: ${daemonHttp()}/agents`);
     return;
   }
 

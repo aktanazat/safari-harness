@@ -41,7 +41,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   `open` (CLI `--group trip`) gives one task a window of its own; without it
   all your tabs share one. The window opens on a page titled with the task's
   name (the group, or "agent", and your process id), which labels it for him
-  and keeps it yours when the extension reloads.
+  and keeps it yours when the extension reloads; it also shows him what you
+  do there and lets him pause or stop you (Mission control, below).
 - That window becomes a Safari tab group of the same name the first time he
   has left the keyboard and mouse alone for 30 seconds, and stays a plain
   window until then. `open` says which under `space`: `group` is `waiting`,
@@ -81,6 +82,44 @@ Safari is the user's everyday browser, so treat his tabs as his.
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
 - `activate` brings Safari and the tab's window to the front.
+
+## Mission control: the user watches and holds you
+
+The page your window opens on is live. While it is on screen it shows the
+task, your process and how long it has run, the other tabs in the window,
+and your last 50 calls, newest first, with what each did and how long it
+took. Its status reads working, waiting on the user (a `handoff` waits for
+him), paused, the user is driving, stopped, or ended.
+`http://127.0.0.1:37334/agents` lists every agent that used Safari in the
+last hour, those at work first, each with a link to its window's page and
+the same buttons.
+`safari agents` prints that list (`--json` for the whole answer).
+
+- Pause: calls already running finish. Your next call waits up to 90 s for
+  him to resume you, then fails with "the user paused this task from its
+  window; wait a minute, then call again". Do that; never work around it
+  with another tab or tool. An MCP client that gives up on a call sooner
+  reports its own timeout instead: wait the same way.
+- Let me drive: he takes over the tab you used last, brought to the front
+  of its window, and you are paused until he presses Give back.
+- Stop: every later call fails with "the user stopped this task from its
+  window; stop and tell the user what you had done". Your background tabs
+  close; the window keeps its page, marked stopped, and goes two minutes
+  later or when your process exits. It lasts until your process exits.
+  Stop there: tell him what you finished and what you did not.
+- Calls with no agent process behind them show under "no agent" and
+  cannot be paused or stopped.
+- The record keeps nothing you typed or read. An argument shows its value
+  only when it says where or how: a tab, ref, selector, frame, group, site,
+  size, position, or flag, and a key's name (Enter, Cmd+K). `text`,
+  `value`, `password`, `code`, `expression`, `body`, and the rest show
+  their length, and so does a key pressed alone, since that is typing. An
+  address shows its site and path, and an answer only whether it worked,
+  where its tab went, and how many. An error loses any text you sent. The
+  record lives in the daemon's memory, 200 calls per agent, and a restart
+  clears it.
+- The buttons take a POST with the secret the page was served with, from
+  the page's own origin, so no other site can press them.
 
 ## Scripts: safari repl
 
@@ -684,8 +723,11 @@ its own `safari` command.
 - `safari status` shows the daemon's recent events, one a line: its starts
   and stops and why, the extension connecting and disconnecting, requests
   the extension never answered, pages that got a fresh copy of the
-  harness's script, and pages it could not be put in. `--json` prints the
-  whole health answer.
+  harness's script, pages it could not be put in, and the user pausing,
+  resuming, stopping, or taking over an agent from its page. `--json`
+  prints the whole health answer.
+- "the user paused this task" or "the user stopped this task": see
+  Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or
   a page stuck loading, holds it. Reload it with `goto` and retry.
 - "Safari is not running": the tool has started Safari hidden, without

@@ -10,6 +10,9 @@ Tabs
   asks about the page he is on. Never navigate, type in, or close his tabs.
 - Close the tabs you open, on success or failure. Background tabs close
   when your session ends anyway; `--keep` (CLI) leaves one open for him.
+- The user can pause or stop you from your window's first tab. When a
+  call fails saying so, do what it says: wait and call again, or stop and
+  report.
 
 Turns
 - Do one step in one call: `run` for several tools in order, `map` for
