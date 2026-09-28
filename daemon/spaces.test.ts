@@ -160,6 +160,31 @@ test("when a task whose window is a tab group ends, a tab it opened for the user
   await spaceTool({ op: "gone", name });
 });
 
+// An agent that finishes in a second exits while the keeper makes its
+// window's group: before, the daemon closed the window under the steps, and
+// a group named for the task, or Untitled, stayed in the sidebar.
+test("a window whose agent exits while its group is being made stays until the keeper says how that went", async () => {
+  const s = safari();
+  const [g, p] = [agent(), agent()];
+  const made = await runAs(g.pid, () => openTab("https://made.example/", true, "made"));
+  const failed = await runAs(p.pid, () => openTab("https://failed.example/", true, "failed"));
+  const pages = [made, failed].map((t) => pageIn(s.tabs, t.windowId)!.id);
+  for (const t of [made, failed]) expect(await spaceTool({ op: "making", name: t.space.name })).toEqual({ ok: true });
+  const marker = Bun.spawnSync(["true"]).pid;
+  g.kill();
+  p.kill();
+  await Promise.all([g.exited, p.exited]);
+  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false]);
+  await spaceTool({ op: "grouped", name: made.space.name });
+  await spaceTool({ op: "plain", name: failed.space.name, why: "the new group took no name" });
+  // the group goes the ended group's way; the window that is none closes
+  expect(pages.map((id) => s.closed.includes(id))).toEqual([false, true]);
+  const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
+  expect(spaces.filter((x) => x.name === made.space.name || x.name === failed.space.name)).toMatchObject([{ name: made.space.name, ended: true }]);
+  await spaceTool({ op: "gone", name: made.space.name });
+});
+
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
   const s = safari();
   const h = agent();

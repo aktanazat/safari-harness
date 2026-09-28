@@ -900,7 +900,7 @@ export const TOOLS: Record<string, Tool> = {
   // Agent windows and their tab groups, for the keeper (keeper.ts).
   space: {
     desc: "Agent windows and their tab groups, for the tab group keeper.",
-    params: { op: { type: "string", description: "state, grouped, plain, release, gone, or scratch" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
+    params: { op: { type: "string", description: "state, making, grouped, plain, waiting, release, gone, or scratch" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
     required: ["op"],
     hidden: true,
     run: spaceTool,

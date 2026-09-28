@@ -20,7 +20,7 @@ import { rpc } from "./rpc.ts";
 
 // A window as the space tool's state lists it; tabs, the extension's count
 // of them in it, only while Safari runs.
-export type SpaceState = { name: string; width: number; height: number; tabs?: number; group: "waiting" | "grouped" | "plain"; ended: boolean; owner?: number };
+export type SpaceState = { name: string; width: number; height: number; tabs?: number; group: "waiting" | "making" | "grouped" | "plain"; ended: boolean; owner?: number };
 export type Daemon = (op: string, args?: Record<string, unknown>) => Promise<unknown>;
 type Log = (line: string) => void;
 
@@ -53,12 +53,16 @@ async function step(h: Helper, what: string, log: Log, run: () => Promise<Outcom
   return stop(groupsOff()!);
 }
 
-// A waiting window becomes its task's group. Its queue entry goes in first,
-// so a keeper stopped midway leaves the group queued.
+// A waiting window becomes its task's group. The daemon holds the window
+// open from making until the outcome is told, since its agent may exit
+// meanwhile. Its queue entry goes in first, so a keeper stopped midway
+// leaves the group queued.
 async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Promise<boolean> {
   const window = await windowOf(h, s);
   let outcome = window;
   if (typeof window === "number") {
+    // It ended since the state was read: there is nothing to make.
+    if (!((await daemon("making", { name: s.name })) as { ok: boolean }).ok) return false;
     changeQueue((q) => {
       q[s.name] = { owner: s.owner, since: Date.now() };
     });
@@ -68,7 +72,8 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
   }
   if (typeof outcome === "number") return true;
   if (outcome.done) await daemon("grouped", { name: s.name });
-  else if (!outcome.wait) await daemon("plain", { name: s.name, why: outcome.why });
+  else if (outcome.wait) await daemon("waiting", { name: s.name });
+  else await daemon("plain", { name: s.name, why: outcome.why });
   return outcome.done || outcome.wait;
 }
 
@@ -123,7 +128,9 @@ export async function pass(h: Helper, daemon: Daemon, given: Set<string>, log: L
   const running = (owner?: number) => owner !== undefined && alive(owner);
   const orphans = queue.filter(([name, e]) => !known.has(name) && !given.has(name) && !running(e.owner)).map(([name]) => name);
   const watching = spaces.some((s) => !s.ended && s.group === "grouped") || queue.some(([name, e]) => !known.has(name) && running(e.owner));
-  const todo = [...spaces.filter((s) => s.ended && !given.has(s.name)), ...spaces.filter((s) => !s.ended && s.group === "waiting")];
+  // A live window still making is a stopped keeper's: this one tells each
+  // outcome before its pass ends.
+  const todo = [...spaces.filter((s) => s.ended && !given.has(s.name)), ...spaces.filter((s) => !s.ended && (s.group === "waiting" || s.group === "making"))];
   if (todo.length === 0 && orphans.length === 0) return watching;
   // Asking a quit Safari anything would start it again.
   if (!connected) return true;

@@ -22,7 +22,9 @@
 // goes with the agent's last tab (close-on-exit, tools.ts), and a tab it
 // opened in front stays there for the user. A group waits for the keeper,
 // which moves every tab but the page out to windows of the user's own
-// (release) and deletes the group, closing the page with it. Only a
+// (release) and deletes the group, closing the page with it. So does a
+// window the keeper is making a group of, until it says how that went:
+// closed under its steps, the window left a group no one deleted. Only a
 // caller's own call may start a Safari the user quit (socket in bridge.ts):
 // while the extension is gone, an ended window waits for it to come back.
 
@@ -33,10 +35,10 @@ import { currentOwner, watchOwner } from "./owner.ts";
 import type { TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
-type Group = "waiting" | "grouped" | "plain";
+type Group = "waiting" | "making" | "grouped" | "plain";
 // What an open says of its window: its name, and whether it is a tab group
-// (grouped), will be one once the user is away from the keys (waiting), or
-// stays plain, and why.
+// (grouped), is becoming one (making), will be one once the user is away
+// from the keys (waiting), or stays plain, and why.
 export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void };
@@ -138,8 +140,10 @@ async function orphaned(name: string): Promise<Space | undefined> {
 
 // The keeper's side (keeper.ts). state lists the windows that are or will
 // be groups and the ended groups, with each window's size and, while Safari
-// runs, how many tabs a waiting one holds; grouped and plain say how a
-// window turned out; release moves every tab but its page out of an ended
+// runs, how many tabs a waiting one holds; making says the keeper begins
+// on a window's group, which fails once the window has ended; grouped,
+// plain, and waiting say how that went, and a window that ended meanwhile
+// then ends as that; release moves every tab but its page out of an ended
 // group's window, since deleting the group closes its tabs, and says how
 // many stayed (left); gone forgets the group; scratch opens a window to
 // delete from a group whose own window is gone. None asks anything of a
@@ -150,16 +154,28 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   switch (a.op) {
     case "state": {
       const watched = [...spaces.values()].filter((s) => s.group !== "plain");
-      const tabs = bridge.connected && watched.some((s) => s.group === "waiting") ? await listTabs() : undefined;
+      const tabs = bridge.connected && watched.some((s) => s.group === "waiting" || s.group === "making") ? await listTabs() : undefined;
       const row = async (s: Space, over: boolean) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(tabs && !over ? { tabs: (await located(s, tabs)).length } : {}) });
       return { connected: bridge.connected, spaces: await Promise.all([...[...closing.values()].map((s) => row(s, true)), ...watched.map((s) => row(s, false))]) };
     }
+    case "making":
+      if (!live) return { ok: false };
+      live.group = "making";
+      return { ok: true };
     case "grouped":
     case "plain":
-      if (!live) return { ok: false };
-      live.group = a.op;
-      live.why = a.op === "plain" ? String(a.why ?? "") : undefined;
+    case "waiting": {
+      const held = closing.get(name);
+      const s = live ?? (held?.group === "making" ? held : undefined);
+      if (!s) return { ok: false };
+      s.group = a.op;
+      s.why = a.op === "plain" ? String(a.why ?? "") : undefined;
+      if (s === held && a.op !== "grouped") {
+        closing.delete(name);
+        await end(s);
+      }
       return { ok: true };
+    }
     case "release": {
       if (!bridge.connected) return { ok: false };
       const s = closing.get(name) ?? (await orphaned(name));
@@ -179,14 +195,14 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       return { ok: true, ...s.size, tabs: (await located(s)).length };
     }
   }
-  throw new Error("space op must be state, grouped, plain, release, gone, or scratch");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, or scratch");
 }
 
 async function end(space: Space) {
   if (spaces.get(space.key) === space) spaces.delete(space.key);
   space.unwatch?.();
   space.unwatch = undefined;
-  if (space.group === "grouped") {
+  if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     return;
   }

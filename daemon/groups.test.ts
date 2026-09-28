@@ -184,8 +184,19 @@ test("a window made while the user types stays plain, and becomes its task's gro
   await pass(h, d, new Set(), quiet);
   expect(groups()).toEqual([TRIP]);
   expect(s.shown).toBe(TRIP);
-  expect(told).toEqual([{ op: "grouped", name: TRIP }]);
+  expect(told).toEqual([{ op: "making", name: TRIP }, { op: "grouped", name: TRIP }]);
   expect(Object.keys(readQueue())).toEqual([TRIP]);
+});
+
+// Its agent exits between the keeper's look at the windows and its first
+// step: the daemon has closed the window, and a group made now would stay.
+test("a window that ended after the keeper looked gets no group", async () => {
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+  const { d: daemonAnswers, told } = daemon([waiting]);
+  const d: Daemon = async (op, a = {}) => (op === "making" ? (told.push({ op, ...a }), { ok: false }) : daemonAnswers(op, a));
+  expect(await pass(h, d, new Set(), quiet)).toBe(false);
+  expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [], []]);
+  expect(told).toEqual([{ op: "making", name: TRIP }]);
 });
 
 test("an ended task's group goes once its tabs for the user are out, with its window, and the queue forgets it", async () => {
