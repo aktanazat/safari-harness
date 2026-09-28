@@ -65,7 +65,12 @@ function safari() {
   bridge.attach(sock);
   // Settles once the harness has closed tab (it closes an agent's tabs from
   // a sweep of its own, not within the call that asked).
-  const closed = (tab: number) => (tabs.has(tab) ? new Promise<void>((r) => closing.set(tab, r)) : Promise.resolve());
+  const closed = (tab: number) => {
+    if (!tabs.has(tab)) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    closing.set(tab, resolve);
+    return promise;
+  };
   return { tabs, closed };
 }
 
@@ -93,7 +98,11 @@ afterAll(async () => {
 });
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
-const settled = () => new Promise<void>((r) => setImmediate(r));
+const settled = () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
+};
 
 // A call the way /rpc in main.ts makes it.
 const call = (owner: number, tool: string, args: Record<string, unknown>) => watched(owner, tool, args, () => runAs(owner, () => callTool(tool, args)));
