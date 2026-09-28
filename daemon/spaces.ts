@@ -37,15 +37,8 @@ const ended = new Set<Space>();
 
 const IDLE_MS = 2 * 60_000;
 const SWEEP_MS = 5000;
-// main.ts serves it (spacePage) on this port.
+// Its live page (mission.ts), which the daemon serves on this port.
 const PAGE = `http://127.0.0.1:${Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)}/space`;
-
-// The page an agent window opens on, titled with its assignment's name.
-export function spacePage(url: URL): Response {
-  const name = (url.searchParams.get("name") ?? "agent").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  const html = `<!doctype html><meta charset="utf-8"><title>${name}</title><p>This window holds the tabs of ${name}. It closes when that task ends.</p>`;
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-}
 
 // An assignment's name: the task's group, or "agent", with the agent's
 // process id, which keeps two agents apart.
@@ -129,4 +122,14 @@ async function sweep() {
     else s.emptySince ??= now;
     if (inWindow.length === 0 || now - s.emptySince! >= IDLE_MS) await end(s);
   }
+}
+
+// The assignment whose window's page carries id, for that page
+// (mission.ts): undefined once the window has ended, or after a restart.
+export function spaceById(id: string): { owner?: number; window: number } | undefined {
+  const space = [...spaces.values()].find((s) => s.id === id);
+  if (!space) return undefined;
+  // key: "<owner, or daemon>:<group>" (spaceWindow)
+  const who = space.key.slice(0, space.key.indexOf(":"));
+  return who === "daemon" ? { window: space.window } : { owner: Number(who), window: space.window };
 }

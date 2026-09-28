@@ -116,6 +116,13 @@ function orphan(owner: number) {
   void sweep();
 }
 
+// The user stopped owner from its window (mission.ts): its background tabs
+// close now, as they would once it exits.
+export function closeTabsOf(owner: number): void {
+  watches.get(owner)?.();
+  orphan(owner);
+}
+
 async function sweep() {
   // Timer work never starts Safari: once the user quits it, only a caller's
   // own call may (socket in bridge.ts). The next sweep tries again.
