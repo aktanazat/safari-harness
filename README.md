@@ -65,6 +65,8 @@ cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless 
 docs/GUIDE.md       the short card of rules (`safari guide`)
 docs/REFERENCE.md   every tool in full (`safari guide reference`)
 docs/sites/         one note per site (`safari guide <site>`)
+bench/              the WebKit bench's rows for content.js, one page per
+                    behavior in fixtures/ (see Tests)
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -72,6 +74,8 @@ scripts/
                     Safari's page area; needs Accessibility permission
   pairing.swift     helper: the Touch ID prompt, and the pairing code read
                     off Apple's window; needs Accessibility permission
+  bench.swift       test bench: content.js and dialogs.js in a WebKit view
+                    no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
                     restart only what changed (see Deploys)
   fake-extension.ts test double that speaks the extension protocol
@@ -291,3 +295,16 @@ read off a stand-in window,
 which tab a call acts on, and keeps the MCP tool list under
 its size ceiling; `bun run check`
 runs the live checks in real Safari.
+
+`bun test` also runs content.js in Safari's WebKit without Safari:
+`bench/*.test.ts` build `scripts/bench.swift` into `.build/` (rebuilt only
+when it changes), open each page in `bench/fixtures` in a web view no window
+shows, with dialogs.js in the page's world and content.js in its own, and
+send the requests background.js sends. A row is one behavior: a page, the
+requests, and the answers they must get (`bench/bench.ts` has the fields),
+so a new behavior takes one page and one row. `scripts/bench extension`,
+built by `bun run helpers`, takes the same requests one JSON line at a time
+(its header lists them), for trying a page by hand. On a Mac without
+Apple's command line tools the rows are skipped, and the run prints why.
+The bench cannot show Safari's own messaging, frame stitching, a background
+tab's timers and painting, or real focus; those need Safari itself.
