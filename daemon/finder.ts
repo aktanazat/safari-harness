@@ -2,14 +2,16 @@
 // his own files, so an agent can look for "insurance card" instead of
 // asking him for a path he already saved. It attaches nothing: the agent
 // picks a candidate (asking him when more than one could be right) and
-// calls upload again with its path. It reads names, kinds, dates, and
-// sizes, never a file's contents, and never returns a path outside those
-// folders, a symlink that leads out of them included.
+// calls upload again with its path. It never returns a path outside those
+// folders, and it reads Spotlight's record of each file (name, kind, date,
+// size), never the file: the daemon opening one in iCloud Drive makes
+// macOS ask the user whether it may, and the open waits on that prompt in
+// one of the daemon's file threads (on 2026-09-28 four hung until he came
+// back). Spotlight lists no symlinks, so none leads out of the folders.
 
 import { execFile } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { basename, join, normalize, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -18,31 +20,40 @@ const execFileAsync = promisify(execFile);
 export const FIND_ROOTS = ["Library/Mobile Documents/com~apple~CloudDocs", "Documents", "Desktop", "Downloads"].map((d) => join(homedir(), d));
 
 export type Found = { path: string; name: string; kind: string; modified: string; size: number };
-// A Spotlight match: its path and Spotlight's name for its kind ("PDF document").
-export type Hit = { path: string; kind: string };
+// A Spotlight match as Spotlight records it: its kind ("PDF document"), its
+// size (null for a folder), and when its contents last changed (ms).
+export type Hit = { path: string; kind: string; size: number | null; modified: number | null };
 export type Search = (roots: string[], query: string) => Promise<Hit[]>;
 
 const MAX = 8;
-// A common word matches tens of thousands of files ("the" matched 41,299 on
-// the owner's Mac), so only the best-named few hundred are looked at on disk.
-const LOOKED_AT = 200;
-const KIND = "   kMDItemKind = ";
+// mdfind prints each match as `path   kMDItemKind = …   kMDItemFSSize = …`,
+// these attributes in this order, ended by NUL; one it lacks reads (null).
+const ATTRS = ["kMDItemKind", "kMDItemFSSize", "kMDItemContentModificationDate"];
 
-// mdfind prints each match as `path   kMDItemKind = kind`, ended by NUL.
+function hitOf(line: string): Hit {
+  let rest = line;
+  const value: Record<string, string | null> = {};
+  for (const attr of ATTRS.toReversed()) {
+    const at = rest.lastIndexOf(`   ${attr} = `);
+    if (at < 0) continue;
+    const v = rest.slice(at + attr.length + 6);
+    value[attr] = v === "(null)" ? null : v;
+    rest = rest.slice(0, at);
+  }
+  const size = value.kMDItemFSSize;
+  const date = value.kMDItemContentModificationDate;
+  return { path: rest, kind: value.kMDItemKind ?? "", size: size == null ? null : Number(size), modified: date == null ? null : Date.parse(date) };
+}
+
 const spotlight: Search = async (roots, query) => {
-  const args = [...roots.flatMap((r) => ["-onlyin", r]), "-attr", "kMDItemKind", "-0", query];
+  const args = [...roots.flatMap((r) => ["-onlyin", r]), ...ATTRS.flatMap((a) => ["-attr", a]), "-0", query];
   const { stdout } = await execFileAsync("mdfind", args, { timeout: 15000, maxBuffer: 64 << 20 }).catch((e: { killed?: boolean; stdout?: string }) => {
     if (e.killed) throw new Error("Spotlight did not answer within 15 s");
     // a query it cannot read is reported on stdout: "Failed to create query for '…'."
     const why = String(e.stdout ?? "").trim();
     throw new Error(`Spotlight could not search for that${why ? `: ${why}` : ""}`);
   });
-  return stdout.split("\0").filter(Boolean).map((line) => {
-    const at = line.lastIndexOf(KIND);
-    if (at < 0) return { path: line, kind: "" };
-    const kind = line.slice(at + KIND.length);
-    return { path: line.slice(0, at), kind: kind === "(null)" ? "" : kind };
-  });
+  return stdout.split("\0").filter(Boolean).map(hitOf);
 };
 
 // Files named for more of the words come first, then the newest.
@@ -50,25 +61,20 @@ export async function findFiles(query: string, opts: { roots?: string[]; search?
   // mdfind takes a leading "-" for an option (-live never returns), and has no "--"
   const q = query.replace(/^[\s-]+/, "").trim();
   if (!q) throw new Error('find needs words to look for, like "insurance card"');
-  const roots = (await Promise.all((opts.roots ?? FIND_ROOTS).map((r) => realpath(r).catch(() => null)))).filter((r) => r !== null);
+  const roots = opts.roots ?? FIND_ROOTS;
   const want = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  const hits = roots.length ? await (opts.search ?? spotlight)(roots, q) : [];
-  const ranked = hits
-    .map((h) => ({ ...h, score: want.filter((w) => basename(h.path).toLowerCase().includes(w)).length }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, LOOKED_AT);
-  const files = new Map<string, { kind: string; score: number; mtime: number; size: number }>();
-  for (const h of ranked) {
-    const real = await realpath(h.path).catch(() => null);
-    if (real === null || files.has(real) || !roots.some((r) => real.startsWith(r + sep))) continue;
-    const st = await stat(real).catch(() => null);
-    if (st?.isFile()) files.set(real, { kind: h.kind, score: h.score, mtime: st.mtimeMs, size: st.size });
+  const files = new Map<string, { kind: string; size: number; modified: number; score: number }>();
+  for (const h of await (opts.search ?? spotlight)(roots, q)) {
+    // a path normalize would change (a .., a doubled /) is not a plain path inside a root
+    if (h.size === null || normalize(h.path) !== h.path || !roots.some((r) => h.path.startsWith(r + sep))) continue;
+    const score = want.filter((w) => basename(h.path).toLowerCase().includes(w)).length;
+    files.set(h.path, { kind: h.kind, size: h.size, modified: h.modified ?? 0, score });
   }
-  const found = [...files].sort(([, a], [, b]) => b.score - a.score || b.mtime - a.mtime).slice(0, MAX).map(([path, f]) => ({
+  const found = [...files].sort(([, a], [, b]) => b.score - a.score || b.modified - a.modified).slice(0, MAX).map(([path, f]) => ({
     path,
     name: basename(path),
     kind: f.kind,
-    modified: new Date(f.mtime).toLocaleString("sv").slice(0, 16),
+    modified: new Date(f.modified).toLocaleString("sv").slice(0, 16),
     size: f.size,
   }));
   return {

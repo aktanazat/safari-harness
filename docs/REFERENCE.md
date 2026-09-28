@@ -404,9 +404,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   Spotlight in iCloud Drive, Documents, Desktop, and Downloads only, and
   returns up to 8 files, those named for more of the words first, then the
   newest: `path`, `name`, `kind`, `modified`, and `size`. It attaches
-  nothing and reads no file's contents. Pick one, asking the user when more
-  than one could be right, then call `upload` with its path. The first
-  search may make macOS ask the user to let the harness read those folders.
+  nothing and opens no file: what it reports is Spotlight's record. Pick
+  one, asking the user when more than one could be right, then call
+  `upload` with its path. Attaching a file from iCloud Drive the first
+  time makes macOS ask the user to let the harness open those files; the
+  upload can wait until he answers on the Mac.
 - `history` with `do: "back"`, `"forward"`, or `"reload"` (CLI `safari back`,
   `safari forward`, `safari reload`, or `safari history --do back`).
 - Alerts, confirms, and prompts never block the page. Each one comes back
