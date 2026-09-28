@@ -11,6 +11,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: "This sentence is shown on the page.\nThis sentence is fading in." } } }],
   },
   {
+    name: "a snapshot that keeps hidden text still leaves out script, style, and noscript source",
+    page: "source.html",
+    steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],
+  },
+  {
     name: "a snapshot reads open shadow roots, with slotted text where its slot is drawn",
     page: "shadow.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'h2 "Ada Lovelace"\n[1] button "Follow"' } } }],
@@ -36,6 +41,22 @@ benchRows("content.js in WebKit", [
         },
       },
     }],
+  },
+  {
+    name: "typing on a label's ref types into the field it labels",
+    page: "form.html",
+    steps: [
+      { op: "snapshot" }, // [1] label "Email"
+      { op: "type", args: ["1", "grace@example.com"], answer: { value: { ok: true, value: "grace@example.com" } } },
+    ],
+  },
+  {
+    name: "select on a label's ref picks from the list it labels",
+    page: "form.html",
+    steps: [
+      { op: "snapshot" }, // [7] label "Plan"
+      { op: "select", args: ["7", "Free"], answer: { value: { ok: true, value: "Free" } } },
+    ],
   },
   {
     name: "a snapshot reads a srcdoc frame as part of the page, as Safari runs no script in one",
