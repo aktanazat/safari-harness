@@ -59,8 +59,7 @@ const USAGE = `safari — drive Safari from the terminal
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
-  safari eval <js-expression> --tab N [--page]
-                                             evaluate JS, print JSON
+  safari eval <js> --tab N [--page]          run JS, print the last value as JSON
   safari extract --tab N [--selector s]      readable text
   safari info --tab N                        url/title/scroll
   safari wait <ms> --tab N                   sleep in the page

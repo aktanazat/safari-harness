@@ -6,6 +6,7 @@ import { fill, fillCode, loginForm, loginsFor, passwords } from "./passwords.ts"
 import { challengeOf, type Challenge } from "./challenge.ts";
 import { inFront, input, SAFARI } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
+import { asExpression } from "./statements.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
@@ -206,13 +207,18 @@ export async function history(opts: { tab?: number; do: string }) {
   return relay(tab, "history", [opts.do]);
 }
 
-// page: true runs it in the page's own world, where its script variables
-// are. A page that demands Trusted Types still runs it; one whose security
-// policy forbids eval outright refuses it.
-export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; frame?: string }) {
+// Statements work too, and a top-level await: statements.ts makes them one
+// expression that returns the last one's value. A leading "f3:", the prefix
+// of an embedded frame's refs, runs it in that frame. page: true runs it in
+// the page's own world, where its script variables are. A page that demands
+// Trusted Types still runs it; one whose security policy forbids eval
+// outright refuses it.
+export async function evaluate(opts: { tab?: number; expression: string; page?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  if (opts.page) return bridge.request("evalPage", [tab, str(opts.expression, "expression"), opts.frame ?? null], 30000);
-  return relay(tab, "eval", [str(opts.expression, "expression")], 30000);
+  const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
+  const code = asExpression(source);
+  if (opts.page) return bridge.request("evalPage", [tab, code, Number(frame)], 30000);
+  return bridge.tab(tab, "eval", [code], 30000, Number(frame));
 }
 
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
@@ -623,8 +629,8 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
-    params: { tab: TAB, expression: { type: "string", description: "JS expression" }, page: { type: "boolean", description: "run in the page's own world" } },
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
+    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" } },
     required: ["tab", "expression"],
     run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
   },

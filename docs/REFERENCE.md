@@ -134,10 +134,12 @@ Escalate in this order:
    and stitches the whole page (up to 12 screens; a sticky header repeats).
    A tab behind another comes to the front of its window for a moment, then
    the user's tab comes back.
-4. `eval` only when you know the exact expression you need. It sees the
-   DOM; `page: true` runs it in the page's own world, where the site's
-   script variables and functions are (YouTube and Google included); a page
-   whose security policy forbids eval outright refuses it.
+4. `eval` only when you know the exact code you need. Statements work, and
+   the value of the last one comes back; `await` works at the top, and a
+   promise is awaited. It sees the DOM; `page: true` runs it in the page's
+   own world, where the site's script variables and functions are (YouTube
+   and Google included); a page whose security policy forbids eval outright
+   refuses it.
 
 A public page that needs no sign-in reads faster and cheaper without Safari:
 use `read`, `web_search`, or Iris first, and open Safari only when those are

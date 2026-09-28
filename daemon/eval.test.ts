@@ -1,0 +1,58 @@
+import { expect, test } from "bun:test";
+import { bridge } from "./bridge.ts";
+import { callTool } from "./tools.ts";
+
+// A page that runs what eval sends the way content.js and pageEval do: new
+// Function("return (" + code + ")"), with a promise awaited. frame is the
+// frame the last request went to.
+let frame: unknown;
+bridge.attach({
+  send(data: string) {
+    const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+    // relay: [tab, "eval", [code], ms, frame]; evalPage: [tab, code, frame]
+    const [code, at] = op === "relay" ? [(args[2] as string[])[0], args[4]] : [args[1], args[2]];
+    frame = at;
+    const answer = (reply: object) => bridge.handleMessage(JSON.stringify({ id, ...reply }));
+    Promise.resolve()
+      .then(() => new Function(`return (${code})`)())
+      .then((result) => answer({ value: { ok: true, result: result ?? null } }), (e) => answer({ error: String(e instanceof Error ? e.message : e) }));
+  },
+  close() {},
+});
+
+const run = async (expression: string, page = false) => ((await callTool("eval", { tab: 7, expression, page })) as { result: unknown }).result;
+
+// On 09-28 an agent's "const a = 1; a + 1" failed with "Unexpected token ';'".
+test("a script returns its last expression's value, as a console shows it", async () => {
+  expect(await run("const a = 1; a + 1")).toBe(2);
+  expect(await run("const r = await Promise.resolve({ status: 200 });\nr.status")).toBe(200);
+  expect(await run("[1, 2].map((x) => x * 2)")).toEqual([2, 4]);
+});
+
+test("a semicolon or bracket inside a string, template, comment, or regex ends no statement", async () => {
+  expect(await run('const s = "a;(b"; s // and/or; this')).toBe("a;(b");
+  expect(await run("const t = `(${1 + 1};\n`; t")).toBe("(2;\n");
+  expect(await run('const re = /\\(;/; re.test("(;")')).toBe(true);
+});
+
+test("a line that carries on the expression above it stays part of it", async () => {
+  expect(await run("const a = 1; a\n+ 2")).toBe(3);
+  expect(await run("const w = [1, 2]\n  .map((x) => x + 1)\n  .join()\nw")).toBe("2,3");
+});
+
+test("a script that ends in a statement runs whole and returns nothing", async () => {
+  expect(await run("globalThis.ran = 0; for (const x of [1, 2]) globalThis.ran += x")).toBeNull();
+  expect(Reflect.get(globalThis, "ran")).toBe(3);
+  expect(await run("const n = f()\nfunction f() { return 7 }")).toBeNull();
+});
+
+// A snapshot names a cross-origin frame's refs "f3:12"; the same prefix on
+// code runs it in that frame.
+test("the prefix of a frame's refs runs a script in that frame, in either world", async () => {
+  for (const page of [false, true]) {
+    expect(await run("f3:const a = 1; a + 1", page)).toBe(2);
+    expect(frame).toBe(3);
+    expect(await run("const b = 2; b", page)).toBe(2);
+    expect(frame).toBe(0);
+  }
+});

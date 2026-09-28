@@ -585,6 +585,15 @@ await withPage("<p>page</p>", "", async (tab) => {
   }
 });
 
+// Agents write eval as they would in a console: statements, then the value.
+await withPage("<p>page</p>", "", async (tab) => {
+  for (const page of [false, true]) {
+    const sum = (await call("eval", { tab, page, expression: "const a = 1; a + 1" })).result;
+    const status = (await call("eval", { tab, page, expression: "await fetch(location.href).then((r) => r.status)" })).result;
+    check(`eval${page ? " page: true" : ""} runs statements and a top-level await, returning the last value`, sum === 2 && status === 200, { sum, status });
+  }
+});
+
 // ---------- screenshots ----------
 
 function pngSize(bytes: Uint8Array): { w: number; h: number } {

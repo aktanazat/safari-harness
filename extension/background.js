@@ -629,8 +629,7 @@ async function handle(msg) {
       return res && res.value;
     }
     case "evalPage": {
-      const [tabId, src, ref] = args;
-      const { frameId } = frameOf([ref || ""]);
+      const [tabId, src, frameId] = args;
       keepAwake(tabId);
       const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
       if (!r) throw new Error("the page did not run it");
