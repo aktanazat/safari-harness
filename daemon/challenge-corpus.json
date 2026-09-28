@@ -1,0 +1,641 @@
+{
+ "asked": {
+  "markers": [
+   "#challenge-stage",
+   "#challenge-running",
+   "#cf-challenge-running",
+   "script[src*='/challenge-platform/'][src*='chl_page']",
+   "iframe#sec-cpt-if",
+   "#sec-if-cpt-container",
+   "iframe[title='Challenge Content']",
+   "#px-captcha",
+   "script[src*='.captcha.awswaf.com/']",
+   ".cf-turnstile",
+   ".geetest_box",
+   ".geetest_panel_box"
+  ],
+  "answers": [
+   "[name='g-recaptcha-response']",
+   "[name='h-captcha-response']",
+   "[name='cf-turnstile-response']"
+  ],
+  "textMax": 2000
+ },
+ "pages": [
+  {
+   "name": "cloudflare-wall-acm",
+   "source": {
+    "url": "https://dl.acm.org/doi/10.1145/3544548",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/doi/10.1145/3544548?__cf_chl_rt_tk=…",
+     "title": "Just a moment...",
+     "text": "",
+     "markers": [
+      "script[src*='/challenge-platform/'][src*='chl_page']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-wall-indeed",
+   "source": {
+    "url": "https://www.indeed.com/jobs?q=nurse",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/jobs?q=nurse&__cf_chl_rt_tk=…",
+     "title": "Security Check - Indeed.com",
+     "text": "Sign in Additional Verification Required Your Ray ID for this request is a421348ec846be62 Return home → Troubleshooting Cloudflare Errors Need more help? Contact us",
+     "markers": [
+      "script[src*='/challenge-platform/'][src*='chl_page']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-wall-glassdoor",
+   "source": {
+    "url": "https://www.glassdoor.com/Job/index.htm",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/Job/index.htm?__cf_chl_rt_tk=…",
+     "title": "Security | Glassdoor",
+     "text": "",
+     "markers": [
+      "script[src*='/challenge-platform/'][src*='chl_page']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-wall-upwork",
+   "source": {
+    "url": "https://www.upwork.com/nx/search/jobs/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/nx/search/jobs/?__cf_chl_rt_tk=…",
+     "title": "Challenge - Upwork",
+     "text": "Cloudflare Ray ID: a421349f39ae2546 Your IP: … © 2015 - 2026 Upwork® Global Inc.",
+     "markers": [
+      "script[src*='/challenge-platform/'][src*='chl_page']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-block-cars",
+   "source": {
+    "url": "https://www.cars.com/vehicledetail/1/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "block"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/cf-cars.html",
+     "title": "Attention Required! | Cloudflare",
+     "text": "Please enable cookies. Sorry, you have been blocked You are unable to access cf-platform-prod.cars.com Why have I been blocked? This website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including submitting a certain word or phrase, a SQL command or malformed data. What can I do to resolve this? You can email the site owner to let them know you were blocked. Please include what you were doing when this page came up and the Cloudflare Ray ID found at the bottom of this page. Cloudflare Ray ID: a421348bbd58cf2a • Your IP: Click to reveal 2601:646:4200:ac30:bd25:66b0:7546:fd52 • Performance & security by Cloudflare",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-block-crunchbase",
+   "source": {
+    "url": "https://www.crunchbase.com/organization/apple",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "block"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/cf-crunchbase.html",
+     "title": "Attention Required! | Cloudflare",
+     "text": "Please enable cookies. Sorry, you have been blocked You are unable to access crunchbase.com Why have I been blocked? This website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including submitting a certain word or phrase, a SQL command or malformed data. What can I do to resolve this? You can email the site owner to let them know you were blocked. Please include what you were doing when this page came up and the Cloudflare Ray ID found at the bottom of this page. Cloudflare Ray ID: a42134a19f6fed3c • Your IP: Click to reveal 2601:646:4200:ac30:bd25:66b0:7546:fd52 • Performance & security by Cloudflare",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "perimeterx-zillow",
+   "source": {
+    "url": "https://www.zillow.com/homes/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "perimeterx",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/px-zillow.html",
+     "title": "Access to this page has been denied",
+     "text": "Press & Hold to confirm you are a human (and not a bot). Reference ID 5b3aca18-bb11-11f1-a701-d36d74b6622a",
+     "markers": [
+      "#px-captcha"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "perimeterx-walmart",
+   "source": {
+    "url": "https://www.walmart.com/search?q=milk",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "perimeterx",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/px-walmart.html",
+     "title": "Robot or human?",
+     "text": "Robot or human? Activate and hold the button to confirm that you’re human. Thank You! Terms of Use Privacy Policy Do Not Sell My Personal Information Request My Personal Information ©2026 Walmart Stores, Inc.",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "akamai-block-homedepot",
+   "source": {
+    "url": "https://www.homedepot.com/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "akamai",
+    "where": "block"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/ak-homedepot.html",
+     "title": "Access Denied",
+     "text": "Access Denied You don't have permission to access \"http://www.homedepot.com/\" on this server. Reference #18.88813217.1790581865.251ca6ec https://errors.edgesuite.net/18.88813217.1790581865.251ca6ec",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "datadome-tripadvisor",
+   "source": {
+    "url": "https://www.tripadvisor.com/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "datadome",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/dd-tripadvisor.html",
+     "title": "tripadvisor.com",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://geo.captcha-delivery.com/captcha/?initialCid=…&hash=…&cid=…&t=fe&referer=…&s=46694&e=…&dm=cd"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "datadome-leboncoin",
+   "source": {
+    "url": "https://www.leboncoin.fr/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "datadome",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/dd-leboncoin.html",
+     "title": "leboncoin.fr",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://geo.captcha-delivery.com/captcha/?initialCid=…&hash=…&cid=…&t=fe&referer=…&s=2089&e=…&dm=cd"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "datadome-g2",
+   "source": {
+    "url": "https://www.g2.com/",
+    "saved": "2026-09-28"
+   },
+   "expect": {
+    "kind": "datadome",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/cf-g2.html",
+     "title": "g2.com",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://geo.captcha-delivery.com/captcha/?initialCid=…&hash=…&cid=…&t=fe&referer=…&s=48621&e=…&dm=cd"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amazon-not-found",
+   "source": {
+    "url": "https://www.amazon.com/dp/B0DGHRT6FM",
+    "saved": "2026-09-28"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "http://127.0.0.1:65031/amz-captcha.html",
+     "title": "Page Not Found",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "hcaptcha-demo",
+   "source": {
+    "url": "https://accounts.hcaptcha.com/demo"
+   },
+   "expect": {
+    "kind": "hcaptcha",
+    "where": "box"
+   },
+   "frames": [
+    {
+     "url": "https://accounts.hcaptcha.com/demo",
+     "title": "hCAPTCHA Demo",
+     "text": "?hl=XXX Use this to change hl JS API parameter. ?sitekey=XXX Use this to change sitekey. ?secret=XXX Use this to change siteverify secret. ?sitekey=XXX&secret=XXX Use this to change both. Sample Form with hCAPTCHA Form Field (optional)",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://newassets.hcaptcha.com/captcha/v1/33e17445452ab4888e3f4665a714b729e48a7a2e/static/hcaptcha.html#frame=checkbox&id=0yx6l121sr3o&host=accounts.hcaptcha.com&sentry=true&reportapi=…&recaptchacompat=true&custom=False&hl=en&tplinks=on&andint=off&pstissuer=…&sitekey=…&theme=light&origin=…&clientOptions=…"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "turnstile-passed-by-itself",
+   "source": {
+    "url": "https://demo.turnstile.workers.dev/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://demo.turnstile.workers.dev/",
+     "title": "Turnstile ‐ Dummy Login Demo",
+     "text": "Turnstile ‐ Dummy Login Demo User name Password (dummy) Sign in See code Go to the explicit render demo",
+     "markers": [
+      ".cf-turnstile"
+     ],
+     "answered": [
+      "[name='cf-turnstile-response']"
+     ],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "recaptcha-invisible-demo",
+   "source": {
+    "url": "https://www.google.com/recaptcha/api2/demo?invisible=true"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.google.com/recaptcha/api2/demo?invisible=true",
+     "title": "ReCAPTCHA demo",
+     "text": "Sample Form with ReCAPTCHA First Name Last Name Email Pick your favorite color: Red Green Submit",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=invisible&sa=action&anchor-ms=20000&execute-ms=30000&cb=itga1psitow1"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wikipedia-captcha",
+   "source": {
+    "url": "https://en.wikipedia.org/wiki/CAPTCHA"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://en.wikipedia.org/wiki/CAPTCHA",
+     "title": "CAPTCHA - Wikipedia",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-turnstile-docs",
+   "source": {
+    "url": "https://developers.cloudflare.com/turnstile/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://developers.cloudflare.com/turnstile/",
+     "title": "Overview · Cloudflare Turnstile docs",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://customer-1mwganm1ma0xgnmj.cloudflarestream.com/7f1104dc5895d96c1957a4db5fdf496a/iframe?preload=true&letterboxColor=transparent&poster=…"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cloudflare-home",
+   "source": {
+    "url": "https://www.cloudflare.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.cloudflare.com/",
+     "title": "Cloudflare: Build for the agent era",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "footlocker-home",
+   "source": {
+    "url": "https://www.footlocker.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.footlocker.com/",
+     "title": "Sneakers, Apparel & More | Foot Locker",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "walmart-home",
+   "source": {
+    "url": "https://www.walmart.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.walmart.com/",
+     "title": "Walmart | Save Money. Live better.",
+     "text": "Skip to Main Content Ask me anythingAI Hi, I’m Sparky, your AI shopping assistant! When you’re signed into your account, I can help with all of your shopping needs. Sign in Cancel 0 $0.00 Pickup or delivery? … Now available!Ship to another country Rollbacks & More Halloween Get it Fast Pharmacy New Arrivals Toy Shop Game Day Meals Made Easy My Items Only at Walmart Credit Card Walmart+ Walmart | Save Money. Live better. Members get movies & more Save up to $129/yr. with Peacock or Paramount+ Try Walmart+ for $1 Try Walmart+ for $1 Style that fits every story Introducing Scenario Shop now Shop now Workout clothes to accessories The active edit Shop all Shop all Now trending The fall style edit Shop now Shop now Huge Deals drop 10/5 at 12am ET! Explore Deals Explore Deals Save up to $250 on 3 select items Free furniture shipping & assembly* Shop now Shop now Decor, food & more Get everything for fall, fast Shop now Shop now Build a boo basket Shop now Shop now Fall coffee, syrups & more Shop now Shop now Accessories & more Easy DIY Halloween costumes Shop now Shop now",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "zillow-home",
+   "source": {
+    "url": "https://www.zillow.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.zillow.com/",
+     "title": "Zillow: Real Estate, Apartments, Mortgages & Home Values",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "homedepot-home",
+   "source": {
+    "url": "https://www.homedepot.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.homedepot.com/",
+     "title": "The Home Depot",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "tripadvisor-home",
+   "source": {
+    "url": "https://www.tripadvisor.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.tripadvisor.com/",
+     "title": "Tripadvisor: Over a billion reviews & contributions for Hotels, Attractions, Restaurants, and more",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://accounts.google.com/gsi/iframe/select?client_id=…&auto_select=true&ux_mode=popup&ui_mode=card&as=…&bs=…&channel_id=…&origin=…&oauth2_auth_url=…"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cvs-lookup",
+   "source": {
+    "url": "https://www.cvs.com/account-login/look-up"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.cvs.com/account-login/look-up",
+     "title": "Sign in or create an account | CVS Pharmacy",
+     "text": "Skip to main content Sign in or create an account First, we’ll check to see if you already have an account or ExtraCare® membership. Mobile number or email Keep me signed in By continuing, you agree to our Terms of Use andPrivacy Policy Continue Need help? Read our frequently asked questions",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "hn-login",
+   "source": {
+    "url": "https://news.ycombinator.com/login"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://news.ycombinator.com/login",
+     "title": "",
+     "text": "Login username: password: Forgot your password? Create Account username: password:",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "hcaptcha-home",
+   "source": {
+    "url": "https://www.hcaptcha.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.hcaptcha.com/",
+     "title": "hCaptcha: Real-Time Bot Detection & Fraud Prevention",
+     "text": "",
+     "markers": [],
+     "answered": [
+      "[name='g-recaptcha-response']",
+      "[name='h-captcha-response']"
+     ],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "duckduckgo-home",
+   "source": {
+    "url": "https://duckduckgo.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://duckduckgo.com/",
+     "title": "DuckDuckGo - Protection. Privacy. Peace of mind.",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "github-not-found",
+   "source": {
+    "url": "https://github.com/safari-harness-no-such-page"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://github.com/safari-harness-no-such-page",
+     "title": "Page not found · GitHub",
+     "text": "Skip to content Type / to search Find code, projects, and people on GitHub: Search Contact Support — GitHub Status — @githubstatus Footer © 2026 GitHub, Inc. Footer navigation Terms Privacy Security Status Community Docs Contact Manage cookies Do not share my personal information",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "example",
+   "source": {
+    "url": "https://example.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://example.com/",
+     "title": "Example Domain",
+     "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "recaptcha-demo",
+   "source": {
+    "url": "https://www.google.com/recaptcha/api2/demo"
+   },
+   "expect": {
+    "kind": "recaptcha",
+    "where": "box"
+   },
+   "frames": [
+    {
+     "url": "https://www.google.com/recaptcha/api2/demo",
+     "title": "ReCAPTCHA demo",
+     "text": "Sample Form with ReCAPTCHA First Name Last Name Email Pick your favorite color: Red Green",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&cb=xmmhyrvo2zx0"
+     ]
+    }
+   ]
+  }
+ ]
+}

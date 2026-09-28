@@ -1070,10 +1070,11 @@
   }
 
   // What a bot check leaves in this frame (challenge.ts in the daemon names
-  // the check): the frame's address and title, which of the markers show (a
-  // script or an iframe counts by being there), which answer fields hold a
-  // token, and the addresses of the frames it shows on the page.
-  function challengeFacts({ markers, answers }) {
+  // the check): the frame's address and title, its text when that is short,
+  // which of the markers show (a script or an iframe counts by being there),
+  // which answer fields hold a token, and the addresses of the frames it
+  // shows on the page.
+  function challengeFacts({ markers, answers, textMax }) {
     const roots = [document, ...shadowRoots()];
     const all = (selector) => roots.flatMap((r) => [...r.querySelectorAll(selector)]);
     const onPage = (el) => {
@@ -1084,10 +1085,29 @@
       origin: location.origin,
       url: location.href,
       title: document.title,
+      text: shortText(textMax),
       markers: markers.filter((s) => all(s).some((el) => el.tagName === "SCRIPT" || el.tagName === "IFRAME" || onPage(el))),
       answered: answers.filter((s) => all(s).some((el) => el.value)),
       frames: all("iframe").filter(onPage).map((f) => f.src).filter(Boolean),
     };
+  }
+
+  // The frame's text as drawn when it is at most max characters, else "": a
+  // wall says what it is in a few lines. Text nodes are counted first, which
+  // needs no layout and stops past max, so a long page costs no more than a
+  // short one.
+  function shortText(max) {
+    const body = document.body;
+    if (!body) return "";
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let length = 0;
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (/^(script|style|noscript|template)$/i.test(n.parentNode.nodeName)) continue;
+      length += n.data.replace(/\s+/g, " ").trim().length;
+      if (length > max) return "";
+    }
+    const text = (body.innerText ?? "").replace(/\s+/g, " ").trim();
+    return text.length <= max ? text : "";
   }
 
   // What the extension asks every frame at once, by name.

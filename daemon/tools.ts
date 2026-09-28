@@ -112,10 +112,11 @@ async function showTab(tab: number): Promise<unknown> {
 }
 
 // open, goto, snapshot, and a missed wait say when the tab shows a bot check
-// (challenge.ts): the agent hands it to the user with handoff.
-async function withChallenge<T extends object>(result: T, tab: number): Promise<T> {
-  const challenge = await challengeOf(tab);
-  return challenge ? { ...result, challenge } : result;
+// (challenge.ts): the agent hands it to the user with handoff. A result still
+// coming has its probe sent beside it.
+async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
+  const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
+  return challenge ? { ...r, challenge } : r;
 }
 
 // The latest whole-page snapshot of each tab, for diff.
