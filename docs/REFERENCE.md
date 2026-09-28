@@ -173,6 +173,20 @@ a step, `real_input`, `handoff`, and the Messages tools included.
   only adds turns (one session spent $8.35 over 36 turns this way for 49
   seconds of browser work).
 
+## Tool and parameter names
+
+A call that names a tool or a parameter another way still runs, and its
+answer says what was used in a `note`: another case, or `-` for `_`
+(`browsing-history`, `max_bytes`), and three names models reach for:
+`go` for `do`, `value` for `option`, and `query` for `text`, each only on
+a tool that takes the second and not the first. A parameter the tool does
+not take fails the call before anything runs, with the closest one:
+"unknown parameter optoin for select; did you mean option? (params: tab,
+ref, option, snapshot)". The CLI takes tools the same way (`safari
+browsing-history`), and the first word after a tool that takes `do` is
+its `do` (`safari passwords status`). The REPL's calls are taken as
+written.
+
 ## Reading a page
 
 Read with `snapshot` when you do not yet know what is on the page.
@@ -365,6 +379,13 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   waits for. A link or form the page's script takes over gets a short wait
   in case it moves. A page that changes later is caught by the next call.
 - Treat an action as unconfirmed until a snapshot shows the result.
+- One acting call runs on a tab at a time: `click`, `type`, `press`,
+  `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`,
+  `login_fill`, `autofill`, and `dialog` or `passwords` when they act.
+  Another acting call on that tab waits its turn, up to 10 s, then fails
+  with "tab N is busy with click from omp pid P for S s". Reads, `wait`,
+  and `handoff` never wait, and a `run`'s steps take the tab one at a
+  time. Open your own tab rather than share one.
 - `real_input` uses the real mouse and keyboard, so the page sees trusted
   events: `do: "click"` a ref (`count: 2` double-clicks, `button: "right"`),
   `do: "type"` text at a ref or where the caret is, `do: "key"` a key or
@@ -403,6 +424,15 @@ Wait for the page, not the clock.
   signals the change. In a CLI script, never put a shell `sleep` before a
   command: `safari wait --text "<text>" --tab N` returns once the text is there,
   and `click`, `goto`, and `open` already wait for a page they load.
+  Past a minute of such sleeps in 10 minutes, each answer carries a `hint`
+  to wait on text or a selector instead.
+- The same call again and again with the same answer is a loop. The sixth
+  in a row within 3 minutes (the same tool and arguments, and the same page
+  or the same error) fails with what to do instead: "you called info on tab
+  7 5 times and got the same page; the page is not changing: act, wait on
+  text, or tell the user". A new answer, or a different action in between
+  (the next field, another button), starts the count again. An action that
+  works is never counted, and neither is `wait`.
 - A tab the harness opened in the background keeps running while hidden: its
   page reads as visible, and its timers and frame callbacks run as in a tab
   in front, so a web app redirects and fills in without coming to the front.
@@ -803,3 +833,12 @@ its own `safari` command.
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.
 - A ref no longer works: the page changed. Take a new snapshot.
+- "tab N is busy with …": another call is acting on that tab (see Acting).
+  Use your own tab, or try again once it is done.
+- "the harness was updated since this MCP server started; restart the
+  Safari MCP server (or the agent)": a deploy happened during your session.
+  Calls the daemon runs still work, and carry this line as a `note`; the
+  ones the MCP server runs itself (Messages, history search, `real_input`,
+  `passwords`, `handoff`, `ask`, `repl`) and tools the new release dropped
+  fail until it restarts. The server also tells its client to list its
+  tools again, so a client that listens sees the new ones at once.
