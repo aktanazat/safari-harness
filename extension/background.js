@@ -569,6 +569,9 @@ async function screenshot(tabId, opts) {
 
 async function handle(msg) {
   const { op, args = [] } = msg;
+  // A tab id from before the extension reloaded names its tab's new id.
+  // Every op with a number first takes a tab id, but these two.
+  if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus") args[0] = await resolveTab(args[0]);
   switch (op) {
     case "tabs.list": {
       const tabs = await api.tabs.query({});
@@ -753,6 +756,11 @@ api.tabs.onRemoved.addListener((id) => {
   ready.delete(id);
   awake.delete(id);
   store.remove(`dialogs:${id}`).catch(() => {});
+  api.storage.local.get("tabAliases").then(({ tabAliases }) => {
+    if (!tabAliases) return;
+    for (const k of Object.keys(tabAliases)) if (tabAliases[k] === id) delete tabAliases[k];
+    return api.storage.local.set({ tabAliases });
+  }).catch(() => {});
 });
 // Embedded frames report too; only the top document makes the tab ready, and
 // a frame that loads while a wait runs (a sign-in frame) joins the wait.
@@ -761,7 +769,7 @@ api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
   if (!sender.frameId) markReady(sender.tab.id);
   else for (const w of frameWaits.get(sender.tab.id)?.values() ?? []) w.join(sender.frameId);
-  return policyOf(sender.tab.id).then((dialogs) => ({ dialogs }));
+  return policyOf(sender.tab.id).then((dialogs) => ({ dialogs, tab: sender.tab.id }));
 });
 
 // ---------- owned tabs ----------
@@ -793,6 +801,45 @@ async function inFront(tabId) {
   const t = await api.tabs.get(tabId);
   return t.active && t.windowId === await userWindow();
 }
+
+// ---------- tab ids across a reload ----------
+// Safari gives every tab a new id when the extension reloads (a deploy),
+// and agents still hold the old ones. Each page keeps the id its tab had
+// when it reported in (content.js), in the extension's own world, which
+// outlives the reload. The extension reads those marks once it is
+// reloaded, or at the first request for an id Safari no longer knows: each
+// old id maps to its tab's new id, and the marks become the new ids for the
+// next reload. The map lives in storage.local, which outlives a reload too;
+// an alias goes with its tab.
+let adopted = null;
+
+async function resolveTab(tabId) {
+  if (await api.tabs.get(tabId).then(() => true, () => false)) return tabId;
+  adopted ??= adopt();
+  return (await adopted)[tabId] ?? tabId;
+}
+
+async function adopt() {
+  const map = (await api.storage.local.get("tabAliases")).tabAliases || {};
+  const tabs = await api.tabs.query({});
+  const marks = await Promise.all(tabs.map((t) => api.scripting.executeScript({
+    target: { tabId: t.id, frameIds: [0] },
+    func: (id) => { const was = window.__safariHarnessTab; window.__safariHarnessTab = id; return was; },
+    args: [t.id],
+  }).then(([r]) => r && r.result, () => undefined)));
+  for (const [i, t] of tabs.entries()) {
+    const was = marks[i];
+    if (typeof was !== "number" || was === t.id) continue;
+    for (const k of Object.keys(map)) if (map[k] === was) map[k] = t.id;
+    map[was] = t.id;
+  }
+  // an old id Safari has since given to another tab names that tab
+  for (const t of tabs) delete map[t.id];
+  await api.storage.local.set({ tabAliases: map });
+  if (Object.keys(map).length) log("tab ids after the reload", JSON.stringify(map));
+  return map;
+}
+api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
 
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so
