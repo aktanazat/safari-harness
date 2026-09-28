@@ -30,9 +30,10 @@ Before a site
 
 Signing in, in this order
 1. A session: most of his sites are already signed in.
-2. `passwords` `fill` with his saved login. If the vault is locked, the
-   error says why: pair at once and ask him for the code in that same
-   message. Do not route around it.
+2. `passwords` `fill` with his saved login. When it is locked, the call
+   asks him for Touch ID and pairs; if it answers `codeShown`, ask him for
+   the code on his Mac in that same message. Do not route around it. Call
+   `passwords` `done` when you no longer need it.
 3. A passkey or Touch ID: click the site's passkey button, then `handoff`
    so he can touch the sensor.
 4. A text code: `imessage_wait_code`, then type it in.

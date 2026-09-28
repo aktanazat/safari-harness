@@ -1,13 +1,21 @@
 // Filling forms from what the user already keeps: their address from the
-// Contacts card marked as theirs, and logins from Bitwarden. Both run in the
-// caller: reading Contacts needs the terminal's Full Disk Access, and the
-// Bitwarden vault is unlocked in the terminal's own environment. Neither
-// reply carries what was filled, only which fields got it.
+// Contacts card marked as theirs, logins from Bitwarden, and the pairing
+// that opens Apple Passwords. All run in the caller: reading Contacts needs
+// the terminal's Full Disk Access, the Bitwarden vault is unlocked in the
+// terminal's own environment, and the Mac's pairing code is read off its
+// window with the terminal's Accessibility access. No reply carries what
+// was filled, only which fields got it.
 
 import { Database } from "bun:sqlite";
-import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
+import { execFile } from "node:child_process";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { resolveTab, TAB, TOOLS, type TabInfo, type Tool } from "./tools.ts";
 import { addressBooks } from "./imessage.ts";
 import { rpc } from "./rpc.ts";
+
+const execFileAsync = promisify(execFile);
+const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
 
 type Labeled = { label: string; primary: boolean };
 type Postal = Labeled & { street: string; city: string; state: string; zip: string; country: string; countryCode: string };
@@ -113,7 +121,55 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   return { filled, username: chosen.login?.username ?? "", site };
 }
 
+// Runs scripts/pairing and parses its one JSON line; failures carry its stderr.
+async function pairing(args: string[], timeout: number): Promise<Record<string, unknown>> {
+  try {
+    const { stdout } = await execFileAsync(PAIRING, args, { timeout });
+    return JSON.parse(stdout);
+  } catch (e) {
+    const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
+    throw new Error(`pairing ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
+  }
+}
+
+// Apple Passwords with one touch. pair, or a call that finds it locked,
+// asks the user to approve with Touch ID; the daemon then pairs, the code
+// the Mac shows is read off the helper's window, and the call goes on.
+// Where Touch ID cannot be asked or the code cannot be read, the user reads
+// the code out, as before.
+async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
+  const unlocked = async () => {
+    const status = await rpc("passwords", { do: "status" });
+    return !!status && typeof status === "object" && "unlocked" in status && status.unlocked === true;
+  };
+  if (a.do !== "pair") {
+    try {
+      return await rpc("passwords", a);
+    } catch (e) {
+      if (!["logins", "fill", "code"].includes(String(a.do)) || (await unlocked())) throw e;
+    }
+  } else if (await unlocked()) {
+    return rpc("passwords", a);
+  }
+  const tab = a.tab === undefined ? undefined : await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]).catch(() => undefined);
+  const form = tab === undefined ? undefined : await rpc("login_form", { tab }).catch(() => undefined);
+  const site = form && typeof form === "object" && "site" in form && typeof form.site === "string" ? ` to sign in to ${form.site}` : "";
+  const approval = await pairing(["approve", `let Safari Harness use your saved passwords${site}`], 120000).catch(() => undefined);
+  if (approval && approval.approved !== true) throw new Error(`the user did not approve Apple Passwords (${String(approval.why)}); ask them before trying again`);
+  const shown = await rpc("passwords", { do: "pair" });
+  if (shown && typeof shown === "object" && "codeShown" in shown) {
+    const helper = "helper" in shown && typeof shown.helper === "number" ? shown.helper : undefined;
+    const read = approval && helper ? await pairing(["code", "--pid", String(helper)], 10000).catch(() => undefined) : undefined;
+    if (typeof read?.code !== "string") return { codeShown: true, next: "next" in shown ? shown.next : undefined };
+    await rpc("passwords", { do: "unlock", code: read.code });
+  }
+  return a.do === "pair" ? { unlocked: true } : rpc("passwords", a);
+}
+
 export const FILL_TOOLS: Record<string, Tool> = {
+  // The daemon's own tool (tools.ts), listed once from there, with the
+  // one-touch pairing in front.
+  passwords: { ...TOOLS.passwords, hidden: true, run: applePasswords },
   fill_address: {
     desc: "Fill the page's empty address, name, email, and phone fields from the user's own Contacts card; card-number fields are left alone. Returns which fields were filled, not what.",
     params: { tab: TAB, label: { type: "string", description: "which address on the card, e.g. home or work; default the primary one" }, root: { type: "string", description: "CSS selector of the form, when the page has several" } },

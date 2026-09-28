@@ -1,14 +1,22 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
-import { ApplePasswords, passwords } from "./passwords.ts";
-import { callTool } from "./tools.ts";
+import { runAs } from "./owner.ts";
+import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from "./passwords.ts";
 
-// The passwords tool promises three things: only the code the Mac shows
-// unlocks it, a wrong code cannot be retried, and a fill puts the password
-// into the page without handing it to the caller. The fake helper below plays
-// Apple's side of the pairing (the SRP server, whose math differs from the
-// client's), so a client that computes the key wrong fails to pair here.
+// The passwords tool promises: only the code the Mac shows unlocks it, a
+// wrong code cannot be retried, a fill puts the password into the page
+// without handing it to the caller, the pairing lasts while some agent
+// session holds it and ends after the last lets go, and a daemon restart
+// hands it to the next daemon, which proves it before it says unlocked.
+// The fake helper below plays Apple's side of the pairing (the SRP server,
+// whose math differs from the client's), so a client that computes the key
+// wrong fails to pair here. Each test runs its own pairing on a scratch
+// profile: the shared one would write the running daemon's key file.
 
 const N = BigInt(
   "0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF",
@@ -19,6 +27,9 @@ const SECRET = "correct horse battery staple";
 const OTP = "731904";
 const SITE = "login.example.com";
 const USER = "aktan@example.com";
+// Two agent sessions that stay up for the whole run.
+const AGENT = process.pid;
+const OTHER = process.ppid;
 
 const H = (...parts: (Buffer | string)[]) => parts.reduce((h, p) => h.update(p), createHash("sha256")).digest();
 const big = (b: Buffer) => BigInt(`0x${b.toString("hex") || "0"}`);
@@ -33,10 +44,11 @@ function pow(b: bigint, e: bigint): bigint {
 }
 
 type Sent = Record<string, unknown> & { cmd: number };
+type Helper = { queries: string[]; answer: (m: Sent) => Record<string, unknown> };
 
-// Apple's helper: shows CODE, verifies the client's proof, and answers
-// encrypted queries for one saved login.
-function fakeHelper() {
+// Apple's helper process: shows CODE, verifies the client's proof, and
+// answers encrypted queries for one saved login under the session it paired.
+function appleHelper(): Helper {
   const queries: string[] = [];
   let srp: { user: string; A: Buffer; B: Buffer; b: bigint; v: bigint; salt: Buffer } | null = null;
   let key: Buffer | null = null;
@@ -86,16 +98,77 @@ function fakeHelper() {
     }
     return { cmd: m.cmd };
   };
+  return { queries, answer };
+}
 
-  const link = {
+// The bridge in Helium, dialing daemon p: it says hello (whether its helper
+// already runs, and the session it keeps), relays to the helper, and keeps
+// whatever session p hands it for the next daemon.
+function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = null as string | null } = {}) {
+  const kept = { stash, closed: false };
+  p.attach({
     send(data: string) {
-      const reply = answer(JSON.parse(data).helper);
-      queueMicrotask(() => passwords.handleMessage(JSON.stringify({ helper: reply })));
+      const msg = JSON.parse(data);
+      if ("stash" in msg) kept.stash = msg.stash;
+      if (msg.helper) {
+        const reply = helper.answer(msg.helper);
+        queueMicrotask(() => p.handleMessage(JSON.stringify({ helper: reply })));
+      }
     },
-    close() {},
+    close() {
+      kept.closed = true;
+    },
+  });
+  p.handleMessage(JSON.stringify({ hello: { helper: running, stash } }));
+  return kept;
+}
+
+// The grace period's clock, run by hand.
+function handClock() {
+  const set: { fn: () => void; live: boolean }[] = [];
+  let armed = Promise.withResolvers<void>();
+  const timers: Timers = {
+    after(_ms, fn) {
+      const t = { fn, live: true };
+      set.push(t);
+      armed.resolve();
+      armed = Promise.withResolvers<void>();
+      return () => {
+        t.live = false;
+      };
+    },
+    now: () => 0,
   };
-  passwords.attach(link);
-  return { queries };
+  return {
+    timers,
+    live: () => set.filter((t) => t.live).length,
+    // Resolves when a timer is next set.
+    armed: () => armed.promise,
+    runOut() {
+      for (const t of set.filter((t) => t.live)) {
+        t.live = false;
+        t.fn();
+      }
+    },
+  };
+}
+
+const profiles: string[] = [];
+afterAll(() => {
+  for (const dir of profiles) rmSync(dir, { recursive: true, force: true });
+});
+
+function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-")) {
+  profiles.push(profile);
+  const clock = handClock();
+  return { p: new ApplePasswords({ profile, timers: clock.timers }), profile, clock };
+}
+
+async function paired(p: ApplePasswords, helper = appleHelper()) {
+  const kept = bridgeTo(p, helper);
+  await p.pair();
+  await p.unlock(CODE);
+  return { helper, kept };
 }
 
 // The Safari tab: a page whose sign-in form (in the top page, or in an
@@ -124,42 +197,44 @@ function fakeTab(url: string, form = { frame: 0, url }) {
   return page;
 }
 
+const locked = (call: Promise<unknown>) => call.then(() => "no error", (e: Error) => e.message);
+
 test("the code on the Mac unlocks, and fill types the password into the page but never returns it", async () => {
-  fakeHelper();
+  const { p } = scratch();
   const page = fakeTab(`https://${SITE}/signin`);
-  await callTool("passwords", { do: "pair" });
-  expect(await callTool("passwords", { do: "unlock", code: CODE })).toEqual({ unlocked: true });
-  const result = await callTool("passwords", { do: "fill", tab: 7 });
+  bridgeTo(p, appleHelper());
+  await p.pair();
+  expect(await p.unlock(CODE)).toEqual({ unlocked: true });
+  const result = await p.fill(7);
   expect(page).toEqual({ username: USER, password: SECRET });
   expect(result).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect(JSON.stringify(await callTool("passwords", { do: "logins", tab: 7 }))).not.toContain(SECRET);
+  expect(JSON.stringify(await p.loginsFor(7))).not.toContain(SECRET);
 });
 
 test("code types the site's verification code into the page but never returns it", async () => {
-  fakeHelper();
+  const { p } = scratch();
   const page = fakeTab(`https://${SITE}/verify`);
-  await callTool("passwords", { do: "pair" });
-  await callTool("passwords", { do: "unlock", code: CODE });
-  const result = await callTool("passwords", { do: "code", tab: 7 });
+  await paired(p);
+  const result = await p.fillCode(7);
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
 });
 
 test("a wrong code is refused and cannot be retried with the right one", async () => {
-  fakeHelper();
+  const { p } = scratch();
   fakeTab(`https://${SITE}/signin`);
-  await callTool("passwords", { do: "pair" });
-  await expect(callTool("passwords", { do: "unlock", code: "000000" })).rejects.toThrow("wrong code");
-  await expect(callTool("passwords", { do: "unlock", code: CODE })).rejects.toThrow("no code is waiting");
-  await expect(callTool("passwords", { do: "fill", tab: 7 })).rejects.toThrow("locked");
+  bridgeTo(p, appleHelper());
+  await p.pair();
+  await expect(p.unlock("000000")).rejects.toThrow("wrong code");
+  await expect(p.unlock(CODE)).rejects.toThrow("no code is waiting");
+  await expect(p.fill(7)).rejects.toThrow("locked");
 });
 
 test("fill on a page that is not https asks the helper for nothing", async () => {
-  const helper = fakeHelper();
+  const { p } = scratch();
   const page = fakeTab(`http://${SITE}/signin`);
-  await callTool("passwords", { do: "pair" });
-  await callTool("passwords", { do: "unlock", code: CODE });
-  await expect(callTool("passwords", { do: "fill", tab: 7 })).rejects.toThrow("https");
+  const { helper } = await paired(p);
+  await expect(p.fill(7)).rejects.toThrow("https");
   expect(helper.queries).toEqual([]);
   expect(page).toEqual({});
 });
@@ -167,48 +242,203 @@ test("fill on a page that is not https asks the helper for nothing", async () =>
 // Apple's sign-in form on appstoreconnect.apple.com is a frame from
 // idmsa.apple.com: what is saved for the frame's site goes into that frame.
 test("a sign-in form in an embedded frame gets the login and code saved for the frame's own site", async () => {
-  const helper = fakeHelper();
+  const { p } = scratch();
   const page = fakeTab("https://appstoreconnect.apple.com/login", { frame: 5031, url: "https://idmsa.apple.com/appleauth/auth/signin" });
-  await callTool("passwords", { do: "pair" });
-  await callTool("passwords", { do: "unlock", code: CODE });
-  expect(await callTool("passwords", { do: "fill", tab: 7 })).toEqual({ filled: ["username", "password"], username: USER, site: "idmsa.apple.com" });
-  expect(await callTool("passwords", { do: "code", tab: 7 })).toEqual({ filled: ["code"], username: USER, site: "idmsa.apple.com" });
+  const { helper } = await paired(p);
+  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: "idmsa.apple.com" });
+  expect(await p.fillCode(7)).toEqual({ filled: ["code"], username: USER, site: "idmsa.apple.com" });
   expect(page).toEqual({ username: USER, password: SECRET, code: OTP });
   expect(helper.queries.map((q) => q.split(" ")[1])).toEqual(["idmsa.apple.com", "idmsa.apple.com", "idmsa.apple.com"]);
 });
 
-// Every agent shares the one pairing, so no call may end it; only the helper
-// going away does, and then a locked call says why and what to do next.
-test("no call ends the shared pairing; a helper restart does, and the locked call says why and to pair now", async () => {
-  fakeHelper();
+test("a helper restart ends the pairing, and the locked call says why and to pair now", async () => {
+  const { p } = scratch();
   fakeTab(`https://${SITE}/signin`);
-  await callTool("passwords", { do: "pair" });
-  await callTool("passwords", { do: "unlock", code: CODE });
-  await expect(callTool("passwords", { do: "lock" })).rejects.toThrow();
-  expect(await callTool("passwords", { do: "status" })).toEqual({ unlocked: true });
-  fakeHelper(); // Helium relaunched: its helper is a new process
-  const { unlocked, reason } = (await callTool("passwords", { do: "status" })) as { unlocked: boolean; reason: string };
+  await paired(p);
+  bridgeTo(p, appleHelper()); // Helium relaunched: its helper is a new process
+  const { unlocked, reason = "no reason" } = await p.status();
   expect(unlocked).toBe(false);
   expect(reason).toContain("restarted at");
-  const error = await callTool("passwords", { do: "fill", tab: 7 }).then(() => "filled", (e: Error) => e.message);
+  const error = await locked(p.fill(7));
   expect(error).toContain(reason);
   expect(error).toContain('{do: "pair"}');
 });
 
+test("another session's done never ends my access", async () => {
+  const { p, clock } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  await runAs(AGENT, () => paired(p));
+  await runAs(OTHER, () => p.loginsFor(7));
+  expect(await runAs(OTHER, () => p.done())).toMatchObject({ released: true, unlocked: true, sessions: 1 });
+  expect(await runAs(OTHER, () => p.done())).toMatchObject({ released: false, unlocked: true, sessions: 1 });
+  expect(clock.live()).toBe(0);
+  expect(await runAs(AGENT, () => p.loginsFor(7))).toEqual({ site: SITE, usernames: [USER] });
+});
+
+test("after the last session is done, the pairing ends when the grace runs out, and Helium's bridge is let go", async () => {
+  const { p, profile, clock } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  const { kept } = await runAs(AGENT, () => paired(p));
+  expect(existsSync(join(profile, "harness-session.key"))).toBe(true);
+  const done = await runAs(AGENT, () => p.done());
+  expect(done).toMatchObject({ released: true, unlocked: true, sessions: 0, ends: expect.stringMatching(/^at /) });
+  clock.runOut();
+  const { unlocked, reason = "no reason" } = await p.status();
+  expect(unlocked).toBe(false);
+  expect(reason).toContain("every session using it was done");
+  expect(kept).toEqual({ stash: null, closed: true });
+  expect(existsSync(join(profile, "harness-session.key"))).toBe(false);
+  expect(await locked(runAs(AGENT, () => p.loginsFor(7)))).toContain(reason);
+});
+
+test("a session that comes back within the grace keeps the pairing", async () => {
+  const { p, clock } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  await runAs(AGENT, () => paired(p));
+  await runAs(AGENT, () => p.done());
+  await runAs(OTHER, () => p.loginsFor(7));
+  clock.runOut();
+  expect(await p.status()).toMatchObject({ unlocked: true, sessions: 1 });
+});
+
+test("a call from no agent session holds nothing, so the grace still runs out", async () => {
+  const { p, clock } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  await p.loginsFor(7);
+  expect(await p.status()).toMatchObject({ unlocked: true, sessions: 0 });
+  clock.runOut();
+  expect((await p.status()).unlocked).toBe(false);
+});
+
+test("a session that exits lets go of the pairing", async () => {
+  const { p, clock } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  const agent = spawn("sleep", ["60"]);
+  const pid = agent.pid ?? 0;
+  await runAs(pid, () => paired(p));
+  expect(await p.status()).toMatchObject({ unlocked: true, sessions: 1 });
+  const released = clock.armed();
+  agent.kill();
+  await released;
+  expect(await p.status()).toMatchObject({ unlocked: true, sessions: 0, ends: expect.stringMatching(/^at /) });
+});
+
+test("a restart hands the pairing and its sessions to the next daemon, which proves it before it says unlocked", async () => {
+  const first = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const helper = appleHelper();
+  const { kept } = await runAs(AGENT, () => paired(first.p, helper));
+  first.p.shutdown();
+  const next = scratch(first.profile);
+  bridgeTo(next.p, helper, { running: true, stash: kept.stash });
+  expect(await next.p.status()).toMatchObject({ unlocked: true, sessions: 1 });
+  expect(helper.queries).toEqual(["4 example.com"]);
+  expect(await runAs(OTHER, () => next.p.fill(7))).toMatchObject({ username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+  expect(await runAs(AGENT, () => next.p.done())).toMatchObject({ released: true, sessions: 1 });
+});
+
+test("a handed-back session the helper no longer answers, or with no key to open it, stays locked", async () => {
+  const first = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  const { kept } = await paired(first.p);
+  first.p.shutdown();
+  const forgot = scratch(first.profile);
+  bridgeTo(forgot.p, appleHelper(), { running: true, stash: kept.stash });
+  expect(await forgot.p.status()).toMatchObject({ unlocked: false, reason: expect.stringContaining("did not survive") });
+
+  const again = scratch();
+  const { kept: kept2 } = await paired(again.p);
+  again.p.shutdown();
+  rmSync(join(again.profile, "harness-session.key"));
+  const keyless = scratch(again.profile);
+  bridgeTo(keyless.p, appleHelper(), { running: true, stash: kept2.stash });
+  expect(await keyless.p.status()).toMatchObject({ unlocked: false, reason: expect.stringContaining("could not open") });
+});
+
 test("Apple Passwords turning off or asking to sign in again ends the pairing, and the locked call says which", async () => {
   for (const [cmd, why] of [[9, "turned off"], [10, "sign in again"]] as const) {
-    fakeHelper();
+    const { p } = scratch();
     fakeTab(`https://${SITE}/signin`);
-    await callTool("passwords", { do: "pair" });
-    await callTool("passwords", { do: "unlock", code: CODE });
-    passwords.handleMessage(JSON.stringify({ helper: { cmd } }));
-    const error = await callTool("passwords", { do: "logins", tab: 7 }).then(() => "listed", (e: Error) => e.message);
-    expect(error).toContain(why);
+    await paired(p);
+    p.handleMessage(JSON.stringify({ helper: { cmd } }));
+    expect(await locked(p.loginsFor(7))).toContain(why);
   }
 });
 
-test("the helper's first start reads as never paired, not as a restart", () => {
-  const fresh = new ApplePasswords();
-  fresh.attach({ send() {}, close() {} });
-  expect(fresh.status()).toEqual({ unlocked: false, reason: expect.stringContaining("not been paired since") });
+test("the helper's first start reads as never paired, not as a restart", async () => {
+  const { p } = scratch();
+  bridgeTo(p, appleHelper());
+  expect(await p.status()).toEqual({ unlocked: false, reason: expect.stringContaining("not been paired since") });
 });
+
+// Helium's defaults ran 8 processes (about 320 MB) for the hidden bridge.
+// The bridge dials in once Helium is up, and the count holds from then on.
+test.skipIf(!existsSync(HELIUM))("the hidden Helium runs in at most 4 processes", async () => {
+  const profile = mkdtempSync("/private/var/tmp/passwords-helium-");
+  profiles.push(profile);
+  const dialed = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    port: 0,
+    fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("", { status: 400 })),
+    websocket: { open: () => dialed.resolve(), message() {} },
+  });
+  try {
+    launchHelium(profile, Number(server.url.port));
+    await dialed.promise;
+    const processes = Bun.spawnSync(["ps", "-A", "-ww", "-o", "command="]).stdout.toString().split("\n").filter((l) => l.includes(profile));
+    expect(processes.length).toBeLessThanOrEqual(4);
+  } finally {
+    await quitHelium(profile);
+    server.stop(true);
+  }
+}, 30000);
+
+// The one-touch pairing reads the code off the helper's window; this
+// stands in a window like it (off screen, invisible, never in front).
+const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
+const trusted = existsSync(PAIRING) && dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", { AXIsProcessTrusted: { returns: FFIType.bool } }).symbols.AXIsProcessTrusted();
+const STAND_IN = `ObjC.import("Cocoa");
+function run(argv) {
+  const app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(-4000, -4000, 480, 238), $.NSWindowStyleMaskTitled, $.NSBackingStoreBuffered, false);
+  w.title = "Verification Code";
+  w.alphaValue = 0;
+  argv.forEach((text, i) => {
+    const label = $.NSTextField.labelWithString(text);
+    label.frame = $.NSMakeRect(20, 180 - 50 * i, 440, 40);
+    w.contentView.addSubview(label);
+  });
+  w.orderFrontRegardless;
+  console.log("ready");
+  app.run;
+}`;
+
+// Shows the texts in a stand-in window and reads it as the pairing does.
+async function readCode(...shown: string[]): Promise<{ code?: string; error?: string }> {
+  const window = Bun.spawn(["osascript", "-l", "JavaScript", "-e", STAND_IN, ...shown], { stderr: "pipe" });
+  try {
+    const said = window.stderr.getReader();
+    for (let seen = ""; !seen.includes("ready"); ) {
+      const { value, done } = await said.read();
+      if (done) throw new Error(`the stand-in window did not open: ${seen}`);
+      seen += new TextDecoder().decode(value);
+    }
+    const reader = Bun.spawn([PAIRING, "code", "--pid", String(window.pid), "--wait", "2000"], { stdout: "pipe", stderr: "pipe" });
+    const [out, err, status] = await Promise.all([new Response(reader.stdout).text(), new Response(reader.stderr).text(), reader.exited]);
+    return status === 0 ? JSON.parse(out) : { error: err.trim() };
+  } finally {
+    window.kill();
+  }
+}
+
+test.skipIf(!trusted)("the pairing code is read off the helper's window, spaced as the Mac shows it", async () => {
+  expect(await readCode("Enter this code in your browser to use Passwords.", "4 8 2   9 1 3")).toEqual({ code: "482913" });
+}, 10000);
+
+// Digits in a sentence, or too few, are not the code.
+test.skipIf(!trusted)("a window without a six-digit code gives no code", async () => {
+  expect(await readCode("Too many tries. Try again in 300000 seconds.", "4 8 2   9 1")).toEqual({ error: expect.stringContaining("no pairing code showed") });
+}, 10000);

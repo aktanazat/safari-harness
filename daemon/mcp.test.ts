@@ -32,7 +32,10 @@ type Call = { tool: string; args: Record<string, unknown> };
 // load, in every frame, with the start of each response body (74) brought it
 // to 17,822: an agent reads a failed request at once instead of starting
 // capture and reloading, as one could not on CVS's insurance form.
-const TOOL_LIST_MAX_BYTES = 17_822;
+// Passwords' done and one-touch pairing (62) brought it to 17,884: a locked
+// call pairs after the user's Touch ID, and a session lets go of the pairing
+// when done.
+const TOOL_LIST_MAX_BYTES = 17_884;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

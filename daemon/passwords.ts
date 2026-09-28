@@ -10,26 +10,49 @@
 //
 // Pairing is SRP-6a (RFC 5054, 3072-bit group, SHA-256) with the 6-digit code
 // macOS shows as the password; the session key then encrypts every query with
-// AES-GCM. The pairing lives as long as the helper process, so a daemon or
-// Helium restart needs a new code. Every agent shares the one pairing, so no
-// tool ends it; each time it ends, the reason is kept for status and for the
-// error a locked call gets.
+// AES-GCM. The pairing lives as long as the helper process. Helium runs in a
+// session of its own, so a daemon restart or deploy leaves it and the helper
+// running: the bridge dials the new daemon and hands back the session the
+// last one left in its keeping, sealed with a key kept in a file only this
+// user can read, and the new daemon proves the session with a query before
+// it reports unlocked.
+//
+// Each agent session that uses the pairing holds it until it calls done or
+// exits; five minutes after the last one lets go, the pairing ends and Helium
+// quits. Each time the pairing ends, the reason is kept for status and for
+// the error a locked call gets.
 //
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
 
+import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Subprocess } from "bun";
-import { bridge } from "./bridge.ts";
+import { bridge, DEFAULT_PORT } from "./bridge.ts";
+import { currentOwner, watchOwner } from "./owner.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
-const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
+export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
 const HELPER = "/System/Cryptexes/App/System/Library/CoreServices/PasswordManagerBrowserExtensionHelper.app/Contents/MacOS/PasswordManagerBrowserExtensionHelper";
-const PROFILE = join(homedir(), "Library", "Application Support", "Safari Harness", "passwords-helium");
 const BRIDGE_SRC = join(import.meta.dir, "..", "passwords-bridge");
+// Opens the session the bridge keeps; lives in the Helium profile.
+const KEY_FILE = "harness-session.key";
+// How long the pairing outlasts the last session holding it.
+const GRACE_MIN = 5;
+// The Helium the last daemon left running redials within a second of this
+// one starting; a new Helium's bridge says hello within a second or two.
+const ADOPT_MS = 3000;
+const LINK_MS = 20000;
+// A handed-back session is proved by any query the helper answers under it.
+const PROOF_HOST = "example.com";
+
+// The daemon on the harness's own port keeps the profile it always had; a
+// scratch daemon on another port gets its own, and never touches that one.
+export function heliumProfile(port: number): string {
+  return join(homedir(), "Library", "Application Support", "Safari Harness", port === DEFAULT_PORT ? "passwords-helium" : `passwords-helium-${port}`);
+}
 
 // ---------- SRP ----------
 
@@ -81,7 +104,7 @@ type Session = { user: string; key: Buffer };
 
 type State =
   | { kind: "idle" }
-  | { kind: "challenged"; challenge: Challenge; at: string }
+  | { kind: "challenged"; challenge: Challenge }
   | { kind: "unlocked"; session: Session };
 
 // "Sep 28, 8:40 PM": when a pairing ended, in the Mac's own time zone.
@@ -121,6 +144,10 @@ const STATUS_NONE = 3;
 export type HelperLink = { send(data: string): void; close(): void };
 type HelperMsg = Record<string, unknown> & { cmd?: number };
 type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error) => void };
+// What the bridge says as it connects: whether its helper, and so any
+// pairing, still runs, and the sealed session it keeps.
+type Hello = { helper?: unknown; stash?: unknown };
+type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -130,37 +157,115 @@ function pakeOf(reply: HelperMsg): Record<string, unknown> {
   return JSON.parse(Buffer.from(pake, "base64").toString("utf8"));
 }
 
+// Whether p resolves within ms; its rejection throws.
+async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: Timer | undefined;
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(resolve, ms, false);
+  });
+  try {
+    return await Promise.race([p.then(() => true), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The grace period's timer, and the clock that says when it runs out.
+export type Timers = { after(ms: number, fn: () => void): () => void; now(): number };
+
+const REAL_TIMERS: Timers = {
+  after(ms, fn) {
+    const t = setTimeout(fn, ms);
+    t.unref();
+    return () => clearTimeout(t);
+  },
+  now: () => Date.now(),
+};
+
+// ---------- the session the bridge keeps ----------
+
+// What the next daemon needs to go on: the session, and the agent sessions
+// holding it.
+type Kept = Session & { holders: number[] };
+
+// AES-256-GCM, iv first. The sealed session lives only in the bridge, and
+// the key that opens it only in a file this user alone can read.
+function sealKept(key: Buffer, kept: Kept): string {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  const text = JSON.stringify({ user: kept.user, key: kept.key.toString("base64"), holders: kept.holders });
+  return Buffer.concat([iv, c.update(text, "utf8"), c.final(), c.getAuthTag()]).toString("base64");
+}
+
+function openKept(key: Buffer, sealed: string): Kept {
+  const data = Buffer.from(sealed, "base64");
+  const d = createDecipheriv("aes-256-gcm", key, data.subarray(0, 12));
+  d.setAuthTag(data.subarray(data.length - 16));
+  const k = JSON.parse(Buffer.concat([d.update(data.subarray(12, data.length - 16)), d.final()]).toString("utf8")) as { user: string; key: string; holders: number[] };
+  return { user: k.user, key: Buffer.from(k.key, "base64"), holders: k.holders };
+}
+
 export class ApplePasswords {
+  private readonly port: number;
+  private readonly profile: string;
+  private readonly keyFile: string;
+  private readonly timers: Timers;
   private link: HelperLink | null = null;
+  // A link carries calls once its bridge has said hello and any session it
+  // handed back has been proved.
+  private greeted = false;
   private linked: PromiseWithResolvers<void> | null = null;
-  private helium: Subprocess | null = null;
+  private quitting: Promise<void> | null = null;
   private state: State = { kind: "idle" };
-  // Why the state is idle, in plain words.
+  // Why there is no pairing, in plain words.
   private why = `it has not been paired since the harness started at ${localTime()}`;
   private helperSeen = false;
   private waiter: Waiter | null = null;
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
+  // Agent sessions holding the pairing, by pid, each with its exit watch.
+  private holders = new Map<number, () => void>();
+  // Counts down while no session holds the pairing.
+  private grace: { ends: number; cancel: () => void } | null = null;
+  // Seals the session the bridge keeps; the key file holds the same key.
+  private stashKey: Buffer | null = null;
 
-  // A new bridge means a new helper process, which knows no pairing.
-  attach(link: HelperLink) {
-    if (this.link && this.link !== link) this.link.close();
-    this.link = link;
-    this.reset(this.helperSeen ? `Apple's password helper restarted at ${localTime()}` : `it has not been paired since Apple's password helper started at ${localTime()}`);
-    this.helperSeen = true;
-    this.linked?.resolve();
+  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS }: { port?: number; profile?: string; timers?: Timers } = {}) {
+    this.port = port;
+    this.profile = profile;
+    this.keyFile = join(profile, KEY_FILE);
+    this.timers = timers;
   }
 
+  // A bridge dialed in: a new Helium's, or that of the Helium the last
+  // daemon left running. Calls wait for its hello.
+  attach(link: HelperLink) {
+    if (this.link && this.link !== link) {
+      this.link.close();
+      this.fail(new Error("the Helium password bridge reconnected"));
+    }
+    this.link = link;
+    this.greeted = false;
+  }
+
+  // The key file stays: a bridge that dials back with its helper still
+  // running hands the pairing back.
   detach(link: HelperLink) {
     if (this.link !== link) return;
     this.link = null;
-    this.reset(`Apple's password helper stopped at ${localTime()}`);
+    this.greeted = false;
+    this.state = { kind: "idle" };
+    this.why = `the hidden Helium disconnected at ${localTime()}`;
     this.fail(new Error("the Helium password bridge disconnected"));
   }
 
   handleMessage(raw: string) {
-    let msg: { helper?: HelperMsg; closed?: string };
+    let msg: { hello?: Hello; helper?: HelperMsg; closed?: string };
     try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.hello) {
+      this.greet(msg.hello).catch((e) => console.error("[safari-harness] the password bridge's hello failed:", e));
+      return;
+    }
     if (msg.closed !== undefined) {
       this.reset(`Apple's password helper stopped at ${localTime()} (${msg.closed})`);
       this.fail(new Error(`Apple's password helper closed: ${msg.closed}`));
@@ -177,24 +282,85 @@ export class ApplePasswords {
     }
   }
 
-  get unlocked(): boolean {
-    return this.state.kind === "unlocked";
+  // A bridge without its helper brings a new helper, which knows no
+  // pairing. One whose helper still runs keeps this daemon's pairing, or
+  // hands back the session it kept for the daemon before.
+  private async greet(hello: Hello) {
+    const link = this.link;
+    if (!link) return;
+    if (hello.helper !== true) {
+      this.reset(this.helperSeen ? `Apple's password helper restarted at ${localTime()}` : `it has not been paired since Apple's password helper started at ${localTime()}`);
+    } else if (this.state.kind === "idle" && typeof hello.stash === "string") {
+      await this.takeOver(link, hello.stash);
+    }
+    if (this.link !== link) return;
+    this.helperSeen = true;
+    if (this.holders.size === 0 && !this.grace) this.startGrace();
+    this.greeted = true;
+    this.linked?.resolve();
+    this.linked = null;
   }
 
+  // The session the bridge kept for the daemon before: opened with the key
+  // file, and taken over once a query under it comes back.
+  private async takeOver(link: HelperLink, stash: string) {
+    let key: Buffer;
+    let kept: Kept;
+    try {
+      key = readFileSync(this.keyFile);
+      kept = openKept(key, stash);
+    } catch {
+      this.reset(`the harness restarted at ${localTime()} and could not open the pairing it kept`);
+      return;
+    }
+    const session = { user: kept.user, key: kept.key };
+    try {
+      await this.query(link, session, Cmd.LOGIN_NAMES, "CmdGetLoginNames4URL", PROOF_HOST, { ACT: 5, URL: PROOF_HOST }, 10000);
+    } catch {
+      if (this.link === link) this.reset(`the pairing did not survive the harness restart at ${localTime()}`);
+      return;
+    }
+    if (this.link !== link) return;
+    this.state = { kind: "unlocked", session };
+    this.stashKey = key;
+    for (const pid of kept.holders) this.hold(pid);
+  }
+
+  // The pairing is over: the bridge forgets the session it kept, and the
+  // key that opens it goes too.
   private reset(why: string) {
     this.state = { kind: "idle" };
     this.why = why;
+    this.stashKey = null;
+    rmSync(this.keyFile, { force: true });
+    this.link?.send(JSON.stringify({ stash: null }));
   }
 
-  status(): { unlocked: boolean; reason?: string } {
-    if (this.state.kind === "unlocked") return { unlocked: true };
-    return { unlocked: false, reason: this.state.kind === "challenged" ? `a pairing began at ${this.state.at} and its code has not been entered` : this.why };
+  // Seals the session, and who holds it, into the bridge's keeping for the
+  // next daemon. Each pairing gets a key of its own, written whole and
+  // readable by this user alone.
+  private sendStash() {
+    if (this.state.kind !== "unlocked" || !this.link) return;
+    if (!this.stashKey) {
+      const key = randomBytes(32);
+      const next = `${this.keyFile}.next`;
+      mkdirSync(this.profile, { recursive: true });
+      rmSync(next, { force: true });
+      writeFileSync(next, key, { mode: 0o600 });
+      renameSync(next, this.keyFile);
+      this.stashKey = key;
+    }
+    this.link.send(JSON.stringify({ stash: sealKept(this.stashKey, { ...this.state.session, holders: [...this.holders.keys()] }) }));
   }
 
-  // What a call that needs the pairing gets without one: why, then the one
-  // way on.
-  lockedError(): Error {
-    return new Error(`Apple Passwords is locked: ${this.status().reason}. Pair now: call passwords {do: "pair"}, and in the same message ask the user for the 6-digit code their Mac shows; then call passwords {do: "unlock", code}. Do not route around the lock.`);
+  async status(): Promise<Status> {
+    await this.settle().catch(() => false);
+    if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
+    return {
+      unlocked: true,
+      sessions: this.holders.size,
+      ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
+    };
   }
 
   private fail(e: Error) {
@@ -209,26 +375,117 @@ export class ApplePasswords {
     return run;
   }
 
-  // Starts the hidden Helium on first use; its bridge dials back within a
-  // second or two.
-  private async ensureLink(): Promise<HelperLink> {
-    if (this.link) return this.link;
+  // ---------- who holds the pairing ----------
+
+  // The calling agent session holds the pairing until it calls done or
+  // exits. A call with no session behind it (a script's own rpc) keeps the
+  // pairing for the grace period only.
+  private hold(pid = currentOwner()) {
+    if (pid === undefined) {
+      if (this.holders.size === 0) this.startGrace();
+      return;
+    }
+    if (this.holders.has(pid)) return;
+    this.holders.set(pid, watchOwner(pid, () => this.release(pid)));
+    this.grace?.cancel();
+    this.grace = null;
+    this.sendStash();
+  }
+
+  private release(pid: number): boolean {
+    const unwatch = this.holders.get(pid);
+    if (!unwatch) return false;
+    unwatch();
+    this.holders.delete(pid);
+    if (this.holders.size === 0) this.startGrace();
+    this.sendStash();
+    return true;
+  }
+
+  private startGrace() {
+    this.grace?.cancel();
+    const ms = GRACE_MIN * 60_000;
+    this.grace = { ends: this.timers.now() + ms, cancel: this.timers.after(ms, () => this.end()) };
+  }
+
+  // No session has held the pairing for the grace period: it ends, and
+  // Helium quits.
+  private end() {
+    this.grace = null;
+    if (this.state.kind !== "idle") this.reset(`every session using it was done, so it ended at ${localTime()}`);
+    this.quitting = this.quit().finally(() => {
+      this.quitting = null;
+    });
+  }
+
+  private async quit() {
+    const link = this.link;
+    this.link = null;
+    this.greeted = false;
+    this.fail(new Error("the pairing ended"));
+    link?.close();
+    await quitHelium(this.profile);
+  }
+
+  // Lets go of the calling session's hold. Other sessions' holds stay, and
+  // the pairing with them.
+  async done(): Promise<{ released: boolean } & Status> {
+    const pid = currentOwner();
+    const released = pid !== undefined && this.release(pid);
+    return { released, ...(await this.status()) };
+  }
+
+  // ---------- reaching the helper ----------
+
+  // Waits for a bridge on its way: one that dialed in and is still saying
+  // hello, or that of a Helium already running (the last daemon's redials
+  // within a second), so a call just after a restart sees the pairing this
+  // daemon takes over. True once a greeted link is up.
+  private async settle(): Promise<boolean> {
+    await this.quitting;
+    if (this.link && this.greeted) return true;
+    const linked = this.linked ?? this.expectLink();
+    if (!this.link) {
+      const running = runningHelium(this.profile);
+      if (!running) return false;
+      if (running.ppid !== 1 && running.ppid !== process.pid) throw new Error(`another program's Helium (pid ${running.pid}) is using ${this.profile}`);
+      if (!(await within(linked.promise, ADOPT_MS)) && !this.link) return false;
+    }
+    return within(linked.promise, LINK_MS);
+  }
+
+  private expectLink(): PromiseWithResolvers<void> {
     const linked = Promise.withResolvers<void>();
+    // Rejected when a new Helium quits first; a waiter that already gave up
+    // must not make that an unhandled rejection.
+    linked.promise.catch(() => {});
     this.linked = linked;
-    const timer = setTimeout(() => linked.reject(new Error("the hidden Helium did not connect within 20s")), 20000);
-    try {
-      if (!this.helium || this.helium.exitCode !== null) this.helium = launchHelium();
-      await linked.promise;
-    } finally {
-      clearTimeout(timer);
-      this.linked = null;
+    return linked;
+  }
+
+  // The link to Apple's helper, starting Helium when no bridge can be
+  // reached. A running Helium whose bridge never dialed in holds no pairing
+  // (a pairing keeps its bridge running), so it makes way for a new one.
+  private async ensureLink(): Promise<HelperLink> {
+    if (!(await this.settle())) {
+      await quitHelium(this.profile);
+      const linked = this.linked ?? this.expectLink();
+      const child = launchHelium(this.profile, this.port);
+      // A Helium that dies before its bridge dials in fails the wait at once.
+      const failed = (why: string) => {
+        if (this.linked === linked) this.linked = null;
+        linked.reject(new Error(why));
+      };
+      child.once("error", (e) => failed(`the hidden Helium did not start: ${e.message}`));
+      child.once("exit", () => failed("the hidden Helium quit before its bridge connected"));
+      if (!(await within(linked.promise, LINK_MS))) throw new Error("the hidden Helium did not connect within 20s");
     }
     if (!this.link) throw new Error("the Helium password bridge disconnected");
     return this.link;
   }
 
-  private async ask(cmd: number, body: Record<string, unknown>, timeoutMs: number, silence = "Apple's password helper did not answer"): Promise<HelperMsg> {
-    const link = await this.ensureLink();
+  // One request to the helper, and its reply.
+  private async exchange(link: HelperLink, cmd: number, body: Record<string, unknown>, timeoutMs: number, silence = "Apple's password helper did not answer"): Promise<HelperMsg> {
     const { promise, resolve, reject } = Promise.withResolvers<HelperMsg>();
     const timer = setTimeout(() => {
       if (this.waiter?.cmd === cmd) this.waiter = null;
@@ -243,9 +500,18 @@ export class ApplePasswords {
     }
   }
 
-  // Shows a fresh 6-digit code on the Mac. A new pair invalidates the last code.
-  pair(): Promise<{ codeShown: true }> {
+  private async ask(cmd: number, body: Record<string, unknown>, timeoutMs: number): Promise<HelperMsg> {
+    return this.exchange(await this.ensureLink(), cmd, body, timeoutMs);
+  }
+
+  // Shows a fresh 6-digit code on the Mac, and names Apple's helper process,
+  // whose window shows it. A new pair invalidates the last code; with a
+  // pairing up, there is nothing to show.
+  pair(): Promise<{ unlocked: true } | { codeShown: true; helper?: number }> {
+    this.hold();
     return this.serial(async () => {
+      await this.settle();
+      if (this.state.kind === "unlocked") return { unlocked: true };
       const caps = (await this.ask(Cmd.CAPABILITIES, {}, 5000)).capabilities;
       if (!caps || typeof caps !== "object" || !("shouldUseBase64" in caps) || caps.shouldUseBase64 !== true) {
         throw new Error("this Mac's password helper speaks an older protocol than the harness does");
@@ -262,12 +528,15 @@ export class ApplePasswords {
       if (String(pake.MSG) !== "1" || pake.PROTO !== 1) throw new Error("the helper spoke an unknown pairing version");
       const B = Buffer.from(String(pake.B), "base64");
       if (fromBytes(B) % N === 0n) throw new Error("the helper sent an invalid pairing key");
-      this.state = { kind: "challenged", challenge: { user, a, A, B, salt: Buffer.from(String(pake.s), "base64") }, at: localTime() };
-      return { codeShown: true };
+      this.state = { kind: "challenged", challenge: { user, a, A, B, salt: Buffer.from(String(pake.s), "base64") } };
+      this.why = `a pairing began at ${localTime()} and its code has not been entered`;
+      const helper = runningHelper(this.profile);
+      return helper ? { codeShown: true, helper } : { codeShown: true };
     });
   }
 
   unlock(code: string): Promise<{ unlocked: true }> {
+    this.hold();
     return this.serial(async () => {
       if (!/^\d{6}$/.test(code)) throw new Error("code must be the 6 digits the Mac shows");
       if (this.state.kind !== "challenged") throw new Error('no code is waiting: call passwords {do: "pair"} first');
@@ -283,14 +552,26 @@ export class ApplePasswords {
       if (pake.ErrCode !== undefined && pake.ErrCode !== 0) throw new Error(`the helper refused the code (error ${String(pake.ErrCode)})`);
       if (!HAMK.equals(Buffer.from(String(pake.HAMK), "base64"))) throw new Error("the helper failed to prove the pairing");
       this.state = { kind: "unlocked", session: { user: c.user, key: K } };
+      this.sendStash();
       return { unlocked: true };
     });
   }
 
-  private async query(cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs: number, silence?: string): Promise<Record<string, unknown>> {
-    if (this.state.kind !== "unlocked") throw this.lockedError();
-    const s = this.state.session;
-    const reply = await this.ask(cmd, {
+  // The pairing's session, once any bridge on its way is in, held for the
+  // calling agent session. Without one: why, then the one way on.
+  private async session(): Promise<Session> {
+    await this.settle();
+    if (this.state.kind !== "unlocked") {
+      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. If it answers codeShown, ask the user for the 6-digit code their Mac shows and call passwords {do: "unlock", code}. Do not route around the lock.`);
+    }
+    this.hold();
+    return this.state.session;
+  }
+
+  // An encrypted query under session s. An answer that is not under s means
+  // the helper has lost the pairing, which then ends here too.
+  private async query(link: HelperLink, s: Session, cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs: number, silence?: string): Promise<Record<string, unknown>> {
+    const reply = await this.exchange(link, cmd, {
       tabId: 0,
       frameId: 0,
       url: host,
@@ -300,6 +581,7 @@ export class ApplePasswords {
     const raw = payload && typeof payload === "object" && "SMSG" in payload ? payload.SMSG : undefined;
     const smsg: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!smsg || typeof smsg !== "object" || !("SDATA" in smsg) || !("TID" in smsg) || smsg.TID !== s.user) {
+      if (this.state.kind === "unlocked" && this.state.session === s) this.reset(`Apple's password helper stopped answering for the pairing at ${localTime()}`);
       throw new Error("the helper answered for another session");
     }
     const out = open(s.key, Buffer.from(String(smsg.SDATA), "base64"));
@@ -308,9 +590,10 @@ export class ApplePasswords {
   }
 
   // Usernames saved for a site. Never includes passwords.
-  logins(host: string): Promise<string[]> {
+  private logins(host: string): Promise<string[]> {
     return this.serial(async () => {
-      const res = await this.query(Cmd.LOGIN_NAMES, "CmdGetLoginNames4URL", host, { ACT: 5, URL: host }, 10000);
+      const s = await this.session();
+      const res = await this.query(await this.ensureLink(), s, Cmd.LOGIN_NAMES, "CmdGetLoginNames4URL", host, { ACT: 5, URL: host }, 10000);
       if (res.STATUS === STATUS_NONE) return [];
       if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
       const entries: unknown[] = Array.isArray(res.Entries) ? res.Entries : [];
@@ -320,9 +603,10 @@ export class ApplePasswords {
 
   // macOS asks for Touch ID or the login password before the helper hands out
   // a password, so allow the user two minutes to approve.
-  password(host: string, username: string): Promise<string> {
+  private password(host: string, username: string): Promise<string> {
     return this.serial(async () => {
-      const res = await this.query(Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }, 120000,
+      const s = await this.session();
+      const res = await this.query(await this.ensureLink(), s, Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }, 120000,
         "the Mac asked the user to approve with Touch ID and nobody did within 2 minutes; ask the user to approve, then fill again");
       const entries: unknown[] = res.STATUS === STATUS_OK && Array.isArray(res.Entries) ? res.Entries : [];
       const entry = entries[0];
@@ -335,9 +619,10 @@ export class ApplePasswords {
 
   // The current code from a verification-code setup saved for the site, for
   // username when given. The helper may ask for Touch ID first.
-  oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
+  private oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
     return this.serial(async () => {
-      const res = await this.query(Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }, 120000,
+      const s = await this.session();
+      const res = await this.query(await this.ensureLink(), s, Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }, 120000,
         "the Mac asked the user to approve with Touch ID and nobody did within 2 minutes; ask the user to approve, then try again");
       if (res.STATUS === STATUS_NONE) throw new Error(`no verification code saved for ${host}`);
       if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
@@ -351,47 +636,135 @@ export class ApplePasswords {
     });
   }
 
-  // Forget the pairing and quit the hidden Helium (it holds about 330 MB),
-  // as the daemon exits.
+  // ---------- a Safari tab's sign-in form ----------
+
+  async loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
+    await this.session();
+    const { site } = await loginForm(tab);
+    return { site, usernames: await this.logins(site) };
+  }
+
+  // Fills the saved login into the tab's sign-in form. The result names the
+  // fields filled, never the password.
+  async fill(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
+    await this.session();
+    const form = await loginForm(tab);
+    if (!form.password && !form.username) throw new Error("no sign-in form on this page");
+    const { site } = form;
+    const saved = await this.logins(site);
+    const login = username ?? (saved.length === 1 ? saved[0] : undefined);
+    if (login === undefined) {
+      throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
+    }
+    if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
+    const secret = form.password ? await this.password(site, login) : null;
+    const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
+    const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
+    if (filled.length === 0) throw new Error("the page changed before the login was filled");
+    return { filled, username: login, site };
+  }
+
+  // Types the site's current verification code into the tab's code field,
+  // in whichever frame holds it. The result never carries the code.
+  async fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
+    await this.session();
+    const frames = await probe(tab, "code");
+    const field = frames.find((f) => f.found);
+    if (!field) throw new Error("no verification code field on this page");
+    const site = httpsHost(field.origin);
+    const { code, username: login } = await this.oneTimeCode(site, username);
+    const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
+    const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
+    if (filled.length === 0) throw new Error("the page changed before the code was filled");
+    return { filled, username: login, site };
+  }
+
+  // The daemon is exiting. Helium, its helper, and the pairing stay up for
+  // the next daemon, which takes over the session the bridge keeps.
   shutdown() {
-    this.reset("the harness stopped");
     this.fail(new Error("the harness stopped"));
+    this.grace?.cancel();
+    for (const unwatch of this.holders.values()) unwatch();
     const link = this.link;
     this.link = null;
     link?.close();
-    this.helium?.kill();
-    this.helium = null;
-    // A Helium left by an earlier daemon reconnects to this one; stop it too.
-    Bun.spawnSync(["pkill", "-f", `user-data-dir=${PROFILE}`]);
   }
 }
 
-// Hidden Helium with its own profile, never the user's. The native host
-// manifest in the profile points Helium at Apple's helper.
-function launchHelium(): Subprocess {
+// Hidden Helium with its own profile, never the user's: the native host
+// manifest in the profile points it at Apple's helper, and the bridge dials
+// port. It runs in a session of its own, so the daemon's stop (launchd
+// signals the daemon's whole process group) leaves it and its helper
+// running. One browser process with the network and GPU work inside it, and
+// no page or spare renderer: 4 processes and about 200 MB, where Helium's
+// defaults ran 8 and about 320 MB. About 90 MB of the rest is uBlock Origin,
+// which Helium builds in and will not turn off.
+export function launchHelium(profile: string, port: number): ChildProcess {
   if (!existsSync(HELIUM)) throw new Error("Apple Passwords needs Helium in /Applications (macOS lets only approved browsers reach the password helper)");
-  const ext = join(PROFILE, "bridge");
-  mkdirSync(join(PROFILE, "NativeMessagingHosts"), { recursive: true });
+  const ext = join(profile, "bridge");
+  mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
   cpSync(BRIDGE_SRC, ext, { recursive: true });
-  writeFileSync(join(ext, "port.json"), JSON.stringify({ port: Number(process.env.SAFARI_HARNESS_WS ?? 37333) }));
-  writeFileSync(join(PROFILE, "NativeMessagingHosts", "com.apple.passwordmanager.json"), JSON.stringify({
+  writeFileSync(join(ext, "port.json"), JSON.stringify({ port }));
+  writeFileSync(join(profile, "NativeMessagingHosts", "com.apple.passwordmanager.json"), JSON.stringify({
     name: "com.apple.passwordmanager",
     description: "PasswordManagerBrowserExtensionHelper",
     path: HELPER,
     type: "stdio",
     allowed_origins: [`${BRIDGE_ORIGIN}/`],
   }));
-  return Bun.spawn([
-    HELIUM,
+  const child = spawn(HELIUM, [
+    `--user-data-dir=${profile}`,
     "--headless=new",
-    `--user-data-dir=${PROFILE}`,
     `--load-extension=${ext}`,
-    "--disable-features=DisableLoadExtensionCommandLineSwitch",
     "--no-first-run",
     "--no-default-browser-check",
+    "--no-startup-window",
     "--disable-gpu",
-    "about:blank",
-  ], { stdout: "ignore", stderr: "ignore" });
+    "--in-process-gpu",
+    "--enable-features=NetworkServiceInProcess2",
+    // One flag for both: a second --disable-features replaces the first.
+    "--disable-features=DisableLoadExtensionCommandLineSwitch,SpareRendererForSitePerProcess",
+  ], { detached: true, stdio: "ignore" });
+  child.unref();
+  return child;
+}
+
+// Our Helium's browser process, if one runs. Its helper processes carry the
+// same --user-data-dir, and start from another path.
+export function runningHelium(profile: string): { pid: number; ppid: number } | undefined {
+  const flag = `--user-data-dir=${profile} `;
+  for (const line of Bun.spawnSync(["ps", "-A", "-ww", "-o", "pid=,ppid=,command="]).stdout.toString().split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
+    if (m && m[3].startsWith(`${HELIUM} `) && m[3].includes(flag)) return { pid: Number(m[1]), ppid: Number(m[2]) };
+  }
+  return undefined;
+}
+
+// Apple's helper, run by our Helium; its window shows the pairing code.
+export function runningHelper(profile: string): number | undefined {
+  const helium = runningHelium(profile);
+  const pid = helium ? Number(Bun.spawnSync(["pgrep", "-P", String(helium.pid), "-f", HELPER]).stdout.toString().split("\n")[0]) : 0;
+  return pid > 1 ? pid : undefined;
+}
+
+// Quits our Helium, and with it the helper, any pairing, and the session its
+// bridge kept. SIGTERM lets Helium close its profile cleanly; one still
+// running 3 s later gets SIGKILL.
+export async function quitHelium(profile: string) {
+  const running = runningHelium(profile);
+  if (!running) return;
+  const gone = Promise.withResolvers<void>();
+  const unwatch = watchOwner(running.pid, gone.resolve);
+  try {
+    for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+      process.kill(running.pid, signal);
+      if (await within(gone.promise, 3000)) return;
+    }
+  } catch {
+    // already gone
+  } finally {
+    unwatch();
+  }
 }
 
 export const passwords = new ApplePasswords();
@@ -428,45 +801,4 @@ export async function loginForm(tab: number): Promise<{ site: string; frame: num
   const form = frames.find((f) => f.username || f.password) ?? frames[0];
   if (!form) throw new Error("the page did not answer; reload it with goto and try again");
   return { site: httpsHost(form.origin), frame: form.frame, username: form.username === true, password: form.password === true };
-}
-
-export async function loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
-  if (!passwords.unlocked) throw passwords.lockedError();
-  const { site } = await loginForm(tab);
-  return { site, usernames: await passwords.logins(site) };
-}
-
-// Fills the saved login into the tab's sign-in form. The result names the
-// fields filled, never the password.
-export async function fill(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
-  if (!passwords.unlocked) throw passwords.lockedError();
-  const form = await loginForm(tab);
-  if (!form.password && !form.username) throw new Error("no sign-in form on this page");
-  const { site } = form;
-  const saved = await passwords.logins(site);
-  const login = username ?? (saved.length === 1 ? saved[0] : undefined);
-  if (login === undefined) {
-    throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
-  }
-  if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
-  const secret = form.password ? await passwords.password(site, login) : null;
-  const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
-  const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
-  if (filled.length === 0) throw new Error("the page changed before the login was filled");
-  return { filled, username: login, site };
-}
-
-// Types the site's current verification code into the tab's code field,
-// in whichever frame holds it. The result never carries the code.
-export async function fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
-  if (!passwords.unlocked) throw passwords.lockedError();
-  const frames = await probe(tab, "code");
-  const field = frames.find((f) => f.found);
-  if (!field) throw new Error("no verification code field on this page");
-  const site = httpsHost(field.origin);
-  const { code, username: login } = await passwords.oneTimeCode(site, username);
-  const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
-  const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
-  if (filled.length === 0) throw new Error("the page changed before the code was filled");
-  return { filled, username: login, site };
 }

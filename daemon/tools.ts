@@ -2,7 +2,7 @@
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
 import { bridge } from "./bridge.ts";
-import { fill, fillCode, loginForm, loginsFor, passwords } from "./passwords.ts";
+import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
@@ -591,26 +591,29 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
   return ops[key]({ tab: a.tab as number | undefined });
 }
 
-// passwords: pair, unlock, and status take no tab; logins, fill, and code
-// act on the tab's own site. The pairing is shared by every agent, so no
-// call ends it.
+// passwords: pair, unlock, status, and done take no tab; logins, fill, and
+// code act on the tab's own site. Each agent session holds the pairing until
+// it calls done or exits, and the pairing ends a few minutes after the last.
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   switch (a.do) {
-    case "pair":
-      await passwords.pair();
-      return { codeShown: true, next: 'ask the user for the 6-digit code on their Mac, then call passwords with do: "unlock" and code' };
+    case "pair": {
+      const paired = await passwords.pair();
+      return "codeShown" in paired ? { ...paired, next: 'ask the user for the 6-digit code on their Mac, then call passwords with do: "unlock" and code' } : paired;
+    }
     case "unlock":
       return passwords.unlock(str(a.code, "code"));
     case "status":
       return passwords.status();
+    case "done":
+      return passwords.done();
     case "logins":
-      return loginsFor(await resolveTab(a.tab));
+      return passwords.loginsFor(await resolveTab(a.tab));
     case "fill":
-      return fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+      return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "code":
-      return fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+      return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     default:
-      throw new Error("do must be pair, unlock, status, logins, fill, or code");
+      throw new Error("do must be pair, unlock, status, done, logins, fill, or code");
   }
 }
 
@@ -854,8 +857,8 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
   },
   passwords: {
-    desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. code fills the site's saved verification code the same way. logins lists saved usernames; status says why it is locked.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "logins", "fill", "code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
+    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first ask the user for Touch ID and pair (as pair does); if one answers codeShown, ask the user for the 6-digit code on their Mac and call unlock with it. Call done when finished; status says why it is locked.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
     required: ["do"],
     run: applePasswords,
   },

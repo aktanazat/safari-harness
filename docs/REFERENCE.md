@@ -287,7 +287,8 @@ Signing in, in this order:
    sites the user uses are already signed in.
 2. Saved logins come from the user's Apple Passwords through the `passwords`
    tool:
-   - `passwords {do: "status"}` returns `{unlocked, reason}`.
+   - `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, or
+     `{unlocked: false, reason}`.
    - `passwords {do: "logins", tab}` lists the usernames saved for the
      sign-in form's site; `passwords {do: "fill", tab}` fills the form
      (pass `username` when several are saved). The result names the fields
@@ -299,15 +300,22 @@ Signing in, in this order:
      the page splits it, and never returns it.
    - The form may sit in an embedded frame; the tools find it in any frame
      of the tab, and the login's site is that frame's own address.
-3. When the vault is locked, the error says why (never paired since the
-   hidden helper started, the helper restarted, or Apple Passwords was
-   turned off or asked to sign in again). Pair at once, and ask the user
-   for the code in the same message; do not route around the lock:
-   1. `passwords {do: "pair"}` makes the Mac show a 6-digit code.
-   2. Ask the user for the code, then `passwords {do: "unlock", code}`. A
-      wrong code cannot be retried: pair again for a new one.
-   The pairing lasts until the daemon or its hidden helper restarts, and it
-   serves every agent on the Mac. There is no lock.
+3. When the vault is locked, `logins`, `fill`, `code`, and `pair` first ask
+   the user to approve with Touch ID (the prompt names the site), then pair,
+   read the 6-digit code off the Mac's window, and go on; reading it needs
+   the calling terminal's Accessibility permission. Where that cannot
+   happen, the call answers `{codeShown: true, next}`: ask the user for the
+   code in the same message, then `passwords {do: "unlock", code}`. A wrong
+   code cannot be retried: pair again for a new one. If the user declines
+   Touch ID, the call fails: ask before trying again. Do not route around
+   the lock; the locked error says why (never paired since the hidden
+   helper started, the helper restarted, every session was done with it,
+   or Apple Passwords was turned off or asked to sign in again).
+   The pairing serves every agent session on the Mac and survives a daemon
+   restart. Each session holds it from its first `passwords` call until it
+   calls `passwords {do: "done"}` or exits; five minutes after the last
+   hold ends, the pairing ends and the hidden Helium quits. `done` lets go
+   of the caller's own hold only; there is no lock.
 4. A site that offers a passkey or Touch ID sign-in: click its passkey
    button, then `handoff` (below) so the user can touch the sensor.
 5. A code sent by text: call `imessage_wait_code` right after asking the site to

@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { DEFAULT_PORT } from "../daemon/bridge.ts";
+import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
 
 const HOME = homedir();
 const REPO = join(import.meta.dir, "..");
@@ -95,8 +97,13 @@ export async function daemonInstall(): Promise<string> {
   return `daemon installed; logs: ${join(LOGS, "daemon.log")}`;
 }
 
+// The hidden Helium for Apple Passwords outlives a daemon restart on
+// purpose (passwords.ts); with the daemon gone for good, it goes too, and
+// the pairing with it.
 export async function daemonUninstall(): Promise<string> {
-  return (await unload(DAEMON_LABEL)) ? "daemon uninstalled" : "daemon was not installed";
+  const had = await unload(DAEMON_LABEL);
+  await quitHelium(heliumProfile(DEFAULT_PORT));
+  return had ? "daemon uninstalled" : "daemon was not installed";
 }
 
 // ---------- routines ----------
