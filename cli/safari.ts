@@ -29,7 +29,8 @@ import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList,
 
 const USAGE = `safari — drive Safari from the terminal
 
-  safari guide                               how to use this for browsing and automations
+  safari guide                               the short card of rules for browsing
+  safari guide reference                     every tool in full
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health

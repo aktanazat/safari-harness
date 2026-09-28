@@ -25,7 +25,7 @@ daemon/
   tools.ts          the Safari tools, each with its own input schema: run
                     (several tools in one call) tabs open close goto activate
                     snapshot click type press select hover upload history
-                    scroll eval fetch download dialog extract info wait net
+                    scroll eval fetch download dialog extract info wait handoff net
                     console cookies shot pdf window passwords. Actions report
                     `navigated`, `newTab`, and any `dialogs`; snapshots take
                     in embedded frames
@@ -33,6 +33,8 @@ daemon/
                     terminal's permissions (Messages, browsing history)
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
+  challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
+                    shows, for challenge in results and for handoff
   input.ts          real_input: the real mouse and keyboard through
                     scripts/input, for pages that ignore scripted events
   passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
@@ -53,8 +55,9 @@ cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
 cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
-docs/GUIDE.md       usage guide for agents and people (`safari guide`)
-docs/sites/         one guide per repl site global (`safari guide <site>`)
+docs/GUIDE.md       the short card of rules (`safari guide`)
+docs/REFERENCE.md   every tool in full (`safari guide reference`)
+docs/sites/         one note per site (`safari guide <site>`)
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -121,9 +124,9 @@ the new code without a settings toggle.
 
 ## Use
 
-`safari guide` is the full usage guide: tab discipline, snapshot-first
-reading, waiting, secrets, confirmation, and routines. The omp skill
-`safari` points agents at it.
+`safari guide` is the short card of rules: tabs, sign-in, bot checks, and
+waiting. `safari guide reference` covers every tool in full. The omp skill
+`safari` points agents at both.
 
 ```
 safari open https://example.com
@@ -155,7 +158,7 @@ safari fill address --tab 7     # name, address, email, phone from your Contacts
 safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
 safari --host studio tabs       # another Mac's Safari, through ssh
 safari host use studio          # make it the default; `host use local` goes back
-safari guide amazon             # direct URLs, snapshot roots, signed-in check
+safari guide gusto              # one site's note: sign-in, paths, what to confirm
 safari guide repl               # the REPL's API and recovery steps
 safari imessage chats           # recent conversations
 safari imessage code            # wait for a sign-in code by text
