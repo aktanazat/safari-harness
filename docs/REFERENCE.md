@@ -150,6 +150,15 @@ Escalate in this order:
    and Google included); a page whose security policy forbids eval outright
    refuses it.
 
+`data` returns what the page itself declares, as JSON: JSON-LD, microdata,
+meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the
+state a framework left in the page (Next.js, Nuxt, Remix, Apollo, Redux). On
+a shop, recipe, or article page it often holds the price, stock, or author
+without a snapshot. Values under names like token or csrf read `[hidden]`.
+Past `max` bytes (default 20000) the sources that fit come back whole and
+the rest are listed with their size and top keys; call again with `pick`, a
+path such as `next.props.pageProps.items[0]`, to read one part.
+
 A public page that needs no sign-in reads faster and cheaper without Safari:
 use `read`, `web_search`, or Iris first, and open Safari only when those are
 blocked or the page needs the user's session. Save long text you will need

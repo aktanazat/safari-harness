@@ -1413,6 +1413,130 @@
     }
   }
 
+  // ---------- the page's own data ----------
+  // What the page declares about itself for machines, as the data tool
+  // reads it: JSON-LD, microdata, meta tags, JSON in script tags (Next.js
+  // and Nuxt keep their state there), and JSON in data- attributes of its
+  // main region. background.js adds the state frameworks leave in page
+  // globals, and the daemon shapes the whole (daemon/pagedata.ts). One
+  // answer must stay well under the 16 MB a message to the daemon may hold,
+  // so a source past what is left of DATA_BUDGET characters is only measured.
+  const DATA_BUDGET = 4e6;
+  const DATA_MAX_ITEMS = 50;
+
+  function pageData() {
+    const found = {
+      jsonld: jsonLd(),
+      microdata: [...document.querySelectorAll("[itemscope]:not([itemprop])")].slice(0, DATA_MAX_ITEMS).map((el) => microItem(el, 0)),
+      meta: metaTags(),
+      next: parseJson(document.getElementById("__NEXT_DATA__")?.textContent),
+      nuxt: parseJson(document.getElementById("__NUXT_DATA__")?.textContent),
+      scripts: jsonScripts(),
+      attrs: jsonAttributes(),
+    };
+    const out = { url: location.href, title: document.title, tooBig: {} };
+    let room = DATA_BUDGET;
+    for (const [name, value] of Object.entries(found)) {
+      if (value === undefined) continue;
+      const json = JSON.stringify(value);
+      if (json.length > room) {
+        out.tooBig[name] = new Blob([json]).size;
+      } else {
+        out[name] = value;
+        room -= json.length;
+      }
+    }
+    return out;
+  }
+
+  // A missing or malformed one reads as nothing.
+  function parseJson(text) {
+    try {
+      return text ? JSON.parse(text) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // The page's JSON-LD blocks, a block that holds a list as its items.
+  function jsonLd() {
+    return [...document.querySelectorAll('script[type="application/ld+json"]')].flatMap((s) => {
+      const v = parseJson(s.textContent);
+      return v === undefined ? [] : Array.isArray(v) ? v : [v];
+    });
+  }
+
+  // Meta tags by name or property (og:, twitter:, product:), one given more
+  // than once as a list, and the canonical address.
+  function metaTags() {
+    const out = new Map();
+    const add = (key, value) => {
+      if (key && value !== null) out.set(key, out.has(key) ? [].concat(out.get(key), value) : value);
+    };
+    for (const m of document.querySelectorAll("meta[property], meta[name]")) add(m.getAttribute("property") || m.getAttribute("name"), m.getAttribute("content"));
+    add("canonical", document.querySelector("link[rel=canonical]")?.href ?? null);
+    return Object.fromEntries(out);
+  }
+
+  // One microdata item: its type and properties, a nested item's as an item
+  // of its own, and a property given more than once as a list.
+  function microItem(item, depth) {
+    const props = new Map();
+    for (const p of item.querySelectorAll("[itemprop]")) {
+      // a property of a nested item belongs to that item
+      if (p.parentElement.closest("[itemscope]") !== item) continue;
+      const value = !p.hasAttribute("itemscope") ? microValue(p) : depth < 5 ? microItem(p, depth + 1) : null;
+      for (const name of p.getAttribute("itemprop").split(/\s+/).filter(Boolean)) {
+        props.set(name, props.has(name) ? [].concat(props.get(name), [value]) : value);
+      }
+    }
+    const type = item.getAttribute("itemtype");
+    return { ...(type ? { type } : {}), props: Object.fromEntries(props) };
+  }
+
+  // Where a microdata property keeps its value, by tag (the HTML standard's
+  // list); any other element's is its text, or the content attribute some
+  // pages add for the value their text only shows ("$19.99" as "19.99").
+  const MICRO_VALUE = { META: "content", AUDIO: "src", EMBED: "src", IFRAME: "src", IMG: "src", SOURCE: "src", TRACK: "src", VIDEO: "src", A: "href", AREA: "href", LINK: "href", OBJECT: "data", DATA: "value", METER: "value", TIME: "datetime" };
+
+  function microValue(el) {
+    const at = Object.hasOwn(MICRO_VALUE, el.tagName) ? MICRO_VALUE[el.tagName] : null;
+    // an address reads resolved, as the page would follow it
+    const v = at === "src" || at === "href" || at === "data" ? el[at] : at && el.getAttribute(at);
+    return String(v || el.getAttribute("content") || norm(el.textContent)).slice(0, 2000);
+  }
+
+  // JSON a page keeps in script tags of its own (a store's product, a
+  // framework's settings), with the tag's id where it has one.
+  function jsonScripts() {
+    return [...document.querySelectorAll('script[type="application/json"]')]
+      .filter((s) => s.id !== "__NEXT_DATA__" && s.id !== "__NUXT_DATA__")
+      .slice(0, DATA_MAX_ITEMS)
+      .flatMap((s) => {
+        const value = parseJson(s.textContent);
+        return value === undefined ? [] : [s.id ? { id: s.id, value } : { value }];
+      });
+  }
+
+  // JSON in data- attributes of the page's main region (a product card's
+  // data-product), each with the element that holds it.
+  function jsonAttributes() {
+    const root = document.querySelector("main, [role=main]") || document.body;
+    const out = [];
+    if (!root) return out;
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      for (const a of el.attributes) {
+        if (!a.name.startsWith("data-") || !/^\s*[[{]/.test(a.value)) continue;
+        const value = parseJson(a.value);
+        if (value === undefined) continue;
+        const classes = [...el.classList].slice(0, 2).map((c) => `.${c}`).join("");
+        out.push({ el: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${classes}`, [a.name]: value });
+        if (out.length >= DATA_MAX_ITEMS) return out;
+      }
+    }
+    return out;
+  }
+
   // ---------- message dispatch ----------
 
   const handlers = {
@@ -1422,6 +1546,7 @@
     press: (ref, spec) => withOutcome(() => pressKey(ref, spec)),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
+    data: pageData,
     tabInfo,
     eval: (src) => {
       // eslint-disable-next-line no-new-func

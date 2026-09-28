@@ -4,6 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
+import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
@@ -807,6 +808,12 @@ export const TOOLS: Record<string, Tool> = {
       const o = { ...(a as { ms?: number; selector?: string; text?: string; front?: boolean }), tab: await resolveTab(a.tab) };
       return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
+  },
+  data: {
+    desc: "The page's own data as JSON: JSON-LD, meta, microdata, framework state (Next.js, Nuxt, Apollo). Past max, sources come as keys; pick a path into one.",
+    params: { tab: TAB, pick: { type: "string", description: "e.g. next.props.pageProps" }, max: { type: "number", description: "bytes, default 20000" } },
+    required: ["tab"],
+    run: async (a) => pageData(await resolveTab(a.tab), { pick: a.pick === undefined ? undefined : str(a.pick, "pick"), max: a.max === undefined ? undefined : num(a.max, "max") }),
   },
   // The daemon's half of handoff (handoff.ts runs in the caller). away says
   // the caller found the user away; texted reports how its text went; id

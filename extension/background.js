@@ -91,7 +91,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -522,6 +522,39 @@ async function pageEval(src) {
   }
 }
 
+// Runs in the page's own world, so it must be self-contained: the state a
+// framework leaves in page globals, for the data tool, each as plain JSON
+// (Safari aborts on a NaN passed on, as for pageEval). One answer must stay
+// well under the 16 MB a message to the daemon may hold, so a value past
+// what is left of 4 million characters is only measured.
+function pageGlobals() {
+  const read = {
+    next: () => window.__NEXT_DATA__,
+    nuxt: () => window.__NUXT__,
+    remix: () => window.__remixContext?.state,
+    apollo: () => window.__APOLLO_STATE__ ?? window.__APOLLO_CLIENT__?.cache?.extract(),
+    state: () => window.__INITIAL_STATE__ ?? window.__PRELOADED_STATE__,
+  };
+  const values = {};
+  const tooBig = {};
+  let room = 4e6;
+  for (const [name, get] of Object.entries(read)) {
+    try {
+      const json = JSON.stringify(get());
+      if (json === undefined) continue;
+      if (json.length > room) {
+        tooBig[name] = new Blob([json]).size;
+      } else {
+        values[name] = JSON.parse(json);
+        room -= json.length;
+      }
+    } catch {
+      // a value that holds itself, or a getter that throws, is no data
+    }
+  }
+  return { values, tooBig };
+}
+
 // ---------- screenshots ----------
 // Safari captures only a window's visible tab: a tab behind another comes
 // to the front for the capture and the tab that was there goes back. All
@@ -722,6 +755,12 @@ async function handle(msg) {
       const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
       if (!r) throw new Error("the page did not run it");
       if (r.result && r.result.error) throw new Error(r.result.error);
+      return r.result;
+    }
+    case "pageData": {
+      const [tabId] = args;
+      const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func: pageGlobals });
+      if (!r) throw new Error("the page did not run it");
       return r.result;
     }
     case "fetchFile": {
