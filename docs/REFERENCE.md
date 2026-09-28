@@ -360,11 +360,12 @@ check, no solving services.
 - `open`, `goto`, `snapshot`, and a `wait` that misses add
   `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
   a `challenge:` line under its header. `kind` names the service
-  (cloudflare, akamai, datadome, perimeterx, aws-waf, apple, recaptcha,
-  hcaptcha, arkose, geetest, or other for a short page that asks the reader
-  to prove they are human). `where` is `"page"` when the check stands in for
-  the whole page, `"box"` when it is a box inside a page that otherwise
-  reads (often on a form), and `"block"` when the site has turned the
+  (cloudflare, akamai, datadome, perimeterx, aws-waf, kasada, imperva,
+  apple, recaptcha, hcaptcha, arkose, geetest, or other for a short page
+  that asks the reader to prove they are human). `where` is `"page"` when
+  the check stands in for the whole page, `"box"` when it is a box inside a
+  page that otherwise reads (often on a form, such as an unanswered
+  Cloudflare Turnstile), and `"block"` when the site has turned the
   browser away: no one can clear that, so report it.
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.

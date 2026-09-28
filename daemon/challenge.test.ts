@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { classify, PROBE, type Challenge, type Facts } from "./challenge.ts";
 
 // Saved walls and live pages as challengeFacts reported them in Safari
-// (top frame; long tokens and the user's own details cut), each with the
-// check it shows or null. scripts/record-challenges.ts records the live ones
-// again when the probe changes.
-type Corpus = { asked: typeof PROBE; pages: { name: string; source: { url: string; saved?: string }; expect: Challenge | null; frames: Facts[] }[] };
+// (top frame; long tokens and the user's own details cut), and walls built
+// from their vendor's documented markup, each with the check it shows or
+// null. scripts/record-challenges.ts records the live ones again when the
+// probe changes.
+type Corpus = { asked: typeof PROBE; pages: { name: string; source: { url: string; saved?: string; built?: string }; expect: Challenge | null; frames: Facts[] }[] };
 const corpus = (await Bun.file(new URL("./challenge-corpus.json", import.meta.url)).json()) as Corpus;
 
 test.each(corpus.pages.map((p) => [p.name, p] as const))("%s is classified as recorded", (_name, page) => {

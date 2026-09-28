@@ -9,8 +9,11 @@
    "#sec-if-cpt-container",
    "iframe[title='Challenge Content']",
    "#px-captcha",
+   "script[src*='.token.awswaf.com/'][src*='/challenge.js']",
    "script[src*='.captcha.awswaf.com/']",
+   "script[src*='/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/ips.js']",
    ".cf-turnstile",
+   ":has(> [name='cf-turnstile-response'])",
    ".geetest_box",
    ".geetest_panel_box"
   ],
@@ -309,6 +312,217 @@
    ]
   },
   {
+   "name": "kasada-first-visit",
+   "source": {
+    "url": "https://docs.hypersolutions.co/k4sada/flow-2-fingerprint-endpoint",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "kasada",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "",
+     "markers": [
+      "script[src*='/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/ips.js']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "kasada-guarded-page",
+   "source": {
+    "url": "https://docs.hypersolutions.co/k4sada/flow-2-fingerprint-endpoint",
+    "built": "2026-09-28"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "Example Store",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    },
+    {
+     "url": "https://www.example.com/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/fp?x-kpsdk-v=j-…",
+     "title": "",
+     "text": "",
+     "markers": [
+      "script[src*='/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/ips.js']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "aws-waf-challenge",
+   "source": {
+    "url": "https://docs.capmonster.cloud/docs/captchas/amazon-task/",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "aws-waf",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "",
+     "markers": [
+      "script[src*='.token.awswaf.com/'][src*='/challenge.js']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "aws-waf-captcha",
+   "source": {
+    "url": "https://docs.capmonster.cloud/docs/captchas/amazon-task/",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "aws-waf",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "",
+     "markers": [
+      "script[src*='.captcha.awswaf.com/']",
+      "script[src*='.token.awswaf.com/'][src*='/challenge.js']"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "imperva-incident-frame",
+   "source": {
+    "url": "https://github.com/chromedp/chromedp/issues/561",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "imperva",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": [
+      "https://www.example.com/_Incapsula_Resource?CWUDNSAI=22&xinfo=…&incident_id=…&edet=16&cinfo=ffffffff&rpinfo=0"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "imperva-block",
+   "source": {
+    "url": "https://learn.microsoft.com/en-us/answers/questions/2401283/access-is-blocked-by-impreza-to-see-safeway-site-w",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "imperva",
+    "where": "block"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "Access denied Error 15 www.example.com 2026-09-28 08:00:00 UTC What happened? This request was blocked by our security service Your IP: … Proxy IP: … Incident ID: … Powered by Imperva",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "imperva-bot-defense",
+   "source": {
+    "url": "https://discussions.apple.com/thread/254511808",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "imperva",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "Pardon Our Interruption",
+     "text": "Pardon Our Interruption As you were browsing something about your browser made us think you were a bot. There are a few reasons this might happen: You're a power user moving through this website with super-human speed. You've disabled cookies in your web browser. A third-party browser plugin, such as Ghostery or NoScript, is preventing JavaScript from running.",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "turnstile-explicit-unanswered",
+   "source": {
+    "url": "https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "cloudflare",
+    "where": "box"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/signup",
+     "title": "Sign up",
+     "text": "",
+     "markers": [
+      ":has(> [name='cf-turnstile-response'])"
+     ],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "akamai-sec-cpt",
+   "source": {
+    "url": "https://pkg.go.dev/github.com/Hyper-Solutions/hyper-sdk-go/v2/akamai",
+    "built": "2026-09-28"
+   },
+   "expect": {
+    "kind": "akamai",
+    "where": "page"
+   },
+   "frames": [
+    {
+     "url": "https://www.example.com/",
+     "title": "",
+     "text": "",
+     "markers": [
+      "iframe#sec-cpt-if"
+     ],
+     "answered": [],
+     "frames": [
+      "https://www.example.com/_sec/cp_challenge/ak-challenge-4-5.htm"
+     ]
+    }
+   ]
+  },
+  {
    "name": "hcaptcha-demo",
    "source": {
     "url": "https://accounts.hcaptcha.com/demo"
@@ -325,7 +539,7 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://newassets.hcaptcha.com/captcha/v1/33e17445452ab4888e3f4665a714b729e48a7a2e/static/hcaptcha.html#frame=checkbox&id=0yx6l121sr3o&host=accounts.hcaptcha.com&sentry=true&reportapi=…&recaptchacompat=true&custom=False&hl=en&tplinks=on&andint=off&pstissuer=…&sitekey=…&theme=light&origin=…&clientOptions=…"
+      "https://newassets.hcaptcha.com/captcha/v1/b9ca2a6602c2bf69741b771db488f3001ea35b08/static/hcaptcha.html#frame=checkbox&id=0oposmomr57p&host=accounts.hcaptcha.com&sentry=true&reportapi=…&recaptchacompat=true&custom=False&hl=en&tplinks=on&andint=off&pstissuer=…&sitekey=…&theme=light&origin=…&clientOptions=…"
      ]
     }
    ]
@@ -342,7 +556,8 @@
      "title": "Turnstile ‐ Dummy Login Demo",
      "text": "Turnstile ‐ Dummy Login Demo User name Password (dummy) Sign in See code Go to the explicit render demo",
      "markers": [
-      ".cf-turnstile"
+      ".cf-turnstile",
+      ":has(> [name='cf-turnstile-response'])"
      ],
      "answered": [
       "[name='cf-turnstile-response']"
@@ -365,7 +580,7 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=invisible&sa=action&anchor-ms=20000&execute-ms=30000&cb=itga1psitow1"
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=invisible&sa=action&anchor-ms=20000&execute-ms=30000&cb=lhmw6tg7sqa"
      ]
     }
    ]
@@ -450,7 +665,7 @@
     {
      "url": "https://www.walmart.com/",
      "title": "Walmart | Save Money. Live better.",
-     "text": "Skip to Main Content Ask me anythingAI Hi, I’m Sparky, your AI shopping assistant! When you’re signed into your account, I can help with all of your shopping needs. Sign in Cancel 0 $0.00 Pickup or delivery? … Now available!Ship to another country Rollbacks & More Halloween Get it Fast Pharmacy New Arrivals Toy Shop Game Day Meals Made Easy My Items Only at Walmart Credit Card Walmart+ Walmart | Save Money. Live better. Members get movies & more Save up to $129/yr. with Peacock or Paramount+ Try Walmart+ for $1 Try Walmart+ for $1 Style that fits every story Introducing Scenario Shop now Shop now Workout clothes to accessories The active edit Shop all Shop all Now trending The fall style edit Shop now Shop now Huge Deals drop 10/5 at 12am ET! Explore Deals Explore Deals Save up to $250 on 3 select items Free furniture shipping & assembly* Shop now Shop now Decor, food & more Get everything for fall, fast Shop now Shop now Build a boo basket Shop now Shop now Fall coffee, syrups & more Shop now Shop now Accessories & more Easy DIY Halloween costumes Shop now Shop now",
+     "text": "Skip to Main Content Pickup or delivery? … • … • Reorder My Items Sign In Account 0 $0.00 Departments Services Rollbacks & More Halloween Get it Fast Pharmacy New Arrivals Toy Shop Game Day Meals Made Easy My Items Walmart+ More Walmart | Save Money. Live better. Save more. A lot more. Annual members can save $380 per year! Try Walmart+ for $1 Try Walmart+ for $1 Style that fits every story Introducing Scenario Shop now Shop now Workout clothes to accessories The active edit Shop all Shop all Car seats, clothes & more Major savings end Sept. 30! Shop now Shop now Get Bricktember savings Find LEGO® in the Toy Shop Shop now Shop now Save up to $250 on 3 select items Free furniture shipping & assembly* Shop now Shop now Decor, food & more Get everything for fall, fast Shop now Shop now Build a boo basket Shop now Shop now Seasonal hosting essentials Shop now Shop now Bedding & decor Luxe bedroom refresh Shop now Shop now",
      "markers": [],
      "answered": [],
      "frames": []
@@ -632,8 +847,80 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&cb=xmmhyrvo2zx0"
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&cb=8ycw0wpvrmdu"
      ]
+    }
+   ]
+  },
+  {
+   "name": "turnstile-explicit-demo",
+   "source": {
+    "url": "https://demo.turnstile.workers.dev/explicit"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://demo.turnstile.workers.dev/explicit",
+     "title": "Turnstile ‐ Dummy Login Demo",
+     "text": "Turnstile ‐ Dummy Login Demo User name Password (dummy) Sign in See code Go to the implicit render demo",
+     "markers": [
+      ":has(> [name='cf-turnstile-response'])"
+     ],
+     "answered": [
+      "[name='cf-turnstile-response']"
+     ],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "kasada-home",
+   "source": {
+    "url": "https://www.kasada.io/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.kasada.io/",
+     "title": "Kasada | Stopping Automated Threats | Web & API Protection",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "imperva-home",
+   "source": {
+    "url": "https://www.imperva.com/"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://www.imperva.com/",
+     "title": "Cyber Security Leader | Imperva, Inc.",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
+    }
+   ]
+  },
+  {
+   "name": "aws-waf-captcha-docs",
+   "source": {
+    "url": "https://docs.aws.amazon.com/waf/latest/developerguide/waf-captcha-and-challenge.html"
+   },
+   "expect": null,
+   "frames": [
+    {
+     "url": "https://docs.aws.amazon.com/waf/latest/developerguide/waf-captcha-and-challenge.html",
+     "title": "CAPTCHA and Challenge in AWS WAF - AWS WAF, AWS Firewall Manager, AWS Shield Advanced, and AWS Shield network security director",
+     "text": "",
+     "markers": [],
+     "answered": [],
+     "frames": []
     }
    ]
   }
