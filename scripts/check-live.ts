@@ -242,14 +242,18 @@ check("closing a tab that is gone says so at once", closedAgain.startsWith("clos
 
 // A copy of the content script left behind when the extension reloads keeps
 // the page's claim and answers nothing; taking the claim from the page's
-// own copy makes it one. The next request puts a fresh copy in at once.
+// own copy makes it one. The next request puts a fresh copy in at once, and
+// the journal says so (a claim eval did not reach would pass the rest).
 await withPage(`<button id=b onclick="this.textContent = 'pressed'">Press</button>`, "", async (tab) => {
   const ref = refOf((await call("snapshot", { tab })).snapshot, /button "Press"/);
+  const since = new Date().toISOString();
   await call("eval", { tab, expression: "(window.__safariHarnessInjected = {}, 1)" });
   const start = Date.now();
   const url = await call("info", { tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
   const ms = Date.now() - start;
-  check("a page whose script stopped answering gets a fresh one at once", url.startsWith("https://example.com/") && ms < 2000, { url, ms });
+  const { journal } = (await (await fetch(HEALTH)).json()) as { journal: { t: string; kind: string; tab?: number; answered?: boolean }[] };
+  const fresh = journal.some((e) => e.t >= since && e.kind === "reinject" && e.tab === tab && e.answered === true);
+  check("a page whose script stopped answering gets a fresh one at once", url.startsWith("https://example.com/") && ms < 2000 && fresh, { url, ms, fresh });
   await call("click", { tab, ref });
   const text = (await call("eval", { tab, expression: "document.getElementById('b').textContent" })).result;
   check("a ref from before the fresh script still works", text === "pressed", text);
