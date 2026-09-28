@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from "./passwords.ts";
 
@@ -179,7 +180,7 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 // answers where the page went instead (act in background.js).
 function fakeTab(url: string, form = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string } = {};
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op: outer, args } = JSON.parse(data);
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));

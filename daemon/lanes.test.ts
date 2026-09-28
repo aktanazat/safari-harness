@@ -1,5 +1,6 @@
 import { afterAll, afterEach, expect, jest, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
 
@@ -11,7 +12,7 @@ import { callTool } from "./tools.ts";
 function safari() {
   const sent: string[] = [];
   const held = new Map<string, () => void>();
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       if (op !== "relay") return queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));

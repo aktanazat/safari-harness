@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge, type ExtSocket } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { changeQueue, files } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { spaceTool } from "./spaces.ts";
@@ -61,7 +62,7 @@ function safari() {
     },
     close() {},
   };
-  bridge.attach(sock);
+  connect(sock);
   // The extension reloads: every tab and window gets a new id.
   const reload = () => {
     const was = [...tabs.values()];
@@ -246,7 +247,7 @@ test("the tab group keeper's questions ask nothing of a quit Safari", async () =
     expect(asked).toEqual([]);
   } finally {
     bridge.request = request;
-    bridge.attach(s.sock);
+    connect(s.sock);
   }
   h.kill();
 });
@@ -273,7 +274,7 @@ test("an agent's exit asks nothing of a quit Safari, and its window's page close
     expect(asked).toEqual([]);
   } finally {
     bridge.request = request;
-    bridge.attach(s.sock);
+    connect(s.sock);
   }
   // The next space sweep closes it, within 5 s on the real clock: the sweep
   // runs on an interval the first open of this file started, before any fake

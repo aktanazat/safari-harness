@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { guide } from "./guides.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
@@ -72,7 +73,7 @@ test.each([
 // for, and a snapshot reads that address.
 const urls = new Map<number, string>();
 let nextTab = 0;
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     let value: unknown = { ok: true };

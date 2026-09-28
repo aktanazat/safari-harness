@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
 import * as phone from "./phone.ts";
@@ -33,7 +34,7 @@ function mac(tab: number, page: Page): Mac {
   const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
   let shown = 1;
   const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));

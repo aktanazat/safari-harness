@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 import { mapPages, type Page } from "./map.ts";
 
@@ -58,7 +59,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   return { value: { ok: true } };
 }
 
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     const reply = (r: { value?: unknown; error?: string }) => bridge.handleMessage(JSON.stringify({ id, ...r }));

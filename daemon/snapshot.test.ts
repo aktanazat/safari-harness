@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // A snapshot says when the tab shows a bot check (challenge.ts), which may
@@ -13,7 +14,7 @@ import { callTool } from "./tools.ts";
 function heldSafari() {
   const sent: string[] = [];
   const held: (() => void)[] = [];
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       sent.push(op === "relay" ? `relay:${args[1]}` : op);

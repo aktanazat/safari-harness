@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // A page that runs what eval sends the way content.js and pageEval do: new
 // Function("return (" + code + ")"), with a promise awaited. frame is the
 // frame the last request went to.
 let frame: unknown;
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     // relay: [tab, "eval", [code], ms, frame]; evalPage: [tab, code, frame]

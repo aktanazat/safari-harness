@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { effectOf, keepRequest, NO_EFFECT, type RawReceipt, site, urlMatch } from "./receipt.ts";
 import { callTool } from "./tools.ts";
 
@@ -173,7 +174,7 @@ test("a quiet wait ends 500 ms after the page's last change", () => {
 // each request to the page is noted as [op, args].
 function safari(answers: Record<string, (args: unknown[]) => unknown>) {
   const sent: [string, unknown[]][] = [];
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const value = op === "relay" ? (sent.push([args[1], args[2]]), answers[args[1]]?.(args[2]) ?? { ok: true }) : [];

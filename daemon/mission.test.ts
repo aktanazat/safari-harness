@@ -1,5 +1,6 @@
 import { afterAll, expect, jest, test } from "bun:test";
 import { bridge, type ExtSocket } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { missionRoute, watched } from "./mission.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
@@ -62,7 +63,7 @@ function safari() {
     },
     close() {},
   };
-  bridge.attach(sock);
+  connect(sock);
   // Settles once the harness has closed tab (it closes an agent's tabs from
   // a sweep of its own, not within the call that asked).
   const closed = (tab: number) => {

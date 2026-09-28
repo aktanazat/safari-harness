@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
+import { connect } from "./fake-safari.ts";
 import * as imessage from "./imessage.ts";
 import { recent } from "./journal.ts";
 import { watched } from "./mission.ts";
@@ -11,7 +12,7 @@ import { callTool } from "./tools.ts";
 // port that records each call as the daemon does (mission.ts).
 const CODE = "402913";
 const fields: unknown[] = [];
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     if (op === "relay") fields.push(args[2]);

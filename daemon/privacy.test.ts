@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { redacted, redactUrl } from "./redact.ts";
 import { callTool } from "./tools.ts";
@@ -36,7 +37,7 @@ function answer(op: string, args: unknown[]): unknown {
   }
   return { ok: true };
 }
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) })));

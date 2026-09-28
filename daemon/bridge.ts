@@ -29,6 +29,10 @@ const TICK_MS = 50;
 // running starts hidden and connects in about 5 s.
 const CONNECT_MS = 10000;
 
+// How long the connected extension has to answer a ping before a socket
+// that opened after it takes its place (see attach).
+const ALIVE_MS = 1500;
+
 // Minimal structural view of Bun's ServerWebSocket so the bridge stays
 // testable without a live server.
 export type ExtSocket = {
@@ -82,29 +86,64 @@ type Pending = {
   sock: ExtSocket;
 };
 
+// What a socket last said about itself: its user agent, and whether it wants
+// ticks. A socket waiting to take over is heard only once it has.
+type Said = { ua?: string; ticks: boolean };
+
 export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
   private pending = new Map<string, Pending>();
   private ticker: Timer | undefined;
   private waiting = new Set<() => void>(); // requests waiting for a socket
+  // Sockets that opened while another was connected, each waiting to learn
+  // whether that one still answers.
+  private candidates = new Set<ExtSocket>();
+  private said = new WeakMap<ExtSocket, Said>();
+  // A copy that keeps retrying is refused twice a second: noted once.
+  private refusing = false;
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
+
+  constructor(private readonly aliveMs = ALIVE_MS) {}
 
   get connected(): boolean {
     return this.sock !== null;
   }
 
-  // A new socket replaces the current one: the extension reloaded, or its
-  // old socket died without the daemon noticing. What the old one was asked
-  // it will never answer, so those requests fail now, not at their limit.
+  // A socket that opens while another is connected is the same extension
+  // again, its old socket dead without the daemon noticing (it reloaded),
+  // or a second copy of it: Safari runs one inside each WebDriver session,
+  // as Apple's safaridriver opens, and that copy sees none of the user's
+  // windows. The newest socket used to win, so the two copies took it from
+  // each other twice a second for as long as the session lasted. The
+  // connected one keeps it while it answers a ping.
   attach(sock: ExtSocket) {
     const old = this.sock;
+    if (old === sock) return;
+    if (old === null) return this.take(sock);
+    this.candidates.add(sock);
+    void this.answers(old).then((alive) => {
+      if (!this.candidates.delete(sock)) return; // it closed meanwhile
+      if (this.sock !== old) return this.attach(sock); // judged against the one connected now
+      if (!alive) return this.take(sock);
+      if (!this.refusing) note("connect", { refused: "another copy of the extension is connected and answering" });
+      this.refusing = true;
+      sock.close(4001, "another Safari Harness extension is connected");
+    });
+  }
+
+  // What the old socket was asked it will never answer, so those requests
+  // fail now, not at their limit.
+  private take(sock: ExtSocket) {
+    const old = this.sock;
+    const said = this.said.get(sock);
     this.sock = sock;
-    this.extensionInfo = { connectedAt: Date.now() };
-    this.ticks(false);
-    if (old && old !== sock) {
+    this.refusing = false;
+    this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
+    this.ticks(said?.ticks ?? false);
+    if (old) {
       const lost = this.drop(old, "the Safari extension restarted before it answered; try again");
       try { old.close(); } catch {}
       note("connect", { replaced: true, ...(lost ? { unanswered: lost } : {}) });
@@ -112,9 +151,24 @@ export class Bridge {
     for (const wake of this.waiting) wake();
   }
 
+  // Whether sock answers a ping within aliveMs. An error is an answer too:
+  // a build without ping is still connected.
+  private answers(sock: ExtSocket): Promise<boolean> {
+    const id = `d${++this.seq}`;
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      resolve(false);
+    }, this.aliveMs);
+    this.pending.set(id, { resolve: () => resolve(true), reject: () => resolve(true), timer, sock });
+    sock.send(JSON.stringify({ id, op: "ping", args: [] }));
+    return promise;
+  }
+
   // A socket closed. Only the current one takes the connection with it; an
   // old one closing after its replacement leaves the new one alone.
   detach(sock: ExtSocket) {
+    this.candidates.delete(sock);
     const lost = this.drop(sock, "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again");
     if (this.sock !== sock) return;
     this.sock = null;
@@ -123,16 +177,19 @@ export class Bridge {
     note("disconnect", lost ? { unanswered: lost } : {});
   }
 
-  // called by the server for every inbound frame on the extension socket
-  handleMessage(raw: string) {
+  // called by the server for every inbound frame on an extension socket
+  handleMessage(raw: string, from: ExtSocket | null = this.sock) {
     const msg = asWire(raw);
     if (!msg) return;
-    if (msg.op === "hello") {
-      this.extensionInfo = { ...this.extensionInfo, ua: msg.ua };
-      return;
-    }
-    if (msg.op === "ticks") {
-      this.ticks(msg.on === true);
+    if (msg.op === "hello" || msg.op === "ticks") {
+      if (!from) return;
+      const said = this.said.get(from) ?? { ticks: false };
+      if (msg.op === "hello") said.ua = msg.ua;
+      else said.ticks = msg.on === true;
+      this.said.set(from, said);
+      if (from !== this.sock) return;
+      if (msg.op === "hello") this.extensionInfo = { ...this.extensionInfo, ua: msg.ua };
+      else this.ticks(said.ticks);
       return;
     }
     if (msg.op === "note" && typeof msg.kind === "string") {

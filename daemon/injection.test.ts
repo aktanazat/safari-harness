@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { MARK, markLines } from "./injection.ts";
 import { callTool, formatResult } from "./tools.ts";
 
@@ -106,7 +107,7 @@ test("tag characters, which draw nothing yet spell words for a model, are gone",
 function safari(page: "shop" | "clean") {
   const shop = page === "shop";
   const url = shop ? "https://shop.example/item" : "https://shop.example/login";
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const ask = op === "relay" ? args[1] : op;

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import type { DomData, Json, PageGlobals } from "./pagedata.ts";
 import { callTool } from "./tools.ts";
 
@@ -8,7 +9,7 @@ import { callTool } from "./tools.ts";
 // (background.js answers "pageData").
 type Page = { dom: DomData; globals?: PageGlobals };
 const pages = new Map<number, Page>();
-bridge.attach({
+connect({
   send(raw: string) {
     const { id, op, args } = JSON.parse(raw) as { id: string; op: string; args: unknown[] };
     const page = pages.get(Number(args[0]));

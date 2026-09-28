@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
 
@@ -10,7 +11,7 @@ import { callTool } from "./tools.ts";
 // sees another's calls.
 function safari(page: (op: string, args: unknown[]) => { value: unknown } | { error: string }) {
   const sent: string[] = [];
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       if (op !== "relay") return queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));

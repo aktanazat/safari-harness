@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { callTool, formatResult, loadTabs } from "./tools.ts";
 
@@ -32,7 +33,7 @@ const ext = {
   },
   close() {},
 };
-bridge.attach(ext);
+connect(ext);
 const file = join(mkdtempSync(join(tmpdir(), "continuity-")), "tabs.json");
 loadTabs(file);
 const owners = () => JSON.parse(readFileSync(file, "utf8")) as Record<string, number | null>;
@@ -86,9 +87,11 @@ test("a snapshot's text form carries its news above the page", async () => {
 test("once the extension connects again, an old id is the tab Safari gives it now", async () => {
   const old = await open();
   fromExtension({ kind: "replaced", from: old, to: 254 });
-  // connections are told apart by the millisecond they began
+  // Its socket closes and it connects again; connections are told apart by
+  // the millisecond they began.
+  bridge.detach(ext);
   for (const began = Date.now(); Date.now() === began; );
-  bridge.attach(ext);
+  connect(ext);
   expect(await as("info", { tab: old })).not.toHaveProperty("replaced");
   expect(reached.at(-1)).toBe(old);
 });

@@ -135,7 +135,7 @@ const server = Bun.serve<SocketScope>({
     message(ws, raw) {
       const text = String(raw);
       if (ws.data.kind === "extension") {
-        bridge.handleMessage(text);
+        bridge.handleMessage(text, ws);
         return;
       }
       if (ws.data.kind === "passwords") {

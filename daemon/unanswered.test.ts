@@ -1,11 +1,12 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 import * as unanswered from "./unanswered.ts";
 
 // Safari fails a request that got no answer with only "Load failed". The
 // page here fails every fetch so; DNS is a fake that knows one host.
-bridge.attach({
+connect({
   send(data: string) {
     const { id } = JSON.parse(data) as { id: string };
     bridge.handleMessage(JSON.stringify({ id, error: "Load failed" }));

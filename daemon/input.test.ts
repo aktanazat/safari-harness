@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { INPUT_TOOLS } from "./input.ts";
 import * as daemonRpc from "./rpc.ts";
@@ -40,7 +41,7 @@ function mac(page: Page = {}): Mac {
     return windowId;
   };
   const m: Mac = { app: GHOSTTY, helper: [], asked: [], shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
-  bridge.attach({
+  connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const answer = (value: unknown) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));

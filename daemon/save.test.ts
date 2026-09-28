@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // A page longer than the 20,000 characters extract answers with by default,
@@ -25,7 +26,7 @@ function answer(op: string, args: unknown[]): unknown {
   if (dom === "eval") return { ok: true, result: VALUES[String(opts)] };
   return { status: 200, url: "https://shop.example/api", type: "application/json", text: "{}", truncated: false };
 }
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) }));

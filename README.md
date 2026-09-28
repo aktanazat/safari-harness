@@ -155,9 +155,9 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
    the Swift helpers and the app, installs the app over `/Applications`,
    and starts the daemon as a launchd agent that stays on (`safari serve`
    runs one in the foreground instead). Safari loads every registered copy
-   of the app; two copies each open the extension socket and keep replacing
-   each other, so every call fails with `extension disconnected`. The
-   script leaves only the one in `/Applications` registered.
+   of the app, and each opens the extension socket; the daemon keeps the
+   one that connected first, which may be a stale build. The script leaves
+   only the one in `/Applications` registered.
 3. Launch "Safari Harness.app" once, then in Safari:
    Settings ▸ Extensions ▸ enable **Safari Harness**.
    That GUI toggle is the only manual step; no Develop-menu or

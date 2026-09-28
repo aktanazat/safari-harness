@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // A stand-in extension on pages whose security policy forbids eval. The
@@ -24,7 +25,7 @@ function answer(op: string, args: unknown[]): { value: unknown } | { error: stri
   }
   return { value: { ok: true } };
 }
-bridge.attach({
+connect({
   send(raw: string) {
     const { id, op, args } = JSON.parse(raw) as { id: string; op: string; args: unknown[] };
     bridge.handleMessage(JSON.stringify({ id, ...answer(op, args) }));

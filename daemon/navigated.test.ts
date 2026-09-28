@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // An action whose page navigates while it runs is answered by the extension
@@ -11,7 +12,7 @@ import { callTool } from "./tools.ts";
 type Answer = { value: unknown } | { error: string };
 let page: Record<string, (args: unknown[]) => Answer> = {};
 let extension: Record<string, (args: unknown[]) => Answer> = {};
-bridge.attach({
+connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     // relay: [tab, op, args, ms, frame]

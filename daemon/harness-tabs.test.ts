@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { callTool, loadTabs } from "./tools.ts";
 
@@ -30,7 +31,7 @@ const ext = {
   },
   close() {},
 };
-bridge.attach(ext);
+connect(ext);
 
 // The daemon's own closes say "owned": the extension then closes a tab only
 // if the harness owns it.
@@ -95,6 +96,6 @@ test("a sweep asks nothing of Safari while its extension is gone", async () => {
     expect(asked).toEqual([]);
   } finally {
     bridge.request = request;
-    bridge.attach(ext);
+    connect(ext);
   }
 });
