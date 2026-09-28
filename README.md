@@ -36,6 +36,8 @@ daemon/
   handoff.ts        handoff's caller half: texts the user's own phone, with a
                     picture of the page, when a step needs him and he is away
                     from the Mac; the daemon raises the tab and notifies
+  mission.ts        the live page each agent window opens on, and /agents:
+                    what each agent did, with Pause, Stop, and Let me drive
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
