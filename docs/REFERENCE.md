@@ -36,6 +36,13 @@ Safari is the user's everyday browser, so treat his tabs as his.
   Through MCP, background tabs your session opened (and tabs they opened)
   also close when the session ends, so a one-shot task can finish with its
   answer instead of a `close` call.
+- From the CLI, background tabs a command opened (and tabs they opened)
+  close about 10 s after the program that ran `safari` exits: omp, claude,
+  codex, a bun or python script, or the terminal's login session. An
+  agent's tabs therefore last its whole session. `--keep` (a CLI flag on
+  any command, such as `safari open <url> --bg --keep`) leaves them open,
+  for a tab the user finishes himself. Tabs opened in front, and tabs on
+  another Mac (`--host`), are never closed.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
