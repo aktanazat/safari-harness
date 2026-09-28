@@ -77,7 +77,8 @@ and your last 50 calls, newest first, with what each did and how long it
 took. Its status reads working, waiting on the user (a `handoff` waits for
 him), paused, the user is driving, stopped, or ended.
 `http://127.0.0.1:37334/agents` lists every agent that used Safari in the
-last hour, each with a link to its window's page and the same buttons.
+last hour, those at work first, each with a link to its window's page and
+the same buttons.
 `safari agents` prints that list (`--json` for the whole answer).
 
 - Pause: calls already running finish. Your next call waits up to 90 s for

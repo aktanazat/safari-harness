@@ -373,7 +373,7 @@ async function overview(): Promise<Overview> {
   prune(now);
   const tabs = await tabList();
   const windows = tabs ? windowsIn(tabs) : [];
-  const rows = [...agents.values(), nobody].filter((a) => listed(a, now)).sort((a, b) => b.last - a.last).map((a) => {
+  const rows = [...agents.values(), nobody].filter((a) => listed(a, now)).map((a) => {
     const mine = windows.filter((w) => w.owner === a.owner);
     return {
       ...summaryOf(a),
@@ -382,7 +382,11 @@ async function overview(): Promise<Overview> {
       tabs: tabs ? inWindows(tabs, new Set(mine.map((w) => w.window))).length : null,
     };
   });
-  return { now, agents: rows };
+  // Agents at work first, then those stopped or ended, each newest first:
+  // a row stays put while its agent works, so its buttons never move under
+  // the user's pointer.
+  const over = (s: Status) => s === "stopped" || s === "ended";
+  return { now, agents: rows.sort((x, y) => Number(over(x.status)) - Number(over(y.status)) || y.since - x.since) };
 }
 
 const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-store" } });
@@ -564,6 +568,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .facts { color: var(--muted); }
 .last { color: var(--muted); font-family: var(--mono); font-size: 0.82rem; overflow-wrap: anywhere; }
 .agents .controls { margin-top: 0.8rem; }
+[hidden] { display: none !important; }
 a { color: var(--hold); text-underline-offset: 0.15em; }
 `;
 
@@ -585,12 +590,13 @@ const SCRIPT = String.raw`
     giveback: () => "Given back. It carries on.",
     stop: () => "Stopped. Its background tabs close, and its calls fail from now on.",
   };
+  const ARMING = "Press again to stop it. Its background tabs close, and its calls fail from now on.";
   let timer = 0;
   let loading = false;
   let again = false;
   let offline = false;
   let armed = "";
-  let armedUntil = 0;
+  let arming = 0;
 
   function make(tag, className, text) {
     const el = document.createElement(tag);
@@ -637,7 +643,7 @@ const SCRIPT = String.raw`
       const b = make("button", primary ? "primary" : action === "stop" ? "stop" : "", LABEL[action]);
       b.type = "button";
       b.dataset.key = key;
-      if (action === "stop" && armed === key && Date.now() < armedUntil) {
+      if (action === "stop" && armed === key) {
         b.dataset.armed = "1";
         b.textContent = "Stop for good?";
       }
@@ -646,17 +652,33 @@ const SCRIPT = String.raw`
     });
   }
 
-  // Stop takes a second press: it cannot be taken back.
+  // Puts an armed Stop back to asking once, in place: a redraw under the
+  // second press would lose it.
+  function unarm() {
+    const b = armed ? document.querySelector('[data-key="' + CSS.escape(armed) + '"]') : null;
+    armed = "";
+    if (!(b instanceof HTMLElement)) return;
+    delete b.dataset.armed;
+    b.textContent = LABEL.stop;
+  }
+
+  // Stop takes a second press within 4 s: it cannot be taken back.
   function press(button, key, target, action) {
-    if (action === "stop" && button.dataset.armed !== "1") {
+    if (action === "stop" && armed !== key) {
+      unarm();
       armed = key;
-      armedUntil = Date.now() + 4000;
+      const n = ++arming;
       button.dataset.armed = "1";
       button.textContent = "Stop for good?";
-      say("Press again to stop it. Its background tabs close, and its calls fail from now on.");
+      say(ARMING);
+      setTimeout(() => {
+        if (arming !== n || armed !== key) return;
+        unarm();
+        if (byId("note").textContent === ARMING) say("");
+      }, 4000);
       return;
     }
-    armed = "";
+    unarm();
     send(button, target, action);
   }
 
@@ -697,6 +719,16 @@ const SCRIPT = String.raw`
     return li;
   }
 
+  // What each part of the page last showed: a poll redraws a part only when
+  // that changed, so a press that spans a poll lands on the button it began
+  // on, and a selection in the record survives.
+  const drawn = new WeakMap();
+  function draw(el, sig, children) {
+    if (drawn.get(el) === sig) return;
+    drawn.set(el, sig);
+    el.replaceChildren(...children());
+  }
+
   function renderSpace(s) {
     const status = byId("status");
     const a = s.agent;
@@ -704,59 +736,56 @@ const SCRIPT = String.raw`
       status.className = "status end";
       setText(status, "Not tracked");
       setText(byId("who"), "The harness restarted after this window opened, so it no longer knows its agent.");
-      byId("controls").replaceChildren();
-      byId("tabs").replaceChildren(make("li", "empty", "Unknown."));
-      byId("calls").replaceChildren(make("li", "empty", "Unknown."));
+      draw(byId("controls"), "", () => []);
+      draw(byId("tabs"), "unknown", () => [make("li", "empty", "Unknown.")]);
+      draw(byId("calls"), "unknown", () => [make("li", "empty", "Unknown.")]);
       return;
     }
     status.className = "status " + (TONE[a.status] || "go");
     setText(status, SAY[a.status] || a.status);
-    setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + ", at work for " + span(s.now - a.since));
-    byId("controls").replaceChildren(...buttons(a, { id: data.id }, ""));
-    const tabs = byId("tabs");
-    if (!s.tabs) tabs.replaceChildren(make("li", "empty", "Safari is not connected."));
-    else if (!s.tabs.length) tabs.replaceChildren(make("li", "empty", "None besides this page."));
-    else tabs.replaceChildren(...s.tabs.map(tabRow));
-    byId("calls").replaceChildren(...(a.calls.length ? a.calls.map(callRow) : [make("li", "empty", "No calls yet.")]));
+    const over = a.status === "stopped" || a.status === "ended";
+    setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)));
+    draw(byId("controls"), actionsOf(a).join(), () => buttons(a, { id: data.id }, ""));
+    draw(byId("tabs"), JSON.stringify(s.tabs), () => (!s.tabs ? [make("li", "empty", "Safari is not connected.")] : s.tabs.length ? s.tabs.map(tabRow) : [make("li", "empty", "None besides this page.")]));
+    draw(byId("calls"), JSON.stringify(a.calls), () => (a.calls.length ? a.calls.map(callRow) : [make("li", "empty", "No calls yet.")]));
   }
 
+  // One row per agent, kept across polls with its parts changed in place,
+  // so its links and buttons stay put while it works.
+  const rows = new Map();
+  const none = make("li", "empty", "No agent has used Safari in the last hour.");
+
   function agentRow(a, now) {
-    const li = make("li", "agent");
-    const head = make("div", "head");
-    head.append(make("h2", "", who(a)), make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status));
-    li.append(head);
-    const facts = [];
-    if (a.tabs !== null) facts.push(a.tabs + (a.tabs === 1 ? " tab" : " tabs"));
-    facts.push("last seen " + span(now - a.active) + " ago");
-    li.append(make("p", "facts", facts.join(" · ")));
-    if (a.tasks.length) {
-      const tasks = make("p", "tasks");
-      a.tasks.forEach((t, i) => {
-        const link = make("a", "", t.name);
-        link.href = "/space?id=" + encodeURIComponent(t.id) + "&name=" + encodeURIComponent(t.name);
-        if (i) tasks.append(", ");
-        tasks.append(link);
-      });
-      li.append(tasks);
+    const key = String(a.owner);
+    let row = rows.get(key);
+    if (!row) {
+      row = { li: make("li", "agent"), head: make("div", "head"), facts: make("p", "facts"), tasks: make("p", "tasks"), last: make("p", "last"), controls: make("div", "controls") };
+      row.li.append(row.head, row.facts, row.tasks, row.last, row.controls);
+      rows.set(key, row);
     }
-    if (a.last) {
-      const c = a.last;
-      const result = c.held ? "waiting for you" : c.ms === undefined ? "running" : c.error || c.outcome || "done";
-      li.append(make("p", "last", clock(c.t) + "  " + c.tool + " " + c.args + "  " + result));
-    }
-    const controls = buttons(a, { owner: a.owner }, a.owner + ":");
-    if (controls.length) {
-      const box = make("div", "controls");
-      box.append(...controls);
-      li.append(box);
-    }
-    return li;
+    draw(row.head, who(a) + "|" + a.status, () => [make("h2", "", who(a)), make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status)]);
+    setText(row.facts, (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + "last seen " + span(now - a.active) + " ago");
+    row.tasks.hidden = !a.tasks.length;
+    draw(row.tasks, JSON.stringify(a.tasks), () => a.tasks.flatMap((t, i) => {
+      const link = make("a", "", t.name);
+      link.href = "/space?id=" + encodeURIComponent(t.id) + "&name=" + encodeURIComponent(t.name);
+      return i ? [", ", link] : [link];
+    }));
+    const c = a.last;
+    row.last.hidden = !c;
+    setText(row.last, c ? clock(c.t) + "  " + c.tool + " " + c.args + "  " + (c.held ? "waiting for you" : c.ms === undefined ? "running" : c.error || c.outcome || "done") : "");
+    row.controls.hidden = !a.controls;
+    draw(row.controls, actionsOf(a).join(), () => buttons(a, { owner: a.owner }, key + ":"));
+    return row.li;
   }
 
   function renderAgents(o) {
     const list = byId("agents");
-    if (!o.agents.length) list.replaceChildren(make("li", "empty", "No agent has used Safari in the last hour."));
-    else list.replaceChildren(...o.agents.map((a) => agentRow(a, o.now)));
+    const shown = new Set(o.agents.map((a) => String(a.owner)));
+    for (const key of rows.keys()) if (!shown.has(key)) rows.delete(key);
+    const next = o.agents.length ? o.agents.map((a) => agentRow(a, o.now)) : [none];
+    // Moves rows only when the list itself changed.
+    if (next.length !== list.children.length || next.some((li, i) => list.children[i] !== li)) list.replaceChildren(...next);
   }
 
   // Polls only while the page shows: a window behind his asks nothing.
