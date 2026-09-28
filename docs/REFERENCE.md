@@ -147,8 +147,13 @@ Escalate in this order:
    the value of the last one comes back; `await` works at the top, and a
    promise is awaited. It sees the DOM; `page: true` runs it in the page's
    own world, where the site's script variables and functions are (YouTube
-   and Google included); a page whose security policy forbids eval outright
-   refuses it.
+   and Google included). A page whose security policy forbids eval runs it
+   in its own world instead; where that is refused too, the error says to
+   read with `snapshot`, `extract`, or `data`. Outside `page: true`, `sh`
+   has helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
+   open shadow roots too, `sh.text(el)` reads an element's text as
+   `extract` does (the whole page without `el`), `sh.jsonld()` lists the
+   page's JSON-LD, and `sh.wait(ms)` pauses (25 s at most).
 
 `data` returns what the page itself declares, as JSON: JSON-LD, microdata,
 meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the

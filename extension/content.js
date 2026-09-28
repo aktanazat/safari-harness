@@ -1537,6 +1537,44 @@
     return out;
   }
 
+  // ---------- eval's helpers ----------
+  // eval's code finds these as sh, in the extension's world only (page: true
+  // runs it in the page's, which has no sh): q and qa query into shadow
+  // roots, text reads what the user sees of an element or selector, jsonld
+  // reads the page's JSON-LD, and wait sleeps.
+  const SH = Object.freeze({
+    q: deepQuery,
+    qa: deepQueryAll,
+    text: (target = document.body) => {
+      const root = typeof target === "string" ? deepQuery(target) : target;
+      return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
+    },
+    jsonld: jsonLd,
+    wait: sleep,
+  });
+
+  // Safari stops a content script's timers in a hidden tab, so a sleep there
+  // also ends on the ticks an owned tab gets (takeTicks). It lasts at most
+  // 25 s, inside eval's 30.
+  function sleep(ms) {
+    const until = Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 25000);
+    return new Promise((resolve) => {
+      const check = () => { if (Date.now() >= until) done(); };
+      const done = () => {
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", check);
+        resolve();
+      };
+      const timer = setTimeout(done, until - Date.now());
+      document.addEventListener("__sh_tick", check);
+    });
+  }
+
+  // A page whose security policy forbids eval refuses to build the code. The
+  // daemon then runs it in the page's own world (evaluate in tools.ts),
+  // where it may be allowed, and says this if it is refused there too.
+  const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+
   // ---------- message dispatch ----------
 
   const handlers = {
@@ -1549,8 +1587,16 @@
     data: pageData,
     tabInfo,
     eval: (src) => {
-      // eslint-disable-next-line no-new-func
-      const result = new Function(`return (${src})`)();
+      let run;
+      try {
+        // eslint-disable-next-line no-new-func
+        run = new Function("sh", `return (${src})`);
+      } catch (e) {
+        // bad code is the caller's to fix; any other refusal is the page's policy
+        if (e instanceof SyntaxError) throw e;
+        return { error: EVAL_BLOCKED };
+      }
+      const result = run(SH);
       if (result && typeof result.then === "function") {
         return result.then((v) => ({ ok: true, result: safeClone(v) }));
       }

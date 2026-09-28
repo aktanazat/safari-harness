@@ -38,8 +38,10 @@ import { expect, test } from "bun:test";
 // agent's background tabs once it exits or leaves them idle, and keep leaves
 // one open for the user. The data tool (440) brought it to 18,470: a shop,
 // recipe, or article page's own JSON (price, stock, author) comes back in
-// one call, where a snapshot and a guessed eval took several.
-const TOOL_LIST_MAX_BYTES = 18_470;
+// one call, where a snapshot and a guessed eval took several. Naming eval's
+// sh helpers (70) brought it to 18,540: code reaches into shadow roots and
+// reads JSON-LD without walking the page by hand.
+const TOOL_LIST_MAX_BYTES = 18_540;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

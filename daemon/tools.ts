@@ -275,14 +275,25 @@ export async function history(opts: { tab?: number; do: string }) {
 // expression that returns the last one's value. A leading "f3:", the prefix
 // of an embedded frame's refs, runs it in that frame. page: true runs it in
 // the page's own world, where its script variables are. A page that demands
-// Trusted Types still runs it; one whose security policy forbids eval
-// outright refuses it.
+// Trusted Types still runs it. A page whose security policy forbids eval
+// refuses it in the extension's world before any of it runs (content.js),
+// so it runs in the page's world instead, once; where that refuses too, the
+// error says to read the page another way.
+const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
+
 export async function evaluate(opts: { tab?: number; expression: string; page?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
-  if (opts.page) return bridge.request("evalPage", [tab, code, Number(frame)], 30000);
-  return bridge.tab(tab, "eval", [code], 30000, Number(frame));
+  const inPage = () => bridge.request("evalPage", [tab, code, Number(frame)], 30000).catch((e: unknown) => {
+    throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(EVAL_BLOCKED) : e;
+  });
+  if (opts.page) return inPage();
+  return bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
+    if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage();
+    throw e;
+  });
 }
 
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
@@ -770,7 +781,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait.",
     params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" } },
     required: ["tab", "expression"],
     run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
