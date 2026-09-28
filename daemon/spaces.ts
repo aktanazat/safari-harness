@@ -30,6 +30,7 @@
 
 import { randomUUID } from "node:crypto";
 import { bridge } from "./bridge.ts";
+import { lastRaised } from "./front.ts";
 import { groupsOff } from "./groups.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import type { TabInfo } from "./tools.ts";
@@ -146,8 +147,8 @@ async function orphaned(name: string): Promise<Space | undefined> {
 // then ends as that; release moves every tab but its page out of an ended
 // group's window, since deleting the group closes its tabs, and says how
 // many stayed (left); gone forgets the group; scratch opens a window to
-// delete from a group whose own window is gone. None asks anything of a
-// quit Safari.
+// delete from a group whose own window is gone; raised says when a call
+// last brought Safari to the front. None asks anything of a quit Safari.
 export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   const name = String(a.name ?? "");
   const live = [...spaces.values()].find((s) => s.name === name);
@@ -194,8 +195,10 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       s.why = "a window to delete tab groups from";
       return { ok: true, ...s.size, tabs: (await located(s)).length };
     }
+    case "raised":
+      return { at: lastRaised() };
   }
-  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, or scratch");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, or raised");
 }
 
 async function end(space: Space) {

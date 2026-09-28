@@ -25,6 +25,8 @@ export type Daemon = (op: string, args?: Record<string, unknown>) => Promise<unk
 type Log = (line: string) => void;
 
 const LOOP_MS = 3000;
+// A raise begun this long before a step can land after its first look.
+const RAISE_MS = 2000;
 const SAFARI = "com.apple.Safari";
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
 
@@ -42,12 +44,20 @@ async function windowOf(h: Helper, s: { width: number; height: number; tabs?: nu
 }
 
 // A step on Safari's controls, with his front app read before and after.
-async function step(h: Helper, what: string, log: Log, run: () => Promise<Outcome>): Promise<Outcome> {
+// Safari in front after it is the step's doing, unless someone else
+// brought it forward meanwhile: the user (the step posts no keys or mouse,
+// so he touched them), or an agent's call for him (activate, a handoff).
+// Then it stays in front for him.
+async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () => Promise<Outcome>): Promise<Outcome> {
+  const since = Date.now();
   const before = (await h("gate")) as Answer & Gate;
   const outcome = await run();
   const after = (await h("gate")) as Answer & Gate;
   log(`${what}: ${outcome.done ? "done" : outcome.why}; front app ${before.front}, then ${after.front}`);
   if (after.front === before.front || after.front !== SAFARI) return outcome;
+  if (after.idleMs <= Date.now() - since) return outcome;
+  const raised = (await daemon("raised")) as { at: number };
+  if (raised.at >= since - RAISE_MS) return outcome;
   turnOff(`Safari came to the front while ${what}`);
   spawnSync(INPUT, ["activate", before.front]);
   return stop(groupsOff()!);
@@ -66,7 +76,7 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
     changeQueue((q) => {
       q[s.name] = { owner: s.owner, since: Date.now() };
     });
-    outcome = await step(h, `making ${s.name}`, log, () => makeGroup(h, window, s.name));
+    outcome = await step(h, daemon, `making ${s.name}`, log, () => makeGroup(h, window, s.name));
     // No group was made, unless group work turned off on the way.
     if (!outcome.done && !groupsOff()) changeQueue((q) => delete q[s.name]);
   }
@@ -81,7 +91,7 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
 // or a scratch one, closed after every try. Whether to try again: a wait
 // does; anything else leaves the group queued for the next keeper.
 async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Set<string>, log: Log): Promise<boolean> {
-  const outcome = typeof window === "number" ? await step(h, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
+  const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
   if (outcome.done) {
     await daemon("gone", { name });

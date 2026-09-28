@@ -175,7 +175,7 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const back = await call("history", { tab, do: "back" });
   check("back reports the previous page", back.navigated?.url === "https://example.com/", back);
   const fwd = await call("history", { tab, do: "forward", snapshot: true });
-  check("snapshot: true returns the page the action led to", /h1 "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
+  check("snapshot: true returns the page the action led to", fwd.page?.url === "https://example.org/" && /documentation examples/.test(fwd.page.snapshot ?? ""), fwd);
 });
 
 // ---------- several steps in one call ----------

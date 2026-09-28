@@ -199,6 +199,26 @@ test("a window that ended after the keeper looked gets no group", async () => {
   expect(told).toEqual([{ op: "making", name: TRIP }]);
 });
 
+// A handoff shows Safari for his passkey while the keeper makes another
+// agent's group: before, the keeper took that for its own step's doing,
+// switched him back to his terminal, and turned group work off.
+test("Safari brought forward during a step by an agent's call, or by the user, leaves group work on", async () => {
+  for (const who of ["agent", "user"] as const) {
+    const { s, h } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+    const { d: daemonAnswers, told } = daemon([waiting]);
+    let raisedAt = 0;
+    const d: Daemon = async (op, a = {}) => (op === "raised" ? { at: raisedAt } : daemonAnswers(op, a));
+    s.on.sidebar = () => {
+      s.front = "com.apple.Safari";
+      if (who === "agent") raisedAt = Date.now();
+      else s.idleMs = 0;
+    };
+    expect(await pass(h, d, new Set(), quiet)).toBe(true);
+    expect(groupsOff()).toBeUndefined();
+    expect(told.at(-1)).toMatchObject({ op: "waiting", name: TRIP });
+  }
+});
+
 test("an ended task's group goes once its tabs for the user are out, with its window, and the queue forgets it", async () => {
   const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }, { kind: "tab" }, { kind: "group", name: "Work" }]);
   s.tabs = 1;

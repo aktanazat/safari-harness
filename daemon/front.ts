@@ -29,6 +29,17 @@ export async function input(args: string[], timeout = 10000): Promise<unknown> {
 
 export type TabOps = { tabs(): Promise<TabInfo[]>; activate(tab: number): Promise<unknown> };
 
+// When this process last brought Safari to the front for a call (activate,
+// a handoff). The daemon's answers the tab group keeper (the space tool):
+// Safari in front after one of its steps is then no fault of the step.
+let raisedAt = 0;
+export const lastRaised = () => raisedAt;
+
+export async function raiseSafari(): Promise<void> {
+  raisedAt = Date.now();
+  await input(["activate", SAFARI]);
+}
+
 // The bundle id of the app in front.
 export async function frontApp(): Promise<string | undefined> {
   const r = await input(["front"]);
@@ -56,7 +67,7 @@ export async function show(tab: number, ops: TabOps): Promise<() => Promise<void
   };
   try {
     await ops.activate(tab);
-    await input(["activate", SAFARI]);
+    await raiseSafari();
   } catch (e) {
     await giveBack();
     throw e;

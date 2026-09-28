@@ -7,7 +7,7 @@ import { challengeOf, type Challenge } from "./challenge.ts";
 import { followTab, queuePopup, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
-import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
+import { frontApp, inFront, notify, raiseSafari, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
@@ -227,7 +227,7 @@ export async function activateTab(tab: number): Promise<unknown> {
 // the user sees the tab.
 async function showTab(tab: number): Promise<unknown> {
   const res = await activateTab(tab);
-  await input(["activate", SAFARI]);
+  await raiseSafari();
   return res;
 }
 
@@ -900,7 +900,7 @@ export const TOOLS: Record<string, Tool> = {
   // Agent windows and their tab groups, for the keeper (keeper.ts).
   space: {
     desc: "Agent windows and their tab groups, for the tab group keeper.",
-    params: { op: { type: "string", description: "state, making, grouped, plain, waiting, release, gone, or scratch" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
+    params: { op: { type: "string", description: "state, making, grouped, plain, waiting, release, gone, scratch, or raised" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
     required: ["op"],
     hidden: true,
     run: spaceTool,
