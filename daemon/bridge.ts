@@ -49,6 +49,17 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+// With the extension gone, either Safari has quit or the extension is off.
+// A quit Safari starts again hidden, without taking the screen, and connects
+// in about 5 s; an agent that got only "not connected" once spent 2 min
+// before anyone opened it.
+async function notConnected(): Promise<never> {
+  const running = await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
+  if (running) throw new Error("Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions)");
+  Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
+  throw new Error("Safari is not running: it is starting in the background now; try again in a few seconds");
+}
+
 export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
@@ -111,9 +122,7 @@ export class Bridge {
   }
 
   request(op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {
-    if (!this.sock) {
-      return Promise.reject(new Error("Safari extension not connected — open Safari and enable the Safari Harness extension (Settings ▸ Extensions)"));
-    }
+    if (!this.sock) return notConnected();
     const id = `d${++this.seq}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
