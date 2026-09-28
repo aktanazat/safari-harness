@@ -33,6 +33,13 @@ daemon/
                     terminal's permissions (Messages, browsing history, the
                     real mouse and keyboard); a `run` with one of them runs
                     its steps from the caller too
+  spaces.ts         each agent's own Safari window, opened behind the user's,
+                    one per task (`open --group`), on a page titled with it
+  groups.ts         makes a window its task's Safari tab group, and deletes
+                    the group after, only while the user is away from the keys
+  keeper.ts         runs groups.ts from the agent's terminal, which has the
+                    Accessibility permission the daemon lacks; call.ts starts
+                    it after an open
   handoff.ts        handoff's caller half: texts the user's own phone, with a
                     picture of the page, when a step needs him and he is away
                     from the Mac; the daemon raises the tab and notifies
@@ -72,6 +79,9 @@ scripts/
                     Safari's page area; needs Accessibility permission
   pairing.swift     helper: the Touch ID prompt, and the pairing code read
                     off Apple's window; needs Accessibility permission
+  spaces.swift      helper: works an agent window's tab group sidebar through
+                    Accessibility, Safari left in the background; needs
+                    Accessibility permission
   dev-install.sh    deploy a commit: make it a release, switch to it, and
                     restart only what changed (see Deploys)
   fake-extension.ts test double that speaks the extension protocol

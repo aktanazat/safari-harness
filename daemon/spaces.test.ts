@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { runAs, watchOwner } from "./owner.ts";
+import { spaceTool } from "./spaces.ts";
 import { openTab } from "./tools.ts";
 
 type Tab = { id: number; url: string; windowId: number; active: boolean };
@@ -34,6 +35,12 @@ function safari() {
       const now = oldTabs.get(id as number) ?? (id as number);
       tabs.delete(now);
       closed.push(now);
+      return { ok: true };
+    },
+    // windows.create({tabId}), while the tab is still in that window
+    "tabs.detach": ([id, windowId]) => {
+      const t = tabs.get(id as number);
+      if (t && t.windowId === windowId) t.windowId = next++;
       return { ok: true };
     },
   };
@@ -126,6 +133,54 @@ test("after an extension reload an agent's next tab joins the window it had, who
   const page = pageIn(s.tabs, window)!;
   e.kill();
   await until(() => s.closed.includes(page.id));
+});
+
+// Deleting a tab group closes its tabs: a tab the agent opened for the user
+// has to leave the group's window first, and the page stays for the delete.
+test("when a task whose window is a tab group ends, a tab it opened for the user moves out to a window of its own", async () => {
+  const s = safari();
+  const g = agent();
+  const his = await runAs(g.pid, () => openTab("https://hotel.example/booking", false, "trip"));
+  const { name } = his.space;
+  expect(his.space).toEqual({ name: `trip (agent ${g.pid})`, group: "waiting" });
+  await spaceTool({ op: "grouped", name });
+  const page = pageIn(s.tabs, his.windowId)!;
+  const marker = Bun.spawnSync(["true"]).pid;
+  g.kill();
+  await g.exited;
+  // one owner sweep calls the watches in turn: the window's came first
+  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
+  expect(spaces.filter((x) => x.name === name)).toMatchObject([{ ended: true }]);
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 1, left: 0 });
+  const moved = s.tabs.get(his.id)!.windowId;
+  expect([moved === his.windowId, moved === 1]).toEqual([false, false]);
+  expect(s.closed).not.toContain(page.id);
+  expect(s.tabs.get(page.id)!.windowId).toBe(his.windowId!);
+  await spaceTool({ op: "gone", name });
+});
+
+test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
+  const s = safari();
+  const h = agent();
+  const t = await runAs(h.pid, () => openTab("https://h.example/", true, "quit"));
+  bridge.detach(s.sock);
+  const request = bridge.request;
+  const asked: unknown[] = [];
+  bridge.request = (...args: Parameters<typeof request>) => {
+    asked.push(args[0]);
+    return Promise.reject(new Error("Safari is quit"));
+  };
+  try {
+    expect(await spaceTool({ op: "state" })).toMatchObject({ connected: false });
+    expect(await spaceTool({ op: "release", name: t.space.name })).toEqual({ ok: false });
+    expect(await spaceTool({ op: "scratch" })).toEqual({ ok: false });
+    expect(asked).toEqual([]);
+  } finally {
+    bridge.request = request;
+    bridge.attach(s.sock);
+  }
+  h.kill();
 });
 
 // He quit Safari: asking it anything would start it again. An exited

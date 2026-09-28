@@ -29,8 +29,6 @@
 // Requests are {"op": OP, ...}; answers {"ok": true, ...} or {"ok": false,
 // "error"}. OPs, the most on one Safari window by its CGWindowID (window):
 //   gate                      {idleMs, locked, front, safariActive, trusted}
-//   groups {names}            {present}: those of names that Bookmarks > Tab
-//                             Group Favorites lists
 //   find {width, height}      {window}: the one Safari window of that size
 //   state                     {tabs, sidebar, shown}
 //   sidebar {show}            shows or hides the window's sidebar
@@ -80,10 +78,6 @@ func poll<T>(_ ms: Int, _ get: () -> T?) -> T? {
 func attr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     var v: CFTypeRef?
     return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
-}
-func element(_ el: AXUIElement, _ name: String) -> AXUIElement? {
-    guard let v = attr(el, name), CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
-    return (v as! AXUIElement)
 }
 func text(_ el: AXUIElement, _ name: String) -> String? { attr(el, name) as? String }
 func kids(_ el: AXUIElement) -> [AXUIElement] { (attr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? [] }
@@ -222,7 +216,6 @@ func openMenu(_ app: AXUIElement, _ el: AXUIElement) -> AXUIElement? {
 func shownMenu(_ app: AXUIElement, _ near: AXUIElement?) -> AXUIElement? {
     near.flatMap { find($0, depth: 2) { role($0) == "AXMenu" } } ?? kids(app).first { role($0) == "AXMenu" }
 }
-func item(_ menu: AXUIElement, _ id: String) -> AXUIElement? { kids(menu).first { ident($0) == id } }
 
 // Safari's menus on screen: a context menu is a window of the pop-up menu
 // level, and the one sure sign it is still open.
@@ -298,13 +291,6 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
     switch op {
     case "gate":
         return gate()
-    case "groups":
-        let app = try safari().el
-        guard let bar = element(app, kAXMenuBarAttribute) else { throw Failure(message: "Safari has no menu bar") }
-        guard let bookmarks = kids(bar).first(where: { text($0, kAXTitleAttribute) == "Bookmarks" }).flatMap({ kids($0).first }) else { throw Failure(message: "Safari's menu bar has no Bookmarks menu") }
-        let favorites = kids(bookmarks).first { text($0, kAXTitleAttribute) == "Tab Group Favorites" }.flatMap { kids($0).first }
-        let listed = Set((favorites.map(kids) ?? []).filter { role($0) == "AXMenuItem" }.compactMap { text($0, kAXTitleAttribute) })
-        return ["present": ((req["names"] as? [String]) ?? []).filter(listed.contains)]
     case "find":
         guard let width = (req["width"] as? NSNumber)?.doubleValue, let height = (req["height"] as? NSNumber)?.doubleValue else { throw Failure(message: "find needs width and height") }
         guard let ids = poll(3000, { () -> [CGWindowID]? in
@@ -375,18 +361,6 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         guard let b = button(s, title), perform(b, kAXPressAction) else { throw Failure(message: "the sheet has no \(title) button") }
         guard poll(2000, { sheet(w) == nil ? true : nil }) != nil else { throw Failure(message: "the sheet stayed open") }
         return [:]
-    case "newgroup":
-        let pid = try safari().pid
-        let all = tabs(w)
-        guard all.count == 1 else { throw Failure(message: "the window holds \(all.count) tabs, not one") }
-        try clear(req)
-        guard let menu = openMenu(app, all[0]) else { throw Failure(message: "the tab's menu did not open", closed: endMenu(pid)) }
-        guard let move = item(menu, "MoveToTabGroupContextMenuItem"), perform(move, kAXPressAction),
-              let sub = poll(1000, { kids(move).first { role($0) == "AXMenu" && !kids($0).isEmpty } }),
-              let new = item(sub, "MoveTabToNewTabGroupMenuItem"), perform(new, kAXPressAction) else {
-            throw Failure(message: "the tab's menu has no Move to Tab Group > New Tab Group", closed: endMenu(pid))
-        }
-        return ["closed": settled(pid)]
     case "name":
         guard let name = req["name"] as? String, !name.isEmpty else { throw Failure(message: "name needs a name") }
         // Safari shows the new group selected in the sidebar, its name field
