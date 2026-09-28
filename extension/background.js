@@ -362,65 +362,63 @@ async function probeFrames(tabId, what, arg) {
 }
 
 // ---------- network and console capture ----------
-// These run in the page's own world. The content script's fetch, XHR, and
-// console are its own copies, so patching them there saw only the harness's
-// requests. The patches go in on the first start, so a page carries them
-// only when asked.
+// Both are read in the page's own world: the content script's fetch, XHR,
+// and console are its own copies. dialogs.js logs requests in every frame
+// from the start of each page's load, since a page may keep its own copy
+// of fetch from its first script; start clears the log and stop ends it.
+// The console patch goes in on the first start, so a page carries it only
+// when asked.
 const CAPTURE = { net: "net", netRead: "net", console: "console", consoleRead: "console" };
 
 async function capture(tabId, op, args) {
+  const kind = CAPTURE[op];
   const cmd = op.endsWith("Read") ? "read" : args && args[0] ? "start" : "stop";
-  const [res] = await api.scripting.executeScript({ target: { tabId }, world: "MAIN", func: pageCapture, args: [CAPTURE[op], cmd] });
-  return res && res.result;
+  if (kind === "console") {
+    const [res] = await api.scripting.executeScript({ target: { tabId }, world: "MAIN", func: pageCapture, args: [kind, cmd] });
+    return res && res.result;
+  }
+  const inFrames = () => api.scripting.executeScript({ target: { tabId, allFrames: true }, world: "MAIN", func: pageCapture, args: [kind, cmd] });
+  const logging = (results) => results.some((r) => r.frameId === 0 && r.result);
+  let results = await inFrames();
+  // Safari skipped the page's script (after a redirect): add it, to log
+  // from now on.
+  if (!logging(results)) {
+    await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", files: ["dialogs.js"] });
+    results = await inFrames();
+    if (!logging(results)) throw new Error("this page is not logging its requests: reload it (history, do: reload), then use net again");
+  }
+  if (cmd !== "read") return { ok: true };
+  const entries = results.flatMap((r) => (Array.isArray(r.result) ? r.result.map((e) => (r.frameId ? { ...e, frame: r.frameId } : e)) : []));
+  return { entries: entries.sort((a, b) => a.t - b.t).slice(-100) };
 }
 
 // Runs in the page, so it must be self-contained.
 function pageCapture(kind, cmd) {
+  if (kind === "net") {
+    const net = window[Symbol.for("safari-harness.page")]?.net;
+    if (!net) return null;
+    if (cmd === "read") return net.log.slice(-100);
+    net.on = cmd === "start";
+    if (net.on) net.log.length = 0;
+    return true;
+  }
   const key = Symbol.for("safari-harness.capture");
   let s = window[key];
   if (!s) {
-    s = window[key] = { net: { on: false, log: [] }, console: { on: false, log: [] } };
-    const add = (c, e) => {
-      if (!c.on) return;
-      c.log.push({ ...e, t: Date.now() });
-      if (c.log.length > 500) c.log.shift();
-    };
-    const origFetch = window.fetch;
-    window.fetch = async function (input, init) {
-      const url = typeof input === "string" ? input : (input && input.url) || String(input);
-      const method = (init && init.method) || (input && input.method) || "GET";
-      const start = Date.now();
-      try {
-        const res = await origFetch.apply(this, arguments);
-        add(s.net, { kind: "fetch", url, method, status: res.status, ms: Date.now() - start });
-        return res;
-      } catch (e) {
-        add(s.net, { kind: "fetch", url, method, error: String(e), ms: Date.now() - start });
-        throw e;
-      }
-    };
-    const sent = new WeakMap();
-    const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (method, url) {
-      sent.set(this, { method, url: String(url) });
-      return origOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function () {
-      const req = sent.get(this);
-      const start = Date.now();
-      if (req) this.addEventListener("loadend", () => add(s.net, { kind: "xhr", ...req, status: this.status, ms: Date.now() - start }));
-      return origSend.apply(this, arguments);
-    };
+    s = window[key] = { console: { on: false, log: [] } };
     for (const level of ["log", "warn", "error"]) {
       const orig = console[level];
       console[level] = function (...args) {
-        add(s.console, { level, text: args.map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 500) });
+        const c = s.console;
+        if (c.on) {
+          c.log.push({ level, text: args.map((a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 500), t: Date.now() });
+          if (c.log.length > 500) c.log.shift();
+        }
         return orig.apply(this, args);
       };
     }
   }
-  const c = s[kind];
+  const c = s.console;
   if (cmd === "read") return { entries: c.log.slice(-100) };
   c.on = cmd === "start";
   if (c.on) c.log.length = 0;

@@ -1,7 +1,8 @@
 // Safari Harness page-world script: runs in the page's own world at
 // document_start in every frame, so it is in place before the page's
-// scripts. It does nothing until content.js arms it (see "dialogs" in
-// content.js): a dialog in a user's tab still shows as usual.
+// scripts. It logs the page's fetch and XHR requests from the start, for
+// the net tool. The rest does nothing until content.js arms it (see
+// "dialogs" in content.js): a dialog in a user's tab still shows as usual.
 //
 // Armed, it answers alert, confirm, prompt, and print without showing them
 // (a dialog blocks the page and every harness request with it), and keeps
@@ -186,5 +187,102 @@
         callback(now);
       });
     }
+  });
+
+  // ---------- network log ----------
+  // A page may keep its own copy of fetch from its first script (CVS's
+  // insurance form did), so the log starts with the page: the net tool
+  // (pageCapture in background.js) reads it, start clears it, and stop
+  // ends it. An entry is added once its status is known, then gets the
+  // start of a text or JSON body, read from a copy of the response, so the
+  // page gets its own untouched. A failure in here never reaches the page.
+  const net = (state.net = { on: true, log: [] });
+  const LOG_MAX = 100;
+  const URL_MAX = 500;
+  const BODY_MAX = 300;
+  const listen = EventTarget.prototype.addEventListener;
+  const decoder = new TextDecoder();
+  const textual = (type) => /^text\/|[/+]json\b/i.test(type ?? "");
+  const cut = (s, max) => (s.length > max ? s.slice(0, max) + "…" : s);
+  const address = (url) => {
+    let href = String(url);
+    try { href = new URL(href, document.baseURI).href; } catch {}
+    return cut(href, URL_MAX);
+  };
+  const record = (entry, start) => {
+    if (!net.on) return false;
+    entry.ms = Math.round(performance.now() - start);
+    entry.t = Date.now();
+    net.log.push(entry);
+    if (net.log.length > LOG_MAX) net.log.shift();
+    return true;
+  };
+
+  const fetched = (entry, start, res) => {
+    entry.status = res.status;
+    if (!record(entry, start) || !textual(res.headers.get("content-type"))) return;
+    const reader = res.clone().body?.getReader();
+    reader?.read()
+      .then(({ value }) => { if (value) entry.body = cut(decoder.decode(value.subarray(0, BODY_MAX * 4)), BODY_MAX); })
+      .catch(() => {})
+      .finally(() => reader.cancel().catch(() => {}));
+  };
+  window.fetch = wrap(window.fetch, (fetch, self, args) => {
+    const start = performance.now();
+    const pending = Reflect.apply(fetch, self, args);
+    let entry;
+    try {
+      const [input, init] = args;
+      const req = input instanceof Request ? input : null;
+      entry = { kind: "fetch", url: address(req ? req.url : input), method: String(init?.method ?? req?.method ?? "GET").toUpperCase() };
+    } catch {
+      return pending;
+    }
+    return pending.then((res) => {
+      try { fetched(entry, start, res); } catch {}
+      return res;
+    }, (e) => {
+      try { record({ ...entry, error: String(e) }, start); } catch {}
+      throw e;
+    });
+  });
+
+  // An XHR's entry is written when it ends, or when the page opens the same
+  // request again first (from its own load handler, while the answer is
+  // still there to read).
+  const xhrs = new WeakMap(); // request -> { entry, start } from open
+  const listening = new WeakSet();
+  const ended = (xhr) => {
+    const req = xhrs.get(xhr);
+    if (!req || req.start === null) return;
+    xhrs.delete(xhr);
+    const { entry, start } = req;
+    const answered = xhr.readyState === 4 && xhr.status > 0;
+    if (answered) entry.status = xhr.status;
+    else entry.error = "no response";
+    if (!record(entry, start) || !answered) return;
+    const type = xhr.responseType;
+    if ((type === "" || type === "text") && textual(xhr.getResponseHeader("content-type"))) entry.body = cut(xhr.responseText.slice(0, BODY_MAX + 1), BODY_MAX);
+  };
+  const XHR = XMLHttpRequest.prototype;
+  XHR.open = wrap(XHR.open, (open, self, args) => {
+    try { ended(self); } catch {}
+    const out = Reflect.apply(open, self, args);
+    try { xhrs.set(self, { entry: { kind: "xhr", url: address(args[1]), method: String(args[0]).toUpperCase() }, start: null }); } catch {}
+    return out;
+  });
+  XHR.send = wrap(XHR.send, (send, self, args) => {
+    try {
+      const req = xhrs.get(self);
+      if (req) {
+        req.start = performance.now();
+        if (!listening.has(self)) {
+          listening.add(self);
+          // a loadend after the page opened the request again is the old one's
+          Reflect.apply(listen, self, ["loadend", () => { try { if (self.readyState === 4) ended(self); } catch {} }]);
+        }
+      }
+    } catch {}
+    return Reflect.apply(send, self, args);
   });
 })();
