@@ -1,9 +1,13 @@
 // Real mouse and keyboard input for daemon/input.ts. Events go in at the HID
 // level, like a physical mouse and keyboard, so pages see event.isTrusted
 // true; the extension's scripted events are ignored by captcha checkboxes,
-// some drag handles, and sites that check isTrusted.
+// some drag handles, and sites that check isTrusted. press has Safari's
+// accessibility tree click an element instead, which reaches a window
+// behind other apps.
 //   input webarea                 Safari's page viewport in its front window:
 //                                 {"x","y","width","height"}
+//   input press MARK W H          presses the element marked MARK in the
+//                                 Safari window of that size, from behind
 //   input click X Y [--count N] [--button left|right]
 //   input move X Y
 //   input drag X1 Y1 X2 Y2
@@ -343,10 +347,70 @@ func webarea() {
     printJSON(["x": best.minX, "y": best.minY, "width": best.width, "height": best.height])
 }
 
+// ---------- press ----------
+
+// Safari's windows of this size, which a page reads as its outerWidth and
+// outerHeight. Its screenY does not place its window: on a display other
+// than the main one it counts from that display's top (30 for a window at
+// -1410). An agent window's size is its own (daemon/spaces.ts); two of
+// the user's windows may share one, and the mark tells their pages apart.
+func windowsOfSize(_ app: AXUIElement, _ width: Double, _ height: Double) -> [AXUIElement] {
+    let all = (attribute(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+    return all.filter { w in
+        guard let f = frame(w) else { return false }
+        return abs(f.width - width) < 1 && abs(f.height - height) < 1
+    }
+}
+
+// The node at or under el whose element has the class mark. The whole tree
+// is searched: a node's frame need not hold its children's, so a search
+// that went only into frames holding the element missed 73 of 104 links on
+// Hacker News. Both attributes come in one request, which halves the trips
+// to Safari on a page of thousands of nodes.
+func markedNode(_ el: AXUIElement, _ mark: String, depth: Int = 0) -> AXUIElement? {
+    var values: CFArray?
+    guard AXUIElementCopyMultipleAttributeValues(el, ["AXDOMClassList", kAXChildrenAttribute] as CFArray, [], &values) == .success,
+          let pair = values as? [Any], pair.count == 2 else { return nil }
+    if let classes = pair[0] as? [String], classes.contains(mark) { return el }
+    guard depth < 200, let kids = pair[1] as? [AXUIElement] else { return nil }
+    for k in kids {
+        if let hit = markedNode(k, mark, depth: depth + 1) { return hit }
+    }
+    return nil
+}
+
+// Presses the element a page marked with the class MARK (pressMark in
+// extension/content.js) through Safari's accessibility tree, in a window of
+// W by H points. WebKit clicks the element's middle for it: mousedown,
+// mouseup, and click, each isTrusted, with no pointer events. Safari, its
+// windows, and the pointer stay where they are, in a window hidden behind
+// another app's too. Prints {"pressed": true}, or {"pressed": false, "why"}
+// when no press was made: no such window, the element is not in the tree
+// (a canvas, a label), or WebKit offers it no press, which would report
+// success and click nothing.
+func press(_ args: [String]) {
+    guard args.count == 3, let w = Double(args[1]), let h = Double(args[2]) else { fail("usage: input press MARK W H", 2) }
+    requireAccess()
+    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    let windows = windowsOfSize(AXUIElementCreateApplication(safari.processIdentifier), w, h)
+    if windows.isEmpty { return printJSON(["pressed": false, "why": "no Safari window is \(args[1]) by \(args[2])"]) }
+    guard let node = windows.flatMap({ webAreas($0) }).lazy.compactMap({ markedNode($0, args[0]) }).first else {
+        return printJSON(["pressed": false, "why": "the element is not in Safari's accessibility tree"])
+    }
+    var names: CFArray?
+    guard AXUIElementCopyActionNames(node, &names) == .success, (names as? [String])?.contains(kAXPressAction) == true else {
+        return printJSON(["pressed": false, "why": "Safari offers no press on the element"])
+    }
+    let err = AXUIElementPerformAction(node, kAXPressAction as CFString)
+    if err != .success { fail("the press did not go through: AXError \(err.rawValue)") }
+    printJSON(["pressed": true])
+}
+
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
 case "webarea": webarea()
+case "press": press(rest)
 case "click": click(rest)
 case "move": move(rest)
 case "drag": drag(rest)
@@ -354,5 +418,5 @@ case "type": typeText(rest)
 case "key": keyCombo(rest)
 case "front": front()
 case "activate": activate(rest)
-default: fail("usage: input webarea | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type TEXT | key SPEC | front | activate BUNDLEID", 2)
+default: fail("usage: input webarea | press MARK W H | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type TEXT | key SPEC | front | activate BUNDLEID", 2)
 }

@@ -66,7 +66,9 @@ daemon/
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
                     shows, for challenge in results and for handoff
   input.ts          real_input: the real mouse and keyboard through
-                    scripts/input, for pages that ignore scripted events
+                    scripts/input, for pages that ignore scripted events; a
+                    single click on a tab behind is pressed through Safari's
+                    accessibility tree, and nothing comes forward
   passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
                     Mac shows (SRP), then asks it for logins and verification
                     codes over AES-GCM. The helper runs only under a real
@@ -106,7 +108,9 @@ scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
   input.swift       helper: posts real clicks and keys (CGEvent) into
-                    Safari's page area; needs Accessibility permission
+                    Safari's page area, and presses an element through
+                    Safari's accessibility tree; needs Accessibility
+                    permission
   pairing.swift     helper: the Touch ID prompt, and the pairing code read
                     off Apple's window; needs Accessibility permission
   spaces.swift      helper: works an agent window's tab group sidebar through

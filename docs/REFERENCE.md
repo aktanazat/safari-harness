@@ -466,13 +466,24 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it only when `click`, `type`,
   or `press` did nothing on a site that ignores scripted events. Never use
   it inside a bot check (see "Bot checks and steps only the user can do").
-  Each call brings Safari and the tab to the front for about half a
-  second, then gives back the user's tab, app, and pointer. It waits until
-  the page has received every key before giving the tab back, so nothing
-  lands in the user's tab; the page sees one extra press of F20, a key no
-  Mac keyboard has. Keys go only to a page with keyboard focus: if Safari's
-  address or find bar has it, the call fails and nothing is typed. The app
-  running the MCP server or CLI needs Accessibility permission.
+  A single left click on a tab that is not in front is pressed through
+  Safari's accessibility tree and answers `background: true`: nothing
+  comes to the front, and the pointer stays put. The page gets a trusted
+  mousedown, mouseup, and click at the element's middle, with no pointer
+  events and a `detail` of 0. A tab behind another in its agent window is
+  shown there for the click. The real mouse clicks instead, and the answer
+  has `at`, for a double or right click, a select, a date, color, or file
+  input, an element Safari cannot press (a canvas), a tab behind another
+  in one of the user's windows, and the tab in front while Safari is: a
+  site that needs pointer events or a focused window gets them after
+  `activate`. The real mouse and keys bring Safari and the tab to the front
+  for about half a second, then give back the user's tab, app, and
+  pointer. Such a call waits until the page has received every key before
+  giving the tab back, so nothing lands in the user's tab; the page sees
+  one extra press of F20, a key no Mac keyboard has. Keys go only to a page
+  with keyboard focus: if Safari's address or find bar has it, the call
+  fails and nothing is typed. The app running the MCP server or CLI needs
+  Accessibility permission.
 
 ## Waiting
 

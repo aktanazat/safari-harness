@@ -5,9 +5,10 @@
 // permission, which the launchd daemon lacks, so these tools run in the
 // caller (terminal, MCP server) and reach the tab through the daemon's RPC
 // port. Real input lands on whatever is on screen, so the tab comes to the
-// front for the moment it takes.
+// front for the moment it takes. A single click on a tab not in front goes
+// through Safari's accessibility tree instead, and nothing comes forward.
 
-import { inFront, input, type TabOps } from "./front.ts";
+import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { rpc } from "./rpc.ts";
 import { REF, resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 
@@ -90,6 +91,49 @@ async function clickRef(tab: number, ref: unknown, count: number, button: string
   return at;
 }
 
+// press_mark's answer once it has marked the element (pressMark in
+// extension/content.js): the class the helper finds it by, and its
+// window's size.
+type Mark = { mark: string; width: number; height: number };
+const isMark = (v: unknown): v is Mark =>
+  !!v && typeof v === "object" && "mark" in v && typeof v.mark === "string" && "width" in v && typeof v.width === "number" && "height" in v && typeof v.height === "number";
+
+// Presses ref through Safari's accessibility tree (press in
+// scripts/input.swift), which reaches a page in a window behind another
+// app's: the page gets a trusted click (mousedown, mouseup, and click; no
+// pointer events, and a detail of 0), and Safari, its windows, and the
+// pointer stay as they were. The tree holds only the tab each window
+// shows, so a tab behind another in its agent window is shown there for
+// the press and put back after. Returns false, having pressed nothing,
+// where the real mouse takes over: the tab Safari shows in front while
+// Safari is the app in front, where it takes nothing from the user (so
+// activate, then real_input, gives a page the real mouse); a tab behind
+// another in one of his windows; a control Safari answers with its own UI;
+// and an element the tree lacks (a canvas) or offers no press on.
+async function pressBehind(tab: number, ref: unknown): Promise<boolean> {
+  const [app, tabs] = await Promise.all([frontApp(), VIA_RPC.tabs()]);
+  const target = tabs.find((t) => t.id === tab);
+  if (!target) throw new Error(`no tab ${tab}`);
+  if (app === SAFARI && target.shown) return false;
+  const back = target.active ? undefined : tabs.find((t) => t.windowId === target.windowId && t.active);
+  if (back && !(await rpc("select_tab", { tab }))) return false;
+  try {
+    const marked = await rpc("press_mark", { tab, ref });
+    if (marked && typeof marked === "object" && "picker" in marked) return false;
+    if (!isMark(marked)) throw new Error(`press_mark returned no mark for ${String(ref)}: ${JSON.stringify(marked)}`);
+    let pressed = false;
+    try {
+      const r = await input(["press", marked.mark, String(marked.width), String(marked.height)]);
+      pressed = !!r && typeof r === "object" && "pressed" in r && r.pressed === true;
+    } finally {
+      await rpc("press_done", { tab, ref, mark: marked.mark, ms: pressed ? 500 : 0 }).catch(() => {});
+    }
+    return pressed;
+  } finally {
+    if (back) await rpc("select_tab", { tab: back.id }).catch(() => {});
+  }
+}
+
 // One tool for the three kinds of input: agents reach for it rarely, and
 // every tool listed costs its description on every turn.
 const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<unknown>> = {
@@ -98,6 +142,10 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     if (count !== 1 && count !== 2 && count !== 3) throw new Error("count must be 1, 2, or 3");
     const button = a.button ?? "left";
     if (button !== "left" && button !== "right") throw new Error("button must be left or right");
+    // A press is one click of the left button: two in a row are two clicks,
+    // never a double click, and the right button's menu opens on screen
+    // over the user's app.
+    if (count === 1 && button === "left" && (await pressBehind(tab, a.ref))) return { ok: true, background: true };
     const at = await inFront(tab, VIA_RPC, () => clickRef(tab, a.ref, count, button));
     return { ok: true, at };
   },
@@ -121,7 +169,7 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
 
 export const INPUT_TOOLS: Record<string, Tool> = {
   real_input: {
-    desc: "The real mouse and keyboard, for controls that ignore scripted input: click a ref, type text (at ref, or where the caret is), or press a key (Enter, Cmd+A). Brings the tab to the front for a moment.",
+    desc: "The real mouse and keyboard, for controls that ignore scripted input: click a ref, type text (at ref, or where the caret is), or press a key (Enter, Cmd+A). A single left click stays in the background; the rest bring the tab to the front for a moment.",
     params: {
       tab: TAB,
       do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },

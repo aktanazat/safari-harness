@@ -92,7 +92,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -801,6 +801,14 @@ async function handle(msg) {
       const [tabId] = args;
       const t = await api.tabs.get(tabId);
       await api.windows.update(t.windowId, { focused: true });
+      await api.tabs.update(tabId, { active: true });
+      return { ok: true };
+    }
+    // Shows a tab in its window and leaves the window where it is:
+    // real_input presses an element through its window's accessibility
+    // tree, which holds only the tab the window shows.
+    case "tabs.select": {
+      const [tabId] = args;
       await api.tabs.update(tabId, { active: true });
       return { ok: true };
     }

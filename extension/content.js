@@ -621,6 +621,48 @@
     return { x, y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
   }
 
+  // real_input's click on a tab not in front (daemon/input.ts) presses the
+  // element through Safari's accessibility tree, where the helper finds it
+  // by a class of its own (AXDOMClassList) in a window of the page's outer
+  // size. WebKit offers a press only on a control, a link, or an element
+  // with a click listener of its own, and a page that listens on window or
+  // document gives its other elements none, so the element gets a listener;
+  // it also tells pressDone when the click has come. A control Safari
+  // answers with its own UI (a select's menu, a date picker, the Colors
+  // panel, a file panel), or a label that clicks one, would open that UI on
+  // screen over the user's app, so it takes the real mouse instead:
+  // { picker: true }.
+  const PICKER_INPUTS = new Set(["date", "datetime-local", "month", "week", "time", "color", "file"]);
+  const picker = (el) => el?.localName === "select" || (el?.localName === "input" && PICKER_INPUTS.has(el.type));
+  const presses = new Map(); // mark -> { el, heard (a promise), listen }
+  function pressMark(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    if (picker(el) || (el.localName === "label" && picker(el.control))) return { picker: true };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const mark = `__sh_press_${Math.random().toString(36).slice(2, 10)}`;
+    const heard = Promise.withResolvers();
+    const listen = (e) => { if (e.isTrusted) heard.resolve(); };
+    el.classList.add(mark);
+    el.addEventListener("click", listen, true);
+    presses.set(mark, { el, heard: heard.promise, listen });
+    return { mark, width: outerWidth, height: outerHeight };
+  }
+
+  // Takes the class and the listener off once the press has reached the
+  // element, or after ms: WebKit looks for the listener when it runs the
+  // press, which may come after the helper has returned. A mark this frame
+  // does not hold is another frame's, which relayOp then asks.
+  async function pressDone(ref, mark, ms) {
+    const p = presses.get(mark);
+    if (!p) return missing(ref);
+    presses.delete(mark);
+    await Promise.race([p.heard, sleep(ms)]);
+    p.el.classList.remove(mark);
+    p.el.removeEventListener("click", p.listen, true);
+    return true;
+  }
+
   // Safari runs no extension script in srcdoc and about:blank frames, so
   // such a frame never reports. It shares this page's origin, so this copy
   // reads its document directly, as part of the page.
@@ -2582,6 +2624,8 @@
     fillCode,
     fillAddress,
     locate,
+    pressMark,
+    pressDone,
     rect: rectOf,
     annotate,
     dialogs: setDialogs,

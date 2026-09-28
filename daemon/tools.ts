@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered } from "./unanswered.ts";
-import { spaceNote, spaceTool, spaceWindow, type SpaceNote } from "./spaces.ts";
+import { spaceNote, spaceTool, spaceWindow, windowOwners, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -1125,6 +1125,43 @@ export const TOOLS: Record<string, Tool> = {
       await relay(tab, "painted", [], 3000).catch(() => {});
       return relay(tab, "locate", [str(String(a.ref), "ref")]);
     },
+  },
+  // real_input's click on a tab not in front (input.ts) goes through
+  // Safari's accessibility tree, which holds only the tab each window
+  // shows. This shows a tab in its agent window and leaves the window where
+  // it is. A window of the user's own keeps showing the tab he chose: the
+  // answer is false, and the click takes the real mouse.
+  select_tab: {
+    desc: "Show a tab in its agent window, leaving the window where it is.",
+    params: { tab: { type: "number", description: "tab id" } },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => {
+      const tab = num(a.tab, "tab");
+      const windowId = (await listTabs()).find((t) => t.id === tab)?.windowId;
+      if (windowId === undefined || !windowOwners().has(windowId)) return false;
+      await bridge.request("tabs.select", [tab]);
+      return true;
+    },
+  },
+  // The element marked for the helper's press, and its window's size
+  // (pressMark in content.js).
+  press_mark: {
+    desc: "Mark an element for a press through Safari's accessibility tree.",
+    params: { tab: TAB, ref: REF },
+    required: ["tab", "ref"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "pressMark", [str(String(a.ref), "ref")]),
+  },
+  // Unmarked once the press has reached it, or after ms. The answer is no
+  // object, so news of a tab the press opened waits for the agent's next
+  // call (withTabNews).
+  press_done: {
+    desc: "Unmark an element once the press has reached it, or after ms.",
+    params: { tab: TAB, ref: REF, mark: { type: "string", description: "from press_mark" }, ms: { type: "number", description: "longest wait for the press" } },
+    required: ["tab", "ref", "mark", "ms"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "pressDone", [str(String(a.ref), "ref"), str(a.mark, "mark"), num(a.ms, "ms")], 2000),
   },
   // One fact about an element (text, inner HTML, value, attribute, box,
   // count), for the REPL's locators.

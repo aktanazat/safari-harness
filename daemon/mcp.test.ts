@@ -65,8 +65,10 @@ import { expect, test } from "bun:test";
 // several texts, text gone, an address, or a quiet page, not a sleep. The
 // replay and recordings tools (733) brought it to 22,677: a task the user
 // showed once with the toolbar button runs again by name in a background
-// tab, with no model working out each step.
-const TOOL_LIST_MAX_BYTES = 22_677;
+// tab, with no model working out each step. Saying that real_input's single
+// click stays in the background (53) brought it to 22,730: an agent clicks
+// a site that ignores scripted clicks without taking the user's screen.
+const TOOL_LIST_MAX_BYTES = 22_730;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

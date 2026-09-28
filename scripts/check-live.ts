@@ -842,17 +842,23 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
 
 // ---------- real input ----------
 
-// Brings Safari to the front for about a second, then gives back the app
-// and tab that were in front.
+// A single click on a tab behind is pressed through Safari's accessibility
+// tree, and the app in front stays there. Typing and keys bring Safari to
+// the front for about a second, then give back the app and tab that were in
+// front.
 const TRUST = `<button id=b onclick="this.dataset.trusted = event.isTrusted">Real</button><input id=f>`;
 
 await withPage(TRUST, "", async (tab) => {
   const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   await call("click", { tab, ref: "#b" });
   const scripted = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
-  await CALLER_TOOLS.real_input.run({ tab, do: "click", ref: "#b" });
+  const app = await frontApp();
+  const clicked = await CALLER_TOOLS.real_input.run({ tab, do: "click", ref: "#b" });
+  const stayed = await frontApp();
   const real = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
   check("real_input click is a trusted event where click is not", scripted === "false" && real === "true", { scripted, real });
+  const background = !!clicked && typeof clicked === "object" && "background" in clicked && clicked.background === true;
+  check("real_input clicks a tab behind with the app in front left there", background && stayed === app, { clicked, app, stayed });
   await CALLER_TOOLS.real_input.run({ tab, do: "type", ref: "#f", text: "abc" });
   await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
   const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;

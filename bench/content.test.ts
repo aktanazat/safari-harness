@@ -114,6 +114,17 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "real_input's press from behind is left to the real mouse on a select, a date or color input, and a label of a file input, which open Safari's own windows",
+    page: "pickers.html",
+    steps: [
+      { op: "pressMark", args: ["#plan"], answer: { value: { picker: true } } },
+      { op: "pressMark", args: ["#day"], answer: { value: { picker: true } } },
+      { op: "pressMark", args: ["#shade"], answer: { value: { picker: true } } },
+      { op: "pressMark", args: ["#upload"], answer: { value: { picker: true } } },
+      { op: "pressMark", args: ["#go"], answer: { value: { mark: expect.stringMatching(/^__sh_press_/) } } },
+    ],
+  },
+  {
     name: "a ref drawn anew finds its own row's control by the text beside it, after the rows moved",
     page: "heal.html",
     steps: [
