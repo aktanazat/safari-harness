@@ -17,8 +17,21 @@
 //           tabs.sendMessage does, in the page or in the embedded frame at
 //           URL, and prints its answer as it gave it: {"id", "value"} or
 //           {"id", "error"}
-//     MS bounds the request (default 10000 for load, 5000 for op). What the
-//     bench itself cannot do prints {"error": "bench: ..."}.
+//       {"takeover": true, "timeout": MS}
+//           reloads the extension and puts a fresh copy of content.js in
+//           the page, as background.js's takeover does: the claim set to
+//           null, then content.js run again in the same world. A copy
+//           already there keeps the old load's API, which reaches no one;
+//           ops go to the fresh copy. Answers {"value": {"url"}} once the
+//           fresh copy has reported in.
+//       {"sent": true}
+//           what the page's copies sent the extension since the page
+//           loaded or since the last sent: {"value": [{"load", "message"}]},
+//           load counting the extension's loads from 1. An answer a copy
+//           gave after its load ended, which reaches no one in Safari, is
+//           there as {"load", "answer"}.
+//     MS bounds the request (default 10000 for load, 5000 for op and
+//     takeover). What the bench itself cannot do prints {"error": "bench: ..."}.
 // Nothing shows, nothing takes focus, and the pages keep no data on disk.
 import AppKit
 import WebKit
@@ -46,39 +59,54 @@ func extensionScript(_ name: String, _ source: String) -> String {
         + "\n} catch (e) { window.webkit.messageHandlers.bench.postMessage({ threw: \"\(name): \" + ((e && e.stack) || e), url: location.href }); } }"
 }
 
-// The part of the extension API content.js uses, in content.js's world. The
+// The part of the extension API content.js uses, in content.js's world, as
+// one load of the extension gives it; a takeover makes the next load. The
 // ready message gets background.js's answer for a tab the harness opened,
 // the tabs agents work in: dialogs answered by the default policy, and the
 // page's requests logged.
 let runtimeShim = #"""
 (() => {
-  const listeners = [];
+  const sent = [];
+  let current = 0;
   const event = (list) => ({ addListener: (fn) => { list.push(fn); } });
-  window.browser = {
-    runtime: {
-      onMessage: event(listeners),
-      sendMessage: (msg) => {
-        if (!msg || msg.__safariHarnessReady !== 1) return Promise.resolve(undefined);
-        window.webkit.messageHandlers.bench.postMessage({ ready: String(window.__safariHarnessFrame), url: location.href });
-        return Promise.resolve({ dialogs: { accept: false, text: null }, tab: 1, window: 1, net: true });
+  window.__benchSent = () => sent.splice(0);
+  window.__benchReload = () => {
+    const load = ++current;
+    const ended = () => load !== current;
+    const listeners = [];
+    window.browser = {
+      runtime: {
+        onMessage: event(listeners),
+        sendMessage: (msg) => {
+          sent.push({ load, message: msg });
+          if (ended()) return Promise.reject(new Error("the extension reloaded"));
+          if (!msg || msg.__safariHarnessReady !== 1) return Promise.resolve(undefined);
+          window.webkit.messageHandlers.bench.postMessage({ ready: String(window.__safariHarnessFrame), url: location.href });
+          return Promise.resolve({ dialogs: { accept: false, text: null }, tab: 1, window: 1, net: true });
+        },
+        connect: (info) => ({ name: (info && info.name) || "", onMessage: event([]), onDisconnect: event([]), postMessage() {}, disconnect() {} }),
       },
-      connect: (info) => ({ name: (info && info.name) || "", onMessage: event([]), onDisconnect: event([]), postMessage() {}, disconnect() {} }),
-    },
+    };
+    // As tabs.sendMessage: the first listener that returns a promise answers.
+    window.__benchSend = async (json) => {
+      const msg = JSON.parse(json);
+      for (const fn of listeners) {
+        const out = fn(msg, {}, () => {});
+        if (out === undefined) continue;
+        const answer = await out;
+        if (ended()) sent.push({ load, answer });
+        return JSON.stringify(answer);
+      }
+      return null;
+    };
   };
-  // As tabs.sendMessage: the first listener that returns a promise answers.
-  window.__benchSend = async (json) => {
-    const msg = JSON.parse(json);
-    for (const fn of listeners) {
-      const out = fn(msg, {}, () => {});
-      if (out !== undefined) return JSON.stringify(await out);
-    }
-    return null;
-  };
+  window.__benchReload();
 })();
 """#
 
 final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let world = WKContentWorld.world(name: "Safari Harness")
+    let content: String
     let web: WKWebView
     var waiting: [String] = []
     var busy = false
@@ -95,6 +123,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var frames: [(url: String, token: String, info: WKFrameInfo)] = []
 
     init(content: String, dialogs: String) {
+        self.content = content
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         // A web view in no window is inactive, and WebKit would slow its
@@ -157,8 +186,20 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             let limit = ms ?? 5000
             after(limit) { reply(problem("\(op) did not answer within \(limit) ms")) }
             send(op, request, reply: reply)
+        } else if request["takeover"] as? Bool == true {
+            let limit = ms ?? 5000
+            after(limit) { reply(problem("the fresh copy of content.js did not report in within \(limit) ms")) }
+            takeover(reply: reply)
+        } else if request["sent"] as? Bool == true {
+            web.callAsyncJavaScript("return JSON.stringify({ value: __benchSent() })", arguments: [:], in: nil, in: world) { result in
+                switch result {
+                case .success(let answer as String): reply(Data(answer.utf8))
+                case .success: reply(problem("the page has no record of what content.js sent"))
+                case .failure(let error): reply(problem("cannot read what content.js sent: \(error.localizedDescription)"))
+                }
+            }
         } else {
-            reply(problem("a request has load or op: \(text)"))
+            reply(problem("a request has load, op, takeover, or sent: \(text)"))
         }
     }
 
@@ -248,6 +289,24 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                 let js = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
                 reply(problem("\(op) failed: \(js ?? error.localizedDescription)"))
             }
+        }
+    }
+
+    // ---------- takeover ----------
+
+    // The claim is cleared on the script's first line, so the script keeps
+    // content.js's line numbers.
+    func takeover(reply: @escaping (Data) -> Void) {
+        guard mainURL != nil else { return reply(problem("content.js has not reported in from the page since it last changed")) }
+        mainURL = nil
+        progress = { [self] in
+            if let threw { return reply(problem(threw)) }
+            guard let mainURL else { return }
+            reply(line(["value": ["url": mainURL]]))
+        }
+        let script = "__benchReload(); window.__safariHarnessInjected = null; " + extensionScript("content.js", content) + "\ntrue"
+        web.evaluateJavaScript(script, in: nil, in: world) { [self] result in
+            if case .failure(let error) = result { abort?("content.js did not run again: \(error.localizedDescription)") }
         }
     }
 }

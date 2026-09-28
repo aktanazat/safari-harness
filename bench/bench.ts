@@ -9,17 +9,25 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export type Step = {
-  op: string;
-  args?: unknown[];
-  // a page in bench/fixtures that an embedded frame shows: the op goes to
-  // that frame's copy of content.js
-  frame?: string;
   // ms before the bench gives up on the answer (default 5000)
   timeout?: number;
   // what the answer must hold, as toMatchObject reads it; a step without one
   // must answer with a value
   answer?: unknown;
-};
+} & (
+  | {
+    op: string;
+    args?: unknown[];
+    // a page in bench/fixtures that an embedded frame shows: the op goes to
+    // that frame's copy of content.js
+    frame?: string;
+  }
+  // the extension reloads and puts a fresh copy of content.js in the page,
+  // as background.js's takeover does
+  | { takeover: true }
+  // what the page's copies sent the extension so far, by extension load
+  | { sent: true }
+);
 
 export type Row = {
   name: string;
@@ -69,7 +77,7 @@ const page = (name: string) => pathToFileURL(join(import.meta.dir, "fixtures", n
 async function answers(row: Row): Promise<unknown[]> {
   const requests = [
     { load: page(row.page), frames: row.frames ?? 0 },
-    ...row.steps.map((s) => ({ op: s.op, args: s.args, frame: s.frame && page(s.frame), timeout: s.timeout })),
+    ...row.steps.map((s) => ("op" in s ? { op: s.op, args: s.args, frame: s.frame && page(s.frame), timeout: s.timeout } : { ...s, answer: undefined })),
   ];
   const proc = Bun.spawn([runner, join(ROOT, "extension")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(requests.map((r) => JSON.stringify(r) + "\n").join(""));
