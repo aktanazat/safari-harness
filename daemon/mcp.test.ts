@@ -25,7 +25,11 @@ type Call = { tool: string; args: Record<string, unknown> };
 // why it is locked. The handoff tool (496, with activate saying it raises
 // Safari) brought it to 17,489: a bot check or a passkey prompt now goes to
 // the user in one call instead of a stalled wait and a chat round trip.
-const TOOL_LIST_MAX_BYTES = 17_489;
+// Requiring tab on the page tools (259: tab joins their required lists, and
+// open says what tab "front" means) brought it to 17,748: a call without
+// tab now fails instead of reading the user's front tab, as one did his
+// medical records page.
+const TOOL_LIST_MAX_BYTES = 17_748;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

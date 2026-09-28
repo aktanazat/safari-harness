@@ -10,7 +10,8 @@ import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 
-export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number };
+// front: the active tab of the window the user had in front last
+export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean };
 
 type Relay = (tabId: number, op: string, args?: unknown[], timeoutMs?: number) => Promise<unknown>;
 const relay: Relay = (tabId, op, args = [], timeoutMs) => bridge.tab(tabId, op, args, timeoutMs);
@@ -30,20 +31,68 @@ export async function listTabs(): Promise<TabInfo[]> {
   return (await bridge.request("tabs.list")) as TabInfo[];
 }
 
-export async function resolveTab(tab?: number): Promise<number> {
-  if (tab !== undefined && tab !== null) return num(tab, "tab");
-  const tabs = await listTabs();
-  const active = tabs.find((t) => t.active) ?? tabs[0];
-  if (!active) throw new Error("no tabs open in Safari");
-  return active.id;
+// A page tool's tab: the id open returned, or "front", the tab the user has
+// in front, named on purpose. A call without one is an error, never a read
+// of his front tab: on 09-28 an agent that left it out read his MyChart
+// page. Tools that run in the caller pass their own way to list tabs.
+export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = listTabs): Promise<number> {
+  if (tab === undefined || tab === null) throw new Error('tab is required: the id open returned (CLI --tab <id>), or "front" for the tab the user has in front (CLI --tab front)');
+  if (tab === "front") {
+    const front = (await tabs()).find((t) => t.front);
+    if (!front) throw new Error("Safari has no front tab");
+    return front.id;
+  }
+  const id = typeof tab === "number" ? tab : Number(tab);
+  if (!Number.isFinite(id)) throw new Error('tab must be a tab id from open, or "front"');
+  return id;
 }
 
 export async function openTab(url: string, background = false): Promise<TabInfo> {
   return (await bridge.request("tabs.open", [str(url, "url"), background])) as TabInfo;
 }
 
+// A native sheet on the tab (a sign-in or permission prompt) or an
+// off-screen window can keep Safari from closing it; the extension gives up
+// after 5 s and says so. This limit is only for an extension that never answers.
 export async function closeTab(tab: number): Promise<unknown> {
-  return bridge.request("tabs.close", [num(tab, "tab")]);
+  const id = num(tab, "tab");
+  owners.delete(id);
+  return bridge.request("tabs.close", [id], 10000);
+}
+
+// A background tab the CLI opened closes once the program that ran the
+// command exits: the CLI names that process as the open's owner. An agent's
+// tabs so last its whole session, and none outlives it. Tabs a click opens
+// from one inherit its owner. The map lives only in this daemon, so after a
+// restart those tabs stay open.
+const owners = new Map<number, number>();
+const SWEEP_MS = 5000;
+let sweep: Timer | undefined;
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: the process runs, as another user
+    return e instanceof Error && "code" in e && e.code === "EPERM";
+  }
+}
+
+function own(tab: number, pid: number) {
+  owners.set(tab, pid);
+  watchOwners();
+}
+
+// Runs only while some tab has an owner.
+function watchOwners() {
+  if (sweep || owners.size === 0) return;
+  sweep = setTimeout(async () => {
+    const orphans = [...owners].filter(([, pid]) => !alive(pid)).map(([tab]) => tab);
+    await Promise.all(orphans.map((tab) => closeTab(tab).catch(() => {})));
+    sweep = undefined;
+    watchOwners();
+  }, SWEEP_MS);
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
@@ -423,8 +472,10 @@ export type Tool = {
   run: (a: Record<string, unknown>) => Promise<unknown>;
 };
 
-const TAB: Param = { type: "number", description: "tab id from open" };
-const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
+export const TAB: Param = { description: 'tab id from open, or "front"' };
+// close, activate, and window act only on a tab the agent opened
+const OWN_TAB: Param = { type: "number", description: "tab id from open" };
+export const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
 const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
 
 // With `snapshot: true` an action also returns the page it led to, saving
@@ -437,8 +488,12 @@ async function withPage(result: unknown, tab: number, want: unknown): Promise<un
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
   return async (a: Record<string, unknown>) => {
-    const tab = await resolveTab(a.tab as number | undefined);
-    return withPage(await run({ ...a, tab }), tab, a.snapshot);
+    const tab = await resolveTab(a.tab);
+    const result = await run({ ...a, tab });
+    const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
+    const owner = owners.get(tab);
+    if (opened !== undefined && owner !== undefined) own(opened, owner);
+    return withPage(result, tab, a.snapshot);
   };
 }
 
@@ -463,11 +518,11 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     case "status":
       return passwords.status();
     case "logins":
-      return loginsFor(await resolveTab(a.tab as number | undefined));
+      return loginsFor(await resolveTab(a.tab));
     case "fill":
-      return fill(await resolveTab(a.tab as number | undefined), a.username === undefined ? undefined : str(a.username, "username"));
+      return fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "code":
-      return fillCode(await resolveTab(a.tab as number | undefined), a.username === undefined ? undefined : str(a.username, "username"));
+      return fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     default:
       throw new Error("do must be pair, unlock, status, logins, fill, or code");
   }
@@ -482,22 +537,28 @@ export const TOOLS: Record<string, Tool> = {
   },
   tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
-    desc: "Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to later calls (a call without tab acts on the user's front tab).",
+    desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
     params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {
       const t = await openTab(str(a.url, "url"), !!a.background);
+      // owner: the process the CLI names; a tab opened in front is the user's to close
+      if (a.background && a.owner !== undefined) {
+        const pid = num(a.owner, "owner");
+        if (!Number.isInteger(pid) || pid <= 1) throw new Error("owner must be a process id");
+        own(t.id, pid);
+      }
       return withPage(await withChallenge(t, t.id), t.id, a.snapshot);
     },
   },
-  close: { desc: "Close a tab you opened.", params: { tab: TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
+  close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
-    required: ["url"],
+    required: ["tab", "url"],
     run: action(async (a) => withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab)),
   },
-  activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
+  activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
     desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs expire when the page changes: snapshot again after acting.",
     params: {
@@ -507,109 +568,119 @@ export const TOOLS: Record<string, Tool> = {
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
     },
+    required: ["tab"],
     run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
     params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
+    required: ["tab"],
     run: action((a) => click(a as { tab: number; ref?: string; x?: number; y?: number })),
   },
   type: {
     desc: "Set a field's text by ref; replaces it unless append.",
     params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, snapshot: PAGE },
-    required: ["ref", "text"],
+    required: ["tab", "ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean })),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
-    required: ["key"],
+    required: ["tab", "key"],
     run: action((a) => press(a as { tab: number; ref?: string; key: string })),
   },
   select: {
     desc: "Choose a dropdown option by label or value; an unknown option returns the list.",
     params: { tab: TAB, ref: REF, option: { type: "string", description: "option label or value" }, snapshot: PAGE },
-    required: ["ref", "option"],
+    required: ["tab", "ref", "option"],
     run: action((a) => select(a as { tab: number; ref: string; option: string })),
   },
   hover: {
     desc: "Hover a ref, for menus that open on mouse-over (not ones driven only by CSS :hover).",
     params: { tab: TAB, ref: REF, snapshot: PAGE },
-    required: ["ref"],
+    required: ["tab", "ref"],
     run: action((a) => hover(a as { tab: number; ref: string })),
   },
   upload: {
     desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input.",
     params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, snapshot: PAGE },
-    required: ["paths"],
+    required: ["tab", "paths"],
     run: action((a) => upload(a as { tab: number; ref?: string; paths: string[] })),
   },
   history: {
     desc: "Go back, go forward, or reload.",
     params: { tab: TAB, do: { type: "string", enum: ["back", "forward", "reload"], description: "which" }, snapshot: PAGE },
-    required: ["do"],
+    required: ["tab", "do"],
     run: action((a) => history(a as { tab: number; do: string })),
   },
   scroll: {
     desc: "Scroll the page. Rarely needed: snapshots include off-screen elements.",
     params: { tab: TAB, dx: { type: "number", description: "pixels right" }, dy: { type: "number", description: "pixels down, default 600" } },
+    required: ["tab"],
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
     desc: "Run a JS expression in the page and return its JSON value; a promise is awaited. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
     params: { tab: TAB, expression: { type: "string", description: "JS expression" }, page: { type: "boolean", description: "run in the page's own world" } },
-    required: ["expression"],
+    required: ["tab", "expression"],
     run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
   },
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
     params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" } },
-    required: ["url"],
+    required: ["tab", "url"],
     run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }),
   },
   download: {
     desc: "Save the file a ref's link or button downloads, or a url, into ~/Downloads; returns its path.",
     params: { tab: TAB, ref: REF, url: { type: "string", description: "instead of ref" }, out: { type: "string", description: "path to write" } },
+    required: ["tab"],
     run: (a) => download(a as { tab?: number; ref?: string; url?: string; out?: string }),
   },
   dialog: {
     desc: "Alerts, confirms, and prompts come back with the action that raised them; confirm and prompt are dismissed unless you accept. read lists recent ones.",
     params: { tab: TAB, do: { type: "string", enum: ["read", "accept", "dismiss"], description: "accept or dismiss from now on" }, text: { type: "string", description: "prompt answer" } },
+    required: ["tab"],
     run: (a) => dialogs(a as { tab?: number; do?: string; text?: string }),
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
     params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" } },
+    required: ["tab"],
     run: (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number }),
   },
-  info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
+  info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
     desc: "Wait until text or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
     params: { tab: TAB, text: { type: "string", description: "visible text" }, selector: { type: "string", description: "CSS selector" }, ms: { type: "number", description: "timeout, or sleep length" }, front: { type: "boolean", description: "keep the tab on screen meanwhile" } },
-    run: (a) => {
-      const o = a as { tab?: number; ms?: number; selector?: string; text?: string; front?: boolean };
-      return o.front ? inFront(num(o.tab, "tab"), { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
+    required: ["tab"],
+    run: async (a) => {
+      const o = { ...(a as { ms?: number; selector?: string; text?: string; front?: boolean }), tab: await resolveTab(a.tab) };
+      return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
   },
   handoff: {
     desc: "Give the user the tab for a step only they can do: a bot check (challenge in a result), a passkey, Touch ID. Shows the tab, notifies why, returns when done; done: false: call again.",
     params: { tab: TAB, why: { type: "string", description: "what to do, for the notice" }, ms: { type: "number", description: "default 60000, max 110000" } },
     required: ["tab", "why"],
-    run: (a) => handoff(num(a.tab, "tab"), str(a.why, "why"), a.ms === undefined ? undefined : num(a.ms, "ms")),
+    run: async (a) => handoff(await resolveTab(a.tab), str(a.why, "why"), a.ms === undefined ? undefined : num(a.ms, "ms")),
   },
   net: {
     desc: "Record the page's fetch/XHR requests: start, then read (url, method, status, time); stop ends it.",
     params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" } },
+    required: ["tab"],
     run: (a) => capture({ start: netStart, read: netRead, stop: netStop }, a),
   },
   console: {
     desc: "Record the page's console messages: start, then read.",
     params: { tab: TAB, do: { type: "string", enum: ["start", "read"], description: "default read" } },
+    required: ["tab"],
     run: (a) => capture({ start: consoleStart, read: consoleRead }, a),
   },
   cookies: {
     desc: "Cookies for the tab's site. Values are secrets: never repeat them. do: set adds one (not HttpOnly).",
     params: { tab: TAB, url: { type: "string", description: "another site's URL" }, do: { type: "string", enum: ["read", "set"], description: "default read" }, name: { type: "string", description: "to set" }, value: { type: "string", description: "to set" } },
+    required: ["tab"],
     run: (a) => a.do === "set"
       ? setCookie(a as { tab?: number; url?: string; name: string; value: string })
       : cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined }),
@@ -617,6 +688,7 @@ export const TOOLS: Record<string, Tool> = {
   shot: {
     desc: "Screenshot the tab's page; returns a PNG path. ref crops to it; annotate labels refs; fullPage stitches the whole page.",
     params: { tab: TAB, ref: REF, annotate: { type: "boolean", description: "draw ref labels" }, fullPage: { type: "boolean", description: "whole page" }, out: { type: "string", description: "PNG path" } },
+    required: ["tab"],
     run: (a) => screenshot(a as { tab?: number; ref?: string; annotate?: boolean; fullPage?: boolean; out?: string }),
   },
   pdf: {
@@ -626,7 +698,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   window: {
     desc: "Put a tab in its own window of this size, e.g. a phone-width page.",
-    params: { tab: TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" } },
+    params: { tab: OWN_TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" } },
     required: ["tab", "width", "height"],
     run: (a) => viewport(a as { tab: number; width: number; height: number }),
   },
@@ -638,7 +710,7 @@ export const TOOLS: Record<string, Tool> = {
     // A tab just brought to the front may not have drawn yet; a real click
     // before it has lands on the tab shown before.
     run: async (a) => {
-      const tab = await resolveTab(a.tab as number | undefined);
+      const tab = await resolveTab(a.tab);
       await relay(tab, "painted", [], 3000).catch(() => {});
       return relay(tab, "locate", [str(String(a.ref), "ref")]);
     },
@@ -651,7 +723,7 @@ export const TOOLS: Record<string, Tool> = {
     required: ["ref", "what"],
     hidden: true,
     run: async (a) => {
-      const tab = await resolveTab(a.tab as number | undefined);
+      const tab = await resolveTab(a.tab);
       const res = (await relay(tab, "element", [str(String(a.ref), "ref"), str(a.what, "what"), a.name ?? null])) as { value: unknown };
       return res.value;
     },
@@ -663,7 +735,7 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: TAB, values: { description: "autocomplete token to value" }, root: { type: "string", description: "CSS selector of the form" } },
     required: ["values"],
     hidden: true,
-    run: async (a) => relay(await resolveTab(a.tab as number | undefined), "fillAddress", [a.values, a.root ?? null]),
+    run: async (a) => relay(await resolveTab(a.tab), "fillAddress", [a.values, a.root ?? null]),
   },
   // Where a login goes: the frame holding the tab's sign-in form and that
   // frame's own site. Bitwarden's fill reads it, and so does a live check.
@@ -748,8 +820,9 @@ function stepOf(step: unknown): { tool: string; args: Record<string, unknown> } 
 // without a model turn between steps. A step without tab uses the tab the
 // latest open step made. Later steps usually depend on earlier ones, so the
 // first error stops the run, except that close steps still run: a failed run
-// must not leave its tab behind.
-async function runSteps(steps: unknown): Promise<Steps> {
+// must not leave its tab behind. call runs one step: here, the daemon's own
+// tools; in a caller (call.ts), any tool, wherever it runs.
+export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool): Promise<Steps> {
   if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
   const done: Step[] = [];
   let opened: number | undefined;
@@ -760,7 +833,7 @@ async function runSteps(steps: unknown): Promise<Steps> {
       const step = stepOf(raw);
       tool = step.tool;
       if (failed && tool !== "close") continue;
-      const value = await callTool(tool, opened === undefined || step.args.tab !== undefined ? step.args : { ...step.args, tab: opened });
+      const value = await call(tool, opened === undefined || step.args.tab !== undefined ? step.args : { ...step.args, tab: opened });
       if (tool === "open" && value && typeof value === "object" && "id" in value && typeof value.id === "number") opened = value.id;
       done.push({ step: i + 1, tool, value });
     } catch (e) {

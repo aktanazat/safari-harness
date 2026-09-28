@@ -9,15 +9,10 @@
 
 import { inFront, input, type TabOps } from "./front.ts";
 import { rpc } from "./rpc.ts";
-import type { TabInfo, Tool } from "./tools.ts";
+import { REF, resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
-
-function tabOf(a: Record<string, unknown>): number {
-  if (typeof a.tab !== "number" || !Number.isInteger(a.tab)) throw new Error("tab must be a tab id from open");
-  return a.tab;
-}
 
 // Real input reaches tabs through the daemon's RPC port.
 const VIA_RPC: TabOps = { tabs: async () => (await rpc("tabs")) as TabInfo[], activate: (tab) => rpc("activate", { tab }) };
@@ -94,10 +89,6 @@ async function clickRef(tab: number, ref: unknown, count: number, button: string
   return at;
 }
 
-type Param = Tool["params"][string];
-const TAB: Param = { type: "number", description: "tab id from open" };
-const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
-
 // One tool for the three kinds of input: agents reach for it rarely, and
 // every tool listed costs its description on every turn.
 const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<unknown>> = {
@@ -140,11 +131,11 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       button: { type: "string", enum: ["left", "right"], description: "default left" },
     },
     required: ["tab", "do"],
-    run: (a) => {
+    run: async (a) => {
       const act = typeof a.do === "string" ? REAL[a.do] : undefined;
       if (!act) throw new Error("do must be click, type, or key");
       if (a.do === "click" && a.ref === undefined) throw new Error("click needs ref");
-      return act(tabOf(a), a);
+      return act(await resolveTab(a.tab, VIA_RPC.tabs), a);
     },
   },
 };

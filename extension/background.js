@@ -534,9 +534,12 @@ async function handle(msg) {
   switch (op) {
     case "tabs.list": {
       const tabs = await api.tabs.query({});
+      // Every window has an active tab; front is the one in the window the
+      // user had in front last, the tab tab: "front" names.
+      const focused = await api.windows.getLastFocused().then((w) => w.id, () => undefined);
       return tabs
         .filter((t) => t.id !== undefined)
-        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId }));
+        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}) }));
     }
     case "tabs.open": {
       const [url, background] = args;
@@ -555,10 +558,17 @@ async function handle(msg) {
         onRemoved = (id) => { if (id === tabId) resolve(); };
         api.tabs.onRemoved.addListener(onRemoved);
       });
+      // A native sheet on the tab (a sign-in or permission prompt) or a
+      // window off screen can hold it open, and Safari then never answers:
+      // on 09-27 three closes each hung 30 s behind an Apple sign-in sheet.
+      let timer;
+      const stuck = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Safari did not close the tab within 5 s: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help")), 5000);
+      });
       try {
-        await api.tabs.remove(tabId);
-        await gone;
+        await Promise.race([api.tabs.remove(tabId).then(() => gone), stuck]);
       } finally {
+        clearTimeout(timer);
         api.tabs.onRemoved.removeListener(onRemoved);
       }
       return { ok: true };

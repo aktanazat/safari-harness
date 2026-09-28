@@ -5,7 +5,7 @@
 // reply carries what was filled, only which fields got it.
 
 import { Database } from "bun:sqlite";
-import type { Tool } from "./tools.ts";
+import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 import { addressBooks } from "./imessage.ts";
 import { rpc } from "./rpc.ts";
 
@@ -95,8 +95,7 @@ type BwItem = { id: string; name: string; type: number; login?: { username?: str
 async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   const status = (JSON.parse(await bw(["status"])) as { status: string }).status;
   if (BW_LOCKED[status]) throw new Error(BW_LOCKED[status]);
-  if (a.tab === undefined) throw new Error("bitwarden needs tab");
-  const tab = Number(a.tab);
+  const tab = await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]);
   const form = await rpc("login_form", { tab });
   if (!form || typeof form !== "object" || !("site" in form) || typeof form.site !== "string" || !("frame" in form) || typeof form.frame !== "number") throw new Error("the tab's sign-in form did not answer; reload it with goto and try again");
   const site = form.site;
@@ -117,14 +116,14 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
 export const FILL_TOOLS: Record<string, Tool> = {
   fill_address: {
     desc: "Fill the page's empty address, name, email, and phone fields from the user's own Contacts card; card-number fields are left alone. Returns which fields were filled, not what.",
-    params: { tab: { type: "number", description: "tab id" }, label: { type: "string", description: "which address on the card, e.g. home or work; default the primary one" }, root: { type: "string", description: "CSS selector of the form, when the page has several" } },
+    params: { tab: TAB, label: { type: "string", description: "which address on the card, e.g. home or work; default the primary one" }, root: { type: "string", description: "CSS selector of the form, when the page has several" } },
     required: ["tab"],
     hidden: true,
     run: async (a) => rpc("autofill", { tab: a.tab, values: myCard(a.label === undefined ? undefined : String(a.label)), root: a.root }),
   },
   bitwarden: {
     desc: "Fill the tab's sign-in form with the login Bitwarden saved for its site; you never see the password. logins lists the saved usernames.",
-    params: { do: { type: "string", enum: ["fill", "logins"], description: "default fill" }, tab: { type: "number", description: "tab id" }, username: { type: "string", description: "which saved login, when there are several" } },
+    params: { do: { type: "string", enum: ["fill", "logins"], description: "default fill" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
     required: ["tab"],
     hidden: true,
     run: bitwarden,

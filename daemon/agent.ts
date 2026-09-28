@@ -50,6 +50,7 @@ export type AgentConfig = {
 const SYSTEM_PROMPT = `You are a browser agent controlling Safari on macOS through tools.
 
 Rules:
+- Every page tool needs tab: the tab the task names, or the id open returned. With neither, open the page in the background first.
 - Call snapshot first to see the page. Elements are listed as "[ref] role "name" {state}".
 - Click and type by ref. Refs go stale after navigation; re-snapshot then.
 - After every click or type, call snapshot (or info + extract) to observe the result before acting again.
@@ -135,7 +136,7 @@ function toolSchemas() {
 export function firstMessages(task: string, tab?: number): ChatMsg[] {
   return [
     { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: tab ? `${task}\n(start in tab ${tab}; omit tab unless switching)` : task },
+    { role: "user", content: tab ? `${task}\n(work in tab ${tab}: pass tab ${tab} to every page tool unless you open another)` : task },
   ];
 }
 

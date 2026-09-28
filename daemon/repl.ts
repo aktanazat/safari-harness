@@ -20,7 +20,7 @@ export const REPL_TIMEOUT_MS = 120_000;
 
 export type ReplResult = { output: string; error?: string };
 
-type TabRow = { id: number; url?: string; title?: string; active?: boolean };
+type TabRow = { id: number; url?: string; title?: string; active?: boolean; front?: boolean };
 type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; newTab?: TabRow; dialogs?: unknown[] };
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
@@ -591,7 +591,7 @@ export class ReplSession {
   }
 
   async attachActiveBrowserTab(): Promise<Page> {
-    const row = ((await this.call("tabs")) as TabRow[]).find((r) => r.active);
+    const row = ((await this.call("tabs")) as TabRow[]).find((r) => r.front);
     if (!row) throw new Error("Safari has no front tab");
     return this.attachBrowserTab(row.id);
   }

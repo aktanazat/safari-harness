@@ -2,20 +2,20 @@
 // safari — drive Safari from the terminal, aside-cli style.
 //
 //   safari tabs
-//   safari open https://example.com
-//   safari snapshot
-//   safari click 12
-//   safari type 14 "hello"
-//   safari eval "document.title"
-//   safari extract
-//   safari shot
+//   safari open https://example.com --bg      # prints the tab's id, say 7
+//   safari snapshot --tab 7
+//   safari click 12 --tab 7
+//   safari type 14 "hello" --tab 7
+//   safari eval "document.title" --tab 7
+//   safari extract --tab 7
+//   safari shot --tab 7
 //   safari repl "const p = await openTab('https://example.com'); console.log(await p.title())"
 //   safari do "find the price of X on example.com"
 //   safari serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
-import { TOOLS, formatResult, type Tool } from "../daemon/tools.ts";
+import { basename, resolve } from "node:path";
+import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
@@ -35,51 +35,56 @@ const USAGE = `safari — drive Safari from the terminal
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
   safari tabs                                list tabs
-  safari open <url> [--bg]                   open a tab
-  safari goto <url> [--tab N]                navigate
-  safari back|forward|reload [--tab N]       history
+  safari open <url> [--bg] [--keep]          open a tab; prints its id
+  safari goto <url> --tab N                  navigate
+  safari back|forward|reload --tab N         history
   safari close <tab>                         close a tab
   safari focus <tab>                         activate a tab
-  safari snapshot [--tab N] [--query text] [--root sel] [--diff]
+  safari snapshot --tab N [--query text] [--root sel] [--diff]
                                              page outline with [ref]s
-  safari click <ref> [--tab N]               click by snapshot ref
-  safari clickat <x> <y> [--tab N]           click by coordinates
-  safari type <ref> <text> [--tab N]         type by ref
-  safari press <key> [--ref R] [--tab N]     press a key
-  safari select <ref> <option> [--tab N]     choose a dropdown option
-  safari hover <ref> [--tab N]               hover an element
-  safari upload <file>... [--ref R] [--tab N]
+  safari click <ref> --tab N                 click by snapshot ref
+  safari clickat <x> <y> --tab N             click by coordinates
+  safari type <ref> <text> --tab N           type by ref
+  safari press <key> [--ref R] --tab N       press a key
+  safari select <ref> <option> --tab N       choose a dropdown option
+  safari hover <ref> --tab N                 hover an element
+  safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
-  safari scroll <dy> [--tab N]               scroll
+  safari scroll <dy> --tab N                 scroll
+
+  Page commands need --tab N, the id open printed, or --tab front for the
+  tab the user has in front. Background tabs a command opens (--bg) close
+  once the program that ran safari exits; --keep leaves them open.
 
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
-  safari eval <js-expression> [--tab N] [--page]
+  safari eval <js-expression> --tab N [--page]
                                              evaluate JS, print JSON
-  safari extract [--tab N] [--selector s]    readable text
-  safari info [--tab N]                      url/title/scroll
-  safari wait <ms> [--tab N]                 sleep in the page
-  safari wait [--selector s] [--text t] [--ms timeout] [--tab N] [--front]
+  safari extract --tab N [--selector s]      readable text
+  safari info --tab N                        url/title/scroll
+  safari wait <ms> --tab N                   sleep in the page
+  safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
-  safari net start|stop|read [--tab N]       fetch/XHR capture
-  safari console start|read [--tab N]        console capture
-  safari cookies [--tab N]                   cookies for the page
-  safari shot [--tab N] [--out file.png] [--ref R] [--annotate] [--full]
+  safari net start|stop|read --tab N         fetch/XHR capture
+  safari console start|read --tab N          console capture
+  safari cookies --tab N                     cookies for the page
+  safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]
                                              screenshot what the tab shows
-  safari download <ref|url> [--out file] [--tab N]
+  safari download <ref|url> [--out file] --tab N
                                              save a file into ~/Downloads
-  safari dialog [read|accept|dismiss] [text] [--tab N]
+  safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
-  safari fetch <url> [--tab N]               request a URL with the page's cookies
+  safari fetch <url> --tab N                 request a URL with the page's cookies
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
+                                             (a file.pdf needs no tab)
   safari window <width> <height> --tab N     give a tab its own window at that size
   safari history-search [text]               search Safari browsing history
-  safari fill address [--label home] [--tab N]
+  safari fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card
-  safari fill login [--bitwarden] [--user name] [--tab N]
+  safari fill login [--bitwarden] [--user name] --tab N
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
@@ -150,7 +155,8 @@ function hasFlag(name: string, argv: string[]): boolean {
 
 function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
-  return t !== undefined ? { tab: Number(t) } : {};
+  if (t === undefined) return {};
+  return { tab: t === "front" ? t : Number(t) };
 }
 
 // The tool a command runs, where its name differs.
@@ -187,16 +193,6 @@ function commandHelp(cmd: string): string | null {
   const params = Object.entries(def.params).map(([name, p]) =>
     `  --${name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${def.required?.includes(name) ? " (required)" : ""}\n      ${p.description}`);
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
-}
-
-// --tab, else the tab in front.
-async function tabOrFront(argv: string[]): Promise<number> {
-  const t = flag("tab", argv);
-  if (t !== undefined) return Number(t);
-  const tabs = (await invoke("tabs", {})) as { id: number; active?: boolean }[];
-  const front = tabs.find((x) => x.active);
-  if (!front) throw new Error("Safari has no front tab; pass --tab N");
-  return front.id;
 }
 
 async function readStdin(): Promise<string> {
@@ -319,7 +315,7 @@ async function replCommand(argv: string[]) {
 async function fillCommand(argv: string[]) {
   const what = argv.find((a, i) => !a.startsWith("--") && !isFlagValue(i, argv));
   await connectHost(flag("host", argv));
-  const tab = await tabOrFront(argv);
+  const { tab } = tabArg(argv);
   if (what === "address") return print(await invoke("fill_address", { tab, label: flag("label", argv), root: flag("root", argv) }));
   if (what === "login") {
     const username = flag("user", argv);
@@ -422,7 +418,7 @@ async function main() {
     if (!task) fail("usage: safari do \"<task>\" [--tab N] [--steps N] [--model m]", 2);
     const tab = flag("tab", rest);
     const rec = await newSession(task, {
-      tab: tab === undefined ? undefined : Number(tab),
+      tab: tab === undefined ? undefined : await resolveTab(tab, async () => (await invoke("tabs", {})) as TabInfo[]),
       host,
       model: flag("model", rest) ?? process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
       baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1",
@@ -565,11 +561,37 @@ async function main() {
     }
   }
 
+  // Tabs a command opens in the background close once the program that ran
+  // safari exits (the daemon watches it); --keep leaves them open. Another
+  // Mac's daemon cannot see this Mac's processes.
+  if (host === "local" && !hasFlag("keep", rest)) {
+    const opens = tool === "open" ? [args] : tool === "run" && Array.isArray(args.steps)
+      ? args.steps.flatMap((s: unknown) => s && typeof s === "object" && "tool" in s && s.tool === "open" && "args" in s && s.args && typeof s.args === "object" ? [s.args as Record<string, unknown>] : [])
+      : [];
+    const owner = opens.length ? ownerPid() : undefined;
+    if (owner !== undefined) for (const o of opens) o.owner = owner;
+  }
+
   print(await invoke(tool, args));
 }
 
+// The program that ran this command: the first ancestor that is not a
+// shell. A shell that ran one command ends with it; omp, claude, codex, a
+// script, or a terminal's login session lasts as long as the work does.
+const SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, fish: true, ksh: true, tcsh: true, csh: true };
+
+function ownerPid(): number | undefined {
+  for (let pid = process.ppid; pid > 1;) {
+    const row = /^\s*(\d+)\s+(.+?)\s*$/.exec(Bun.spawnSync(["ps", "-o", "ppid=,comm=", "-p", String(pid)]).stdout.toString());
+    if (!row) return undefined;
+    if (!SHELLS[basename(row[2]).replace(/^-/, "")]) return pid;
+    pid = Number(row[1]);
+  }
+  return undefined;
+}
+
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

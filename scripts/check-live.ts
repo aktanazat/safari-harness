@@ -8,10 +8,12 @@
 // any site's markup changing.
 
 import { CALLER_TOOLS } from "../daemon/caller.ts";
+import { invoke } from "../daemon/call.ts";
+import { inFront } from "../daemon/front.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
 
-type Tab = { id: number; active: boolean };
+type Tab = { id: number; active: boolean; front?: boolean };
 
 async function call(tool: string, args: Record<string, unknown> = {}): Promise<any> {
   const res = await fetch(HTTP, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, args }) });
@@ -49,7 +51,7 @@ async function withPage(html: string, setup: string, body: (tab: number) => Prom
   }
 }
 
-const front = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+const front = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
 
 // ---------- actions ----------
 
@@ -105,7 +107,7 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const opened = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
   check("a click that opens a tab reports newTab", opened.newTab?.url === "https://example.org/", opened);
   if (opened.newTab) await call("close", { tab: opened.newTab.id });
-  const activeNow = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+  const activeNow = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   check("a new tab from a background tab leaves the user's tab in front", activeNow === front, { front, activeNow });
 
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
@@ -155,6 +157,28 @@ for (const t of left2) await call("close", { tab: t.id });
 check("a failed run still runs its close step",
   left2.length === 0 && cleaned.notRun === 1 && cleaned.steps.at(-1)?.tool === "close" && cleaned.steps.at(-1)?.step === 4 && cleaned.steps.at(-1)?.error === undefined,
   { cleaned, left2 });
+
+// ---------- which tab ----------
+
+// On 09-28 an agent that left out tab read the user's MyChart page.
+const untargeted = await call("snapshot", {}).then(() => "resolved", (e: Error) => e.message);
+check("a page tool without tab is an error, not a read of the front tab", untargeted.startsWith("snapshot: tab is required"), untargeted);
+
+// Brings Safari to the front for a moment, then gives back the app and tab
+// that were in front. A failure prints only whose tab it was: the other
+// is the user's.
+const TAB_OPS = { tabs: () => call("tabs") as Promise<Tab[]>, activate: (tab: number) => call("activate", { tab }) };
+await withPage("<p>front check</p>", 'document.title = "front check"', async (tab) => {
+  const named = await inFront(tab, TAB_OPS, () => call("info", { tab: "front" }));
+  check('tab "front" names the tab in front', named.title === "front check", named.title === "front check" ? "ours" : "another tab");
+});
+
+const closed = (await call("open", { url: "https://example.com/", background: true })).id as number;
+await call("close", { tab: closed });
+const closeStart = Date.now();
+const closedAgain = await call("close", { tab: closed }).then(() => "resolved", (e: Error) => e.message);
+const closeMs = Date.now() - closeStart;
+check("closing a tab that is gone says so at once", closedAgain.startsWith("close: that tab is gone") && closeMs < 5000, { closedAgain, closeMs });
 
 // ---------- acting without a snapshot ----------
 
@@ -554,9 +578,21 @@ await withPage(TRUST, "", async (tab) => {
   await CALLER_TOOLS.real_input.run({ tab, do: "type", ref: "#f", text: "abc" });
   await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
   const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;
-  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === front, { typed, nowFront, front });
 });
+
+// run takes every tool: a real_input step runs in this process, and the run
+// goes step by step from here.
+const mixed = await invoke("run", { steps: [
+  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "eval", args: { expression: `(() => { document.body.innerHTML = ${JSON.stringify(TRUST)}; return 1; })()` } },
+  { tool: "real_input", args: { do: "click", ref: "#b" } },
+  { tool: "eval", args: { expression: "document.getElementById('b').dataset.trusted" } },
+  { tool: "close" },
+] });
+const mixedSteps = mixed && typeof mixed === "object" && "steps" in mixed && Array.isArray(mixed.steps) ? mixed.steps : [];
+check("run takes a real_input step", mixedSteps.length === 5 && mixedSteps.every((s) => s.error === undefined) && mixedSteps[3].value?.result === "true", mixed);
 
 // A tab it opened runs its scripts while hidden but draws only on screen: a
 // CSS animation ends once the tab is shown. The daemon runs wait's front
@@ -570,7 +606,7 @@ const SHOWN_JS = `document.getElementById("out").addEventListener("animationend"
 await withPage(SHOWN, SHOWN_JS, async (tab) => {
   const hidden = await call("wait", { tab, text: "Now drawn", ms: 1500 });
   const shown = await call("wait", { tab, text: "Now drawn", ms: 5000, front: true });
-  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
+  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   check("wait front shows a hidden tab until it draws, then gives the front tab back", !hidden.found && shown.found && nowFront === front, { hidden, shown, nowFront, front });
 });
 
@@ -579,6 +615,37 @@ await withPage(SHOWN, SHOWN_JS, async (tab) => {
 // Runs in this process: reading History.db needs the terminal's Full Disk Access.
 const visits = (await CALLER_TOOLS.browsing_history.run({ text: "example.com", days: 1 })) as { url: string }[];
 check("browsing_history finds the page these checks just opened", visits.some((v) => v.url.startsWith("https://example.com/")), visits.slice(0, 3));
+
+// ---------- tabs close with the program that opened them ----------
+
+// Here that program is a bun process that runs the CLI and exits. The
+// daemon looks every 5 s, so the tab is gone within about 10 s; the --keep
+// tab must outlive a look after that.
+const CLI = new URL("../cli/safari.ts", import.meta.url).pathname;
+async function openFromChild(keep: boolean): Promise<number> {
+  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json", ...(keep ? ["--keep"] : [])];
+  const child = Bun.spawn([process.execPath, "-e", `const r = Bun.spawnSync(${JSON.stringify(argv)}); process.stdout.write(r.stdout); process.stderr.write(r.stderr)`], { stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  await child.exited;
+  const opened: unknown = JSON.parse(out || "null");
+  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "number") throw new Error(`safari open failed: ${err.trim() || out}`);
+  return opened.id;
+}
+const tabIds = async () => new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const [owned, kept] = await Promise.all([openFromChild(false), openFromChild(true)]);
+try {
+  let ownedLeft = true;
+  for (let waited = 0; ownedLeft && waited < 15000; waited += 1000) {
+    await Bun.sleep(1000);
+    ownedLeft = (await tabIds()).has(owned);
+  }
+  await Bun.sleep(6000);
+  const keptLeft = (await tabIds()).has(kept);
+  check("a background tab closes once the program that opened it exits, unless --keep", !ownedLeft && keptLeft, { ownedLeft, keptLeft });
+} finally {
+  const left = await tabIds();
+  for (const t of [owned, kept]) if (left.has(t)) await call("close", { tab: t });
+}
 
 // ---------- snapshot size ----------
 
