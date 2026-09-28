@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { bridge, type ExtSocket } from "./bridge.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { openTab } from "./tools.ts";
 
 type Tab = { id: number; url: string; windowId: number; active: boolean };
@@ -9,6 +9,10 @@ type Tab = { id: number; url: string; windowId: number; active: boolean };
 function safari() {
   const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", windowId: 1, active: true }]]);
   const closed: number[] = [];
+  // What the extension maps the ids it had before a reload to (adopt in
+  // background.js).
+  const oldTabs = new Map<number, number>();
+  const oldWindows = new Map<number, number>();
   let next = 100;
   const ops: Record<string, (args: unknown[]) => unknown> = {
     "tabs.list": () => [...tabs.values()],
@@ -22,9 +26,14 @@ function safari() {
       tabs.set(t.id, t);
       return { windowId: t.windowId, tabId: t.id };
     },
+    "windows.resolve": ([id]) => {
+      const now = oldWindows.get(id as number) ?? (id as number);
+      return [...tabs.values()].some((t) => t.windowId === now) ? now : null;
+    },
     "tabs.close": ([id]) => {
-      tabs.delete(id as number);
-      closed.push(id as number);
+      const now = oldTabs.get(id as number) ?? (id as number);
+      tabs.delete(now);
+      closed.push(now);
       return { ok: true };
     },
   };
@@ -36,7 +45,17 @@ function safari() {
     close() {},
   };
   bridge.attach(sock);
-  return { tabs, closed };
+  // The extension reloads: every tab and window gets a new id.
+  const reload = () => {
+    const was = [...tabs.values()];
+    tabs.clear();
+    for (const t of was) {
+      if (!oldWindows.has(t.windowId)) oldWindows.set(t.windowId, next++);
+      oldTabs.set(t.id, next++);
+      tabs.set(oldTabs.get(t.id)!, { ...t, id: oldTabs.get(t.id)!, windowId: oldWindows.get(t.windowId)! });
+    }
+  };
+  return { tabs, closed, sock, reload, oldTabs };
 }
 
 // An agent process, to open tabs for and then end.
@@ -53,6 +72,9 @@ async function until(ok: () => boolean, ms = 4000) {
   }
 }
 
+// The page a window opens on, which names its assignment.
+const pageIn = (tabs: Map<number, Tab>, window: number | undefined) => [...tabs.values()].find((t) => t.windowId === window && t.url.includes("/space?"));
+
 test("each agent's tabs open in a window of its own, never the user's, and a task's later tabs join its window", async () => {
   safari();
   const [a, b] = [agent(), agent()];
@@ -68,13 +90,13 @@ test("each agent's tabs open in a window of its own, never the user's, and a tas
   b.kill();
 });
 
-test("when an agent exits its window's blank tab closes, and a tab it opened for the user stays", async () => {
+test("when an agent exits its window's page closes, and a tab it opened for the user stays", async () => {
   const s = safari();
   const c = agent();
   const his = await runAs(c.pid, () => openTab("https://hotel.example/booking", false));
-  const blank = [...s.tabs.values()].find((t) => t.windowId === his.windowId && t.url === "about:blank")!;
+  const page = pageIn(s.tabs, his.windowId)!;
   c.kill();
-  await until(() => s.closed.includes(blank.id));
+  await until(() => s.closed.includes(page.id));
   expect(s.tabs.has(his.id)).toBe(true);
   expect(s.closed).not.toContain(his.id);
 });
@@ -89,3 +111,49 @@ test("an agent whose window the user closed gets a new one on its next open", as
   expect(next.windowId).not.toBe(1);
   d.kill();
 });
+
+// A deploy reloads the extension, and Safari renumbers every window: before,
+// the agent's next tab went into a second window, and the first one's page
+// stayed open for good.
+test("after an extension reload an agent's next tab joins the window it had, whose page still closes when it exits", async () => {
+  const s = safari();
+  const e = agent();
+  const first = await runAs(e.pid, () => openTab("https://e.example/1", true));
+  s.reload();
+  const window = s.tabs.get(s.oldTabs.get(first.id)!)!.windowId;
+  const next = await runAs(e.pid, () => openTab("https://e.example/2", true));
+  expect(next.windowId).toBe(window);
+  const page = pageIn(s.tabs, window)!;
+  e.kill();
+  await until(() => s.closed.includes(page.id));
+});
+
+// He quit Safari: asking it anything would start it again. An exited
+// agent's page then waits, unasked, for the extension to come back.
+test("an agent's exit asks nothing of a quit Safari, and its window's page closes once Safari is back", async () => {
+  const s = safari();
+  const f = agent();
+  const first = await runAs(f.pid, () => openTab("https://f.example/1", true));
+  const page = pageIn(s.tabs, first.windowId)!;
+  bridge.detach(s.sock);
+  const request = bridge.request;
+  const asked: unknown[] = [];
+  bridge.request = (...args: Parameters<typeof request>) => {
+    asked.push(args[0]);
+    return Promise.reject(new Error("Safari is quit"));
+  };
+  try {
+    const marker = Bun.spawnSync(["true"]).pid;
+    f.kill();
+    // one owner sweep calls the watches in turn: the window's came first
+    await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+    expect(asked).toEqual([]);
+  } finally {
+    bridge.request = request;
+    bridge.attach(s.sock);
+  }
+  // The next space sweep closes it, within 5 s on the real clock: the sweep
+  // runs on an interval the first open of this file started, before any fake
+  // clock could take it over.
+  await until(() => s.closed.includes(page.id), 8000);
+}, 15_000);

@@ -12,6 +12,7 @@
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
 //     /shutdown      {reason} stop once the calls in flight finish
+//     /space         the page an agent window opens on (spaces.ts)
 
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,7 @@ import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent } from "./journal.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
+import { spacePage } from "./spaces.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -188,6 +190,7 @@ const rpcServer = Bun.serve({
       void stop(typeof reason === "string" && reason ? reason : "shutdown requested", SHUTDOWN_DRAIN_MS);
       return Response.json({ ok: true, inFlight });
     }
+    if (url.pathname === "/space" && req.method === "GET") return spacePage(url);
     return new Response("not found", { status: 404 });
   },
 });

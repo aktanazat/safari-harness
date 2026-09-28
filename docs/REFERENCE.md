@@ -39,9 +39,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - Every tab you open goes into a Safari window of your own, opened behind
   his without taking focus, never into his windows or tab groups. `group` on
   `open` (CLI `--group trip`) gives one task a window of its own; without it
-  all your tabs share one. When your process exits, or the window has held
-  only its blank tab for two minutes, the blank tab closes: the window goes
-  with your last tab, and a tab you opened in front stays there for him.
+  all your tabs share one. The window opens on a page titled with the task's
+  name (the group, or "agent", and your process id), which labels it for him
+  and keeps it yours when the extension reloads. When your process exits, or
+  the window has held only that page for two minutes, the page closes: the
+  window goes with your last tab, and a tab you opened in front stays there
+  for him.
 - Close your tab with `close` when the task ends, on success or failure.
   Background tabs you opened (and tabs they opened) close within a few
   seconds after your agent process exits (omp, claude, codex, a bun or
