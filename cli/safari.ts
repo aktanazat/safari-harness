@@ -109,6 +109,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
   safari routine list | run <name> | remove <name>
                                              scheduled tasks run through omp
+  safari routine add <name> --at HH:MM|--every MIN --watch <url>
+                      --selector CSS | --text REGEX | --eval JS | --replay <recording>
+                                             a watch: no model; texts your phone when the
+                                             value it reads off the page changes
 
   safari guide sites                         sites with a usage guide
   safari guide <site|host>                   one site's guide (e.g. slack, x.com)
@@ -124,10 +128,13 @@ const USAGE = `safari — drive Safari from the terminal
   safari imessage send <to> <text> [--approved]
                                              draft a text; sends only with --approved
   safari contacts <name>                     phones and emails for a contact
+  safari ask "<question>" [--choices a,b,c] [--ms N]
+                                             away from the Mac, text your phone the question
+                                             and wait for the answer; at the Mac, send nothing
 
   Every command takes --host <ssh-host> to use another Mac's Safari, and
-  --json to print JSON. Messages, Contacts, history, and fill commands run
-  in this terminal (they need its Full Disk Access), not in the daemon.
+  --json to print JSON. Messages, Contacts, history, ask, and fill commands
+  run in this terminal (they need its Full Disk Access), not in the daemon.
   A command's parameters also work as flags (click --ref 3 is click 3), and
   safari <command> --help lists them.
 `;
@@ -374,15 +381,19 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
-    const { parseSchedule, routineAdd, routineList, routineRemove, routineRun } = await import("./launchd.ts");
+    const { parseSchedule, routineAdd, routineAddWatch, routineList, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
       const schedule = parseSchedule(flag("at", r), flag("every", r));
-      console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      const url = flag("watch", r);
+      if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      else if (pos.length > 1) fail("a watch runs no model, so it takes no task");
+      else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, schedule));
     } else if (sub === "list") {
       print(await routineList());
     } else if (sub === "run") {
-      const { code, log } = await routineRun(pos[0]);
+      const { code, log, note } = await routineRun(pos[0]);
+      if (note !== undefined) console.log(note);
       console.log(`exit ${code}; log: ${log}`);
       process.exit(code);
     } else if (sub === "remove") {
@@ -456,6 +467,18 @@ async function main() {
     if (!call) fail("usage: safari imessage chats|history|search|code|send …, or safari contacts <name>", 2);
     print(await invoke(...call));
     return;
+  }
+
+  // One tool call waits about 2 minutes for the answer; the command waits
+  // out all of ms.
+  if (cmd === "ask") {
+    const choices = flag("choices", rest)?.split(",").map((c) => c.trim()).filter(Boolean);
+    const ms = flag("ms", rest);
+    const args = { question: rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" "), ...(choices ? { choices } : {}), ...(ms === undefined ? {} : { ms: Number(ms) }) };
+    for (;;) {
+      const r = await invoke("ask", args);
+      if (!(r && typeof r === "object" && "waiting" in r)) return print(r);
+    }
   }
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));

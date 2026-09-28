@@ -1,14 +1,17 @@
 // launchd plumbing: keep the daemon always on, and run saved prompts
 // ("routines") on a schedule through headless omp, which reaches Safari
-// through the safari MCP tools.
+// through the safari MCP tools. A watch is a routine with no model: each
+// run reads one value off a page and texts the user when it changes
+// (daemon/watch.ts).
 
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
+import { lastValue, parseWatch, runWatch, stateFile, type How, type Watch } from "../daemon/watch.ts";
 
 const HOME = homedir();
 // The deployed release (scripts/dev-install.sh points it at the newest), so
@@ -153,15 +156,10 @@ function describe(s: Schedule): string {
     : `every ${s.everyMinutes} min`;
 }
 
-type RoutineMeta = { name: string; schedule: Schedule; model?: string; created: string };
+type RoutineMeta = { name: string; schedule: Schedule; model?: string; created: string; watch?: Watch };
 
-export async function routineAdd(name: string | undefined, prompt: string, schedule: Schedule, model?: string): Promise<string> {
-  const n = checkName(name);
-  if (!prompt.trim()) throw new Error("routine needs a task prompt");
-  await mkdir(ROUTINES, { recursive: true });
-  await writeFile(join(ROUTINES, `${n}.md`), PREAMBLE + prompt.trim() + "\n");
-  const meta: RoutineMeta = { name: n, schedule, model, created: new Date().toISOString() };
-  await writeFile(join(ROUTINES, `${n}.json`), JSON.stringify(meta, null, 2) + "\n");
+// launchd runs `safari routine run <name>` from the deployed release.
+async function scheduleRoutine(n: string, schedule: Schedule): Promise<void> {
   const body = plist(
     ROUTINE_PREFIX + n,
     [process.execPath, join(CURRENT, "cli", "safari.ts"), "routine", "run", n],
@@ -170,10 +168,34 @@ export async function routineAdd(name: string | undefined, prompt: string, sched
   );
   await mkdir(join(LOGS, "routines"), { recursive: true });
   await load(ROUTINE_PREFIX + n, body);
+}
+
+export async function routineAdd(name: string | undefined, prompt: string, schedule: Schedule, model?: string): Promise<string> {
+  const n = checkName(name);
+  if (!prompt.trim()) throw new Error("routine needs a task prompt");
+  await mkdir(ROUTINES, { recursive: true });
+  await writeFile(join(ROUTINES, `${n}.md`), PREAMBLE + prompt.trim() + "\n");
+  const meta: RoutineMeta = { name: n, schedule, model, created: new Date().toISOString() };
+  await writeFile(join(ROUTINES, `${n}.json`), JSON.stringify(meta, null, 2) + "\n");
+  await scheduleRoutine(n, schedule);
   return `routine ${n} scheduled ${describe(schedule)}; prompt: ${join(ROUTINES, `${n}.md`)}`;
 }
 
-export async function routineList(): Promise<Array<{ name: string; schedule: string; loaded: boolean; lastRun?: string }>> {
+// A watch starts over when added again: its first run records the value
+// and texts nothing, so a changed selector never reads as news.
+export async function routineAddWatch(name: string | undefined, url: string, reads: Partial<Record<How, string>>, schedule: Schedule): Promise<string> {
+  const n = checkName(name);
+  if (existsSync(join(ROUTINES, `${n}.md`))) throw new Error(`routine ${n} runs a model; remove it first, or give the watch another name`);
+  const watch = await parseWatch(url, reads);
+  await mkdir(ROUTINES, { recursive: true });
+  const meta: RoutineMeta = { name: n, schedule, created: new Date().toISOString(), watch };
+  await writeFile(join(ROUTINES, `${n}.json`), JSON.stringify(meta, null, 2) + "\n");
+  await rm(stateFile(n), { force: true });
+  await scheduleRoutine(n, schedule);
+  return `watch ${n} scheduled ${describe(schedule)}: ${watch.how} ${watch.what} on ${url}`;
+}
+
+export async function routineList(): Promise<Array<{ name: string; schedule: string; loaded: boolean; watch?: string; lastValue?: string; lastRun?: string }>> {
   if (!existsSync(ROUTINES)) return [];
   const files = (await readdir(ROUTINES)).filter((f) => f.endsWith(".json"));
   const rows = [];
@@ -185,6 +207,7 @@ export async function routineList(): Promise<Array<{ name: string; schedule: str
       name: meta.name,
       schedule: describe(meta.schedule),
       loaded,
+      ...(meta.watch ? { watch: `${meta.watch.how} ${meta.watch.what} on ${meta.watch.url}`, lastValue: lastValue(meta.name) } : {}),
       lastRun: existsSync(last) ? (await readFile(last, "utf8")).trim() : undefined,
     });
   }
@@ -194,6 +217,10 @@ export async function routineList(): Promise<Array<{ name: string; schedule: str
 export async function routineRemove(name: string | undefined): Promise<string> {
   const n = checkName(name);
   const had = await unload(ROUTINE_PREFIX + n);
+  const metaPath = join(ROUTINES, `${n}.json`);
+  const meta = existsSync(metaPath) ? (JSON.parse(await readFile(metaPath, "utf8")) as RoutineMeta) : undefined;
+  // a watch's state is its own; a model routine's is the model's to keep
+  if (meta?.watch) await rm(stateFile(n), { force: true });
   for (const ext of ["md", "json"]) {
     const p = join(ROUTINES, `${n}.${ext}`);
     if (existsSync(p)) await unlink(p);
@@ -201,18 +228,26 @@ export async function routineRemove(name: string | undefined): Promise<string> {
   return had ? `routine ${n} removed` : `routine ${n} had no schedule; files cleared`;
 }
 
-// Runs one routine now, in the foreground: headless omp with the saved prompt.
-// Output goes to a timestamped log; `<name>.last` records the latest outcome.
-export async function routineRun(name: string | undefined): Promise<{ code: number; log: string }> {
+// Runs one routine now, in the foreground: headless omp with the saved
+// prompt, or a watch's read. Output goes to a timestamped log;
+// `<name>.last` records the latest outcome.
+export async function routineRun(name: string | undefined): Promise<{ code: number; log: string; note?: string }> {
   const n = checkName(name);
   const promptPath = join(ROUTINES, `${n}.md`);
   const metaPath = join(ROUTINES, `${n}.json`);
-  if (!existsSync(promptPath) || !existsSync(metaPath)) throw new Error(`no routine named ${n}`);
+  if (!existsSync(metaPath)) throw new Error(`no routine named ${n}`);
   const meta = JSON.parse(await readFile(metaPath, "utf8")) as RoutineMeta;
+  if (!meta.watch && !existsSync(promptPath)) throw new Error(`no routine named ${n}`);
   const dir = join(LOGS, "routines");
   await mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const log = join(dir, `${n}-${stamp}.log`);
+  if (meta.watch) {
+    const { code, note } = await runWatch(n, meta.watch).catch((e: Error) => ({ code: 1, note: e.message }));
+    await writeFile(log, `${note}\n`);
+    await writeFile(join(dir, `${n}.last`), `${new Date().toISOString()} exit ${code} ${log}\n`);
+    return { code, log, note };
+  }
   const args = ["-p", "--mode", "text", "--auto-approve", "--no-session", "--max-time", "30m"];
   if (meta.model) args.push("--model", meta.model);
   args.push(`@${promptPath}`);
