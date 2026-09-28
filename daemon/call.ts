@@ -10,6 +10,7 @@ import { keeperRunning } from "./groups.ts";
 import { beside, checkCall, nameIn } from "./guard.ts";
 import { rpc } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
+import { secretType, typeSecret } from "./secret.ts";
 import { TOOLS, runSteps } from "./tools.ts";
 
 export type Invoke = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -17,15 +18,16 @@ export type Invoke = (tool: string, args: Record<string, unknown>) => Promise<un
 const CALLER_NAMES = Object.keys(CALLER_TOOLS);
 const DAEMON_NAMES = Object.keys(TOOLS);
 
-// A call that runs in this process: a caller tool, or a run with one among
-// its steps, however a model wrote their names (browsing-history).
+// A call that runs in this process: a caller tool, a type that fills in a
+// code (secret.ts), or a run with one among its steps, however a model
+// wrote their names (browsing-history).
 export function runsHere(tool: string, args: Record<string, unknown>): boolean {
-  return callerSteps(tool, args) || nameIn(CALLER_NAMES, tool) !== undefined;
+  return callerSteps(tool, args) || nameIn(CALLER_NAMES, tool) !== undefined || secretType(tool, args);
 }
 
 function callerSteps(tool: string, args: Record<string, unknown>): boolean {
   const steps = args.steps;
-  return tool === "run" && Array.isArray(steps) && steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && nameIn(CALLER_NAMES, s.tool) !== undefined);
+  return tool === "run" && Array.isArray(steps) && steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && runsHere(s.tool, "args" in s && s.args && typeof s.args === "object" ? (s.args as Record<string, unknown>) : {}));
 }
 
 // model: the call is one a model wrote. The daemon checks the calls it
@@ -34,6 +36,7 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   // The daemon cannot run a caller tool, so a run with one among its steps
   // goes step by step from here, each step where it runs.
   if (callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model));
+  if (secretType(tool, args)) return typeSecret(checkCall(TOOLS, tool, args, model).args, model);
   if (nameIn(CALLER_NAMES, tool) === undefined) {
     const result = await rpc(tool, args, model);
     claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);

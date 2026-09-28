@@ -41,7 +41,7 @@ benchRows("content.js page data, eval, and editors in WebKit", [
     page: "editor.html",
     steps: [
       { op: "snapshot" }, // [1] Message
-      { op: "type", args: ["1", "New text"], answer: { value: { ok: true, value: "New text" } } },
+      { op: "type", args: ["1", "New text"], answer: { value: { ok: true, kept: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Editor holds: New text.") } } },
     ],
   },
@@ -50,7 +50,7 @@ benchRows("content.js page data, eval, and editors in WebKit", [
     page: "editor.html",
     steps: [
       { op: "snapshot" }, // [1] Message
-      { op: "type", args: ["1", ""], answer: { value: { ok: true, value: "" } } },
+      { op: "type", args: ["1", ""], answer: { value: { ok: true, kept: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Editor holds: .") } } },
     ],
   },
@@ -59,7 +59,7 @@ benchRows("content.js page data, eval, and editors in WebKit", [
     page: "editor.html",
     steps: [
       { op: "snapshot" }, // [1] Message
-      { op: "type", args: ["1", " and more", { append: true }], answer: { value: { ok: true, value: "Old notes and more" } } },
+      { op: "type", args: ["1", " and more", { append: true }], answer: { value: { ok: true, kept: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Editor holds: Old notes and more.") } } },
     ],
   },

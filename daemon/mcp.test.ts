@@ -56,8 +56,11 @@ import { expect, test } from "bun:test";
 // sh helpers (70) brought it to 21,248: code reaches into shadow roots and
 // reads JSON-LD without walking the page by hand. Saying that refs outlast
 // redraws (4) brought it to 21,252: a ref whose element the page drew anew
-// still works, so an agent acts on it without another snapshot.
-const TOOL_LIST_MAX_BYTES = 21_252;
+// still works, so an agent acts on it without another snapshot. Private
+// tabs, texted codes typed unseen, and pairing on the Mac (289) brought it
+// to 21,541: an agent gets its own tabs and a count of his, where it once
+// listed his whole Safari six times over, and never sees a code.
+const TOOL_LIST_MAX_BYTES = 21_541;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
