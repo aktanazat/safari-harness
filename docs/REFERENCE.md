@@ -260,6 +260,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   tab.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
+- `type` and `select` on a label's ref act on the field it labels.
 - `hover` opens menus that appear on mouse-over.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has

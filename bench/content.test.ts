@@ -43,6 +43,22 @@ benchRows("content.js in WebKit", [
     }],
   },
   {
+    name: "typing on a label's ref types into the field it labels",
+    page: "form.html",
+    steps: [
+      { op: "snapshot" }, // [1] label "Email"
+      { op: "type", args: ["1", "grace@example.com"], answer: { value: { ok: true, value: "grace@example.com" } } },
+    ],
+  },
+  {
+    name: "select on a label's ref picks from the list it labels",
+    page: "form.html",
+    steps: [
+      { op: "snapshot" }, // [7] label "Plan"
+      { op: "select", args: ["7", "Free"], answer: { value: { ok: true, value: "Free" } } },
+    ],
+  },
+  {
     name: "a snapshot reads a srcdoc frame as part of the page, as Safari runs no script in one",
     page: "srcdoc.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] iframe "Inline"\n  Inline frame text\n  [2] button "Inline button"' } } }],

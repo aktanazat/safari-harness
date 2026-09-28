@@ -629,6 +629,13 @@
     return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
   }
 
+  // A label stands for its field. The snapshot gives a label that wraps its
+  // field a ref of its own; typing into that ref or picking an option on it
+  // means the field.
+  function fieldOf(el) {
+    return el && el.tagName === "LABEL" && el.control ? el.control : el;
+  }
+
   // isVisible alone passes the children of a display:none parent, because
   // the snapshot never walks into one; a target found by search must also
   // have a box on the page.
@@ -662,7 +669,7 @@
       if (textOf(el, want.length + 1).toLowerCase() === want && shown(el)) found = el;
     }
     found ??= partial;
-    return found && found.tagName === "LABEL" && found.control ? found.control : found;
+    return fieldOf(found);
   }
 
   function missing(target) {
@@ -768,7 +775,7 @@
   }
 
   function selectOption(ref, choice) {
-    const el = resolve(ref);
+    const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
     const options = [...el.options];
@@ -1001,7 +1008,7 @@
   }
 
   async function typeText(ref, text, opts = {}) {
-    const el = resolve(ref);
+    const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
