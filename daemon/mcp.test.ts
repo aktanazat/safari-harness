@@ -50,8 +50,10 @@ import { expect, test } from "bun:test";
 // away gets his answer or his skip from his phone instead of stalling until
 // he is back. Letting upload find the user's file (135) brought it to
 // 20,738: an agent asked him for an insurance card photo that was already
-// in his iCloud Drive.
-const TOOL_LIST_MAX_BYTES = 20_738;
+// in his iCloud Drive. Saying that refs outlast redraws (4) brought it to
+// 20,742: a ref whose element the page drew anew still works, so an agent
+// acts on it without another snapshot.
+const TOOL_LIST_MAX_BYTES = 20_742;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

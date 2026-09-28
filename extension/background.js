@@ -425,7 +425,17 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
       if (r && !(typeof r.error === "string" && MISS.test(r.error))) return r;
     }
   }
-  return res;
+  return frame || frameId === 0 ? res : prefixed(res, frameId);
+}
+
+// A ref of an embedded frame reads "f<frameId>:<ref>", and the frame's own
+// script knows only the ref: a stale ref it reports, or a heal it made,
+// gets the frame's prefix back, so the agent reads the ref it sent.
+function prefixed(res, frameId) {
+  if (res && typeof res.error === "string") return { ...res, error: res.error.replace(/^stale ref (\d+)/, `stale ref f${frameId}:$1`) };
+  const healed = res && res.value && res.value.healed;
+  if (!healed) return res;
+  return { ...res, value: { ...res.value, healed: { ref: `f${frameId}:${healed.ref}`, now: `f${frameId}:${healed.now}` } } };
 }
 
 // ---------- waiting in every frame ----------

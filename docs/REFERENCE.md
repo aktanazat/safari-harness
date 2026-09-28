@@ -183,8 +183,15 @@ Read with `snapshot` when you do not yet know what is on the page.
   sits. A link's address follows its name. Table cells join with ` | `.
   A control with no role (a span with a click handler) gets a ref when it
   shows a hand cursor and has a label, title, or test id.
-- Refs belong to one snapshot. After any click, typing, or navigation, take a
-  new snapshot before using refs again. Never guess a ref.
+- Refs belong to the page that gave them. A ref still works after the page
+  draws its element anew, as a framework does when it redraws a list or a
+  form: the action goes to the one element that looks the same, with the
+  same text beside it (one row's "Delete", not the next row's), and its
+  answer says `healed: {ref, now}`, where `now` is that element's new ref.
+  A ref is stale when its element left the page, when the page drew
+  several lookalikes in its place, and after the tab loads a new page:
+  take a new snapshot then. Take one after acting, too, to see what
+  changed. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
   Matching ignores case and reaches into frames. `a|b` returns lines
@@ -802,4 +809,6 @@ its own `safari` command.
 - `extension disconnected` on every call: two copies of the app are
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.
-- A ref no longer works: the page changed. Take a new snapshot.
+- "stale ref": the ref's element left the page, the page drew several
+  lookalikes in its place, or the tab loaded a new page. Take a new
+  snapshot.

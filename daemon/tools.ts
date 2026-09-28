@@ -820,7 +820,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
-    desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs expire when the page changes: snapshot again after acting.",
+    desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs outlast redraws; snapshot again to see what an action changed.",
     params: {
       tab: TAB,
       query: { type: "string", description: "only lines containing this text" },
