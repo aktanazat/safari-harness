@@ -10,7 +10,7 @@
   "scripts": {
     "serve": "bun daemon/main.ts serve",
     "mcp": "bun daemon/main.ts mcp",
-    "helpers": "swiftc -O scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O scripts/input.swift -o scripts/input && swiftc -O scripts/pairing.swift -o scripts/pairing",
+    "helpers": "swiftc -O scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O scripts/input.swift -o scripts/input && swiftc -O scripts/pairing.swift -o scripts/pairing && swiftc -O scripts/bench.swift -o scripts/bench",
     "check": "bun scripts/check-live.ts"
   }
 }
