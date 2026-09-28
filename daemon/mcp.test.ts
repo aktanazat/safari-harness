@@ -36,12 +36,26 @@ import { expect, test } from "bun:test";
 // after the user's Touch ID, and a session lets go of the pairing when done.
 // Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
-// one open for the user. The data tool (440) brought it to 18,470: a shop,
+// one open for the user. The learn tool (445) brought it to 18,475: an
+// agent keeps what it found out about a site (CVS's insurance-card flow, a
+// button that loads late) past compaction and for the next agent, instead
+// of spending the same turns finding it again. Saving a read to a file (544:
+// save on extract, snapshot, eval, and fetch) brought it to 19,019: a long
+// page costs the model its path and first 500 characters instead of its
+// whole text. Reading tables as rows (105: extract's as) brought it to
+// 19,124: a table or product list comes back as rows to use, not text to
+// parse. The map tool (870) brought it to 19,994: one call reads 20 pages
+// that took 20 runs or 60 calls. The ask tool (539) and handoff naming the
+// replies skip and stop (70) brought it to 20,603: an agent whose user is
+// away gets his answer or his skip from his phone instead of stalling until
+// he is back. Letting upload find the user's file (135) brought it to
+// 20,738: an agent asked him for an insurance card photo that was already
+// in his iCloud Drive. The data tool (440) brought it to 21,178: a shop,
 // recipe, or article page's own JSON (price, stock, author) comes back in
 // one call, where a snapshot and a guessed eval took several. Naming eval's
-// sh helpers (70) brought it to 18,540: code reaches into shadow roots and
+// sh helpers (70) brought it to 21,248: code reaches into shadow roots and
 // reads JSON-LD without walking the page by hand.
-const TOOL_LIST_MAX_BYTES = 18_540;
+const TOOL_LIST_MAX_BYTES = 21_248;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

@@ -6,9 +6,10 @@ import { join } from "node:path";
 // Every CLI command and every MCP session starts a bun process, and each
 // module it imports adds to that start. A tool call needs the tools, not
 // the modules of the repl (node:vm and the site kits), agent sessions,
-// guides, or launchd: loaded by every command, they were 5 of the 26 ms
-// `safari info` took, and 2 MB of each MCP server for its whole session.
-const COMMAND_ONLY = /\/daemon\/(repl|repl-host|sessions|agent|guides)\.ts$|\/daemon\/sites\/|\/cli\/launchd\.ts$/;
+// guides, or launchd and its watch routines: loaded by every command, they
+// were 5 of the 26 ms `safari info` took, and 2 MB of each MCP server for its
+// whole session.
+const COMMAND_ONLY = /\/daemon\/(repl|repl-host|sessions|agent|guides|watch)\.ts$|\/daemon\/sites\/|\/cli\/launchd\.ts$/;
 
 const REPO = join(import.meta.dir, "..");
 const home = await mkdtemp(join(tmpdir(), "safari-startup-"));

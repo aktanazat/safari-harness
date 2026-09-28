@@ -10,10 +10,14 @@ Tabs
   asks about the page he is on. Never navigate, type in, or close his tabs.
 - Close the tabs you open, on success or failure. Background tabs close
   when your session ends anyway; `--keep` (CLI) leaves one open for him.
+- The user can pause or stop you from your window's first tab. When a
+  call fails saying so, do what it says: wait and call again, or stop and
+  report.
 
 Turns
-- Do one step in one call: `run` for several tools in order, `repl` for
-  loops, downloads, and a site's own API.
+- Do one step in one call: `run` for several tools in order, `map` for
+  the same read of many pages, `repl` for loops, downloads, and a site's
+  own API.
 - Never start a `safari` command in the background and poll it; every
   command already waits for its page. One session spent $8.35 over 36 turns
   that way for 49 seconds of browser work.
@@ -21,12 +25,21 @@ Turns
   `text`), never on the clock. Check the page's wording once with a
   `snapshot` `query` before waiting on a guess.
 - From the CLI, pass `--json` when a program reads the output.
+- When calls keep failing and the error does not say why, run
+  `safari doctor` once: it checks every part and prints the fix. One
+  session spent 12 turns and $0.68 finding that Safari was not running.
 
 Before a site
 - Run `safari guide <site>` (for example `safari guide gusto`). It says
   what failed before and what worked. `safari guide sites` lists them.
+- When you find out something about a site the hard way (a flow's steps,
+  a control that loads late, which account owns what), save it in one
+  sentence with `learn {site, fact}` (`safari learn <site> "<fact>"`),
+  never a secret. Your first `open`, `goto`, or `snapshot` there carries
+  what agents saved before, as `notes`.
 - A public page reads faster without Safari: try `read`, `web_search`, or
-  Iris first. Save long text to a file instead of fetching it twice.
+  Iris first. Keep long text with `save` instead of fetching it twice, and
+  read a table or product list with `extract` `as: "table"`.
 
 Signing in, in this order
 1. A session: most of his sites are already signed in.

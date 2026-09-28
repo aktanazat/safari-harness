@@ -12,7 +12,8 @@
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
 //     /shutdown      {reason} stop once the calls in flight finish
-//     /space         the page an agent window opens on (spaces.ts)
+//     /space         the live page an agent window opens on, with its state
+//                    and controls; /agents, every agent at work (mission.ts)
 
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent } from "./journal.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
-import { spacePage } from "./spaces.ts";
+import { missionRoute, watched } from "./mission.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -154,6 +155,10 @@ const rpcServer = Bun.serve({
   port: httpPort,
   async fetch(req) {
     const url = new URL(req.url);
+    // The agent windows' pages call back from their own origin, which the
+    // check below refuses: mission.ts checks its routes itself.
+    const page = await missionRoute(req, url);
+    if (page) return page;
     if (!allowed(req, "local")) return refuse(req, url);
     if (url.pathname === "/health") {
       return Response.json({
@@ -177,7 +182,7 @@ const rpcServer = Bun.serve({
       inFlight++;
       try {
         const owner = Number.isInteger(caller) && Number(caller) > 1 ? await ownerOf(Number(caller)) : undefined;
-        const value = await runAs(owner, () => callTool(tool, args ?? {}));
+        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {})));
         return Response.json({ ok: true, value });
       } catch (e) {
         return Response.json({ ok: false, error: String(e instanceof Error ? e.message : e) });
@@ -190,7 +195,6 @@ const rpcServer = Bun.serve({
       void stop(typeof reason === "string" && reason ? reason : "shutdown requested", SHUTDOWN_DRAIN_MS);
       return Response.json({ ok: true, inFlight });
     }
-    if (url.pathname === "/space" && req.method === "GET") return spacePage(url);
     return new Response("not found", { status: 404 });
   },
 });

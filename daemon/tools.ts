@@ -9,9 +9,16 @@ import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
+import { findFiles } from "./finder.ts";
+import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
-import { spaceWindow } from "./spaces.ts";
+import { spaceNote, spaceTool, spaceWindow, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
+import { filledOf, navigatedOf } from "./navigated.ts";
+import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
+import { firstNotes, learn } from "./notes.ts";
+import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
+import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -59,10 +66,12 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   return now;
 }
 
-// Every tab opens in a window of the calling agent's own (spaces.ts).
-export async function openTab(url: string, background = false, group?: string): Promise<TabInfo> {
-  const window = await spaceWindow(group);
-  return (await bridge.request("tabs.open", [str(url, "url"), background, window])) as TabInfo;
+// Every tab opens in a window of the calling agent's own (spaces.ts), which
+// the result names.
+export async function openTab(url: string, background = false, group?: string): Promise<TabInfo & { space: SpaceNote }> {
+  const space = await spaceWindow(group);
+  const t = (await bridge.request("tabs.open", [str(url, "url"), background, space.window])) as TabInfo;
+  return { ...t, space: spaceNote(space) };
 }
 
 // A native sheet on the tab (a sign-in or permission prompt) or an
@@ -119,6 +128,13 @@ function orphan(owner: number) {
   watches.delete(owner);
   for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
   void sweep();
+}
+
+// The user stopped owner from its window (mission.ts): its background tabs
+// close now, as they would once it exits.
+export function closeTabsOf(owner: number): void {
+  watches.get(owner)?.();
+  orphan(owner);
 }
 
 async function sweep() {
@@ -216,6 +232,13 @@ async function withChallenge<T extends object>(result: T | Promise<T>, tab: numb
   return challenge ? { ...r, challenge } : r;
 }
 
+// open, goto, and snapshot also carry what agents have learned about the
+// site, on the first result on it for each agent (notes.ts).
+function withNotes<T extends object>(result: T): T {
+  const notes = firstNotes("url" in result ? result.url : undefined);
+  return notes ? { ...result, notes } : result;
+}
+
 // The latest whole-page snapshot of each tab, for diff.
 const lastSnapshot = new Map<number, string>();
 
@@ -223,7 +246,7 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
   // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
-  const snap = await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
+  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
@@ -284,9 +307,12 @@ export async function hover(opts: { tab?: number; ref: number | string }) {
   return relay(tab, "hover", [opts.ref]);
 }
 
-export async function upload(opts: { tab?: number; ref?: number | string; paths: string[] }) {
+// find looks for the file in his own folders (finder.ts) and attaches
+// nothing; the agent calls again with the path it picked.
+export async function upload(opts: { tab?: number; ref?: number | string; paths?: string[]; find?: string }) {
   const tab = await resolveTab(opts.tab);
-  if (!Array.isArray(opts.paths) || opts.paths.length === 0) throw new Error("upload needs paths: [\"/abs/file\", ...]");
+  if (opts.find !== undefined) return findFiles(str(opts.find, "find"));
+  if (!Array.isArray(opts.paths) || opts.paths.length === 0) throw new Error("upload needs paths: [\"/abs/file\", ...], or find: \"words\" to look for the file");
   const files = await Promise.all(opts.paths.map(async (p) => {
     const f = Bun.file(str(p, "path"));
     if (!(await f.exists())) throw new Error(`no such file: ${p}`);
@@ -328,9 +354,12 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   });
 }
 
-export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
+// as: "table" reads the page's tables and repeated card lists as rows.
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes }]);
+  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as }])) as Extract | { tables: unknown[] };
+  // as: "table" answers rows, not text
+  return "text" in page ? shieldExtract(page) : page;
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -382,9 +411,10 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 // (about 2 minutes). The user is done when the check is gone or, with no
 // check seen, the page has moved on: if they are still on the tab, they get
 // back the tab and app they had in front. A block ends a handoff (no one can
-// clear it), and so do 5 minutes with no call waiting. Once over, it answers
-// only the calls that carry its id (the caller's own later slices, which may
-// come after it ends), so they do not start another.
+// clear it), and so do the user's reply of skip or stop and 5 minutes with
+// no call waiting. Once over, it answers only the calls that carry its id
+// (the caller's own later slices, which may come after it ends), so they do
+// not start another.
 type Handoff = {
   id: number;
   start: number;
@@ -397,6 +427,12 @@ type Handoff = {
   error?: string;
   // how the text to the user's phone went: one per handoff
   texted?: string;
+  // where his replies to it are (phone.ts), for every later call to read
+  thread?: unknown;
+  // settled to look at the page at once: he replied that he is done
+  look: PromiseWithResolvers<void>;
+  // he replied skip or stop: over, with the page left as it is
+  user?: "skip" | "stop";
   waiting: number;
   calledAt: number;
 };
@@ -420,7 +456,9 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
     // the first check the page answered with; null until it answers
     let seen = initial;
     while (h.waiting > 0 || Date.now() - h.calledAt < HANDOFF_IDLE_MS) {
-      await Bun.sleep(1000);
+      await Promise.race([Bun.sleep(1000), h.look.promise]);
+      h.look = Promise.withResolvers();
+      if (h.user) return;
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
       // Safari may have swapped the tab for another (continuity.ts)
       tab = followTab(tab);
@@ -441,7 +479,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
     h.error = e instanceof Error ? e.message : String(e);
   } finally {
     // one that ran out of callers leaves nothing to answer
-    if (handoffs.get(tab) === h && !h.done && h.error === undefined) handoffs.delete(tab);
+    if (handoffs.get(tab) === h && !h.done && h.error === undefined && h.user === undefined) handoffs.delete(tab);
     h.begun.resolve();
     h.over.resolve();
   }
@@ -451,19 +489,26 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
 // first call that finds the user away (as the caller measured) is told to
 // text them (text: true) and returns at once; it reports how that went as
 // texted, so no other call sends one.
-async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; texted?: string; id?: number }) {
+async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; texted?: string; thread?: unknown; look?: boolean; user?: "skip" | "stop"; id?: number }) {
   let h = handoffs.get(tab);
-  if (h && (h.done || h.error !== undefined) && h.id !== o.id) h = undefined;
+  if (h && (h.done || h.error !== undefined || h.user !== undefined) && h.id !== o.id) h = undefined;
   const joined = h !== undefined;
   if (!h) {
-    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
-    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now() };
+    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined || x.user !== undefined)) handoffs.delete(t);
+    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), look: Promise.withResolvers() };
     handoffs.set(tab, h);
     void watchHandoff(tab, why, h);
   }
   const session = h;
   session.waiting++;
   if (o.texted !== undefined) session.texted = o.texted;
+  if (o.thread !== undefined) session.thread = o.thread;
+  if (o.look) session.look.resolve();
+  // his skip or stop ends it, unless the page is clear already
+  if (o.user && !session.done && session.error === undefined) {
+    session.user = o.user;
+    session.look.resolve();
+  }
   let timer: Timer | undefined;
   try {
     await session.begun.promise;
@@ -471,7 +516,7 @@ async function handoffWait(tab: number, why: string, o: { ms: number; away: bool
     if (text) session.texted = "sending";
     else if (o.ms > 0) await Promise.race([session.over.promise, new Promise<void>((r) => { timer = setTimeout(r, Math.min(o.ms, 110000)); })]);
     if (session.error !== undefined) throw new Error(session.error);
-    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.texted ? { texted: session.texted } : {}), ...(text ? { text } : {}) };
+    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.texted ? { texted: session.texted } : {}), ...(session.thread === undefined ? {} : { thread: session.thread }), ...(session.user ? { user: session.user } : {}), ...(text ? { text } : {}) };
   } finally {
     clearTimeout(timer);
     session.waiting--;
@@ -599,6 +644,20 @@ async function saveFile(f: FilePayload, url: string, out?: string) {
   return { path, name: basename(path), size: f.size, type: f.type };
 }
 
+const isFile = (f: unknown): f is FilePayload => !!f && typeof f === "object" && "data" in f && typeof f.data === "string";
+
+// A click that took the page elsewhere answers where it went, not a file.
+// Safari shows some files itself (a PDF, an image), so that address may be
+// the file; a page there means the click opened a page, or began a download
+// of the site's own, which Safari saves in ~/Downloads.
+async function fileAfterClick(res: unknown): Promise<FilePayload> {
+  const to = navigatedOf(res);
+  if (!to) throw new Error("the page answered no file");
+  const f = (await bridge.request("fetchFile", [to.url], 120000)) as FilePayload;
+  if (/^text\/html\b/i.test(f.type)) throw new Error(`the click went to the page ${to.url}, not a file; a download the site started itself is saved in ~/Downloads`);
+  return f;
+}
+
 // A file by url, fetched with the page's cookies (the extension's own
 // fetch when the page may not read that site), or the file a ref's link or
 // button downloads. Saved in ~/Downloads unless out says where.
@@ -606,18 +665,40 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   const tab = await resolveTab(opts.tab);
   if (opts.url !== undefined) {
     const url = str(opts.url, "url");
-    const f = (await relay(tab, "fetchFile", [url, ""], 120000).catch(() => bridge.request("fetchFile", [url], 120000))) as FilePayload;
+    // A page that navigates while it fetches answers where it went instead.
+    const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
+    const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
     return saveFile(f, url, opts.out);
   }
   if (opts.ref === undefined) throw new Error("download needs ref or url");
   const ref = String(opts.ref);
+  // A file the server sends after the click is saved by Safari itself, never
+  // handed to the page; on a tab the harness opened it is found in
+  // ~/Downloads instead (downloads.ts).
+  const saved = harnessTabs.has(tab) ? await watchDownloads(DOWNLOADS) : null;
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
-    const f = (await relay(tab, "download", [ref], 120000)) as FilePayload;
-    return saveFile(f, "", opts.out);
+    const f = await relay(tab, "download", [ref], 120000);
+    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", opts.out);
+  } catch (e) {
+    const got = saved ? await saved() : {};
+    if (!got.downloaded && !got.downloading) throw e;
+    return got;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// A click or key on a tab the harness opened reports the files Safari saved
+// to ~/Downloads while it ran (downloads.ts). The user's own tabs are never
+// watched, so none of his downloads is claimed.
+function watched(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
+  return async (a: Record<string, unknown> & { tab: number }) => {
+    if (!harnessTabs.has(a.tab)) return run(a);
+    const saved = await watchDownloads(DOWNLOADS);
+    const result = await run(a);
+    return { ...(result as object), ...(await saved()) };
+  };
 }
 
 // ---------- PDF ----------
@@ -635,8 +716,16 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
   const tab = await resolveTab(opts.tab);
-  const page = (await relay(tab, "eval", ["({ html: document.documentElement.outerHTML, url: location.href, title: document.title })"])) as { result: { html: string; url: string; title: string } };
-  const { html, url, title } = page.result;
+  // Reading the page is an eval, which a page that navigates meanwhile
+  // answers with where it went instead: the new page is read once more.
+  const read = async () => {
+    // the expression builds result; an answer without it navigated
+    const answer = (await relay(tab, "eval", ["({ html: document.documentElement.outerHTML, url: location.href, title: document.title })"])) as { result?: { html: string; url: string; title: string } };
+    return answer.result;
+  };
+  const page = (await read()) ?? (await read());
+  if (!page) throw new Error("the page kept navigating while it was read; save it once it settles");
+  const { html, url, title } = page;
   const out = opts.out ?? await scratchFile("safari-pdf-", `${(title || "page").replace(/[/\\:\0]/g, "_").slice(0, 80)}.pdf`);
   return renderPdf(html, url, out);
 }
@@ -673,13 +762,15 @@ export const TAB: Param = { description: 'tab id from open, or "front"' };
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 export const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
 const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
+const SAVE: Param = { description: "true, or an absolute file path: write the whole output there; returns its path, size, and first 500 characters" };
 
 // With `snapshot: true` an action also returns the page it led to, saving
 // the agent a separate snapshot call.
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   if (!want) return result;
   const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
-  return { ...(result as object), page: await relay(opened ?? tab, "snapshot", [{}]) };
+  const page = (await relay(opened ?? tab, "snapshot", [{}])) as Snapshot;
+  return { ...(result as object), page: shieldSnapshot(page) };
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
@@ -690,6 +781,18 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     const from = harnessTabs.get(tab);
     if (opened !== undefined && from) own(opened, from.owner);
     return withPage(result, tab, a.snapshot);
+  };
+}
+
+// save on a read writes its whole output to a file and answers with the
+// file's path, size, and first 500 characters (save.ts). The target is
+// checked first, so a bad one sends the page no request.
+function saving(kind: SaveKind, run: (a: Record<string, unknown>) => Promise<unknown>) {
+  return async (a: Record<string, unknown>) => {
+    if (a.save === undefined || a.save === false) return run(a);
+    const target = targetOf(a.save, "file");
+    const tab = await resolveTab(a.tab);
+    return saveOutput(kind, await run({ ...withLimit(kind, a), tab }), target, async () => (await listTabs()).find((t) => t.id === tab)?.url ?? "");
   };
 }
 
@@ -743,15 +846,23 @@ export const TOOLS: Record<string, Tool> = {
       const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"));
       // a tab opened in front is the user's to close
       if (a.background && !a.keep) own(t.id, currentOwner());
-      return withPage(await withChallenge(t, t.id), t.id, a.snapshot);
+      return withPage(withNotes(await withChallenge(t, t.id)), t.id, a.snapshot);
     },
+  },
+  // Agent windows and their tab groups, for the keeper (keeper.ts).
+  space: {
+    desc: "Agent windows and their tab groups, for the tab group keeper.",
+    params: { op: { type: "string", description: "state, grouped, plain, release, gone, or scratch" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
+    required: ["op"],
+    hidden: true,
+    run: spaceTool,
   },
   close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["tab", "url"],
-    run: action(async (a) => withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab)),
+    run: action(async (a) => withNotes(await withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab))),
   },
   activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
@@ -762,15 +873,16 @@ export const TOOLS: Record<string, Tool> = {
       root: { type: "string", description: "CSS selector of the region to read" },
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
+      save: SAVE,
     },
     required: ["tab"],
-    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }),
+    run: saving("snapshot", async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }))),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
     params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
     required: ["tab"],
-    run: action((a) => click(a as { tab: number; ref?: string; x?: number; y?: number })),
+    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
   type: {
     desc: "Set a field's text by ref; replaces it unless append.",
@@ -782,7 +894,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     required: ["tab", "key"],
-    run: action((a) => press(a as { tab: number; ref?: string; key: string })),
+    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string }))),
   },
   select: {
     desc: "Choose a dropdown option by label or value; an unknown option returns the list.",
@@ -797,10 +909,10 @@ export const TOOLS: Record<string, Tool> = {
     run: action((a) => hover(a as { tab: number; ref: string })),
   },
   upload: {
-    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input.",
-    params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, snapshot: PAGE },
-    required: ["tab", "paths"],
-    run: action((a) => upload(a as { tab: number; ref?: string; paths: string[] })),
+    desc: "Attach local files to a file input. ref may be the upload area; omit it when the page has one file input. find lists the user's matching files to pick from; it attaches nothing.",
+    params: { tab: TAB, ref: REF, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, find: { type: "string", description: "words to search his files for" }, snapshot: PAGE },
+    required: ["tab"],
+    run: action((a) => upload(a as { tab: number; ref?: string; paths?: string[]; find?: string })),
   },
   history: {
     desc: "Go back, go forward, or reload.",
@@ -816,15 +928,15 @@ export const TOOLS: Record<string, Tool> = {
   },
   eval: {
     desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait.",
-    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" } },
+    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, save: SAVE },
     required: ["tab", "expression"],
-    run: (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page }),
+    run: saving("eval", (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page })),
   },
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
-    params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" } },
+    params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" }, save: SAVE },
     required: ["tab", "url"],
-    run: (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }),
+    run: saving("fetch", (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean })),
   },
   download: {
     desc: "Save the file a ref's link or button downloads, or a url, into ~/Downloads; returns its path.",
@@ -840,9 +952,24 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" } },
+    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table"], description: "table: tables and card lists as JSON rows" }, save: SAVE },
     required: ["tab"],
-    run: (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number }),
+    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
+  },
+  map: {
+    desc: `Read up to ${MAP_MAX_URLS} pages at once, each in a background tab that closes after: extract (default), snapshot, eval, or fetch. A failed page or a bot check is reported in its place; the rest go on.`,
+    params: {
+      urls: { type: "array", items: { type: "string" }, description: "addresses" },
+      what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
+      expression: { type: "string", description: "JS, for eval" },
+      selector: { type: "string", description: "for extract" },
+      query: { type: "string", description: "only lines containing this" },
+      as: { type: "string", enum: ["text", "table"], description: "for extract" },
+      concurrency: { type: "number", description: "default 4, max 6" },
+      save: { description: "true, or an absolute folder: a file per page" },
+    },
+    required: ["urls"],
+    run: (a) => mapPages(a, callTool),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -861,8 +988,10 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => pageData(await resolveTab(a.tab), { pick: a.pick === undefined ? undefined : str(a.pick, "pick"), max: a.max === undefined ? undefined : num(a.max, "max") }),
   },
   // The daemon's half of handoff (handoff.ts runs in the caller). away says
-  // the caller found the user away; texted reports how its text went; id
-  // names the handoff the caller's earlier call started or joined.
+  // the caller found the user away; texted reports how its text went, and
+  // thread where his replies to it are; look says he replied done, and user
+  // that he replied skip or stop; id names the handoff the caller's earlier
+  // call started or joined.
   handoff_wait: {
     desc: "Start or join the tab's handoff and wait up to ms for the user.",
     params: {
@@ -872,10 +1001,13 @@ export const TOOLS: Record<string, Tool> = {
       away: { type: "boolean", description: "the user is away from the Mac" },
       texted: { type: "string", description: "how the text to the user's phone went" },
       id: { type: "number", description: "the handoff an earlier call returned" },
+      thread: { description: "where the user's replies to the text are; given back to every later call" },
+      look: { type: "boolean", description: "the user says he is done: look at the page now" },
+      user: { type: "string", enum: ["skip", "stop"], description: "the user replied skip or stop: end the handoff" },
     },
     required: ["tab", "why", "ms"],
     hidden: true,
-    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.texted === undefined ? {} : { texted: str(a.texted, "texted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }) }),
+    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, look: a.look === true, ...(a.user === "skip" || a.user === "stop" ? { user: a.user } : {}), ...(a.texted === undefined ? {} : { texted: str(a.texted, "texted") }), ...(a.thread === undefined ? {} : { thread: a.thread }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }) }),
   },
   net: {
     desc: "The page's fetch/XHR requests since it began loading, in every frame: url, method, status, time, and the start of a text or JSON body. start clears the list; stop ends it.",
@@ -960,13 +1092,18 @@ export const TOOLS: Record<string, Tool> = {
   },
   // A login the caller read from a password manager (Bitwarden), filled
   // into the frame login_form named, only while it is on the site the
-  // login was saved for.
+  // login was saved for. It answers which fields got it, and where the page
+  // went when the form submitted itself.
   login_fill: {
     desc: "Fill a login into the tab's sign-in form, only while the tab is on site.",
     params: { tab: TAB, frame: { type: "number", description: "frame from login_form" }, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
     required: ["tab", "site"],
     hidden: true,
-    run: async (a) => bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
+    run: async (a) => filledOf(
+      await bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
+      [...(a.username ? ["username"] : []), ...(a.password ? ["password"] : [])],
+      "login",
+    ),
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first ask the user for Touch ID and pair (as pair does); if one answers codeShown, ask the user for the 6-digit code on their Mac and call unlock with it. Call done when finished; status says why it is locked.",
@@ -974,14 +1111,20 @@ export const TOOLS: Record<string, Tool> = {
     required: ["do"],
     run: applePasswords,
   },
+  learn: {
+    desc: "Save a site fact for later agents: a flow's steps, a control that loads late, which account owns what. Never a secret. Only site: list its notes; forget: n removes one.",
+    params: { site: { type: "string", description: "host or address" }, fact: { type: "string", description: "max 300 chars" }, forget: { type: "number", description: "note number" } },
+    required: ["site"],
+    run: learn,
+  },
 };
 
 export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge };
-type Extract = { url: string; title: string; text: string };
+type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; notes?: string };
+type Extract = Shielded & { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
@@ -990,14 +1133,16 @@ export function formatResult(value: unknown): string {
   const news = value && typeof value === "object" ? splitNews(value) : null;
   if (news) return `${news.line}\n${formatResult(news.rest)}`;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
+    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
+    const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${v.snapshot}`;
+      const notes = v.notes ? `${v.notes}\n` : "";
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${notes}${v.snapshot}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${text}`;
@@ -1010,6 +1155,18 @@ export function formatResult(value: unknown): string {
       const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
       if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
       return lines.join("\n");
+    }
+    // map: each page under its address, as its read prints alone
+    if (Array.isArray(v.pages)) {
+      return v.pages.map((p) => {
+        const notes = [`${p.ms} ms`, ...(p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []), ...(p.closeError ? [`not closed: ${p.closeError}`] : [])];
+        return `## ${p.url} (${notes.join("; ")})\n${p.ok ? formatResult(p.value) : `error: ${p.error}`}`;
+      }).join("\n\n");
+    }
+    // extract as table: each table as one line of JSON
+    if (Array.isArray(v.tables)) {
+      const note = v.truncated ? "\n…truncated: narrow with selector or query" : "";
+      return `# ${v.title} — ${v.url}\n\n${v.tables.map((t) => JSON.stringify(t)).join("\n")}${note}`;
     }
   }
   return JSON.stringify(value, null, 1);

@@ -953,6 +953,53 @@ try {
   for (const a of agents) a.child.kill();
 }
 
+// ---------- each task's own tab group ----------
+
+// Two agents, each a program that opens a background tab for a task through
+// the CLI and keeps running: once the user has left the keyboard and mouse
+// alone 30 s, each window becomes a Safari tab group named for its task,
+// and the app he has in front never changes. Once an agent exits, its group
+// goes. While he works the groups wait, and the check says so, not failing.
+type SpaceRow = { name: string; group: string; ended: boolean };
+async function agentWithGroup(task: string) {
+  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--group", task, "--json"];
+  const child = Bun.spawn([process.execPath, "-e", `process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`], { stdout: "pipe", stderr: "ignore" });
+  const reader = child.stdout.getReader();
+  let out = "";
+  while (!out.includes("\n")) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += new TextDecoder().decode(value);
+  }
+  return { child, space: (JSON.parse(out) as { space: { name: string; group: string } }).space };
+}
+const spaceRows = async () => ((await call("space", { op: "state" })) as { spaces: SpaceRow[] }).spaces;
+// Whether done comes true within ms, looked at once a second.
+async function within(ms: number, done: () => Promise<boolean>) {
+  for (let waited = 0; waited < ms; waited += 1000) {
+    if (await done()) return true;
+    await Bun.sleep(1000);
+  }
+  return done();
+}
+const groupApp = await frontApp();
+const tasks = await Promise.all([agentWithGroup("check-live-a"), agentWithGroup("check-live-b")]);
+try {
+  const names = tasks.map((t) => t.space.name);
+  check("each agent's window is named for its task and waits to become its tab group", tasks.every((t) => t.space.group === "waiting" && t.space.name.startsWith("check-live-")) && names[0] !== names[1], tasks.map((t) => t.space));
+  const grouped = await within(120_000, async () => (await spaceRows()).filter((r) => names.includes(r.name) && r.group === "grouped").length === 2);
+  if (!grouped) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or groups are off): ${JSON.stringify(await spaceRows())}`);
+  else {
+    check("each task's window becomes a tab group of its own, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
+    for (const t of tasks) t.child.kill();
+    const gone = await within(120_000, async () => !(await spaceRows()).some((r) => names.includes(r.name)));
+    if (gone) check("a task's tab group goes once its agent exits, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
+    else console.log(`SKIP tab group delete: not done within 2 min (the user was at the keys): ${JSON.stringify(await spaceRows())}`);
+  }
+} finally {
+  for (const t of tasks) t.child.kill();
+}
+
 // ---------- snapshot size ----------
 
 // A shop-like listing: every card links twice with a long tracking query,

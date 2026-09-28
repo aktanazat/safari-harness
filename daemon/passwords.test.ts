@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
@@ -174,8 +174,10 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 // The Safari tab: a page whose sign-in form (in the top page, or in an
 // embedded frame from another site, as Apple's is) records what was typed.
 // As in the content script, a fill lands only when sent to the frame that
-// holds the form, for the site that frame is on.
-function fakeTab(url: string, form = { frame: 0, url }) {
+// holds the form, for the site that frame is on. A form that submits itself
+// once filled takes the page away before it can answer, so the extension
+// answers where the page went instead (act in background.js).
+function fakeTab(url: string, form = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string } = {};
   bridge.attach({
     send(data: string) {
@@ -190,7 +192,7 @@ function fakeTab(url: string, form = { frame: 0, url }) {
       if (frame !== form.frame || opArgs[0] !== new URL(form.url).hostname) return answer({ error: "nothing was filled" });
       if (op === "fillLogin") Object.assign(page, { username: opArgs[1], password: opArgs[2] });
       if (op === "fillCode") Object.assign(page, { code: opArgs[1] });
-      answer({ value: { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
+      answer({ value: navigated ? { ok: true, navigated } : { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
     },
     close() {},
   });
@@ -218,6 +220,24 @@ test("code types the site's verification code into the page but never returns it
   const result = await p.fillCode(7);
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
+});
+
+const HOME = { url: `https://${SITE}/home`, title: "Home" };
+
+test("a login form that submits itself as it is filled reports the fields filled and where the page went", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`, undefined, HOME);
+  await paired(p);
+  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], navigated: HOME, username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+test("a code field that submits itself as it is filled reports the code filled and where the page went", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/verify`, undefined, HOME);
+  await paired(p);
+  expect(await p.fillCode(7)).toEqual({ filled: ["code"], navigated: HOME, username: USER, site: SITE });
+  expect(page).toEqual({ code: OTP });
 });
 
 test("a wrong code is refused and cannot be retried with the right one", async () => {
@@ -389,6 +409,49 @@ test.skipIf(!existsSync(HELIUM))("the hidden Helium runs in at most 4 processes"
     await dialed.promise;
     const processes = Bun.spawnSync(["ps", "-A", "-ww", "-o", "command="]).stdout.toString().split("\n").filter((l) => l.includes(profile));
     expect(processes.length).toBeLessThanOrEqual(4);
+  } finally {
+    await quitHelium(profile);
+    server.stop(true);
+  }
+}, 30000);
+
+// A profile keeps the service worker of the bridge it last ran, and Helium
+// starts that cached copy over the files in the profile. After the bridge
+// changed, the old one dialed in and never said hello, so every sign-in
+// waited out the link and failed. A new Helium must run this release's
+// bridge, whatever an earlier one left in its profile. The old copy never
+// says hello, so the test's own timeout is the failure.
+test.skipIf(!existsSync(HELIUM))("a new Helium runs this release's bridge, not the one its profile ran before", async () => {
+  const profile = mkdtempSync("/private/var/tmp/passwords-helium-");
+  profiles.push(profile);
+  const dialed = Promise.withResolvers<void>();
+  const hello = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    port: 0,
+    fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("", { status: 400 })),
+    websocket: {
+      open: () => dialed.resolve(),
+      message: (_ws, m) => {
+        if ("hello" in JSON.parse(String(m))) hello.resolve();
+      },
+    },
+  });
+  const port = Number(server.url.port);
+  try {
+    // An earlier release's bridge, under the same extension id: it dials in
+    // and says nothing.
+    const old = join(profile, "bridge");
+    mkdirSync(old, { recursive: true });
+    const manifest = JSON.parse(readFileSync(join(import.meta.dir, "..", "passwords-bridge", "manifest.json"), "utf8"));
+    writeFileSync(join(old, "manifest.json"), JSON.stringify({ ...manifest, version: "0.9.0" }));
+    writeFileSync(join(old, "port.json"), JSON.stringify({ port }));
+    writeFileSync(join(old, "bridge.js"), `fetch(chrome.runtime.getURL("port.json")).then((r) => r.json()).then(({ port }) => { self.ws = new WebSocket("ws://127.0.0.1:" + port + "/passwords"); });`);
+    spawn(HELIUM, [`--user-data-dir=${profile}`, "--headless=new", `--load-extension=${old}`, "--no-first-run", "--disable-features=DisableLoadExtensionCommandLineSwitch"], { stdio: "ignore" });
+    await dialed.promise;
+    await quitHelium(profile);
+
+    launchHelium(profile, port);
+    await hello.promise;
   } finally {
     await quitHelium(profile);
     server.stop(true);

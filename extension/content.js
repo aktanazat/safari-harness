@@ -109,6 +109,62 @@
     return true;
   }
 
+  // ---------- words no one sees ----------
+  // Pages hide text from people but not from agents: instructions addressed
+  // to an AI, parked where no one looks. The page as an agent reads it
+  // (snapshot, extract) leaves such words out; showHidden keeps them.
+
+  // A box whose content no scroll shows: a frame or an overflow-hidden box
+  // of at most a pixel (the screen-reader-only pattern), a positioned box
+  // clipped to nothing, or one moved wholly left of or above the page. A
+  // collapsed panel, flat one way only, stays: its text is a click away.
+  // Most boxes sit in the flow unclipped and skip the layout read.
+  function unseenBox(el, style) {
+    const frame = el.tagName === "IFRAME" || el.tagName === "FRAME";
+    const shut = style.overflowX !== "visible" && style.overflowY !== "visible" && style.display !== "inline" && style.display !== "contents";
+    const placed = style.position !== "static";
+    if (!frame && !shut && !placed) return false;
+    const r = el.getBoundingClientRect();
+    if (frame ? r.width <= 1 || r.height <= 1 : shut && r.width <= 1 && r.height <= 1) return true;
+    if ((style.position === "absolute" || style.position === "fixed") && clipShut(style.clip)) return true;
+    if (!placed || !r.width || !r.height) return false;
+    // a fixed box stays where the window puts it; the others scroll
+    const view = el.ownerDocument.defaultView || window;
+    const fixed = style.position === "fixed";
+    return r.right + (fixed ? 0 : view.scrollX) <= 0 || r.bottom + (fixed ? 0 : view.scrollY) <= 0;
+  }
+
+  // clip: rect(top, right, bottom, left) leaving no room. An auto edge is
+  // the box's own, which leaves room.
+  function clipShut(clip) {
+    const edges = /^rect\((.*)\)$/.exec(clip)?.[1].split(/[\s,]+/).map(parseFloat);
+    return edges?.length === 4 && (edges[1] - edges[3] <= 1 || edges[2] - edges[0] <= 1);
+  }
+
+  // An element's own words drawn without ink: a font of at most a pixel,
+  // or a clear fill (alpha 0) with no outline or shadow, unless a
+  // background shows through the letters (a gradient heading's
+  // background-clip: text). Its children can set their own.
+  function faintText(el, style) {
+    if (parseFloat(style.fontSize) <= 1) return true;
+    if (!/^transparent$|^rgba\(.*,\s*0\)$|\/\s*0\)$/.test(style.getPropertyValue("-webkit-text-fill-color"))) return false;
+    if (style.textShadow !== "none" || parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) > 0) return false;
+    for (let e = el; e; e = e.parentElement) {
+      const s = e === el ? style : (e.ownerDocument.defaultView || window).getComputedStyle(e);
+      if ((s.getPropertyValue("background-clip") + s.getPropertyValue("-webkit-background-clip")).includes("text")) return false;
+    }
+    return true;
+  }
+
+  // A text node's words no one sees: its element hides them or draws them
+  // without ink. Whitespace only parts words, so it always counts.
+  function unseenWords(text) {
+    const el = text.parentElement;
+    if (!el || !/\S/.test(text.nodeValue)) return false;
+    const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+    return style.visibility !== "visible" || faintText(el, style);
+  }
+
   // Roles whose accessible name comes from their text (ARIA "name from content").
   const NAME_FROM_CONTENT = new Set(["button", "link", "heading", "tab", "menuitem", "menuitemcheckbox",
     "menuitemradio", "option", "checkbox", "radio", "switch", "treeitem", "cell", "gridcell",
@@ -424,18 +480,28 @@
     // in page order. `named` holds the ancestors naming themselves by their
     // text; each gathers the text inside it.
     const top = { kids: [] };
-    const walk = (el, parent, named, inItem, inHand) => {
+    const walk = (el, parent, named, inItem, inHand, muted = false) => {
+      // Never drawn, hidden or not: showHidden would print a page's script
+      // source and style rules as its text.
+      if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
-        if (style.display === "none" || style.visibility === "hidden" || transparent(el, style)) return;
+        if (style.display === "none" || transparent(el, style)) return;
         if (style.position === "fixed" && el.getClientRects().length === 0) return;
       }
+      // A child of a hidden element can show itself with visibility: visible
+      // (Slack's workspace chooser does), so a hidden element loses only its
+      // own line and words, and each child is judged by its own style. The
+      // words in a box no one sees (unseenBox) print nowhere.
+      const hidden = !opts.showHidden && style.visibility !== "visible";
+      const boxed = muted || (!opts.showHidden && unseenBox(el, style));
+      if ((hidden || boxed) && (el.tagName === "IFRAME" || el.tagName === "FRAME")) return;
       const role = getExplicitRole(el);
       const actionable = ACTION_ROLES.has(role) || isInteractive(el, style, inHand) || el.tagName === "IFRAME" || el.tagName === "FRAME";
       let node = parent;
-      if (actionable || (role && NAMED_ROLES.has(role))) {
+      if (!hidden && (actionable || (role && NAMED_ROLES.has(role)))) {
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
         parent.kids.push(node);
         if (node.name === null && namedByContent(el)) {
@@ -446,19 +512,30 @@
         node = { group: true, kids: [] };
         parent.kids.push(node);
       }
-      const pic = el.tagName === "IMG" ? el.getAttribute("alt") : node.el !== el ? el.getAttribute("aria-label") : null;
+      const pic = hidden ? null : el.tagName === "IMG" ? el.getAttribute("alt") : node.el !== el ? el.getAttribute("aria-label") : null;
       if (pic) for (const n of named) n.pic ??= pic.trim();
       const add = (x) => { node.kids.push(x); for (const n of named) n.text.push(typeof x === "string" ? x : " "); };
+      // Words no one sees still name the control they sit in, as
+      // screen-reader text does, but print nowhere; a hidden element's own
+      // words do neither. Whitespace only parts words, so it always goes.
+      let quiet = null;
+      const words = (t) => {
+        if (!/\S/.test(t)) return add(t);
+        if (hidden) return;
+        quiet ??= boxed || (!opts.showHidden && faintText(el, style));
+        if (!quiet) return add(t);
+        for (const n of named) n.text.push(t);
+      };
       if (!/^(SELECT|TEXTAREA|IMG|svg|INPUT)$/.test(el.tagName)) {
         const d = style.display;
         const block = !d.startsWith("inline") && d !== "contents";
         const edge = d === "table-cell" ? CELL : BREAK;
         if (block) add(edge);
         for (const child of drawnChildren(el)) {
-          if (child.nodeType === Node.TEXT_NODE) add(child.nodeValue);
+          if (child.nodeType === Node.TEXT_NODE) words(child.nodeValue);
           else if (child.nodeType === Node.ELEMENT_NODE) {
             if (child.tagName === "BR") add(BREAK);
-            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"));
+            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"), boxed);
           }
         }
         if (block) add(edge);
@@ -626,6 +703,13 @@
     return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
   }
 
+  // A label stands for its field. The snapshot gives a label that wraps its
+  // field a ref of its own; typing into that ref or picking an option on it
+  // means the field.
+  function fieldOf(el) {
+    return el && el.tagName === "LABEL" && el.control ? el.control : el;
+  }
+
   // isVisible alone passes the children of a display:none parent, because
   // the snapshot never walks into one; a target found by search must also
   // have a box on the page.
@@ -659,7 +743,7 @@
       if (textOf(el, want.length + 1).toLowerCase() === want && shown(el)) found = el;
     }
     found ??= partial;
-    return found && found.tagName === "LABEL" && found.control ? found.control : found;
+    return fieldOf(found);
   }
 
   function missing(target) {
@@ -765,7 +849,7 @@
   }
 
   function selectOption(ref, choice) {
-    const el = resolve(ref);
+    const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
     const options = [...el.options];
@@ -1023,7 +1107,7 @@
   }
 
   async function typeText(ref, text, opts = {}) {
-    const el = resolve(ref);
+    const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
@@ -1274,24 +1358,37 @@
     return { ok: true, scrollY: Math.round(window.scrollY), maxY: Math.round(document.documentElement.scrollHeight - innerHeight) };
   }
 
-  // innerText, minus text drawn in boxes of at most one pixel. Pages hide
-  // decoys that way (ebay interleaves random letters into item labels and
-  // parks them off-screen); innerText keeps them because they do render.
+  // innerText, minus the words no one sees: boxes of at most one pixel,
+  // clear boxes, boxes no scroll shows (unseenBox), and an element's own
+  // words drawn without ink (faintText). Pages hide decoys that way (ebay
+  // interleaves random letters into item labels and parks them
+  // off-screen), and text addressed to AI agents; innerText keeps them
+  // because they do render.
   function visibleText(root) {
     const text = root.innerText || "";
-    const decoys = [];
+    const cuts = []; // [node, its words], each cut at its next occurrence
+    let skip = null;
     for (const el of root.querySelectorAll("*")) {
-      if (decoys.length && decoys[decoys.length - 1].contains(el)) continue;
+      if (skip?.contains(el)) continue;
       const rects = el.getClientRects();
       if (!rects.length) continue; // not rendered, so not in innerText either
       const r = el.getBoundingClientRect();
-      if (r.width <= 1 && r.height <= 1 && el.textContent.trim()) decoys.push(el);
+      const style = getComputedStyle(el);
+      if ((r.width <= 1 && r.height <= 1) || transparent(el, style) || unseenBox(el, style)) {
+        if (el.textContent.trim()) {
+          skip = el;
+          cuts.push([el, el.innerText]);
+        }
+        continue;
+      }
+      const own = [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue));
+      if (own.length && faintText(el, style)) for (const n of own) cuts.push([n, norm(n.nodeValue)]);
     }
-    // Cut each decoy at its next occurrence, in document order.
+    // An element's own words and its children's interleave: cut in page order.
+    cuts.sort(([a], [b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
     let out = "";
     let at = 0;
-    for (const el of decoys) {
-      const t = el.innerText;
+    for (const [, t] of cuts) {
       const i = t ? text.indexOf(t, at) : -1;
       if (i < 0) continue;
       out += text.slice(at, i);
@@ -1313,11 +1410,12 @@
     }
     if (!path.size) return leaf(root);
     const read = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.replace(/\s+/g, " ");
+      if (node.nodeType === Node.TEXT_NODE) return unseenWords(node) ? "" : node.nodeValue.replace(/\s+/g, " ");
       if (node.nodeType !== Node.ELEMENT_NODE) return "";
       if (node.tagName === "BR") return "\n";
-      const d = getComputedStyle(node).display;
-      if (d === "none") return "";
+      const style = getComputedStyle(node);
+      const d = style.display;
+      if (d === "none" || transparent(node, style) || unseenBox(node, style)) return "";
       const t = path.has(node) ? [...drawnChildren(node)].map(read).join("") : leaf(node);
       return d.startsWith("inline") || d === "contents" ? t : `\n${t}\n`;
     };
@@ -1328,6 +1426,7 @@
   // whole body (the first of many articles is a card, not the content).
   // query keeps the lines containing it, searched across the whole body.
   function extract(opts = {}) {
+    if (opts.as === "table") return tables(opts);
     let root;
     if (opts.selector) root = deepQuery(opts.selector);
     else if (opts.query) root = document.body;
@@ -1355,6 +1454,143 @@
       const t = line.toLowerCase();
       return alts.some((a) => t.includes(a));
     };
+  }
+
+  // ---------- tables as rows ----------
+  // extract with as: "table" reads the page's data as rows instead of text:
+  // each table (a <table>, or an element with the ARIA table or grid role),
+  // and each run of 3 or more cards of the same structure among siblings (a
+  // product grid, search results). The rules are fixed, so the same page
+  // always reads the same.
+
+  const TABLE_ROLES = "[role=table],[role=grid],[role=treegrid]";
+  const CELL_ROLES = "[role=cell],[role=gridcell],[role=columnheader],[role=rowheader]";
+  // A card with more fields than this is a section of the page, not a card.
+  const CARD_FIELDS_MAX = 40;
+
+  const cellText = (cell) => norm(cell.innerText || cell.textContent || "");
+  const keyOf = (el) => el.localName + (el.classList.length ? `.${el.classList[0]}` : "");
+  const drawn = (el) => el.getClientRects().length > 0;
+
+  // Tables and card lists under the root, in page order, each list once: a
+  // list inside a card of one already read is part of that card.
+  function tables(opts) {
+    const root = opts.selector ? deepQuery(opts.selector) : document.body;
+    if (!root) return { error: "no content root" };
+    const found = [];
+    const lists = [];
+    for (const el of [root, ...deepElements(root)]) {
+      const table = tableOf(el);
+      if (table) found.push(table);
+      else if (!lists.some((p) => p.contains(el))) {
+        const cards = cardsOf(el);
+        if (cards.length) lists.push(el);
+        found.push(...cards);
+      }
+    }
+    return { url: location.href, title: document.title, ...withinLimit(found, opts) };
+  }
+
+  // query keeps the rows containing it; maxBytes (default 20000) bounds the
+  // JSON of what is kept, and the first row past it ends the read.
+  function withinLimit(found, opts) {
+    const keep = opts.query ? queryMatch(opts.query) : () => true;
+    const limit = opts.maxBytes || 20000;
+    const out = [];
+    let used = 0;
+    for (const t of found) {
+      const rows = [];
+      let size = JSON.stringify({ ...t, rows }).length;
+      for (const row of t.rows) {
+        if (!keep(row.join(" | "))) continue;
+        size += JSON.stringify(row).length + 1;
+        if (used + size > limit) return { tables: rows.length ? [...out, { ...t, rows }] : out, truncated: true };
+        rows.push(row);
+      }
+      if (!rows.length) continue;
+      out.push({ ...t, rows });
+      used += size;
+    }
+    return { tables: out, truncated: false };
+  }
+
+  // A drawn table's rows, or null for anything else. A table that holds
+  // other tables, or says it is for layout, lays out the page instead.
+  function tableOf(el) {
+    if (el.tagName === "TABLE") {
+      if (el.matches("[role=presentation],[role=none]") || el.querySelector("table") || !drawn(el)) return null;
+      const rows = [...el.rows];
+      const thead = rows.filter((row) => row.parentElement.tagName === "THEAD").length;
+      const head = thead || (rows.length > 1 && [...rows[0].cells].every((c) => c.tagName === "TH") ? 1 : 0);
+      return asTable(el.caption ? cellText(el.caption) : "", spanGrid(rows), head);
+    }
+    if (!el.matches(TABLE_ROLES) || !drawn(el)) return null;
+    const rows = [...el.querySelectorAll("[role=row]")].filter((row) => row.closest(TABLE_ROLES) === el)
+      .map((row) => [...row.querySelectorAll(CELL_ROLES)].filter((c) => c.closest("[role=row]") === row));
+    const head = rows.length > 1 && rows[0].length && rows[0].every((c) => c.getAttribute("role") === "columnheader") ? 1 : 0;
+    return asTable(el.getAttribute("aria-label") || "", rows.map((cells) => cells.map(cellText)), head);
+  }
+
+  // A cell that spans rows or columns fills each slot it covers, so every
+  // row lines up with the headers (as pandas' read_html reads them).
+  function spanGrid(rows) {
+    const grid = rows.map(() => []);
+    rows.forEach((row, r) => {
+      let c = 0;
+      for (const cell of row.cells) {
+        while (grid[r][c] !== undefined) c++;
+        const text = cellText(cell);
+        const down = Math.min(Math.max(1, cell.rowSpan), rows.length - r);
+        const across = Math.max(1, cell.colSpan);
+        for (let dr = 0; dr < down; dr++) for (let dc = 0; dc < across; dc++) grid[r + dr][c + dc] = text;
+        c += across;
+      }
+    });
+    return grid;
+  }
+
+  // Header rows join by column: "Price" over "USD" reads "Price / USD"; a
+  // table without them has none. Rows are padded to one width; empty ones
+  // are dropped.
+  function asTable(caption, grid, head) {
+    const width = grid.reduce((w, row) => Math.max(w, row.length), 0);
+    const pad = (row) => Array.from({ length: width }, (_, c) => row[c] ?? "");
+    const headers = head ? pad([]).map((_, c) => [...new Set(grid.slice(0, head).map((row) => row[c] ?? "").filter(Boolean))].join(" / ")) : [];
+    const rows = grid.slice(head).map(pad).filter((row) => row.some(Boolean));
+    return rows.length ? { kind: "table", ...(caption ? { caption } : {}), headers, rows } : null;
+  }
+
+  // The card lists among el's children: 3 or more drawn children with the
+  // same tag, first class, and fields, each with 2 or more text fields (a
+  // menu of bare links is not data).
+  function cardsOf(el) {
+    if (el.children.length < 3 || el.closest(`table,select,svg,${TABLE_ROLES}`)) return [];
+    const lists = [];
+    for (const alike of Map.groupBy(el.children, keyOf).values()) {
+      if (alike.length < 3) continue;
+      const cards = alike.map((card) => (drawn(card) ? cardFields(card) : null))
+        .filter((fields) => fields && fields.filter((f) => !f.link).length >= 2);
+      for (const same of Map.groupBy(cards, (fields) => fields.map((f) => f.key).join(" ")).values()) {
+        if (same.length >= 3) lists.push({ kind: "cards", headers: same[0].map((f) => f.key), rows: same.map((fields) => fields.map((f) => f.value)) });
+      }
+    }
+    return lists;
+  }
+
+  // A card's fields in page order: the own text of each drawn element
+  // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class,
+  // and each link's address after its text. null when it has too many.
+  function cardFields(card) {
+    const fields = [];
+    const add = (el) => {
+      const own = norm([...el.childNodes].map((n) => (n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.nodeName === "BR" ? " " : "")).join(""));
+      if (own && drawn(el)) fields.push({ key: keyOf(el), value: own });
+      if (el.tagName === "A" && el.href) fields.push({ key: `${keyOf(el)} href`, value: el.href, link: true });
+      return fields.length <= CARD_FIELDS_MAX;
+    };
+    if (!add(card)) return null;
+    for (const el of deepElements(card)) if (!add(el)) return null;
+    return fields;
   }
 
   function tabInfo() {

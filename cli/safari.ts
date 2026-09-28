@@ -23,8 +23,9 @@ import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } fr
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
+import type { Overview } from "../daemon/mission.ts";
 
-// Commands beyond the tools (guide, repl, session, do, daemon, routine)
+// Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
 // would add 5 ms to the start of every command.
 
@@ -35,6 +36,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
+  safari agents                              agents using Safari now, and the page
+                                             that pauses or stops them
+  safari doctor                              check every part the harness needs on this
+                                             Mac, with the fix for each that fails
   safari tabs                                list tabs
   safari open <url> [--bg] [--keep]          open a tab; prints its id
   safari goto <url> --tab N                  navigate
@@ -51,6 +56,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari hover <ref> --tab N                 hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
+  safari upload --find <words> --tab N       list the user's files that match, to pick
+                                             one (iCloud Drive, Documents, Desktop,
+                                             Downloads); attaches nothing
   safari scroll <dy> --tab N                 scroll
 
   Page commands need --tab N, the id open printed, or --tab front for the
@@ -61,8 +69,13 @@ const USAGE = `safari — drive Safari from the terminal
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
+  Reads (snapshot eval extract fetch) take --save to write the whole output
+  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>,
+  and print only its path, size, and first 500 characters.
+
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
   safari extract --tab N [--selector s]      readable text
+  safari extract --as table --tab N          tables and card lists as JSON rows
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
@@ -80,6 +93,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
+  safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
+                                             read up to 20 pages at once, each in a
+                                             background tab that closes after
+                                             (--expression js, --as table, --concurrency 4)
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
@@ -111,10 +128,17 @@ const USAGE = `safari — drive Safari from the terminal
   safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
   safari routine list | run <name> | remove <name>
                                              scheduled tasks run through omp
+  safari routine add <name> --at HH:MM|--every MIN --watch <url>
+                      --selector CSS | --text REGEX | --eval JS | --replay <recording>
+                                             a watch: no model; texts your phone when the
+                                             value it reads off the page changes
 
   safari guide sites                         sites with a usage guide
-  safari guide <site|host>                   one site's guide (e.g. slack, x.com)
+  safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
   safari guide repl                          the REPL's API and recipes
+  safari learn <site> "<fact>"               save a fact about a site for later agents
+                                             (at most 300 characters; never a secret)
+  safari learn <site> [--forget <n>]         list a site's notes; remove note n
 
   safari imessage chats [--limit N]          recent conversations
   safari imessage history <chat> [--limit N] [--since rowid]
@@ -126,10 +150,13 @@ const USAGE = `safari — drive Safari from the terminal
   safari imessage send <to> <text> [--approved]
                                              draft a text; sends only with --approved
   safari contacts <name>                     phones and emails for a contact
+  safari ask "<question>" [--choices a,b,c] [--ms N]
+                                             away from the Mac, text your phone the question
+                                             and wait for the answer; at the Mac, send nothing
 
   Every command takes --host <ssh-host> to use another Mac's Safari, and
-  --json to print JSON. Messages, Contacts, history, and fill commands run
-  in this terminal (they need its Full Disk Access), not in the daemon.
+  --json to print JSON. Messages, Contacts, history, ask, and fill commands
+  run in this terminal (they need its Full Disk Access), not in the daemon.
   A command's parameters also work as flags (click --ref 3 is click 3), and
   safari <command> --help lists them.
 `;
@@ -160,6 +187,15 @@ function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
   return { tab: t === "front" ? t : Number(t) };
+}
+
+// --save writes a read's whole output to a new file in the saved folder;
+// --save=<path> names the file. A relative path is the terminal's, not the
+// daemon's.
+function saveArg(argv: string[]): Record<string, unknown> {
+  if (hasFlag("save", argv)) return { save: true };
+  const path = flag("save", argv);
+  return path === undefined ? {} : { save: resolve(path) };
 }
 
 // The tool a command runs, where its name differs.
@@ -376,15 +412,19 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
-    const { parseSchedule, routineAdd, routineList, routineRemove, routineRun } = await import("./launchd.ts");
+    const { parseSchedule, routineAdd, routineAddWatch, routineList, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
       const schedule = parseSchedule(flag("at", r), flag("every", r));
-      console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      const url = flag("watch", r);
+      if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      else if (pos.length > 1) fail("a watch runs no model, so it takes no task");
+      else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, schedule));
     } else if (sub === "list") {
       print(await routineList());
     } else if (sub === "run") {
-      const { code, log } = await routineRun(pos[0]);
+      const { code, log, note } = await routineRun(pos[0]);
+      if (note !== undefined) console.log(note);
       console.log(`exit ${code}; log: ${log}`);
       process.exit(code);
     } else if (sub === "remove") {
@@ -411,6 +451,16 @@ async function main() {
     return;
   }
 
+  // doctor: this Mac's harness only, whatever host is the default; it exits
+  // 1 when a check fails (--json: the checks as data).
+  if (cmd === "doctor") {
+    const { doctor, report } = await import("./doctor.ts");
+    const checks = await doctor();
+    const failed = checks.some((c) => c.status === "fail");
+    console.log(json ? JSON.stringify({ ok: !failed, checks }) : report(checks));
+    process.exit(failed ? 1 : 0);
+  }
+
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
 
@@ -424,6 +474,24 @@ async function main() {
     console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
     console.log(h.extension ? `extension connected${h.extension.connectedAt ? ` since ${at(h.extension.connectedAt)}` : ""}` : "extension not connected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions");
     for (const { t, kind, ...rest } of h.journal ?? []) console.log(`${at(t)}  ${kind}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ""}`);
+    return;
+  }
+
+  // agents: every agent that used Safari in the last hour, its last call,
+  // and the pages that show it and let the user pause or stop it (--json:
+  // the whole answer).
+  if (cmd === "agents") {
+    const o = await fetch(`${daemonHttp()}/agents.json`).then((r) => r.json() as Promise<Overview>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    if (json) return print(o);
+    for (const a of o.agents) {
+      const tabs = a.tabs === null ? "" : `, ${a.tabs} tab${a.tabs === 1 ? "" : "s"}`;
+      console.log(`${a.owner === null ? "no agent" : `agent ${a.owner}${a.process ? ` (${a.process})` : ""}`}: ${a.status}${tabs}`);
+      for (const t of a.tasks) console.log(`  ${t.name}  ${daemonHttp()}/space?id=${t.id}&name=${encodeURIComponent(t.name)}`);
+      const c = a.last;
+      if (c) console.log(`  last: ${new Date(c.t).toLocaleTimeString("sv")} ${c.tool} ${c.args}  ${c.error ?? c.outcome ?? (c.held ? "held" : "running")}`);
+    }
+    if (o.agents.length === 0) console.log("no agent has used Safari in the last hour");
+    console.log(`watch, pause, or stop them: ${daemonHttp()}/agents`);
     return;
   }
 
@@ -460,9 +528,21 @@ async function main() {
     return;
   }
 
+  // One tool call waits about 2 minutes for the answer; the command waits
+  // out all of ms.
+  if (cmd === "ask") {
+    const choices = flag("choices", rest)?.split(",").map((c) => c.trim()).filter(Boolean);
+    const ms = flag("ms", rest);
+    const args = { question: rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" "), ...(choices ? { choices } : {}), ...(ms === undefined ? {} : { ms: Number(ms) }) };
+    for (;;) {
+      const r = await invoke("ask", args);
+      if (!(r && typeof r === "object" && "waiting" in r)) return print(r);
+    }
+  }
+
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = ALIAS[cmd] ?? cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
+  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
     case "tabs": break;
@@ -492,7 +572,7 @@ async function main() {
     case "select": args.ref = positional[0]; args.option = positional.slice(1).join(" "); break;
     case "hover": args.ref = positional[0]; break;
     case "upload": {
-      args.paths = positional.map((p) => resolve(p));
+      if (positional.length) args.paths = positional.map((p) => resolve(p));
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;
@@ -545,6 +625,7 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": args.url = positional[0]; break;
+    case "map": args.urls = positional; break;
     case "pdf": {
       args.do = positional[0] ?? "save";
       if (positional[1]) args.path = resolve(positional[1]);
@@ -554,6 +635,7 @@ async function main() {
     }
     case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
     case "history-search": args = { text: positional.join(" ") || undefined }; break;
+    case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");
@@ -580,7 +662,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
