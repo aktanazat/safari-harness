@@ -7,6 +7,9 @@
 //   extension -> daemon  {id, value} | {id, error}
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
 //   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
+//   extension -> daemon  {op:"note", kind, ...}  an event for the journal
+
+import { note } from "./journal.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -14,6 +17,12 @@ export const DEFAULT_PORT = 37333;
 // tabs running" in background.js): Safari holds the extension's own timers
 // to four a second, and this one is exact.
 const TICK_MS = 50;
+
+// How long a request waits for the extension when none is connected. It
+// connects again within a second or two of a daemon restart or an extension
+// reload (its retries back off to 10 s at most); a Safari that was not
+// running starts hidden and connects in about 5 s.
+const CONNECT_MS = 10000;
 
 // Minimal structural view of Bun's ServerWebSocket so the bridge stays
 // testable without a live server.
@@ -31,6 +40,7 @@ type WireMessage = {
   ua?: string;
   role?: string;
   on?: boolean;
+  kind?: unknown;
 };
 
 function asWire(raw: string): WireMessage | null {
@@ -46,44 +56,48 @@ function asWire(raw: string): WireMessage | null {
 type Pending = {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: Timer;
+  // the socket the request went out on: only that extension can answer it
+  sock: ExtSocket;
 };
-
-// With the extension gone, either Safari has quit or the extension is off.
-// A quit Safari starts again hidden, without taking the screen, and connects
-// in about 5 s; an agent that got only "not connected" once spent 2 min
-// before anyone opened it.
-async function notConnected(): Promise<never> {
-  const running = await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
-  if (running) throw new Error("Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions)");
-  Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
-  throw new Error("Safari is not running: it is starting in the background now; try again in a few seconds");
-}
 
 export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
-  private pending: Record<string, Pending> = {};
+  private pending = new Map<string, Pending>();
   private ticker: Timer | undefined;
+  private waiting = new Set<() => void>(); // requests waiting for a socket
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
 
   get connected(): boolean {
     return this.sock !== null;
   }
 
-  attach(sock: ExtSocket, hello?: WireMessage) {
-    if (this.sock && this.sock !== sock) {
-      try { this.sock.close(); } catch {}
-    }
+  // A new socket replaces the current one: the extension reloaded, or its
+  // old socket died without the daemon noticing. What the old one was asked
+  // it will never answer, so those requests fail now, not at their limit.
+  attach(sock: ExtSocket) {
+    const old = this.sock;
     this.sock = sock;
-    this.extensionInfo = { ua: hello?.ua, connectedAt: Date.now() };
+    this.extensionInfo = { connectedAt: Date.now() };
+    this.ticks(false);
+    if (old && old !== sock) {
+      const lost = this.drop(old, "the Safari extension restarted before it answered; try again");
+      try { old.close(); } catch {}
+      note("connect", { replaced: true, ...(lost ? { unanswered: lost } : {}) });
+    } else note("connect");
+    for (const wake of this.waiting) wake();
   }
 
-  detach() {
+  // A socket closed. Only the current one takes the connection with it; an
+  // old one closing after its replacement leaves the new one alone.
+  detach(sock: ExtSocket) {
+    const lost = this.drop(sock, "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again");
+    if (this.sock !== sock) return;
     this.sock = null;
     this.extensionInfo = null;
     this.ticks(false);
-    this.failAll(new Error("extension disconnected"));
+    note("disconnect", lost ? { unanswered: lost } : {});
   }
 
   // called by the server for every inbound frame on the extension socket
@@ -91,29 +105,37 @@ export class Bridge {
     const msg = asWire(raw);
     if (!msg) return;
     if (msg.op === "hello") {
-      this.extensionInfo = { ua: msg.ua, connectedAt: Date.now() };
+      this.extensionInfo = { ...this.extensionInfo, ua: msg.ua };
       return;
     }
     if (msg.op === "ticks") {
       this.ticks(msg.on === true);
       return;
     }
+    if (msg.op === "note" && typeof msg.kind === "string") {
+      note(msg.kind, Object.fromEntries(Object.entries(msg).filter(([k]) => k !== "op" && k !== "kind")));
+      return;
+    }
     if (msg.id === undefined) return;
     const key = String(msg.id);
-    const p = this.pending[key];
+    const p = this.pending.get(key);
     if (!p) return;
-    delete this.pending[key];
+    this.pending.delete(key);
     clearTimeout(p.timer);
     if (msg.error !== undefined) p.reject(new Error(String(msg.error)));
     else p.resolve(msg.value);
   }
 
-  private failAll(e: Error) {
-    for (const key of Object.keys(this.pending)) {
-      clearTimeout(this.pending[key].timer);
-      this.pending[key].reject(e);
-      delete this.pending[key];
+  private drop(sock: ExtSocket, reason: string): number {
+    let n = 0;
+    for (const [key, p] of this.pending) {
+      if (p.sock !== sock) continue;
+      this.pending.delete(key);
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+      n++;
     }
+    return n;
   }
 
   private ticks(on: boolean) {
@@ -121,22 +143,44 @@ export class Bridge {
     this.ticker = on ? setInterval(() => this.sock?.send('{"op":"tick"}'), TICK_MS) : undefined;
   }
 
-  request(op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {
-    if (!this.sock) return notConnected();
+  // The extension's socket, waiting for one when there is none. With the
+  // extension gone, it is reconnecting, Safari has quit, or the extension is
+  // off. A quit Safari starts again hidden, without taking the screen; an
+  // agent that got only "not connected" once spent 2 min before anyone
+  // opened it.
+  private async socket(): Promise<ExtSocket> {
+    if (this.sock) return this.sock;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(resolve, CONNECT_MS);
+    this.waiting.add(resolve);
+    const running = await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
+    if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
+    await promise;
+    clearTimeout(timer);
+    this.waiting.delete(resolve);
+    if (this.sock) return this.sock;
+    throw new Error(running
+      ? "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions)"
+      : `Safari was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
+  }
+
+  async request(op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {
+    const sock = await this.socket();
     const id = `d${++this.seq}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
-      delete this.pending[id];
+      this.pending.delete(id);
+      note("timeout", { op, ...(op === "relay" ? { tab: args[0], dom: args[1] } : {}), ms: timeoutMs });
       reject(new Error(`extension request ${op} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    this.pending[id] = { resolve, reject, timer };
-    this.sock.send(JSON.stringify({ id, op, args }));
+    this.pending.set(id, { resolve, reject, timer, sock });
+    sock.send(JSON.stringify({ id, op, args }));
     return promise;
   }
 
   // relay a DOM op into the content script of a specific tab: its top page,
   // or the embedded frame frameId. The extension gets the time limit too,
-  // and times out first, so it never re-sends an op the daemon has given up on.
+  // and answers first, so it never re-sends an op the daemon has given up on.
   tab(tabId: number, op: string, args: unknown[] = [], timeoutMs = 30000, frameId = 0): Promise<unknown> {
     return this.request("relay", [tabId, op, args, timeoutMs, frameId], timeoutMs + 2000);
   }
