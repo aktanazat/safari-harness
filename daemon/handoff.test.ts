@@ -20,18 +20,21 @@ type Mac = { app: string; activated: number[]; notices: string[]; texts: { line:
 const MAIL = "com.apple.mail";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
-// Mail is in front. Safari's one window shows the user's tab 3 and holds
-// the agent's tab behind it, on a page with a Cloudflare box, or a
-// Cloudflare block, while page.check says so. The Mac records the tabs the
-// harness activates, the app in front, the notices, and the texts.
+// Mail is in front. Safari's window shows the user's tab 3; the agent's tab
+// sits alone in an agent window behind it, which never holds the front tab,
+// on a page with a Cloudflare box, or a Cloudflare block, while page.check
+// says so. Safari shows the window of the tab activated last. The Mac
+// records the tabs the harness activates, the app in front, the notices,
+// and the texts.
 function mac(tab: number, page: Page): Mac {
-  const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 1, url: page.url, active: false }];
-  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], use: (id) => { for (const t of tabs) t.active = t.id === id; } };
+  const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
+  let shown = 1;
+  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
   bridge.attach({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
-      if (op === "tabs.list") return answer({ value: tabs.map((t) => ({ ...t, url: t.id === tab ? page.url : t.url, front: t.active })) });
+      if (op === "tabs.list") return answer({ value: tabs.map((t) => ({ ...t, url: t.id === tab ? page.url : t.url, ...(t.windowId === 1 ? { front: true } : {}), ...(t.windowId === shown ? { shown: true } : {}) })) });
       if (op === "tabs.activate") {
         m.activated.push(args[0]);
         m.use(args[0]);

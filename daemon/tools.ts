@@ -14,8 +14,9 @@ import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 
-// front: the active tab of the window the user had in front last
-export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean };
+// front: the active tab of the window the user had in front last; shown: the
+// active tab of the window Safari shows in front, agent windows included
+export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean };
 
 type Relay = (tabId: number, op: string, args?: unknown[], timeoutMs?: number) => Promise<unknown>;
 const relay: Relay = (tabId, op, args = [], timeoutMs) => bridge.tab(tabId, op, args, timeoutMs);
@@ -384,8 +385,9 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
       h.now = { url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
       if (challenge === undefined && (seen !== undefined || now.url !== first.url)) {
         h.done = true;
-        // gone elsewhere, they have taken back what they wanted themselves
-        if (now.front && (await frontApp().catch(() => undefined)) === SAFARI) await giveBack();
+        // gone elsewhere, they have taken back what they wanted themselves;
+        // the tab sits in an agent window, which never holds the front tab
+        if (now.shown && (await frontApp().catch(() => undefined)) === SAFARI) await giveBack();
         return;
       }
     }

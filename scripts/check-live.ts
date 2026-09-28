@@ -223,12 +223,16 @@ const untargeted = await call("snapshot", {}).then(() => "resolved", (e: Error) 
 check("a page tool without tab is an error, not a read of the front tab", untargeted.startsWith("snapshot: tab is required"), untargeted);
 
 // Brings Safari to the front for a moment, then gives back the app and tab
-// that were in front. A failure prints only whose tab it was: the other
-// is the user's.
+// that were in front. Our tab sits in an agent window, which never holds
+// the user's front tab, even raised: "front" names the tab he was on. A
+// failure prints only whose tab it was; his page is never read.
 const TAB_OPS = { tabs: () => call("tabs") as Promise<Tab[]>, activate: (tab: number) => call("activate", { tab }) };
 await withPage("<p>front check</p>", 'document.title = "front check"', async (tab) => {
-  const named = await inFront(tab, TAB_OPS, () => call("info", { tab: "front" }));
-  check('tab "front" names the tab in front', named.title === "front check", named.title === "front check" ? "ours" : "another tab");
+  const rows = await inFront(tab, TAB_OPS, () => call("tabs") as Promise<(Tab & { windowId: number })[]>);
+  const ours = rows.find((t) => t.id === tab);
+  const front = rows.filter((t) => t.front);
+  check('tab "front" stays the user\'s tab while an agent tab is raised', front.length === 1 && front[0].windowId !== ours?.windowId,
+    front.length === 1 ? (front[0].id === tab ? "ours" : "another agent window's tab") : `${front.length} tabs marked front`);
 });
 
 const closed = (await call("open", { url: "https://example.com/", background: true })).id as number;

@@ -580,11 +580,12 @@ async function handle(msg) {
     case "tabs.list": {
       const tabs = await api.tabs.query({});
       // Every window has an active tab; front is the one in the window the
-      // user had in front last, the tab tab: "front" names.
-      const focused = await userWindow();
+      // user had in front last, the tab tab: "front" names. shown is the one
+      // Safari shows in front, which may be in an agent window an agent raised.
+      const [focused, shown] = await Promise.all([frontWindow(false), frontWindow(true)]);
       return tabs
         .filter((t) => t.id !== undefined)
-        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}) }));
+        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}), ...(t.active && t.windowId === shown ? { shown: true } : {}) }));
     }
     case "tabs.open": {
       const [url, background, windowId] = args;
@@ -821,7 +822,7 @@ async function ownTab(tabId) {
 // alone; an idle one stays while the user has it in front.
 async function inFront(tabId) {
   const t = await api.tabs.get(tabId);
-  return t.active && t.windowId === await userWindow();
+  return t.active && t.windowId === await frontWindow(false);
 }
 
 // ---------- ids across a reload ----------
@@ -938,8 +939,9 @@ api.windows.onRemoved.addListener((id) => {
   }).catch(() => {});
 });
 
-// The window the user had in front last.
-async function userWindow() {
+// The window focused last: with agents, whichever it is; without, the one
+// the user had in front last, leaving agent windows out.
+async function frontWindow(agents) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
   if (adopted) await adopted.catch(() => {});
   const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
@@ -948,7 +950,7 @@ async function userWindow() {
     api.windows.getLastFocused().then((w) => w.id, () => undefined),
   ]);
   const ids = new Set(open.map((w) => w.id));
-  return [...focusOrder, last, ...ids].find((id) => ids.has(id) && !agentWindows.includes(id));
+  return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));
 }
 
 // ---------- tabs agents work in ----------
