@@ -46,6 +46,20 @@ test("a script that ends in a statement runs whole and returns nothing", async (
   expect(await run("const n = f()\nfunction f() { return 7 }")).toBeNull();
 });
 
+// On 09-28 an agent's script that ended in a loop, then ({ len, out }),
+// came back null with no error.
+test("a value after a loop's or an if's block is the script's last value; after a function's brace it is the call", async () => {
+  expect(await run("const out = [];\nfor (const x of [1, 2]) { if (x > 1) break; out.push(x) } ({ n: out.length, out })")).toEqual({ n: 1, out: [1] });
+  expect(await run("if (true) { globalThis.hit = 1 }\n[1, 2].length")).toBe(2);
+  expect(await run("const k = 2;\nglobalThis.twice = function (a) { return a * k }\n(4)")).toBe(8);
+});
+
+// On 09-28 a script with a stray word at its end failed with "Unexpected
+// keyword 'const'", its first word, so the agent rewrote code that was fine.
+test("a script that does not parse fails naming the error in its statements", async () => {
+  await expect(run("const a = 1; a )")).rejects.toThrow("Unexpected token ')'");
+});
+
 // A snapshot names a cross-origin frame's refs "f3:12"; the same prefix on
 // code runs it in that frame.
 test("the prefix of a frame's refs runs a script in that frame, in either world", async () => {

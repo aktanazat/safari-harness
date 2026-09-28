@@ -21,15 +21,20 @@ const DECLARATION = /^(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*(?:async\
 
 export function asExpression(source: string): string {
   if (!/\bawait\b/.test(source) && parses(`return (${source})`)) return source;
-  // one that parses as neither goes as it is, for the page to name the error
-  if (!parses(asyncBody(source))) return source;
-  const { starts, last } = statementStarts(source);
+  // One that parses as neither goes as statements, so the page names the
+  // error in them: as an expression, any script fails at its first keyword.
+  if (!parses(asyncBody(source))) return `(async () => {${source}\n})()`;
+  const { starts, joins, last } = statementStarts(source);
   // The last start after which the script before it parses is the last
   // statement's; a misread start fails that parse.
   for (let k = starts.length - 1; k >= -1; k--) {
     const start = k < 0 ? 0 : starts[k];
     const head = source.slice(0, start);
     if (!parses(asyncBody(head))) continue;
+    // A brace the next token may carry on ends a statement only when nothing
+    // can follow it the way it follows an expression: after a loop's or an
+    // if's block, "(" starts a statement; after a function's, it calls it.
+    if (joins.has(start) && parses(asyncBody(`${head}.x`))) continue;
     const tail = source.slice(start, last);
     if (DECLARATION.test(tail)) break;
     const body = `${head}\nreturn (${tail}\n)`;
@@ -56,16 +61,19 @@ function continues(source: string, i: number, division: boolean): boolean {
 
 // Where each top-level statement of source may begin: after a semicolon,
 // or after a line break or a block's closing brace that ends one; and where
-// the last token ends. Strings, templates, comments, and regular
-// expressions are stepped over.
-function statementStarts(source: string): { starts: number[]; last: number } {
+// the last token ends. joins are the starts after a closing brace whose next
+// token carries on an expression, and so a statement only after a block.
+// Strings, templates, comments, and regular expressions are stepped over.
+function statementStarts(source: string): { starts: number[]; joins: Set<number>; last: number } {
   const starts: number[] = [];
+  const joins = new Set<number>();
   const templates: number[] = []; // the depth each open ${ in a template sits at
   let depth = 0;
   let last = 0;
   let prev = ""; // the last token: a word, "lit" for a literal, or a punctuator
   let open = false; // a statement has begun since the last start
   let soft = -1; // where a statement ends unless the next token carries it on
+  let brace = -1; // soft, when a closing brace set it
   let i = 0;
   const n = source.length;
   // a template's text from i, up to its end or its next ${
@@ -108,6 +116,10 @@ function statementStarts(source: string): { starts: number[]; last: number } {
     }
     const regex = c === "/" && (prev === "" || prev === "}" || BEFORE_REGEX[prev] || (prev.length === 1 && !WORD.test(prev) && prev !== ")" && prev !== "]"));
     if (soft >= 0 && !continues(source, i, c === "/" && !regex)) starts.push(soft);
+    else if (soft >= 0 && soft === brace) {
+      starts.push(soft);
+      joins.add(soft);
+    }
     soft = -1;
     if (c === ";") {
       if (depth === 0) {
@@ -149,11 +161,11 @@ function statementStarts(source: string): { starts: number[]; last: number } {
     } else {
       if ("([{".includes(c)) depth++;
       if (")]}".includes(c)) depth--;
-      if (c === "}" && depth === 0) soft = i + 1;
+      if (c === "}" && depth === 0) soft = brace = i + 1;
       prev = c;
       i++;
     }
     last = Math.min(i, n);
   }
-  return { starts: starts.filter((s) => s < last), last };
+  return { starts: starts.filter((s) => s < last), joins, last };
 }
