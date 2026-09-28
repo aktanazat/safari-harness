@@ -56,12 +56,18 @@ daemon/
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
                     and draft-then-approve sending (chat.db read-only,
                     AddressBook, osascript)
+  finder.ts         upload's find: Spotlight over iCloud Drive, Documents,
+                    Desktop, and Downloads, returning paths, never contents
+  downloads.ts      the files Safari saves to ~/Downloads while an agent's
+                    click, press, or download runs
   agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API;
                     gets the Messages read tools, not send)
 cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
 cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
+cli/doctor.ts       `safari doctor`: checks each part the harness needs on
+                    this Mac and prints the fix for each that fails
 docs/GUIDE.md       the short card of rules (`safari guide`)
 docs/REFERENCE.md   every tool in full (`safari guide reference`)
 docs/sites/         one note per site (`safari guide <site>`)
@@ -115,8 +121,12 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 3. Launch "Safari Harness.app" once, then in Safari:
    Settings ▸ Extensions ▸ enable **Safari Harness**.
    That GUI toggle is the only manual step; no Develop-menu or
-   "Allow remote automation" toggle is needed for this path.
-4. `safari status` should show the extension connected.
+   "Allow remote automation" toggle is needed for this path (that one is
+   for Apple's own `safaridriver --mcp`; see "Two lanes" in
+   docs/REFERENCE.md).
+4. Run `safari doctor`. It checks every part, the extension connection
+   and Accessibility and Full Disk Access for your terminal included, and
+   prints the fix for each that fails.
 
 ## Deploys
 

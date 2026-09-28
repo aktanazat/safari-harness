@@ -24,7 +24,7 @@ import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
 
-// Commands beyond the tools (guide, repl, session, do, daemon, routine)
+// Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
 // would add 5 ms to the start of every command.
 
@@ -35,6 +35,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
+  safari doctor                              check every part the harness needs on this
+                                             Mac, with the fix for each that fails
   safari tabs                                list tabs
   safari open <url> [--bg] [--keep]          open a tab; prints its id
   safari goto <url> --tab N                  navigate
@@ -410,6 +412,16 @@ async function main() {
     });
     child.on("exit", (code) => process.exit(code ?? 0));
     return;
+  }
+
+  // doctor: this Mac's harness only, whatever host is the default; it exits
+  // 1 when a check fails (--json: the checks as data).
+  if (cmd === "doctor") {
+    const { doctor, report } = await import("./doctor.ts");
+    const checks = await doctor();
+    const failed = checks.some((c) => c.status === "fail");
+    console.log(json ? JSON.stringify({ ok: !failed, checks }) : report(checks));
+    process.exit(failed ? 1 : 0);
   }
 
   // Everything below talks to a daemon: this Mac's, or --host's.

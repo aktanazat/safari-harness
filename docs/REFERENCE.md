@@ -20,10 +20,28 @@ Three ways in:
   with the same tools. See "Routines" below.
 
 No health check is needed first: when the extension is not connected, every
-tool says so. Then `safari status` shows the connection, and
-"Troubleshooting" has the fix. When Safari is not running, tools say
-"Safari is not running" and start it again hidden, without taking the
-screen; call again a few seconds later.
+tool says so. Then `safari doctor` checks every part the harness needs on
+this Mac and prints the fix for each that fails (see "Troubleshooting").
+When Safari is not running, tools say "Safari is not running" and start it
+again hidden, without taking the screen; call again a few seconds later.
+
+## Two lanes: this harness or Apple's safaridriver
+
+Apple's own `safaridriver --mcp` (in `/usr/bin`) is an MCP server that
+drives Safari too, in automation windows of its own, marked by an orange
+address field, with a clean session: none of the user's logins, cookies,
+AutoFill, or history, and one session at a time. It runs only once the user
+turns on Allow remote automation in Safari's Developer settings, and omp
+has it only once he adds it as an MCP server; `safari doctor` says whether
+the setting is on.
+
+- Use this harness for anything that needs the user: his signed-in sites,
+  his passwords and codes, his Messages, his tabs.
+- Use Apple's lane, when omp has it, for public pages that need a browser
+  and for debugging a local server (`localhost`): the clean session shows
+  what a first-time visitor sees, and nothing touches the user's windows.
+- A public page that only needs reading is cheaper still without Safari
+  (see "Reading a page").
 
 ## Tabs: work in your own tab
 
@@ -524,6 +542,12 @@ its own `safari` command.
 
 ## Troubleshooting
 
+- Start with `safari doctor`. It checks Safari, the daemon and its launchd
+  job, the extension and whether it is the deployed release's, a round
+  trip through a hidden tab it opens and closes, Accessibility, Messages
+  access, the passwords pairing, free disk, swap, and Apple's safaridriver
+  lane, and prints the fix under each failure. It changes no setting and
+  starts no Safari, and it exits 1 when a check fails (`--json` for data).
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
 - `safari status` shows the daemon's recent events, one a line: its starts

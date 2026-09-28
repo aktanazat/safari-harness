@@ -27,7 +27,7 @@ const toAppleNs = (ms: number) => (ms - APPLE_EPOCH_MS) * 1e6;
 // Messages keep what counts as a real message: no tapbacks, no group events.
 const REAL = "m.item_type = 0 AND NOT (m.associated_message_type BETWEEN 2000 AND 3999)";
 
-function openChatDb(): Database {
+export function openChatDb(): Database {
   try {
     return new Database(CHAT_DB, { readonly: true });
   } catch (e) {
