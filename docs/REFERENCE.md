@@ -248,7 +248,8 @@ Read with `snapshot` when you do not yet know what is on the page.
   less, clipped boxes, boxes placed off the page, fonts of a pixel or
   less, and letters with a clear fill. A visually hidden label still names
   its control, and `aria-hidden` text still reads. Unicode tag characters,
-  which draw nothing, are removed. `showHidden: true` reads it all.
+  which draw nothing, are removed. `showHidden: true` (CLI `--showHidden`)
+  reads it all.
 - Page text that tells AI agents what to do ("Ignore all previous
   instructions", "Note to AI agents: ...", "If you are an AI, you must
   ...") starts with `(to AI agents) `, and the result says how many
@@ -381,7 +382,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   tab.
 - `type` in a rich editor (a contenteditable chat box or document) goes
   through the editor's own editing events, so the editor keeps the text;
-  `append: true` adds at the end.
+  `append: true` adds at the end. An editor that names no role of its own
+  (ProseMirror's) shows in `snapshot` as a `textbox` with a ref.
 - `type` answers `{ok, kept, typed: "N chars"}`, never the text. `kept` is
   false when the page changed or cut what you typed (a phone field adds
   dashes, a length limit drops the rest): snapshot to see it.
