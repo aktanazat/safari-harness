@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { bridge } from "./bridge.ts";
-import { passwords } from "./passwords.ts";
+import { ApplePasswords, passwords } from "./passwords.ts";
 import { callTool } from "./tools.ts";
 
 // The passwords tool promises three things: only the code the Mac shows
@@ -156,4 +156,40 @@ test("fill on a page that is not https asks the helper for nothing", async () =>
   await expect(callTool("passwords", { do: "fill", tab: 7 })).rejects.toThrow("https");
   expect(helper.queries).toEqual([]);
   expect(page).toEqual({});
+});
+
+// Every agent shares the one pairing, so no call may end it; only the helper
+// going away does, and then a locked call says why and what to do next.
+test("no call ends the shared pairing; a helper restart does, and the locked call says why and to pair now", async () => {
+  fakeHelper();
+  fakeTab(`https://${SITE}/signin`);
+  await callTool("passwords", { do: "pair" });
+  await callTool("passwords", { do: "unlock", code: CODE });
+  await expect(callTool("passwords", { do: "lock" })).rejects.toThrow();
+  expect(await callTool("passwords", { do: "status" })).toEqual({ unlocked: true });
+  fakeHelper(); // Helium relaunched: its helper is a new process
+  const { unlocked, reason } = (await callTool("passwords", { do: "status" })) as { unlocked: boolean; reason: string };
+  expect(unlocked).toBe(false);
+  expect(reason).toContain("restarted at");
+  const error = await callTool("passwords", { do: "fill", tab: 7 }).then(() => "filled", (e: Error) => e.message);
+  expect(error).toContain(reason);
+  expect(error).toContain('{do: "pair"}');
+});
+
+test("Apple Passwords turning off or asking to sign in again ends the pairing, and the locked call says which", async () => {
+  for (const [cmd, why] of [[9, "turned off"], [10, "sign in again"]] as const) {
+    fakeHelper();
+    fakeTab(`https://${SITE}/signin`);
+    await callTool("passwords", { do: "pair" });
+    await callTool("passwords", { do: "unlock", code: CODE });
+    passwords.handleMessage(JSON.stringify({ helper: { cmd } }));
+    const error = await callTool("passwords", { do: "logins", tab: 7 }).then(() => "listed", (e: Error) => e.message);
+    expect(error).toContain(why);
+  }
+});
+
+test("the helper's first start reads as never paired, not as a restart", () => {
+  const fresh = new ApplePasswords();
+  fresh.attach({ send() {}, close() {} });
+  expect(fresh.status()).toEqual({ unlocked: false, reason: expect.stringContaining("not been paired since") });
 });

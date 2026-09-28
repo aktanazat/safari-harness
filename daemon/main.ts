@@ -142,7 +142,7 @@ console.log(`[safari-harness] extension+cdp ws :${wsPort}  rpc http :${httpPort}
 function stop() {
   stopAllPumps();
   bridge.detach();
-  passwords.lock();
+  passwords.shutdown();
   server.stop();
   rpcServer.stop();
   process.exit(0);

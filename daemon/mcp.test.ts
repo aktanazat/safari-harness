@@ -20,7 +20,10 @@ type Call = { tool: string; args: Record<string, unknown> };
 // off the list, reached through repl and the CLI. Holding a tab on screen
 // during wait (76) brought it to 16,979: a routine can finish a sign-in
 // page that stalls in a hidden tab without Accessibility permission.
-const TOOL_LIST_MAX_BYTES = 16_979;
+// Trading passwords lock for status (14) brought it to 16,993: one agent's
+// lock had locked the shared pairing for every other agent, and status says
+// why it is locked.
+const TOOL_LIST_MAX_BYTES = 16_993;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

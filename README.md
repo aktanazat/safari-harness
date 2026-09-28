@@ -243,8 +243,9 @@ unlisted, answer `-32000 not supported` — never a fake result.
   session; if Safari unloads it, the `alarms` keepalive reconnects it
 - Apple Passwords needs a hidden Helium: macOS kills its browser helper
   (`SIGKILL (Code Signature Invalid)`) unless an allow-listed browser starts
-  it. Helium must be installed in /Applications, and the pairing lasts until
-  the daemon restarts or `passwords {do: "lock"}`
+  it. Helium must be installed in /Applications. Every agent shares the one
+  pairing, which lasts until the daemon or the hidden helper restarts; no
+  tool ends it, and `passwords {do: "status"}` says why it is locked
 - Messages and browsing history need Full Disk Access, and real input
   needs Accessibility; the launchd daemon has neither, so those tools run in
   the calling process (terminal or MCP server)

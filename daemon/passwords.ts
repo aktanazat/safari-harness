@@ -11,7 +11,9 @@
 // Pairing is SRP-6a (RFC 5054, 3072-bit group, SHA-256) with the 6-digit code
 // macOS shows as the password; the session key then encrypts every query with
 // AES-GCM. The pairing lives as long as the helper process, so a daemon or
-// Helium restart needs a new code.
+// Helium restart needs a new code. Every agent shares the one pairing, so no
+// tool ends it; each time it ends, the reason is kept for status and for the
+// error a locked call gets.
 //
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
@@ -79,8 +81,13 @@ type Session = { user: string; key: Buffer };
 
 type State =
   | { kind: "idle" }
-  | { kind: "challenged"; challenge: Challenge }
+  | { kind: "challenged"; challenge: Challenge; at: string }
   | { kind: "unlocked"; session: Session };
+
+// "Sep 28, 8:40 PM": when a pairing ended, in the Mac's own time zone.
+function localTime(at = new Date()): string {
+  return at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 
 // M goes to the helper; the helper must answer with HAMK; K is the shared key.
 function prove(c: Challenge, code: string): { M: Buffer; HAMK: Buffer; K: Buffer } {
@@ -115,8 +122,6 @@ export type HelperLink = { send(data: string): void; close(): void };
 type HelperMsg = Record<string, unknown> & { cmd?: number };
 type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error) => void };
 
-const NOT_UNLOCKED = 'Apple Passwords is locked: call passwords {do: "pair"}, ask the user for the 6-digit code their Mac shows, then passwords {do: "unlock", code}';
-
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
   const p = reply.payload;
@@ -130,6 +135,9 @@ export class ApplePasswords {
   private linked: PromiseWithResolvers<void> | null = null;
   private helium: Subprocess | null = null;
   private state: State = { kind: "idle" };
+  // Why the state is idle, in plain words.
+  private why = `it has not been paired since the harness started at ${localTime()}`;
+  private helperSeen = false;
   private waiter: Waiter | null = null;
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
@@ -138,14 +146,15 @@ export class ApplePasswords {
   attach(link: HelperLink) {
     if (this.link && this.link !== link) this.link.close();
     this.link = link;
-    this.state = { kind: "idle" };
+    this.reset(this.helperSeen ? `Apple's password helper restarted at ${localTime()}` : `it has not been paired since Apple's password helper started at ${localTime()}`);
+    this.helperSeen = true;
     this.linked?.resolve();
   }
 
   detach(link: HelperLink) {
     if (this.link !== link) return;
     this.link = null;
-    this.state = { kind: "idle" };
+    this.reset(`Apple's password helper stopped at ${localTime()}`);
     this.fail(new Error("the Helium password bridge disconnected"));
   }
 
@@ -153,13 +162,14 @@ export class ApplePasswords {
     let msg: { helper?: HelperMsg; closed?: string };
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.closed !== undefined) {
-      this.state = { kind: "idle" };
+      this.reset(`Apple's password helper stopped at ${localTime()} (${msg.closed})`);
       this.fail(new Error(`Apple's password helper closed: ${msg.closed}`));
       return;
     }
     const m = msg.helper;
     if (!m) return;
-    if (m.cmd === Cmd.DISABLED || m.cmd === Cmd.RELOGIN) this.state = { kind: "idle" };
+    if (m.cmd === Cmd.DISABLED) this.reset(`Apple Passwords was turned off on this Mac at ${localTime()}`);
+    if (m.cmd === Cmd.RELOGIN) this.reset(`Apple Passwords asked to sign in again at ${localTime()}`);
     if (this.waiter && m.cmd === this.waiter.cmd) {
       const w = this.waiter;
       this.waiter = null;
@@ -169,6 +179,22 @@ export class ApplePasswords {
 
   get unlocked(): boolean {
     return this.state.kind === "unlocked";
+  }
+
+  private reset(why: string) {
+    this.state = { kind: "idle" };
+    this.why = why;
+  }
+
+  status(): { unlocked: boolean; reason?: string } {
+    if (this.state.kind === "unlocked") return { unlocked: true };
+    return { unlocked: false, reason: this.state.kind === "challenged" ? `a pairing began at ${this.state.at} and its code has not been entered` : this.why };
+  }
+
+  // What a call that needs the pairing gets without one: why, then the one
+  // way on.
+  lockedError(): Error {
+    return new Error(`Apple Passwords is locked: ${this.status().reason}. Pair now: call passwords {do: "pair"}, and in the same message ask the user for the 6-digit code their Mac shows; then call passwords {do: "unlock", code}. Do not route around the lock.`);
   }
 
   private fail(e: Error) {
@@ -236,7 +262,7 @@ export class ApplePasswords {
       if (String(pake.MSG) !== "1" || pake.PROTO !== 1) throw new Error("the helper spoke an unknown pairing version");
       const B = Buffer.from(String(pake.B), "base64");
       if (fromBytes(B) % N === 0n) throw new Error("the helper sent an invalid pairing key");
-      this.state = { kind: "challenged", challenge: { user, a, A, B, salt: Buffer.from(String(pake.s), "base64") } };
+      this.state = { kind: "challenged", challenge: { user, a, A, B, salt: Buffer.from(String(pake.s), "base64") }, at: localTime() };
       return { codeShown: true };
     });
   }
@@ -247,7 +273,7 @@ export class ApplePasswords {
       if (this.state.kind !== "challenged") throw new Error('no code is waiting: call passwords {do: "pair"} first');
       const c = this.state.challenge;
       // A failed try burns the code on the helper's side, so drop it here too.
-      this.state = { kind: "idle" };
+      this.reset(`the pairing code entered at ${localTime()} was not accepted`);
       const { M, HAMK, K } = prove(c, code);
       const verify = { TID: c.user, MSG: 2, M: M.toString("base64") };
       const pake = pakeOf(await this.ask(Cmd.HANDSHAKE, {
@@ -262,7 +288,7 @@ export class ApplePasswords {
   }
 
   private async query(cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs: number, silence?: string): Promise<Record<string, unknown>> {
-    if (this.state.kind !== "unlocked") throw new Error(NOT_UNLOCKED);
+    if (this.state.kind !== "unlocked") throw this.lockedError();
     const s = this.state.session;
     const reply = await this.ask(cmd, {
       tabId: 0,
@@ -325,10 +351,11 @@ export class ApplePasswords {
     });
   }
 
-  // Forget the pairing and quit the hidden Helium (it holds about 330 MB).
-  lock(): { locked: true } {
-    this.state = { kind: "idle" };
-    this.fail(new Error("locked"));
+  // Forget the pairing and quit the hidden Helium (it holds about 330 MB),
+  // as the daemon exits.
+  shutdown() {
+    this.reset("the harness stopped");
+    this.fail(new Error("the harness stopped"));
     const link = this.link;
     this.link = null;
     link?.close();
@@ -336,7 +363,6 @@ export class ApplePasswords {
     this.helium = null;
     // A Helium left by an earlier daemon reconnects to this one; stop it too.
     Bun.spawnSync(["pkill", "-f", `user-data-dir=${PROFILE}`]);
-    return { locked: true };
   }
 }
 
@@ -382,7 +408,7 @@ async function siteOf(tab: number): Promise<string> {
 }
 
 export async function loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
-  if (!passwords.unlocked) throw new Error(NOT_UNLOCKED);
+  if (!passwords.unlocked) throw passwords.lockedError();
   const site = await siteOf(tab);
   return { site, usernames: await passwords.logins(site) };
 }
@@ -390,7 +416,7 @@ export async function loginsFor(tab: number): Promise<{ site: string; usernames:
 // Fills the saved login into the tab's sign-in form. The result names the
 // fields filled, never the password.
 export async function fill(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
-  if (!passwords.unlocked) throw new Error(NOT_UNLOCKED);
+  if (!passwords.unlocked) throw passwords.lockedError();
   const site = await siteOf(tab);
   const form = await bridge.tab(tab, "loginForm", [site]);
   const hasPassword = !!form && typeof form === "object" && "password" in form && form.password === true;
@@ -412,7 +438,7 @@ export async function fill(tab: number, username?: string): Promise<{ filled: st
 // Types the site's current verification code into the tab's code field.
 // The result never carries the code.
 export async function fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
-  if (!passwords.unlocked) throw new Error(NOT_UNLOCKED);
+  if (!passwords.unlocked) throw passwords.lockedError();
   const site = await siteOf(tab);
   const form = await bridge.tab(tab, "codeField", [site]);
   if (!form || typeof form !== "object" || !("found" in form) || form.found !== true) throw new Error("no verification code field on this page");
