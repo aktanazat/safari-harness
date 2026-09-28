@@ -699,9 +699,16 @@ export class ApplePasswords {
 // no page or spare renderer: 4 processes and about 200 MB, where Helium's
 // defaults ran 8 and about 320 MB. About 90 MB of the rest is uBlock Origin,
 // which Helium builds in and will not turn off.
+//
+// The profile keeps the service worker the bridge last ran, and Helium
+// starts that copy over the files in bridge/, even for a new version: the
+// bridge before this one dialed in, never said hello, and every sign-in
+// timed out. Nothing runs on the profile here (a launch follows a quit), so
+// dropping the cached worker makes Helium register this release's bridge.
 export function launchHelium(profile: string, port: number): ChildProcess {
   if (!existsSync(HELIUM)) throw new Error("Apple Passwords needs Helium in /Applications (macOS lets only approved browsers reach the password helper)");
   const ext = join(profile, "bridge");
+  rmSync(join(profile, "Default", "Service Worker"), { recursive: true, force: true });
   mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
   cpSync(BRIDGE_SRC, ext, { recursive: true });
   writeFileSync(join(ext, "port.json"), JSON.stringify({ port }));
