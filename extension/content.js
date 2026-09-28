@@ -1530,5 +1530,6 @@
     if (!r) return;
     window.__safariHarnessTab = r.tab;
     if (r.dialogs) setDialogs(r.dialogs);
+    if (r.net === false) document.dispatchEvent(new Event("__sh_net_off"));
   }, () => {});
 })();

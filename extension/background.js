@@ -168,6 +168,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const onCreated = (t) => {
     if (opened !== null || (t.openerTabId !== undefined && t.openerTabId !== tabId)) return;
     opened = t.id;
+    drive(t.id);
     if (ready.get(t.id) !== true) ready.set(t.id, false);
     wake();
   };
@@ -412,6 +413,7 @@ const CAPTURE = { net: "net", netRead: "net", console: "console", consoleRead: "
 
 async function capture(tabId, op, args) {
   const kind = CAPTURE[op];
+  drive(tabId);
   const cmd = op.endsWith("Read") ? "read" : args && args[0] ? "start" : "stop";
   if (kind === "console") {
     const [res] = await api.scripting.executeScript({ target: { tabId }, world: "MAIN", func: pageCapture, args: [kind, cmd] });
@@ -435,9 +437,11 @@ async function capture(tabId, op, args) {
 // Runs in the page, so it must be self-contained.
 function pageCapture(kind, cmd) {
   if (kind === "net") {
-    const net = window[Symbol.for("safari-harness.page")]?.net;
+    const page = window[Symbol.for("safari-harness.page")];
+    const net = page?.net;
     if (!net) return null;
     if (cmd === "read") return net.log.slice(-100);
+    if (cmd === "start") page.logNet?.();
     net.on = cmd === "start";
     if (net.on) net.log.length = 0;
     return true;
@@ -586,6 +590,7 @@ async function handle(msg) {
       const [url, background] = args;
       const tab = await api.tabs.create({ url: url || "about:blank", active: !background });
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
+      drive(tab.id);
       if (background) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
       const t = await api.tabs.get(tab.id);
@@ -755,6 +760,7 @@ api.tabs.onRemoved.addListener((id) => {
   markReady(id);
   ready.delete(id);
   awake.delete(id);
+  if (drivenTabs.delete(id)) store.set({ driven: [...drivenTabs] }).catch(() => {});
   store.remove(`dialogs:${id}`).catch(() => {});
   api.storage.local.get("tabAliases").then(({ tabAliases }) => {
     if (!tabAliases) return;
@@ -769,7 +775,7 @@ api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
   if (!sender.frameId) markReady(sender.tab.id);
   else for (const w of frameWaits.get(sender.tab.id)?.values() ?? []) w.join(sender.frameId);
-  return policyOf(sender.tab.id).then((dialogs) => ({ dialogs, tab: sender.tab.id }));
+  return Promise.all([policyOf(sender.tab.id), drivenRead]).then(([dialogs]) => ({ dialogs, tab: sender.tab.id, net: dialogs !== null || drivenTabs.has(sender.tab.id) }));
 });
 
 // ---------- owned tabs ----------
@@ -841,6 +847,21 @@ async function adopt() {
 }
 api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
 
+// ---------- tabs agents work in ----------
+// A tab the harness owns, opened, or sent a page request, and a tab one of
+// those opened, keeps a request log on each new page (dialogs.js); any
+// other tab's page drops its log once it reports in, so the user's own tabs
+// run their own fetch. A tab is marked before its page can report in. Kept
+// in session storage, which outlives this page while Safari runs.
+const drivenTabs = new Set();
+const drivenRead = store.get("driven").then(({ driven = [] }) => { for (const id of driven) drivenTabs.add(id); }, () => {});
+
+function drive(tabId) {
+  if (drivenTabs.has(tabId)) return;
+  drivenTabs.add(tabId);
+  drivenRead.then(() => store.set({ driven: [...drivenTabs] })).catch(() => {});
+}
+
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so
 // a web app in a background harness tab stalls. An owned tab the harness
@@ -854,6 +875,7 @@ const AWAKE_MS = 60000;
 const awake = new Map(); // tabId -> when its ticks stop
 
 function keepAwake(tabId) {
+  drive(tabId);
   ownsTab(tabId).then((owned) => {
     if (!owned) return;
     if (awake.size === 0) send({ op: "ticks", on: true });

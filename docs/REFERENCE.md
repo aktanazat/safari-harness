@@ -37,20 +37,20 @@ Safari is the user's everyday browser, so treat his tabs as his.
   he asks about the page he is looking at. `close`, `activate`, and `window`
   take only a tab id.
 - Close your tab with `close` when the task ends, on success or failure.
-  Through MCP, background tabs your session opened (and tabs they opened)
-  also close when the session ends, so a one-shot task can finish with its
-  answer instead of a `close` call.
-- From the CLI, background tabs a command opened (and tabs they opened)
-  close within about 5 s after the program that ran `safari` exits: omp,
-  claude, codex, a bun or python script, or the terminal's login session.
-  An agent's tabs therefore last its whole session. `--keep` on `open` (such
-  as `safari open <url> --bg --keep`) or on `safari call run` leaves them
-  open, for a tab the user finishes himself. Tabs opened in front, tabs on
-  another Mac (`--host`), and tabs opened before the daemon restarted are
-  never closed this way.
-- A `close` on a tab stuck behind a native sheet (a sign-in or permission
-  prompt) or in a window off screen fails within about 5 s and says so; tell
-  the user rather than retrying.
+  Background tabs you opened (and tabs they opened) close within a few
+  seconds after your agent process exits (omp, claude, codex, a bun or
+  python script, or the terminal's login session), whether you called them
+  through MCP or the CLI, so a one-shot task can finish with its answer
+  instead of a `close` call. The daemon keeps that list across its own
+  restarts. A background tab nobody has used for 20 minutes closes too,
+  unless the user has it in front. `keep: true` on `open` (CLI `safari open
+  <url> --bg --keep`) leaves a tab open for the user to finish himself. Tabs
+  opened in front and tabs on another Mac (`--host`) are never closed this
+  way.
+- A native sheet (a sign-in or permission prompt) can keep Safari from
+  closing a tab. A tab the harness opened still closes, within about 15 s;
+  `close` on any other tab so held, or in a window off screen, fails within
+  about 5 s and says so: tell the user rather than retrying.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -238,7 +238,9 @@ Wait for the page, not the clock.
 `net` returns the fetch/XHR requests the page has made since it began
 loading, in every frame, oldest first (the last 100): URL, method, status or
 error, time, and the first 300 characters of a text or JSON response. A
-request from an embedded frame names its `frame`. `do: "start"` clears the
+request from an embedded frame names its `frame`. Pages log this only in
+tabs the harness opened or an agent has used; in any other tab (a tab the
+user had open), the log starts at `do: "start"`. `do: "start"` clears the
 list, so the next read shows only what follows; `do: "stop"` ends it on this
 page. It sees fetch and XHR only: not page loads, images, scripts, or web
 workers. `console` records console messages from `do: "start"`; read them

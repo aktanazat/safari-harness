@@ -481,6 +481,56 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
   check("the page still reads each whole body itself", got.long === 100000 && (got.missing ?? 0) > 300, got);
 });
 
+// ---------- the request log only in tabs agents work in ----------
+
+// A page that fetches as it loads, served here. A harness tab's log has the
+// call without any start; a tab no agent works in (made through AppleScript
+// in this check's own window) keeps the page's own fetch.
+{
+  const hits: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const path = new URL(req.url).pathname;
+      hits.push(path);
+      return path === "/" ? new Response('<title>at load</title><script>fetch("/at-load")</script>', { headers: { "content-type": "text/html" } }) : new Response("ok");
+    },
+  });
+  const url = `http://127.0.0.1:${server.port}/`;
+  const title = `check-live-net-${Date.now()}`;
+  const listed = async () => (await call("tabs")) as (Tab & { url?: string })[];
+  const tab = (await call("open", { url, background: true })).id as number;
+  let other: number | undefined;
+  try {
+    let net: { url: string }[] = [];
+    for (let i = 0; i < 30 && !net.some((e) => e.url === `${url}at-load`); i++) {
+      await Bun.sleep(100);
+      net = (await call("net", { tab, do: "read" })).entries;
+    }
+    check("a harness tab's log has the fetch its page made as it loaded", net.some((e) => e.url === `${url}at-load`), net);
+    await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
+    await call("window", { tab, width: 420, height: 380 });
+    const before = new Set((await listed()).map((t) => t.id));
+    Bun.spawnSync(["osascript", "-e", `tell application "Safari" to tell (first window whose name is "${title}") to make new tab with properties {URL:"${url}"}`]);
+    for (let i = 0; i < 50 && other === undefined; i++) {
+      await Bun.sleep(100);
+      other = (await listed()).find((t) => !before.has(t.id) && t.url === url)?.id;
+    }
+    const atLoad = () => hits.filter((p) => p === "/at-load").length;
+    const plain = (own: unknown) => String(own).startsWith("function fetch()");
+    let own: unknown = "no tab";
+    for (let i = 0; i < 30 && other !== undefined && !(plain(own) && atLoad() === 2); i++) {
+      await Bun.sleep(100);
+      own = (await call("eval", { tab: other, page: true, expression: "Function.prototype.toString.call(fetch)" })).result;
+    }
+    check("a tab no agent works in keeps the page's own fetch, and the page's call still goes out", plain(own) && atLoad() === 2, { own, hits });
+  } finally {
+    const left = new Set((await listed()).map((t) => t.id));
+    for (const t of [tab, other]) if (t !== undefined && left.has(t)) await call("close", { tab: t });
+    await server.stop(true);
+  }
+}
+
 // ---------- frames ----------
 
 // A srcdoc frame gets no extension script in Safari, so the page reads it

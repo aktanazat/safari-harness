@@ -227,7 +227,10 @@
       .catch(() => {})
       .finally(() => reader.cancel().catch(() => {}));
   };
-  window.fetch = wrap(window.fetch, (fetch, self, args) => {
+  const XHR = XMLHttpRequest.prototype;
+  const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send };
+  const ours = {};
+  ours.fetch = wrap(plain.fetch, (fetch, self, args) => {
     const start = performance.now();
     const pending = Reflect.apply(fetch, self, args);
     let entry;
@@ -264,14 +267,13 @@
     const type = xhr.responseType;
     if ((type === "" || type === "text") && textual(xhr.getResponseHeader("content-type"))) entry.body = cut(xhr.responseText.slice(0, BODY_MAX + 1), BODY_MAX);
   };
-  const XHR = XMLHttpRequest.prototype;
-  XHR.open = wrap(XHR.open, (open, self, args) => {
+  ours.open = wrap(plain.open, (open, self, args) => {
     try { ended(self); } catch {}
     const out = Reflect.apply(open, self, args);
     try { xhrs.set(self, { entry: { kind: "xhr", url: address(args[1]), method: String(args[0]).toUpperCase() }, start: null }); } catch {}
     return out;
   });
-  XHR.send = wrap(XHR.send, (send, self, args) => {
+  ours.send = wrap(plain.send, (send, self, args) => {
     try {
       const req = xhrs.get(self);
       if (req) {
@@ -285,4 +287,20 @@
     } catch {}
     return Reflect.apply(send, self, args);
   });
+
+  // A tab no agent works in keeps the page's own fetch and XMLHttpRequest:
+  // content.js says so once the page reports in, and a copy the page took
+  // meanwhile logs nothing. net start (pageCapture) puts the log back.
+  const swap = (from, to) => {
+    if (window.fetch === from.fetch) window.fetch = to.fetch;
+    if (XHR.open === from.open) XHR.open = to.open;
+    if (XHR.send === from.send) XHR.send = to.send;
+  };
+  state.logNet = () => swap(plain, ours);
+  document.addEventListener("__sh_net_off", () => {
+    net.on = false;
+    net.log.length = 0;
+    swap(ours, plain);
+  });
+  swap(plain, ours);
 })();
