@@ -13,7 +13,7 @@ The user's developer account: identifiers and capabilities, the CloudKit console
 
 ## CloudKit console
 - `https://icloud.developer.apple.com/dashboard/`. A "What's New" dialog comes up again and again (three times in one session): click `Continue to CloudKit Console` each time.
-- Schema lives under `/dashboard/database/teams/<team>/containers/<container>/env...`. The "Add field" control is a span with no role, `[data-testid=add-new-field-button]` (aria-label "Add field"); click it by that selector or by its snapshot ref. A field's type is a dropdown: `select` with its `option` (for example "Bytes").
+- Schema lives under `/dashboard/database/teams/<team>/containers/<container>/env...`. The "Add field" control is a span with no role, so `snapshot` gives it no ref: click it by the selector `[data-testid=add-new-field-button]` (aria-label "Add field"). A field's type is a dropdown: `select` with its `option` (for example "Bytes").
 - A new record type may not exist yet: a `wait` for its name will miss. Check the list before waiting.
 - To publish: `Deploy Schema Changes…` shows the difference from Production; confirm, then read the Production schema back to verify.
 - Without Safari, `xcrun cktool import-schema` does the same, but it needs a management token the user creates in the console (`xcrun cktool get-teams` says "No management token found" until then). Creating one is his decision.

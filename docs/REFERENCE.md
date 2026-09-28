@@ -28,21 +28,12 @@ tool says so. Then `safari status` shows the connection, and
 Safari is the user's everyday browser, so treat his tabs as his.
 
 - Start with `open <url>`. It returns the new tab's `id`. Pass that `tab` to
-  every later call. Page tools need `tab`: a call without one is an error,
-  never a read of whatever tab is in front.
-- `tab: "front"` (CLI `--tab front`) names the user's front tab on purpose.
-  Use it only when he asks about the page he is looking at.
+  every later call. A call without `tab` acts on the front tab, which is
+  usually the user's, so never leave it out.
 - Close your tab with `close` when the task ends, on success or failure.
   Through MCP, background tabs your session opened (and tabs they opened)
   also close when the session ends, so a one-shot task can finish with its
   answer instead of a `close` call.
-- From the CLI, background tabs a command opened (and tabs they opened)
-  close about 10 s after the program that ran `safari` exits: omp, claude,
-  codex, a bun or python script, or the terminal's login session. An
-  agent's tabs therefore last its whole session. `--keep` (a CLI flag on
-  any command, such as `safari open <url> --bg --keep`) leaves them open,
-  for a tab the user finishes himself. Tabs opened in front, and tabs on
-  another Mac (`--host`), are never closed.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -50,10 +41,6 @@ Safari is the user's everyday browser, so treat his tabs as his.
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
 - `activate` brings Safari and the tab's window to the front.
-- A `close` on a tab stuck behind a native sheet or an off-screen window
-  fails at once and says so; tell the user rather than retrying.
-- When Safari is not running, tools say "Safari is not running" and start it
-  again hidden, without taking the screen.
 
 ## Scripts: safari repl
 
@@ -72,8 +59,8 @@ run goes wrong.
 Every tool call costs a model turn of a few seconds. `run` does several tools
 in one call, in order. After the first error it skips the remaining steps
 except `close`, so a failed run never leaves its tab open. A step without
-`tab` uses the tab an earlier `open` step made. Every tool can be a step,
-`real_input` and `handoff` included.
+`tab` uses the tab an earlier `open` step made. `handoff` can be a step;
+`real_input` cannot.
 
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
@@ -96,14 +83,12 @@ Read with `snapshot` when you do not yet know what is on the page.
   on carries a ref like `[12]`; headings (`h1`…`h6`), landmarks, and the
   page's own text print without one, each piece of text once, where it
   sits. A link's address follows its name. Table cells join with ` | `.
-- A clickable element with no ARIA role (the pointer cursor plus an
-  `aria-label`, `title`, or `data-testid`) also gets a ref.
 - Refs belong to one snapshot. After any click, typing, or navigation, take a
   new snapshot before using refs again. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
-  `a|b` returns lines containing either one; it is plain text, not a regular
-  expression. `extract` takes the same `query`.
+  It is one piece of plain text: `a|b` looks for that exact text, not
+  either word, so run one query per label.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
@@ -156,7 +141,7 @@ again to a file instead of fetching it twice.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
   one file input.
-- `history` with `do: "back"`, `"forward"`, or `"reload"`.
+- `history` with `go: "back"`, `"forward"`, or `"reload"`.
 - Alerts, confirms, and prompts never block the page. Each one comes back
   in the result of the action that raised it (`dialogs`), with how it was
   answered. A confirm or prompt is dismissed unless you first call `dialog`
@@ -226,9 +211,9 @@ Wait for the page, not the clock.
 ## Network and console
 
 `net` with `do: "start"`, then `do: "read"`, returns the fetch/XHR requests the
-page made from the start of its load (URL, method, status, time, and the
-start of each response body); `do: "stop"` ends it. `console` does the same
-for console messages. Neither sees request bodies.
+page made after capture started (URL, method, status, time); `do: "stop"` ends
+it. `console` does the same for console messages. Neither sees request bodies
+or requests made before capture started, so start `net`, then reload.
 
 ## Files, PDFs, and requests
 
@@ -325,13 +310,21 @@ screenshots read for the answer, no scripted clicks or drags inside the
 check, no solving services.
 
 - `open`, `goto`, `snapshot`, and a `wait` that misses add
-  `challenge: {kind, where}` when the tab shows one.
+  `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
+  a `challenge:` line under its header. `kind` names the service
+  (cloudflare, akamai, datadome, perimeterx, aws-waf, apple, recaptcha,
+  hcaptcha, arkose, geetest). `where` is `"page"` when the check stands in
+  for the whole page, `"box"` when it is a box inside a page that otherwise
+  reads (often on a form).
+- A check that draws a moment after the page loads can be missing from
+  `open`; the next `snapshot` or missed `wait` reports it.
 - `handoff {tab, why}` hands the tab to the user: it brings Safari and the
   tab to the front, posts a macOS notification that says `why`, and waits
-  until the check is gone or the page moves on. `ms` is how long to wait
-  (default 60000, max 110000). It returns `{done, waitedMs, url, title,
-  challenge}`; when `done` is false, call it again to keep waiting. Then
-  carry on in the same tab.
+  until he is done. `ms` is how long to wait (default 60000, max 110000).
+  It returns `{done, waitedMs, url, title, challenge}`. `done` is true when
+  the check is gone, or, when the tab showed no check at the start (a
+  passkey sign-in), when the page's address changes. When `done` is false,
+  call it again to keep waiting. Then carry on in the same tab.
 - Write `why` for the user: what to do and on which site ("Cars.com wants a
   human check before it shows the listing").
 - Use `handoff` for any step only the user can take in the tab: a passkey or
@@ -455,8 +448,10 @@ its own `safari` command.
 
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
-- "Safari is not running": the tool starts Safari hidden; call again once
-  it is up.
+- "Safari extension not connected" on every call: first check that Safari
+  is running (`pgrep -x Safari`). The extension runs only while Safari
+  does; if it is closed, start it hidden with `open -g -j -a Safari` and
+  call again.
 - `extension` is `null`: in Safari Settings, go to Extensions and turn
   "Safari Harness Bridge" off and on. It should connect within seconds.
 - `extension disconnected` on every call: two copies of the app are
