@@ -41,10 +41,24 @@ Safari is the user's everyday browser, so treat his tabs as his.
   `open` (CLI `--group trip`) gives one task a window of its own; without it
   all your tabs share one. The window opens on a page titled with the task's
   name (the group, or "agent", and your process id), which labels it for him
-  and keeps it yours when the extension reloads. When your process exits, or
-  the window has held only that page for two minutes, the page closes: the
-  window goes with your last tab, and a tab you opened in front stays there
-  for him.
+  and keeps it yours when the extension reloads.
+- That window becomes a Safari tab group of the same name the first time he
+  has left the keyboard and mouse alone for 30 seconds, and stays a plain
+  window until then. `open` says which under `space`: `group` is `waiting`,
+  `grouped`, or `plain` with `why` (the terminal lacks Accessibility
+  permission, `bun run helpers` has not built scripts/spaces, or groups are
+  off). Your terminal makes and deletes the groups, through a keeper process
+  `open` starts: each step waits until he is idle, the screen unlocked and
+  Safari behind, and stops if his front app changes. A menu that will not
+  close turns groups off until `~/.local/share/safari-harness/groups-off.json`,
+  which says why, is removed.
+- When your process exits, or the window has held only its page for two
+  minutes, the task ends. A plain window's page closes: the window goes with
+  your last tab, and a tab you opened in front stays there for him. A tab
+  group's tabs left for him (opened in front, or `keep`) move to windows of
+  their own, then the group is deleted with its page, again only while he is
+  away from the keys. A group that cannot go yet waits in
+  `~/.local/share/safari-harness/groups.json` for the next keeper.
 - Close your tab with `close` when the task ends, on success or failure.
   Background tabs you opened (and tabs they opened) close within a few
   seconds after your agent process exits (omp, claude, codex, a bun or
@@ -524,10 +538,10 @@ its own `safari` command.
 
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
   or request bodies.
-- No bookmarks, top sites, download list, or tab groups: Safari gives its
-  web extensions no API for them. Its window controls can make a tab group,
-  but none deletes one safely from a window in the background, so agent
-  windows stay plain.
+- No bookmarks, top sites, download list, or tab groups API: Safari gives
+  its web extensions none. Agent tab groups go through the window's own
+  controls with Accessibility instead, so they need the terminal's
+  permission and wait for the user to leave the keys alone.
 - Screenshots need the tab's window on screen (not minimized).
 - No reach inside closed shadow DOM.
 - `hover` fires mouse events; menus that open purely through CSS `:hover`

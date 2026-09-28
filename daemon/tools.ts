@@ -7,7 +7,7 @@ import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
-import { spaceWindow } from "./spaces.ts";
+import { spaceNote, spaceTool, spaceWindow, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { firstNotes, learn } from "./notes.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -55,10 +55,12 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   return id;
 }
 
-// Every tab opens in a window of the calling agent's own (spaces.ts).
-export async function openTab(url: string, background = false, group?: string): Promise<TabInfo> {
-  const window = await spaceWindow(group);
-  return (await bridge.request("tabs.open", [str(url, "url"), background, window])) as TabInfo;
+// Every tab opens in a window of the calling agent's own (spaces.ts), which
+// the result names.
+export async function openTab(url: string, background = false, group?: string): Promise<TabInfo & { space: SpaceNote }> {
+  const space = await spaceWindow(group);
+  const t = (await bridge.request("tabs.open", [str(url, "url"), background, space.window])) as TabInfo;
+  return { ...t, space: spaceNote(space) };
 }
 
 // A native sheet on the tab (a sign-in or permission prompt) or an
@@ -707,6 +709,14 @@ export const TOOLS: Record<string, Tool> = {
       if (a.background && !a.keep) own(t.id, currentOwner());
       return withPage(withNotes(await withChallenge(t, t.id)), t.id, a.snapshot);
     },
+  },
+  // Agent windows and their tab groups, for the keeper (keeper.ts).
+  space: {
+    desc: "Agent windows and their tab groups, for the tab group keeper.",
+    params: { op: { type: "string", description: "state, grouped, plain, release, gone, or scratch" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
+    required: ["op"],
+    hidden: true,
+    run: spaceTool,
   },
   close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
   goto: {

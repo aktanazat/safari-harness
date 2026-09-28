@@ -754,11 +754,14 @@ async function handle(msg) {
       return { ok: true, windowId: (await api.tabs.get(tabId)).windowId, viewport: r && r.value && r.value.viewport };
     }
     // A window of an agent's own (daemon/spaces.ts), made behind the user's
-    // without focus.
+    // without focus, of a size no other window has: its keeper, which sees
+    // windows only through Accessibility, finds it by size.
     case "windows.open": {
-      const [url] = args;
-      const w = await api.windows.create({ url, focused: false });
+      const [url, size] = args;
+      const dims = size ? { width: Math.round(size.width), height: Math.round(size.height) } : {};
+      const w = await api.windows.create({ url, focused: false, ...dims });
       await markAgentWindow(w.id);
+      if (size) await api.windows.update(w.id, dims);
       const [tab] = w.tabs && w.tabs.length ? w.tabs : await api.tabs.query({ windowId: w.id });
       return { windowId: w.id, tabId: tab.id };
     }
@@ -767,6 +770,15 @@ async function handle(msg) {
     case "windows.resolve": {
       const id = await resolveWindow(args[0]);
       return (await api.windows.get(id).then(() => true, () => false)) ? id : null;
+    }
+    // A tab an agent opened for the user leaves the agent's window, which
+    // goes with its tab group, for one of his own; only while it is still
+    // in that window.
+    case "tabs.detach": {
+      const [tabId, windowId] = args;
+      if ((await api.tabs.get(tabId)).windowId !== await resolveWindow(windowId)) return { ok: false };
+      await api.windows.create({ tabId, focused: false });
+      return { ok: true };
     }
     case "ping":
       return "pong";
