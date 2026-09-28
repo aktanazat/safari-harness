@@ -1,22 +1,28 @@
 import { afterAll, afterEach, beforeEach, expect, jest, mock, spyOn, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import * as front from "./front.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
 import * as imessage from "./imessage.ts";
+import * as phone from "./phone.ts";
 import * as daemonRpc from "./rpc.ts";
 import { callTool } from "./tools.ts";
 
 // handoff gives the user the tab for a step only they can take. The daemon's
 // half raises the tab with a notice, looks at the page once a second, and
 // gives back what the user had in front; the caller's half texts their
-// phone when they are away. Both run here, the caller's RPC calls going
-// straight to the daemon's tools. Safari, the screen, notices, Messages,
-// and the clock are fakes: a test moves the clock on once every call it
-// made has been taken up.
+// phone when they are away, and reads their replies. Both run here, the
+// caller's RPC calls going straight to the daemon's tools. Safari, the
+// screen, notices, Messages, and the clock are fakes: a test moves the
+// clock on once every call it made has been taken up.
 
 type Page = { url: string; check?: "box" | "block" };
-type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; use(tab: number): void };
+// The user's thread with his own number, as Messages records it.
+type Row = { me: boolean; text: string; at: number };
+type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; thread: Row[]; reply(line: string): void; use(tab: number): void };
+const OWN = "+15550100000";
 const MAIL = "com.apple.mail";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
@@ -25,11 +31,13 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAY
 // on a page with a Cloudflare box, or a Cloudflare block, while page.check
 // says so. Safari shows the window of the tab activated last. The Mac
 // records the tabs the harness activates, the app in front, the notices,
-// and the texts.
+// and the texts. A line texted to his own number shows in his thread as
+// sent and again as received, the harness's and his replies alike.
 function mac(tab: number, page: Page): Mac {
   const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
   let shown = 1;
-  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
+  const both = (line: string): Row[] => [{ me: true, text: line, at: Date.now() }, { me: false, text: line, at: Date.now() }];
+  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], thread: [], reply: (line) => void m.thread.push(...both(line)), use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
   bridge.attach({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
@@ -56,8 +64,12 @@ function mac(tab: number, page: Page): Mac {
   spyOn(front, "notify").mockImplementation((text) => void m.notices.push(text));
   spyOn(imessage, "textOwner").mockImplementation(async (line, picture) => {
     m.texts.push({ line, picture: picture !== undefined && existsSync(picture) });
-    return { status: "received" };
+    const after = m.thread.length;
+    m.thread.push(...both(line));
+    return { status: "received", to: OWN, after };
   });
+  spyOn(imessage, "textOwnNumber").mockImplementation(async (_to, line) => void m.thread.push(...both(line)));
+  spyOn(imessage, "ownThread").mockImplementation((to, after) => (to === OWN ? m.thread.slice(after) : []));
   return m;
 }
 
@@ -67,6 +79,8 @@ const tick = async (ms = 1000) => {
   jest.advanceTimersByTime(ms);
   await settled();
 };
+// what a call has returned by now, with no more time going by
+const now = <T>(p: Promise<T>) => Promise.race([p, settled().then(() => "still waiting")]);
 
 type Args = Record<string, unknown>;
 // Settles once the daemon has taken up the caller's next handoff call that
@@ -81,9 +95,12 @@ function taken(is: (a: Args) => boolean): Promise<void> {
 const waits = (why: string) => (a: Args) => a.why === why && Number(a.ms) > 0 && a.away !== true;
 
 const away = process.env.SAFARI_HARNESS_AWAY;
+let dir = "";
 beforeEach(() => {
   jest.useFakeTimers();
   process.env.SAFARI_HARNESS_AWAY = "0";
+  dir = mkdtempSync(join(tmpdir(), "safari-handoff-"));
+  spyOn(phone, "dataFile").mockImplementation((name) => join(dir, name));
   spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
     const result = callTool(tool, args);
     if (tool === "handoff_wait" && next?.is(args)) next.taken();
@@ -93,6 +110,7 @@ beforeEach(() => {
 afterEach(() => {
   mock.restore();
   jest.useRealTimers();
+  rmSync(dir, { recursive: true, force: true });
 });
 afterAll(() => {
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
@@ -200,7 +218,7 @@ test("a user who clears the check while the text to their phone is on its way en
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(77, page);
   const texting = Promise.withResolvers<void>();
-  const sent = Promise.withResolvers<{ status: "received" }>();
+  const sent = Promise.withResolvers<{ status: "received"; to: string; after: number }>();
   spyOn(imessage, "textOwner").mockImplementation(() => {
     texting.resolve();
     return sent.promise;
@@ -210,10 +228,77 @@ test("a user who clears the check while the text to their phone is on its way en
   page.check = undefined;
   await tick();
   const t = taken((a) => a.texted !== undefined);
-  sent.resolve({ status: "received" });
+  sent.resolve({ status: "received", to: OWN, after: 0 });
   await t;
   // were it to wait again, its 10 seconds run out
   await tick(10000);
   expect(await handed).toMatchObject({ done: true, texted: "received" });
   expect(m.notices).toEqual(["Clear the check"]);
+});
+
+test("a user away who clears the check and replies done ends the handoff at once, before the page's next look of its own", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(78, page);
+  const t = taken((a) => a.texted !== undefined);
+  const handed = handoff(78, "Clear the check");
+  await t;
+  page.check = undefined;
+  m.reply("Done!");
+  // half the second the daemon waits between looks of its own
+  await tick(phone.POLL_MS);
+  expect(await now(handed)).toMatchObject({ done: true, texted: "received" });
+});
+
+test.each([["skip", 79], ["stop", 81]] as const)("a user away who replies %s ends the wait with the check still up, and the agent hears which", async (word, tab) => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const m = mac(tab, { url: "https://shop.example/login", check: "box" });
+  const t = taken((a) => a.texted !== undefined);
+  const handed = handoff(tab, "Clear the check");
+  await t;
+  m.reply(`${word[0].toUpperCase()}${word.slice(1)}, thanks`);
+  await tick(phone.POLL_MS);
+  const r = await now(handed);
+  expect(r).toMatchObject({ done: false, user: word });
+  // where his replies are stays between the harness and Messages
+  expect(JSON.stringify(r)).not.toContain(OWN);
+});
+
+test("a reply from before the text, or another text of the harness's own, never ends the wait", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(80, page);
+  m.reply("skip");
+  const t = taken((a) => a.texted !== undefined);
+  const handed = handoff(80, "Clear the check");
+  await t;
+  // a watch's news, whose first word is one a handoff takes
+  await phone.text("stop-sale: 3 left -> 2 left (https://shop.example/)", "note", { to: OWN });
+  await tick(phone.POLL_MS);
+  expect(await now(handed)).toBe("still waiting");
+  page.check = undefined;
+  await tick();
+  expect(await handed).toEqual(expect.objectContaining({ done: true }));
+  expect(await handed).not.toHaveProperty("user");
+});
+
+test("after a skip, the next handoff on that tab is a new one: it texts him again and waits on a new reply", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(82, page);
+  let t = taken((a) => a.texted !== undefined);
+  const skipped = handoff(82, "Clear the check");
+  await t;
+  m.reply("skip");
+  await tick(phone.POLL_MS);
+  expect(await now(skipped)).toMatchObject({ done: false, user: "skip" });
+  t = taken((a) => a.texted !== undefined);
+  const again = handoff(82, "Clear the check");
+  await t;
+  await tick(phone.POLL_MS);
+  expect(await now(again)).toBe("still waiting");
+  expect(m.texts).toHaveLength(2);
+  page.check = undefined;
+  await tick();
+  expect(await again).toMatchObject({ done: true });
 });

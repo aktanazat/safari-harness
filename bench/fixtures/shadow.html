@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Shadow root</title>
+<script>
+  customElements.define("user-card", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = "<h2><slot name=name></slot></h2><button>Follow</button>";
+    }
+  });
+</script>
+<user-card><span slot="name">Ada Lovelace</span></user-card>

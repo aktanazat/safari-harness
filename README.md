@@ -25,17 +25,38 @@ daemon/
   tools.ts          the Safari tools, each with its own input schema: run
                     (several tools in one call) tabs open close goto activate
                     snapshot click type press select hover upload history
-                    scroll eval fetch download dialog extract info wait handoff net
-                    console cookies shot pdf window passwords. Actions report
-                    `navigated`, `newTab`, and any `dialogs`; snapshots take
-                    in embedded frames
+                    scroll eval fetch download dialog extract map info wait
+                    handoff net console cookies shot pdf window passwords.
+                    Actions report `navigated`, `newTab`, and any `dialogs`;
+                    snapshots take in embedded frames
   caller.ts         tools that run in the calling process, which holds the
                     terminal's permissions (Messages, browsing history, the
                     real mouse and keyboard); a `run` with one of them runs
                     its steps from the caller too
+  spaces.ts         each agent's own Safari window, opened behind the user's,
+                    one per task (`open --group`), on a page titled with it
+  groups.ts         makes a window its task's Safari tab group, and deletes
+                    the group after, only while the user is away from the keys
+  keeper.ts         runs groups.ts from the agent's terminal, which has the
+                    Accessibility permission the daemon lacks; call.ts starts
+                    it after an open
   handoff.ts        handoff's caller half: texts the user's own phone, with a
                     picture of the page, when a step needs him and he is away
-                    from the Mac; the daemon raises the tab and notifies
+                    from the Mac, and acts on his reply (done, skip, stop); the
+                    daemon raises the tab and notifies
+  ask.ts            ask: an agent's question texted to the user's phone when
+                    he is away, and his answer
+  phone.ts          every text to the user's phone: at most 6 an hour, and his
+                    replies told apart from the harness's own lines
+  watch.ts          watch routines: one value read off a page on a schedule,
+                    texted when it changes, with no model
+  save.ts           save on extract, snapshot, eval, and fetch: the whole
+                    output goes to a file, and the reply is its path, size,
+                    and first 500 characters
+  map.ts            map: one read of each of up to 20 pages, a few at a time,
+                    each in a background tab that closes after
+  mission.ts        the live page each agent window opens on, and /agents:
+                    what each agent did, with Pause, Stop, and Let me drive
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
@@ -58,13 +79,19 @@ daemon/
                     AddressBook, osascript)
   agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API;
                     gets the Messages read tools, not send)
+  notes.ts          site notes: facts agents save with `learn`, handed to an
+                    agent on its first page on that site, and printed by
+                    `safari guide <site>`; refuses secret-looking facts
 cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
-cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
+cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless
+                    omp, or a watch with no model)
 docs/GUIDE.md       the short card of rules (`safari guide`)
 docs/REFERENCE.md   every tool in full (`safari guide reference`)
 docs/sites/         one note per site (`safari guide <site>`)
+bench/              the WebKit bench's rows for content.js, one page per
+                    behavior in fixtures/ (see Tests)
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -72,6 +99,11 @@ scripts/
                     Safari's page area; needs Accessibility permission
   pairing.swift     helper: the Touch ID prompt, and the pairing code read
                     off Apple's window; needs Accessibility permission
+  spaces.swift      helper: works an agent window's tab group sidebar through
+                    Accessibility, Safari left in the background; needs
+                    Accessibility permission
+  bench.swift       test bench: content.js and dialogs.js in a WebKit view
+                    no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
                     restart only what changed (see Deploys)
   fake-extension.ts test double that speaks the extension protocol
@@ -159,6 +191,9 @@ safari upload ~/photo.jpg --tab 7      # the page's file input
 safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7
+safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
+safari extract --as table --tab 7      # tables and product lists as rows of JSON
+safari map https://a.example https://b.example   # up to 20 pages at once
 safari eval "JSON.stringify(performance.timing)" --tab 7
 safari net read --tab 7                # the page's requests since it loaded, with the start of each body
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full
@@ -183,6 +218,7 @@ safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
 safari --host studio tabs              # another Mac's Safari, through ssh
 safari host use studio                 # make it the default; `host use local` goes back
 safari guide gusto                     # one site's note: sign-in, paths, what to confirm
+safari learn cvs.com "Insurance card: Pharmacy > Insurance > Add card"   # a fact for later agents
 safari guide repl                      # the REPL's API and recovery steps
 safari imessage chats                  # recent conversations
 safari imessage code                   # wait for a sign-in code by text
@@ -221,11 +257,14 @@ safari routine add morning-inbox --at 08:00 "List today's unread Gmail senders a
 safari routine list
 safari routine run morning-inbox
 safari routine remove morning-inbox
+safari routine add stock --every 30 --watch https://example.com/item --selector ".stock"
 ```
 
 A routine is a prompt file in `~/.local/share/safari-harness/routines/` plus a
 launchd agent `at.aktan.safari-harness.routine.<name>` that runs
-`omp -p --auto-approve` with it. Output goes to
+`omp -p --auto-approve` with it. A watch (`--watch <url>` with `--selector`,
+`--text`, `--eval`, or `--replay`) runs no model: each run reads one value off
+the page and texts the user's phone when it changes. Output goes to
 `~/Library/Logs/safari-harness/routines/`.
 
 ### MCP
@@ -291,3 +330,16 @@ read off a stand-in window,
 which tab a call acts on, and keeps the MCP tool list under
 its size ceiling; `bun run check`
 runs the live checks in real Safari.
+
+`bun test` also runs content.js in Safari's WebKit without Safari:
+`bench/*.test.ts` build `scripts/bench.swift` into `.build/` (rebuilt only
+when it changes), open each page in `bench/fixtures` in a web view no window
+shows, with dialogs.js in the page's world and content.js in its own, and
+send the requests background.js sends. A row is one behavior: a page, the
+requests, and the answers they must get (`bench/bench.ts` has the fields),
+so a new behavior takes one page and one row. `scripts/bench extension`,
+built by `bun run helpers`, takes the same requests one JSON line at a time
+(its header lists them), for trying a page by hand. On a Mac without
+Apple's command line tools the rows are skipped, and the run prints why.
+The bench cannot show Safari's own messaging, frame stitching, a background
+tab's timers and painting, or real focus; those need Safari itself.
