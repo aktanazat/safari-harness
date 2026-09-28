@@ -282,7 +282,11 @@ Escalate in this order:
    has helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
    open shadow roots too, `sh.text(el)` reads an element's text as
    `extract` does (the whole page without `el`), `sh.jsonld()` lists the
-   page's JSON-LD, and `sh.wait(ms)` pauses (25 s at most).
+   page's JSON-LD, and `sh.wait(ms)` pauses (25 s at most). From a shell or
+   another program, hand over a script with `safari eval --file path` (or
+   pipe it in) instead of escaping it onto one line; `--save <path>` names
+   the file the answer goes to. A script that does not parse fails with the
+   error in its statements.
 
 `data` returns what the page itself declares, as JSON: JSON-LD, microdata,
 meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the
@@ -562,6 +566,15 @@ with `do: "read"`.
   opening a page. `method` and `body` send a POST. From the CLI, pipe
   `safari fetch --json …` into a JSON parser; the plain output is not one
   JSON document.
+- A site's own API: read the address the page itself calls from `net`,
+  not one built from settings in its source (a dealer page carried the
+  keys of a search host that no longer exists), and call it from the
+  page: `eval` with `page: true` through the site's own functions, or
+  `fetch`. The keys the page uses stay in the page, and no shell command
+  carries them. `Load failed` is Safari's word for a request that got no
+  answer; `fetch` adds whether its host exists at all, and otherwise the
+  page's rules (CORS, its security policy) refused it or the server
+  dropped it.
 - `pdf` saves the page as a PDF (letter pages, like Export as PDF, from the
   page's current HTML) and returns its path; a page that moves on while it
   is read is saved as the page it moved to. `do: "read"` returns a PDF's

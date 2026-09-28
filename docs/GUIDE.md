@@ -17,7 +17,7 @@ Tabs
 Turns
 - Do one step in one call: `run` for several tools in order, `map` for
   the same read of many pages, `repl` for loops, downloads, and a site's
-  own API.
+  own API (call it from the page, at the address `net` shows it using).
 - When the user has shown you a task with the toolbar button (teach
   mode), `replay {name}` does it again in one call; `recordings` lists
   what he recorded. A failed step comes back with its number.
@@ -27,7 +27,8 @@ Turns
 - Wait on an element or the page's exact words (`wait` with `selector` or
   `text`), never on the clock. Check the page's wording once with a
   `snapshot` `query` before waiting on a guess.
-- From the CLI, pass `--json` when a program reads the output.
+- From the CLI, pass `--json` when a program reads the output, and a
+  script with `eval --file`, never escaped onto one line.
 - When calls keep failing and the error does not say why, run
   `safari doctor` once: it checks every part and prints the fix. One
   session spent 12 turns and $0.68 finding that Safari was not running.

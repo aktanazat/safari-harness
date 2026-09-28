@@ -73,10 +73,12 @@ const USAGE = `safari — drive Safari from the terminal
   hover upload) take --snapshot to print the resulting page too.
 
   Reads (snapshot eval extract fetch) take --save to write the whole output
-  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>,
-  and print only its path, size, and first 500 characters.
+  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
+  (or --save <file>, for a path starting with / ./ or ../), and print only
+  its path, size, and first 500 characters.
 
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
+                                             (code from --file path, or stdin when omitted)
   safari extract --tab N [--selector s]      readable text
   safari extract --as table --tab N          tables and card lists as JSON rows
   safari data --tab N [--pick path] [--max bytes]
@@ -202,12 +204,20 @@ function tabArg(argv: string[]): Record<string, unknown> {
 }
 
 // --save writes a read's whole output to a new file in the saved folder;
-// --save=<path> names the file. A relative path is the terminal's, not the
-// daemon's.
+// --save=<path> names the file, as does a path after --save: agents wrote
+// --save /private/var/tmp/rows.json, and the path went into eval's code. A
+// relative path is the terminal's, not the daemon's.
 function saveArg(argv: string[]): Record<string, unknown> {
-  if (hasFlag("save", argv)) return { save: true };
+  const i = argv.indexOf("--save");
+  if (i >= 0) return isSavePath(i + 1, argv) ? { save: resolve(argv[i + 1]) } : { save: true };
   const path = flag("save", argv);
   return path === undefined ? {} : { save: resolve(path) };
+}
+
+// A word after --save names its file when it reads as a path: a URL never
+// starts so, and code only as a regular expression.
+function isSavePath(i: number, argv: string[]): boolean {
+  return argv[i - 1] === "--save" && /^\.{0,2}\//.test(argv[i] ?? "");
 }
 
 // The tool a command runs, where its name differs.
@@ -607,7 +617,14 @@ async function main() {
       break;
     }
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
-    case "eval": args.expression = positional.join(" "); args.page = hasFlag("page", rest); break;
+    case "eval": {
+      // --file, or stdin, carries a script with no quoting to get right
+      const file = flag("file", rest);
+      args.expression = file !== undefined ? await Bun.file(resolve(file)).text() : positional.join(" ") || (await readStdin());
+      if (!String(args.expression).trim()) fail('usage: safari eval "<js>" --tab N [--page] | --file path (or pipe the code in)', 2);
+      args.page = hasFlag("page", rest);
+      break;
+    }
     case "extract": {
       const sel = flag("selector", rest);
       if (sel) args.selector = sel;
@@ -702,7 +719,7 @@ const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
-  return i > 0 && prev.startsWith("--") && !prev.includes("=") && !BOOLEAN_FLAGS.has(prev.slice(2));
+  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && !BOOLEAN_FLAGS.has(prev.slice(2))) || isSavePath(i, argv));
 }
 
 main().then(
