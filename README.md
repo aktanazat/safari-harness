@@ -145,6 +145,8 @@ safari dialog accept            # answer confirms with OK from now on
 safari window 390 844 --tab 7   # a phone-width window for your tab
 safari history-search invoice   # Safari browsing history
 safari call snapshot '{"diff":true}'  # any tool with its MCP arguments
+safari passwords --do logins --tab 7  # the same, with each argument as a flag
+safari click --help            # a command's arguments and what they take
 safari do "find the price of X on example.com"
 safari session list             # agent runs; resume, steer, queue, stop, delete
 safari repl "const p = await openTab('https://example.com'); console.log((await snapshot(p)).tree)"
