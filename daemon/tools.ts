@@ -12,6 +12,7 @@ import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
+import { unanswered } from "./unanswered.ts";
 import { spaceNote, spaceTool, spaceWindow, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf } from "./navigated.ts";
@@ -374,11 +375,11 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   const inPage = () => bridge.request("evalPage", [tab, code, Number(frame)], 30000).catch((e: unknown) => {
     throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(EVAL_BLOCKED) : e;
   });
-  if (opts.page) return inPage();
-  return bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
+  const answer = opts.page ? inPage() : bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
     if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage();
     throw e;
   });
+  return answer.catch(async (e: unknown) => { throw await unanswered(e); });
 }
 
 // as: "table" reads the page's tables and repeated card lists as rows.
@@ -627,7 +628,9 @@ export async function setCookie(opts: { tab?: number; url?: string; name: string
 
 export async function pageFetch(opts: { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "fetch", [str(opts.url, "url"), { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes, base64: !!opts.base64 }], 60000);
+  const url = str(opts.url, "url");
+  return relay(tab, "fetch", [url, { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes, base64: !!opts.base64 }], 60000)
+    .catch(async (e: unknown) => { throw await unanswered(e, url); });
 }
 
 async function scratchFile(prefix: string, name: string): Promise<string> {
