@@ -175,15 +175,15 @@ again to a file instead of fetching it twice.
 - Every action reports what it caused: `navigated` (this tab loaded a new
   page) or `newTab`. Pass `snapshot: true` to get the resulting page in the
   same call; that is the fastest way to act and then read.
+- An action or `eval` whose page leaves before it answers (a submit, a
+  redirect) still answers, with `ok: true` and the page it loaded as
+  `navigated`. It is never sent twice.
 - An action returns as soon as it has run, unless it started a load or a
   tab (a link, a form submit, the page's own script moving it), which it
   waits for. A link or form the page's script takes over gets a short wait
   in case it moves. A page that changes later is caught by the next call.
 - Treat an action as unconfirmed until a snapshot shows the result.
 - `real_input` uses the real mouse and keyboard, so the page sees trusted
-- An action or `eval` whose page leaves before it answers (a submit, a
-  redirect) still answers, with `ok: true` and the page it loaded as
-  `navigated`. It is never sent twice.
   events: `do: "click"` a ref (`count: 2` double-clicks, `button: "right"`),
   `do: "type"` text at a ref or where the caret is, `do: "key"` a key or
   combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it only when `click`, `type`,
@@ -493,6 +493,12 @@ its own `safari` command.
 
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
+- `safari status` shows the daemon's recent events, one a line: its starts
+  and stops and why, the extension connecting and disconnecting, requests
+  the extension never answered, and pages that got a fresh copy of the
+  harness's script. `--json` prints the whole health answer.
+- "the page at … did not answer within 5 s": a dialog open on the page, or
+  a page stuck loading, holds it. Reload it with `goto` and retry.
 - "Safari is not running": the tool has started Safari hidden, without
   taking the screen; call again in a few seconds.
 - "Safari extension not connected" while Safari runs, or `extension` is
@@ -502,9 +508,3 @@ its own `safari` command.
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.
 - A ref no longer works: the page changed. Take a new snapshot.
-- `safari status` shows the daemon's recent events, one a line: its starts
-  and stops and why, the extension connecting and disconnecting, requests
-  the extension never answered, and pages that got a fresh copy of the
-  harness's script. `--json` prints the whole health answer.
-- "the page at … did not answer within 5 s": a dialog open on the page, or
-  a page stuck loading, holds it. Reload it with `goto` and retry.

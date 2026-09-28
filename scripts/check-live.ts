@@ -180,6 +180,44 @@ const closedAgain = await call("close", { tab: closed }).then(() => "resolved", 
 const closeMs = Date.now() - closeStart;
 check("closing a tab that is gone says so at once", closedAgain.startsWith("close: that tab is gone") && closeMs < 5000, { closedAgain, closeMs });
 
+// ---------- a page whose script stops answering, and actions that navigate ----------
+
+// A copy of the content script left behind when the extension reloads keeps
+// the page's claim and answers nothing; taking the claim from the page's
+// own copy makes it one. The next request puts a fresh copy in at once.
+await withPage(`<button id=b onclick="this.textContent = 'pressed'">Press</button>`, "", async (tab) => {
+  const ref = refOf((await call("snapshot", { tab })).snapshot, /button "Press"/);
+  await call("eval", { tab, expression: "(window.__safariHarnessInjected = {}, 1)" });
+  const start = Date.now();
+  const url = await call("info", { tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
+  const ms = Date.now() - start;
+  check("a page whose script stopped answering gets a fresh one at once", url.startsWith("https://example.com/") && ms < 2000, { url, ms });
+  await call("click", { tab, ref });
+  const text = (await call("eval", { tab, expression: "document.getElementById('b').textContent" })).result;
+  check("a ref from before the fresh script still works", text === "pressed", text);
+});
+
+// An action that loads a page answers with that page, and runs once.
+await withPage('<form action="https://example.org/" method=get><input name=q value=x aria-label=Query><button>Go</button></form>', "", async (tab) => {
+  const clicked = await call("click", { tab, ref: refOf((await call("snapshot", { tab })).snapshot, /button "Go"/) });
+  check("a click that submits a form reports the page it loaded", String(clicked?.navigated?.url).startsWith("https://example.org/?q=x"), clicked);
+});
+await withPage('<form action="https://example.com/" method=get><input type=hidden name=sent value=1><button>Send</button></form>', "", async (tab) => {
+  const evaled = await call("eval", { tab, expression: "(localStorage.shEvalRuns = String(Number(localStorage.shEvalRuns || 0) + 1), document.forms[0].submit(), 'sent')" }).then((v) => v, (e: Error) => e.message);
+  const runs = (await call("eval", { tab, expression: "(() => { const n = localStorage.shEvalRuns; localStorage.removeItem('shEvalRuns'); return n; })()" })).result;
+  check("an eval that submits a form answers, and runs once", typeof evaled === "object" && runs === "1", { evaled, runs });
+});
+await withPage('<form action="https://example.org/" method=get><input name=q aria-label=Query><button>Go</button></form>', "", async (tab) => {
+  const snap = (await call("snapshot", { tab })).snapshot;
+  const r = await call("run", { steps: [
+    { tool: "type", args: { tab, ref: refOf(snap, /textbox "Query"/), text: "y" } },
+    { tool: "click", args: { tab, ref: refOf(snap, /button "Go"/) } },
+    { tool: "info", args: { tab } },
+  ] });
+  check("a run types, submits, and reads the page the submit loaded",
+    r.steps.length === 3 && r.steps.every((s: { error?: string }) => !s.error) && String(r.steps[2].value?.url).startsWith("https://example.org/?q=y"), r);
+});
+
 // ---------- acting without a snapshot ----------
 
 // A hidden copy of the button comes first, and a <menu> element shares the
@@ -238,44 +276,6 @@ await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:a
 // Pages put instructions in headings; the login benchmark lost a turn when
 // its credentials fell past an 80-character cut.
 const INSTRUCTIONS = "This is where you can log into the secure area. Enter tomsmith for the username and SuperSecretPassword! for the password.";
-// ---------- a page whose script stops answering, and actions that navigate ----------
-
-// A copy of the content script left behind when the extension reloads keeps
-// the page's claim and answers nothing; taking the claim from the page's
-// own copy makes it one. The next request puts a fresh copy in at once.
-await withPage(`<button id=b onclick="this.textContent = 'pressed'">Press</button>`, "", async (tab) => {
-  const ref = refOf((await call("snapshot", { tab })).snapshot, /button "Press"/);
-  await call("eval", { tab, expression: "(window.__safariHarnessInjected = {}, 1)" });
-  const start = Date.now();
-  const url = await call("info", { tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
-  const ms = Date.now() - start;
-  check("a page whose script stopped answering gets a fresh one at once", url.startsWith("https://example.com/") && ms < 2000, { url, ms });
-  await call("click", { tab, ref });
-  const text = (await call("eval", { tab, expression: "document.getElementById('b').textContent" })).result;
-  check("a ref from before the fresh script still works", text === "pressed", text);
-});
-
-// An action that loads a page answers with that page, and runs once.
-await withPage('<form action="https://example.org/" method=get><input name=q value=x aria-label=Query><button>Go</button></form>', "", async (tab) => {
-  const clicked = await call("click", { tab, ref: refOf((await call("snapshot", { tab })).snapshot, /button "Go"/) });
-  check("a click that submits a form reports the page it loaded", String(clicked?.navigated?.url).startsWith("https://example.org/?q=x"), clicked);
-});
-await withPage('<form action="https://example.com/" method=get><input type=hidden name=sent value=1><button>Send</button></form>', "", async (tab) => {
-  const evaled = await call("eval", { tab, expression: "(localStorage.shEvalRuns = String(Number(localStorage.shEvalRuns || 0) + 1), document.forms[0].submit(), 'sent')" }).then((v) => v, (e: Error) => e.message);
-  const runs = (await call("eval", { tab, expression: "(() => { const n = localStorage.shEvalRuns; localStorage.removeItem('shEvalRuns'); return n; })()" })).result;
-  check("an eval that submits a form answers, and runs once", typeof evaled === "object" && runs === "1", { evaled, runs });
-});
-await withPage('<form action="https://example.org/" method=get><input name=q aria-label=Query><button>Go</button></form>', "", async (tab) => {
-  const snap = (await call("snapshot", { tab })).snapshot;
-  const r = await call("run", { steps: [
-    { tool: "type", args: { tab, ref: refOf(snap, /textbox "Query"/), text: "y" } },
-    { tool: "click", args: { tab, ref: refOf(snap, /button "Go"/) } },
-    { tool: "info", args: { tab } },
-  ] });
-  check("a run types, submits, and reads the page the submit loaded",
-    r.steps.length === 3 && r.steps.every((s: { error?: string }) => !s.error) && String(r.steps[2].value?.url).startsWith("https://example.org/?q=y"), r);
-});
-
 
 await withPage(`<h4>${INSTRUCTIONS}</h4>`, "", async (tab) => {
   const s = await call("snapshot", { tab });
