@@ -20,10 +20,28 @@ Three ways in:
   with the same tools. See "Routines" below.
 
 No health check is needed first: when the extension is not connected, every
-tool says so. Then `safari status` shows the connection, and
-"Troubleshooting" has the fix. When Safari is not running, tools say
-"Safari is not running" and start it again hidden, without taking the
-screen; call again a few seconds later.
+tool says so. Then `safari doctor` checks every part the harness needs on
+this Mac and prints the fix for each that fails (see "Troubleshooting").
+When Safari is not running, tools say "Safari is not running" and start it
+again hidden, without taking the screen; call again a few seconds later.
+
+## Two lanes: this harness or Apple's safaridriver
+
+Apple's own `safaridriver --mcp` (in `/usr/bin`) is an MCP server that
+drives Safari too, in automation windows of its own, marked by an orange
+address field, with a clean session: none of the user's logins, cookies,
+AutoFill, or history, and one session at a time. It runs only once the user
+turns on Allow remote automation in Safari's Developer settings, and omp
+has it only once he adds it as an MCP server; `safari doctor` says whether
+the setting is on.
+
+- Use this harness for anything that needs the user: his signed-in sites,
+  his passwords and codes, his Messages, his tabs.
+- Use Apple's lane, when omp has it, for public pages that need a browser
+  and for debugging a local server (`localhost`): the clean session shows
+  what a first-time visitor sees, and nothing touches the user's windows.
+- A public page that only needs reading is cheaper still without Safari
+  (see "Reading a page").
 
 ## Tabs: work in your own tab
 
@@ -317,6 +335,15 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
   one file input.
+- `upload` with `find` instead of `paths` looks for the user's own file
+  when he did not give a path (`find: "insurance card"`, CLI
+  `safari upload --find "insurance card" --tab N`). It searches with
+  Spotlight in iCloud Drive, Documents, Desktop, and Downloads only, and
+  returns up to 8 files, those named for more of the words first, then the
+  newest: `path`, `name`, `kind`, `modified`, and `size`. It attaches
+  nothing and reads no file's contents. Pick one, asking the user when more
+  than one could be right, then call `upload` with its path. The first
+  search may make macOS ask the user to let the harness read those folders.
 - `history` with `do: "back"`, `"forward"`, or `"reload"` (CLI `safari back`,
   `safari forward`, `safari reload`, or `safari history --do back`).
 - Alerts, confirms, and prompts never block the page. Each one comes back
@@ -410,7 +437,17 @@ with `do: "read"`.
   click the page cannot see, lands in `~/Downloads` through Safari itself.
   A click that takes the tab to a file Safari shows itself (a PDF, an
   image) saves that file; one that opens a page fails with the page's
-  address, and a file the site sent then is in `~/Downloads`.
+  address, and a file the site sent then is in `~/Downloads`. On your own
+  tab, `download` then returns that file instead of an error.
+- `click`, `press`, and `download` on a tab you opened report the files
+  Safari saved to `~/Downloads` while they ran, as
+  `downloaded: [{path, bytes}]`. A download still under way when the
+  action ends is waited for up to 30 s; one still going after that comes
+  back as `downloading` with the path it will have. Only names new since
+  the action began count, so nothing the user downloads earlier or in his
+  own tabs is claimed; two agents acting at the same moment may each see
+  the other's file. A download that starts after the action's own short
+  wait for the page shows up in `~/Downloads` alone.
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
   opening a page. `method` and `body` send a POST. From the CLI, pipe
@@ -727,7 +764,8 @@ its own `safari` command.
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
   or request bodies.
 - No bookmarks, top sites, download list, or tab groups API: Safari gives
-  its web extensions none. Agent tab groups go through the window's own
+  its web extensions none (a file an agent's own click saves is found in
+  `~/Downloads` instead). Agent tab groups go through the window's own
   controls with Accessibility instead, so they need the terminal's
   permission and wait for the user to leave the keys alone.
 - Screenshots need the tab's window on screen (not minimized).
@@ -738,6 +776,12 @@ its own `safari` command.
 
 ## Troubleshooting
 
+- Start with `safari doctor`. It checks Safari, the daemon and its launchd
+  job, the extension and whether it is the deployed release's, a round
+  trip through a hidden tab it opens and closes, Accessibility, Messages
+  access, the passwords pairing, free disk, swap, and Apple's safaridriver
+  lane, and prints the fix under each failure. It changes no setting and
+  starts no Safari, and it exits 1 when a check fails (`--json` for data).
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
 - `safari status` shows the daemon's recent events, one a line: its starts

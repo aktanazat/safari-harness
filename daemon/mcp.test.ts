@@ -48,8 +48,10 @@ import { expect, test } from "bun:test";
 // that took 20 runs or 60 calls. The ask tool (539) and handoff naming the
 // replies skip and stop (70) brought it to 20,603: an agent whose user is
 // away gets his answer or his skip from his phone instead of stalling until
-// he is back.
-const TOOL_LIST_MAX_BYTES = 20_603;
+// he is back. Letting upload find the user's file (135) brought it to
+// 20,738: an agent asked him for an insurance card photo that was already
+// in his iCloud Drive.
+const TOOL_LIST_MAX_BYTES = 20_738;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

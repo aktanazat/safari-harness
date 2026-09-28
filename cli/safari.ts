@@ -25,7 +25,7 @@ import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
 import type { Overview } from "../daemon/mission.ts";
 
-// Commands beyond the tools (guide, repl, session, do, daemon, routine)
+// Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
 // would add 5 ms to the start of every command.
 
@@ -38,6 +38,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari status                              daemon + extension health
   safari agents                              agents using Safari now, and the page
                                              that pauses or stops them
+  safari doctor                              check every part the harness needs on this
+                                             Mac, with the fix for each that fails
   safari tabs                                list tabs
   safari open <url> [--bg] [--keep]          open a tab; prints its id
   safari goto <url> --tab N                  navigate
@@ -54,6 +56,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari hover <ref> --tab N                 hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
+  safari upload --find <words> --tab N       list the user's files that match, to pick
+                                             one (iCloud Drive, Documents, Desktop,
+                                             Downloads); attaches nothing
   safari scroll <dy> --tab N                 scroll
 
   Page commands need --tab N, the id open printed, or --tab front for the
@@ -444,6 +449,16 @@ async function main() {
     return;
   }
 
+  // doctor: this Mac's harness only, whatever host is the default; it exits
+  // 1 when a check fails (--json: the checks as data).
+  if (cmd === "doctor") {
+    const { doctor, report } = await import("./doctor.ts");
+    const checks = await doctor();
+    const failed = checks.some((c) => c.status === "fail");
+    console.log(json ? JSON.stringify({ ok: !failed, checks }) : report(checks));
+    process.exit(failed ? 1 : 0);
+  }
+
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
 
@@ -555,7 +570,7 @@ async function main() {
     case "select": args.ref = positional[0]; args.option = positional.slice(1).join(" "); break;
     case "hover": args.ref = positional[0]; break;
     case "upload": {
-      args.paths = positional.map((p) => resolve(p));
+      if (positional.length) args.paths = positional.map((p) => resolve(p));
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;

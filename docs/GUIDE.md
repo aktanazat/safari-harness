@@ -25,6 +25,9 @@ Turns
   `text`), never on the clock. Check the page's wording once with a
   `snapshot` `query` before waiting on a guess.
 - From the CLI, pass `--json` when a program reads the output.
+- When calls keep failing and the error does not say why, run
+  `safari doctor` once: it checks every part and prints the fix. One
+  session spent 12 turns and $0.68 finding that Safari was not running.
 
 Before a site
 - Run `safari guide <site>` (for example `safari guide gusto`). It says

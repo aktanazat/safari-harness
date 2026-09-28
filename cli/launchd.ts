@@ -123,6 +123,11 @@ export async function daemonUninstall(): Promise<string> {
   return had ? "daemon uninstalled" : "daemon was not installed";
 }
 
+// Whether launchd has the daemon's job, for safari doctor.
+export function daemonLoaded(): boolean {
+  return launchctl("print", `gui/${uid()}/${DAEMON_LABEL}`).code === 0;
+}
+
 // ---------- routines ----------
 
 function checkName(name: string | undefined): string {
