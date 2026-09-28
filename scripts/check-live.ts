@@ -41,11 +41,13 @@ function refOf(snap: string, pattern: RegExp): string {
 // Runs `body` in a fresh background tab on example.com with `html` as its page.
 // Links in the fixtures lead only to example.org, so any example.org tab that
 // appears meanwhile is ours, even when a failing check lost track of it.
+// The site's own styles go too: since its 2026 redesign they stretch the
+// body to the window's height and more, so a printed fixture took 2 pages.
 async function withPage(html: string, setup: string, body: (tab: number) => Promise<void>) {
   const before = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
   const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
   try {
-    await call("eval", { tab, expression: `(() => { document.body.innerHTML = ${JSON.stringify(html)}; ${setup}; return 1; })()` });
+    await call("eval", { tab, expression: `(() => { document.querySelectorAll("style").forEach((s) => s.remove()); document.body.innerHTML = ${JSON.stringify(html)}; ${setup}; return 1; })()` });
     await body(tab);
   } finally {
     await call("close", { tab });
@@ -181,7 +183,7 @@ await withPage(FORM, FORM_JS, async (tab) => {
 const tabsBefore = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
 const read = await call("run", { steps: [
   { tool: "open", args: { url: "https://example.com/", background: true } },
-  { tool: "eval", args: { expression: 'document.querySelector("h1").textContent' } },
+  { tool: "eval", args: { expression: "document.title" } },
   { tool: "close" },
 ] });
 const leftover = ((await call("tabs")) as Tab[]).filter((t) => !tabsBefore.has(t.id));
@@ -527,9 +529,10 @@ await withPage(POINTER, POINTER_JS, async (tab) => {
 
 // The page keeps its own copy of fetch and calls it before any net start
 // (CVS's insurance form did). net still sees the calls, with the start of
-// each body, and the page still reads each whole body.
-const LOAD_CALLS = 'const f = window.fetch; window.got = {}; f("/nope").then((r) => r.text()).then((t) => { got.missing = t.length; });' +
-  ' f("data:text/plain," + "a".repeat(100000)).then((r) => r.text()).then((t) => { got.long = t.length; });';
+// each body, and the page still reads each whole body. The braces keep the
+// copy's name off the page's globals: example.com's script declares f.
+const LOAD_CALLS = '{ const f = window.fetch; window.got = {}; f("/nope").then((r) => r.text()).then((t) => { got.missing = t.length; });' +
+  ' f("data:text/plain," + "a".repeat(100000)).then((r) => r.text()).then((t) => { got.long = t.length; }); }';
 const LOAD_CALLS_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(LOAD_CALLS)} }))`;
 
 await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
