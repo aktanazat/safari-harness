@@ -704,8 +704,8 @@ check("browsing_history finds the page these checks just opened", visits.some((v
 // ---------- tabs close with the program that opened them ----------
 
 // Here that program is a bun process that runs the CLI and exits. The
-// daemon looks every 5 s, so the tab is gone within about 10 s; the --keep
-// tab must outlive a look after that.
+// daemon looks each second (owner.ts), so the tab is gone within a few
+// seconds; the --keep tab must outlive a look after that.
 const CLI = new URL("../cli/safari.ts", import.meta.url).pathname;
 async function openFromChild(keep: boolean): Promise<number> {
   const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json", ...(keep ? ["--keep"] : [])];
@@ -724,7 +724,7 @@ try {
     await Bun.sleep(1000);
     ownedLeft = (await tabIds()).has(owned);
   }
-  await Bun.sleep(6000);
+  await Bun.sleep(2000);
   const keptLeft = (await tabIds()).has(kept);
   check("a background tab closes once the program that opened it exits, unless --keep", !ownedLeft && keptLeft, { ownedLeft, keptLeft });
 } finally {

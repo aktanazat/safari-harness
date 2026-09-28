@@ -7,6 +7,8 @@ import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
+import { currentOwner, watchOwner } from "./owner.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
@@ -45,6 +47,8 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   }
   const id = typeof tab === "number" ? tab : Number(tab);
   if (!Number.isFinite(id)) throw new Error('tab must be a tab id from open, or "front"');
+  const mine = harnessTabs.get(id);
+  if (mine) mine.used = Date.now();
   return id;
 }
 
@@ -53,47 +57,99 @@ export async function openTab(url: string, background = false): Promise<TabInfo>
 }
 
 // A native sheet on the tab (a sign-in or permission prompt) or an
-// off-screen window can keep Safari from closing it; the extension gives up
-// after 5 s and says so. This limit is only for an extension that never answers.
+// off-screen window can keep Safari from closing it; the extension tries
+// for 15 s and says so. This limit is only for an extension that never
+// answers.
 export async function closeTab(tab: number): Promise<unknown> {
   const id = num(tab, "tab");
-  owners.delete(id);
-  return bridge.request("tabs.close", [id], 10000);
+  const res = await bridge.request("tabs.close", [id], 20000);
+  forget(id);
+  return res;
 }
 
-// A background tab the CLI opened closes once the program that ran the
-// command exits: the CLI names that process as the open's owner. An agent's
-// tabs so last its whole session, and none outlives it. Tabs a click opens
-// from one inherit its owner. The map lives only in this daemon, so after a
-// restart those tabs stay open.
-const owners = new Map<number, number>();
-const SWEEP_MS = 5000;
-let sweep: Timer | undefined;
+// A background tab an agent opens closes once that agent exits (owner.ts),
+// or once it sits untouched for IDLE_MS while the user does not have it in
+// front; keep leaves it open. Tabs a click opens from one inherit its
+// owner. The list is kept in a file, so a restarted daemon still closes
+// them, and the extension closes only a tab the harness owns, so an id
+// Safari has given another tab since is left alone. A tab it cannot close
+// now (not connected, a sheet) is tried again each minute.
+const IDLE_MS = 20 * 60_000;
+type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true };
+const harnessTabs = new Map<number, HarnessTab>();
+const watches = new Map<number, () => void>();
+let tabsFile: string | undefined;
+let sweeper: Timer | undefined;
 
-function alive(pid: number): boolean {
+// The daemon names the file once, as it starts.
+export function loadTabs(path: string): void {
+  tabsFile = path;
+  mkdirSync(dirname(path), { recursive: true });
+  let saved: Record<string, number | null> = {};
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM: the process runs, as another user
-    return e instanceof Error && "code" in e && e.code === "EPERM";
+    saved = JSON.parse(readFileSync(path, "utf8")) as Record<string, number | null>;
+  } catch {
+    // none kept yet
   }
+  for (const [tab, owner] of Object.entries(saved)) remember(Number(tab), owner ?? undefined);
 }
 
-function own(tab: number, pid: number) {
-  owners.set(tab, pid);
-  watchOwners();
+function own(tab: number, owner: number | undefined) {
+  remember(tab, owner);
+  save();
 }
 
-// Runs only while some tab has an owner.
-function watchOwners() {
-  if (sweep || owners.size === 0) return;
-  sweep = setTimeout(async () => {
-    const orphans = [...owners].filter(([, pid]) => !alive(pid)).map(([tab]) => tab);
-    await Promise.all(orphans.map((tab) => closeTab(tab).catch(() => {})));
-    sweep = undefined;
-    watchOwners();
-  }, SWEEP_MS);
+function remember(tab: number, owner: number | undefined) {
+  harnessTabs.set(tab, { owner, used: Date.now() });
+  if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => orphan(owner)));
+  sweeper ??= setInterval(sweep, 60_000);
+  sweeper.unref();
+}
+
+function orphan(owner: number) {
+  watches.delete(owner);
+  for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
+  void sweep();
+}
+
+async function sweep() {
+  const idle = Date.now() - IDLE_MS;
+  await Promise.all([...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.used < idle)).map(async ([tab, t]) => {
+    t.closing = true;
+    try {
+      const res = (await bridge.request("tabs.close", [tab, t.orphan ? "owned" : "idle"], 20000)) as { front?: true } | null;
+      if (res?.front) t.used = Date.now();
+      else forget(tab);
+    } catch (e) {
+      console.error(`[safari-harness] closing tab ${tab} failed:`, e instanceof Error ? e.message : e);
+    } finally {
+      delete t.closing;
+    }
+  }));
+}
+
+function forget(tab: number) {
+  const t = harnessTabs.get(tab);
+  if (!t) return;
+  harnessTabs.delete(tab);
+  if (t.owner !== undefined && ![...harnessTabs.values()].some((o) => o.owner === t.owner)) {
+    watches.get(t.owner)?.();
+    watches.delete(t.owner);
+  }
+  if (harnessTabs.size === 0) {
+    clearInterval(sweeper);
+    sweeper = undefined;
+  }
+  save();
+}
+
+function save() {
+  if (!tabsFile) return;
+  try {
+    writeFileSync(tabsFile, JSON.stringify(Object.fromEntries([...harnessTabs].map(([tab, t]) => [tab, t.owner ?? null]))));
+  } catch (e) {
+    console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
+  }
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
@@ -577,8 +633,8 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     const tab = await resolveTab(a.tab);
     const result = await run({ ...a, tab });
     const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
-    const owner = owners.get(tab);
-    if (opened !== undefined && owner !== undefined) own(opened, owner);
+    const from = harnessTabs.get(tab);
+    if (opened !== undefined && from) own(opened, from.owner);
     return withPage(result, tab, a.snapshot);
   };
 }
@@ -627,16 +683,12 @@ export const TOOLS: Record<string, Tool> = {
   tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
     desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
-    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, snapshot: PAGE },
+    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, keep: { type: "boolean", description: "leave it open after you exit" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {
       const t = await openTab(str(a.url, "url"), !!a.background);
-      // owner: the process the CLI names; a tab opened in front is the user's to close
-      if (a.background && a.owner !== undefined) {
-        const pid = num(a.owner, "owner");
-        if (!Number.isInteger(pid) || pid <= 1) throw new Error("owner must be a process id");
-        own(t.id, pid);
-      }
+      // a tab opened in front is the user's to close
+      if (a.background && !a.keep) own(t.id, currentOwner());
       return withPage(await withChallenge(t, t.id), t.id, a.snapshot);
     },
   },

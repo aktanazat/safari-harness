@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { CALLER_GROUPS } from "./caller.ts";
 import { invoke } from "./call.ts";
-import { rpc } from "./rpc.ts";
 import { connectHost } from "./host.ts";
 import type { ReplSession } from "./repl.ts";
 
@@ -20,46 +19,9 @@ hostReady.catch(() => {});
 // The daemon owns the extension bridge; MCP mode is a thin client that
 // talks to the daemon over its HTTP RPC port instead of holding the socket.
 
-// Background tabs this session opened, and tabs they opened in turn. The
-// user never saw them, so they close when the session ends, and an agent
-// that is done need not spend a turn on close.
-const owned = new Set<number>();
-
-function idOf(v: unknown): number | undefined {
-  return v && typeof v === "object" && "id" in v && typeof v.id === "number" ? v.id : undefined;
-}
-
-function track(tool: string, args: Record<string, unknown>, value: unknown) {
-  if (!value || typeof value !== "object") return;
-  const tab = args.tab === undefined ? undefined : Number(args.tab);
-  if (tool === "open" && args.background) {
-    const id = idOf(value);
-    if (id !== undefined) owned.add(id);
-  }
-  if (tool === "close" && tab !== undefined) owned.delete(tab);
-  const opened = "newTab" in value ? idOf(value.newTab) : undefined;
-  if (opened !== undefined && tab !== undefined && owned.has(tab)) owned.add(opened);
-  // run: each step as if called alone; a step without tab uses the latest open
-  if (tool === "run" && "steps" in value && Array.isArray(value.steps) && Array.isArray(args.steps)) {
-    let last: number | undefined;
-    for (const s of value.steps as { step: number; tool: string; value?: unknown }[]) {
-      const input: unknown = args.steps[s.step - 1];
-      const stepArgs = input && typeof input === "object" && "args" in input && input.args && typeof input.args === "object" ? input.args as Record<string, unknown> : {};
-      track(s.tool, stepArgs.tab === undefined && last !== undefined ? { ...stepArgs, tab: last } : stepArgs, s.value);
-      if (s.tool === "open") last = idOf(s.value) ?? last;
-    }
-  }
-}
-
 // This connection's own REPL session: its bindings last as long as the
 // connection, and its tabs close with it.
 let repl: ReplSession | undefined;
-
-async function closeOwned() {
-  await Promise.all([...owned].map((tab) => rpc("close", { tab }).catch(() => {})));
-  owned.clear();
-  await repl?.close();
-}
 
 const REPL_TOOL: Tool = {
   desc: "Run Playwright-style JavaScript against Safari: openTab(url), snapshot(page), page.locator(ref).click(), page.pdf(), cookie-bearing fetch, and site globals (slack, gmail, notion, youtube, x, linkedin, imessage...). Bindings persist; console.log returns values; 120 s limit. API: safari guide repl.",
@@ -121,7 +83,6 @@ async function handle(msg: RpcMsg) {
       try {
         await hostReady;
         const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args);
-        track(name, args, value);
         return reply(msg.id, {
           content: [{ type: "text", text: formatResult(value).slice(0, 100_000) }],
         });
@@ -139,7 +100,7 @@ async function handle(msg: RpcMsg) {
 
 // The client ends the session by closing stdin, or by a signal.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
-  process.on(sig, () => { closeOwned().finally(() => process.exit(0)); });
+  process.on(sig, () => { void Promise.resolve(repl?.close()).finally(() => process.exit(0)); });
 }
 
 let buf = "";
@@ -156,4 +117,4 @@ for await (const chunk of Bun.stdin.stream()) {
     handle(parsed).catch((e) => replyErr(parsed?.id, -32603, String(e)));
   }
 }
-await closeOwned();
+await repl?.close();

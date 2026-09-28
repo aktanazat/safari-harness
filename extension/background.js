@@ -549,7 +549,9 @@ async function handle(msg) {
       return { id: t.id, url: t.url, title: t.title };
     }
     case "tabs.close": {
-      const [tabId] = args;
+      const [tabId, only] = args;
+      if (only && !(await ownsTab(tabId))) return { ok: false };
+      if (only === "idle" && await inFront(tabId)) return { ok: false, front: true };
       // resolve once Safari has dropped the tab, so a following list omits it
       let onRemoved;
       const gone = new Promise((resolve) => {
@@ -742,6 +744,14 @@ async function ownTab(tabId) {
   const policy = (await policyOf(tabId)) || { accept: false, text: null };
   await store.set({ [`dialogs:${tabId}`]: policy });
   await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
+}
+
+// The daemon's own closes (an agent gone, a tab left idle) take only a tab
+// the harness owns, so an id Safari has since given another tab is left
+// alone; an idle one stays while the user has it in front.
+async function inFront(tabId) {
+  const t = await api.tabs.get(tabId);
+  return t.active && t.windowId === await userWindow();
 }
 
 // ---------- keeping owned tabs running ----------

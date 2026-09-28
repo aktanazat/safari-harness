@@ -54,7 +54,8 @@ const USAGE = `safari — drive Safari from the terminal
 
   Page commands need --tab N, the id open printed, or --tab front for the
   tab the user has in front. Background tabs a command opens (--bg) close
-  once the program that ran safari exits; --keep leaves them open.
+  once the program that ran safari exits, or after 20 minutes unused;
+  --keep leaves them open.
 
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
