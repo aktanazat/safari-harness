@@ -956,6 +956,12 @@ its own `safari` command.
   harness's script, pages it could not be put in, and the user pausing,
   resuming, stopping, or taking over an agent from its page. `--json`
   prints the whole health answer.
+- When the extension reloads (every deploy of it), a page already open
+  gets a fresh copy of the harness's script at the next call to it, and
+  that copy stops the one left behind: its page listeners come off and a
+  wait it held ends. A page open since before the release of September
+  28, 2026 that added this keeps its old copy's listeners running beside
+  the new one until the page reloads; it answers nothing.
 - "the user paused this task" or "the user stopped this task": see
   Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or

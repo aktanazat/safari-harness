@@ -188,4 +188,41 @@ benchRows("content.js in WebKit", [
     page: "extract.html",
     steps: [{ op: "extract", answer: { value: { text: "Pricing\n\nPro costs $12 a month.\n\nCode: BENCH\n\nBilled yearly" } } }],
   },
+  {
+    name: "after a takeover, a window the page opens is announced to the extension once, by the fresh copy",
+    page: "popup.html",
+    steps: [
+      { takeover: true },
+      { op: "click", args: ["Open"] },
+      {
+        sent: true,
+        answer: {
+          value: [
+            { load: 1, message: { __safariHarnessReady: 1 } },
+            { load: 2, message: { __safariHarnessReady: 1 } },
+            { load: 2, message: { __safariHarnessPopup: 1 } },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    name: "a wait the old copy still held ends at a takeover, and stops watching the page",
+    page: "popup.html",
+    steps: [
+      // the extension gives up on the answer; the wait stays open in the page
+      { op: "wait", args: [null, { text: "never on this page" }], timeout: 100, answer: { error: "bench: wait did not answer within 100 ms" } },
+      { takeover: true },
+      {
+        sent: true,
+        answer: {
+          value: [
+            { load: 1, message: { __safariHarnessReady: 1 } },
+            { load: 2, message: { __safariHarnessReady: 1 } },
+            { load: 1, answer: { value: { found: false } } },
+          ],
+        },
+      },
+    ],
+  },
 ]);

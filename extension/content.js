@@ -12,11 +12,16 @@
   // claim to null to put a fresh copy in where the one there answers
   // nothing (a copy left behind when the extension reloaded): the old copy
   // then ignores every message, and the new one numbers its refs after the
-  // ones already on the page.
+  // ones already on the page. The new one first retires the old one (see
+  // __safariHarnessRetire at the end), whose page listeners and watches
+  // would otherwise run on for the page's life with no one to answer.
   if (window.__safariHarnessInjected) return;
   const takeover = window.__safariHarnessInjected === null;
+  if (takeover) window.__safariHarnessRetire?.();
   const claim = {};
   window.__safariHarnessInjected = claim;
+  // This copy's life in the page: its page listeners end with it.
+  const life = new AbortController();
 
   const REF_ATTR = "data-sh-ref";
   let refSeq = 0;
@@ -591,7 +596,7 @@
       offsetWaiters.delete(d.__shOffsetReply);
       resolve({ x: d.x, y: d.y, innerWidth: d.innerWidth, innerHeight: d.innerHeight });
     }
-  });
+  }, { signal: life.signal });
   if (window !== window.top) parent.postMessage({ __shFrame: frameToken }, "*");
   for (const f of deepQueryAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
 
@@ -1114,7 +1119,7 @@
     if (typeof e.detail !== "string") return;
     try { dialogLog.push(JSON.parse(e.detail)); } catch {}
     if (dialogLog.length > 50) dialogLog.shift();
-  });
+  }, { signal: life.signal });
   function armDialogs(armed, policy) {
     const detail = JSON.stringify({ armed, owned: !!policy, accept: !!(policy && policy.accept), text: policy && typeof policy.text === "string" ? policy.text : null });
     document.dispatchEvent(new CustomEvent("__sh_dialog_policy", { detail }));
@@ -1139,7 +1144,7 @@
     tickPort.onMessage.addListener(() => document.dispatchEvent(new CustomEvent("__sh_tick")));
     tickPort.onDisconnect.addListener(() => { tickPort = null; });
   }
-  addEventListener("pageshow", (e) => { if (e.persisted && dialogPolicy) takeTicks(); });
+  addEventListener("pageshow", (e) => { if (e.persisted && dialogPolicy) takeTicks(); }, { signal: life.signal });
 
   // ---------- page fetch and downloads ----------
   // Requests from here carry the page's cookies, as the page's own would.
@@ -1207,11 +1212,11 @@
     if (typeof e.detail !== "string") return;
     try { caughtDownload = JSON.parse(e.detail); } catch { return; }
     pendingDownload?.(caughtDownload);
-  });
+  }, { signal: life.signal });
   // Safari gives a tab a page opens no opener, so the page says one is
   // coming (tabs a page opens, in background.js).
   const announceTab = () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); };
-  document.addEventListener("__sh_popup", announceTab);
+  document.addEventListener("__sh_popup", announceTab, { signal: life.signal });
   function catchDownloads(on) {
     document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
   }
@@ -2534,7 +2539,7 @@
   if (window === window.top) {
     for (const [type, fn] of [["mousedown", onRecordedMouseDown], ["click", onRecordedClick], ["mouseup", onRecordedMouseUp], ["keydown", onRecordedKeyDown],
       ["input", onRecordedInput], ["change", onRecordedChange], ["focusout", onRecordedFocusOut], ["pagehide", onRecordedPageHide]]) {
-      addEventListener(type, fn, true);
+      addEventListener(type, fn, { capture: true, signal: life.signal });
     }
   }
   // ---------- message dispatch ----------
@@ -2664,6 +2669,17 @@
   // to the old load's messaging, which reaches no one: the extension asks
   // through executeScript then (sendUntilNavigation in background.js).
   window.__safariHarnessRun = (msg) => (window.__safariHarnessInjected === claim ? answer(msg) : null);
+  // A newer copy taking over ends this one: its page listeners come off,
+  // and a wait or a download it still holds ends, as no one would ever
+  // stop them. Its tick port closed with the load that opened it. A watch
+  // after an action and a sleep in eval end by themselves within seconds;
+  // ending the sleep early would run the rest of the old eval sooner. A
+  // copy from before this hook stays.
+  window.__safariHarnessRetire = () => {
+    life.abort();
+    pendingWait?.done(false);
+    pendingDownload?.(null);
+  };
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
     return answer(msg);
