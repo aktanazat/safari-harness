@@ -99,6 +99,8 @@ Read with `snapshot` when you do not yet know what is on the page.
   on carries a ref like `[12]`; headings (`h1`…`h6`), landmarks, and the
   page's own text print without one, each piece of text once, where it
   sits. A link's address follows its name. Table cells join with ` | `.
+  A control with no role (a span with a click handler) gets a ref when it
+  shows a hand cursor and has a label, title, or test id.
 - Refs belong to one snapshot. After any click, typing, or navigation, take a
   new snapshot before using refs again. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
@@ -228,10 +230,14 @@ Wait for the page, not the clock.
 
 ## Network and console
 
-`net` with `do: "start"`, then `do: "read"`, returns the fetch/XHR requests the
-page made after capture started (URL, method, status, time); `do: "stop"` ends
-it. `console` does the same for console messages. Neither sees request bodies
-or requests made before capture started, so start `net`, then reload.
+`net` returns the fetch/XHR requests the page has made since it began
+loading, in every frame, oldest first (the last 100): URL, method, status or
+error, time, and the first 300 characters of a text or JSON response. A
+request from an embedded frame names its `frame`. `do: "start"` clears the
+list, so the next read shows only what follows; `do: "stop"` ends it on this
+page. It sees fetch and XHR only: not page loads, images, scripts, or web
+workers. `console` records console messages from `do: "start"`; read them
+with `do: "read"`.
 
 ## Files, PDFs, and requests
 

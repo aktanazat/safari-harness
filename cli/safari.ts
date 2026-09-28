@@ -67,7 +67,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
-  safari net start|stop|read --tab N         fetch/XHR capture
+  safari net read|start|stop --tab N         fetch/XHR since the page loaded
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
   safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]

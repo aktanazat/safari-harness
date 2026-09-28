@@ -666,7 +666,7 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => handoff(await resolveTab(a.tab), str(a.why, "why"), a.ms === undefined ? undefined : num(a.ms, "ms")),
   },
   net: {
-    desc: "Record the page's fetch/XHR requests: start, then read (url, method, status, time); stop ends it.",
+    desc: "The page's fetch/XHR requests since it began loading, in every frame: url, method, status, time, and the start of a text or JSON body. start clears the list; stop ends it.",
     params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" } },
     required: ["tab"],
     run: (a) => capture({ start: netStart, read: netRead, stop: netStop }, a),

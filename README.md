@@ -141,7 +141,7 @@ safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7
 safari eval "JSON.stringify(performance.timing)" --tab 7
-safari net start --tab 7; safari goto https://… --tab 7; safari net read --tab 7
+safari net read --tab 7                # the page's requests since it loaded, with the start of each body
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full
 safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
 safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf

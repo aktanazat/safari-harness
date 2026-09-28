@@ -28,8 +28,11 @@ type Call = { tool: string; args: Record<string, unknown> };
 // Requiring tab on the page tools (259: tab joins their required lists, and
 // open says what tab "front" means) brought it to 17,748: a call without
 // tab now fails instead of reading the user's front tab, as one did his
-// medical records page.
-const TOOL_LIST_MAX_BYTES = 17_748;
+// medical records page. Saying that net records from the start of the page
+// load, in every frame, with the start of each response body (74) brought it
+// to 17,822: an agent reads a failed request at once instead of starting
+// capture and reloading, as one could not on CVS's insurance form.
+const TOOL_LIST_MAX_BYTES = 17_822;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
