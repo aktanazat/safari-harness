@@ -712,5 +712,20 @@ await withPage(LISTING, "", async (tab) => {
   check(`listing snapshot stays under ${LISTING_MAX_BYTES} bytes (was ${bytes})`, bytes <= LISTING_MAX_BYTES, `${bytes} bytes`);
 });
 
+// ---------- snapshot work ----------
+
+// A long page's outline stops reading at its last line. The render used to
+// go on through the rest: on Wikipedia's World War II article it parsed
+// 5,010 link addresses for 600 printed lines, 40% of a warm snapshot.
+const LINKS = Array.from({ length: 2000 }, (_, i) => `<p><a href="https://example.org/${i}">Link ${i}</a></p>`).join("");
+const COUNT_URLS = "const U = URL; window.__urls = 0; window.URL = new Proxy(U, { construct(t, a) { window.__urls++; return new t(...a); } })";
+
+await withPage(LINKS, COUNT_URLS, async (tab) => {
+  const s = await call("snapshot", { tab, maxNodes: 100 });
+  const urls = (await call("eval", { tab, expression: "window.__urls" })).result;
+  check("a snapshot cut at 100 lines parses no link address past them",
+    s.truncated === true && s.nodes === 100 && urls <= s.nodes + 1, { urls, nodes: s.nodes, truncated: s.truncated });
+});
+
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

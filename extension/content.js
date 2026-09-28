@@ -543,6 +543,8 @@
     };
     const short = (t) => t.length <= 24 && !t.includes(" | ");
     const render = (node, depth) => {
+      // nothing prints past the last line: stop reading the page there
+      if (truncated) return;
       const kids = node.kids;
       // links that only show a picture, when a text link in the same block
       // goes to the same place
@@ -554,7 +556,7 @@
         }
       };
       scan(node, 0);
-      for (let i = 0; i < kids.length;) {
+      for (let i = 0; i < kids.length && !truncated;) {
         const c = kids[i];
         if (typeof c !== "object") {
           let { items, next } = textItems(kids, i);
