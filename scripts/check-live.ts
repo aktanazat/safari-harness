@@ -51,8 +51,6 @@ async function withPage(html: string, setup: string, body: (tab: number) => Prom
   }
 }
 
-const front = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
-
 // ---------- actions ----------
 
 const FORM = '<label>Size <select id=s><option value="">pick</option><option value="7">US 7</option><option value="8">US 8</option></select></label>' +
@@ -104,11 +102,12 @@ await withPage(FORM, FORM_JS, async (tab) => {
     await call("eval", { tab, expression: 'document.getElementById("fout").textContent' }));
   await Bun.file(file).delete();
 
+  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   const opened = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
   check("a click that opens a tab reports newTab", opened.newTab?.url === "https://example.org/", opened);
   if (opened.newTab) await call("close", { tab: opened.newTab.id });
   const activeNow = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
-  check("a new tab from a background tab leaves the user's tab in front", activeNow === front, { front, activeNow });
+  check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
 
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
   check("a click that loads a page reports navigated", nav.navigated?.url === "https://example.org/", nav);
@@ -402,6 +401,47 @@ await withPage("<button id=go>Load</button><p id=out></p>", PAGE_CALLS_JS, async
     { net, logs });
 });
 
+// ---------- controls without a role ----------
+
+// A span with a hand cursor, a label, and a click handler added from script
+// (CloudKit's "Add field") is a control. Text inside a hand-cursor control,
+// and plain text under a hand cursor, are not.
+const POINTER = '<span id=add style="cursor:pointer" aria-label="Add field" data-testid="add-new-field-button">+</span><p id=added></p>' +
+  '<div style="cursor:pointer" aria-label="Product card"><span title="Price">$5</span></div><div style="cursor:pointer"><span>plain one</span></div>';
+const POINTER_JS = 'document.getElementById("add").addEventListener("click", () => { document.getElementById("added").textContent = "added"; })';
+
+await withPage(POINTER, POINTER_JS, async (tab) => {
+  const snap = (await call("snapshot", { tab })).snapshot as string;
+  check("a hand-cursor element with a label gets a ref; text inside one, and plain hand-cursor text, do not",
+    /^\[\d+\] span "Add field"$/m.test(snap) && /^\[\d+\] div "Product card"$/m.test(snap) && !/\] span "Price"/.test(snap) && /^plain one$/m.test(snap), snap);
+  await call("click", { tab, ref: refOf(snap, /span "Add field"/) });
+  check("clicking that ref runs the page's handler", (await call("wait", { tab, text: "added", ms: 3000 })).found === true, "no added text");
+});
+
+// ---------- requests from the page's load ----------
+
+// The page keeps its own copy of fetch and calls it before any net start
+// (CVS's insurance form did). net still sees the calls, with the start of
+// each body, and the page still reads each whole body.
+const LOAD_CALLS = 'const f = window.fetch; window.got = {}; f("/nope").then((r) => r.text()).then((t) => { got.missing = t.length; });' +
+  ' f("data:text/plain," + "a".repeat(100000)).then((r) => r.text()).then((t) => { got.long = t.length; });';
+const LOAD_CALLS_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(LOAD_CALLS)} }))`;
+
+await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
+  let net: { url: string; status?: number; body?: string }[] = [];
+  let got: { missing?: number; long?: number } = {};
+  for (let i = 0; i < 30 && (got.missing === undefined || got.long === undefined || !net.some((e) => e.status === 404 && e.body)); i++) {
+    await Bun.sleep(100);
+    net = (await call("net", { tab, do: "read" })).entries;
+    got = (await call("eval", { tab, page: true, expression: "window.got" })).result ?? {};
+  }
+  const missing = net.find((e) => e.url === "https://example.com/nope");
+  const long = net.find((e) => e.url.startsWith("data:text/plain,"));
+  check("net shows requests from before any start, made with the page's own copy of fetch, with the start of each body",
+    missing?.status === 404 && /^<!doctype html>/i.test(missing.body ?? "") && long?.status === 200 && long.body === "a".repeat(300) + "…", net);
+  check("the page still reads each whole body itself", got.long === 100000 && (got.missing ?? 0) > 300, got);
+});
+
 // ---------- frames ----------
 
 // A srcdoc frame gets no extension script in Safari, so the page reads it
@@ -459,16 +499,17 @@ await withPage(FADE, "", async (tab) => {
 // ---------- bot checks ----------
 
 // A Turnstile-style box that the page removes 2.5 s later, the way a passed
-// check goes away. handoff brings the tab to the front, so the user's front
-// tab is put back after.
+// check goes away. handoff brings the tab to the front, so the tab the user
+// had in front is put back after, unless he closed it meanwhile.
 const BOT_CHECK = '<form><div class="cf-turnstile" style="width:300px;height:65px"></div><button>Sign in</button></form>';
 const BOT_CHECK_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: "setTimeout(() => document.querySelector('.cf-turnstile').remove(), 2500)" }))`;
 await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
+  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   const handed = await call("handoff", { tab, why: "Safari Harness self-test: nothing to do", ms: 8000 });
   check("handoff returns once the check is gone", handed.done === true && handed.challenge === undefined && handed.waitedMs < 8000, handed);
-  if (front !== undefined) await call("activate", { tab: front });
+  if (userFront !== undefined) await call("activate", { tab: userFront }).catch((e: Error) => { if (!e.message.includes("that tab is gone")) throw e; });
 });
 
 // ---------- dialogs ----------
@@ -570,6 +611,7 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
 const TRUST = `<button id=b onclick="this.dataset.trusted = event.isTrusted">Real</button><input id=f>`;
 
 await withPage(TRUST, "", async (tab) => {
+  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   await call("click", { tab, ref: "#b" });
   const scripted = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
   await CALLER_TOOLS.real_input.run({ tab, do: "click", ref: "#b" });
@@ -579,7 +621,7 @@ await withPage(TRUST, "", async (tab) => {
   await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
   const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;
   const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
-  check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === front, { typed, nowFront, front });
+  check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === userFront, { typed, nowFront, userFront });
 });
 
 // run takes every tool: a real_input step runs in this process, and the run
@@ -604,10 +646,11 @@ const SHOWN = `<style>@keyframes sh-fade { from { opacity: 0 } }</style><p id=ou
 const SHOWN_JS = `document.getElementById("out").addEventListener("animationend", (e) => { e.target.textContent = "Now drawn"; })`;
 
 await withPage(SHOWN, SHOWN_JS, async (tab) => {
+  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
   const hidden = await call("wait", { tab, text: "Now drawn", ms: 1500 });
   const shown = await call("wait", { tab, text: "Now drawn", ms: 5000, front: true });
   const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
-  check("wait front shows a hidden tab until it draws, then gives the front tab back", !hidden.found && shown.found && nowFront === front, { hidden, shown, nowFront, front });
+  check("wait front shows a hidden tab until it draws, then gives the front tab back", !hidden.found && shown.found && nowFront === userFront, { hidden, shown, nowFront, userFront });
 });
 
 // ---------- browsing history ----------
