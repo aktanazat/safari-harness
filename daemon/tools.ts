@@ -351,9 +351,10 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 // (about 2 minutes). The user is done when the check is gone or, with no
 // check seen, the page has moved on: if they are still on the tab, they get
 // back the tab and app they had in front. A block ends a handoff (no one can
-// clear it), and so do 5 minutes with no call waiting. Once over, it answers
-// only the calls that carry its id (the caller's own later slices, which may
-// come after it ends), so they do not start another.
+// clear it), and so do the user's reply of skip or stop and 5 minutes with
+// no call waiting. Once over, it answers only the calls that carry its id
+// (the caller's own later slices, which may come after it ends), so they do
+// not start another.
 type Handoff = {
   id: number;
   start: number;
@@ -366,6 +367,12 @@ type Handoff = {
   error?: string;
   // how the text to the user's phone went: one per handoff
   texted?: string;
+  // where his replies to it are (phone.ts), for every later call to read
+  thread?: unknown;
+  // settled to look at the page at once: he replied that he is done
+  look: PromiseWithResolvers<void>;
+  // he replied skip or stop: over, with the page left as it is
+  user?: "skip" | "stop";
   waiting: number;
   calledAt: number;
 };
@@ -389,7 +396,9 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
     // the first check the page answered with; null until it answers
     let seen = initial;
     while (h.waiting > 0 || Date.now() - h.calledAt < HANDOFF_IDLE_MS) {
-      await Bun.sleep(1000);
+      await Promise.race([Bun.sleep(1000), h.look.promise]);
+      h.look = Promise.withResolvers();
+      if (h.user) return;
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
       const now = tabs.find((t) => t.id === tab);
       if (!now) throw gone;
@@ -408,7 +417,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
     h.error = e instanceof Error ? e.message : String(e);
   } finally {
     // one that ran out of callers leaves nothing to answer
-    if (handoffs.get(tab) === h && !h.done && h.error === undefined) handoffs.delete(tab);
+    if (handoffs.get(tab) === h && !h.done && h.error === undefined && h.user === undefined) handoffs.delete(tab);
     h.begun.resolve();
     h.over.resolve();
   }
@@ -418,19 +427,26 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
 // first call that finds the user away (as the caller measured) is told to
 // text them (text: true) and returns at once; it reports how that went as
 // texted, so no other call sends one.
-async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; texted?: string; id?: number }) {
+async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; texted?: string; thread?: unknown; look?: boolean; user?: "skip" | "stop"; id?: number }) {
   let h = handoffs.get(tab);
-  if (h && (h.done || h.error !== undefined) && h.id !== o.id) h = undefined;
+  if (h && (h.done || h.error !== undefined || h.user !== undefined) && h.id !== o.id) h = undefined;
   const joined = h !== undefined;
   if (!h) {
-    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
-    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now() };
+    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined || x.user !== undefined)) handoffs.delete(t);
+    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), look: Promise.withResolvers() };
     handoffs.set(tab, h);
     void watchHandoff(tab, why, h);
   }
   const session = h;
   session.waiting++;
   if (o.texted !== undefined) session.texted = o.texted;
+  if (o.thread !== undefined) session.thread = o.thread;
+  if (o.look) session.look.resolve();
+  // his skip or stop ends it, unless the page is clear already
+  if (o.user && !session.done && session.error === undefined) {
+    session.user = o.user;
+    session.look.resolve();
+  }
   let timer: Timer | undefined;
   try {
     await session.begun.promise;
@@ -438,7 +454,7 @@ async function handoffWait(tab: number, why: string, o: { ms: number; away: bool
     if (text) session.texted = "sending";
     else if (o.ms > 0) await Promise.race([session.over.promise, new Promise<void>((r) => { timer = setTimeout(r, Math.min(o.ms, 110000)); })]);
     if (session.error !== undefined) throw new Error(session.error);
-    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.texted ? { texted: session.texted } : {}), ...(text ? { text } : {}) };
+    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.texted ? { texted: session.texted } : {}), ...(session.thread === undefined ? {} : { thread: session.thread }), ...(session.user ? { user: session.user } : {}), ...(text ? { text } : {}) };
   } finally {
     clearTimeout(timer);
     session.waiting--;
@@ -859,8 +875,10 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   // The daemon's half of handoff (handoff.ts runs in the caller). away says
-  // the caller found the user away; texted reports how its text went; id
-  // names the handoff the caller's earlier call started or joined.
+  // the caller found the user away; texted reports how its text went, and
+  // thread where his replies to it are; look says he replied done, and user
+  // that he replied skip or stop; id names the handoff the caller's earlier
+  // call started or joined.
   handoff_wait: {
     desc: "Start or join the tab's handoff and wait up to ms for the user.",
     params: {
@@ -870,10 +888,13 @@ export const TOOLS: Record<string, Tool> = {
       away: { type: "boolean", description: "the user is away from the Mac" },
       texted: { type: "string", description: "how the text to the user's phone went" },
       id: { type: "number", description: "the handoff an earlier call returned" },
+      thread: { description: "where the user's replies to the text are; given back to every later call" },
+      look: { type: "boolean", description: "the user says he is done: look at the page now" },
+      user: { type: "string", enum: ["skip", "stop"], description: "the user replied skip or stop: end the handoff" },
     },
     required: ["tab", "why", "ms"],
     hidden: true,
-    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.texted === undefined ? {} : { texted: str(a.texted, "texted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }) }),
+    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, look: a.look === true, ...(a.user === "skip" || a.user === "stop" ? { user: a.user } : {}), ...(a.texted === undefined ? {} : { texted: str(a.texted, "texted") }), ...(a.thread === undefined ? {} : { thread: a.thread }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }) }),
   },
   net: {
     desc: "The page's fetch/XHR requests since it began loading, in every frame: url, method, status, time, and the start of a text or JSON body. start clears the list; stop ends it.",

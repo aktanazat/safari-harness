@@ -42,7 +42,14 @@ daemon/
                     it after an open
   handoff.ts        handoff's caller half: texts the user's own phone, with a
                     picture of the page, when a step needs him and he is away
-                    from the Mac; the daemon raises the tab and notifies
+                    from the Mac, and acts on his reply (done, skip, stop); the
+                    daemon raises the tab and notifies
+  ask.ts            ask: an agent's question texted to the user's phone when
+                    he is away, and his answer
+  phone.ts          every text to the user's phone: at most 6 an hour, and his
+                    replies told apart from the harness's own lines
+  watch.ts          watch routines: one value read off a page on a schedule,
+                    texted when it changes, with no model
   save.ts           save on extract, snapshot, eval, and fetch: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
@@ -76,7 +83,8 @@ daemon/
 cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
-cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless omp)
+cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless
+                    omp, or a watch with no model)
 docs/GUIDE.md       the short card of rules (`safari guide`)
 docs/REFERENCE.md   every tool in full (`safari guide reference`)
 docs/sites/         one note per site (`safari guide <site>`)
@@ -247,11 +255,14 @@ safari routine add morning-inbox --at 08:00 "List today's unread Gmail senders a
 safari routine list
 safari routine run morning-inbox
 safari routine remove morning-inbox
+safari routine add stock --every 30 --watch https://example.com/item --selector ".stock"
 ```
 
 A routine is a prompt file in `~/.local/share/safari-harness/routines/` plus a
 launchd agent `at.aktan.safari-harness.routine.<name>` that runs
-`omp -p --auto-approve` with it. Output goes to
+`omp -p --auto-approve` with it. A watch (`--watch <url>` with `--selector`,
+`--text`, `--eval`, or `--replay`) runs no model: each run reads one value off
+the page and texts the user's phone when it changes. Output goes to
 `~/Library/Logs/safari-harness/routines/`.
 
 ### MCP

@@ -27,7 +27,7 @@ const toAppleNs = (ms: number) => (ms - APPLE_EPOCH_MS) * 1e6;
 // Messages keep what counts as a real message: no tapbacks, no group events.
 const REAL = "m.item_type = 0 AND NOT (m.associated_message_type BETWEEN 2000 AND 3999)";
 
-function openChatDb(): Database {
+export function openChatDb(): Database {
   try {
     return new Database(CHAT_DB, { readonly: true });
   } catch (e) {
@@ -330,6 +330,13 @@ end run`;
 // Our own newest message after a rowid, by its text.
 const OUR_ROW = "SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1";
 type OurRow = { is_sent: number; is_delivered: number; error: number };
+// The user's own number: the one his newest message went out from.
+const OWN_NUMBER = "SELECT destination_caller_id n FROM message WHERE is_from_me = 1 AND destination_caller_id LIKE '+%' ORDER BY ROWID DESC LIMIT 1";
+const NO_NUMBER = "Messages shows no phone number of the user's own to text";
+
+const sms = (argv: string[]) => runSend(SEND_SMS, argv).catch((e: Error) => {
+  throw /Can.t get account|-1728/.test(e.message) ? new Error("Messages on this Mac cannot send texts: on the iPhone, turn on Settings > Messages > Text Message Forwarding for it") : e;
+});
 
 async function runSend(script: string, argv: string[]): Promise<void> {
   try {
@@ -393,27 +400,25 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
 }
 
 // Texts the user's own phone, for a step waiting on him while he is away
-// from the Mac (handoff.ts). His number is the one his newest message went
+// from the Mac (phone.ts). His number is the one his newest message went
 // out from, so the text reaches no one else and needs no draft. A picture
 // goes first, so the line is what his lock screen shows. status is
 // "received" once the line has come back to his phone as a text received
 // (the Mac records that copy too), else how far it got in 30 s; picture
-// says why the picture did not go.
-export async function textOwner(line: string, picture?: string): Promise<{ status: "received" | "sent" | "unconfirmed"; picture?: string }> {
+// says why the picture did not go. to and after say where a reply will be:
+// in his thread, after that rowid.
+export async function textOwner(line: string, picture?: string): Promise<{ status: "received" | "sent" | "unconfirmed"; picture?: string; to: string; after: number }> {
   const db = openChatDb();
   let own: { n: string } | null;
   let after: number;
   try {
-    own = db.query<{ n: string }, []>("SELECT destination_caller_id n FROM message WHERE is_from_me = 1 AND destination_caller_id LIKE '+%' ORDER BY ROWID DESC LIMIT 1").get();
+    own = db.query<{ n: string }, []>(OWN_NUMBER).get();
     after = db.query<{ n: number }, []>("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get()?.n ?? 0;
   } finally {
     db.close();
   }
-  if (!own) throw new Error("Messages shows no phone number of the user's own to text");
+  if (!own) throw new Error(NO_NUMBER);
   const to = own.n;
-  const sms = (argv: string[]) => runSend(SEND_SMS, argv).catch((e: Error) => {
-    throw /Can.t get account|-1728/.test(e.message) ? new Error("Messages on this Mac cannot send texts: on the iPhone, turn on Settings > Messages > Text Message Forwarding for it") : e;
-  });
   const missing = picture ? await sms([picture, to, "picture"]).then(() => undefined, (e: Error) => e.message) : undefined;
   await sms([line, to]);
   const deadline = Date.now() + 30000;
@@ -427,12 +432,47 @@ export async function textOwner(line: string, picture?: string): Promise<{ statu
       const back = check.query<{ text: string | null; body: Uint8Array | null }, [number, string]>(
         "SELECT m.text, m.attributedBody body FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 0 AND h.id = ?",
       ).all(after, to);
-      if (back.some((r) => messageText(r.text, r.body) === line)) return { status: "received", ...(missing ? { picture: missing } : {}) };
+      if (back.some((r) => messageText(r.text, r.body) === line)) return { status: "received", ...(missing ? { picture: missing } : {}), to, after };
     } finally {
       check.close();
     }
   }
-  return { status: row?.is_sent ? "sent" : "unconfirmed", ...(missing ? { picture: missing } : {}) };
+  return { status: row?.is_sent ? "sent" : "unconfirmed", ...(missing ? { picture: missing } : {}), to, after };
+}
+
+// The user's own thread after a rowid, oldest first: his replies to a text
+// the harness sent him, and the harness's own lines, which come back to the
+// Mac as received too. A line he texts his own number may show as sent, as
+// received, or as both. at is when it was written, in ms.
+export function ownThread(to: string, after: number): { me: boolean; text: string; at: number }[] {
+  const db = openChatDb();
+  try {
+    return db.query<{ me: number; text: string | null; body: Uint8Array | null; date: number }, [number, string]>(
+      `SELECT m.is_from_me me, m.text, m.attributedBody body, m.date FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND h.id = ? AND ${REAL} ORDER BY m.ROWID`,
+    ).all(after, to).map((r) => ({ me: r.me === 1, text: messageText(r.text, r.body), at: APPLE_EPOCH_MS + Math.floor(r.date / 1e6) }));
+  } finally {
+    db.close();
+  }
+}
+
+// The user's own number, for a job that texts him later from where it may
+// not read Messages' database: launchd runs a scheduled watch without the
+// Full Disk Access of the terminal that set it up.
+export function ownNumber(): string {
+  const db = openChatDb();
+  try {
+    const own = db.query<{ n: string }, []>(OWN_NUMBER).get();
+    if (!own) throw new Error(NO_NUMBER);
+    return own.n;
+  } finally {
+    db.close();
+  }
+}
+
+// Texts his own number with no look at Messages' database, so nothing
+// confirms it arrived.
+export async function textOwnNumber(to: string, line: string): Promise<void> {
+  await sms([line, to]);
 }
 
 // ---------- tool table ----------

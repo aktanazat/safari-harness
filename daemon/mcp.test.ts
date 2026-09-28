@@ -45,8 +45,11 @@ import { expect, test } from "bun:test";
 // whole text. Reading tables as rows (105: extract's as) brought it to
 // 19,124: a table or product list comes back as rows to use, not text to
 // parse. The map tool (870) brought it to 19,994: one call reads 20 pages
-// that took 20 runs or 60 calls.
-const TOOL_LIST_MAX_BYTES = 19_994;
+// that took 20 runs or 60 calls. The ask tool (539) and handoff naming the
+// replies skip and stop (70) brought it to 20,603: an agent whose user is
+// away gets his answer or his skip from his phone instead of stalling until
+// he is back.
+const TOOL_LIST_MAX_BYTES = 20_603;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
