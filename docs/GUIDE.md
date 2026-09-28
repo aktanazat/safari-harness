@@ -26,7 +26,8 @@ Before a site
 - Run `safari guide <site>` (for example `safari guide gusto`). It says
   what failed before and what worked. `safari guide sites` lists them.
 - A public page reads faster without Safari: try `read`, `web_search`, or
-  Iris first. Keep long text with `save` instead of fetching it twice.
+  Iris first. Keep long text with `save` instead of fetching it twice, and
+  read a table or product list with `extract` `as: "table"`.
 
 Signing in, in this order
 1. A session: most of his sites are already signed in.

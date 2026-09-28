@@ -285,9 +285,10 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   return bridge.tab(tab, "eval", [code], 30000, Number(frame));
 }
 
-export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number }) {
+// as: "table" reads the page's tables and repeated card lists as rows.
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes }]);
+  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as }]);
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -809,9 +810,9 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, save: SAVE },
+    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table"], description: "table: tables and card lists as JSON rows" }, save: SAVE },
     required: ["tab"],
-    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number })),
+    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -951,7 +952,7 @@ type Extract = { url: string; title: string; text: string };
 export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
+    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; tables?: unknown[] };
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
@@ -971,6 +972,11 @@ export function formatResult(value: unknown): string {
       const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
       if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
       return lines.join("\n");
+    }
+    // extract as table: each table as one line of JSON
+    if (Array.isArray(v.tables)) {
+      const note = v.truncated ? "\n…truncated: narrow with selector or query" : "";
+      return `# ${v.title} — ${v.url}\n\n${v.tables.map((t) => JSON.stringify(t)).join("\n")}${note}`;
     }
   }
   return JSON.stringify(value, null, 1);

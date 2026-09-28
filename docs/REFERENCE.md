@@ -179,6 +179,36 @@ file (grep it, or read a range) instead of carrying the page in context.
 - CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
   path.
 
+## Tables and card lists as rows
+
+`extract` with `as: "table"` returns the page's data as rows instead of
+text: `{url, title, tables, truncated}`, each entry of `tables` in page
+order. The rules are fixed, so the same page always reads the same way.
+
+- A table (`kind: "table"`) is a `<table>`, or an element with the ARIA
+  `table`, `grid`, or `treegrid` role. It has `caption` when there is one,
+  `headers` (empty when it has no header row; two header rows join by
+  column, as `Price / USD`), and `rows`, each an array of cell text. A cell
+  that spans rows or columns fills each slot it covers, so every row lines
+  up with the headers. A table holding other tables or marked
+  `role="presentation"` lays out the page and is skipped, and so is a table
+  that is not drawn.
+- A card list (`kind: "cards"`) is 3 or more sibling elements with the same
+  structure: a product grid, search results, a list of orders. A card's
+  fields are the text of each element in it, in page order, each link's
+  address after the link's text. `headers` names each field by its
+  element's tag and first class (`h3`, `span.price`, `a href`). A card
+  whose structure differs (one with an extra badge) is left out, or forms a
+  list of its own. A list whose cards hold fewer than 2 pieces of text (a
+  menu of links) is skipped, and a list inside a card of another list is
+  part of that card.
+- `selector` narrows the read to one region, and may name the table or
+  list itself. `query` keeps the rows containing the text. `maxBytes`
+  (default 20000) bounds the JSON of what comes back; `truncated: true`
+  says rows were left out.
+- CLI: `safari extract --as table --tab N` prints one table per line of
+  JSON.
+
 ## Acting
 
 - Every action's `ref` takes a snapshot ref (`12`), a CSS selector

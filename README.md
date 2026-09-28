@@ -163,6 +163,7 @@ safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7
 safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
+safari extract --as table --tab 7      # tables and product lists as rows of JSON
 safari eval "JSON.stringify(performance.timing)" --tab 7
 safari net read --tab 7                # the page's requests since it loaded, with the start of each body
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full

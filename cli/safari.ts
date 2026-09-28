@@ -67,6 +67,7 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
   safari extract --tab N [--selector s]      readable text
+  safari extract --as table --tab N          tables and card lists as JSON rows
   safari info --tab N                        url/title/scroll
   safari wait <ms> --tab N                   sleep in the page
   safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
