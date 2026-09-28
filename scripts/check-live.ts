@@ -3,6 +3,9 @@
 // it opens in the background, and closes them; the user's tabs stay as they are.
 //
 //   bun scripts/check-live.ts
+//   bun scripts/check-live.ts --restart          restarts the daemon (below)
+//   bun scripts/check-live.ts --before-install   then a deploy that changes
+//   bun scripts/check-live.ts --after-install    the extension, then this
 //
 // Pages are built inside example.com with eval, so the checks do not depend on
 // any site's markup changing.
@@ -50,6 +53,61 @@ async function withPage(html: string, setup: string, body: (tab: number) => Prom
       .filter((t) => !before.has(t.id) && t.url.startsWith("https://example.org/"));
     for (const t of strays) await call("close", { tab: t.id });
   }
+}
+
+// ---------- deploys (opt in: each restarts or reloads something) ----------
+// --restart: the daemon finishes a call in flight before it restarts
+//   (check-pairing.ts covers the pairing across restarts).
+// --before-install, then scripts/dev-install.sh with an extension change,
+//   then --after-install: the reload leaves the daemon and the pairing
+//   alone, and a tab opened before it answers at once by the id it had.
+//   Safari gives every tab a new id on a reload and the extension maps the
+//   old ones, except across the reload that installs that mapping.
+const HEALTH = "http://127.0.0.1:37334/health";
+const INSTALL_STATE = "/private/var/tmp/check-live-install.json";
+const health = async () => (await (await fetch(HEALTH)).json()) as { pid: number; inFlight: number };
+const unlocked = async () => ((await call("passwords", { do: "status" })) as { unlocked: boolean }).unlocked;
+const phase = process.argv[2];
+if (phase === "--restart") {
+  const { pid } = await health();
+  const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
+  const pending = call("wait", { tab, ms: 10000 }).then(() => "ok", (e: Error) => e.message);
+  for (let i = 0; i < 100 && (await health()).inFlight < 1; i++) await Bun.sleep(50);
+  const asked = (await (await fetch(HEALTH.replace("health", "shutdown"), { method: "POST", body: JSON.stringify({ reason: "check-live: drained restart" }) })).json()) as { inFlight: number };
+  const answer = await pending;
+  let now = pid;
+  for (let i = 0; i < 120 && now === pid; i++) {
+    await Bun.sleep(500);
+    now = await health().then((h) => h.pid, () => pid);
+  }
+  check("a restart first finishes the call in flight", asked.inFlight >= 1 && answer === "ok", { asked, answer });
+  check("the daemon comes back", now !== pid, { pid, now });
+  await call("close", { tab });
+  process.exit(failed ? 1 : 0);
+}
+if (phase === "--before-install") {
+  const tab = (await call("open", { url: `https://example.com/?check-live-install=${Date.now()}`, background: true })).id as number;
+  await call("eval", { tab, expression: `(() => { document.body.innerHTML = ${JSON.stringify(`<button onclick="this.textContent = 'pressed'">Press</button>`)}; return 1; })()` });
+  const ref = refOf((await call("snapshot", { tab })).snapshot, /button "Press"/);
+  await Bun.write(INSTALL_STATE, JSON.stringify({ tab, ref, url: (await call("info", { tab })).url, pid: (await health()).pid, unlocked: await unlocked() }));
+  console.log(`saved ${INSTALL_STATE}: deploy an extension change, then run --after-install`);
+  process.exit(0);
+}
+if (phase === "--after-install") {
+  const s = (await Bun.file(INSTALL_STATE).json()) as { tab: number; ref: string; url: string; pid: number; unlocked: boolean };
+  const start = Date.now();
+  const byOldId = await call("info", { tab: s.tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
+  const ms = Date.now() - start;
+  check("a tab opened before the reload answers at once by the id it had", byOldId === s.url && ms < 2000, { byOldId, ms });
+  const tab = ((await call("tabs")) as (Tab & { url: string })[]).find((t) => t.url === s.url)?.id;
+  if (tab !== undefined) {
+    await call("click", { tab, ref: s.ref });
+    const text = (await call("eval", { tab, expression: "document.querySelector('button').textContent" })).result;
+    check("its page takes a fresh script, and a ref from before the reload still works", text === "pressed", text);
+    await call("close", { tab });
+  }
+  check("the reload left the daemon running and the pairing as it was", (await health()).pid === s.pid && (await unlocked()) === s.unlocked, s);
+  process.exit(failed ? 1 : 0);
 }
 
 // ---------- actions ----------
