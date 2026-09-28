@@ -5,10 +5,11 @@ The tools drive the user's real Safari: his logins, cookies, and tabs.
 script API. Read a section only when a rule below does not settle it.
 
 Tabs
-- `open` returns a tab id. Pass it as `tab` to every call: a call without
-  one acts on his front tab. Read his own tabs only when he asks about a
-  page he has open, and never navigate, type in, or close them.
-- Close the tabs you open, on success or failure.
+- `open` returns a tab id. Pass it as `tab` to every call; a call without
+  one is an error. `tab: "front"` is his own front tab: use it only when he
+  asks about the page he is on. Never navigate, type in, or close his tabs.
+- Close the tabs you open, on success or failure. Background tabs close
+  when your session ends anyway; `--keep` (CLI) leaves one open for him.
 
 Turns
 - Do one step in one call: `run` for several tools in order, `repl` for

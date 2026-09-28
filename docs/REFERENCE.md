@@ -21,19 +21,36 @@ Three ways in:
 
 No health check is needed first: when the extension is not connected, every
 tool says so. Then `safari status` shows the connection, and
-"Troubleshooting" has the fix.
+"Troubleshooting" has the fix. When Safari is not running, tools say
+"Safari is not running" and start it again hidden, without taking the
+screen; call again a few seconds later.
 
 ## Tabs: work in your own tab
 
 Safari is the user's everyday browser, so treat his tabs as his.
 
 - Start with `open <url>`. It returns the new tab's `id`. Pass that `tab` to
-  every later call. A call without `tab` acts on the front tab, which is
-  usually the user's, so never leave it out.
+  every later call. Page tools need `tab`: a call without one is an error,
+  never a read of whatever tab is in front.
+- `tab: "front"` (CLI `--tab front`) names the user's front tab on purpose:
+  the active tab of the Safari window he had in front last. Use it only when
+  he asks about the page he is looking at. `close`, `activate`, and `window`
+  take only a tab id.
 - Close your tab with `close` when the task ends, on success or failure.
   Through MCP, background tabs your session opened (and tabs they opened)
   also close when the session ends, so a one-shot task can finish with its
   answer instead of a `close` call.
+- From the CLI, background tabs a command opened (and tabs they opened)
+  close within about 5 s after the program that ran `safari` exits: omp,
+  claude, codex, a bun or python script, or the terminal's login session.
+  An agent's tabs therefore last its whole session. `--keep` on `open` (such
+  as `safari open <url> --bg --keep`) or on `safari call run` leaves them
+  open, for a tab the user finishes himself. Tabs opened in front, tabs on
+  another Mac (`--host`), and tabs opened before the daemon restarted are
+  never closed this way.
+- A `close` on a tab stuck behind a native sheet (a sign-in or permission
+  prompt) or in a window off screen fails within about 5 s and says so; tell
+  the user rather than retrying.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -59,8 +76,8 @@ run goes wrong.
 Every tool call costs a model turn of a few seconds. `run` does several tools
 in one call, in order. After the first error it skips the remaining steps
 except `close`, so a failed run never leaves its tab open. A step without
-`tab` uses the tab an earlier `open` step made. `handoff` can be a step;
-`real_input` cannot.
+`tab` uses the tab an earlier `open` step made. Every tool but `repl` can be
+a step, `real_input`, `handoff`, and the Messages tools included.
 
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
@@ -69,7 +86,6 @@ except `close`, so a failed run never leaves its tab open. A step without
   `{ref: "Poetry"}`, `wait` for the text you expect, `extract`, `close`.
 - A step cannot use a ref number from a snapshot taken in the same `run`; use
   the element's visible text or a CSS selector instead.
-- `run` covers the Safari tools, not the Messages tools.
 - From a shell script, never start a `safari` command in the background and
   poll for it. Each command already waits for its page; a backgrounded one
   only adds turns (one session spent $8.35 over 36 turns this way for 49
@@ -450,11 +466,10 @@ its own `safari` command.
 
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
-- "Safari extension not connected" on every call: first check that Safari
-  is running (`pgrep -x Safari`). The extension runs only while Safari
-  does; if it is closed, start it hidden with `open -g -j -a Safari` and
-  call again.
-- `extension` is `null`: in Safari Settings, go to Extensions and turn
+- "Safari is not running": the tool has started Safari hidden, without
+  taking the screen; call again in a few seconds.
+- "Safari extension not connected" while Safari runs, or `extension` is
+  `null` in `safari status`: in Safari Settings, go to Extensions and turn
   "Safari Harness Bridge" off and on. It should connect within seconds.
 - `extension disconnected` on every call: two copies of the app are
   registered and knock each other offline. Keep only

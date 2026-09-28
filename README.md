@@ -30,7 +30,9 @@ daemon/
                     `navigated`, `newTab`, and any `dialogs`; snapshots take
                     in embedded frames
   caller.ts         tools that run in the calling process, which holds the
-                    terminal's permissions (Messages, browsing history)
+                    terminal's permissions (Messages, browsing history, the
+                    real mouse and keyboard); a `run` with one of them runs
+                    its steps from the caller too
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
@@ -129,40 +131,43 @@ waiting. `safari guide reference` covers every tool in full. The omp skill
 `safari` points agents at both.
 
 ```
-safari open https://example.com
-safari snapshot                 # [ref]s for click/type
-safari snapshot --query price   # only the lines that mention "price"
-safari click 2 --snapshot       # click, then print the page it led to
-safari select 5 "US 8"          # dropdown option by label
-safari upload ~/photo.jpg       # the page's file input
-safari back
-safari wait --text "Welcome"    # returns the moment it is on the page
-safari extract
-safari eval "JSON.stringify(performance.timing)"
-safari net start; safari goto https://…; safari net read
-safari shot --out page.png      # what the tab shows; --ref R, --annotate, --full
-safari download "Export CSV"    # the file that button makes, into ~/Downloads
-safari pdf --out page.pdf       # the page as PDF; safari pdf read file.pdf
-safari fetch /api/me            # a request with the page's cookies
-safari dialog accept            # answer confirms with OK from now on
-safari window 390 844 --tab 7   # a phone-width window for your tab
-safari history-search invoice   # Safari browsing history
-safari call snapshot '{"diff":true}'  # any tool with its MCP arguments
-safari passwords --do logins --tab 7  # the same, with each argument as a flag
-safari click --help            # a command's arguments and what they take
+safari open https://example.com --bg   # prints the new tab's id, say 7
+safari snapshot --tab 7                # [ref]s for click/type
+safari snapshot --query price --tab 7  # only the lines that mention "price"
+safari click 2 --snapshot --tab 7      # click, then print the page it led to
+safari select 5 "US 8" --tab 7         # dropdown option by label
+safari upload ~/photo.jpg --tab 7      # the page's file input
+safari back --tab 7
+safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
+safari extract --tab 7
+safari eval "JSON.stringify(performance.timing)" --tab 7
+safari net start --tab 7; safari goto https://… --tab 7; safari net read --tab 7
+safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full
+safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
+safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf
+safari fetch /api/me --tab 7           # a request with the page's cookies
+safari dialog accept --tab 7           # answer confirms with OK from now on
+safari window 390 844 --tab 7          # a phone-width window for your tab
+safari close 7                         # else it closes once the program that opened it exits
+safari open https://example.com --bg --keep  # a tab left open for the user
+safari info --tab front                # the page the user has in front, when he asks
+safari history-search invoice          # Safari browsing history
+safari call snapshot '{"tab":7,"diff":true}'  # any tool with its MCP arguments
+safari passwords --do logins --tab 7   # the same, with each argument as a flag
+safari click --help                    # a command's arguments and what they take
 safari do "find the price of X on example.com"
-safari session list             # agent runs; resume, steer, queue, stop, delete
+safari session list                    # agent runs; resume, steer, queue, stop, delete
 safari repl "const p = await openTab('https://example.com'); console.log((await snapshot(p)).tree)"
 safari repl --session work "console.log(await gmail.search(0, 'from:bank', {limit: 5}))"
-safari fill address --tab 7     # name, address, email, phone from your Contacts card
+safari fill address --tab 7            # name, address, email, phone from your Contacts card
 safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
-safari --host studio tabs       # another Mac's Safari, through ssh
-safari host use studio          # make it the default; `host use local` goes back
-safari guide gusto              # one site's note: sign-in, paths, what to confirm
-safari guide repl               # the REPL's API and recovery steps
-safari imessage chats           # recent conversations
-safari imessage code            # wait for a sign-in code by text
-safari imessage send "+1…" "hi" # prints a draft; add --approved to send
+safari --host studio tabs              # another Mac's Safari, through ssh
+safari host use studio                 # make it the default; `host use local` goes back
+safari guide gusto                     # one site's note: sign-in, paths, what to confirm
+safari guide repl                      # the REPL's API and recovery steps
+safari imessage chats                  # recent conversations
+safari imessage code                   # wait for a sign-in code by text
+safari imessage send "+1…" "hi"        # prints a draft; add --approved to send
 ```
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,
@@ -217,7 +222,9 @@ ends every call at 30 s.
 ### CDP clients
 
 Attach to `ws://127.0.0.1:37333/devtools/browser` (or a page id like
-`/devtools/page/101`). Implemented: `Target.*`, `Page.navigate/reload/
+`/devtools/page/101`). A command acts on the tab its page socket or attached
+session names; a browser-level command with neither is an error, never a
+read of the tab the user has in front. Implemented: `Target.*`, `Page.navigate/reload/
 captureScreenshot/getFrameTree/getNavigationHistory`, `Runtime.evaluate/
 `Network.enable` + `Log.enable` (polled from the content-script capture, so
 requests are those the page actually made after enabling; no request bodies,
@@ -256,7 +263,9 @@ unlisted, answer `-32000 not supported` — never a fake result.
 ## Tests
 
 `bun scripts/fake-extension.ts` (with the daemon up) exercises CLI, CDP shim,
-MCP, and the agent loop without Safari. `bun test` covers sign-in code
-detection, the Apple Passwords pairing and fill against a fake helper, and
-keeps the MCP tool list under its size ceiling; `bun run check`
+MCP, and the agent loop without Safari; with `SAFARI_HARNESS_WS` set it joins
+a second daemon on other ports and leaves the real one alone. `bun test`
+covers sign-in code detection, the Apple Passwords pairing and fill against
+a fake helper, which tab a call acts on, and keeps the MCP tool list under
+its size ceiling; `bun run check`
 runs the live checks in real Safari.
