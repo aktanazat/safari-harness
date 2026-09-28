@@ -11,7 +11,9 @@ import { DEFAULT_PORT } from "../daemon/bridge.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
 
 const HOME = homedir();
-const REPO = join(import.meta.dir, "..");
+// The deployed release (scripts/dev-install.sh points it at the newest), so
+// jobs run what was deployed, never a checkout being edited.
+const CURRENT = join(HOME, ".local", "share", "safari-harness", "current");
 const AGENTS = join(HOME, "Library", "LaunchAgents");
 const LOGS = join(HOME, "Library", "Logs", "safari-harness");
 const ROUTINES = join(HOME, ".local", "share", "safari-harness", "routines");
@@ -87,9 +89,11 @@ async function unload(label: string): Promise<boolean> {
 // ---------- daemon ----------
 
 export async function daemonInstall(): Promise<string> {
+  const main = join(CURRENT, "daemon", "main.ts");
+  if (!existsSync(main)) throw new Error("no release is deployed; run scripts/dev-install.sh in the checkout");
   const body = plist(
     DAEMON_LABEL,
-    [process.execPath, join(REPO, "daemon", "main.ts")],
+    [process.execPath, main],
     "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>",
     join(LOGS, "daemon"),
   );
@@ -150,7 +154,7 @@ export async function routineAdd(name: string | undefined, prompt: string, sched
   await writeFile(join(ROUTINES, `${n}.json`), JSON.stringify(meta, null, 2) + "\n");
   const body = plist(
     ROUTINE_PREFIX + n,
-    [process.execPath, join(REPO, "cli", "safari.ts"), "routine", "run", n],
+    [process.execPath, join(CURRENT, "cli", "safari.ts"), "routine", "run", n],
     scheduleXml(schedule),
     join(LOGS, "routines", `${n}.launchd`),
   );
