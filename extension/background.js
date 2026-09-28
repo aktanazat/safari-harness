@@ -45,7 +45,9 @@ function connect() {
       handle(msg).then((value) => {
         if (msg.id !== undefined) send({ id: msg.id, value });
       }, (err) => {
-        if (msg.id !== undefined) send({ id: msg.id, error: String(err && err.message || err) });
+        const text = String(err && err.message || err);
+        // Safari gives every tab a new id when the extension restarts.
+        if (msg.id !== undefined) send({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed, or Safari gave every tab a new id when the extension restarted; find it with tabs" : text });
       });
     };
     ws.onclose = () => { ws = null; scheduleReconnect(); };

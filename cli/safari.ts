@@ -15,7 +15,8 @@
 //
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
-import { formatResult } from "../daemon/tools.ts";
+import { TOOLS, formatResult, type Tool } from "../daemon/tools.ts";
+import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
@@ -80,6 +81,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari fill login [--bitwarden] [--user name] [--tab N]
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
+  safari <tool> [--<param> value ...]        the same, with each parameter as a flag
+                                             (safari passwords --do logins --tab N)
 
   safari repl [--session name] [code]        Playwright-style JavaScript with site globals
                                              (code from stdin when omitted); see: safari guide repl
@@ -118,6 +121,8 @@ const USAGE = `safari — drive Safari from the terminal
   Every command takes --host <ssh-host> to use another Mac's Safari, and
   --json to print JSON. Messages, Contacts, history, and fill commands run
   in this terminal (they need its Full Disk Access), not in the daemon.
+  A command's parameters also work as flags (click --ref 3 is click 3), and
+  safari <command> --help lists them.
 `;
 
 const json = process.argv.includes("--json");
@@ -145,6 +150,42 @@ function hasFlag(name: string, argv: string[]): boolean {
 function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   return t !== undefined ? { tab: Number(t) } : {};
+}
+
+// The tool a command runs, where its name differs.
+const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history" };
+
+const toolDef = (cmd: string): Tool | undefined => TOOLS[ALIAS[cmd] ?? cmd] ?? CALLER_TOOLS[ALIAS[cmd] ?? cmd];
+
+// A tool's parameters given as --name value; a boolean one needs only --name.
+function flagArgs(tool: Tool, argv: string[]): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  for (const [name, p] of Object.entries(tool.params)) {
+    if (p.type === "boolean") {
+      if (hasFlag(name, argv)) args[name] = true;
+      continue;
+    }
+    const v = flag(name, argv);
+    if (v === undefined) continue;
+    args[name] = p.type === "number" ? Number(v) : p.type === "array" ? (v.startsWith("[") ? JSON.parse(v) : [v]) : v;
+  }
+  return args;
+}
+
+// The command's lines from USAGE, then its tool's parameters.
+function commandHelp(cmd: string): string | null {
+  const lines = USAGE.split("\n");
+  const usage: string[] = [];
+  lines.forEach((line, i) => {
+    if (!new RegExp(`^  safari ${cmd.replace(/[^\w-]/g, "")}\\b`).test(line)) return;
+    usage.push(line);
+    for (let j = i + 1; j < lines.length && /^ {20,}\S/.test(lines[j]); j++) usage.push(lines[j]);
+  });
+  const def = toolDef(cmd);
+  if (!def) return usage.length ? usage.join("\n") : null;
+  const params = Object.entries(def.params).map(([name, p]) =>
+    `  --${name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${def.required?.includes(name) ? " (required)" : ""}\n      ${p.description}`);
+  return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
 
 // --tab, else the tab in front.
@@ -289,6 +330,12 @@ async function fillCommand(argv: string[]) {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "help" || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
+  if (rest.includes("--help")) {
+    const text = commandHelp(cmd);
+    if (text === null) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+    console.log(text);
+    return;
+  }
 
   if (cmd === "serve") {
     const ws = flag("ws", rest);
@@ -402,16 +449,15 @@ async function main() {
   }
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
-  let tool = cmd;
+  let tool = ALIAS[cmd] ?? cmd;
   let args: Record<string, unknown> = { ...tabArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
     case "tabs": break;
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
-    case "back": case "forward": case "reload": tool = "history"; args.go = cmd; break;
-    case "close": tool = "close"; args.tab = Number(positional[0]); break;
-    case "focus": tool = "activate"; args.tab = Number(positional[0]); break;
+    case "back": case "forward": case "reload": args.go = cmd; break;
+    case "close": case "focus": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);
       if (root) args.root = root;
@@ -423,7 +469,7 @@ async function main() {
       break;
     }
     case "click": args.ref = positional[0]; break;
-    case "clickat": tool = "click"; args.x = Number(positional[0]); args.y = Number(positional[1]); break;
+    case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
     case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
     case "press": {
       args.key = positional[0];
@@ -495,7 +541,7 @@ async function main() {
       break;
     }
     case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
-    case "history-search": tool = "browsing_history"; args = { text: positional.join(" ") || undefined }; break;
+    case "history-search": args = { text: positional.join(" ") || undefined }; break;
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");
@@ -507,7 +553,15 @@ async function main() {
       break;
     }
     default:
-      fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+      if (!toolDef(cmd)) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+  }
+
+  // Parameters given as flags fill what the positional words left out.
+  const def = toolDef(tool);
+  if (def) {
+    for (const [k, v] of Object.entries(flagArgs(def, rest))) {
+      if (args[k] === undefined || args[k] === "" || Number.isNaN(args[k])) args[k] = v;
+    }
   }
 
   print(await invoke(tool, args));

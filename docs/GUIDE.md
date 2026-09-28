@@ -9,12 +9,15 @@ Three ways in:
 - **omp tools (recommended).** In omp the tools appear as `safari` MCP tools
   (`tabs`, `open`, `snapshot`, `click`, ...). The omp model does the thinking.
 - **CLI.** `safari <command>` runs one tool and prints JSON. Good for scripts and
-  quick checks. `safari --help` lists every command.
+  quick checks. `safari --help` lists every command, and `safari <command>
+  --help` its parameters, which also work as flags (`click --ref 3`). Any
+  tool runs by name: `safari passwords --do logins --tab N`.
 - **Routines.** A saved task plus a schedule, run unattended by headless omp
   with the same tools. See "Routines" below.
 
-Check health first: `safari status` must show `"extension"` as an object, not
-`null`. If it is `null`, see "Troubleshooting".
+No health check is needed first: when the extension is not connected, every
+tool says so. Then `safari status` shows the connection, and
+"Troubleshooting" has the fix.
 
 ## Tabs: work in your own tab
 
