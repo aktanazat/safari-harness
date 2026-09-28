@@ -1,7 +1,7 @@
 // Safari Harness content script.
 // Runs in every page. Implements the DOM-side verbs the daemon calls:
 // aria snapshots with stable element refs, click/type/scroll by ref,
-// JS evaluation, extraction, and network capture.
+// JS evaluation, and extraction.
 //
 // This is a clean-room implementation of the same contract Aside's
 // injected.ts snapshot module provides for Chrome, adapted to Safari's
@@ -71,12 +71,20 @@
     "LABEL", "OPTION", "VIDEO", "AUDIO", "IFRAME",
   ]);
 
-  function isInteractive(el) {
+  // A control the page made of a plain element, with no role or tab stop
+  // and its click handler added from script (CloudKit's "Add field" span),
+  // shows only as a hand cursor. It counts when the page also names it,
+  // for assistive tech or its tests: plain text under a hand cursor stays
+  // text. Inside a control that shows the hand (inHand), the hand is that
+  // control's.
+  function isInteractive(el, style, inHand = false) {
     if (el.tabIndex >= 0 && !el.hasAttribute("disabled")) return true;
     const role = getExplicitRole(el);
     if (role && ["button", "link", "textbox", "checkbox", "radio", "combobox", "listbox", "menuitem", "tab", "slider", "switch"].includes(role)) return true;
     if (el.onclick || el.onmousedown || el.onpointerdown) return true;
-    return INTERACTIVE_TAGS.has(el.tagName);
+    if (INTERACTIVE_TAGS.has(el.tagName)) return true;
+    if (inHand || !(el.hasAttribute("aria-label") || el.hasAttribute("title") || el.hasAttribute("data-testid"))) return false;
+    return (style ?? (el.ownerDocument.defaultView || window).getComputedStyle(el)).cursor === "pointer";
   }
 
   // Opacity 0 hides an element, but not one fading in: Safari runs no
@@ -408,7 +416,7 @@
     // in page order. `named` holds the ancestors naming themselves by their
     // text; each gathers the text inside it.
     const top = { kids: [] };
-    const walk = (el, parent, named, inItem) => {
+    const walk = (el, parent, named, inItem, inHand) => {
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
@@ -417,7 +425,7 @@
         if (style.position === "fixed" && el.getClientRects().length === 0) return;
       }
       const role = getExplicitRole(el);
-      const actionable = ACTION_ROLES.has(role) || isInteractive(el) || el.tagName === "IFRAME" || el.tagName === "FRAME";
+      const actionable = ACTION_ROLES.has(role) || isInteractive(el, style, inHand) || el.tagName === "IFRAME" || el.tagName === "FRAME";
       let node = parent;
       if (actionable || (role && NAMED_ROLES.has(role))) {
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
@@ -442,14 +450,14 @@
           if (child.nodeType === Node.TEXT_NODE) add(child.nodeValue);
           else if (child.nodeType === Node.ELEMENT_NODE) {
             if (child.tagName === "BR") add(BREAK);
-            else walk(child, node, named, inItem || el.tagName === "LI");
+            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"));
           }
         }
         if (block) add(edge);
       }
       if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
         const d = inlineDoc(el);
-        if (d) walk(d.body, node, [], false);
+        if (d) walk(d.body, node, [], false, false);
         else if (!childToken.has(el) && !greeted.has(el)) {
           greeted.add(el);
           el.contentWindow?.postMessage({ __shHello: 1 }, "*");
@@ -475,7 +483,7 @@
         if (node.name && title && /(\.\.\.|…)$/.test(node.name) && title.startsWith(node.name.replace(/\s*(\.\.\.|…)$/, ""))) node.name = title.trim();
       } else if (node.name === null) node.name = (el.getAttribute("title") || "").trim();
     };
-    walk(root, top, [], false);
+    walk(root, top, [], false, false);
 
     // Pass 2: print. A ref is given only to a line that is printed.
     const lines = [];
