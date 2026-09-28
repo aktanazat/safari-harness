@@ -151,23 +151,25 @@ Wait for the page, not the clock.
 
 - `wait` with `text` or `selector` returns the moment it appears, even in a
   background tab, and catches text that shows only briefly. `ms` is the
-  timeout (default 10000, max 30000). The result says `found: true|false`.
+  timeout (default 10000, max 30000); the call ends then even if the page is
+  too busy to answer. The result says `found: true|false`.
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
 - `wait` with only `ms` is a plain sleep. Use it only when nothing on the page
   signals the change.
-- A background tab runs the page's own timers slowly, so a web app may
-  redirect or fill in only once its tab comes to the front. A page that sat
-  still in the background and changed on `activate`, `shot`, or
-  `real_input` is usually the site's own script catching up, not a reaction
-  to the harness: a signed-in site leaving its sign-in page, for example.
-- `wait` with `front: true` holds the tab on screen until the text appears
-  or `ms` runs out (with only `ms`, for that long), then gives back the
-  user's tab and app. Use it for a page that stalls while hidden. It takes
-  the screen from the user for that time, so keep `ms` short. It needs no
-  Accessibility permission, so it works in a routine.
+- A tab the harness opened in the background keeps running while hidden: its
+  page reads as visible, and its timers and frame callbacks run as in a tab
+  in front, so a web app redirects and fills in without coming to the front.
+  Never use `activate`, `shot`, or `real_input` to wake a tab. A tab the user
+  opened runs as Safari runs any hidden tab: slowly.
+- Only drawing waits for the screen: CSS animations and transitions run only
+  in a tab in front. `wait` with `front: true` holds the tab on screen until
+  the text appears or `ms` runs out (with only `ms`, for that long), then
+  gives back the user's tab and app. Use it only for a page that waits on an
+  animation. It takes the screen from the user for that time, so keep `ms`
+  short. It needs no Accessibility permission, so it works in a routine.
 
 ## Network and console
 

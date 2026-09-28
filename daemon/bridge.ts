@@ -5,8 +5,15 @@
 //   extension -> daemon  {op:"hello", role:"extension", ua}
 //   daemon -> extension  {id, op, args}   (op handled by background.js)
 //   extension -> daemon  {id, value} | {id, error}
+//   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
+//   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
 
 export const DEFAULT_PORT = 37333;
+
+// The clock for hidden tabs the extension keeps running (see "keeping owned
+// tabs running" in background.js): Safari holds the extension's own timers
+// to four a second, and this one is exact.
+const TICK_MS = 50;
 
 // Minimal structural view of Bun's ServerWebSocket so the bridge stays
 // testable without a live server.
@@ -23,6 +30,7 @@ type WireMessage = {
   error?: unknown;
   ua?: string;
   role?: string;
+  on?: boolean;
 };
 
 function asWire(raw: string): WireMessage | null {
@@ -45,6 +53,7 @@ export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
   private pending: Record<string, Pending> = {};
+  private ticker: Timer | undefined;
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
 
   get connected(): boolean {
@@ -62,6 +71,7 @@ export class Bridge {
   detach() {
     this.sock = null;
     this.extensionInfo = null;
+    this.ticks(false);
     this.failAll(new Error("extension disconnected"));
   }
 
@@ -71,6 +81,10 @@ export class Bridge {
     if (!msg) return;
     if (msg.op === "hello") {
       this.extensionInfo = { ua: msg.ua, connectedAt: Date.now() };
+      return;
+    }
+    if (msg.op === "ticks") {
+      this.ticks(msg.on === true);
       return;
     }
     if (msg.id === undefined) return;
@@ -89,6 +103,11 @@ export class Bridge {
       this.pending[key].reject(e);
       delete this.pending[key];
     }
+  }
+
+  private ticks(on: boolean) {
+    clearInterval(this.ticker);
+    this.ticker = on ? setInterval(() => this.sock?.send('{"op":"tick"}'), TICK_MS) : undefined;
   }
 
   request(op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {

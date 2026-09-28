@@ -160,7 +160,9 @@ export async function tabInfo(opts: { tab?: number } = {}) {
 // Sleep for ms, or, given a selector or text, wait until it is present (ms is
 // then the timeout, max 30000). The page reports the change the moment it
 // happens (waitFor in content.js); the time limit is kept here, because
-// Safari stops a content script's timers in a hidden tab.
+// Safari stops a content script's timers in a hidden tab. The answer at the
+// limit does not wait for the page: a page still loading, or too busy to
+// answer, would otherwise hold the call past its limit.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string }) {
   const tab = await resolveTab(opts.tab);
   const until = opts.selector !== undefined || opts.text !== undefined;
@@ -171,12 +173,18 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     return { ok: true };
   }
   const start = Date.now();
-  const stop = setTimeout(() => { relay(tab, "waitStop").catch(() => {}); }, limit);
+  const stop = () => { relay(tab, "waitStop").catch(() => {}); };
+  const seen = relay(tab, "wait", [opts.selector ?? null, opts.text ?? null], limit + 5000) as Promise<{ found: boolean }>;
+  // A page that answers only after the limit (it navigated, and the new page
+  // began the wait again) still holds a wait: end that one too.
+  seen.catch(stop);
+  const timeUp = Promise.withResolvers<{ found: boolean }>();
+  const timer = setTimeout(() => { stop(); timeUp.resolve({ found: false }); }, limit);
   try {
-    const { found } = (await relay(tab, "wait", [opts.selector ?? null, opts.text ?? null], limit + 5000)) as { found: boolean };
+    const { found } = await Promise.race([seen, timeUp.promise]);
     return { ok: true, found, waitedMs: Date.now() - start };
   } finally {
-    clearTimeout(stop);
+    clearTimeout(timer);
   }
 }
 

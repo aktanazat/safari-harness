@@ -36,10 +36,12 @@ function connect() {
       backoff = 500;
       log("connected to daemon on", port);
       send({ op: "hello", role: "extension", ua: navigator.userAgent });
+      if (awake.size > 0) send({ op: "ticks", on: true });
     };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
+      if (msg.op === "tick") return tick();
       handle(msg).then((value) => {
         if (msg.id !== undefined) send({ id: msg.id, value });
       }, (err) => {
@@ -90,6 +92,7 @@ const START_MS = { load: 3000, tab: 3000, script: 400 };
 
 async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
+  keepAwake(tabId);
   await waitReady(tabId, 15000);
   try {
     const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
@@ -363,8 +366,11 @@ async function pageEval(src) {
 
 // ---------- screenshots ----------
 // Safari captures only a window's visible tab: a tab behind another comes
-// to the front for the capture and the tab that was there goes back. A tab
-// in its own window (the window tool) is captured where it is.
+// to the front for the capture and the tab that was there goes back. All
+// that needs no drawing (the element's box, the page's height, the ref
+// labels) happens first, so the user's tab is away only while the picture
+// is taken. A tab in its own window (the window tool) is captured where it
+// is.
 async function dataUrlBitmap(url) {
   return createImageBitmap(await (await fetch(url)).blob());
 }
@@ -391,49 +397,46 @@ async function screenshot(tabId, opts) {
   const t = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: t.windowId });
   const flip = front && front.id !== tabId;
-  if (flip) await api.tabs.update(tabId, { active: true });
+  const box = opts.ref ? await relayOp(tabId, "rect", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
+  const page = opts.fullPage && !box ? await pageValue(tabId, "eval", ["({ h: document.documentElement.scrollHeight, y: scrollY, ih: innerHeight, iw: innerWidth })"]).then((v) => v.result) : null;
+  const grab = () => api.tabs.captureVisibleTab(t.windowId, { format: "png" });
+  const shots = [];
   try {
-    await toTab(tabId, "painted", [], 3000).catch(() => {});
-    const grab = () => api.tabs.captureVisibleTab(t.windowId, { format: "png" });
-    const box = opts.ref ? await relayOp(tabId, "rect", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
     if (opts.annotate) await pageValue(tabId, "annotate", [true]);
-    let shots;
-    let page = null;
+    if (flip) await api.tabs.update(tabId, { active: true });
     try {
-      if (opts.fullPage && !box) {
-        page = await pageValue(tabId, "eval", ["({ h: document.documentElement.scrollHeight, y: scrollY, ih: innerHeight, iw: innerWidth })"]).then((v) => v.result);
-        shots = [];
-        for (let y = 0; y < page.h && shots.length < FULL_PAGE_MAX; y += page.ih) {
-          await pageValue(tabId, "eval", [`(scrollTo(0, ${y}), scrollY)`]);
-          await toTab(tabId, "painted", [], 3000).catch(() => {});
-          shots.push({ y: (await pageValue(tabId, "eval", ["scrollY"])).result, url: await grab() });
-        }
-        await pageValue(tabId, "eval", [`(scrollTo(0, ${page.y}), 1)`]);
-      } else shots = [{ y: 0, url: await grab() }];
+      await toTab(tabId, "painted", [], 3000).catch(() => {});
+      if (!page) shots.push({ y: 0, url: await grab() });
+      for (let y = 0; page && y < page.h && shots.length < FULL_PAGE_MAX; y += page.ih) {
+        await pageValue(tabId, "eval", [`(scrollTo(0, ${y}), scrollY)`]);
+        await toTab(tabId, "painted", [], 3000).catch(() => {});
+        shots.push({ y: (await pageValue(tabId, "eval", ["scrollY"])).result, url: await grab() });
+      }
     } finally {
-      if (opts.annotate) await pageValue(tabId, "annotate", [false]).catch(() => {});
+      if (flip) await api.tabs.update(front.id, { active: true });
     }
-    if (!box && shots.length === 1) return { data: shots[0].url.replace(/^data:[^,]*,/, "") };
-    const first = await dataUrlBitmap(shots[0].url);
-    if (box) {
-      const scale = first.width / box.innerWidth;
-      const x = Math.max(0, Math.floor(box.x * scale));
-      const y = Math.max(0, Math.floor(box.y * scale));
-      const w = Math.max(1, Math.min(first.width - x, Math.ceil(box.width * scale)));
-      const h = Math.max(1, Math.min(first.height - y, Math.ceil(box.height * scale)));
-      const c = new OffscreenCanvas(w, h);
-      c.getContext("2d").drawImage(first, x, y, w, h, 0, 0, w, h);
-      return { data: await pngOf(c) };
-    }
-    const scale = first.width / page.iw;
-    const height = Math.min(Math.ceil(page.h * scale), Math.ceil((shots[shots.length - 1].y + page.ih) * scale));
-    const c = new OffscreenCanvas(first.width, height);
-    const ctx = c.getContext("2d");
-    for (const s of shots) ctx.drawImage(s === shots[0] ? first : await dataUrlBitmap(s.url), 0, Math.round(s.y * scale));
-    return { data: await pngOf(c), screens: shots.length, cut: shots.length === FULL_PAGE_MAX && page.h > FULL_PAGE_MAX * page.ih };
   } finally {
-    if (flip) await api.tabs.update(front.id, { active: true });
+    if (page) await pageValue(tabId, "eval", [`(scrollTo(0, ${page.y}), 1)`]).catch(() => {});
+    if (opts.annotate) await pageValue(tabId, "annotate", [false]).catch(() => {});
   }
+  if (!box && shots.length === 1) return { data: shots[0].url.replace(/^data:[^,]*,/, "") };
+  const first = await dataUrlBitmap(shots[0].url);
+  if (box) {
+    const scale = first.width / box.innerWidth;
+    const x = Math.max(0, Math.floor(box.x * scale));
+    const y = Math.max(0, Math.floor(box.y * scale));
+    const w = Math.max(1, Math.min(first.width - x, Math.ceil(box.width * scale)));
+    const h = Math.max(1, Math.min(first.height - y, Math.ceil(box.height * scale)));
+    const c = new OffscreenCanvas(w, h);
+    c.getContext("2d").drawImage(first, x, y, w, h, 0, 0, w, h);
+    return { data: await pngOf(c) };
+  }
+  const scale = first.width / page.iw;
+  const height = Math.min(Math.ceil(page.h * scale), Math.ceil((shots[shots.length - 1].y + page.ih) * scale));
+  const c = new OffscreenCanvas(first.width, height);
+  const ctx = c.getContext("2d");
+  for (const s of shots) ctx.drawImage(s === shots[0] ? first : await dataUrlBitmap(s.url), 0, Math.round(s.y * scale));
+  return { data: await pngOf(c), screens: shots.length, cut: shots.length === FULL_PAGE_MAX && page.h > FULL_PAGE_MAX * page.ih };
 }
 
 // ---------- handlers ----------
@@ -475,6 +478,7 @@ async function handle(msg) {
     case "tabs.navigate": {
       const [tabId, url] = args;
       ready.set(tabId, false);
+      keepAwake(tabId);
       await api.tabs.update(tabId, { url });
       await waitReady(tabId, 20000);
       const t = await api.tabs.get(tabId);
@@ -529,6 +533,7 @@ async function handle(msg) {
     case "evalPage": {
       const [tabId, src, ref] = args;
       const { frameId } = frameOf([ref || ""]);
+      keepAwake(tabId);
       const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
       if (!r) throw new Error("the page did not run it");
       if (r.result && r.result.error) throw new Error(r.result.error);
@@ -598,6 +603,7 @@ api.tabs.onUpdated.addListener((id, info) => {
 api.tabs.onRemoved.addListener((id) => {
   markReady(id);
   ready.delete(id);
+  awake.delete(id);
   store.remove(`dialogs:${id}`).catch(() => {});
 });
 // Embedded frames report too; only the top document makes the tab ready.
@@ -623,8 +629,55 @@ async function ownsTab(tabId) {
   return (await policyOf(tabId)) !== null;
 }
 
+// Also tells the page, which may have reported in before the tab was owned.
 async function ownTab(tabId) {
-  if (!(await ownsTab(tabId))) await store.set({ [`dialogs:${tabId}`]: { accept: false, text: null } });
+  const policy = (await policyOf(tabId)) || { accept: false, text: null };
+  await store.set({ [`dialogs:${tabId}`]: policy });
+  await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
+}
+
+// ---------- keeping owned tabs running ----------
+// Safari draws nothing in a hidden tab and soon nearly stops its timers, so
+// a web app in a background harness tab stalls. An owned tab the harness
+// works in gets a tick every 50 ms in each frame, until a minute after the
+// last request to it; dialogs.js runs the page's due frame callbacks and
+// timers on each tick while the tab is hidden. A tab left open and unused
+// stops ticking, so a forgotten tab costs nothing. The ticks come from the
+// daemon, whose clock Safari leaves alone: it holds this page's timers to
+// four a second.
+const AWAKE_MS = 60000;
+const awake = new Map(); // tabId -> when its ticks stop
+
+function keepAwake(tabId) {
+  ownsTab(tabId).then((owned) => {
+    if (!owned) return;
+    if (awake.size === 0) send({ op: "ticks", on: true });
+    awake.set(tabId, Date.now() + AWAKE_MS);
+  }, () => {});
+}
+
+// Each frame of an owned tab connects a "ticks" port (see takeTicks in
+// content.js); the port closes with its page.
+const tickPorts = new Map(); // tabId -> Set of ports, one per frame
+api.runtime.onConnect.addListener((port) => {
+  const id = port.sender && port.sender.tab && port.sender.tab.id;
+  if (port.name !== "ticks" || id === undefined) return;
+  if (!tickPorts.has(id)) tickPorts.set(id, new Set());
+  tickPorts.get(id).add(port);
+  port.onDisconnect.addListener(() => {
+    const ports = tickPorts.get(id);
+    ports?.delete(port);
+    if (ports?.size === 0) tickPorts.delete(id);
+  });
+});
+
+function tick() {
+  const now = Date.now();
+  for (const [id, until] of awake) {
+    if (until < now) awake.delete(id);
+    else for (const port of tickPorts.get(id) || []) port.postMessage(1);
+  }
+  if (awake.size === 0) send({ op: "ticks", on: false });
 }
 
 // Resolves when the tab is ready, or after ms regardless.

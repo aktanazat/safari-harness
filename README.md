@@ -201,10 +201,12 @@ launchd agent `at.aktan.safari-harness.routine.<name>` that runs
 
 ### MCP
 
-Add to an MCP client config:
+Add to an MCP client config. `timeout` (milliseconds, where the client reads
+one) lets a long call finish: `repl` runs for up to 120 s, and omp otherwise
+ends every call at 30 s.
 
 ```json
-{ "mcpServers": { "safari": { "command": "bun", "args": ["/path/to/safari-harness/daemon/mcp.ts"] } } }
+{ "mcpServers": { "safari": { "command": "bun", "args": ["/path/to/safari-harness/daemon/mcp.ts"], "timeout": 130000 } } }
 ```
 
 ### CDP clients

@@ -13,7 +13,7 @@ This is the user's health plan: MyChart messages, results, and the Kaiser pharma
 
 ## Finding pages
 - Signed in, typed links to kp.org marketing and "learn" pages (`kp.org/newmember`, `/northern-california/learn/pharmacy/...`) stop on an `FdiRedirection` page that stays empty. Use the MyChart menu instead: `Menu`, then type in "Search the menu" (for example "transfer"), then click the result.
-- Pharmacy pages open inside an iframe on `/northern-california/secure/pharmacy/...`. It fills in about 10 s in a background tab; take a `shot` to force a redraw, then `snapshot` lists the frame's refs (`f<frame>:<n>`).
+- Pharmacy pages open inside an iframe on `/northern-california/secure/pharmacy/...`, which fills in several seconds after the page loads; `wait` for the text you expect, then `snapshot` lists the frame's refs (`f<frame>:<n>`).
 
 ## Moving a prescription to Kaiser
 - Menu, search "transfer", `Pharmacy transfer`, then `Transfer a prescription`. The intro says prescriptions with 0 refills, for pain or attention disorders, or for someone else may not transfer; `Continue`.

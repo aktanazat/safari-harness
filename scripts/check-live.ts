@@ -244,6 +244,38 @@ await withPage(`<p id="late">waiting</p>`, LATE_JS, async (tab) => {
   check("wait in a hidden tab sees text the page adds after several seconds", r.found === true && r.waitedMs < 10000, r);
 });
 
+// Safari draws nothing in a hidden tab and soon nearly stops its timers; a
+// tab the harness opened runs them anyway (see dialogs.js), so a web app in
+// it renders without coming to the front. The page counts 40 frame callbacks
+// and 40 chained timers, in the top page and in an embedded frame.
+const COUNT_JS = (out: string) => `
+  let frames = 0, timers = 0;
+  const show = () => { if (frames >= 40 && timers >= 40) ${out}.textContent = "kept running " + document.visibilityState; };
+  const frame = () => { frames++; show(); if (frames < 40) requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  const timer = () => { timers++; show(); if (timers < 40) setTimeout(timer, 20); };
+  setTimeout(timer, 20);`;
+const COUNT_TOP_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(COUNT_JS('document.getElementById("run")'))} }))`;
+const COUNT_FRAME_JS = `const f = document.createElement("iframe"); f.src = "https://example.com/";
+  f.onload = () => { f.contentDocument.head.appendChild(Object.assign(f.contentDocument.createElement("script"), { textContent: ${JSON.stringify(COUNT_JS('parent.document.getElementById("run")'))} })); };
+  document.body.appendChild(f)`;
+
+for (const [where, setup] of [["top page", COUNT_TOP_JS], ["embedded frame", COUNT_FRAME_JS]]) {
+  await withPage(`<p id="run"></p>`, setup, async (tab) => {
+    const r = await call("wait", { tab, text: "kept running visible", ms: 15000 });
+    check(`a hidden tab it opened runs the ${where}'s frames and timers, and reads visible`, r.found === true, r);
+  });
+}
+
+// A page too busy to answer must not hold wait past its limit.
+const BUSY_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'const c = new MessageChannel(); c.port1.onmessage = () => { const end = Date.now() + 4000; while (Date.now() < end); }; c.port2.postMessage(0)' }))`;
+
+await withPage("<p>busy</p>", BUSY_JS, async (tab) => {
+  const r = await call("wait", { tab, text: "never shown", ms: 1500 });
+  check("wait on a page too busy to answer still ends at its limit", r.found === false && r.waitedMs < 3000, r);
+});
+
 // Text that is on the page for one instant: the page adds it and takes it
 // away in the next microtask. The page reports the change as it happens, so
 // wait sees it; polling the page, however often, never could.
@@ -387,11 +419,12 @@ await withPage("<p>page</p>", `${PAGE_VAR_JS}; ${TRUSTED_TYPES_JS}`, async (tab)
 });
 
 // Safari passes results on as JSON and aborts the whole browser on a NaN or
-// Infinity; a result holding them must come back, with Safari still up.
+// Infinity; a result holding them must come back, with Safari still up. Its
+// native side does not keep an object's key order.
 await withPage("<p>page</p>", "", async (tab) => {
   for (const page of [false, true]) {
     const r = (await call("eval", { tab, page, expression: "({ a: NaN, b: [Infinity, 1] })" })).result;
-    check(`eval${page ? " page: true" : ""} returns NaN and Infinity as null without crashing Safari`, JSON.stringify(r) === '{"a":null,"b":[null,1]}', r);
+    check(`eval${page ? " page: true" : ""} returns NaN and Infinity as null without crashing Safari`, r.a === null && JSON.stringify(r.b) === "[null,1]" && Object.keys(r).length === 2, r);
   }
 });
 
@@ -433,18 +466,20 @@ await withPage(TRUST, "", async (tab) => {
   check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === front, { typed, nowFront, front });
 });
 
-// The daemon runs wait's front itself, under launchd, where only the helper
-// verbs that need no Accessibility permission work. This covers bringing the
-// tab forward in its window; Safari coming to the front matters only when
-// another app covers Safari's window, which a check cannot arrange.
-const SHOWN = `<p id=out></p>`;
-const SHOWN_JS = `document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") document.getElementById("out").textContent = "Now visible"; })`;
+// A tab it opened runs its scripts while hidden but draws only on screen: a
+// CSS animation ends once the tab is shown. The daemon runs wait's front
+// itself, under launchd, where only the helper verbs that need no
+// Accessibility permission work. This covers bringing the tab forward in its
+// window; Safari coming to the front matters only when another app covers
+// Safari's window, which a check cannot arrange.
+const SHOWN = `<style>@keyframes sh-fade { from { opacity: 0 } }</style><p id=out style="animation: sh-fade 100ms">drawing</p>`;
+const SHOWN_JS = `document.getElementById("out").addEventListener("animationend", (e) => { e.target.textContent = "Now drawn"; })`;
 
 await withPage(SHOWN, SHOWN_JS, async (tab) => {
-  const hidden = await call("wait", { tab, text: "Now visible", ms: 1500 });
-  const shown = await call("wait", { tab, text: "Now visible", ms: 5000, front: true });
+  const hidden = await call("wait", { tab, text: "Now drawn", ms: 1500 });
+  const shown = await call("wait", { tab, text: "Now drawn", ms: 5000, front: true });
   const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.active)?.id;
-  check("wait front shows a hidden tab until its text appears, then gives the front tab back", !hidden.found && shown.found && nowFront === front, { hidden, shown, nowFront, front });
+  check("wait front shows a hidden tab until it draws, then gives the front tab back", !hidden.found && shown.found && nowFront === front, { hidden, shown, nowFront, front });
 });
 
 // ---------- browsing history ----------

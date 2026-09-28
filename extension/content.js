@@ -738,9 +738,10 @@
   // dialogs.js runs in the page's own world and, once armed, answers
   // alert, confirm, prompt, and print itself instead of showing them, and
   // keeps beforeunload from holding a navigation. A tab the harness opened
-  // is armed for good; any other tab only while an action runs, so a dialog
-  // the user meets later still shows. Each dialog is reported to this world
-  // and returned with the action that raised it.
+  // is armed for good, and kept running while hidden; any other tab only
+  // while an action runs, so a dialog the user meets later still shows.
+  // Each dialog is reported to this world and returned with the action
+  // that raised it.
   const dialogLog = [];
   let dialogPolicy = null; // { accept, text } once the extension armed this tab
   document.addEventListener("__sh_dialog_seen", (e) => {
@@ -749,16 +750,30 @@
     if (dialogLog.length > 50) dialogLog.shift();
   });
   function armDialogs(armed, policy) {
-    const detail = JSON.stringify({ armed, accept: !!(policy && policy.accept), text: policy && typeof policy.text === "string" ? policy.text : null });
+    const detail = JSON.stringify({ armed, owned: !!policy, accept: !!(policy && policy.accept), text: policy && typeof policy.text === "string" ? policy.text : null });
     document.dispatchEvent(new CustomEvent("__sh_dialog_policy", { detail }));
   }
   function setDialogs(policy) {
     if (policy) {
       dialogPolicy = policy;
       armDialogs(true, policy);
+      takeTicks();
     }
     return { dialogs: dialogLog.slice(-20), answer: dialogPolicy && dialogPolicy.accept ? "accept" : "dismiss" };
   }
+
+  // An owned tab takes the extension's ticks (see dialogs.js) over a port of
+  // its own: a message per tick, 20 a second, leaves Safari answering the
+  // harness's requests to the tab with nothing. A page restored from the
+  // back-forward cache lost its port and connects again.
+  let tickPort = null;
+  function takeTicks() {
+    if (tickPort) return;
+    tickPort = api.runtime.connect({ name: "ticks" });
+    tickPort.onMessage.addListener(() => document.dispatchEvent(new CustomEvent("__sh_tick")));
+    tickPort.onDisconnect.addListener(() => { tickPort = null; });
+  }
+  addEventListener("pageshow", (e) => { if (e.persisted && dialogPolicy) takeTicks(); });
 
   // ---------- page fetch and downloads ----------
   // Requests from here carry the page's cookies, as the page's own would.
