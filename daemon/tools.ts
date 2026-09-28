@@ -7,6 +7,7 @@ import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
+import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
@@ -569,13 +570,33 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   }
   if (opts.ref === undefined) throw new Error("download needs ref or url");
   const ref = String(opts.ref);
+  // A file the server sends after the click is saved by Safari itself, never
+  // handed to the page; on a tab the harness opened it is found in
+  // ~/Downloads instead (downloads.ts).
+  const saved = harnessTabs.has(tab) ? await watchDownloads(DOWNLOADS) : null;
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
     const f = (await relay(tab, "download", [ref], 120000)) as FilePayload;
     return saveFile(f, "", opts.out);
+  } catch (e) {
+    const got = saved ? await saved() : {};
+    if (!got.downloaded && !got.downloading) throw e;
+    return got;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// A click or key on a tab the harness opened reports the files Safari saved
+// to ~/Downloads while it ran (downloads.ts). The user's own tabs are never
+// watched, so none of his downloads is claimed.
+function watched(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
+  return async (a: Record<string, unknown> & { tab: number }) => {
+    if (!harnessTabs.has(a.tab)) return run(a);
+    const saved = await watchDownloads(DOWNLOADS);
+    const result = await run(a);
+    return { ...(result as object), ...(await saved()) };
+  };
 }
 
 // ---------- PDF ----------
@@ -728,7 +749,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
     params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
     required: ["tab"],
-    run: action((a) => click(a as { tab: number; ref?: string; x?: number; y?: number })),
+    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
   type: {
     desc: "Set a field's text by ref; replaces it unless append.",
@@ -740,7 +761,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     required: ["tab", "key"],
-    run: action((a) => press(a as { tab: number; ref?: string; key: string })),
+    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string }))),
   },
   select: {
     desc: "Choose a dropdown option by label or value; an unknown option returns the list.",

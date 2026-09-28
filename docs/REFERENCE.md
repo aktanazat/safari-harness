@@ -270,7 +270,17 @@ with `do: "read"`.
   `ref` of a download link or of a button that makes a file, or a `url`.
   It fetches with the page's cookies, so a signed-in file works. A name
   already taken gets ` (1)`. A download only the server starts, after a
-  click the page cannot see, lands in `~/Downloads` through Safari itself.
+  click the page cannot see, lands in `~/Downloads` through Safari itself;
+  on your own tab, `download` then returns that file instead of an error.
+- `click`, `press`, and `download` on a tab you opened report the files
+  Safari saved to `~/Downloads` while they ran, as
+  `downloaded: [{path, bytes}]`. A download still under way when the
+  action ends is waited for up to 30 s; one still going after that comes
+  back as `downloading` with the path it will have. Only names new since
+  the action began count, so nothing the user downloads earlier or in his
+  own tabs is claimed; two agents acting at the same moment may each see
+  the other's file. A download that starts after the action's own short
+  wait for the page shows up in `~/Downloads` alone.
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
   opening a page. `method` and `body` send a POST. From the CLI, pipe
@@ -502,7 +512,8 @@ its own `safari` command.
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
   or request bodies.
 - No bookmarks, top sites, download list, or tab groups: Safari gives its
-  web extensions no API for them. Its window controls can make a tab group,
+  web extensions no API for them (a file an agent's own click saves is
+  found in `~/Downloads` instead). Its window controls can make a tab group,
   but none deletes one safely from a window in the background, so agent
   windows stay plain.
 - Screenshots need the tab's window on screen (not minimized).
