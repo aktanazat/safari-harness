@@ -124,7 +124,9 @@ const lastSnapshot = new Map<number, string>();
 
 export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
-  const snap = await withChallenge((await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }])) as Snapshot, tab);
+  // The bot-check probe goes out with the snapshot request: sent after its
+  // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
+  const snap = await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
