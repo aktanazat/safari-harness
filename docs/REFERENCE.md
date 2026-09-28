@@ -181,6 +181,9 @@ again to a file instead of fetching it twice.
   in case it moves. A page that changes later is caught by the next call.
 - Treat an action as unconfirmed until a snapshot shows the result.
 - `real_input` uses the real mouse and keyboard, so the page sees trusted
+- An action or `eval` whose page leaves before it answers (a submit, a
+  redirect) still answers, with `ok: true` and the page it loaded as
+  `navigated`. It is never sent twice.
   events: `do: "click"` a ref (`count: 2` double-clicks, `button: "right"`),
   `do: "type"` text at a ref or where the caret is, `do: "key"` a key or
   combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it only when `click`, `type`,

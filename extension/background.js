@@ -55,13 +55,16 @@ function connect() {
   });
 }
 
+// The daemon comes back within seconds of a restart, and a request waits
+// for the extension only briefly (CONNECT_MS in bridge.ts), so retries stay
+// close together.
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
   }, backoff);
-  backoff = Math.min(backoff * 2, 10000);
+  backoff = Math.min(backoff * 2, 2000);
 }
 
 function send(obj) {
@@ -84,48 +87,77 @@ function pingLoop() {
 
 function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 
-// Ops that act on the page. If the page navigates while one is pending, the
-// action caused it: report that instead of re-sending (never act twice).
-const ACTIONS = new Set(["click", "clickAt", "type", "press", "select", "upload", "history", "hover", "fillLogin", "fillCode"]);
+// Ops that only read the page. If the page navigates while one is pending
+// (a redirect, or a chain of them), it is asked again of each new page. Any
+// other op may act on the page, so a navigation while it is pending is what
+// it caused: act reports that instead of sending it again (never act twice).
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
 const START_MS = { load: 3000, tab: 3000, script: 400 };
+// How long a page gets to show its script is there. A page that answers
+// nothing (a dialog open on it, or one stuck loading) fails the request
+// then, not at the request's own limit; a heavy page starting up answers
+// well within it.
+const PING_MS = 5000;
 
+// Asks the content script in the tab's frame to run op, and settles within
+// timeoutMs, whatever the page does: the daemon gives up 2 s later.
 async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
+  const deadline = Date.now() + timeoutMs;
+  const left = () => Math.max(deadline - Date.now(), 500);
   const msg = { __safariHarness: 1, id: nextId(), op, args };
   keepAwake(tabId);
-  await waitReady(tabId, 15000);
-  // A read asked of a page that navigates (a redirect, or a chain of them)
-  // is asked again of each new page, until its time runs out.
-  const deadline = Date.now() + timeoutMs;
   for (;;) {
+    await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
+    let sent = false;
     try {
-      const res = await sendUntilNavigation(tabId, msg, Math.max(deadline - Date.now(), 1000), frameId);
+      // A page may hold no copy of the script that answers: one left behind
+      // when the extension reloaded answers nothing, and Safari skips
+      // injecting some pages (after a redirect). Put a fresh copy in.
+      let here = await ping(tabId, frameId, Math.min(PING_MS, left()));
+      if (!here) {
+        await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
+        here = await ping(tabId, frameId, Math.min(PING_MS, left()));
+        send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: here });
+        if (!here) break;
+      }
+      sent = true;
+      const res = await sendUntilNavigation(tabId, msg, left(), frameId);
       if (res !== undefined) return res;
       break;
     } catch (e) {
-      if (!e.navigated) break;
-      if (ACTIONS.has(op)) return { value: { ok: true } };
+      if (!e.navigated) throw e;
+      if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
-      await waitReady(tabId, 15000);
     }
   }
-  // The page has no content script (Safari skipped injecting it, e.g. after a
-  // redirect): the send rejects, or resolves undefined because no listener
-  // answered. Inject it and ask once more.
-  await ensureContent(tabId, frameId);
-  const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
-  if (res !== undefined) return res;
   const { url } = await api.tabs.get(tabId);
   throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
+}
+
+// Whether a copy of the script that answers is in the frame: false at once
+// when none took the message. A page that says nothing in ms is held (see
+// PING_MS), and the request fails.
+async function ping(tabId, frameId, ms) {
+  try {
+    const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "ping" }, ms, frameId);
+    return !!res && res.value === true;
+  } catch (e) {
+    if (!e.timedOut) throw e;
+    send({ op: "note", kind: "silent", tab: tabId, frame: frameId, ms });
+    const { url } = await api.tabs.get(tabId);
+    throw new Error(`the page at ${url || "about:blank"} did not answer within ${Math.round(ms / 1000)} s (a dialog open on it, or a page stuck loading, holds it); reload it with goto and retry`);
+  }
 }
 
 // Run an action and report what it caused: a new page in this tab
 // (`navigated`) or a new tab (`newTab`), each once readable. A new tab that
 // jumps in front while the agent works in a background tab is sent behind
-// the user's tab again.
-async function act(tabId, op, args, timeoutMs, frameId = 0) {
+// the user's tab again. Its waits end by the action's time limit.
+async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
+  const deadline = Date.now() + timeoutMs;
   const source = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
   let opened = null;
@@ -147,25 +179,27 @@ async function act(tabId, op, args, timeoutMs, frameId = 0) {
   api.tabs.onCreated.addListener(onCreated);
   api.tabs.onUpdated.addListener(onUpdated);
   try {
-    const res = await toTab(tabId, op, args, timeoutMs, frameId);
+    const res = await toTab(tabId, op, args, deadline - Date.now(), frameId);
     if (res && res.error) return res;
-    const { expect, ...value } = (res && res.value) || {};
+    // an action answers an object; anything else is passed on as it came
+    if (!res || !res.value || typeof res.value !== "object" || Array.isArray(res.value)) return res;
+    const { expect, ...value } = res.value;
     const ms = START_MS[expect];
     if (ms && opened === null && !navigated) {
       await new Promise((resolve) => {
-        const timer = setTimeout(resolve, ms);
+        const timer = setTimeout(resolve, Math.min(ms, deadline - Date.now()));
         wake = () => { clearTimeout(timer); resolve(); };
       });
     }
     if (navigated) {
-      await waitReady(tabId, 20000);
+      await waitReady(tabId, Math.min(20000, deadline - Date.now()));
       const t = await api.tabs.get(tabId);
       value.navigated = { url: t.url, title: t.title };
     }
     if (opened !== null) {
       if (front && !source.active) await api.tabs.update(front.id, { active: true });
       if (await ownsTab(tabId)) await ownTab(opened);
-      await waitReady(opened, 20000);
+      await waitReady(opened, Math.min(20000, deadline - Date.now()));
       const t = await api.tabs.get(opened);
       value.newTab = { id: t.id, url: t.url, title: t.title };
     }
@@ -177,7 +211,8 @@ async function act(tabId, op, args, timeoutMs, frameId = 0) {
 }
 
 // Safari never settles a message whose page unloads mid-request, so race it
-// against the tab starting a new load.
+// against the tab starting a new load. A message no copy of the script took
+// settles undefined, whether Safari says so or finds no listener.
 function sendUntilNavigation(tabId, msg, ms, frameId = 0) {
   return new Promise((resolve, reject) => {
     const stop = () => { clearTimeout(t); api.tabs.onUpdated.removeListener(onNav); };
@@ -186,21 +221,26 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0) {
       stop();
       reject(Object.assign(new Error("page navigated"), { navigated: true }));
     };
-    const t = setTimeout(() => { stop(); reject(new Error(`tab ${ms}ms timeout`)); }, ms);
+    const t = setTimeout(() => {
+      stop();
+      reject(Object.assign(new Error(`the page did not answer ${msg.op} within ${Math.round(ms / 1000)} s`), { timedOut: true }));
+    }, ms);
     api.tabs.onUpdated.addListener(onNav);
-    api.tabs.sendMessage(tabId, msg, { frameId }).then((v) => { stop(); resolve(v); }, (err) => { stop(); reject(err); });
+    api.tabs.sendMessage(tabId, msg, { frameId }).then((v) => { stop(); resolve(v); }, () => { stop(); resolve(undefined); });
   });
 }
 
-async function ensureContent(tabId, frameId = 0) {
-  try {
-    await api.scripting.executeScript({
-      target: { tabId, frameIds: [frameId] },
-      files: ["content.js"],
-    });
-  } catch (e) {
-    log("inject failed", String(e));
-  }
+// Puts a copy of content.js in the frame, where Safari left none; with
+// takeOver, a fresh one that takes over from any copy already there (see
+// the claim at the top of content.js). A page stuck loading may never run
+// it, so this gives up after ms.
+async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false) {
+  const target = { tabId, frameIds: [frameId] };
+  const release = takeOver ? api.scripting.executeScript({ target, func: () => { window.__safariHarnessInjected = null; } }) : Promise.resolve();
+  const inject = release
+    .then(() => api.scripting.executeScript({ target, files: ["content.js"] }))
+    .catch((e) => log("inject failed", String(e)));
+  await Promise.race([inject, new Promise((resolve) => setTimeout(resolve, ms))]);
 }
 
 // ---------- embedded frames ----------
@@ -293,7 +333,7 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
     if (res && res.value && typeof res.value.snapshot === "string") return { value: await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0) };
     return res;
   }
-  const send = (id) => ACTIONS.has(domOp) ? act(tabId, domOp, args, timeoutMs, id) : toTab(tabId, domOp, args, timeoutMs, id);
+  const send = (id) => READS.has(domOp) ? toTab(tabId, domOp, args, timeoutMs, id) : act(tabId, domOp, args, timeoutMs, id);
   const res = await send(frameId);
   if (frameId === 0 && res && typeof res.error === "string" && MISS.test(res.error)) {
     const tokens = await frameTokens(tabId).catch(() => new Map());

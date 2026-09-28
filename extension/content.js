@@ -8,12 +8,20 @@
 // Web Extension API (no chrome.debugger available).
 
 (() => {
+  // One copy of this script answers in each page. The extension sets the
+  // claim to null to put a fresh copy in where the one there answers
+  // nothing (a copy left behind when the extension reloaded): the old copy
+  // then ignores every message, and the new one numbers its refs after the
+  // ones already on the page.
   if (window.__safariHarnessInjected) return;
-  window.__safariHarnessInjected = true;
+  const takeover = window.__safariHarnessInjected === null;
+  const claim = {};
+  window.__safariHarnessInjected = claim;
 
   const REF_ATTR = "data-sh-ref";
   let refSeq = 0;
   const refMap = new Map(); // ref -> element
+  if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) refSeq = Math.max(refSeq, Number(el.getAttribute(REF_ATTR)) || 0);
 
   // ---------- role / name computation (ARIA-lite) ----------
 
@@ -309,7 +317,7 @@
 
   addEventListener("message", (e) => {
     const d = e.data;
-    if (!d || typeof d !== "object") return;
+    if (!d || typeof d !== "object" || window.__safariHarnessInjected !== claim) return;
     if (typeof d.__shFrame === "string") {
       const f = frameElementOf(e.source);
       if (f) childToken.set(f, d.__shFrame);
@@ -1491,7 +1499,9 @@
 
   const api = (typeof browser !== "undefined" && browser.runtime) ? browser : chrome;
   api.runtime.onMessage.addListener((msg) => {
-    if (!msg || msg.__safariHarness !== 1) return;
+    if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
+    // the extension asks this first, to know a copy that answers is here
+    if (msg.op === "ping") return Promise.resolve({ id: msg.id, value: true });
     const fn = handlers[msg.op];
     if (!fn) return Promise.resolve({ id: msg.id, error: `unknown op ${msg.op}` });
     // Handlers report expected failures (stale ref, no such option) as
