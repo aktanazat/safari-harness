@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { callTool, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 1, 2, 3...; a click in tab 1
@@ -19,7 +19,7 @@ function answer(op: string, args: unknown[]): unknown {
   if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
   return { ok: true };
 }
-bridge.attach({
+const ext = {
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) }));
@@ -29,7 +29,8 @@ bridge.attach({
     }
   },
   close() {},
-});
+};
+bridge.attach(ext);
 
 // The daemon's own closes say "owned": the extension then closes a tab only
 // if the harness owns it.
@@ -72,4 +73,28 @@ test("an agent's background tabs, and tabs they open, close once it exits; front
   await closedOwned([1, 4, 100]);
   await settled();
   expect(ownedCloses()).toEqual([1, 4, 11, 100]);
+});
+
+// He quit Safari: a sweep that asked it anything would start it again. An
+// exited agent's tab then waits, unasked, for the extension to come back.
+test("a sweep asks nothing of Safari while its extension is gone", async () => {
+  bridge.detach(ext);
+  const request = bridge.request;
+  const asked: unknown[] = [];
+  bridge.request = (...args: Parameters<typeof request>) => {
+    asked.push(args[0]);
+    return request.apply(bridge, args);
+  };
+  try {
+    const [exited, marker] = [Bun.spawnSync(["true"]).pid, Bun.spawnSync(["true"]).pid];
+    const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+    writeFileSync(file, JSON.stringify({ 31: exited }));
+    loadTabs(file);
+    // one owner sweep calls the watches in turn: the tab's came first
+    await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+    expect(asked).toEqual([]);
+  } finally {
+    bridge.request = request;
+    bridge.attach(ext);
+  }
 });

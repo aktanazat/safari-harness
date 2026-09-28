@@ -116,6 +116,9 @@ function orphan(owner: number) {
 }
 
 async function sweep() {
+  // Timer work never starts Safari: once the user quits it, only a caller's
+  // own call may (socket in bridge.ts). The next sweep tries again.
+  if (!bridge.connected) return;
   const idle = Date.now() - IDLE_MS;
   await Promise.all([...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.used < idle)).map(async ([tab, t]) => {
     t.closing = true;
