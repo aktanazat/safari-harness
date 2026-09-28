@@ -287,6 +287,38 @@ says what signed out looks like, where the page's data sits, what failed
 before, and, for a site with a `safari repl` global, the global's methods.
 Read it before working on that site.
 
+### Learned notes
+
+What you find out about a site the hard way, save for the next agent (and
+for yourself after your context is compacted) with `learn {site, fact}`
+(CLI `safari learn cvs.com "<fact>"`): a flow's steps, a control that loads
+late, which account or identity owns which workspace. One fact is one
+plain sentence of at most 300 characters.
+
+- `site` is a host or an address; `www.` is dropped, so `www.cvs.com` and
+  `cvs.com` share notes, while a subdomain (`acme.slack.com`) keeps its own.
+- The same fact is kept once. A site keeps 50; the 51st pushes out the
+  oldest.
+- `learn {site}` alone (CLI `safari learn cvs.com`) lists the site's notes,
+  numbered; `learn {site, forget: n}` (CLI `--forget n`) removes note n.
+- Never a secret: a fact that looks like a password, a verification code,
+  a card number, or a token is refused. Say where it comes from instead
+  ("the code comes by text").
+- Notes come to you by themselves: your first `open`, `goto`, or
+  `snapshot` on a site with notes carries `notes`, one line (a snapshot
+  prints it under its header). Three or fewer short notes come in full;
+  more come as a count, `site notes for cvs.com: 5; read them with guide
+  cvs.com`, which `safari guide cvs.com` prints. Each agent gets the line
+  once per site.
+- `safari guide <site>` prints the bundled guide, then the notes learned
+  on that host; by name (`safari guide slack`) it also shows the notes of
+  each subdomain its hosts cover. `safari guide sites` ends with the hosts
+  that have notes.
+- They are plain files, one per host, in
+  `~/.local/share/safari-harness/notes/<host>.md`, a line per fact with its
+  date and the name of the agent's program (`omp`, `claude`). The daemon
+  keeps them on the Mac whose Safari it drives.
+
 ## Logged-in sites and secrets
 
 The tabs carry the user's real sessions. Never print passwords, one-time codes,
