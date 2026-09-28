@@ -104,6 +104,35 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click on a ref whose element the page drew anew presses the element that took its place, and says so",
+    page: "heal.html",
+    steps: [
+      { op: "snapshot" }, // [1] Save, [4] Redraw
+      { op: "click", args: ["4"] },
+      { op: "click", args: ["1"], answer: { value: { ok: true, healed: { ref: "1", now: "7" } } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Saved") } } },
+    ],
+  },
+  {
+    name: "a ref drawn anew finds its own row's control by the text beside it, after the rows moved",
+    page: "heal.html",
+    steps: [
+      { op: "snapshot" }, // [3] Bob's Delete, [6] Sort (Bob before Alice)
+      { op: "click", args: ["6"] },
+      { op: "click", args: ["3"], answer: { value: { ok: true, healed: { ref: "3", now: "7" } } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Deleted Bob") } } },
+    ],
+  },
+  {
+    name: "a ref drawn anew as one of lookalikes it cannot tell apart stays stale",
+    page: "heal.html",
+    steps: [
+      { op: "snapshot" }, // [1] Save, [5] Redraw twice
+      { op: "click", args: ["5"] },
+      { op: "click", args: ["1"], answer: { error: "stale ref 1; re-run snapshot" } },
+    ],
+  },
+  {
     name: "typing replaces a text field's value, with the input event the page listens for",
     page: "type.html",
     steps: [

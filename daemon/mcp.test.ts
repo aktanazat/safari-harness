@@ -54,8 +54,10 @@ import { expect, test } from "bun:test";
 // recipe, or article page's own JSON (price, stock, author) comes back in
 // one call, where a snapshot and a guessed eval took several. Naming eval's
 // sh helpers (70) brought it to 21,248: code reaches into shadow roots and
-// reads JSON-LD without walking the page by hand.
-const TOOL_LIST_MAX_BYTES = 21_248;
+// reads JSON-LD without walking the page by hand. Saying that refs outlast
+// redraws (4) brought it to 21,252: a ref whose element the page drew anew
+// still works, so an agent acts on it without another snapshot.
+const TOOL_LIST_MAX_BYTES = 21_252;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

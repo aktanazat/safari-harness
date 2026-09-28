@@ -1,0 +1,31 @@
+<!doctype html>
+<title>Heal</title>
+<p id="said">Nothing done yet</p>
+<div id="bar"></div>
+<ul id="people"></ul>
+<button onclick="drawBar(1)">Redraw</button>
+<button onclick="drawBar(2)">Redraw twice</button>
+<button onclick="drawPeople(['Bob', 'Alice'])">Sort</button>
+<script>
+  // Each draw replaces the elements with new ones made from script, as a
+  // framework does when its state changes: the same controls, none of the
+  // elements a snapshot gave refs.
+  function button(name, did) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.onclick = () => { said.textContent = did; };
+    return b;
+  }
+  function drawBar(copies) {
+    bar.replaceChildren(...Array.from({ length: copies }, () => button("Save", "Saved")));
+  }
+  function drawPeople(names) {
+    people.replaceChildren(...names.map((name) => {
+      const li = document.createElement("li");
+      li.append(`${name} `, button("Delete", `Deleted ${name}`));
+      return li;
+    }));
+  }
+  drawBar(1);
+  drawPeople(["Alice", "Bob"]);
+</script>

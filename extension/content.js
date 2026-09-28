@@ -330,6 +330,7 @@
       el.setAttribute(REF_ATTR, ref);
     }
     refMap.set(ref, el);
+    remember(ref, el);
     return ref;
   }
 
@@ -338,6 +339,175 @@
     for (const [ref, el] of refMap) {
       if (!el.isConnected) refMap.delete(ref);
     }
+  }
+
+  // ---------- fingerprints ----------
+  // A framework that draws the page anew replaces the elements a snapshot
+  // gave refs, and the agent's next action would miss. Each ref keeps a
+  // fingerprint of its element (daemon/fingerprint.ts says what one
+  // holds), and a ref whose element is gone heals to the one element on
+  // the page that matches it; the reply says so (healed: { ref, now }).
+  const fingerprints = new Map(); // ref -> fingerprint, kept after its element leaves
+  const FINGERPRINTS_MAX = 5000;
+  let healedNow = null; // the heal the running request made
+  // How much of an element's surroundings a fingerprint keeps: enough to
+  // tell one row's "Delete" from the next.
+  const NEAR_MAX = 80;
+  const NO_TEXT = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+  // An id the page's author wrote, not one its framework numbers anew on
+  // each load.
+  const STABLE_ID = /^[A-Za-z][A-Za-z_-]*$/;
+
+  function parentOf(el) {
+    return el.parentElement ?? (el.parentNode instanceof ShadowRoot ? el.parentNode.host : null);
+  }
+
+  // The opening text in box outside el, read from its text nodes: reading
+  // a whole large box, or laying it out for innerText, would cost every
+  // ref a snapshot gives.
+  function textAround(box, el) {
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => n === el || NO_TEXT.has(n.nodeName) ? NodeFilter.FILTER_REJECT
+        : n.nodeType === Node.TEXT_NODE ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
+    });
+    let t = "";
+    for (let n = walker.nextNode(); n && t.length < NEAR_MAX; n = walker.nextNode()) {
+      const d = n.data.trim();
+      if (d) t += ` ${d}`;
+    }
+    return norm(t).slice(0, NEAR_MAX);
+  }
+
+  // The text of the nearest box around the element with text of its own
+  // beside it: a row's, a list item's, a field's label.
+  function nearText(el) {
+    let up = 0;
+    for (let box = parentOf(el); box && up < 6; box = parentOf(box), up++) {
+      const t = textAround(box, el);
+      if (t) return t;
+    }
+    return "";
+  }
+
+  // Up to depth steps from the element toward the top of its document or
+  // shadow root: a stable id ends the path, else each step is the tag and
+  // its place among its siblings of that tag.
+  function cssPath(el, depth) {
+    const steps = [];
+    for (let e = el; e && steps.length < depth; e = e.parentElement) {
+      if (STABLE_ID.test(e.id)) {
+        steps.unshift(`#${CSS.escape(e.id)}`);
+        break;
+      }
+      let k = 1;
+      for (let s = e.previousElementSibling; s; s = s.previousElementSibling) if (s.localName === e.localName) k++;
+      steps.unshift(`${CSS.escape(e.localName)}:nth-of-type(${k})`);
+    }
+    return steps.join(">");
+  }
+
+  // An element as the matcher sees it; near and path are read only for
+  // lookalikes (matchFingerprint).
+  function candidateOf(el) {
+    const tag = el.localName;
+    return {
+      role: getExplicitRole(el) || tag,
+      name: accessibleName(el),
+      tag,
+      get near() { return nearText(el); },
+      get path() { return cssPath(el, 4); },
+    };
+  }
+
+  // The page's elements by tag, and each one's place among its lookalikes,
+  // for the request running: a snapshot fingerprints hundreds of elements,
+  // and the page holds still until it returns.
+  let census = null;
+  function censusNow() {
+    if (!census) {
+      census = { roots: [document, ...shadowRoots()], tags: new Map() };
+      queueMicrotask(() => { census = null; });
+    }
+    return census;
+  }
+
+  // Every element of a tag, shadow roots included, in page order.
+  function tagged(tag) {
+    return censusNow().roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
+  }
+
+  // Each element of the tag, with its place among those that look the same
+  // (lookalikeKey) and how many of those there are.
+  function placesOf(tag) {
+    const c = censusNow();
+    let places = c.tags.get(tag);
+    if (!places) {
+      const counts = new Map();
+      places = new Map();
+      for (const el of tagged(tag)) {
+        const key = lookalikeKey(candidateOf(el));
+        const index = counts.get(key) ?? 0;
+        counts.set(key, index + 1);
+        places.set(el, { key, index, counts });
+      }
+      c.tags.set(tag, places);
+    }
+    return places;
+  }
+
+  function fingerprintOf(el) {
+    const { role, name, tag, near, path } = candidateOf(el);
+    const at = placesOf(tag).get(el);
+    return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+  }
+
+  function remember(ref, el) {
+    fingerprints.delete(ref);
+    fingerprints.set(ref, fingerprintOf(el));
+    if (fingerprints.size > FINGERPRINTS_MAX) fingerprints.delete(fingerprints.keys().next().value);
+  }
+
+  // ---- shared with daemon/fingerprint.ts: begin ----
+  function lookalikeKey(c) {
+    return `${c.role}\n${c.name}\n${c.tag}`;
+  }
+
+  function matchFingerprint(fp, candidates) {
+    const want = lookalikeKey(fp);
+    const same = [];
+    for (let i = 0; i < candidates.length; i++) if (lookalikeKey(candidates[i]) === want) same.push(i);
+    if (same.length === 1 && fp.count === 1) return { index: same[0] };
+    // One of several lookalikes, then or now: the one whose surroundings read
+    // the same; among several of those, the one on the same path, or the one
+    // at the same place among as many lookalikes as before.
+    const kin = same.filter((i) => candidates[i].near === fp.near);
+    if (kin.length === 1) return { index: kin[0] };
+    const onPath = kin.filter((i) => candidates[i].path === fp.path);
+    if (onPath.length === 1) return { index: onPath[0] };
+    const placed = same[fp.index];
+    if (same.length === fp.count && kin.includes(placed)) return { index: placed };
+    return { count: same.length };
+  }
+  // ---- shared with daemon/fingerprint.ts: end ----
+
+  // The element a gone ref's fingerprint names, now with a ref of its own;
+  // null when no one element matches (none, or lookalikes it cannot tell
+  // apart), and the action fails as a stale ref.
+  function heal(ref) {
+    const fp = fingerprints.get(ref);
+    if (!fp) return null;
+    const els = tagged(fp.tag);
+    const m = matchFingerprint(fp, els.map(candidateOf));
+    if (!("index" in m)) return null;
+    const el = els[m.index];
+    healedNow = { ref, now: ensureRef(el) };
+    refMap.set(ref, el);
+    return el;
+  }
+
+  // A reply carries the heal its request made beside what the op answered.
+  function withHeal(value, healed) {
+    return healed && value && typeof value === "object" && !Array.isArray(value) ? { ...value, healed } : value;
   }
 
   // ---------- embedded frames ----------
@@ -698,7 +868,7 @@
       if (el && el.isConnected) return el;
       const dom = deepQuery(`[${REF_ATTR}="${key}"]`);
       if (dom) refMap.set(key, dom);
-      return dom;
+      return dom ?? heal(key);
     }
     return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
   }
@@ -1936,13 +2106,17 @@
     // { error }; send those as errors so callers never mistake them for success.
     const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
       ? { id: msg.id, error: value.error }
-      : { id: msg.id, value: safeClone(value) };
+      : { id: msg.id, value: safeClone(withHeal(value, healed)) };
     let out;
+    healedNow = null;
     try {
       out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
     } catch (e) {
       return Promise.resolve({ id: msg.id, error: String(e && e.message || e) });
     }
+    // Every handler resolves its target before its first await, so a heal
+    // made now is this request's.
+    const healed = healedNow;
     if (out && typeof out.then === "function") {
       return out.then(settle, (err) => ({ id: msg.id, error: String(err && err.message || err) }));
     }

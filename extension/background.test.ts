@@ -100,7 +100,9 @@ async function start() {
     const answer = async (m: Msg): Promise<Reply> => {
       if (m.op === "ping") return { id: m.id, value: true };
       doc.ran.push(m.op);
-      return { id: m.id, value: await doc.does(m.op) };
+      // content.js sends a failure it reports as { error } as an error
+      const value = await doc.does(m.op);
+      return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { id: m.id, error: value.error } : { id: m.id, value };
     };
     w.__safariHarnessRun = (m: Msg) => (w.__safariHarnessInjected === claim ? answer(m) : null);
     if (!doc.live) return;
@@ -308,4 +310,13 @@ test("a known page that stops answering fails at the ping time, not at the reque
   b.ask(tab, "tabInfo").then((a) => { answer = a; });
   await b.clock.advance(10000);
   expect(answer?.error).toStartWith("the page at https://example.com/ did not answer within 5 s");
+});
+
+test("a stale ref or a heal in an embedded frame names the ref as the agent sent it, with the frame's prefix", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  tab.doc.does = () => ({ ok: true, healed: { ref: "3", now: "9" } });
+  expect((await b.ask(tab, "click", ["f5:3"])).value).toEqual({ ok: true, healed: { ref: "f5:3", now: "f5:9" } });
+  tab.doc.does = () => ({ error: "stale ref 3; re-run snapshot" });
+  expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
 });
