@@ -11,6 +11,8 @@
 //   extension -> daemon  {op:"tab", kind:"replaced", from, to}  Safari swapped a tab
 //   extension -> daemon  {op:"tab", kind:"popup", tab, opener, url}  an owned
 //                        tab's page opened another outside an action
+//   extension -> daemon  {op:"recording", recording}  what the user did once
+//                        in teach mode, to save (recordings.ts)
 
 import { note } from "./journal.ts";
 
@@ -49,6 +51,7 @@ type WireMessage = {
   tab?: unknown;
   opener?: unknown;
   url?: unknown;
+  recording?: unknown;
 };
 
 function asWire(raw: string): WireMessage | null {
@@ -87,6 +90,7 @@ export class Bridge {
   private waiting = new Set<() => void>(); // requests waiting for a socket
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
+  public onRecording: (recording: unknown) => void = () => {};
 
   get connected(): boolean {
     return this.sock !== null;
@@ -138,6 +142,10 @@ export class Bridge {
     if (msg.op === "tab") {
       const event = tabEvent(msg);
       if (event) this.onTab(event);
+      return;
+    }
+    if (msg.op === "recording") {
+      this.onRecording(msg.recording);
       return;
     }
     if (msg.id === undefined) return;
