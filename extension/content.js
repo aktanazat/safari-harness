@@ -968,12 +968,15 @@
     let nav = null;
     let submit = null;
     let clicked = null;
+    let popped = false;
     const onNav = (e) => { nav ??= e; };
     const onSubmit = (e) => { submit ??= e; };
     const onClick = (e) => { clicked ??= e; };
+    const onPopup = () => { popped = true; };
     navigation.addEventListener("navigate", onNav);
     addEventListener("submit", onSubmit, true);
     addEventListener("click", onClick, true);
+    document.addEventListener("__sh_popup", onPopup);
     let res;
     try {
       res = act();
@@ -981,12 +984,16 @@
       navigation.removeEventListener("navigate", onNav);
       removeEventListener("submit", onSubmit, true);
       removeEventListener("click", onClick, true);
+      document.removeEventListener("__sh_popup", onPopup);
     }
     if (!res || res.error) return res;
-    const expect = nav ? (nav.destination.sameDocument ? null : "load")
+    const expect = popped ? "tab"
+      : nav ? (nav.destination.sameDocument ? null : "load")
       : submit ? submitOutcome(submit)
       : clicked ? linkOutcome(clicked)
       : null;
+    // the window.open said so already
+    if (expect === "tab" && !popped) announceTab();
     return expect ? { ...res, expect } : res;
   }
 
@@ -1201,7 +1208,10 @@
     try { caughtDownload = JSON.parse(e.detail); } catch { return; }
     pendingDownload?.(caughtDownload);
   });
-  document.addEventListener("__sh_popup", () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); });
+  // Safari gives a tab a page opens no opener, so the page says one is
+  // coming (tabs a page opens, in background.js).
+  const announceTab = () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); };
+  document.addEventListener("__sh_popup", announceTab);
   function catchDownloads(on) {
     document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
   }

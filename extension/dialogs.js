@@ -77,9 +77,9 @@
       caught(new URL(String(url), location.href).href, "");
       return null;
     }
-    // Safari gives the tab this makes no opener, so an owned page says it
-    // is opening one (popups in background.js).
-    if (owned) tell("__sh_popup", {});
+    // Safari gives the tab this makes no opener, so the page says it is
+    // opening one (tabs a page opens, in background.js).
+    tell("__sh_popup", {});
     return native.open.apply(this, arguments);
   };
   document.addEventListener("__sh_download_catch", (e) => { state.catching = e.detail === "1"; });

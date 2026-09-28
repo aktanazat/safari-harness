@@ -246,6 +246,23 @@ async function start() {
     step(tab: Tab, step: unknown) {
       onMessage.fire({ __safariHarnessStep: 1, step }, { tab: { id: tab.id, windowId: 1 }, frameId: 0 });
     },
+    // Safari makes a tab: one a page opened, or one of its own making (a
+    // tab group's), with its opener when Safari says it; its page reports in.
+    create(opener?: Tab): Tab {
+      const tab = { id: nextTab++, doc: new Doc("https://example.com/popup") };
+      tabs.set(tab.id, tab);
+      browser.tabs.onCreated.fire({ id: tab.id, windowId: 1, ...(opener ? { openerTabId: opener.id } : {}) });
+      copyIn(tab, tab.doc);
+      return tab;
+    },
+    // The page in tab says a tab it opens is coming (content.js).
+    announce(tab: Tab) {
+      onMessage.fire({ __safariHarnessPopup: 1 }, { tab: { id: tab.id, windowId: 1 }, frameId: 0 });
+    },
+    // A tab the harness opened, whose dialogs and popups are its own.
+    own(tab: Tab) {
+      return session.set({ [`dialogs:${tab.id}`]: { accept: false, text: null } });
+    },
     close(tab: Tab) {
       tabs.delete(tab.id);
       onRemoved.fire(tab.id);
@@ -415,4 +432,50 @@ test("closing the recorded tab ends its recording, and one ended while the daemo
   b.reconnect();
   await b.clock.advance(0);
   expect(recordings(b)).toMatchObject([{ url: "https://example.com/", steps: [clickStep(1)], why: "closed" }]);
+});
+
+test("a tab that appears while a click runs is not the click's unless its page says one is coming", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  // the tab group keeper's New Tab Group makes a tab mid-click
+  tab.doc.does = (op) => (op === "click" ? (b.create(), { ok: true }) : {});
+  const answer = b.ask(tab, "click", ["1"]);
+  await b.clock.advance(5000);
+  expect(await answer).toEqual({ value: { ok: true } });
+});
+
+test("a click whose page opens a tab reports it, whether Safari makes the tab before or after the page says so", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const opened: Tab[] = [];
+  const clicks = [
+    () => { b.announce(tab); opened.push(b.create()); },
+    () => { opened.push(b.create()); b.announce(tab); },
+  ];
+  for (const click of clicks) {
+    tab.doc.does = (op) => (op === "click" ? (click(), { ok: true, expect: "tab" }) : {});
+    const answer = b.ask(tab, "click", ["1"]);
+    await b.clock.advance(5000);
+    expect(await answer).toEqual({ value: { ok: true, newTab: { id: opened.at(-1)!.id, url: "https://example.com/popup", title: "" } } });
+  }
+});
+
+test("a popup an owned page opens on its own goes to the agent, and one the user's page opens stays his", async () => {
+  const b = await start();
+  const owned = b.open("https://example.com/");
+  const his = b.open("https://example.org/");
+  await b.own(owned);
+  b.announce(owned);
+  const first = b.create();
+  await b.clock.advance(2000);
+  const second = b.create();
+  b.announce(owned);
+  await b.clock.advance(2000);
+  b.announce(his);
+  b.create();
+  await b.clock.advance(2000);
+  expect(b.told.filter((m) => m.kind === "popup")).toEqual([
+    { op: "tab", kind: "popup", tab: first.id, opener: owned.id, url: "https://example.com/popup" },
+    { op: "tab", kind: "popup", tab: second.id, opener: owned.id, url: "https://example.com/popup" },
+  ]);
 });

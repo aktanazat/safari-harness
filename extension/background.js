@@ -195,10 +195,11 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   let opened = null;
   let navigated = false;
   let wake = () => {};
-  // A new tab reads "complete" while still blank, so it is not ready until
+  // The tab this page opens, as the popup matcher below hands it over. A
+  // new tab reads "complete" while still blank, so it is not ready until
   // its page reports in (as for tabs.open).
-  const onCreated = (t) => {
-    if (opened !== null || (t.openerTabId !== undefined && t.openerTabId !== tabId)) return;
+  const claim = (t) => {
+    if (opened !== null) return;
     opened = t.id;
     drive(t.id);
     if (ready.get(t.id) !== true) ready.set(t.id, false);
@@ -209,7 +210,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const onUpdated = (id, info) => {
     if (id === tabId && (info.status === "loading" || (info.url && info.url !== source.url))) { navigated = true; wake(); }
   };
-  api.tabs.onCreated.addListener(onCreated);
+  acting.set(tabId, claim);
   api.tabs.onUpdated.addListener(onUpdated);
   try {
     const res = await toTab(tabId, op, args, deadline - Date.now(), frameId);
@@ -238,7 +239,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
     }
     return { value };
   } finally {
-    api.tabs.onCreated.removeListener(onCreated);
+    if (acting.get(tabId) === claim) acting.delete(tabId);
     api.tabs.onUpdated.removeListener(onUpdated);
   }
 }
@@ -1174,13 +1175,26 @@ if (api.tabs.onReplaced) {
   });
 }
 
-// A tab an owned tab's page opens on its own, outside an action (a sign-in
-// popup a script opens later), is owned too, and the daemon gives it to the
-// agent that owns the opener. act claims the tab its action opens as it is
-// created; this looks a turn later and leaves that one to act. A tab the
-// user's own tabs open stays his. The daemon hears of it once it has an
-// address, which tells the agent what it is.
+// ---------- tabs a page opens ----------
+// Safari sets no openerTabId on a tab a page opens, so the page says one is
+// coming: a window.open (dialogs.js), or an action whose link or form opens
+// a tab (withOutcome in content.js). The tab made with no opener within a
+// second of that, before or after, is that page's. One nothing announced
+// is nobody's: Safari makes tabs of its own (the tab group keeper's New
+// Tab Group made one while a replay clicked, and the click took it).
+const POPUP_MS = 1000;
+const acting = new Map(); // tabId -> act's claim, while an action on it runs
+let announced = null; // { opener, at }: a page just said a tab is coming
+let unclaimed = null; // { tab, at }: a tab just made with no opener
+
+// The tab goes to the action running on its opener. Outside an action, one
+// an owned tab's page opens on its own (a sign-in popup a script opens
+// later) is owned too, and the daemon gives it to the agent that owns the
+// opener; a tab the user's own tabs open stays his. The daemon hears of it
+// once it has an address, which tells the agent what it is.
 function adoptPopup(t, opener) {
+  const claim = acting.get(opener);
+  if (claim) return claim(t);
   setTimeout(async () => {
     if (drivenTabs.has(t.id) || !(await ownsTab(opener))) return;
     drive(t.id);
@@ -1191,13 +1205,6 @@ function adoptPopup(t, opener) {
     send({ op: "tab", kind: "popup", tab: t.id, opener, url: now.url || t.pendingUrl || "" });
   }, 0);
 }
-
-// Safari sets no openerTabId on a tab a script opens, so an owned page
-// says when it calls window.open (dialogs.js), and the tab made with no
-// opener within a second of that, before or after, is its popup.
-const POPUP_MS = 1000;
-let announced = null; // { opener, at }: an owned page just called window.open
-let unclaimed = null; // { tab, at }: a tab just made with no opener
 
 api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessPopup !== 1 || !sender.tab) return;
@@ -1211,7 +1218,7 @@ api.runtime.onMessage.addListener((m, sender) => {
 
 api.tabs.onCreated.addListener((t) => {
   let opener = t.openerTabId;
-  if (opener === undefined && announced && Date.now() - announced.at < POPUP_MS) {
+  if (announced && Date.now() - announced.at < POPUP_MS && (opener === undefined || opener === announced.opener)) {
     opener = announced.opener;
     announced = null;
   }
