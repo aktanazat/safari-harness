@@ -64,14 +64,14 @@ Bot checks
   scripted clicks or drags inside it.
 - `open`, `goto`, `snapshot`, and a missed `wait` carry `challenge` when
   one shows. Call `handoff {tab, why}`: it brings the tab to the front,
-  notifies him with `why`, texts his phone when he is away from the Mac,
+  notifies him with `why`, alerts his phone when he is away from the Mac,
   and returns when he is done, giving back what he had in front.
   `done: false` means call it again: the same wait goes on, with no second
-  notice or text. Then carry on in the same tab.
+  notice or alert. Then carry on in the same tab.
 - `challenge.where: "block"` means the site turned the browser away. No one
   can clear it, so `handoff` refuses it: report it.
-- An unattended routine hands off once (he gets a text if he is away), and
-  reports the check if it is still there.
+- An unattended routine hands off once (he gets an alert if he is away),
+  and reports the check if it is still there.
 
 Privacy and care
 - List his tabs only when the task is about a page he has open.

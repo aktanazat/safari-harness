@@ -2,23 +2,22 @@ import { afterEach, beforeEach, expect, mock, setSystemTime, spyOn, test } from 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as imessage from "./imessage.ts";
 import * as phone from "./phone.ts";
 import * as daemonRpc from "./rpc.ts";
+import * as telegram from "./telegram.ts";
 import { lastValue, runWatch, type Watch } from "./watch.ts";
 
 // A watch routine reads one value off a page on a schedule, with no model,
-// and texts the user's phone when it changes. Safari and Messages are fakes:
-// the daemon's tools answer from one page, which may show a check or a
-// sign-in form instead of the value, and a text is only recorded.
+// and alerts the user's phone when it changes. Safari and Telegram are
+// fakes: the daemon's tools answer from one page, which may show a check or
+// a sign-in form instead of the value, and an alert is only recorded.
 
-const OWN = "+15550100000";
-const WATCH: Watch = { url: "https://shop.example/item", how: "selector", what: ".stock", to: OWN };
+const WATCH: Watch = { url: "https://shop.example/item", how: "selector", what: ".stock" };
 type Page = { value?: string; check?: true; signIn?: true };
 
 let page: Page = {};
 let dir = "";
-let texts: [string, string][] = [];
+let texts: string[] = [];
 let opened: Record<string, unknown>[] = [];
 let closed: unknown[] = [];
 
@@ -29,7 +28,7 @@ beforeEach(() => {
   opened = [];
   closed = [];
   spyOn(phone, "dataFile").mockImplementation((name) => join(dir, name));
-  spyOn(imessage, "textOwnNumber").mockImplementation(async (to, line) => void texts.push([to, line]));
+  spyOn(telegram, "sendTelegram").mockImplementation(async (line) => void texts.push(line));
   spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
     if (tool === "open") {
       opened.push(args);
@@ -48,7 +47,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a watch texts only when the value changes: its first run records it without a text, and every run closes the tab it opened", async () => {
+test("a watch alerts only when the value changes: its first run records it without an alert, and every run closes the tab it opened", async () => {
   page = { value: "3 left" };
   await runWatch("stock", WATCH);
   await runWatch("stock", WATCH);
@@ -56,7 +55,7 @@ test("a watch texts only when the value changes: its first run records it withou
   page = { value: "2 left" };
   await runWatch("stock", WATCH);
   await runWatch("stock", WATCH);
-  expect(texts).toEqual([[OWN, "stock: 3 left -> 2 left (https://shop.example/item)"]]);
+  expect(texts).toEqual(["stock: 3 left -> 2 left (https://shop.example/item)"]);
   expect(lastValue("stock")).toBe("2 left");
   // in the background, never left open
   expect(opened).toEqual(Array(4).fill(expect.objectContaining({ background: true })));
@@ -66,7 +65,7 @@ test("a watch texts only when the value changes: its first run records it withou
 test.each([
   ["a check", { check: true }],
   ["a sign-in page", { signIn: true }],
-] as const)("a watched page that shows %s texts him about it at most once a day, and keeps the value it last read", async (wall, shown) => {
+] as const)("a watched page that shows %s alerts him about it at most once a day, and keeps the value it last read", async (wall, shown) => {
   const start = Date.UTC(2026, 8, 28, 12);
   setSystemTime(start);
   page = { value: "3 left" };
@@ -79,6 +78,6 @@ test.each([
   page = { value: "2 left" };
   setSystemTime(start + 50 * 3_600_000);
   await runWatch("stock", WATCH);
-  const line: [string, string] = [OWN, `stock needs you: shop.example shows ${wall}`];
-  expect(texts).toEqual([line, line, line, [OWN, "stock: 3 left -> 2 left (https://shop.example/item)"]]);
+  const line = `stock needs you: shop.example shows ${wall}`;
+  expect(texts).toEqual([line, line, line, "stock: 3 left -> 2 left (https://shop.example/item)"]);
 });

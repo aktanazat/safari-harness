@@ -10,10 +10,11 @@
 // Pages are built inside example.com with eval, so the checks do not depend on
 // any site's markup changing.
 
+import { existsSync, readFileSync } from "node:fs";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { frontApp, inFront } from "../daemon/front.ts";
-import { search } from "../daemon/imessage.ts";
+import { dataFile } from "../daemon/phone.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
 
@@ -697,11 +698,11 @@ await withPage(FADE, "", async (tab) => {
 // check goes away. handoff runs here, as it does in any caller. Two at once
 // share one handoff (the second joins it), and once the check is gone the
 // user gets back the tab and app he had in front. At the Mac (forced here),
-// nothing is texted: Messages gains no alert line.
+// nothing is sent: the alert log gains no line.
 const BOT_CHECK = '<form><div class="cf-turnstile" style="width:300px;height:65px"></div><button>Sign in</button></form>';
 const BOT_CHECK_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: "setTimeout(() => document.querySelector('.cf-turnstile').remove(), 2500)" }))`;
 const SELF_TEST = "Safari Harness self-test: nothing to do";
-const alertTexts = () => search({ text: "the agent carries on by itself", days: 1, limit: 100 }).length;
+const alertTexts = () => (existsSync(dataFile("alerts.jsonl")) ? readFileSync(dataFile("alerts.jsonl"), "utf8").split("\n").filter(Boolean).length : 0);
 await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
@@ -718,7 +719,7 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const [nowFront, nowApp] = [((await call("tabs")) as Tab[]).find((t) => t.front)?.id, await frontApp()];
   check("handoff gives back the tab and app the user had in front", nowFront === userFront && nowApp === userApp, { nowFront, userFront, nowApp, userApp });
   const textsAfter = alertTexts();
-  check("handoff with the user at the Mac texts nothing", textsAfter === textsBefore, { textsBefore, textsAfter });
+  check("handoff with the user at the Mac sends nothing", textsAfter === textsBefore, { textsBefore, textsAfter });
 });
 
 // A page that turns the browser away is a block: no one can clear it, so

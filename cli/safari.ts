@@ -164,13 +164,12 @@ const USAGE = `safari — drive Safari from the terminal
   safari imessage send <to> <text> [--approved]
                                              draft a text; sends only with --approved
   safari contacts <name>                     phones and emails for a contact
-  safari ask "<question>" [--choices a,b,c] [--ms N]
-                                             away from the Mac, text your phone the question
-                                             and wait for the answer; at the Mac, send nothing
+  safari ask "<question>"                    away from the Mac, send the question to your phone
+                                             (answer it back here); at the Mac, send nothing
 
   Every command takes --host <ssh-host> to use another Mac's Safari, and
-  --json to print JSON. Messages, Contacts, history, ask, and fill commands
-  run in this terminal (they need its Full Disk Access), not in the daemon.
+  --json to print JSON. Messages, Contacts, history, and fill commands run
+  in this terminal (they need its Full Disk Access), not in the daemon.
   A command's parameters also work as flags (click --ref 3 is click 3), and
   safari <command> --help lists them.
 `;
@@ -566,18 +565,6 @@ async function main() {
     return;
   }
 
-  // One tool call waits about 2 minutes for the answer; the command waits
-  // out all of ms.
-  if (cmd === "ask") {
-    const choices = flag("choices", rest)?.split(",").map((c) => c.trim()).filter(Boolean);
-    const ms = flag("ms", rest);
-    const args = { question: rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" "), ...(choices ? { choices } : {}), ...(ms === undefined ? {} : { ms: Number(ms) }) };
-    for (;;) {
-      const r = await invoke("ask", args);
-      if (!(r && typeof r === "object" && "waiting" in r)) return print(r);
-    }
-  }
-
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = ALIAS[cmd] ?? cmd;
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
@@ -683,6 +670,7 @@ async function main() {
     case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
+    case "ask": args.question = positional.join(" "); break;
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");

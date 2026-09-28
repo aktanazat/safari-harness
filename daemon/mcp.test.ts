@@ -68,7 +68,9 @@ import { expect, test } from "bun:test";
 // tab, with no model working out each step. Saying that real_input's single
 // click stays in the background (53) brought it to 22,730: an agent clicks
 // a site that ignores scripted clicks without taking the user's screen.
-const TOOL_LIST_MAX_BYTES = 22_730;
+// Alerts moving to Telegram, where the user cannot answer (-169), brought
+// it to 22,561: ask lost its choices and its wait for a reply.
+const TOOL_LIST_MAX_BYTES = 22_561;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

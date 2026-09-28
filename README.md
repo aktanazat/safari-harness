@@ -40,16 +40,16 @@ daemon/
   keeper.ts         runs groups.ts from the agent's terminal, which has the
                     Accessibility permission the daemon lacks; call.ts starts
                     it after an open
-  handoff.ts        handoff's caller half: texts the user's own phone, with a
+  handoff.ts        handoff's caller half: alerts the user's phone, with a
                     picture of the page, when a step needs him and he is away
-                    from the Mac, and acts on his reply (done, skip, stop); the
-                    daemon raises the tab and notifies
-  ask.ts            ask: an agent's question texted to the user's phone when
-                    he is away, and his answer
-  phone.ts          every text to the user's phone: at most 6 an hour, and his
-                    replies told apart from the harness's own lines
+                    from the Mac; the daemon raises the tab and notifies
+  ask.ts            ask: an agent's question put on the user's phone when he
+                    is away, for him to answer back at the Mac
+  phone.ts          every alert to the user's phone: at most 6 an hour
+  telegram.ts       sends an alert, and its picture, to his Telegram through
+                    ~/.local/bin/tell-aktan
   watch.ts          watch routines: one value read off a page on a schedule,
-                    texted when it changes, with no model
+                    alerted when it changes, with no model
   recordings.ts     teach mode's recordings, saved for the user alone (0600),
                     each typed secret kept only as its kind
   replay.ts         a recording done again in a background tab, each step's
@@ -282,7 +282,7 @@ A routine is a prompt file in `~/.local/share/safari-harness/routines/` plus a
 launchd agent `at.aktan.safari-harness.routine.<name>` that runs
 `omp -p --auto-approve` with it. A watch (`--watch <url>` with `--selector`,
 `--text`, `--eval`, or `--replay`) runs no model: each run reads one value off
-the page and texts the user's phone when it changes. Output goes to
+the page and alerts the user's phone when it changes. Output goes to
 `~/Library/Logs/safari-harness/routines/`.
 
 ### MCP

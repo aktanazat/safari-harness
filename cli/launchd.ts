@@ -1,7 +1,7 @@
 // launchd plumbing: keep the daemon always on, and run saved prompts
 // ("routines") on a schedule through headless omp, which reaches Safari
 // through the safari MCP tools. A watch is a routine with no model: each
-// run reads one value off a page and texts the user when it changes
+// run reads one value off a page and alerts the user when it changes
 // (daemon/watch.ts).
 
 import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
@@ -187,7 +187,7 @@ export async function routineAdd(name: string | undefined, prompt: string, sched
 }
 
 // A watch starts over when added again: its first run records the value
-// and texts nothing, so a changed selector never reads as news.
+// and sends nothing, so a changed selector never reads as news.
 export async function routineAddWatch(name: string | undefined, url: string, reads: Partial<Record<How, string>>, schedule: Schedule): Promise<string> {
   const n = checkName(name);
   if (existsSync(join(ROUTINES, `${n}.md`))) throw new Error(`routine ${n} runs a model; remove it first, or give the watch another name`);
