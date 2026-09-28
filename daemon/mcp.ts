@@ -7,8 +7,7 @@ import { CALLER_GROUPS } from "./caller.ts";
 import { invoke } from "./call.ts";
 import { rpc } from "./rpc.ts";
 import { connectHost } from "./host.ts";
-import { ReplSession } from "./repl.ts";
-import { REPL_DIR, runInSession } from "./repl-host.ts";
+import type { ReplSession } from "./repl.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
@@ -67,6 +66,9 @@ const REPL_TOOL: Tool = {
   params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
   required: ["code"],
   run: async (a) => {
+    // The repl's modules (node:vm, the site kits) load on its first call:
+    // most sessions never make one, and this server lives as long as its session.
+    const [{ ReplSession }, { REPL_DIR, runInSession }] = await Promise.all([import("./repl.ts"), import("./repl-host.ts")]);
     const code = String(a.code ?? "");
     const r = a.session === undefined
       ? await (repl ??= new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)

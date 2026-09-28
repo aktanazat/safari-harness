@@ -20,12 +20,12 @@ import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
-import { guide } from "../daemon/guides.ts";
-import { ReplSession } from "../daemon/repl.ts";
-import { closeSession, listSessions, runInSession } from "../daemon/repl-host.ts";
-import { deleteSession, isRunning, listSessionRecords, loadSession, newSession, runSession, sendControl, statusOf, transcript, type SessionRecord } from "../daemon/sessions.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
-import { daemonInstall, daemonUninstall, parseSchedule, routineAdd, routineList, routineRemove, routineRun } from "./launchd.ts";
+import type { SessionRecord } from "../daemon/sessions.ts";
+
+// Commands beyond the tools (guide, repl, session, do, daemon, routine)
+// import their own modules when they run: imported here, those modules
+// would add 5 ms to the start of every command.
 
 const USAGE = `safari — drive Safari from the terminal
 
@@ -211,12 +211,14 @@ function showEvent(ev: AgentEvent) {
 }
 
 async function runAndReport(rec: SessionRecord, argv: string[]) {
+  const { runSession } = await import("../daemon/sessions.ts");
   const done = await runSession(rec, { apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: Number(flag("steps", argv) ?? 30), onEvent: showEvent });
   if (done.status !== "done") console.error(`session ${done.id} ${done.status}; go on with: safari session resume ${done.id} "<prompt>"`);
   console.log(done.answer ?? "");
 }
 
 async function sessionCommand(argv: string[]) {
+  const { deleteSession, isRunning, listSessionRecords, loadSession, sendControl, statusOf, transcript } = await import("../daemon/sessions.ts");
   const [sub, id, ...words] = argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv));
   const text = words.join(" ");
   switch (sub) {
@@ -280,6 +282,8 @@ async function hostCommand(argv: string[]) {
 }
 
 async function replCommand(argv: string[]) {
+  const { closeSession, listSessions, runInSession } = await import("../daemon/repl-host.ts");
+  const { ReplSession } = await import("../daemon/repl.ts");
   const session = flag("session", argv);
   if (hasFlag("list", argv)) {
     const running = await listSessions();
@@ -351,6 +355,7 @@ async function main() {
 
   if (cmd === "guide") {
     const which = rest.find((a) => !a.startsWith("--"));
+    const { guide } = await import("../daemon/guides.ts");
     const text = await guide(which);
     if (text === null) fail(`no guide for ${which}; see: safari guide sites`);
     console.log(text);
@@ -359,6 +364,7 @@ async function main() {
 
   if (cmd === "daemon") {
     const sub = rest[0];
+    const { daemonInstall, daemonUninstall } = await import("./launchd.ts");
     if (sub === "install") console.log(await daemonInstall());
     else if (sub === "uninstall") console.log(await daemonUninstall());
     else { console.error("usage: safari daemon install|uninstall"); process.exit(2); }
@@ -367,6 +373,7 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
+    const { parseSchedule, routineAdd, routineList, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
       const schedule = parseSchedule(flag("at", r), flag("every", r));
@@ -416,6 +423,7 @@ async function main() {
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");
     if (!task) fail("usage: safari do \"<task>\" [--tab N] [--steps N] [--model m]", 2);
+    const { newSession } = await import("../daemon/sessions.ts");
     const tab = flag("tab", rest);
     const rec = await newSession(task, {
       tab: tab === undefined ? undefined : await resolveTab(tab, async () => (await invoke("tabs", {})) as TabInfo[]),
