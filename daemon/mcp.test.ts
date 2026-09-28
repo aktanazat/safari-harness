@@ -36,8 +36,11 @@ import { expect, test } from "bun:test";
 // after the user's Touch ID, and a session lets go of the pairing when done.
 // Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
-// one open for the user.
-const TOOL_LIST_MAX_BYTES = 18_030;
+// one open for the user. The learn tool (445) brought it to 18,475: an
+// agent keeps what it found out about a site (CVS's insurance-card flow, a
+// button that loads late) past compaction and for the next agent, instead
+// of spending the same turns finding it again.
+const TOOL_LIST_MAX_BYTES = 18_475;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

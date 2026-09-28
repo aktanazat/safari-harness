@@ -111,8 +111,11 @@ const USAGE = `safari — drive Safari from the terminal
                                              scheduled tasks run through omp
 
   safari guide sites                         sites with a usage guide
-  safari guide <site|host>                   one site's guide (e.g. slack, x.com)
+  safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
   safari guide repl                          the REPL's API and recipes
+  safari learn <site> "<fact>"               save a fact about a site for later agents
+                                             (at most 300 characters; never a secret)
+  safari learn <site> [--forget <n>]         list a site's notes; remove note n
 
   safari imessage chats [--limit N]          recent conversations
   safari imessage history <chat> [--limit N] [--since rowid]
@@ -552,6 +555,7 @@ async function main() {
     }
     case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
     case "history-search": args = { text: positional.join(" ") || undefined }; break;
+    case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");

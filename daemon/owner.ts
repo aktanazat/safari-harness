@@ -46,6 +46,14 @@ export async function ownerOf(pid: number): Promise<number | undefined> {
   return undefined;
 }
 
+// The name of pid's executable (its first 16 characters), while it runs:
+// omp, claude, codex, bun.
+export async function processName(pid: number): Promise<string | undefined> {
+  const read = await loadKernel();
+  const info = new Uint8Array(INFO_BYTES);
+  return read(pid, info) ? new TextDecoder().decode(info.subarray(16, 32)).split("\0", 1)[0] : undefined;
+}
+
 // ---------- daemon side ----------
 
 const scope = new AsyncLocalStorage<number | undefined>();
