@@ -499,3 +499,9 @@ its own `safari` command.
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.
 - A ref no longer works: the page changed. Take a new snapshot.
+- `safari status` shows the daemon's recent events, one a line: its starts
+  and stops and why, the extension connecting and disconnecting, requests
+  the extension never answered, and pages that got a fresh copy of the
+  harness's script. `--json` prints the whole health answer.
+- "the page at … did not answer within 5 s": a dialog open on the page, or
+  a page stuck loading, holds it. Reload it with `goto` and retry.

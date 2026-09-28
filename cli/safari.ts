@@ -14,7 +14,7 @@
 //   safari serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
@@ -22,6 +22,7 @@ import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
+import type { JournalEvent } from "../daemon/journal.ts";
 
 // Commands beyond the tools (guide, repl, session, do, daemon, routine)
 // import their own modules when they run: imported here, those modules
@@ -411,12 +412,16 @@ async function main() {
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
 
+  // status: the daemon, its extension, and what happened to them lately,
+  // one event a line (--json: the whole health answer).
   if (cmd === "status") {
-    try {
-      print(await (await fetch(`${daemonHttp()}/health`)).json());
-    } catch {
-      fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`);
-    }
+    type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connectedAt?: number } | null; journal?: JournalEvent[] };
+    const h = await fetch(`${daemonHttp()}/health`).then((r) => r.json() as Promise<Health>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    if (json) return print(h);
+    const at = (t: string | number) => new Date(t).toLocaleString("sv").slice(5);
+    console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
+    console.log(h.extension ? `extension connected${h.extension.connectedAt ? ` since ${at(h.extension.connectedAt)}` : ""}` : "extension not connected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions");
+    for (const { t, kind, ...rest } of h.journal ?? []) console.log(`${at(t)}  ${kind}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ""}`);
     return;
   }
 
@@ -569,33 +574,7 @@ async function main() {
     }
   }
 
-  // Tabs a command opens in the background close once the program that ran
-  // safari exits (the daemon watches it); --keep leaves them open. Another
-  // Mac's daemon cannot see this Mac's processes.
-  if (host === "local" && !hasFlag("keep", rest)) {
-    const opens = tool === "open" ? [args] : tool === "run" && Array.isArray(args.steps)
-      ? args.steps.flatMap((s: unknown) => s && typeof s === "object" && "tool" in s && s.tool === "open" && "args" in s && s.args && typeof s.args === "object" ? [s.args as Record<string, unknown>] : [])
-      : [];
-    const owner = opens.length ? ownerPid() : undefined;
-    if (owner !== undefined) for (const o of opens) o.owner = owner;
-  }
-
   print(await invoke(tool, args));
-}
-
-// The program that ran this command: the first ancestor that is not a
-// shell. A shell that ran one command ends with it; omp, claude, codex, a
-// script, or a terminal's login session lasts as long as the work does.
-const SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, fish: true, ksh: true, tcsh: true, csh: true };
-
-function ownerPid(): number | undefined {
-  for (let pid = process.ppid; pid > 1;) {
-    const row = /^\s*(\d+)\s+(.+?)\s*$/.exec(Bun.spawnSync(["ps", "-o", "ppid=,comm=", "-p", String(pid)]).stdout.toString());
-    if (!row) return undefined;
-    if (!SHELLS[basename(row[2]).replace(/^-/, "")]) return pid;
-    pid = Number(row[1]);
-  }
-  return undefined;
 }
 
 // Flags that take no value; the word after them is positional.

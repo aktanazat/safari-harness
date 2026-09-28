@@ -8,16 +8,42 @@
 //     /passwords     the hidden Helium's Apple Passwords bridge (passwords.ts)
 //     /devtools/…    CDP-compatible shim for Chrome-protocol clients
 //   http :SAFARI_HARNESS_HTTP_PORT (default 37334)
-//     /rpc           {tool,args} -> {ok,value|error}   (CLI + MCP client)
-//     /health        bridge status
+//     /rpc           {tool,args,caller} -> {ok,value|error}   (CLI + MCP client)
+//     /health        bridge status, calls in flight, the code and directory
+//                    it runs, recent events
+//     /shutdown      {reason} stop once the calls in flight finish
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
-import { TOOLS, callTool } from "./tools.ts";
+import { TOOLS, callTool, loadTabs } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
+import { note, openJournal, recent } from "./journal.ts";
+import { codeHash } from "./codehash.ts";
+import { ownerOf, runAs } from "./owner.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
+
+// Every line of the log (launchd's StandardOutPath) says when.
+for (const level of ["log", "warn", "error"] as const) {
+  const write = console[level].bind(console);
+  console[level] = (...a: unknown[]) => write(new Date().toISOString(), ...a);
+}
+
+// The release it runs (scripts/dev-install.sh keeps that one while it runs)
+const ROOT = join(import.meta.dir, "..");
+const CODE = codeHash(ROOT);
+const earlier = openJournal(join(homedir(), "Library", "Logs", "safari-harness", `journal-${httpPort}.jsonl`));
+const last = earlier.at(-1);
+note("start", {
+  pid: process.pid,
+  code: CODE,
+  reason: !last ? "first start" : last.kind === "stop" ? `after a stop: ${String(last.reason)}` : "the previous daemon ended without stopping (it crashed or was killed)",
+});
+// Background tabs agents opened, so a restart still closes them (tools.ts).
+loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
 
 type SocketScope =
   | { kind: "extension" }
@@ -101,12 +127,25 @@ const server = Bun.serve<SocketScope>({
       if (msg) handleCdp((obj) => ws.send(JSON.stringify(obj)), msg as CdpMsg, ws.data);
     },
     close(ws) {
-      if (ws.data.kind === "extension") bridge.detach();
+      if (ws.data.kind === "extension") bridge.detach(ws);
       else if (ws.data.kind === "passwords") passwords.detach(ws);
       else stopConnPumps(ws.data.connId);
     },
   },
 });
+
+// Calls in flight, and why the daemon is stopping once it is: it then
+// refuses new calls with 503 (rpc.ts waits for the next daemon and calls
+// again) and exits when the calls in flight have finished.
+let inFlight = 0;
+let stopping: string | null = null;
+const idle = new Set<() => void>();
+// How long a stop waits for the calls in flight. launchd kills the daemon
+// 20 s after its SIGTERM (its default ExitTimeOut); a deploy asks by
+// /shutdown and can wait longer, for a call that waits on the user's
+// Touch ID.
+const SIGNAL_DRAIN_MS = 15000;
+const SHUTDOWN_DRAIN_MS = 60000;
 
 const rpcServer = Bun.serve({
   hostname: "127.0.0.1",
@@ -115,23 +154,39 @@ const rpcServer = Bun.serve({
     const url = new URL(req.url);
     if (!allowed(req, "local")) return refuse(req, url);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, extension: bridge.connected ? (bridge.extensionInfo ?? { connected: true }) : null, tools: Object.keys(TOOLS) });
+      return Response.json({
+        ok: true,
+        pid: process.pid,
+        code: CODE,
+        root: ROOT,
+        inFlight,
+        ...(stopping ? { stopping } : {}),
+        extension: bridge.connected ? (bridge.extensionInfo ?? { connected: true }) : null,
+        tools: Object.keys(TOOLS),
+        journal: recent(),
+      });
     }
     if (url.pathname === "/rpc" && req.method === "POST") {
+      if (stopping) return Response.json({ ok: false, restarting: true, error: `the safari daemon is restarting (${stopping}); try again in a moment` }, { status: 503 });
       let body: unknown;
       try { body = await req.json(); } catch { return Response.json({ ok: false, error: "bad json" }, { status: 400 }); }
-      const { tool, args } = (body ?? {}) as { tool?: string; args?: Record<string, unknown> };
+      const { tool, args, caller } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown };
       if (!tool) return Response.json({ ok: false, error: "missing tool" }, { status: 400 });
+      inFlight++;
       try {
-        const value = await callTool(tool, args ?? {});
+        const owner = Number.isInteger(caller) && Number(caller) > 1 ? await ownerOf(Number(caller)) : undefined;
+        const value = await runAs(owner, () => callTool(tool, args ?? {}));
         return Response.json({ ok: true, value });
       } catch (e) {
         return Response.json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+      } finally {
+        if (--inFlight === 0) for (const wake of idle) wake();
       }
     }
     if (url.pathname === "/shutdown" && req.method === "POST") {
-      setTimeout(stop, 50);
-      return Response.json({ ok: true });
+      const reason = safeParse(await req.text())?.reason;
+      void stop(typeof reason === "string" && reason ? reason : "shutdown requested", SHUTDOWN_DRAIN_MS);
+      return Response.json({ ok: true, inFlight });
     }
     return new Response("not found", { status: 404 });
   },
@@ -139,14 +194,24 @@ const rpcServer = Bun.serve({
 
 console.log(`[safari-harness] extension+cdp ws :${wsPort}  rpc http :${httpPort}`);
 
-function stop() {
+async function stop(reason: string, drainMs: number) {
+  if (stopping) return;
+  stopping = reason;
+  const busy = inFlight;
+  if (busy > 0) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(resolve, drainMs);
+    idle.add(resolve);
+    await promise;
+    clearTimeout(timer);
+  }
+  note("stop", { reason, ...(busy ? { finished: busy - inFlight, cut: inFlight } : {}) });
   stopAllPumps();
-  bridge.detach();
   passwords.shutdown();
   server.stop();
   rpcServer.stop();
   process.exit(0);
 }
 
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+process.on("SIGINT", () => void stop("SIGINT", SIGNAL_DRAIN_MS));
+process.on("SIGTERM", () => void stop("SIGTERM", SIGNAL_DRAIN_MS));
