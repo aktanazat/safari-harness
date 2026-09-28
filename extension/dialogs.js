@@ -14,6 +14,10 @@
 
 (() => {
   const KEY = Symbol.for("safari-harness.page");
+  // A page keeps the first copy for its life, through extension reloads:
+  // the page holds on to the wrappers below (a saved fetch, timers set
+  // through them), so a newer copy could not take them back. A newer
+  // content.js therefore works with an older copy: its events only grow.
   if (window[KEY]) return;
   const state = (window[KEY] = { armed: false, accept: false, text: null, catching: false });
   const native = {
