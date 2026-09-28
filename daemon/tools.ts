@@ -3,7 +3,8 @@
 
 import { bridge } from "./bridge.ts";
 import { fill, fillCode, loginForm, loginsFor, passwords } from "./passwords.ts";
-import { inFront } from "./front.ts";
+import { challengeOf, type Challenge } from "./challenge.ts";
+import { inFront, input, SAFARI } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -53,12 +54,27 @@ export async function activateTab(tab: number): Promise<unknown> {
   return bridge.request("tabs.activate", [num(tab, "tab")]);
 }
 
+// The tab shows in its window, and the window and Safari come to the front:
+// the user sees the tab.
+async function showTab(tab: number): Promise<unknown> {
+  const res = await activateTab(tab);
+  await input(["activate", SAFARI]);
+  return res;
+}
+
+// open, goto, snapshot, and a missed wait say when the tab shows a bot check
+// (challenge.ts): the agent hands it to the user with handoff.
+async function withChallenge<T extends object>(result: T, tab: number): Promise<T> {
+  const challenge = await challengeOf(tab);
+  return challenge ? { ...result, challenge } : result;
+}
+
 // The latest whole-page snapshot of each tab, for diff.
 const lastSnapshot = new Map<number, string>();
 
 export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
-  const snap = (await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }])) as Snapshot;
+  const snap = await withChallenge((await relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }])) as Snapshot, tab);
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
@@ -186,9 +202,35 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     const waitedMs = Date.now() - start;
     if (found) return { ok: true, found, waitedMs };
     const now = (await listTabs()).find((t) => t.id === tab);
-    return { ok: true, found, waitedMs, url: now?.url, title: now?.title };
+    return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title }, tab);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// Hands the tab to the user for a step only they can take: a bot check, or a
+// passkey or Touch ID prompt. The tab comes to the front, a notification says
+// why, and the call returns once they are done: the check is gone, or, with
+// no check to watch, the page has moved on. At the limit it returns done:
+// false, and a new call keeps waiting.
+export async function handoff(tab: number, why: string, ms = 60000) {
+  const limit = Math.min(ms, 110000);
+  const start = Date.now();
+  const at = async () => {
+    const t = (await listTabs()).find((t) => t.id === tab);
+    if (!t) throw new Error("that tab is gone: it was closed; find it with tabs");
+    return t;
+  };
+  const [first, initial] = await Promise.all([at(), challengeOf(tab)]);
+  await showTab(tab);
+  // why goes in as an argument, so no text of the agent's is read as script
+  Bun.spawn(["osascript", "-e", "on run argv", "-e", 'display notification (item 1 of argv) with title "Safari Harness"', "-e", "end run", why], { stdout: "ignore", stderr: "ignore" });
+  for (;;) {
+    const [now, challenge] = await Promise.all([at(), challengeOf(tab)]);
+    const done = !challenge && (initial !== undefined || now.url !== first.url);
+    const waitedMs = Date.now() - start;
+    if (done || waitedMs >= limit) return { done, waitedMs, url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
+    await Bun.sleep(Math.min(1000, limit - waitedMs));
   }
 }
 
@@ -445,7 +487,7 @@ export const TOOLS: Record<string, Tool> = {
     required: ["url"],
     run: async (a) => {
       const t = await openTab(str(a.url, "url"), !!a.background);
-      return withPage(t, t.id, a.snapshot);
+      return withPage(await withChallenge(t, t.id), t.id, a.snapshot);
     },
   },
   close: { desc: "Close a tab you opened.", params: { tab: TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
@@ -453,9 +495,9 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["url"],
-    run: action((a) => navigate(a.tab, str(a.url, "url"))),
+    run: action(async (a) => withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab)),
   },
-  activate: { desc: "Bring a tab to the front.", params: { tab: TAB }, required: ["tab"], run: (a) => activateTab(num(a.tab, "tab")) },
+  activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
     desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs expire when the page changes: snapshot again after acting.",
     params: {
@@ -548,6 +590,12 @@ export const TOOLS: Record<string, Tool> = {
       const o = a as { tab?: number; ms?: number; selector?: string; text?: string; front?: boolean };
       return o.front ? inFront(num(o.tab, "tab"), { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
+  },
+  handoff: {
+    desc: "Give the user the tab for a step only they can do: a bot check (challenge in a result), a passkey, Touch ID. Shows the tab, notifies why, returns when done; done: false: call again.",
+    params: { tab: TAB, why: { type: "string", description: "what to do, for the notice" }, ms: { type: "number", description: "default 60000, max 110000" } },
+    required: ["tab", "why"],
+    run: (a) => handoff(num(a.tab, "tab"), str(a.why, "why"), a.ms === undefined ? undefined : num(a.ms, "ms")),
   },
   net: {
     desc: "Record the page's fetch/XHR requests: start, then read (url, method, status, time); stop ends it.",
@@ -648,7 +696,7 @@ export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string };
+type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge };
 type Extract = { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
@@ -659,7 +707,8 @@ export function formatResult(value: unknown): string {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${v.snapshot}`;
+      const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${v.snapshot}`;
     }
     if (typeof v.text === "string") {
       if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;

@@ -1058,8 +1058,29 @@
     return { origin: location.origin, found: codeFields().length > 0 };
   }
 
+  // What a bot check leaves in this frame (challenge.ts in the daemon names
+  // the check): the frame's address and title, which of the markers show (a
+  // script or an iframe counts by being there), which answer fields hold a
+  // token, and the addresses of the frames it shows on the page.
+  function challengeFacts({ markers, answers }) {
+    const roots = [document, ...shadowRoots()];
+    const all = (selector) => roots.flatMap((r) => [...r.querySelectorAll(selector)]);
+    const onPage = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width >= 30 && r.height >= 30 && r.bottom > 0 && r.right > 0 && shown(el);
+    };
+    return {
+      origin: location.origin,
+      url: location.href,
+      title: document.title,
+      markers: markers.filter((s) => all(s).some((el) => el.tagName === "SCRIPT" || el.tagName === "IFRAME" || onPage(el))),
+      answered: answers.filter((s) => all(s).some((el) => el.value)),
+      frames: all("iframe").filter(onPage).map((f) => f.src).filter(Boolean),
+    };
+  }
+
   // What the extension asks every frame at once, by name.
-  window.__safariHarnessProbe = { login: loginForm, code: codeField };
+  window.__safariHarnessProbe = { login: loginForm, code: codeField, challenge: challengeFacts };
 
   function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };

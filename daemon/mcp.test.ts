@@ -22,8 +22,10 @@ type Call = { tool: string; args: Record<string, unknown> };
 // page that stalls in a hidden tab without Accessibility permission.
 // Trading passwords lock for status (14) brought it to 16,993: one agent's
 // lock had locked the shared pairing for every other agent, and status says
-// why it is locked.
-const TOOL_LIST_MAX_BYTES = 16_993;
+// why it is locked. The handoff tool (496, with activate saying it raises
+// Safari) brought it to 17,489: a bot check or a passkey prompt now goes to
+// the user in one call instead of a stalled wait and a chat round trip.
+const TOOL_LIST_MAX_BYTES = 17_489;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

@@ -129,7 +129,7 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
 
 export const INPUT_TOOLS: Record<string, Tool> = {
   real_input: {
-    desc: "The real mouse and keyboard, for controls that ignore scripted input, like captchas: click a ref, type text (at ref, or where the caret is), or press a key (Enter, Cmd+A). Brings the tab to the front for a moment.",
+    desc: "The real mouse and keyboard, for controls that ignore scripted input: click a ref, type text (at ref, or where the caret is), or press a key (Enter, Cmd+A). Brings the tab to the front for a moment.",
     params: {
       tab: TAB,
       do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },

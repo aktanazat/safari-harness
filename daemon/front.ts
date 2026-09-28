@@ -13,7 +13,7 @@ import type { TabInfo } from "./tools.ts";
 
 const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
-const SAFARI = "com.apple.Safari";
+export const SAFARI = "com.apple.Safari";
 
 // Runs the helper and parses its one JSON line; failures carry its stderr.
 export async function input(args: string[], timeout = 10000): Promise<unknown> {

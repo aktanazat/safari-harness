@@ -432,6 +432,21 @@ await withPage(FADE, "", async (tab) => {
   check("a snapshot shows a form still fading in, but not a transparent field", /textbox "Fading field"/.test(s) && !/Clear field/.test(s), s);
 });
 
+// ---------- bot checks ----------
+
+// A Turnstile-style box that the page removes 2.5 s later, the way a passed
+// check goes away. handoff brings the tab to the front, so the user's front
+// tab is put back after.
+const BOT_CHECK = '<form><div class="cf-turnstile" style="width:300px;height:65px"></div><button>Sign in</button></form>';
+const BOT_CHECK_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: "setTimeout(() => document.querySelector('.cf-turnstile').remove(), 2500)" }))`;
+await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
+  const snap = await call("snapshot", { tab });
+  check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
+  const handed = await call("handoff", { tab, why: "Safari Harness self-test: nothing to do", ms: 8000 });
+  check("handoff returns once the check is gone", handed.done === true && handed.challenge === undefined && handed.waitedMs < 8000, handed);
+  if (front !== undefined) await call("activate", { tab: front });
+});
+
 // ---------- dialogs ----------
 
 const DIALOG = `<button id=ask onclick="document.getElementById('o').textContent = String(confirm('Sure?')) + ' ' + prompt('Name?')">Ask</button><p id=o></p>`;

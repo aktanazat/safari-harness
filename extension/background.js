@@ -339,15 +339,15 @@ function waitInFrames(tabId, args, timeoutMs) {
 }
 
 // Asks every frame of the tab at once what it holds (__safariHarnessProbe
-// in content.js), top page first: a sign-in form may sit in an embedded
-// frame of another site.
-async function probeFrames(tabId, what) {
+// in content.js), top page first: a sign-in form or a bot check may sit in
+// an embedded frame of another site.
+async function probeFrames(tabId, what, arg) {
   keepAwake(tabId);
   await waitReady(tabId, 15000);
   const ask = () => api.scripting.executeScript({
     target: { tabId, allFrames: true },
-    func: (w) => (window.__safariHarnessProbe ? window.__safariHarnessProbe[w]() : null),
-    args: [what],
+    func: (w, a) => (window.__safariHarnessProbe ? window.__safariHarnessProbe[w](a) : null),
+    args: [what, arg ?? null],
   });
   let results = await ask();
   // Safari skipped injecting the top page's script (after a redirect): add it.
@@ -585,7 +585,7 @@ async function handle(msg) {
       return res && res.value;
     }
     case "probe":
-      return probeFrames(args[0], args[1]);
+      return probeFrames(args[0], args[1], args[2]);
     case "daemonPort": {
       port = args[0];
       await api.storage.local.set({ daemonPort: port });
