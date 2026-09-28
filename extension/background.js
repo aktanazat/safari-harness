@@ -101,6 +101,11 @@ const START_MS = { load: 3000, tab: 3000, script: 400 };
 // then, not at the request's own limit; a heavy page starting up answers
 // well within it.
 const PING_MS = 5000;
+// This load of the extension. A reload leaves each open page's script world
+// in place, bound to the old load's messaging, which reaches no one: a copy
+// of the script this load puts in such a world is asked through
+// executeScript instead (window.__safariHarnessRun in content.js).
+const LOAD = crypto.randomUUID();
 
 // Asks the content script in the tab's frame to run op, and settles within
 // timeoutMs, whatever the page does: the daemon gives up 2 s later.
@@ -116,15 +121,15 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       // A page may hold no copy of the script that answers: one left behind
       // when the extension reloaded answers nothing, and Safari skips
       // injecting some pages (after a redirect). Put a fresh copy in.
-      let here = await ping(tabId, frameId, Math.min(PING_MS, left()));
-      if (!here) {
+      let how = await reach(tabId, frameId, Math.min(PING_MS, left()));
+      if (!how) {
         await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
-        here = await ping(tabId, frameId, Math.min(PING_MS, left()));
-        send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: here });
-        if (!here) break;
+        how = await reach(tabId, frameId, Math.min(PING_MS, left()));
+        send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
+        if (!how) break;
       }
       sent = true;
-      const res = await sendUntilNavigation(tabId, msg, left(), frameId);
+      const res = await sendUntilNavigation(tabId, msg, left(), frameId, how === "script");
       if (res !== undefined) return res;
       break;
     } catch (e) {
@@ -137,12 +142,20 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
 }
 
-// Whether a copy of the script that answers is in the frame: false at once
-// when none took the message. A page that says nothing in ms is held (see
-// PING_MS), and the request fails.
-async function ping(tabId, frameId, ms) {
+// How a copy of the script that answers is reached in the frame: by
+// message, through executeScript (a page open since before a reload), or
+// not at all (null).
+async function reach(tabId, frameId, ms) {
+  if (await ping(tabId, frameId, ms, false)) return "message";
+  return (await ping(tabId, frameId, ms, true)) ? "script" : null;
+}
+
+// Whether that copy answers, asked the one way: false at once when none
+// took the message. A page that says nothing in ms is held (see PING_MS),
+// and the request fails.
+async function ping(tabId, frameId, ms, script) {
   try {
-    const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "ping" }, ms, frameId);
+    const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "ping" }, ms, frameId, script);
     return !!res && res.value === true;
   } catch (e) {
     if (!e.timedOut) throw e;
@@ -213,8 +226,9 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
 
 // Safari never settles a message whose page unloads mid-request, so race it
 // against the tab starting a new load. A message no copy of the script took
-// settles undefined, whether Safari says so or finds no listener.
-function sendUntilNavigation(tabId, msg, ms, frameId = 0) {
+// settles undefined, whether Safari says so or finds no listener; through
+// executeScript, only a copy this load put in takes it.
+function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
   return new Promise((resolve, reject) => {
     const stop = () => { clearTimeout(t); api.tabs.onUpdated.removeListener(onNav); };
     const onNav = (id, info) => {
@@ -227,20 +241,34 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0) {
       reject(Object.assign(new Error(`the page did not answer ${msg.op} within ${Math.round(ms / 1000)} s`), { timedOut: true }));
     }, ms);
     api.tabs.onUpdated.addListener(onNav);
-    api.tabs.sendMessage(tabId, msg, { frameId }).then((v) => { stop(); resolve(v); }, () => { stop(); resolve(undefined); });
+    const reply = script
+      ? api.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        func: (load, m) => (window.__safariHarnessLoad === load && window.__safariHarnessRun ? window.__safariHarnessRun(m) : null),
+        args: [LOAD, msg],
+      }).then(([r]) => r?.result ?? undefined)
+      : api.tabs.sendMessage(tabId, msg, { frameId });
+    reply.then((v) => { stop(); resolve(v); }, () => { stop(); resolve(undefined); });
   });
 }
 
 // Puts a copy of content.js in the frame, where Safari left none; with
 // takeOver, a fresh one that takes over from any copy already there (see
-// the claim at the top of content.js). A page stuck loading may never run
-// it, so this gives up after ms.
+// the claim at the top of content.js). The copy is marked this load's. A
+// page stuck loading may never run it, so this gives up after ms.
 async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false) {
   const target = { tabId, frameIds: [frameId] };
-  const release = takeOver ? api.scripting.executeScript({ target, func: () => { window.__safariHarnessInjected = null; } }) : Promise.resolve();
+  const release = api.scripting.executeScript({
+    target,
+    func: (load, take) => {
+      if (take) window.__safariHarnessInjected = null;
+      if (!window.__safariHarnessInjected) window.__safariHarnessLoad = load;
+    },
+    args: [LOAD, takeOver],
+  });
   const inject = release
     .then(() => api.scripting.executeScript({ target, files: ["content.js"] }))
-    .catch((e) => log("inject failed", String(e)));
+    .catch((e) => send({ op: "note", kind: "inject failed", tab: tabId, frame: frameId, error: String(e) }));
   await Promise.race([inject, new Promise((resolve) => setTimeout(resolve, ms))]);
 }
 

@@ -1498,8 +1498,8 @@
   }
 
   const api = (typeof browser !== "undefined" && browser.runtime) ? browser : chrome;
-  api.runtime.onMessage.addListener((msg) => {
-    if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
+  // Answers one request from the extension.
+  function answer(msg) {
     // the extension asks this first, to know a copy that answers is here
     if (msg.op === "ping") return Promise.resolve({ id: msg.id, value: true });
     const fn = handlers[msg.op];
@@ -1519,6 +1519,14 @@
       return out.then(settle, (err) => ({ id: msg.id, error: String(err && err.message || err) }));
     }
     return Promise.resolve(settle(out));
+  }
+  // A page open since before the extension reloaded keeps this world bound
+  // to the old load's messaging, which reaches no one: the extension asks
+  // through executeScript then (sendUntilNavigation in background.js).
+  window.__safariHarnessRun = (msg) => (window.__safariHarnessInjected === claim ? answer(msg) : null);
+  api.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
+    return answer(msg);
   });
 
   // Tell the extension this document can take requests; this lands well
