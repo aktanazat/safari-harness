@@ -13,7 +13,7 @@ Public dealer listings and dealer reviews. No sign-in needed.
 
 ## A listing
 - `https://www.cars.com/vehicledetail/<id>/`, titled "Used <year> <make> <model> For Sale $<price> | Cars.com".
-- One listing once read "Just a moment..." (a Cloudflare check) while others loaded. That is a bot check: `handoff` in a session with the user, report it in a routine.
+- One listing once read "Just a moment..." (a Cloudflare check) while others loaded. That is a bot check: call `handoff`, in a routine too, and report it if it stays.
 
 ## Dealer reviews
 - `https://www.cars.com/dealers/<id>/<slug>/reviews/?page=N&page_size=50&sort_by=LowestRated`. `wait` for "Show full review".

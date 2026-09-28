@@ -3,7 +3,8 @@
 // Messages app. Reading needs Full Disk Access for the process that runs this,
 // so these tools run in the caller (terminal, MCP server) rather than in the
 // launchd daemon, which macOS denies. Sending needs the caller to be allowed to
-// control Messages, and always returns a draft first.
+// control Messages, and returns a draft first unless it goes to the user's
+// own phone.
 
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
@@ -311,6 +312,34 @@ const SEND_TO_HANDLE = `on run argv
     send (item 1 of argv) to participant (item 2 of argv) of svc
   end tell
 end run`;
+// To the user's own number, as SMS through his iPhone: the carrier brings it
+// back to the phone as a text received, which alerts him, where an iMessage
+// to himself arrives quietly as one he sent. With a third argument, the
+// first is a picture's path.
+const SEND_SMS = `on run argv
+  tell application "Messages"
+    set who to participant (item 2 of argv) of (1st account whose service type = SMS)
+    if (count of argv) > 2 then
+      send (POSIX file (item 1 of argv)) to who
+    else
+      send (item 1 of argv) to who
+    end if
+  end tell
+end run`;
+
+// Our own newest message after a rowid, by its text.
+const OUR_ROW = "SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1";
+type OurRow = { is_sent: number; is_delivered: number; error: number };
+
+async function runSend(script: string, argv: string[]): Promise<void> {
+  try {
+    await execFileAsync("osascript", ["-e", script, ...argv], { timeout: 20000 });
+  } catch (e) {
+    const msg = typeof e === "object" && e !== null && "stderr" in e && e.stderr ? String(e.stderr) : e instanceof Error ? e.message : String(e);
+    if (/-1743|not allowed|Not authorized/i.test(msg)) throw new Error("macOS has not allowed this app to control Messages: System Settings > Privacy & Security > Automation");
+    throw new Error(`Messages did not send: ${msg.trim()}`);
+  }
+}
 
 export async function send(opts: { to: string; text: string; approved?: boolean }) {
   const text = String(opts.text ?? "");
@@ -345,20 +374,14 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
     return { status: "draft", ...draft, next: "show the user this recipient, text, and recent lines; call again with approved: true only after they say yes" };
   }
   const [script, target] = draft.chat ? [SEND_TO_CHAT, draft.chat] : [SEND_TO_HANDLE, to];
-  try {
-    await execFileAsync("osascript", ["-e", script, text, target], { timeout: 20000 });
-  } catch (e) {
-    const msg = String((e as { stderr?: string }).stderr || (e as Error).message);
-    if (/-1743|not allowed|Not authorized/i.test(msg)) throw new Error("macOS has not allowed this app to control Messages: System Settings > Privacy & Security > Automation");
-    throw new Error(`Messages did not send: ${msg.trim()}`);
-  }
+  await runSend(script, [text, target]);
   // Confirm from the database: the sent row appears within a few seconds.
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
     await Bun.sleep(700);
     const check = openChatDb();
     try {
-      const row = check.query("SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1").get(startRowid, text) as { is_sent: number; is_delivered: number; error: number } | null;
+      const row = check.query<OurRow, [number, string]>(OUR_ROW).get(startRowid, text);
       if (row?.error) throw new Error(`Messages reported error ${row.error} sending to ${draft.to}`);
       if (row?.is_delivered) return { status: "delivered", to: draft.to };
       if (row?.is_sent) return { status: "sent", to: draft.to };
@@ -367,6 +390,49 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
     }
   }
   return { status: "unconfirmed", to: draft.to, note: "handed to Messages; no sent receipt yet. Check imessage_history before retrying so it is not sent twice." };
+}
+
+// Texts the user's own phone, for a step waiting on him while he is away
+// from the Mac (handoff.ts). His number is the one his newest message went
+// out from, so the text reaches no one else and needs no draft. A picture
+// goes first, so the line is what his lock screen shows. status is
+// "received" once the line has come back to his phone as a text received
+// (the Mac records that copy too), else how far it got in 30 s; picture
+// says why the picture did not go.
+export async function textOwner(line: string, picture?: string): Promise<{ status: "received" | "sent" | "unconfirmed"; picture?: string }> {
+  const db = openChatDb();
+  let own: { n: string } | null;
+  let after: number;
+  try {
+    own = db.query<{ n: string }, []>("SELECT destination_caller_id n FROM message WHERE is_from_me = 1 AND destination_caller_id LIKE '+%' ORDER BY ROWID DESC LIMIT 1").get();
+    after = db.query<{ n: number }, []>("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get()?.n ?? 0;
+  } finally {
+    db.close();
+  }
+  if (!own) throw new Error("Messages shows no phone number of the user's own to text");
+  const to = own.n;
+  const sms = (argv: string[]) => runSend(SEND_SMS, argv).catch((e: Error) => {
+    throw /Can.t get account|-1728/.test(e.message) ? new Error("Messages on this Mac cannot send texts: on the iPhone, turn on Settings > Messages > Text Message Forwarding for it") : e;
+  });
+  const missing = picture ? await sms([picture, to, "picture"]).then(() => undefined, (e: Error) => e.message) : undefined;
+  await sms([line, to]);
+  const deadline = Date.now() + 30000;
+  let row: OurRow | null = null;
+  while (Date.now() < deadline) {
+    await Bun.sleep(1000);
+    const check = openChatDb();
+    try {
+      row = check.query<OurRow, [number, string]>(OUR_ROW).get(after, line);
+      if (row?.error) throw new Error(`Messages reported error ${row.error} texting the user's phone`);
+      const back = check.query<{ text: string | null; body: Uint8Array | null }, [number, string]>(
+        "SELECT m.text, m.attributedBody body FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 0 AND h.id = ?",
+      ).all(after, to);
+      if (back.some((r) => messageText(r.text, r.body) === line)) return { status: "received", ...(missing ? { picture: missing } : {}) };
+    } finally {
+      check.close();
+    }
+  }
+  return { status: row?.is_sent ? "sent" : "unconfirmed", ...(missing ? { picture: missing } : {}) };
 }
 
 // ---------- tool table ----------

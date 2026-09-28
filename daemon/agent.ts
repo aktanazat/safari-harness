@@ -12,6 +12,7 @@ import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { IMESSAGE_READ_TOOLS } from "./imessage.ts";
 import { HISTORY_TOOLS } from "./safari-history.ts";
 import { FILL_TOOLS } from "./fill.ts";
+import { HANDOFF_TOOLS } from "./handoff.ts";
 import { siteGuide } from "./guides.ts";
 import { invoke } from "./call.ts";
 
@@ -116,13 +117,15 @@ const CONTEXT_TOOLS: Record<string, Tool> = {
   },
 };
 
-// The loop runs unattended, so it gets the Messages read tools but not send.
-// Its small local model takes one step per turn (see the rules), so no run.
+// The loop runs unattended, so it gets the Messages read tools but not send;
+// handoff texts only the user's own phone, when they are away. Its small
+// local model takes one step per turn (see the rules), so no run.
 const ALL_TOOLS: Record<string, Tool> = {
   ...Object.fromEntries(Object.entries(TOOLS).filter(([name, t]) => name !== "run" && !t.hidden)),
   ...IMESSAGE_READ_TOOLS,
   ...HISTORY_TOOLS,
   ...FILL_TOOLS,
+  ...HANDOFF_TOOLS,
   ...CONTEXT_TOOLS,
 };
 

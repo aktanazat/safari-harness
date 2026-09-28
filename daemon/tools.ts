@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { fill, fillCode, loginForm, loginsFor, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
-import { inFront, input, SAFARI } from "./front.ts";
+import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
@@ -267,28 +267,105 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 }
 
 // Hands the tab to the user for a step only they can take: a bot check, or a
-// passkey or Touch ID prompt. The tab comes to the front, a notification says
-// why, and the call returns once they are done: the check is gone, or, with
-// no check to watch, the page has moved on. At the limit it returns done:
-// false, and a new call keeps waiting.
-export async function handoff(tab: number, why: string, ms = 60000) {
-  const limit = Math.min(ms, 110000);
-  const start = Date.now();
-  const at = async () => {
-    const t = (await listTabs()).find((t) => t.id === tab);
-    if (!t) throw new Error("that tab is gone: it was closed; find it with tabs");
-    return t;
-  };
-  const [first, initial] = await Promise.all([at(), challengeOf(tab)]);
-  await showTab(tab);
-  // why goes in as an argument, so no text of the agent's is read as script
-  Bun.spawn(["osascript", "-e", "on run argv", "-e", 'display notification (item 1 of argv) with title "Safari Harness"', "-e", "end run", why], { stdout: "ignore", stderr: "ignore" });
-  for (;;) {
-    const [now, challenge] = await Promise.all([at(), challengeOf(tab)]);
-    const done = !challenge && (initial !== undefined || now.url !== first.url);
-    const waitedMs = Date.now() - start;
-    if (done || waitedMs >= limit) return { done, waitedMs, url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
-    await Bun.sleep(Math.min(1000, limit - waitedMs));
+// passkey or Touch ID prompt. This is the daemon's half of handoff; the
+// caller's (handoff.ts) texts the user's phone when they are away. A tab has
+// one handoff at a time, watched here once a second: the first call brings
+// the tab to the front and posts a notification that says why, and a later
+// call joins it with no second notice, so the wait can outlast one tool call
+// (about 2 minutes). The user is done when the check is gone or, with no
+// check seen, the page has moved on: if they are still on the tab, they get
+// back the tab and app they had in front. A block ends a handoff (no one can
+// clear it), and so do 5 minutes with no call waiting. Once over, it answers
+// only the calls that carry its id (the caller's own later slices, which may
+// come after it ends), so they do not start another.
+type Handoff = {
+  id: number;
+  start: number;
+  // settled once the tab is in front with the notice up, or the handoff failed
+  begun: PromiseWithResolvers<void>;
+  over: PromiseWithResolvers<void>;
+  // the tab as last seen
+  now: { url?: string; title?: string; challenge?: Challenge };
+  done: boolean;
+  error?: string;
+  // how the text to the user's phone went: one per handoff
+  texted?: string;
+  waiting: number;
+  calledAt: number;
+};
+const handoffs = new Map<number, Handoff>();
+const HANDOFF_IDLE_MS = 5 * 60_000;
+let handoffCount = 0;
+
+const blocked = (c: Challenge) => `${c.kind} turned this browser away: the page is a block, not a check, so no one can clear it. Try later or another way in.`;
+
+async function watchHandoff(tab: number, why: string, h: Handoff) {
+  const gone = new Error("that tab is gone: it was closed; find it with tabs");
+  try {
+    const [tabs, initial] = await Promise.all([listTabs(), challengeOf(tab)]);
+    const first = tabs.find((t) => t.id === tab);
+    if (!first) throw gone;
+    if (initial?.where === "block") throw new Error(blocked(initial));
+    h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
+    const giveBack = await show(tab, { tabs: listTabs, activate: activateTab });
+    notify(why);
+    h.begun.resolve();
+    // the first check the page answered with; null until it answers
+    let seen = initial;
+    while (h.waiting > 0 || Date.now() - h.calledAt < HANDOFF_IDLE_MS) {
+      await Bun.sleep(1000);
+      const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
+      const now = tabs.find((t) => t.id === tab);
+      if (!now) throw gone;
+      if (challenge?.where === "block") throw new Error(blocked(challenge));
+      if (seen === null) seen = challenge;
+      h.now = { url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
+      if (challenge === undefined && (seen !== undefined || now.url !== first.url)) {
+        h.done = true;
+        // gone elsewhere, they have taken back what they wanted themselves
+        if (now.front && (await frontApp().catch(() => undefined)) === SAFARI) await giveBack();
+        return;
+      }
+    }
+  } catch (e) {
+    h.error = e instanceof Error ? e.message : String(e);
+  } finally {
+    // one that ran out of callers leaves nothing to answer
+    if (handoffs.get(tab) === h && !h.done && h.error === undefined) handoffs.delete(tab);
+    h.begun.resolve();
+    h.over.resolve();
+  }
+}
+
+// Starts or joins the tab's handoff and waits up to ms for it to end. The
+// first call that finds the user away (as the caller measured) is told to
+// text them (text: true) and returns at once; it reports how that went as
+// texted, so no other call sends one.
+async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; texted?: string; id?: number }) {
+  let h = handoffs.get(tab);
+  if (h && (h.done || h.error !== undefined) && h.id !== o.id) h = undefined;
+  const joined = h !== undefined;
+  if (!h) {
+    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
+    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now() };
+    handoffs.set(tab, h);
+    void watchHandoff(tab, why, h);
+  }
+  const session = h;
+  session.waiting++;
+  if (o.texted !== undefined) session.texted = o.texted;
+  let timer: Timer | undefined;
+  try {
+    await session.begun.promise;
+    const text = o.away && session.texted === undefined && !session.done && session.error === undefined;
+    if (text) session.texted = "sending";
+    else if (o.ms > 0) await Promise.race([session.over.promise, new Promise<void>((r) => { timer = setTimeout(r, Math.min(o.ms, 110000)); })]);
+    if (session.error !== undefined) throw new Error(session.error);
+    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.texted ? { texted: session.texted } : {}), ...(text ? { text } : {}) };
+  } finally {
+    clearTimeout(timer);
+    session.waiting--;
+    session.calledAt = Date.now();
   }
 }
 
@@ -668,11 +745,22 @@ export const TOOLS: Record<string, Tool> = {
       return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
   },
-  handoff: {
-    desc: "Give the user the tab for a step only they can do: a bot check (challenge in a result), a passkey, Touch ID. Shows the tab, notifies why, returns when done; done: false: call again.",
-    params: { tab: TAB, why: { type: "string", description: "what to do, for the notice" }, ms: { type: "number", description: "default 60000, max 110000" } },
-    required: ["tab", "why"],
-    run: async (a) => handoff(await resolveTab(a.tab), str(a.why, "why"), a.ms === undefined ? undefined : num(a.ms, "ms")),
+  // The daemon's half of handoff (handoff.ts runs in the caller). away says
+  // the caller found the user away; texted reports how its text went; id
+  // names the handoff the caller's earlier call started or joined.
+  handoff_wait: {
+    desc: "Start or join the tab's handoff and wait up to ms for the user.",
+    params: {
+      tab: TAB,
+      why: { type: "string", description: "for the notice" },
+      ms: { type: "number", description: "max 110000" },
+      away: { type: "boolean", description: "the user is away from the Mac" },
+      texted: { type: "string", description: "how the text to the user's phone went" },
+      id: { type: "number", description: "the handoff an earlier call returned" },
+    },
+    required: ["tab", "why", "ms"],
+    hidden: true,
+    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.texted === undefined ? {} : { texted: str(a.texted, "texted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }) }),
   },
   net: {
     desc: "The page's fetch/XHR requests since it began loading, in every frame: url, method, status, time, and the start of a text or JSON body. start clears the list; stop ends it.",

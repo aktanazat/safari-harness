@@ -9,7 +9,8 @@
 
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { inFront } from "../daemon/front.ts";
+import { frontApp, inFront } from "../daemon/front.ts";
+import { search } from "../daemon/imessage.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
 
@@ -499,17 +500,49 @@ await withPage(FADE, "", async (tab) => {
 // ---------- bot checks ----------
 
 // A Turnstile-style box that the page removes 2.5 s later, the way a passed
-// check goes away. handoff brings the tab to the front, so the tab the user
-// had in front is put back after, unless he closed it meanwhile.
+// check goes away. handoff runs here, as it does in any caller. Two at once
+// share one handoff (the second joins it), and once the check is gone the
+// user gets back the tab and app he had in front. At the Mac (forced here),
+// nothing is texted: Messages gains no alert line.
 const BOT_CHECK = '<form><div class="cf-turnstile" style="width:300px;height:65px"></div><button>Sign in</button></form>';
 const BOT_CHECK_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: "setTimeout(() => document.querySelector('.cf-turnstile').remove(), 2500)" }))`;
+const SELF_TEST = "Safari Harness self-test: nothing to do";
+const alertTexts = () => search({ text: "the agent carries on by itself", days: 1, limit: 100 }).length;
 await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
   const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
-  const handed = await call("handoff", { tab, why: "Safari Harness self-test: nothing to do", ms: 8000 });
-  check("handoff returns once the check is gone", handed.done === true && handed.challenge === undefined && handed.waitedMs < 8000, handed);
-  if (userFront !== undefined) await call("activate", { tab: userFront }).catch((e: Error) => { if (!e.message.includes("that tab is gone")) throw e; });
+  const [userApp, textsBefore] = [await frontApp(), alertTexts()];
+  process.env.SAFARI_HARNESS_AWAY = "0";
+  try {
+    const both = await Promise.all([0, 1].map(() => CALLER_TOOLS.handoff.run({ tab, why: SELF_TEST, ms: 8000 }))) as { done: boolean; joined?: true; challenge?: unknown; waitedMs: number }[];
+    check("two handoffs of a tab share one, and both return once the check is gone",
+      both.every((h) => h.done && h.challenge === undefined && h.waitedMs < 8000) && both.filter((h) => h.joined).length === 1, both);
+  } finally {
+    delete process.env.SAFARI_HARNESS_AWAY;
+  }
+  const [nowFront, nowApp] = [((await call("tabs")) as Tab[]).find((t) => t.front)?.id, await frontApp()];
+  check("handoff gives back the tab and app the user had in front", nowFront === userFront && nowApp === userApp, { nowFront, userFront, nowApp, userApp });
+  const textsAfter = alertTexts();
+  check("handoff with the user at the Mac texts nothing", textsAfter === textsBefore, { textsBefore, textsAfter });
+});
+
+// A page that turns the browser away is a block: no one can clear it, so
+// handoff refuses it without raising the tab.
+await withPage("<h1>Sorry, you have been blocked</h1><p>You are unable to access example.com</p>", 'document.title = "Attention Required! | Cloudflare"', async (tab) => {
+  const snap = await call("snapshot", { tab });
+  check("snapshot says the site blocked the browser", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "block", snap.challenge);
+  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const refused = await CALLER_TOOLS.handoff.run({ tab, why: SELF_TEST, ms: 3000 }).then(() => "handed off", (e: Error) => e.message);
+  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  check("handoff refuses a block without raising the tab", refused.includes("no one can clear it") && nowFront === userFront, { refused, nowFront, userFront });
+});
+
+// A short page asking the reader to prove they are human, from no vendor a
+// rule knows.
+await withPage("<h1>Please verify you are a human</h1><button>Continue</button>", "", async (tab) => {
+  const snap = await call("snapshot", { tab });
+  check("snapshot names a check from an unknown vendor as other", snap.challenge?.kind === "other" && snap.challenge?.where === "page", snap.challenge);
 });
 
 // ---------- dialogs ----------

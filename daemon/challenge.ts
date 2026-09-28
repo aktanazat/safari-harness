@@ -107,10 +107,12 @@ function isFacts(f: unknown): f is Facts {
     && "frames" in f && Array.isArray(f.frames);
 }
 
-// The check the tab shows, if any. It adds a note to another tool's result,
-// so a tab that cannot answer within 2 s (busy, or gone) reads as showing none
-// rather than failing that tool.
-export async function challengeOf(tab: number): Promise<Challenge | undefined> {
+// The check the tab shows, if any, or null when the top page did not answer
+// within 2 s (the tab is busy, loading, or gone). A note on another tool's
+// result reads null as none rather than failing that tool; handoff waits on.
+export async function challengeOf(tab: number): Promise<Challenge | null | undefined> {
   const frames = await bridge.request("probe", [tab, "challenge", PROBE], 2000).catch(() => []);
-  return classify(Array.isArray(frames) ? frames.filter(isFacts) : []);
+  const facts = Array.isArray(frames) ? frames.filter(isFacts) : [];
+  // the extension lists the top page, frame 0, first
+  return facts[0] && "frame" in facts[0] && facts[0].frame === 0 ? classify(facts) : null;
 }

@@ -339,24 +339,32 @@ check, no solving services.
   `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
   a `challenge:` line under its header. `kind` names the service
   (cloudflare, akamai, datadome, perimeterx, aws-waf, apple, recaptcha,
-  hcaptcha, arkose, geetest). `where` is `"page"` when the check stands in
-  for the whole page, `"box"` when it is a box inside a page that otherwise
-  reads (often on a form).
+  hcaptcha, arkose, geetest, or other for a short page that asks the reader
+  to prove they are human). `where` is `"page"` when the check stands in for
+  the whole page, `"box"` when it is a box inside a page that otherwise
+  reads (often on a form), and `"block"` when the site has turned the
+  browser away: no one can clear that, so report it.
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
 - `handoff {tab, why}` hands the tab to the user: it brings Safari and the
   tab to the front, posts a macOS notification that says `why`, and waits
-  until he is done. `ms` is how long to wait (default 60000, max 110000).
-  It returns `{done, waitedMs, url, title, challenge}`. `done` is true when
-  the check is gone, or, when the tab showed no check at the start (a
-  passkey sign-in), when the page's address changes. When `done` is false,
-  call it again to keep waiting. Then carry on in the same tab.
+  until he is done. When he is away from the Mac (screen locked or asleep,
+  or no input for 3 minutes) it also texts his own phone, once per handoff:
+  a picture of the page and one line naming the site. `ms` is how long to
+  wait (default 60000, max 110000). It returns `{done, waitedMs, url,
+  title, challenge}`, plus `texted` (how the text went: `received` once his
+  phone got it) and `joined` when the tab's handoff was already running.
+  `done` is true when the check is gone, or, when the tab showed no check at
+  the start (a passkey sign-in), when the page's address changes; then the
+  tab and app he had in front come back, if he is still on the tab. When
+  `done` is false, call it again: it joins the same wait, with no second
+  notice or text. A block fails at once. Then carry on in the same tab.
 - Write `why` for the user: what to do and on which site ("Cars.com wants a
   human check before it shows the listing").
 - Use `handoff` for any step only the user can take in the tab: a passkey or
   Touch ID prompt, a code read off his card, a consent screen.
-- A routine runs with nobody watching: it never calls `handoff`. It reports
-  the check and moves on.
+- A routine runs with nobody watching: it calls `handoff` once, so he is
+  texted if he is away, and reports the check if it is still there.
 - To find a picture on a normal page, search Google Images in your own tab
   and read the results with `shot --annotate` and `extract`, or read the
   image's own address from a snapshot.
