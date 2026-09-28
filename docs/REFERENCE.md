@@ -63,6 +63,13 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
+- A page's own script can open a tab later, outside any action (a sign-in
+  popup). One that a background tab of yours opens is yours too: your next
+  result carries `popup` with its `tab` and `url`. Close it like any other.
+  A tab the user's own tabs open stays his.
+- Safari sometimes swaps a tab for a new one under a new id (a page it
+  prepared ahead). Calls with the old id still reach it, and the result
+  carries `replaced: {from, to}`: use the new id from then on.
 - `open` and `goto` return the page's `title` once it has one of its own; a
   page still without one after a moment returns none.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,

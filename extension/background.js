@@ -1058,6 +1058,62 @@ function drive(tabId) {
   drivenRead.then(() => store.set({ driven: [...drivenTabs] })).catch(() => {});
 }
 
+// ---------- tabs that change id, and popups ----------
+// Safari may swap a tab for another under a new id (a page it prepared
+// ahead, shown in the tab's place). What is kept for the old id moves to the
+// new one, the old id becomes an alias of it (see "ids across a reload"),
+// and the daemon moves what it keeps (continuity.ts).
+if (api.tabs.onReplaced) {
+  api.tabs.onReplaced.addListener(async (added, removed) => {
+    send({ op: "tab", kind: "replaced", from: removed, to: added });
+    for (const map of [awake, frameWaits]) {
+      if (!map.has(removed)) continue;
+      map.set(added, map.get(removed));
+      map.delete(removed);
+    }
+    if (drivenTabs.delete(removed)) drive(added);
+    // a wait for the old page to be ready waits for the new one
+    const waiters = readyWaiters.get(removed);
+    readyWaiters.delete(removed);
+    ready.delete(removed);
+    if (waiters) {
+      if (!readyWaiters.has(added)) readyWaiters.set(added, new Set());
+      for (const w of waiters) readyWaiters.get(added).add(w);
+      api.tabs.get(added).then((t) => { if (ready.get(added) === true || t.status === "complete") markReady(added); }, () => {});
+    }
+    const policy = await policyOf(removed);
+    if (policy) {
+      await store.set({ [`dialogs:${added}`]: policy });
+      await store.remove(`dialogs:${removed}`);
+      await ownTab(added);
+    }
+    const { tabAliases = {} } = await api.storage.local.get("tabAliases");
+    alias(tabAliases, removed, added);
+    await api.storage.local.set({ tabAliases });
+    adopted?.then((a) => alias(a.tabs, removed, added), () => {});
+  });
+}
+
+// A tab an owned tab's page opens on its own, outside an action (a sign-in
+// popup a script opens later), is owned too, and the daemon gives it to the
+// agent that owns the opener. act claims the tab its action opens as it is
+// created; this looks a turn later and leaves that one to act. A tab the
+// user's own tabs open stays his. The daemon hears of it once it has an
+// address, which tells the agent what it is.
+api.tabs.onCreated.addListener((t) => {
+  const opener = t.openerTabId;
+  if (opener === undefined) return;
+  setTimeout(async () => {
+    if (drivenTabs.has(t.id) || !(await ownsTab(opener))) return;
+    drive(t.id);
+    if (ready.get(t.id) !== true) ready.set(t.id, false);
+    await ownTab(t.id);
+    await waitReady(t.id, 3000);
+    const now = await api.tabs.get(t.id).catch(() => t);
+    send({ op: "tab", kind: "popup", tab: t.id, opener, url: now.url || t.pendingUrl || "" });
+  }, 0);
+});
+
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so
 // a web app in a background harness tab stalls. An owned tab the harness

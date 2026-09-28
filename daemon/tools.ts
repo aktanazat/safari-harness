@@ -4,6 +4,8 @@
 import { bridge } from "./bridge.ts";
 import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
+import { followTab, queuePopup, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
@@ -50,9 +52,11 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   }
   const id = typeof tab === "number" ? tab : Number(tab);
   if (!Number.isFinite(id)) throw new Error('tab must be a tab id from open, or "front"');
-  const mine = harnessTabs.get(id);
+  // a tab Safari swapped for another is reached under its new id
+  const now = followTab(id);
+  const mine = harnessTabs.get(now);
   if (mine) mine.used = Date.now();
-  return id;
+  return now;
 }
 
 // Every tab opens in a window of the calling agent's own (spaces.ts).
@@ -66,7 +70,7 @@ export async function openTab(url: string, background = false, group?: string): 
 // for 15 s and says so. This limit is only for an extension that never
 // answers.
 export async function closeTab(tab: number): Promise<unknown> {
-  const id = num(tab, "tab");
+  const id = followTab(num(tab, "tab"));
   const res = await bridge.request("tabs.close", [id], 20000);
   forget(id);
   return res;
@@ -158,6 +162,34 @@ function save() {
   } catch (e) {
     console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
   }
+}
+
+// ---------- tabs that change id, and popups (continuity.ts) ----------
+// What the daemon keeps per tab follows a tab Safari swapped for another. A
+// popup an agent's tab opened on its own is that agent's, as a tab its click
+// opens is (action); one the user's own tabs open stays his.
+bridge.onTab = (e) => {
+  if (e.kind === "replaced") {
+    recordReplaced(e.from, e.to);
+    if (move(harnessTabs, e.from, e.to)) save();
+    move(lastSnapshot, e.from, e.to);
+    move(handoffs, e.from, e.to);
+    note("replaced", { from: e.from, to: e.to });
+    return;
+  }
+  const from = harnessTabs.get(e.opener);
+  if (!from) return;
+  own(e.tab, from.owner);
+  if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
+  note("popup", { tab: e.tab, opener: e.opener });
+};
+
+function move<V>(map: Map<number, V>, from: number, to: number): boolean {
+  const v = map.get(from);
+  if (v === undefined) return false;
+  map.delete(from);
+  map.set(to, v);
+  return true;
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
@@ -390,6 +422,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
     while (h.waiting > 0 || Date.now() - h.calledAt < HANDOFF_IDLE_MS) {
       await Bun.sleep(1000);
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
+      // Safari may have swapped the tab for another (continuity.ts)
+      tab = followTab(tab);
       const now = tabs.find((t) => t.id === tab);
       if (!now) throw gone;
       if (challenge?.where === "block") throw new Error(blocked(challenge));
@@ -953,6 +987,8 @@ type Extract = { url: string; title: string; text: string };
 // text stay readable instead of arriving as escaped JSON strings.
 export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
+  const news = value && typeof value === "object" ? splitNews(value) : null;
+  if (news) return `${news.line}\n${formatResult(news.rest)}`;
   if (value && typeof value === "object") {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown };
     if (typeof v.snapshot === "string") {
@@ -982,7 +1018,7 @@ export function formatResult(value: unknown): string {
 export async function callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
   const tool = TOOLS[name];
   if (!tool) throw new Error(`unknown tool ${name}; tools: ${Object.keys(TOOLS).filter((k) => !TOOLS[k].hidden).join(", ")}`);
-  return tool.run(args);
+  return withTabNews(args.tab, () => tool.run(args));
 }
 
 type Step = { step: number; tool: string; value?: unknown; error?: string };
