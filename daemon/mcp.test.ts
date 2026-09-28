@@ -36,8 +36,10 @@ import { expect, test } from "bun:test";
 // after the user's Touch ID, and a session lets go of the pairing when done.
 // Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
-// one open for the user.
-const TOOL_LIST_MAX_BYTES = 18_030;
+// one open for the user. The ask tool (539) and handoff naming the replies
+// skip and stop (70) brought it to 18,639: an agent whose user is away gets
+// his answer or his skip from his phone instead of stalling until he is back.
+const TOOL_LIST_MAX_BYTES = 18_639;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
