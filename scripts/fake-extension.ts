@@ -3,7 +3,7 @@
 // without Safari. Answers relay ops with canned content-script results.
 
 // The daemon gives the extension socket only to an extension origin.
-const ws = new WebSocket("ws://127.0.0.1:37333/", { headers: { Origin: "safari-web-extension://fake-extension" } });
+const ws = new WebSocket(`ws://127.0.0.1:${process.env.SAFARI_HARNESS_WS ?? 37333}/`, { headers: { Origin: "safari-web-extension://fake-extension" } });
 const tabs = new Map<number, { id: number; url: string; title: string; active: boolean; windowId: number }>([
   [101, { id: 101, url: "https://example.com/", title: "Example Domain", active: true, windowId: 1 }],
 ]);
@@ -23,9 +23,11 @@ ws.addEventListener("message", (ev) => {
   const args = (msg.args ?? []) as unknown[];
 
   if (msg.op === "ping") return reply("pong");
-  if (msg.op === "tabs.list") return reply([...tabs.values()]);
+  // One window, so its active tab is the one in front.
+  if (msg.op === "tabs.list") return reply([...tabs.values()].map((t) => ({ ...t, front: t.active })));
   if (msg.op === "tabs.open") {
     const t = { id: nextTab++, url: String(args[0]), title: "New", active: !args[1], windowId: 1 };
+    if (t.active) for (const other of tabs.values()) other.active = false;
     tabs.set(t.id, t);
     return reply(t);
   }
