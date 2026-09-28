@@ -25,6 +25,8 @@ import { note, openJournal, recent } from "./journal.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, watched } from "./mission.ts";
+import { saveRecording } from "./recordings.ts";
+import { notify } from "./front.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -47,6 +49,17 @@ note("start", {
 });
 // Background tabs agents opened, so a restart still closes them (tools.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
+// What the user taught in a tab (teach mode) is saved as he stops it; a
+// notification tells him its name, or why it was not saved.
+bridge.onRecording = (recording) => {
+  try {
+    notify(`Saved the recording as ${saveRecording(recording)}`);
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    console.error("[safari-harness] recording not saved:", why);
+    notify(`The recording was not saved: ${why}`);
+  }
+};
 
 type SocketScope =
   | { kind: "extension" }

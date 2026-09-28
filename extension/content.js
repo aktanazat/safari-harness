@@ -352,6 +352,8 @@
   // fingerprint of its element (daemon/fingerprint.ts says what one
   // holds), and a ref whose element is gone heals to the one element on
   // the page that matches it; the reply says so (healed: { ref, now }).
+  // Teach mode keeps the same fingerprint of each step's target, for a
+  // replay to find the target again.
   const fingerprints = new Map(); // ref -> fingerprint, kept after its element leaves
   const FINGERPRINTS_MAX = 5000;
   let healedNow = null; // the heal the running request made
@@ -508,6 +510,19 @@
     healedNow = { ref, now: ensureRef(el) };
     refMap.set(ref, el);
     return el;
+  }
+
+  // The elements that look like a fingerprint's target (the same role,
+  // name, and tag), each with a ref, for a replay to choose among with the
+  // matcher (daemon/replay.ts).
+  function lookalikes(fp) {
+    const want = lookalikeKey(fp);
+    const out = [];
+    for (const el of tagged(fp.tag)) {
+      const c = candidateOf(el);
+      if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
+    }
+    return out;
   }
 
   // A reply carries the heal its request made beside what the op answered.
@@ -2318,6 +2333,200 @@
   // where it may be allowed, and says this if it is refused there too.
   const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
 
+  // ---------- teach mode ----------
+  // The user clicks the toolbar button to record what he does in this tab;
+  // background.js keeps the recording and turns record on in each page of
+  // it. Each click, text he types, dropdown choice, Enter in a field, and
+  // text he selects to read becomes a step with its target's fingerprint,
+  // so a replay finds the same control on a fresh page (daemon/replay.ts).
+  // Only his own input counts (isTrusted), and only in the top page. A
+  // secret field's text never leaves the page: its step names the kind of
+  // secret instead, for Apple Passwords to fill on replay.
+  let recording = false;
+  let typing = null; // { el, step }: the field he is typing in, sent once he moves on
+  let enterNow = false; // in the task of an Enter step: Safari's click on the form's button is part of it
+  let passedTo = null; // the control a clicked label passes its click to, in this task
+  let pressedAt = null; // where the mouse went down: a click that moved selected text
+  let lastRead = ""; // the selector of a read step sent last: a double click selects twice
+  const secretKinds = new WeakMap(); // a field once secret stays so, through a show-password toggle
+  const NOT_TEXT = /^(checkbox|radio|button|submit|reset|image|file|range|color|hidden)$/;
+
+  function recordingHere() {
+    return recording && window.__safariHarnessInjected === claim;
+  }
+
+  function textField(el) {
+    return el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && !NOT_TEXT.test(el.type));
+  }
+
+  function fieldFacts(el) {
+    return { type: el.isContentEditable ? "contenteditable" : String(el.type ?? el.localName), autocomplete: el.getAttribute("autocomplete") ?? "", name: el.getAttribute("name") ?? "", id: el.id, label: accessibleName(el) };
+  }
+
+  // Which secret a field holds, from what fieldFacts says of it, or null.
+  // The daemon judges each step again with its copy before it saves one
+  // (daemon/recordings.ts); recordings.test.ts runs both on one table.
+  // ---- shared with daemon/recordings.ts: begin ----
+  const SECRET_HINTS = { password: /passw|passcode|\bpin\b/i, code: /\botp\b|one.?time|verification.?code|\b2fa\b|\bmfa\b/i, card: /\bcc-|card|cvv|cvc|csc|expir|security.?code/i };
+
+  function secretOfField(f) {
+    const hints = `${f.name} ${f.id} ${f.label}`;
+    if (f.type === "hidden") return "hidden";
+    if (f.type === "password" || /\b(current|new)-password\b/i.test(f.autocomplete) || SECRET_HINTS.password.test(hints)) return "password";
+    if (/\bone-time-code\b/i.test(f.autocomplete) || SECRET_HINTS.code.test(hints)) return "one-time-code";
+    if (/\bcc-/i.test(f.autocomplete) || SECRET_HINTS.card.test(hints)) return "card";
+    return null;
+  }
+  // ---- shared with daemon/recordings.ts: end ----
+
+  // A field judged secret once stays so: a show-password toggle makes it a
+  // text field.
+  function secretKind(el) {
+    if (secretKinds.has(el)) return secretKinds.get(el);
+    const kind = secretOfField(fieldFacts(el));
+    if (kind) secretKinds.set(el, kind);
+    return kind;
+  }
+
+  function stepFor(kind, el) {
+    return { kind, url: location.href, target: fingerprintOf(el) };
+  }
+
+  function sendStep(step) {
+    if (!step) return;
+    lastRead = step.kind === "read" ? step.selector : "";
+    api.runtime.sendMessage({ __safariHarnessStep: 1, step }).catch(() => {});
+  }
+
+  // The field he was typing in, as its step, once he moves on.
+  function typed() {
+    if (!typing) return null;
+    const { el, step } = typing;
+    typing = null;
+    const secret = secretKind(el);
+    if (secret) step.secret = secret;
+    else step.value = el.isContentEditable ? el.innerText : String(el.value ?? "");
+    return step;
+  }
+
+  // A click in a field, on a dropdown, or on a file input is no step: the
+  // typing or choice after it is (a file choice is not recorded).
+  function noClickStep(el) {
+    return textField(el) || el.localName === "select" || el.localName === "option" || (el.localName === "input" && el.type === "file");
+  }
+
+  // What a click was on: the nearest control around the point (a label
+  // stands for its control), else the box showing the hand cursor there (a
+  // card the page made clickable from script); null for plain text and the
+  // page's background.
+  function clickTarget(node) {
+    let hand = null;
+    let up = 0;
+    for (let el = node instanceof Element ? node : null; el && up < 10; el = parentOf(el), up++) {
+      if (noClickStep(el)) return null;
+      if (el.localName === "label" && el.control) return noClickStep(el.control) ? null : el.control;
+      if (el.localName !== "details" && isInteractive(el)) return el;
+      if (getComputedStyle(el).cursor === "pointer") hand = el;
+      else if (hand) return hand;
+    }
+    return hand;
+  }
+
+  // A mouse that moved while down dragged out a selection.
+  function dragged(e) {
+    return e.detail > 0 && pressedAt !== null && Math.hypot(e.clientX - pressedAt.x, e.clientY - pressedAt.y) > 5;
+  }
+
+  function onRecordedMouseDown(e) {
+    if (recordingHere() && e.isTrusted) pressedAt = { x: e.clientX, y: e.clientY };
+  }
+
+  function onRecordedClick(e) {
+    if (!recordingHere() || !e.isTrusted || enterNow || dragged(e)) return;
+    const start = e.composedPath()[0];
+    if (start === passedTo) return;
+    const el = clickTarget(start);
+    if (!el) return;
+    if (!el.contains(start)) {
+      // a label: the click it passes on to its control is this same step
+      passedTo = el;
+      setTimeout(() => { passedTo = null; }, 0);
+    }
+    sendStep(typed());
+    sendStep(stepFor("click", el));
+  }
+
+  // Text he selects, by dragging or a double click, is a step that reads
+  // it; its target is found again by where it sits on the page (selector),
+  // as its text is what changes from one run to the next.
+  function onRecordedMouseUp(e) {
+    if (!recordingHere() || !e.isTrusted || !(dragged(e) || e.detail > 1)) return;
+    const sel = getSelection();
+    const active = document.activeElement;
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || (active && textField(active))) return;
+    const node = sel.getRangeAt(0).commonAncestorContainer;
+    const el = node instanceof Element ? node : node.parentElement;
+    if (!el) return;
+    const selector = cssPath(el, Infinity);
+    if (selector === lastRead) return;
+    sendStep(typed());
+    sendStep({ ...stepFor("read", el), selector });
+  }
+
+  function onRecordedKeyDown(e) {
+    if (!recordingHere() || !e.isTrusted || e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || !textField(el)) return;
+    sendStep(typed());
+    sendStep({ ...stepFor("press", el), key: "Enter" });
+    enterNow = true;
+    setTimeout(() => { enterNow = false; }, 0);
+  }
+
+  function onRecordedInput(e) {
+    if (!recordingHere() || !e.isTrusted) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || !textField(el) || typing?.el === el) return;
+    sendStep(typed());
+    // judged now, before a show-password toggle can make it a text field
+    secretKind(el);
+    typing = { el, step: { ...stepFor("type", el), field: fieldFacts(el) } };
+  }
+
+  function onRecordedChange(e) {
+    if (!recordingHere() || !e.isTrusted) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || el.localName !== "select") return;
+    sendStep(typed());
+    const step = { ...stepFor("select", el), field: fieldFacts(el) };
+    const secret = secretKind(el);
+    if (secret) step.secret = secret;
+    else step.option = el.selectedOptions[0]?.label.trim() ?? "";
+    sendStep(step);
+  }
+
+  function onRecordedFocusOut(e) {
+    if (recordingHere() && typing && e.composedPath()[0] === typing.el) sendStep(typed());
+  }
+
+  function onRecordedPageHide() {
+    if (recordingHere()) sendStep(typed());
+  }
+
+  // background.js turns recording on in each page of the tab he records,
+  // and off when he stops; the answer to off holds what he was typing.
+  function record(on) {
+    const pending = on ? null : typed();
+    recording = on === true && window === window.top;
+    return { ok: true, recording, pending };
+  }
+
+  if (window === window.top) {
+    for (const [type, fn] of [["mousedown", onRecordedMouseDown], ["click", onRecordedClick], ["mouseup", onRecordedMouseUp], ["keydown", onRecordedKeyDown],
+      ["input", onRecordedInput], ["change", onRecordedChange], ["focusout", onRecordedFocusOut], ["pagehide", onRecordedPageHide]]) {
+      addEventListener(type, fn, true);
+    }
+  }
   // ---------- message dispatch ----------
 
   const handlers = {
@@ -2366,6 +2575,8 @@
     download,
     downloadStop: () => { pendingDownload?.(null); return { ok: true }; },
     element: elementInfo,
+    lookalikes,
+    record,
   };
   // Ops that may raise a dialog; the page's dialogs are armed while they run.
   const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download"]);

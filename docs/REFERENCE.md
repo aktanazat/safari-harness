@@ -610,6 +610,42 @@ plain sentence of at most 300 characters.
   date and the name of the agent's program (`omp`, `claude`). The daemon
   keeps them on the Mac whose Safari it drives.
 
+## Teach and replay
+
+The user can show you a task once instead of describing it. He clicks the
+Safari Harness toolbar button (it shows REC), does the task in that tab, and
+clicks it again; closing the tab, or 30 minutes, also stops it. The daemon
+saves the recording in `~/.local/share/safari-harness/recordings/` (a folder
+only he can read, each file 0600), named for the site and the minute it began
+(`shop.example-20260928-1412`, `-2` for a second that minute), and a
+notification tells him the name. No secret he typed is saved: a password,
+one-time code, card, or hidden field keeps only its kind.
+
+- `recordings` lists them, newest first; `do: "show"` with `name` gives one's
+  steps, `do: "rm"` deletes one. `safari record list | show <name> | rm
+  <name>` does the same.
+- `replay {name}` does the task again in a background tab of yours, finding
+  each step's target by what it looked like when he used it, and closes the
+  tab when every step went through. It answers `{ok, name, steps, value}`:
+  `value` is the text of the last thing he selected to read.
+- A step whose target is gone, or looks like several elements with none
+  clearly the one, stops the replay: `failedAt` is its number (from 1; 0 is
+  the first page), `error` says what it looked for, and the tab stays open,
+  with its `url` and `title`, for you to look at.
+- `vars` changes what is typed or chosen: `{"q": "shoes"}` types `shoes` into
+  the field whose name, id, or label is `q`. A name no field has is refused
+  before anything opens.
+- A password step fills the saved login from Apple Passwords (`vars.username`
+  picks one of several), and a code step its verification code; a locked vault
+  fails that step with how to pair. A card or hidden field fails its step:
+  replay never types one.
+- A bot check stops it with the tab left open: hand the tab to the user with
+  `handoff`, then `replay` again with `tab`. A site that blocks this browser is
+  reported, not handed off.
+- `safari replay <name> --json` prints one JSON line and exits 0 only when
+  every step went through, so a watch routine's `--replay <name>` reads the
+  value a replay ends on.
+
 ## Logged-in sites and secrets
 
 The tabs carry the user's real sessions. Never print passwords, one-time codes,

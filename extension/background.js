@@ -37,6 +37,7 @@ function connect() {
       log("connected to daemon on", port);
       send({ op: "hello", role: "extension", ua: navigator.userAgent });
       if (awake.size > 0) send({ op: "ticks", on: true });
+      sendRecordings().catch(() => {});
     };
     ws.onmessage = (ev) => {
       let msg;
@@ -91,7 +92,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -1279,6 +1280,147 @@ function waitReady(tabId, ms) {
     if (!ready.has(tabId)) api.tabs.get(tabId).then((t) => { if (t.status === "complete") markReady(tabId); }, done);
   });
 }
+
+// ---------- teach mode ----------
+// The user clicks the toolbar button to record what he does in that tab
+// (content.js records each step), and clicks it again to stop; the daemon
+// saves the recording for replay (daemon/recordings.ts). No other tab is
+// recorded. A recording is kept in session storage, which outlives this
+// page while Safari runs; it also stops when its tab closes, or after
+// REC_MINUTES.
+const REC_MINUTES = 30;
+// The page moving to a new address this soon after a step (a link, a
+// form, a redirect) is that step's doing, which a replay lets it do again.
+const FOLLOWS_MS = 5000;
+const recTabs = new Set(); // tabs being recorded
+const stopping = new Set(); // tabs whose page is still handing over its last step
+const recRead = store.get(null).then((all) => {
+  for (const key of Object.keys(all)) if (key.startsWith("rec:")) recTabs.add(Number(key.slice(4)));
+}, () => {});
+let recQueue = Promise.resolve();
+
+// Read-modify-write of a tab's recording, one change at a time; a change
+// that returns false leaves it as it was.
+function changeRecording(tabId, change) {
+  const next = recQueue.then(async () => {
+    const key = `rec:${tabId}`;
+    const rec = (await store.get(key))[key];
+    if (rec && change(rec) !== false) await store.set({ [key]: rec });
+  });
+  recQueue = next.catch((e) => log("recording not kept", String(e)));
+  return recQueue;
+}
+
+function showRecording(tabId, on) {
+  api.action.setBadgeText({ tabId, text: on ? "REC" : "" }).catch(() => {});
+  api.action.setTitle({ tabId, title: on ? "recording: click to stop" : "Safari Harness" }).catch(() => {});
+}
+
+// Tells the tab's top page to record or stop, putting the script in first
+// where Safari left none; a page still loading hears it when it reports
+// in. The answer to a stop holds the step he was still typing.
+async function tellPage(tabId, on) {
+  try {
+    let how = await reach(tabId, 0, PING_MS);
+    if (!how && on) {
+      await ensureContent(tabId, 0, PING_MS, true);
+      how = await reach(tabId, 0, PING_MS);
+    }
+    if (!how) return null;
+    const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "record", args: [on] }, PING_MS, 0, how === "script");
+    return (res && res.value && res.value.pending) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function startRecording(tab) {
+  await store.set({ [`rec:${tab.id}`]: { url: tab.url, title: tab.title, startedAt: Date.now(), steps: [], lastAt: 0 } });
+  recTabs.add(tab.id);
+  showRecording(tab.id, true);
+  api.alarms.create(`sh-rec-${tab.id}`, { delayInMinutes: REC_MINUTES });
+  await tellPage(tab.id, true);
+}
+
+// Ends the tab's recording and hands it to the daemon. why: stopped (the
+// button), closed (the tab), or time limit.
+async function stopRecording(tabId, why) {
+  if (!recTabs.has(tabId) || stopping.has(tabId)) return;
+  stopping.add(tabId);
+  api.alarms.clear(`sh-rec-${tabId}`);
+  const closed = why === "closed";
+  if (!closed) showRecording(tabId, false);
+  // steps he makes meanwhile still count, until the page has stopped
+  const pending = closed ? null : await tellPage(tabId, false);
+  recTabs.delete(tabId);
+  stopping.delete(tabId);
+  const key = `rec:${tabId}`;
+  const done = recQueue.then(async () => {
+    const rec = (await store.get(key))[key];
+    await store.remove(key);
+    if (!rec) return;
+    if (pending) rec.steps.push(pending);
+    delete rec.lastAt;
+    await deliver({ ...rec, stoppedAt: Date.now(), why });
+  });
+  recQueue = done.catch((e) => log("recording lost", String(e)));
+  return recQueue;
+}
+
+// The daemon saves it; while the daemon is away it waits here, and goes
+// out once the socket opens again.
+async function deliver(rec) {
+  if (send({ op: "recording", recording: rec })) return;
+  const { recOut = [] } = await store.get("recOut");
+  await store.set({ recOut: [...recOut, rec] });
+}
+
+async function sendRecordings() {
+  const { recOut = [] } = await store.get("recOut");
+  if (recOut.length === 0) return;
+  await store.remove("recOut");
+  for (const rec of recOut) await deliver(rec);
+}
+
+api.action.onClicked.addListener((tab) => {
+  recRead.then(() => (recTabs.has(tab.id) ? stopRecording(tab.id, "stopped") : startRecording(tab))).catch((e) => log("teach mode", String(e)));
+});
+api.runtime.onMessage.addListener((m, sender) => {
+  if (!m || !sender.tab || sender.frameId !== 0) return;
+  const tabId = sender.tab.id;
+  if (m.__safariHarnessStep === 1) {
+    recRead.then(() => {
+      if (recTabs.has(tabId)) changeRecording(tabId, (rec) => { rec.steps.push(m.step); rec.lastAt = Date.now(); });
+    });
+  } else if (m.__safariHarnessReady === 1) {
+    // each new page in the tab records too
+    recRead.then(() => {
+      if (!recTabs.has(tabId) || stopping.has(tabId)) return;
+      showRecording(tabId, true);
+      tellPage(tabId, true);
+    });
+  }
+});
+api.tabs.onUpdated.addListener((tabId, info) => {
+  if (!info.url) return;
+  recRead.then(() => {
+    if (!recTabs.has(tabId)) return;
+    // the step the page sends as it leaves may come in just after this
+    setTimeout(() => changeRecording(tabId, (rec) => {
+      const at = rec.steps.findLast((s) => s.kind === "navigate")?.url ?? rec.url;
+      if (info.url === at) return false;
+      rec.steps.push({ kind: "navigate", url: info.url, from: Date.now() - rec.lastAt < FOLLOWS_MS ? "step" : "user" });
+      rec.lastAt = Date.now();
+    }), 300);
+  });
+});
+api.alarms.onAlarm.addListener((a) => {
+  const m = /^sh-rec-(\d+)$/.exec(a.name);
+  if (m) recRead.then(() => stopRecording(Number(m[1]), "time limit"));
+});
+api.tabs.onRemoved.addListener((tabId) => {
+  recRead.then(() => stopRecording(tabId, "closed"));
+});
 
 connect();
 pingLoop();

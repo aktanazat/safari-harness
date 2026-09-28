@@ -62,8 +62,11 @@ import { expect, test } from "bun:test";
 // listed his whole Safari six times over, and never sees a code. Action
 // receipts and settle-aware waits (403) brought it to 21,944: a click the
 // page ignored says so in its own answer, and a wait ends on the first of
-// several texts, text gone, an address, or a quiet page, not a sleep.
-const TOOL_LIST_MAX_BYTES = 21_944;
+// several texts, text gone, an address, or a quiet page, not a sleep. The
+// replay and recordings tools (733) brought it to 22,677: a task the user
+// showed once with the toolbar button runs again by name in a background
+// tab, with no model working out each step.
+const TOOL_LIST_MAX_BYTES = 22_677;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
