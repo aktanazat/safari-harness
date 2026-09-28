@@ -425,6 +425,9 @@
     // text; each gathers the text inside it.
     const top = { kids: [] };
     const walk = (el, parent, named, inItem, inHand) => {
+      // Never drawn, hidden or not: showHidden would print a page's script
+      // source and style rules as its text.
+      if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.

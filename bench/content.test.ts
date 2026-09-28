@@ -11,6 +11,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: "This sentence is shown on the page.\nThis sentence is fading in." } } }],
   },
   {
+    name: "a snapshot that keeps hidden text still leaves out script, style, and noscript source",
+    page: "source.html",
+    steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],
+  },
+  {
     name: "a snapshot reads open shadow roots, with slotted text where its slot is drawn",
     page: "shadow.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'h2 "Ada Lovelace"\n[1] button "Follow"' } } }],
