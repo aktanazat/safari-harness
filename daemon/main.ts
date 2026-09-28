@@ -209,7 +209,9 @@ async function stop(reason: string, drainMs: number) {
   stopAllPumps();
   passwords.shutdown();
   server.stop();
-  rpcServer.stop();
+  // A drained call is done before its answer is written: exit once the rpc
+  // connections have closed (a call the drain's timeout cut is cut here).
+  await rpcServer.stop(inFlight > 0);
   process.exit(0);
 }
 
