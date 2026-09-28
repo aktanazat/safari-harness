@@ -110,9 +110,9 @@ await withPage(FORM, FORM_JS, async (tab) => {
 
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
   check("a click that loads a page reports navigated", nav.navigated?.url === "https://example.org/", nav);
-  const back = await call("history", { tab, go: "back" });
+  const back = await call("history", { tab, do: "back" });
   check("back reports the previous page", back.navigated?.url === "https://example.com/", back);
-  const fwd = await call("history", { tab, go: "forward", snapshot: true });
+  const fwd = await call("history", { tab, do: "forward", snapshot: true });
   check("snapshot: true returns the page the action led to", /h1 "Example Domain"/.test(fwd.page?.snapshot ?? ""), fwd);
 });
 

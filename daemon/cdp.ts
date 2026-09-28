@@ -201,7 +201,7 @@ export async function handleCdp(send: Send, msg: CdpMsg, scope: { kind: "browser
       }
       case "Page.reload": {
         const tabId = effTab ?? (await tools.resolveTab());
-        await tools.history({ tab: tabId, go: "reload" });
+        await tools.history({ tab: tabId, do: "reload" });
         return send(ok(id, {}));
       }
       case "Page.enable":

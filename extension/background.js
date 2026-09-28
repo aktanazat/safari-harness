@@ -247,6 +247,8 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
   const out = [];
   let truncated = snap.truncated;
   const limit = opts.maxNodes || 600;
+  // "a|b" keeps lines containing either, as in the frame's own snapshot
+  const alts = String(opts.query ?? "").toLowerCase().split("|").map((s) => s.trim()).filter(Boolean);
   for (const line of lines) {
     const m = MARK.exec(line);
     if (!m) { out.push(line); continue; }
@@ -266,7 +268,7 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
       }
     }
     // with a query, the frame's line stood in for its matches
-    if (!opts.query || head.toLowerCase().includes(String(opts.query).toLowerCase())) out.push(head);
+    if (!opts.query || alts.some((a) => head.toLowerCase().includes(a))) out.push(head);
     const indent = opts.query ? "" : head.match(/^ */)[0] + "  ";
     for (const l of inner) out.push(indent + l);
   }

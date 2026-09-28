@@ -379,7 +379,8 @@
   //     £51.77 · In stock
   //     [55] button "Add to basket"
   // opts.query keeps only lines containing that text (case-insensitive), as
-  // a flat list, so an agent can find one element without reading the page.
+  // a flat list, so an agent can find one element without reading the page;
+  // "a|b" keeps lines containing either.
   const ACTION_ROLES = new Set(["button", "link", "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio",
     "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "spinbutton"]);
   const BREAK = 0; // a block edge: the text on each side prints on its own line
@@ -393,7 +394,7 @@
     const root = opts.root ? deepQuery(opts.root) : document.body;
     if (!root) return { error: "root not found" };
     const maxLines = opts.maxNodes || 600;
-    const query = opts.query ? String(opts.query).toLowerCase() : null;
+    const query = opts.query ? queryMatch(opts.query) : null;
     // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
     // the extension knows which frame an action goes to.
     const prefix = opts.refPrefix || "";
@@ -482,7 +483,7 @@
     const push = (depth, text, n) => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
-      if (query && !text.toLowerCase().includes(query) && !text.includes(FRAME_MARK)) return;
+      if (query && !query(text) && !text.includes(FRAME_MARK)) return;
       if (lines.length >= maxLines) { truncated = true; return; }
       const line = n ? `[${prefix}${ensureRef(n.el)}] ${text}` : text;
       lines.push(query ? line : "  ".repeat(depth) + line);
@@ -794,7 +795,7 @@
     if (to === "back") history.back();
     else if (to === "forward") history.forward();
     else if (to === "reload") location.reload();
-    else return { error: `go must be back, forward, or reload` };
+    else return { error: `do must be back, forward, or reload` };
     return { ok: true, expect: to === "reload" ? "load" : "script" };
   }
 
@@ -1277,16 +1278,23 @@
     }
     if (!root) return { error: "no content root" };
     let text = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (opts.query) {
-      const q = String(opts.query).toLowerCase();
-      text = text.split("\n").filter((line) => line.toLowerCase().includes(q)).join("\n");
-    }
+    if (opts.query) text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
     const limit = opts.maxBytes || 20000;
     return {
       url: location.href,
       title: document.title,
       text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
       truncated: text.length > limit,
+    };
+  }
+
+  // A query's test for one line: "a|b" matches a line containing either
+  // alternative, as plain text, case-insensitive.
+  function queryMatch(query) {
+    const alts = String(query).toLowerCase().split("|").map((s) => s.trim()).filter(Boolean);
+    return (line) => {
+      const t = line.toLowerCase();
+      return alts.some((a) => t.includes(a));
     };
   }
 

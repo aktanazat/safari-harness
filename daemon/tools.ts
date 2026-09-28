@@ -148,10 +148,10 @@ export async function upload(opts: { tab?: number; ref?: number | string; paths:
 
 const HISTORY = new Set(["back", "forward", "reload"]);
 
-export async function history(opts: { tab?: number; go: string }) {
+export async function history(opts: { tab?: number; do: string }) {
   const tab = await resolveTab(opts.tab);
-  if (!HISTORY.has(opts.go)) throw new Error("go must be back, forward, or reload");
-  return relay(tab, "history", [opts.go]);
+  if (!HISTORY.has(opts.do)) throw new Error("do must be back, forward, or reload");
+  return relay(tab, "history", [opts.do]);
 }
 
 // page: true runs it in the page's own world, where its script variables
@@ -546,9 +546,9 @@ export const TOOLS: Record<string, Tool> = {
   },
   history: {
     desc: "Go back, go forward, or reload.",
-    params: { tab: TAB, go: { type: "string", enum: ["back", "forward", "reload"], description: "direction" }, snapshot: PAGE },
-    required: ["go"],
-    run: action((a) => history(a as { tab: number; go: string })),
+    params: { tab: TAB, do: { type: "string", enum: ["back", "forward", "reload"], description: "which" }, snapshot: PAGE },
+    required: ["do"],
+    run: action((a) => history(a as { tab: number; do: string })),
   },
   scroll: {
     desc: "Scroll the page. Rarely needed: snapshots include off-screen elements.",

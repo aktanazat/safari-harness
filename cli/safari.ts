@@ -457,7 +457,7 @@ async function main() {
     case "tabs": break;
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
-    case "back": case "forward": case "reload": args.go = cmd; break;
+    case "back": case "forward": case "reload": args.do = cmd; break;
     case "close": case "focus": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);

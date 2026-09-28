@@ -243,15 +243,15 @@ export class Page {
     return { url: this.#url, title: this.#title };
   }
   async goBack(): Promise<void> {
-    await this.act("history", { go: "back" });
+    await this.act("history", { do: "back" });
     await this.info();
   }
   async goForward(): Promise<void> {
-    await this.act("history", { go: "forward" });
+    await this.act("history", { do: "forward" });
     await this.info();
   }
   async reload(): Promise<void> {
-    await this.act("history", { go: "reload" });
+    await this.act("history", { do: "reload" });
     await this.info();
   }
 
