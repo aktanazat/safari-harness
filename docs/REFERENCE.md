@@ -47,7 +47,7 @@ the setting is on.
   connected first, the user's; a daemon restart during a session can leave
   it with the session's copy, which sees none of his tabs, until the
   session ends. Safari keeps a session whose driver was killed, not ended,
-  for about 5 minutes, and starts no new one meanwhile.
+  for about 6 minutes, and starts no new one meanwhile.
 
 ## Tabs: work in your own tab
 
