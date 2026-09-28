@@ -87,8 +87,9 @@ Read with `snapshot` when you do not yet know what is on the page.
   new snapshot before using refs again. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
-  It is one piece of plain text: `a|b` looks for that exact text, not
-  either word, so run one query per label.
+  Matching ignores case and reaches into frames. `a|b` returns lines
+  containing either alternative, as plain text, not a regular expression.
+  `extract` takes the same `query`.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
@@ -141,7 +142,8 @@ again to a file instead of fetching it twice.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
   one file input.
-- `history` with `go: "back"`, `"forward"`, or `"reload"`.
+- `history` with `do: "back"`, `"forward"`, or `"reload"` (CLI `safari back`,
+  `safari forward`, `safari reload`, or `safari history --do back`).
 - Alerts, confirms, and prompts never block the page. Each one comes back
   in the result of the action that raised it (`dialogs`), with how it was
   answered. A confirm or prompt is dismissed unless you first call `dialog`
