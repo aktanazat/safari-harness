@@ -555,6 +555,29 @@ function pageGlobals() {
   return { values, tooBig };
 }
 
+// Safari gives a page its address as a title until the page names itself,
+// and a new page's script may name it just after it loads: a web page gets
+// a moment for a title of its own, and without one it reports none.
+function titled(tabId, ms = 1500) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      api.tabs.onUpdated.removeListener(onUpdated);
+      resolve(api.tabs.get(tabId));
+    };
+    const onUpdated = (id, info, tab) => { if (id === tabId && info.title !== undefined && realTitle(tab)) done(); };
+    const timer = setTimeout(done, ms);
+    api.tabs.onUpdated.addListener(onUpdated);
+    api.tabs.get(tabId).then((t) => { if (realTitle(t) || !/^https?:/.test(t.url || "")) done(); }, done);
+  });
+}
+
+// A title that only repeats the address is none.
+function realTitle(t) {
+  const bare = (s) => String(s || "").replace(/^[a-z]+:\/\/(www\.)?/i, "").replace(/\/$/, "");
+  return t.title && bare(t.title) !== bare(t.url) ? t.title : undefined;
+}
+
 // ---------- screenshots ----------
 // Safari captures only a window's visible tab: a tab behind another comes
 // to the front for the capture and the tab that was there goes back. All
@@ -655,8 +678,8 @@ async function handle(msg) {
       drive(tab.id);
       if (background) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
-      const t = await api.tabs.get(tab.id);
-      return { id: t.id, url: t.url, title: t.title, windowId: t.windowId };
+      const t = await titled(tab.id);
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -698,8 +721,8 @@ async function handle(msg) {
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
       await waitReady(tabId, 20000);
-      const t = await api.tabs.get(tabId);
-      return { id: t.id, url: t.url, title: t.title };
+      const t = await titled(tabId);
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}) };
     }
     case "tabs.activate": {
       const [tabId] = args;

@@ -63,6 +63,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
+- `open` and `goto` return the page's `title` once it has one of its own; a
+  page still without one after a moment returns none.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
