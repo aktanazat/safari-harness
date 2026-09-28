@@ -21,6 +21,7 @@ import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { checkCall, fromModel, guard } from "./guard.ts";
 import { inLane } from "./lanes.ts";
+import { urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -246,12 +247,24 @@ function withNotes<T extends object>(result: T): T {
 // The latest whole-page snapshot of each tab, for diff.
 const lastSnapshot = new Map<number, string>();
 
+// A whole page with nothing on it yet is read again, every EMPTY_POLL_MS
+// for EMPTY_WAIT_MS at most: a sign-in page still drawing (Chase's) read
+// as empty once, and the agent never looked again.
+const EMPTY_WAIT_MS = 2000;
+const EMPTY_POLL_MS = 200;
+
 export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
   // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
-  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
+  const read = async () => shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
+  let snap = await read();
   if (opts.root !== undefined || opts.query !== undefined) return snap;
+  const until = Date.now() + EMPTY_WAIT_MS;
+  while (snap.nodes === 0 && Date.now() < until) {
+    await Bun.sleep(EMPTY_POLL_MS);
+    snap = await read();
+  }
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
   if (!opts.diff || before === undefined) return snap;
@@ -379,34 +392,47 @@ export async function tabInfo(opts: { tab?: number } = {}) {
   return relay(tab, "tabInfo");
 }
 
-// Sleep for ms, or, given a selector or text, wait until it is present (ms is
-// then the timeout, max 30000). The page reports the change the moment it
-// happens (waitFor in content.js); the time limit is kept here, because
-// Safari stops a content script's timers in a hidden tab. The answer at the
-// limit does not wait for the page: a page still loading, or too busy to
-// answer, would otherwise hold the call past its limit. A miss says where
-// the tab is: often a redirect (signed out, sent to the home page).
-export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string }) {
+// Sleep for ms, or wait until the page shows what the wait asks for (ms is
+// then the timeout, max 30000): a selector or text, the first of several
+// texts (any; which says which), text gone, an address (url: a part of it,
+// or /regex/), or a page that made no change for 500 ms (quiet). Text
+// matches case and spacing aside. The page reports the moment it sees it
+// (waitFor in content.js); the time limit is kept here, because Safari
+// stops a content script's timers in a hidden tab. The answer at the limit
+// does not wait for the page: a page still loading, or too busy to answer,
+// would otherwise hold the call past its limit. A miss says where the tab
+// is: often a redirect (signed out, sent to the home page).
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  const until = opts.selector !== undefined || opts.text !== undefined;
-  if (!until && opts.ms === undefined) throw new Error("wait needs ms, selector, or text");
+  const until = waitsOnPage(opts);
+  if (!until && opts.ms === undefined) throw new Error("wait needs ms, selector, text, any, gone, url, or quiet");
   const limit = Math.min(opts.ms === undefined ? 10000 : num(opts.ms, "ms"), 30000);
   if (!until) {
     await Bun.sleep(limit);
     return { ok: true };
   }
+  if (opts.any !== undefined && !(Array.isArray(opts.any) && opts.any.length > 0 && opts.any.every((t) => typeof t === "string"))) throw new Error("any must be a list of texts");
+  if (opts.url !== undefined) {
+    const url = str(opts.url, "url");
+    try {
+      urlMatch("", url);
+    } catch (e) {
+      throw new Error(`url ${url} is not a valid /regex/: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   const start = Date.now();
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
-  const seen = relay(tab, "wait", [opts.selector ?? null, opts.text ?? null], limit + 5000) as Promise<{ found: boolean }>;
+  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true };
+  const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<{ found: boolean; which?: string }>;
   // A page that answers only after the limit (it navigated, and the new page
   // began the wait again) still holds a wait: end that one too.
   seen.catch(stop);
-  const timeUp = Promise.withResolvers<{ found: boolean }>();
+  const timeUp = Promise.withResolvers<{ found: boolean; which?: string }>();
   const timer = setTimeout(() => { stop(); timeUp.resolve({ found: false }); }, limit);
   try {
-    const { found } = await Promise.race([seen, timeUp.promise]);
+    const { found, which } = await Promise.race([seen, timeUp.promise]);
     const waitedMs = Date.now() - start;
-    if (found) return { ok: true, found, waitedMs };
+    if (found) return which === undefined ? { ok: true, found, waitedMs } : { ok: true, found, waitedMs, which };
     const now = (await listTabs()).find((t) => t.id === tab);
     return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title }, tab);
   } finally {
@@ -788,7 +814,8 @@ async function withPage(result: unknown, tab: number, want: unknown): Promise<un
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
   return async (a: Record<string, unknown>) => {
     const tab = await resolveTab(a.tab);
-    const result = await run({ ...a, tab });
+    // A click, a key, or an option answers with what it did to the page.
+    const result = withEffect(await run({ ...a, tab }));
     const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
     const from = harnessTabs.get(tab);
     if (opened !== undefined && from) own(opened, from.owner);
@@ -895,7 +922,7 @@ export const TOOLS: Record<string, Tool> = {
     run: saving("snapshot", async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }))),
   },
   click: {
-    desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
+    desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
     params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
     required: ["tab"],
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
@@ -991,11 +1018,21 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait until text or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
-    params: { tab: TAB, text: { type: "string", description: "visible text" }, selector: { type: "string", description: "CSS selector" }, ms: { type: "number", description: "timeout, or sleep length" }, front: { type: "boolean", description: "keep the tab on screen meanwhile" } },
+    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms, sleep. Text ignores case and spaces. Returns found.",
+    params: {
+      tab: TAB,
+      text: { type: "string", description: "visible text" },
+      selector: { type: "string", description: "CSS selector" },
+      any: { type: "array", items: { type: "string" }, description: "texts; the first shown ends it" },
+      gone: { type: "string", description: "text to disappear" },
+      url: { type: "string", description: "part of the URL, or /regex/" },
+      quiet: { type: "boolean", description: "no page change for 0.5 s" },
+      ms: { type: "number", description: "timeout, or sleep length" },
+      front: { type: "boolean", description: "keep the tab on screen meanwhile" },
+    },
     required: ["tab"],
     run: async (a) => {
-      const o = { ...(a as { ms?: number; selector?: string; text?: string; front?: boolean }), tab: await resolveTab(a.tab) };
+      const o = { ...(a as Parameters<typeof wait>[0] & { front?: boolean }), tab: await resolveTab(a.tab) };
       return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
   },

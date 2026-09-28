@@ -20,6 +20,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { acts } from "./lanes.ts";
 import { READS } from "./map.ts";
 import { currentOwner } from "./owner.ts";
+import { waitsOnPage } from "./receipt.ts";
 import type { Tool } from "./tools.ts";
 
 // Names as a model may write them: in another case, or with - or _ between
@@ -196,7 +197,7 @@ function repeat(calls: Map<string, Streak>, key: string, outcome: string, now: n
 // A wait with only ms sleeps, whatever the page does. Its time counts
 // toward the owner's budget; past it, the answer carries the hint.
 function slept(owner: number, args: Record<string, unknown>, start: number, result: unknown): unknown {
-  if (args.text !== undefined || args.selector !== undefined) return result;
+  if (waitsOnPage(args)) return result;
   const now = Date.now();
   const recent = (sleeps.get(owner) ?? []).filter((s) => now - s.at < SLEEP_MS);
   recent.push({ at: now, ms: now - start });

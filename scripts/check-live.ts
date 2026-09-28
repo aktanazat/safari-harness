@@ -322,13 +322,14 @@ await withPage(TARGETS, TARGETS_JS, async (tab) => {
 
 // ---------- no fixed pause after an action ----------
 
-// Each control's script retitles the page 150 ms after the click. An action
-// that starts no load returns at once, so the page it returns still has the
-// old title; a fixed pause after clicks (it used to be 400 ms), or a wait for
-// a load that never comes, would show the new one. The order of two events,
-// not a time budget. The link's scheme has no handler, so no app opens.
+// Each control's script retitles the page 1500 ms after the click. An
+// action that starts no load watches the page for 800 ms at most (its
+// receipt), so the page it returns still has the old title; a fixed pause,
+// or a wait for a load that never comes (3 s), would show the new one. The
+// order of two events, not a time budget. The link's scheme has no
+// handler, so no app opens.
 const LATER_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
-  { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => setTimeout(() => { document.title = id + " retitled"; }, 150)' }))`;
+  { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => setTimeout(() => { document.title = id + " retitled"; }, 1500)' }))`;
 
 await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:abc">App link</a>', LATER_JS, async (tab) => {
   const r = await call("click", { tab, ref: "#later", snapshot: true });
@@ -337,6 +338,42 @@ await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:a
   const app = await call("click", { tab, ref: "#app", snapshot: true });
   check("a click on an app link (mailto:, tel:) does not wait for a page load",
     app.page?.title !== "app retitled" && app.navigated === undefined, { title: app.page?.title, navigated: app.navigated });
+});
+
+// ---------- action receipts ----------
+
+// A click answers with what it did to the page (withReceipt in content.js,
+// daemon/receipt.ts): nothing, with what to try; a menu it opened; a
+// request of the page's that failed, listed first.
+const RECEIPT_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'document.getElementById("menu").onclick = (e) => { e.currentTarget.setAttribute("aria-expanded", "true"); document.getElementById("m").hidden = false; }; document.getElementById("save").onclick = () => { fetch("/nope-receipt", { method: "POST" }).catch(() => {}); };' }))`;
+
+await withPage('<button id=idle>Nothing</button> <button id=menu aria-expanded=false aria-controls=m>Menu</button> <ul id=m hidden><li>One</li></ul> <button id=save>Save</button>', RECEIPT_JS, async (tab) => {
+  const idle = await call("click", { tab, ref: "#idle" });
+  check("a click the page ignores says so, and what to try next",
+    idle.effect === "none" && String(idle.next).includes("real_input"), idle);
+  const menu = await call("click", { tab, ref: "#menu" });
+  check("a click that opens a menu reports the control's new state",
+    (menu.effect?.states ?? []).some((s: string) => s.includes("now expanded")), menu);
+  const save = await call("click", { tab, ref: "#save" });
+  check("a click whose request fails lists the failure first",
+    save.effect?.net?.[0] === "failed: POST /nope-receipt 405", save);
+});
+
+// Waits on what the page shows: text spaced otherwise, text that leaves,
+// the first of several texts, and a page that holds still.
+const LATER_TEXT_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
+  { textContent: 'setTimeout(() => { document.body.insertAdjacentHTML("beforeend", "<p>M240 i</p>"); document.getElementById("spin").remove(); }, 1000)' }))`;
+
+await withPage('<div id=spin role=status>Loading the car</div>', LATER_TEXT_JS, async (tab) => {
+  const text = await call("wait", { tab, text: "m240i", ms: 5000 });
+  check("a wait finds text however the page spaces and cases it", text.found === true, text);
+  const gone = await call("wait", { tab, gone: "Loading the car", ms: 5000 });
+  check("a wait for text to leave ends once it has", gone.found === true, gone);
+  const any = await call("wait", { tab, any: ["Declined", "M240 i"], ms: 5000 });
+  check("a wait on several texts says which one it saw", any.found === true && any.which === "M240 i", any);
+  const quiet = await call("wait", { tab, quiet: true, ms: 5000 });
+  check("a wait for quiet ends once the page holds still", quiet.found === true && quiet.waitedMs < 2000, quiet);
 });
 
 // ---------- page text in the outline ----------

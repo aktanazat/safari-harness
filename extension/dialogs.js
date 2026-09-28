@@ -230,6 +230,9 @@
   const XHR = XMLHttpRequest.prototype;
   const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send };
   const ours = {};
+  // Requests begun and not yet answered, with when each began, for an
+  // action's receipt (below): a page still waiting on its own site is busy.
+  const flying = new Map(); // entry -> Date.now() at its start
   ours.fetch = wrap(plain.fetch, (fetch, self, args) => {
     const start = performance.now();
     const pending = Reflect.apply(fetch, self, args);
@@ -241,10 +244,13 @@
     } catch {
       return pending;
     }
+    flying.set(entry, Date.now());
     return pending.then((res) => {
+      flying.delete(entry);
       try { fetched(entry, start, res); } catch {}
       return res;
     }, (e) => {
+      flying.delete(entry);
       try { record({ ...entry, error: String(e) }, start); } catch {}
       throw e;
     });
@@ -259,6 +265,7 @@
     const req = xhrs.get(xhr);
     if (!req || req.start === null) return;
     xhrs.delete(xhr);
+    flying.delete(req.entry);
     const { entry, start } = req;
     const answered = xhr.readyState === 4 && xhr.status > 0;
     if (answered) entry.status = xhr.status;
@@ -278,6 +285,7 @@
       const req = xhrs.get(self);
       if (req) {
         req.start = performance.now();
+        flying.set(req.entry, Date.now());
         if (!listening.has(self)) {
           listening.add(self);
           // a loadend after the page opened the request again is the old one's
@@ -303,4 +311,32 @@
     swap(ours, plain);
   });
   swap(plain, ours);
+
+  // ---------- action receipts ----------
+  // content.js asks, as it ends an action's watch (withReceipt there), what
+  // the page did since the action began: the requests it made, from the
+  // log (none while the log is off), those still out, and the errors it
+  // did not catch, which are kept whether the log is on or not. The answer
+  // goes back within the ask.
+  const ERRORS_MAX = 20;
+  const errors = []; // { t, message }
+  const thrown = (message) => {
+    errors.push({ t: Date.now(), message: cut(message, 200) });
+    if (errors.length > ERRORS_MAX) errors.shift();
+  };
+  addEventListener("error", (e) => thrown(String(e.message)));
+  addEventListener("unhandledrejection", (e) => {
+    let why = "";
+    try { why = e.reason instanceof Error ? e.reason.message : String(e.reason); } catch {}
+    thrown(`unhandled rejection: ${why}`);
+  });
+  document.addEventListener("__sh_receipt_ask", (e) => {
+    let since;
+    try { since = JSON.parse(e.detail).since; } catch { return; }
+    tell("__sh_receipt_answer", {
+      requests: net.on ? net.log.filter((x) => x.t - x.ms >= since).map(({ method, url, status, error }) => ({ method, url, status, error })) : null,
+      pending: net.on ? [...flying].filter(([, t]) => t >= since).map(([x]) => ({ method: x.method, url: x.url })) : null,
+      errors: errors.filter((x) => x.t >= since).map((x) => x.message),
+    });
+  });
 })();
