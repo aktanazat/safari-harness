@@ -36,6 +36,9 @@ daemon/
   handoff.ts        handoff's caller half: texts the user's own phone, with a
                     picture of the page, when a step needs him and he is away
                     from the Mac; the daemon raises the tab and notifies
+  save.ts           save on extract, snapshot, eval, and fetch: the whole
+                    output goes to a file, and the reply is its path, size,
+                    and first 500 characters
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
@@ -159,6 +162,7 @@ safari upload ~/photo.jpg --tab 7      # the page's file input
 safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7
+safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
 safari eval "JSON.stringify(performance.timing)" --tab 7
 safari net read --tab 7                # the page's requests since it loaded, with the start of each body
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full
