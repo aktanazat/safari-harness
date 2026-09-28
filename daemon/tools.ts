@@ -16,6 +16,8 @@ import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./i
 import { firstNotes, learn } from "./notes.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
+import { checkCall, fromModel, guard } from "./guard.ts";
+import { inLane } from "./lanes.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -923,7 +925,9 @@ export const TOOLS: Record<string, Tool> = {
       save: { description: "true, or an absolute folder: a file per page" },
     },
     required: ["urls"],
-    run: (a) => mapPages(a, callTool),
+    // The model's map call was checked (guard.ts); its opens, reads, and
+    // closes are the harness's, and pass each read the options map has.
+    run: (a) => mapPages(a, (tool, args) => callTool(tool, args, false)),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -1077,6 +1081,12 @@ type Extract = Shielded & { url: string; title: string; text: string };
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
 export function formatResult(value: unknown): string {
+  // A note or hint beside a result (guard.ts) goes on a line of its own after it.
+  if (value && typeof value === "object" && !Array.isArray(value) && ("note" in value || "hint" in value)) {
+    const { note, hint, ...rest }: { note?: unknown; hint?: unknown } = value;
+    const body = Object.keys(rest).length === 1 && "value" in rest ? formatResult(rest.value) : formatResult(rest);
+    return [body, ...(note === undefined ? [] : [`note: ${String(note)}`]), ...(hint === undefined ? [] : [`hint: ${String(hint)}`])].join("\n");
+  }
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
@@ -1118,10 +1128,11 @@ export function formatResult(value: unknown): string {
   return JSON.stringify(value, null, 1);
 }
 
-export async function callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-  const tool = TOOLS[name];
-  if (!tool) throw new Error(`unknown tool ${name}; tools: ${Object.keys(TOOLS).filter((k) => !TOOLS[k].hidden).join(", ")}`);
-  return tool.run(args);
+// A model's call (its own, or a step of its run) is checked and watched
+// (guard.ts); an acting call waits its turn on the tab (lanes.ts).
+export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel()): Promise<unknown> {
+  const call = checkCall(TOOLS, name, args, model);
+  return guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => TOOLS[call.tool].run(call.args)));
 }
 
 type Step = { step: number; tool: string; value?: unknown; error?: string };

@@ -18,6 +18,7 @@ import { resolve } from "node:path";
 import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
+import { nameIn } from "../daemon/guard.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
@@ -106,10 +107,10 @@ const USAGE = `safari — drive Safari from the terminal
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
-                                             (safari passwords --do logins --tab N)
+                                             (safari passwords logins --tab N: a first word is do)
 
   safari repl [--session name] [code]        Playwright-style JavaScript with site globals
-                                             (code from stdin when omitted); see: safari guide repl
+                                             (code from stdin when omitted, or --file path); see: safari guide repl
   safari repl --list | --close <name>        named sessions still running; end one
 
   safari do "<task>" [--tab N] [--steps 30] [--model m]
@@ -197,7 +198,7 @@ function saveArg(argv: string[]): Record<string, unknown> {
 }
 
 // The tool a command runs, where its name differs.
-const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history" };
+const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history" };
 
 const toolDef = (cmd: string): Tool | undefined => TOOLS[ALIAS[cmd] ?? cmd] ?? CALLER_TOOLS[ALIAS[cmd] ?? cmd];
 
@@ -331,8 +332,10 @@ async function replCommand(argv: string[]) {
   }
   const closing = flag("close", argv);
   if (closing) return console.log(await closeSession(closing));
-  const code = argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
-  if (!code.trim()) fail('usage: safari repl [--session name] "<code>" (or pipe the code in)', 2);
+  // --file runs a script saved to disk: agents reached for it (01a0e50b).
+  const file = flag("file", argv);
+  const code = file !== undefined ? await Bun.file(resolve(file)).text() : argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
+  if (!code.trim()) fail('usage: safari repl [--session name] "<code>" | --file path (or pipe the code in)', 2);
   let result: { output: string; error?: string };
   if (session) {
     const r = await runInSession(session, code, { host: flag("host", argv) });
@@ -522,7 +525,7 @@ async function main() {
     };
     const call = sub ? calls[sub] : undefined;
     if (!call) fail("usage: safari imessage chats|history|search|code|send …, or safari contacts <name>", 2);
-    print(await invoke(...call));
+    print(await invoke(...call, true));
     return;
   }
 
@@ -632,7 +635,7 @@ async function main() {
       break;
     }
     case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
-    case "history-search": args = { text: positional.join(" ") || undefined }; break;
+    case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "call": {
       tool = positional[0] ?? "";
@@ -644,8 +647,14 @@ async function main() {
       }
       break;
     }
-    default:
-      if (!toolDef(cmd)) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+    default: {
+      // Any tool by name, however it is written (login-form for login_form).
+      const name = nameIn([...Object.keys(TOOLS), ...Object.keys(CALLER_TOOLS)], cmd);
+      if (!name) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+      tool = name;
+      // safari passwords status: the word after a tool that takes do is its do.
+      if (positional[0] !== undefined && toolDef(tool)?.params.do) args.do = positional[0];
+    }
   }
 
   // Parameters given as flags fill what the positional words left out.
@@ -656,7 +665,7 @@ async function main() {
     }
   }
 
-  print(await invoke(tool, args));
+  print(await invoke(tool, args, true));
 }
 
 // Flags that take no value; the word after them is positional.

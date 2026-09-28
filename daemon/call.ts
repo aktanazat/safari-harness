@@ -7,28 +7,43 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CALLER_TOOLS } from "./caller.ts";
 import { keeperRunning } from "./groups.ts";
+import { beside, checkCall, nameIn } from "./guard.ts";
 import { rpc } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
-import { runSteps } from "./tools.ts";
+import { TOOLS, runSteps } from "./tools.ts";
 
 export type Invoke = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 
-export const invoke: Invoke = async (tool, args) => {
+const CALLER_NAMES = Object.keys(CALLER_TOOLS);
+const DAEMON_NAMES = Object.keys(TOOLS);
+
+// A call that runs in this process: a caller tool, or a run with one among
+// its steps, however a model wrote their names (browsing-history).
+export function runsHere(tool: string, args: Record<string, unknown>): boolean {
+  return callerSteps(tool, args) || nameIn(CALLER_NAMES, tool) !== undefined;
+}
+
+function callerSteps(tool: string, args: Record<string, unknown>): boolean {
+  const steps = args.steps;
+  return tool === "run" && Array.isArray(steps) && steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && nameIn(CALLER_NAMES, s.tool) !== undefined);
+}
+
+// model: the call is one a model wrote. The daemon checks the calls it
+// runs (guard.ts), and this process the ones that run here.
+export async function invoke(tool: string, args: Record<string, unknown>, model = false): Promise<unknown> {
   // The daemon cannot run a caller tool, so a run with one among its steps
   // goes step by step from here, each step where it runs.
-  const steps = args.steps;
-  if (tool === "run" && Array.isArray(steps) && steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && Object.hasOwn(CALLER_TOOLS, s.tool))) {
-    return runSteps(steps, invoke);
-  }
-  const local = CALLER_TOOLS[tool];
-  if (!local) {
-    const result = await rpc(tool, args);
-    claimSpaces(tool, result);
+  if (callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model));
+  if (nameIn(CALLER_NAMES, tool) === undefined) {
+    const result = await rpc(tool, args, model);
+    claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
     return result;
   }
+  const call = checkCall(CALLER_TOOLS, tool, args, model);
   const remote = process.env.SAFARI_HARNESS_REMOTE;
-  return remote ? remoteCall(remote, tool, args) : local.run(args);
-};
+  const result = await (remote ? remoteCall(remote, call.tool, call.args) : CALLER_TOOLS[call.tool].run(call.args));
+  return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
+}
 
 // The windows an open, or a run's open steps, went in (spaces.ts).
 function spacesIn(tool: string, result: unknown): unknown[] {

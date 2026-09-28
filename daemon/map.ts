@@ -11,7 +11,7 @@ import { saveOutput, targetOf, withLimit, type SaveKind, type Target } from "./s
 export const MAP_MAX_URLS = 20;
 const AT_ONCE = 4;
 const MAX_AT_ONCE = 6;
-const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
+export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 
 // A check that stands in for the page leaves nothing to read; one in a box
 // on a page that otherwise reads normally is noted beside what was read.
