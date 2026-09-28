@@ -508,7 +508,9 @@ export class ReplSession {
     try {
       js = this.#transpiler.transformSync(code);
     } catch (e) {
-      return { output: "", error: errorText(e) };
+      const error = errorText(e);
+      // Playwright scripts often end with `return x`; a session's script cannot.
+      return { output: "", error: /Top-level return/.test(error) ? `${error}\nend the script with the value instead: its last expression prints` : error };
     }
     let timer: Timer | undefined;
     try {

@@ -29,8 +29,9 @@ waiting after 120 seconds.
 - `listBrowserTabs()` lists every Safari tab; `attachBrowserTab(id)` and
   `attachActiveBrowserTab()` hand you one the user already has. Only read
   those; never close or move them.
-- `tabs` (the pages this session holds), `getTabs()`, `getTabByTargetId(id)`,
-  `closeTab(page)`.
+- `tabs` (the pages this session holds), `getTabs()`, `getTabByTargetId(id)`
+  (a page this session holds, else null: attach any other tab with
+  `attachBrowserTab(id)`), `closeTab(page)`.
 
 ## Reading a page
 
