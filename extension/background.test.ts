@@ -80,9 +80,19 @@ async function start() {
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
   const onMessage = new Hook<[unknown, Sender]>();
-  const onUpdated = new Hook<[number, { status: string }]>();
+  const onUpdated = new Hook<[number, { status: string; url?: string }]>();
+  const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
+  const onRemoved = new Hook<[number]>();
   const hook = () => new Hook<unknown[]>();
   const storage = { get: async () => ({}), set: async () => {}, remove: async () => {} };
+  // Session storage keeps what is put in it, as Safari's does while it
+  // runs: a recording lives there between steps.
+  const kept = new Map<string, unknown>();
+  const session = {
+    get: async (keys: string | string[] | null) => Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)])),
+    set: async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v)); },
+    remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
+  };
   const tabOf = (id: number) => {
     const tab = tabs.get(id);
     if (!tab) throw new Error(`Tab '${id}' was not found`);
@@ -112,9 +122,11 @@ async function start() {
 
   const browser = {
     runtime: { onMessage, onInstalled: hook(), onStartup: hook(), onConnect: hook() },
+    action: { onClicked, setBadgeText: async () => {}, setTitle: async () => {} },
+    alarms: { onAlarm: hook(), create: () => {}, clear: async () => true },
     tabs: {
       onUpdated,
-      onRemoved: hook(),
+      onRemoved,
       onCreated: hook(),
       onAttached: hook(),
       onReplaced: hook(),
@@ -151,12 +163,14 @@ async function start() {
         return [{ frameId: 0, result: result ?? null }];
       },
     },
-    storage: { local: storage, session: storage },
+    storage: { local: storage, session },
     windows: { onFocusChanged: hook(), onRemoved: hook(), WINDOW_ID_NONE: -1 },
   };
 
   let seq = 0;
   const waiting = new Map<string, (answer: Answer) => void>();
+  // What background.js tells the daemon unasked.
+  const told: { op: string; [key: string]: unknown }[] = [];
   let socket: Socket | undefined;
   class Socket {
     static CONNECTING = 0;
@@ -166,8 +180,9 @@ async function start() {
     onmessage = (_ev: { data: string }) => {};
     constructor() { socket = this; }
     send(data: string) {
-      const m = JSON.parse(data) as { id?: string; value?: unknown; error?: string };
+      const m = JSON.parse(data) as { id?: string; op: string; value?: unknown; error?: string };
       if (m.id !== undefined) waiting.get(m.id)?.({ value: m.value, error: m.error });
+      else told.push(m);
     }
     close() {}
   }
@@ -185,6 +200,7 @@ async function start() {
   return {
     clock,
     trips,
+    told,
     // A tab showing a page whose script reported in to this background page,
     // or, reported false, to an earlier run of it (Safari stops an idle one).
     open(url: string, reported = true): Tab {
@@ -203,7 +219,7 @@ async function start() {
     },
     // The tab loads doc; Safari skips putting the script in some pages.
     navigate(tab: Tab, doc: Doc, script = true) {
-      onUpdated.fire(tab.id, { status: "loading" });
+      onUpdated.fire(tab.id, { status: "loading", url: doc.url });
       tab.doc = doc;
       if (script) copyIn(tab, doc);
       onUpdated.fire(tab.id, { status: "complete" });
@@ -221,6 +237,24 @@ async function start() {
       waiting.set(id, answer.resolve);
       open.onmessage({ data: JSON.stringify({ id, op: "relay", args: [tab.id, op, args, 30000, 0] }) });
       return answer.promise;
+    },
+    // He clicks the toolbar button with tab in front.
+    toolbar(tab: Tab) {
+      onClicked.fire({ id: tab.id, url: tab.doc.url, title: "Example" });
+    },
+    // The page in tab reports a step it recorded.
+    step(tab: Tab, step: unknown) {
+      onMessage.fire({ __safariHarnessStep: 1, step }, { tab: { id: tab.id, windowId: 1 }, frameId: 0 });
+    },
+    close(tab: Tab) {
+      tabs.delete(tab.id);
+      onRemoved.fire(tab.id);
+    },
+    // The daemon goes away, and comes back.
+    drop() { open.readyState = 3; },
+    reconnect() {
+      open.readyState = Socket.OPEN;
+      open.onopen();
     },
   };
 }
@@ -319,4 +353,66 @@ test("a stale ref or a heal in an embedded frame names the ref as the agent sent
   expect((await b.ask(tab, "click", ["f5:3"])).value).toEqual({ ok: true, healed: { ref: "f5:3", now: "f5:9" } });
   tab.doc.does = () => ({ error: "stale ref 3; re-run snapshot" });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
+});
+
+const clickStep = (n: number) => ({ kind: "click", url: "https://example.com/", target: { role: "button", name: `Step ${n}`, tag: "button", near: "", path: "", index: 0, count: 1 } });
+const recordings = (b: { told: { op: string; [key: string]: unknown }[] }) => b.told.filter((m) => m.op === "recording").map((m) => m.recording);
+
+test("teach mode records the steps of the tab he started it in, and the daemon gets them when he stops", async () => {
+  const b = await start();
+  await b.clock.advance(60_000);
+  const tab = b.open("https://example.com/");
+  const other = b.open("https://example.org/");
+  b.toolbar(tab);
+  await b.clock.advance(0);
+  expect(tab.doc.ran).toEqual(["record"]);
+  b.step(tab, clickStep(1));
+  b.step(other, clickStep(99));
+  b.step(tab, clickStep(2));
+  await b.clock.advance(1000);
+  // what he was still typing when he stopped comes back with the stop
+  const typing = { kind: "type", url: "https://example.com/", target: clickStep(3).target, value: "Ada" };
+  tab.doc.does = (op) => (op === "record" ? { ok: true, recording: false, pending: typing } : {});
+  b.toolbar(tab);
+  await b.clock.advance(0);
+  expect(recordings(b)).toEqual([{ url: "https://example.com/", title: "Example", startedAt: 60_000, steps: [clickStep(1), clickStep(2), typing], stoppedAt: 61_000, why: "stopped" }]);
+  // stopped means stopped: a later step is nobody's
+  b.step(tab, clickStep(4));
+  await b.clock.advance(0);
+  expect(recordings(b)).toHaveLength(1);
+});
+
+test("a load soon after a step is that step's doing, and one long after is his own", async () => {
+  const b = await start();
+  await b.clock.advance(60_000);
+  const tab = b.open("https://example.com/");
+  b.toolbar(tab);
+  await b.clock.advance(0);
+  b.step(tab, clickStep(1));
+  await b.clock.advance(1000);
+  b.navigate(tab, new Doc("https://example.com/next"));
+  await b.clock.advance(20_000);
+  b.navigate(tab, new Doc("https://example.com/later"));
+  await b.clock.advance(1000);
+  b.toolbar(tab);
+  await b.clock.advance(0);
+  expect(recordings(b)[0]).toMatchObject({
+    steps: [clickStep(1), { kind: "navigate", url: "https://example.com/next", from: "step" }, { kind: "navigate", url: "https://example.com/later", from: "user" }],
+  });
+});
+
+test("closing the recorded tab ends its recording, and one ended while the daemon is away reaches it when it is back", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  b.toolbar(tab);
+  await b.clock.advance(0);
+  b.step(tab, clickStep(1));
+  await b.clock.advance(0);
+  b.drop();
+  b.close(tab);
+  await b.clock.advance(0);
+  expect(recordings(b)).toEqual([]);
+  b.reconnect();
+  await b.clock.advance(0);
+  expect(recordings(b)).toMatchObject([{ url: "https://example.com/", steps: [clickStep(1)], why: "closed" }]);
 });
