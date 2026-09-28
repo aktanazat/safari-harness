@@ -287,6 +287,57 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
   check("wait sees text the page shows for only an instant", r.found === true, r);
 });
 
+// Case and spacing aside, as a click finds its target.
+await withPage("<h2>Tretinoin   cream 0.05%</h2>", "", async (tab) => {
+  const r = await call("wait", { tab, text: "TRETINOIN cream", ms: 1500 });
+  check("wait matches text in any case", r.found === true, r);
+});
+
+// A page that navigates while wait runs (a sign-in redirect, or a chain of
+// them) is read again after each load; a miss says where the tab landed.
+await withPage("<p>start</p>", "setTimeout(() => location.reload(), 300)", async (tab) => {
+  const pending = call("wait", { tab, text: "never shown", ms: 5000 }).catch((e: Error) => e.message);
+  await Bun.sleep(1500);
+  await call("eval", { tab, expression: `(() => { setTimeout(() => { location.href = "https://example.org/"; }, 200); return 1; })()` });
+  const r = await pending;
+  check("wait lasts through two navigations and gives the page the tab landed on", r?.found === false && r.url === "https://example.org/", r);
+});
+
+// ---------- shadow roots ----------
+
+// Web components draw into shadow roots, which a plain query and innerText
+// never enter (CVS's insurance-card upload lives in them). The outline, the
+// text, waits, clicks, and uploads read open ones as part of the page, and a
+// <slot> as what the host put in it. The page's own script, not the
+// extension's, reacts and adds the later text, as a site's would.
+const SHADOW_PAGE_JS = `const r = document.getElementById("host").shadowRoot;
+  r.getElementById("sf").onchange = (e) => { r.getElementById("sout").textContent = "got " + e.target.files[0].name; };
+  setTimeout(() => r.getElementById("sp").append(", back side"), 1500);`;
+const SHADOW_JS = `document.getElementById("host").attachShadow({ mode: "open" }).innerHTML =
+  '<p id=sp>Insurance card</p><button onclick="this.textContent = \\'front chosen\\'">Upload front</button><label>Card <input type=file id=sf></label><div id=sout></div><slot></slot>';
+  document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(SHADOW_PAGE_JS)} }))`;
+
+await withPage("<div id=host><span>slotted words</span></div>", SHADOW_JS, async (tab) => {
+  const snap = (await call("snapshot", { tab })).snapshot as string;
+  check("snapshot shows a shadow root's text, its buttons, and slotted text",
+    snap.includes("Insurance card") && /button "Upload front"/.test(snap) && snap.includes("slotted words"), snap);
+  const text = (await call("extract", { tab })).text as string;
+  check("extract reads text inside a shadow root", text.includes("Insurance card") && text.includes("slotted words"), text);
+  const later = await call("wait", { tab, text: "back side", ms: 5000 });
+  check("wait sees text a shadow root adds later", later.found === true && later.waitedMs < 5000, later);
+  const sel = await call("wait", { tab, selector: "#sf", ms: 1000 });
+  check("wait finds a selector inside a shadow root", sel.found === true, sel);
+  const clicked = await call("click", { tab, ref: "Upload front" }).catch((e: Error) => e.message);
+  const shown = await call("wait", { tab, text: "front chosen", ms: 2000 });
+  check("click by text reaches a button inside a shadow root", shown.found === true, { clicked, shown });
+  const file = "/private/var/tmp/safari-harness-shadow-check.txt";
+  await Bun.write(file, "card\n");
+  const up = await call("upload", { tab, paths: [file] }).catch((e: Error) => e.message);
+  const got = await call("wait", { tab, text: "got safari-harness-shadow-check.txt", ms: 3000 });
+  check("upload without a ref finds the file input inside a shadow root", got.found === true, { up, got });
+  await Bun.file(file).delete();
+});
+
 // ---------- secrets in the outline ----------
 
 // Autofill fills these without the agent typing: a password from Apple

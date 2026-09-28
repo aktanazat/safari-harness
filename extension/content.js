@@ -113,7 +113,7 @@
     const labelledby = el.getAttribute("aria-labelledby");
     if (labelledby) {
       const parts = labelledby.split(/\s+/)
-        .map((id) => document.getElementById(id))
+        .map((id) => el.getRootNode().getElementById(id))
         .filter(Boolean)
         .map((n) => textOf(n, 80));
       if (parts.some(Boolean)) return parts.filter(Boolean).join(" ");
@@ -165,7 +165,7 @@
     if (el.getAttribute("aria-checked") === "true" || el.checked === true) s.push("checked");
     if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-      if (document.activeElement === el) s.push("focused");
+      if (el.getRootNode().activeElement === el) s.push("focused");
       const v = el.value;
       if (v) s.push(secretField(el) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
     }
@@ -193,6 +193,52 @@
     if (u.origin === location.origin && u.pathname === location.pathname && u.search === location.search) return null;
     const base = u.origin === location.origin ? u.pathname : u.origin + u.pathname;
     return base + (u.search.length > 41 ? "?…" : u.search);
+  }
+
+  // ---------- shadow roots ----------
+  // Web components draw into shadow roots, which querySelector, innerText,
+  // and a MutationObserver on the document never enter (CVS's insurance
+  // forms live there). Open ones are read as part of the page, as drawn: a
+  // host shows its shadow root, and a <slot> the host's children assigned to
+  // it. A closed root stays unreadable.
+  function drawnChildren(el) {
+    if (el.shadowRoot) return el.shadowRoot.childNodes;
+    if (el.tagName === "SLOT" && el.assignedNodes().length) return el.assignedNodes();
+    return el.childNodes;
+  }
+
+  // Every element under root, each shadow root's right after its host.
+  function* deepElements(root) {
+    if (root.shadowRoot) yield* deepElements(root.shadowRoot);
+    for (const el of root.querySelectorAll("*")) {
+      yield el;
+      if (el.shadowRoot) yield* deepElements(el.shadowRoot);
+    }
+  }
+
+  function shadowRoots(root = document) {
+    const out = root.shadowRoot ? [root.shadowRoot] : [];
+    for (const el of deepElements(root)) if (el.shadowRoot) out.push(el.shadowRoot);
+    return out;
+  }
+
+  function deepQueryAll(selector, root = document) {
+    return [root, ...shadowRoots(root)].flatMap((r) => [...r.querySelectorAll(selector)]);
+  }
+
+  function deepQuery(selector) {
+    return document.querySelector(selector) ?? deepQueryAll(selector)[0] ?? null;
+  }
+
+  // The innermost element at a point: elementFromPoint stops at a host.
+  function deepPoint(x, y) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
   }
 
   // ---------- snapshot ----------
@@ -229,7 +275,7 @@
   const offsetWaiters = new Map(); // request id -> resolve
 
   function frameElementOf(source) {
-    for (const f of document.querySelectorAll("iframe, frame")) if (f.contentWindow === source) return f;
+    for (const f of deepQueryAll("iframe, frame")) if (f.contentWindow === source) return f;
     return null;
   }
 
@@ -277,7 +323,7 @@
     }
   });
   if (window !== window.top) parent.postMessage({ __shFrame: frameToken }, "*");
-  for (const f of document.querySelectorAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
+  for (const f of deepQueryAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
 
   // The element's box in the top page's viewport, in CSS pixels, scrolled
   // into view: where a real mouse click must land.
@@ -309,7 +355,7 @@
   }
   function inlineBodies() {
     const out = [];
-    for (const f of document.querySelectorAll("iframe, frame")) {
+    for (const f of deepQueryAll("iframe, frame")) {
       const d = inlineDoc(f);
       if (d) out.push(d.body);
     }
@@ -336,7 +382,7 @@
 
   function snapshot(opts = {}) {
     pruneRefs();
-    const root = opts.root ? document.querySelector(opts.root) : document.body;
+    const root = opts.root ? deepQuery(opts.root) : document.body;
     if (!root) return { error: "root not found" };
     const maxLines = opts.maxNodes || 600;
     const query = opts.query ? String(opts.query).toLowerCase() : null;
@@ -378,7 +424,7 @@
         const block = !d.startsWith("inline") && d !== "contents";
         const edge = d === "table-cell" ? CELL : BREAK;
         if (block) add(edge);
-        for (const child of el.childNodes) {
+        for (const child of drawnChildren(el)) {
           if (child.nodeType === Node.TEXT_NODE) add(child.nodeValue);
           else if (child.nodeType === Node.ELEMENT_NODE) {
             if (child.tagName === "BR") add(BREAK);
@@ -536,7 +582,7 @@
     if (/^\d+$/.test(key)) {
       const el = refMap.get(key);
       if (el && el.isConnected) return el;
-      const dom = document.querySelector(`[${REF_ATTR}="${key}"]`);
+      const dom = deepQuery(`[${REF_ATTR}="${key}"]`);
       if (dom) refMap.set(key, dom);
       return dom;
     }
@@ -552,7 +598,7 @@
 
   function bySelector(selector) {
     let all;
-    try { all = [...document.querySelectorAll(selector)]; } catch { return null; }
+    try { all = deepQueryAll(selector); } catch { return null; }
     return all.find(shown) ?? all[0] ?? null;
   }
 
@@ -562,7 +608,7 @@
   function byText(text) {
     const want = text.replace(/\s+/g, " ").trim().toLowerCase();
     if (!want) return null;
-    const all = [document.body, ...inlineBodies()].flatMap((b) => [...b.querySelectorAll("*")]);
+    const all = [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]);
     let partial = null;
     let found = null;
     for (const el of all) {
@@ -665,7 +711,7 @@
     // The topmost element at that point gets the click only when it is part
     // of the target (an overlay inside a link); anything else is a cover
     // that would swallow the click, so click the target itself.
-    const hit = document.elementFromPoint(x, y);
+    const hit = deepPoint(x, y);
     const target = hit && el.contains(hit) ? hit : el;
     fireClick(target, x, y);
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
@@ -705,10 +751,10 @@
     if (ref !== null && ref !== undefined) {
       const el = resolve(ref);
       if (!el) return missing(ref);
-      input = el.matches("input[type=file]") ? el : el.querySelector("input[type=file]");
+      input = el.matches("input[type=file]") ? el : deepQueryAll("input[type=file]", el)[0];
       if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
     } else {
-      const all = document.querySelectorAll("input[type=file]");
+      const all = deepQueryAll("input[type=file]");
       if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
       input = all[0];
     }
@@ -942,10 +988,10 @@
   // latter, which must then say it is a username or email field.
   function loginFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const password = [...document.querySelectorAll("input[type=password]")]
+    const password = deepQueryAll("input[type=password]")
       .find((el) => usable(el) && el.getAttribute("autocomplete") !== "new-password") ?? null;
     const scope = password?.form ?? document;
-    const texts = [...scope.querySelectorAll("input:not([type]), input[type=text], input[type=email], input[type=tel]")].filter(usable);
+    const texts = deepQueryAll("input:not([type]), input[type=text], input[type=email], input[type=tel]", scope).filter(usable);
     const tagged = texts.find((el) => /\b(username|email)\b/.test(el.getAttribute("autocomplete") ?? ""));
     const username = tagged ?? (password
       ? texts.filter((el) => el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING).pop()
@@ -979,7 +1025,7 @@
   // a code, or a row of one-character boxes (one digit each).
   function codeFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const inputs = [...document.querySelectorAll("input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]")].filter(usable);
+    const inputs = deepQueryAll("input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]").filter(usable);
     const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
     if (marked) return [marked];
     const boxes = inputs.filter((el) => el.maxLength === 1);
@@ -1049,12 +1095,12 @@
   // token, and chooses select options that match. The reply names the
   // fields, never what went in them.
   function fillAddress(values, root) {
-    const scope = root ? document.querySelector(root) : document;
+    const scope = root ? deepQuery(root) : document;
     if (!scope) return missing(root);
     const filled = [];
     const kept = [];
     let cards = 0;
-    for (const el of scope.querySelectorAll("input, select, textarea")) {
+    for (const el of deepQueryAll("input, select, textarea", scope)) {
       if (el.disabled || el.readOnly || !shown(el) || secretField(el) || /^(hidden|submit|button|checkbox|radio|file|image|reset)$/.test(el.type)) continue;
       const token = addressToken(el);
       if (token === "card") { cards++; continue; }
@@ -1102,7 +1148,12 @@
   }
 
   function pressKey(ref, spec) {
-    const el = (ref === null || ref === undefined ? null : resolve(ref)) || document.activeElement || document.body;
+    let el = ref === null || ref === undefined ? null : resolve(ref);
+    if (!el) {
+      el = document.activeElement;
+      while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    }
+    el ??= document.body;
     const { key, flags } = parseKey(spec);
     const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
     el.dispatchEvent(new KeyboardEvent("keydown", common));
@@ -1146,19 +1197,43 @@
     return out + text.slice(at);
   }
 
+  // innerText stops at a shadow root and reads a filled <slot> as empty. The
+  // path from root down to each open shadow host and each filled slot is
+  // read node by node, as drawn; each subtree off that path is read whole
+  // by leaf (innerText, or visibleText).
+  function readText(root, leaf) {
+    const up = (n) => n.assignedSlot ?? (n.parentNode instanceof ShadowRoot ? n.parentNode.host : n.parentNode);
+    const path = new Set();
+    for (const el of [root, ...deepElements(root)]) {
+      if (!el.shadowRoot && !(el.tagName === "SLOT" && el.assignedNodes().length)) continue;
+      for (let n = el; n && !path.has(n); n = n === root ? null : up(n)) path.add(n);
+    }
+    if (!path.size) return leaf(root);
+    const read = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue.replace(/\s+/g, " ");
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+      if (node.tagName === "BR") return "\n";
+      const d = getComputedStyle(node).display;
+      if (d === "none") return "";
+      const t = path.has(node) ? [...drawnChildren(node)].map(read).join("") : leaf(node);
+      return d.startsWith("inline") || d === "contents" ? t : `\n${t}\n`;
+    };
+    return read(root);
+  }
+
   // Default root: the page's main region, or its only article; otherwise the
   // whole body (the first of many articles is a card, not the content).
   // query keeps the lines containing it, searched across the whole body.
   function extract(opts = {}) {
     let root;
-    if (opts.selector) root = document.querySelector(opts.selector);
+    if (opts.selector) root = deepQuery(opts.selector);
     else if (opts.query) root = document.body;
     else {
       const articles = document.querySelectorAll("article");
       root = document.querySelector("main, [role=main]") || (articles.length === 1 ? articles[0] : document.body);
     }
     if (!root) return { error: "no content root" };
-    let text = visibleText(root).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    let text = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     if (opts.query) {
       const q = String(opts.query).toLowerCase();
       text = text.split("\n").filter((line) => line.toLowerCase().includes(q)).join("\n");
@@ -1191,23 +1266,30 @@
   // older one.
   let pendingWait = null;
 
+  // Text matches as a click's target does: case and spacing aside.
   function present(selector, text) {
-    return (!selector || document.querySelector(selector) !== null) &&
-      (!text || (document.body?.innerText ?? "").includes(text));
+    if (selector && deepQuery(selector) === null) return false;
+    if (!text) return true;
+    const want = norm(text).toLowerCase();
+    return [document.body, ...inlineBodies()].some((b) => b && norm(readText(b, (el) => el.innerText ?? "")).toLowerCase().includes(want));
   }
 
   function waitFor(selector, text) {
     pendingWait?.(false);
     if (present(selector, text)) return { found: true };
     return new Promise((resolve) => {
-      const observer = new MutationObserver(() => { if (present(selector, text)) done(true); });
+      const opts = { childList: true, subtree: true, characterData: true, attributes: true };
+      // a change inside a shadow root reaches only an observer on that root
+      const watch = () => { for (const r of shadowRoots()) observer.observe(r, opts); };
+      const observer = new MutationObserver(() => { watch(); if (present(selector, text)) done(true); });
       const done = (found) => {
         observer.disconnect();
         if (pendingWait === done) pendingWait = null;
         resolve({ found });
       };
       pendingWait = done;
-      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true });
+      observer.observe(document.documentElement, opts);
+      watch();
     });
   }
 
@@ -1219,7 +1301,7 @@
     if (what === "count") {
       if (/^\d+$/.test(key)) return { value: resolve(key) ? 1 : 0 };
       if (CSS_HINT.test(key)) {
-        try { return { value: document.querySelectorAll(key).length }; } catch { /* not a selector: count by text */ }
+        try { return { value: deepQueryAll(key).length }; } catch { /* not a selector: count by text */ }
       }
       return { value: resolve(key) ? 1 : 0 };
     }
@@ -1307,7 +1389,7 @@
   }
 
   function clickAt(x, y) {
-    const el = document.elementFromPoint(x, y);
+    const el = deepPoint(x, y);
     if (!el) return { error: "no element at point" };
     fireClick(el, x, y);
     return { ok: true, tag: el.tagName };

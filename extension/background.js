@@ -96,15 +96,19 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const msg = { __safariHarness: 1, id: nextId(), op, args };
   keepAwake(tabId);
   await waitReady(tabId, 15000);
-  try {
-    const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
-    if (res !== undefined) return res;
-  } catch (e) {
-    if (e.navigated) {
-      if (ACTIONS.has(op)) return { value: { ok: true } };
-      await waitReady(tabId, 15000);
-      const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
+  // A read asked of a page that navigates (a redirect, or a chain of them)
+  // is asked again of each new page, until its time runs out.
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const res = await sendUntilNavigation(tabId, msg, Math.max(deadline - Date.now(), 1000), frameId);
       if (res !== undefined) return res;
+      break;
+    } catch (e) {
+      if (!e.navigated) break;
+      if (ACTIONS.has(op)) return { value: { ok: true } };
+      if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
+      await waitReady(tabId, 15000);
     }
   }
   // The page has no content script (Safari skipped injecting it, e.g. after a
@@ -112,8 +116,9 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   // answered. Inject it and ask once more.
   await ensureContent(tabId, frameId);
   const res = await sendUntilNavigation(tabId, msg, timeoutMs, frameId);
-  if (res === undefined) throw new Error("the page did not answer; reload it with goto and retry");
-  return res;
+  if (res !== undefined) return res;
+  const { url } = await api.tabs.get(tabId);
+  throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
 }
 
 // Run an action and report what it caused: a new page in this tab

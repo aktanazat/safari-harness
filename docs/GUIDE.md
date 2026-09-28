@@ -84,6 +84,10 @@ Read with `snapshot` when you do not yet know what is on the page.
 - Embedded frames print under their `iframe` line. Refs inside a frame from
   another site look like `f3:12`; use them like any ref. Text and selector
   targets also reach into frames.
+- Web components that draw into an open shadow root read as part of the
+  page: snapshot, extract, wait, text and selector targets, and `upload`
+  reach inside, so never walk `shadowRoot` by hand with `eval`. A closed
+  shadow root stays unreadable.
 - `diff: true` returns only the lines that changed since your last snapshot
   of that tab (`- ` gone, `+ ` new): the cheap way to see what an action did.
 
@@ -153,9 +157,13 @@ Escalate in this order:
 Wait for the page, not the clock.
 
 - `wait` with `text` or `selector` returns the moment it appears, even in a
-  background tab, and catches text that shows only briefly. `ms` is the
-  timeout (default 10000, max 30000); the call ends then even if the page is
-  too busy to answer. The result says `found: true|false`.
+  background tab, and catches text that shows only briefly. Text matches in
+  any case. `ms` is the timeout (default 10000, max 30000); the call ends
+  then even if the page is too busy to answer. The result says
+  `found: true|false`.
+- A page that navigates during a wait is read again after each load. A miss
+  also gives the tab's `url` and `title`: a sign-in redirect or a bounce to
+  the home page shows there, so read them before waiting again.
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers.
 - A page that fills in after loading (search results, feeds) still needs a

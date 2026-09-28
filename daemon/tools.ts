@@ -162,7 +162,8 @@ export async function tabInfo(opts: { tab?: number } = {}) {
 // happens (waitFor in content.js); the time limit is kept here, because
 // Safari stops a content script's timers in a hidden tab. The answer at the
 // limit does not wait for the page: a page still loading, or too busy to
-// answer, would otherwise hold the call past its limit.
+// answer, would otherwise hold the call past its limit. A miss says where
+// the tab is: often a redirect (signed out, sent to the home page).
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string }) {
   const tab = await resolveTab(opts.tab);
   const until = opts.selector !== undefined || opts.text !== undefined;
@@ -182,7 +183,10 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   const timer = setTimeout(() => { stop(); timeUp.resolve({ found: false }); }, limit);
   try {
     const { found } = await Promise.race([seen, timeUp.promise]);
-    return { ok: true, found, waitedMs: Date.now() - start };
+    const waitedMs = Date.now() - start;
+    if (found) return { ok: true, found, waitedMs };
+    const now = (await listTabs()).find((t) => t.id === tab);
+    return { ok: true, found, waitedMs, url: now?.url, title: now?.title };
   } finally {
     clearTimeout(timer);
   }
@@ -667,7 +671,7 @@ export function formatResult(value: unknown): string {
 
 export async function callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
   const tool = TOOLS[name];
-  if (!tool) throw new Error(`unknown tool ${name}`);
+  if (!tool) throw new Error(`unknown tool ${name}; tools: ${Object.keys(TOOLS).filter((k) => !TOOLS[k].hidden).join(", ")}`);
   return tool.run(args);
 }
 
