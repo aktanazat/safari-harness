@@ -20,8 +20,10 @@
 #     from the installed ones, or the extension is not connected. Safari
 #     reloads the extension, which reconnects to the daemon.
 # Agent sessions already running keep their MCP server's code until they
-# start again. deploys.log records each deploy; the last releases stay for
-# --rollback. One deploy runs at a time.
+# start again; each server notices the new release on its next call, asks
+# its client to list the tools again, and answers with a restart message
+# (daemon/fresh.ts). deploys.log records each deploy; the last releases
+# stay for --rollback. One deploy runs at a time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
