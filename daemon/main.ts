@@ -27,6 +27,7 @@ import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, watched } from "./mission.ts";
 import { saveRecording } from "./recordings.ts";
 import { notify } from "./front.ts";
+import { loadSpaces } from "./spaces.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -47,8 +48,10 @@ note("start", {
   code: CODE,
   reason: !last ? "first start" : last.kind === "stop" ? `after a stop: ${String(last.reason)}` : "the previous daemon ended without stopping (it crashed or was killed)",
 });
-// Background tabs agents opened, so a restart still closes them (tools.ts).
+// Background tabs agents opened, and the windows they opened them in, so a
+// restart still closes them (tools.ts, spaces.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
+loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`));
 // What the user taught in a tab (teach mode) is saved as he stops it; a
 // notification tells him its name, or why it was not saved.
 bridge.onRecording = (recording) => {

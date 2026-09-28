@@ -27,8 +27,11 @@
 // closed under its steps, the window left a group no one deleted. Only a
 // caller's own call may start a Safari the user quit (socket in bridge.ts):
 // while the extension is gone, an ended window waits for it to come back.
+// The windows are saved as they change, so a restarted daemon picks up
+// where the last left off (loadSpaces).
 
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { bridge } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
@@ -95,6 +98,7 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   const now = (await bridge.request("windows.resolve", [space.window]).catch(() => null)) as number | null;
   if (now === null || now === space.window) return [];
   space.window = now;
+  save();
   return all.filter((t) => t.windowId === now);
 }
 
@@ -119,15 +123,53 @@ export async function spaceWindow(group?: string): Promise<Space> {
       const off = groupsOff();
       const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
-      if (owner !== undefined) space.unwatch = watchOwner(owner, () => void end(space).catch((e) => console.error(`[safari-harness] closing the window of ${key} failed:`, e)));
-      sweeping ??= setInterval(() => void sweep().catch(() => {}), SWEEP_MS);
-      sweeping.unref();
+      watch(space);
+      save();
       return space;
     })();
     making.set(key, made);
     made.finally(() => making.delete(key)).catch(() => {});
   }
   return made;
+}
+
+function watch(space: Space) {
+  if (space.owner !== undefined) space.unwatch = watchOwner(space.owner, () => void end(space).catch((e) => console.error(`[safari-harness] closing the window of ${space.key} failed:`, e)));
+  sweepSoon();
+}
+
+// The windows, saved as they change, so a restarted daemon (a deploy)
+// still knows them: an agent's next tab joins its window, the window still
+// closes when the agent exits, and the keeper still deletes its group.
+// Before, a restart left every agent window open for good.
+type Kept = Omit<Space, "unwatch" | "emptySince">;
+let spacesFile: string | undefined;
+
+export function loadSpaces(path: string): void {
+  spacesFile = path;
+  let saved: { spaces?: Kept[]; closing?: Kept[]; ended?: Kept[] } = {};
+  try {
+    saved = JSON.parse(readFileSync(path, "utf8")) as typeof saved;
+  } catch {
+    // none kept yet
+  }
+  for (const s of saved.spaces ?? []) {
+    spaces.set(s.key, s);
+    watch(s);
+  }
+  for (const s of saved.closing ?? []) closing.set(s.name, s);
+  for (const s of saved.ended ?? []) ended.add(s);
+  if (ended.size > 0) sweepSoon();
+}
+
+function save() {
+  if (!spacesFile) return;
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.why ? { why: s.why } : {}) });
+  try {
+    writeFileSync(spacesFile, JSON.stringify({ spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }));
+  } catch (e) {
+    console.error("[safari-harness] window list not written:", e instanceof Error ? e.message : e);
+  }
 }
 
 export const spaceNote = (s: Space): SpaceNote => ({ name: s.name, group: s.group, ...(s.why ? { why: s.why } : {}) });
@@ -142,6 +184,7 @@ async function orphaned(name: string): Promise<Space | undefined> {
     if (q.get("name") !== name || !width || !height) continue;
     const s: Space = { key: `orphan:${name}`, id: q.get("id") ?? "", window: t.windowId, name, size: { width, height }, group: "grouped" };
     closing.set(name, s);
+    save();
     return s;
   }
   return undefined;
@@ -170,6 +213,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
     case "making":
       if (!live) return { ok: false };
       live.group = "making";
+      save();
       return { ok: true };
     case "grouped":
     case "plain":
@@ -183,6 +227,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
         closing.delete(name);
         await end(s);
       }
+      save();
       return { ok: true };
     }
     case "release": {
@@ -194,13 +239,17 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const now = await located(s);
       return { ok: true, tabs: now.length, left: now.filter((t) => !isPage(t, s)).length, ...s.size };
     }
-    case "gone":
-      return { ok: closing.delete(name) };
+    case "gone": {
+      const ok = closing.delete(name);
+      save();
+      return { ok };
+    }
     case "scratch": {
       if (!bridge.connected) return { ok: false };
       const s = await spaceWindow("tab group cleanup");
       s.group = "plain";
       s.why = "a window to delete tab groups from";
+      save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };
     }
     case "raised":
@@ -215,18 +264,26 @@ async function end(space: Space) {
   space.unwatch = undefined;
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
+    save();
     return;
   }
   if (!bridge.connected) {
     ended.add(space);
+    save();
     return;
   }
   ended.delete(space);
+  save();
   const page = (await located(space)).find((t) => isPage(t, space));
   if (page) await bridge.request("tabs.close", [page.id], 10000);
 }
 
 let sweeping: Timer | undefined;
+
+function sweepSoon() {
+  sweeping ??= setInterval(() => void sweep().catch(() => {}), SWEEP_MS);
+  sweeping.unref();
+}
 
 async function sweep() {
   if (spaces.size === 0 && ended.size === 0) {

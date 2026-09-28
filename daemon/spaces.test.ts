@@ -207,6 +207,27 @@ test("an agent's window takes a name no group still to be deleted has", async ()
   q.kill();
 });
 
+// A deploy restarts the daemon. It forgot every agent window: the agent's
+// next tab opened a second window, and the first stayed open for good,
+// its page left behind when the agent exited.
+test("a restarted daemon puts an agent's next tab in the window it already had", async () => {
+  const s = safari();
+  const q = agent();
+  const saved = join(dir, "spaces.json");
+  // Each daemon's spaces.ts, loaded afresh: the one before the restart and
+  // the one after.
+  const first = (await import(`./spaces.ts?first`)) as typeof import("./spaces.ts");
+  const restarted = (await import(`./spaces.ts?restarted`)) as typeof import("./spaces.ts");
+  first.loadSpaces(saved);
+  const before = await runAs(q.pid, () => first.spaceWindow());
+  restarted.loadSpaces(saved);
+  const after = await runAs(q.pid, () => restarted.spaceWindow());
+  expect(after.window).toBe(before.window);
+  q.kill();
+  // Both have saved by the time the page closes, before the folder goes.
+  await until(() => !pageIn(s.tabs, before.window));
+});
+
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
   const s = safari();
   const h = agent();
