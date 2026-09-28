@@ -228,3 +228,12 @@ export function spaceById(id: string): { owner?: number; window: number } | unde
   const who = space.key.slice(0, space.key.indexOf(":"));
   return who === "daemon" ? { window: space.window } : { owner: Number(who), window: space.window };
 }
+
+// The agent windows open now, and whose each is (tabs-view.ts): a tab in
+// one is that agent's.
+export function windowOwners(): Map<number, number | undefined> {
+  return new Map([...spaces.values()].map((s) => [s.window, s.owner]));
+}
+
+// An agent window's own page, which is no one's tab to work in.
+export const isSpacePage = (t: TabInfo) => t.url?.startsWith(`${PAGE}?`) ?? false;

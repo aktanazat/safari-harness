@@ -14,8 +14,9 @@ import { REF, resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
 
-// Real input reaches tabs through the daemon's RPC port.
-const VIA_RPC: TabOps = { tabs: async () => (await rpc("tabs")) as TabInfo[], activate: (tab) => rpc("activate", { tab }) };
+// Real input reaches tabs through the daemon's RPC port. It gives the user
+// back his own front tab, so it lists his tabs too (tabs-view.ts).
+const VIA_RPC: TabOps = { tabs: async () => (await rpc("tabs", { all: true })) as TabInfo[], activate: (tab) => rpc("activate", { tab }) };
 
 type PageState = { marks: number; focus: boolean };
 

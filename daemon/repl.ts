@@ -543,13 +543,21 @@ export class ReplSession {
   // lets go of tabs someone closed.
   async #refresh(): Promise<void> {
     if (this.tabs.length === 0) return;
-    const rows = (await this.call("tabs")) as TabRow[];
+    const rows = await this.#rows(true);
     // A copy: forgetting a page takes it out of this.tabs.
     for (const p of this.tabs.slice()) {
       const row = rows.find((r) => r.id === p.id);
       if (row) p.note(row.url, row.title);
       else this.#forget(p);
     }
+  }
+
+  // The tabs tool's rows. An agent's own call lists its tabs, the user's
+  // front tab, and a line counting his others; all lists his too, their
+  // addresses cut at the path (tabs-view.ts). A page may be one of his.
+  async #rows(all = false): Promise<TabRow[]> {
+    const rows = (await this.call("tabs", all ? { all: true } : {})) as unknown[];
+    return rows.filter((r): r is TabRow => typeof r === "object" && r !== null);
   }
 
   #forget(p: Page): void {
@@ -578,13 +586,13 @@ export class ReplSession {
   }
 
   async listBrowserTabs(): Promise<{ targetId: string; id: number; active: boolean; title: string; url: string; attached: boolean }[]> {
-    const rows = (await this.call("tabs")) as TabRow[];
+    const rows = await this.#rows();
     return rows.map((r) => ({ targetId: String(r.id), id: r.id, active: !!r.active, title: r.title ?? "", url: r.url ?? "", attached: this.tabs.some((p) => p.id === r.id) }));
   }
 
   async attachBrowserTab(targetId: unknown): Promise<Page> {
     const id = Number(targetId);
-    const row = ((await this.call("tabs")) as TabRow[]).find((r) => r.id === id);
+    const row = (await this.#rows(true)).find((r) => r.id === id);
     if (!row) throw new Error(`no open tab ${String(targetId)}; see listBrowserTabs()`);
     const p = this.#attached(row);
     this.#g.page = p;
@@ -592,14 +600,14 @@ export class ReplSession {
   }
 
   async attachActiveBrowserTab(): Promise<Page> {
-    const row = ((await this.call("tabs")) as TabRow[]).find((r) => r.front);
+    const row = (await this.#rows()).find((r) => r.front);
     if (!row) throw new Error("Safari has no front tab");
     return this.attachBrowserTab(row.id);
   }
 
   // Every open Safari tab as a page of this session; page stays as it was.
   async getTabs(): Promise<Page[]> {
-    const rows = (await this.call("tabs")) as TabRow[];
+    const rows = await this.#rows();
     return rows.map((r) => this.#attached(r));
   }
 
@@ -679,13 +687,13 @@ export class ReplSession {
   // The next tab an action on page opens. The action's own report names it
   // at once; a tab its script opens later shows up in the tab list.
   async waitForPopup(page: Page, ms: number): Promise<Page> {
-    const known = new Set(((await this.call("tabs")) as TabRow[]).map((r) => r.id));
+    const known = new Set((await this.#rows(true)).map((r) => r.id));
     const reported = waitFor<Page>(ms, "popup", (w) => { page.popupWaiter = w; });
     const listed = (async () => {
       const start = Date.now();
       while (Date.now() - start < ms && page.popupWaiter) {
         await Bun.sleep(500);
-        const fresh = ((await this.call("tabs")) as TabRow[]).find((r) => !known.has(r.id));
+        const fresh = (await this.#rows(true)).find((r) => !known.has(r.id));
         if (fresh && page.popupWaiter) {
           const w = page.popupWaiter;
           page.popupWaiter = null;

@@ -57,7 +57,7 @@ benchRows("content.js in WebKit", [
     page: "form.html",
     steps: [
       { op: "snapshot" }, // [1] label "Email"
-      { op: "type", args: ["1", "grace@example.com"], answer: { value: { ok: true, value: "grace@example.com" } } },
+      { op: "type", args: ["1", "grace@example.com"], answer: { value: { ok: true, kept: true } } },
     ],
   },
   {
@@ -137,7 +137,7 @@ benchRows("content.js in WebKit", [
     page: "type.html",
     steps: [
       { op: "snapshot" }, // [1] Name
-      { op: "type", args: ["1", "Ada"], answer: { value: { ok: true, value: "Ada" } } },
+      { op: "type", args: ["1", "Ada"], answer: { value: { ok: true, kept: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Page saw Ada") } } },
     ],
   },
@@ -146,7 +146,7 @@ benchRows("content.js in WebKit", [
     page: "type.html",
     steps: [
       { op: "snapshot" }, // [2] Notes
-      { op: "type", args: ["2", "New notes"], answer: { value: { ok: true, value: "New notes" } } },
+      { op: "type", args: ["2", "New notes"], answer: { value: { ok: true, kept: true } } },
     ],
   },
   {

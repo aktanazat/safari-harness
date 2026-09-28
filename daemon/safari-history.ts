@@ -9,6 +9,7 @@ import { copyFileSync, existsSync, mkdtempSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Tool } from "./tools.ts";
+import { redactUrl } from "./redact.ts";
 
 const HOME = homedir();
 const HISTORY_DB = join(HOME, "Library", "Safari", "History.db");
@@ -71,7 +72,7 @@ export function browsingHistory(opts: { text?: string; days?: number; limit?: nu
   }
   return rows.map((r) => ({
     title: r.title ?? "",
-    url: r.url,
+    url: redactUrl(r.url),
     lastVisit: new Date((APPLE_EPOCH_S + r.last) * 1000).toISOString(),
     visits: r.visits,
   }));
