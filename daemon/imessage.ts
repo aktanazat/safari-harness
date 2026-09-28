@@ -314,11 +314,13 @@ const SEND_TO_HANDLE = `on run argv
 end run`;
 // To the user's own number, as SMS through his iPhone: the carrier brings it
 // back to the phone as a text received, which alerts him, where an iMessage
-// to himself arrives quietly as one he sent. With a third argument, the
+// to himself arrives quietly as one he sent. Over RCS when the SMS copy
+// fails, the way Messages resent one by itself. With a third argument, the
 // first is a picture's path.
-const SEND_SMS = `on run argv
+type Service = "SMS" | "RCS";
+const sendOwn = (service: Service) => `on run argv
   tell application "Messages"
-    set who to participant (item 2 of argv) of (1st account whose service type = SMS)
+    set who to participant (item 2 of argv) of (1st account whose service type = ${service})
     if (count of argv) > 2 then
       send (POSIX file (item 1 of argv)) to who
     else
@@ -326,17 +328,33 @@ const SEND_SMS = `on run argv
     end if
   end tell
 end run`;
+const SEND_OWN: Record<Service, string> = { SMS: sendOwn("SMS"), RCS: sendOwn("RCS") };
 
 // Our own newest message after a rowid, by its text.
 const OUR_ROW = "SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1";
 type OurRow = { is_sent: number; is_delivered: number; error: number };
+// Our copies of a line (by its text) or of a picture (by its attachment) in
+// his thread after a rowid, oldest first: his number has a handle for each
+// service, and Messages may put the line on RCS by itself.
+const LINE_COPIES = "SELECT m.service, m.is_sent, m.error FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 1 AND h.id = ? AND m.text = ? ORDER BY m.ROWID";
+const PICTURE_COPIES = "SELECT m.service, m.is_sent, m.error FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 1 AND h.id = ? AND m.cache_has_attachments = 1 ORDER BY m.ROWID";
+type Copy = { service: string; is_sent: number; error: number };
 // The user's own number: the one his newest message went out from.
 const OWN_NUMBER = "SELECT destination_caller_id n FROM message WHERE is_from_me = 1 AND destination_caller_id LIKE '+%' ORDER BY ROWID DESC LIMIT 1";
 const NO_NUMBER = "Messages shows no phone number of the user's own to text";
+const NEWEST = "SELECT IFNULL(MAX(ROWID), 0) n FROM message";
 
-const sms = (argv: string[]) => runSend(SEND_SMS, argv).catch((e: Error) => {
-  throw /Can.t get account|-1728/.test(e.message) ? new Error("Messages on this Mac cannot send texts: on the iPhone, turn on Settings > Messages > Text Message Forwarding for it") : e;
-});
+// Messages on this Mac has no account for the service.
+class NoAccount extends Error {}
+
+// Hands a line, or a picture by its path, to Messages for the user's own
+// number over one service.
+export async function textOver(service: Service, to: string, what: string, picture = false): Promise<void> {
+  await runSend(SEND_OWN[service], picture ? [what, to, "picture"] : [what, to]).catch((e: Error) => {
+    if (!/Can.t get account|-1728/.test(e.message)) throw e;
+    throw new NoAccount(service === "SMS" ? "Messages on this Mac cannot send texts: on the iPhone, turn on Settings > Messages > Text Message Forwarding for it" : "Messages on this Mac has no RCS account");
+  });
+}
 
 async function runSend(script: string, argv: string[]): Promise<void> {
   try {
@@ -399,6 +417,78 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
   return { status: "unconfirmed", to: draft.to, note: "handed to Messages; no sent receipt yet. Check imessage_history before retrying so it is not sent twice." };
 }
 
+// What failed, once every service's newest copy did.
+function failed(copies: Map<string, Copy>): string | undefined {
+  const all = [...copies.values()];
+  return all.length && all.every((c) => c.error) ? all.map((c) => `error ${c.error} over ${c.service}`).join(" and ") : undefined;
+}
+
+// Texts line, after picture, to his own number, and watches the copies
+// Messages records after rowid after for 30 s. A copy whose SMS send fails
+// goes again over RCS; SMS goes first, since a text the carrier brings back
+// alerts his phone. The line fails only once every service it went over
+// failed. A picture that fails never costs the line: picture says why it
+// did not go.
+async function deliver(to: string, after: number, line: string, picture?: string): Promise<{ status: "received" | "sent" | "unconfirmed"; picture?: string }> {
+  let missing = picture ? await textOver("SMS", to, picture, true).then(() => undefined, (e: Error) => e.message) : undefined;
+  await textOver("SMS", to, line);
+  // Once the picture went, or its RCS copy shows, it holds up nothing.
+  let pictureSettled = picture === undefined || missing !== undefined;
+  let pictureResent = false;
+  let lineResent = false;
+  let received = false;
+  // each service's newest copy
+  let lines = new Map<string, Copy>();
+  let pictures = new Map<string, Copy>();
+  const result = (status: "received" | "sent" | "unconfirmed") => {
+    const both = pictures.has("RCS") ? failed(pictures) : undefined;
+    const why = missing ?? (both ? `Messages reported ${both} sending the picture` : undefined);
+    return { status, ...(why ? { picture: why } : {}) };
+  };
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    await Bun.sleep(1000);
+    const check = openChatDb();
+    try {
+      lines = new Map(check.query<Copy, [number, string, string]>(LINE_COPIES).all(after, to, line).map((r) => [r.service, r]));
+      if (picture) pictures = new Map(check.query<Copy, [number, string]>(PICTURE_COPIES).all(after, to).map((r) => [r.service, r]));
+      const back = check.query<{ text: string | null; body: Uint8Array | null }, [number, string]>(
+        "SELECT m.text, m.attributedBody body FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 0 AND h.id = ?",
+      ).all(after, to);
+      received ||= back.some((r) => messageText(r.text, r.body) === line);
+    } finally {
+      check.close();
+    }
+    // the picture first, so it stays ahead of the line. A failed copy may
+    // still say is_sent, as the RCS ones on his Mac did.
+    const pictureSms = pictures.get("SMS");
+    if (picture && !pictureSettled && (pictures.has("RCS") || (pictureSms?.is_sent && !pictureSms.error))) pictureSettled = true;
+    else if (picture && !pictureSettled && !pictureResent && pictureSms?.error) {
+      pictureResent = true;
+      missing = await textOver("RCS", to, picture, true).then(() => undefined, (e: Error) => `the picture failed with error ${pictureSms.error} over SMS, and over RCS: ${e.message}`);
+      pictureSettled = missing !== undefined;
+    }
+    const lineSms = lines.get("SMS");
+    if (!lineResent && lineSms?.error && !lines.has("RCS")) {
+      lineResent = true;
+      try {
+        await textOver("RCS", to, line);
+      } catch (e) {
+        if (e instanceof NoAccount) throw new Error(`Messages reported error ${lineSms.error} texting the user's phone`);
+        throw new Error(`Messages reported error ${lineSms.error} over SMS texting the user's phone, and over RCS: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      continue;
+    }
+    if (received && pictureSettled) return result("received");
+    // a resend whose copy has not shown yet may still go
+    const failure = lineResent && !lines.has("RCS") ? undefined : failed(lines);
+    if (failure) throw new Error(`Messages reported ${failure} texting the user's phone`);
+  }
+  if (received) return result("received");
+  const last = lines.get("RCS") ?? lines.get("SMS");
+  return result(last?.is_sent && !last.error ? "sent" : "unconfirmed");
+}
+
 // Texts the user's own phone, for a step waiting on him while he is away
 // from the Mac (phone.ts). His number is the one his newest message went
 // out from, so the text reaches no one else and needs no draft. A picture
@@ -413,31 +503,12 @@ export async function textOwner(line: string, picture?: string): Promise<{ statu
   let after: number;
   try {
     own = db.query<{ n: string }, []>(OWN_NUMBER).get();
-    after = db.query<{ n: number }, []>("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get()?.n ?? 0;
+    after = db.query<{ n: number }, []>(NEWEST).get()?.n ?? 0;
   } finally {
     db.close();
   }
   if (!own) throw new Error(NO_NUMBER);
-  const to = own.n;
-  const missing = picture ? await sms([picture, to, "picture"]).then(() => undefined, (e: Error) => e.message) : undefined;
-  await sms([line, to]);
-  const deadline = Date.now() + 30000;
-  let row: OurRow | null = null;
-  while (Date.now() < deadline) {
-    await Bun.sleep(1000);
-    const check = openChatDb();
-    try {
-      row = check.query<OurRow, [number, string]>(OUR_ROW).get(after, line);
-      if (row?.error) throw new Error(`Messages reported error ${row.error} texting the user's phone`);
-      const back = check.query<{ text: string | null; body: Uint8Array | null }, [number, string]>(
-        "SELECT m.text, m.attributedBody body FROM message m JOIN handle h ON h.ROWID = m.handle_id WHERE m.ROWID > ? AND m.is_from_me = 0 AND h.id = ?",
-      ).all(after, to);
-      if (back.some((r) => messageText(r.text, r.body) === line)) return { status: "received", ...(missing ? { picture: missing } : {}), to, after };
-    } finally {
-      check.close();
-    }
-  }
-  return { status: row?.is_sent ? "sent" : "unconfirmed", ...(missing ? { picture: missing } : {}), to, after };
+  return { ...(await deliver(own.n, after, line, picture)), to: own.n, after };
 }
 
 // The user's own thread after a rowid, oldest first: his replies to a text
@@ -469,10 +540,25 @@ export function ownNumber(): string {
   }
 }
 
-// Texts his own number with no look at Messages' database, so nothing
-// confirms it arrived.
+// Texts his own number for a scheduled watch. Where it can read Messages'
+// database, a failed SMS copy goes again over RCS as in textOwner. Where it
+// cannot (launchd runs a watch without the terminal's Full Disk Access),
+// the text goes over SMS alone, as it always did, and nothing confirms it
+// arrived.
 export async function textOwnNumber(to: string, line: string): Promise<void> {
-  await sms([line, to]);
+  let after: number;
+  try {
+    const db = openChatDb();
+    try {
+      after = db.query<{ n: number }, []>(NEWEST).get()?.n ?? 0;
+    } finally {
+      db.close();
+    }
+  } catch {
+    await textOver("SMS", to, line);
+    return;
+  }
+  await deliver(to, after, line);
 }
 
 // ---------- tool table ----------
