@@ -150,7 +150,10 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
     }
   }
-  const { url } = await api.tabs.get(tabId);
+  const { url, title } = await api.tabs.get(tabId);
+  // Safari's own page for a site that never answered takes no script: a
+  // reload will not help, and the address is what went wrong.
+  if (title === "Failed to open page") throw new Error(`Safari could not open ${url}: the site did not answer`);
   throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
 }
 

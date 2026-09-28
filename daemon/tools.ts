@@ -9,6 +9,8 @@ import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
 import { spaceNote, spaceTool, spaceWindow, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
+import { filledOf, navigatedOf } from "./navigated.ts";
+import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn } from "./notes.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
@@ -209,7 +211,7 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
   // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
-  const snap = await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
+  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
@@ -306,7 +308,9 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
 // as: "table" reads the page's tables and repeated card lists as rows.
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as }]);
+  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as }])) as Extract | { tables: unknown[] };
+  // as: "table" answers rows, not text
+  return "text" in page ? shieldExtract(page) : page;
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -589,6 +593,20 @@ async function saveFile(f: FilePayload, url: string, out?: string) {
   return { path, name: basename(path), size: f.size, type: f.type };
 }
 
+const isFile = (f: unknown): f is FilePayload => !!f && typeof f === "object" && "data" in f && typeof f.data === "string";
+
+// A click that took the page elsewhere answers where it went, not a file.
+// Safari shows some files itself (a PDF, an image), so that address may be
+// the file; a page there means the click opened a page, or began a download
+// of the site's own, which Safari saves in ~/Downloads.
+async function fileAfterClick(res: unknown): Promise<FilePayload> {
+  const to = navigatedOf(res);
+  if (!to) throw new Error("the page answered no file");
+  const f = (await bridge.request("fetchFile", [to.url], 120000)) as FilePayload;
+  if (/^text\/html\b/i.test(f.type)) throw new Error(`the click went to the page ${to.url}, not a file; a download the site started itself is saved in ~/Downloads`);
+  return f;
+}
+
 // A file by url, fetched with the page's cookies (the extension's own
 // fetch when the page may not read that site), or the file a ref's link or
 // button downloads. Saved in ~/Downloads unless out says where.
@@ -596,15 +614,17 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   const tab = await resolveTab(opts.tab);
   if (opts.url !== undefined) {
     const url = str(opts.url, "url");
-    const f = (await relay(tab, "fetchFile", [url, ""], 120000).catch(() => bridge.request("fetchFile", [url], 120000))) as FilePayload;
+    // A page that navigates while it fetches answers where it went instead.
+    const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
+    const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
     return saveFile(f, url, opts.out);
   }
   if (opts.ref === undefined) throw new Error("download needs ref or url");
   const ref = String(opts.ref);
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
-    const f = (await relay(tab, "download", [ref], 120000)) as FilePayload;
-    return saveFile(f, "", opts.out);
+    const f = await relay(tab, "download", [ref], 120000);
+    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", opts.out);
   } finally {
     clearTimeout(stop);
   }
@@ -625,8 +645,16 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
   const tab = await resolveTab(opts.tab);
-  const page = (await relay(tab, "eval", ["({ html: document.documentElement.outerHTML, url: location.href, title: document.title })"])) as { result: { html: string; url: string; title: string } };
-  const { html, url, title } = page.result;
+  // Reading the page is an eval, which a page that navigates meanwhile
+  // answers with where it went instead: the new page is read once more.
+  const read = async () => {
+    // the expression builds result; an answer without it navigated
+    const answer = (await relay(tab, "eval", ["({ html: document.documentElement.outerHTML, url: location.href, title: document.title })"])) as { result?: { html: string; url: string; title: string } };
+    return answer.result;
+  };
+  const page = (await read()) ?? (await read());
+  if (!page) throw new Error("the page kept navigating while it was read; save it once it settles");
+  const { html, url, title } = page;
   const out = opts.out ?? await scratchFile("safari-pdf-", `${(title || "page").replace(/[/\\:\0]/g, "_").slice(0, 80)}.pdf`);
   return renderPdf(html, url, out);
 }
@@ -670,7 +698,8 @@ const SAVE: Param = { description: "true, or an absolute file path: write the wh
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   if (!want) return result;
   const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
-  return { ...(result as object), page: await relay(opened ?? tab, "snapshot", [{}]) };
+  const page = (await relay(opened ?? tab, "snapshot", [{}])) as Snapshot;
+  return { ...(result as object), page: shieldSnapshot(page) };
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
@@ -986,13 +1015,18 @@ export const TOOLS: Record<string, Tool> = {
   },
   // A login the caller read from a password manager (Bitwarden), filled
   // into the frame login_form named, only while it is on the site the
-  // login was saved for.
+  // login was saved for. It answers which fields got it, and where the page
+  // went when the form submitted itself.
   login_fill: {
     desc: "Fill a login into the tab's sign-in form, only while the tab is on site.",
     params: { tab: TAB, frame: { type: "number", description: "frame from login_form" }, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
     required: ["tab", "site"],
     hidden: true,
-    run: async (a) => bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
+    run: async (a) => filledOf(
+      await bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
+      [...(a.username ? ["username"] : []), ...(a.password ? ["password"] : [])],
+      "login",
+    ),
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first ask the user for Touch ID and pair (as pair does); if one answers codeShown, ask the user for the 6-digit code on their Mac and call unlock with it. Call done when finished; status says why it is locked.",
@@ -1012,8 +1046,8 @@ export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; notes?: string };
-type Extract = { url: string; title: string; text: string };
+type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; notes?: string };
+type Extract = Shielded & { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
@@ -1021,14 +1055,15 @@ export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
+    const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
       const notes = v.notes ? `${v.notes}\n` : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${notes}${v.snapshot}`;
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${notes}${v.snapshot}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${text}`;

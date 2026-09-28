@@ -16,6 +16,16 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],
   },
   {
+    name: "a snapshot leaves out words no one sees, keeps a shown child of a hidden wrapper, and names a control by its screen-reader label",
+    page: "unseen.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: 'Workspace shown inside a hidden wrapper.\nh2 "Gradient heading"\n[1] button "Close dialog"\nShown words.' } } }],
+  },
+  {
+    name: "extract leaves out words no one sees and keeps a shown child of a hidden wrapper",
+    page: "unseen.html",
+    steps: [{ op: "extract", answer: { value: { text: "Workspace shown inside a hidden wrapper.\n\nGradient heading\n\nShown words." } } }],
+  },
+  {
     name: "a snapshot reads open shadow roots, with slotted text where its slot is drawn",
     page: "shadow.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'h2 "Ada Lovelace"\n[1] button "Follow"' } } }],
