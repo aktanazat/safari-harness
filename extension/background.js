@@ -91,7 +91,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -586,6 +586,62 @@ async function pageEval(src) {
   }
 }
 
+// Runs in the page's own world, so it must be self-contained: the state a
+// framework leaves in page globals, for the data tool, each as plain JSON
+// (Safari aborts on a NaN passed on, as for pageEval). One answer must stay
+// well under the 16 MB a message to the daemon may hold, so a value past
+// what is left of 4 million characters is only measured.
+function pageGlobals() {
+  const read = {
+    next: () => window.__NEXT_DATA__,
+    nuxt: () => window.__NUXT__,
+    remix: () => window.__remixContext?.state,
+    apollo: () => window.__APOLLO_STATE__ ?? window.__APOLLO_CLIENT__?.cache?.extract(),
+    state: () => window.__INITIAL_STATE__ ?? window.__PRELOADED_STATE__,
+  };
+  const values = {};
+  const tooBig = {};
+  let room = 4e6;
+  for (const [name, get] of Object.entries(read)) {
+    try {
+      const json = JSON.stringify(get());
+      if (json === undefined) continue;
+      if (json.length > room) {
+        tooBig[name] = new Blob([json]).size;
+      } else {
+        values[name] = JSON.parse(json);
+        room -= json.length;
+      }
+    } catch {
+      // a value that holds itself, or a getter that throws, is no data
+    }
+  }
+  return { values, tooBig };
+}
+
+// Safari gives a page its address as a title until the page names itself,
+// and a new page's script may name it just after it loads: a web page gets
+// a moment for a title of its own, and without one it reports none.
+function titled(tabId, ms = 1500) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      api.tabs.onUpdated.removeListener(onUpdated);
+      resolve(api.tabs.get(tabId));
+    };
+    const onUpdated = (id, info, tab) => { if (id === tabId && info.title !== undefined && realTitle(tab)) done(); };
+    const timer = setTimeout(done, ms);
+    api.tabs.onUpdated.addListener(onUpdated);
+    api.tabs.get(tabId).then((t) => { if (realTitle(t) || !/^https?:/.test(t.url || "")) done(); }, done);
+  });
+}
+
+// A title that only repeats the address is none.
+function realTitle(t) {
+  const bare = (s) => String(s || "").replace(/^[a-z]+:\/\/(www\.)?/i, "").replace(/\/$/, "");
+  return t.title && bare(t.title) !== bare(t.url) ? t.title : undefined;
+}
+
 // ---------- screenshots ----------
 // Safari captures only a window's visible tab: a tab behind another comes
 // to the front for the capture and the tab that was there goes back. All
@@ -686,8 +742,8 @@ async function handle(msg) {
       drive(tab.id);
       if (background) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
-      const t = await api.tabs.get(tab.id);
-      return { id: t.id, url: t.url, title: t.title, windowId: t.windowId };
+      const t = await titled(tab.id);
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -729,8 +785,8 @@ async function handle(msg) {
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
       await waitReady(tabId, 20000);
-      const t = await api.tabs.get(tabId);
-      return { id: t.id, url: t.url, title: t.title };
+      const t = await titled(tabId);
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}) };
     }
     case "tabs.activate": {
       const [tabId] = args;
@@ -786,6 +842,12 @@ async function handle(msg) {
       const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
       if (!r) throw new Error("the page did not run it");
       if (r.result && r.result.error) throw new Error(r.result.error);
+      return r.result;
+    }
+    case "pageData": {
+      const [tabId] = args;
+      const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func: pageGlobals });
+      if (!r) throw new Error("the page did not run it");
       return r.result;
     }
     case "fetchFile": {
@@ -1071,6 +1133,62 @@ function drive(tabId) {
   drivenTabs.add(tabId);
   drivenRead.then(() => store.set({ driven: [...drivenTabs] })).catch(() => {});
 }
+
+// ---------- tabs that change id, and popups ----------
+// Safari may swap a tab for another under a new id (a page it prepared
+// ahead, shown in the tab's place). What is kept for the old id moves to the
+// new one, the old id becomes an alias of it (see "ids across a reload"),
+// and the daemon moves what it keeps (continuity.ts).
+if (api.tabs.onReplaced) {
+  api.tabs.onReplaced.addListener(async (added, removed) => {
+    send({ op: "tab", kind: "replaced", from: removed, to: added });
+    for (const map of [awake, frameWaits]) {
+      if (!map.has(removed)) continue;
+      map.set(added, map.get(removed));
+      map.delete(removed);
+    }
+    if (drivenTabs.delete(removed)) drive(added);
+    // a wait for the old page to be ready waits for the new one
+    const waiters = readyWaiters.get(removed);
+    readyWaiters.delete(removed);
+    ready.delete(removed);
+    if (waiters) {
+      if (!readyWaiters.has(added)) readyWaiters.set(added, new Set());
+      for (const w of waiters) readyWaiters.get(added).add(w);
+      api.tabs.get(added).then((t) => { if (ready.get(added) === true || t.status === "complete") markReady(added); }, () => {});
+    }
+    const policy = await policyOf(removed);
+    if (policy) {
+      await store.set({ [`dialogs:${added}`]: policy });
+      await store.remove(`dialogs:${removed}`);
+      await ownTab(added);
+    }
+    const { tabAliases = {} } = await api.storage.local.get("tabAliases");
+    alias(tabAliases, removed, added);
+    await api.storage.local.set({ tabAliases });
+    adopted?.then((a) => alias(a.tabs, removed, added), () => {});
+  });
+}
+
+// A tab an owned tab's page opens on its own, outside an action (a sign-in
+// popup a script opens later), is owned too, and the daemon gives it to the
+// agent that owns the opener. act claims the tab its action opens as it is
+// created; this looks a turn later and leaves that one to act. A tab the
+// user's own tabs open stays his. The daemon hears of it once it has an
+// address, which tells the agent what it is.
+api.tabs.onCreated.addListener((t) => {
+  const opener = t.openerTabId;
+  if (opener === undefined) return;
+  setTimeout(async () => {
+    if (drivenTabs.has(t.id) || !(await ownsTab(opener))) return;
+    drive(t.id);
+    if (ready.get(t.id) !== true) ready.set(t.id, false);
+    await ownTab(t.id);
+    await waitReady(t.id, 3000);
+    const now = await api.tabs.get(t.id).catch(() => t);
+    send({ op: "tab", kind: "popup", tab: t.id, opener, url: now.url || t.pendingUrl || "" });
+  }, 0);
+});
 
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so

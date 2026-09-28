@@ -4,6 +4,9 @@
 import { bridge } from "./bridge.ts";
 import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
+import { followTab, queuePopup, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { note } from "./journal.ts";
+import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
@@ -56,9 +59,11 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   }
   const id = typeof tab === "number" ? tab : Number(tab);
   if (!Number.isFinite(id)) throw new Error('tab must be a tab id from open, or "front"');
-  const mine = harnessTabs.get(id);
+  // a tab Safari swapped for another is reached under its new id
+  const now = followTab(id);
+  const mine = harnessTabs.get(now);
   if (mine) mine.used = Date.now();
-  return id;
+  return now;
 }
 
 // Every tab opens in a window of the calling agent's own (spaces.ts), which
@@ -74,7 +79,7 @@ export async function openTab(url: string, background = false, group?: string): 
 // for 15 s and says so. This limit is only for an extension that never
 // answers.
 export async function closeTab(tab: number): Promise<unknown> {
-  const id = num(tab, "tab");
+  const id = followTab(num(tab, "tab"));
   const res = await bridge.request("tabs.close", [id], 20000);
   forget(id);
   return res;
@@ -173,6 +178,34 @@ function save() {
   } catch (e) {
     console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
   }
+}
+
+// ---------- tabs that change id, and popups (continuity.ts) ----------
+// What the daemon keeps per tab follows a tab Safari swapped for another. A
+// popup an agent's tab opened on its own is that agent's, as a tab its click
+// opens is (action); one the user's own tabs open stays his.
+bridge.onTab = (e) => {
+  if (e.kind === "replaced") {
+    recordReplaced(e.from, e.to);
+    if (move(harnessTabs, e.from, e.to)) save();
+    move(lastSnapshot, e.from, e.to);
+    move(handoffs, e.from, e.to);
+    note("replaced", { from: e.from, to: e.to });
+    return;
+  }
+  const from = harnessTabs.get(e.opener);
+  if (!from) return;
+  own(e.tab, from.owner);
+  if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
+  note("popup", { tab: e.tab, opener: e.opener });
+};
+
+function move<V>(map: Map<number, V>, from: number, to: number): boolean {
+  const v = map.get(from);
+  if (v === undefined) return false;
+  map.delete(from);
+  map.set(to, v);
+  return true;
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
@@ -300,14 +333,25 @@ export async function history(opts: { tab?: number; do: string }) {
 // expression that returns the last one's value. A leading "f3:", the prefix
 // of an embedded frame's refs, runs it in that frame. page: true runs it in
 // the page's own world, where its script variables are. A page that demands
-// Trusted Types still runs it; one whose security policy forbids eval
-// outright refuses it.
+// Trusted Types still runs it. A page whose security policy forbids eval
+// refuses it in the extension's world before any of it runs (content.js),
+// so it runs in the page's world instead, once; where that refuses too, the
+// error says to read the page another way.
+const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
+
 export async function evaluate(opts: { tab?: number; expression: string; page?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
-  if (opts.page) return bridge.request("evalPage", [tab, code, Number(frame)], 30000);
-  return bridge.tab(tab, "eval", [code], 30000, Number(frame));
+  const inPage = () => bridge.request("evalPage", [tab, code, Number(frame)], 30000).catch((e: unknown) => {
+    throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(EVAL_BLOCKED) : e;
+  });
+  if (opts.page) return inPage();
+  return bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
+    if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage();
+    throw e;
+  });
 }
 
 // as: "table" reads the page's tables and repeated card lists as rows.
@@ -416,6 +460,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff) {
       h.look = Promise.withResolvers();
       if (h.user) return;
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
+      // Safari may have swapped the tab for another (continuity.ts)
+      tab = followTab(tab);
       const now = tabs.find((t) => t.id === tab);
       if (!now) throw gone;
       if (challenge?.where === "block") throw new Error(blocked(challenge));
@@ -881,7 +927,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone.",
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait.",
     params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, save: SAVE },
     required: ["tab", "expression"],
     run: saving("eval", (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page })),
@@ -934,6 +980,12 @@ export const TOOLS: Record<string, Tool> = {
       const o = { ...(a as { ms?: number; selector?: string; text?: string; front?: boolean }), tab: await resolveTab(a.tab) };
       return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
     },
+  },
+  data: {
+    desc: "The page's own data as JSON: JSON-LD, meta, microdata, framework state (Next.js, Nuxt, Apollo). Past max, sources come as keys; pick a path into one.",
+    params: { tab: TAB, pick: { type: "string", description: "e.g. next.props.pageProps" }, max: { type: "number", description: "bytes, default 20000" } },
+    required: ["tab"],
+    run: async (a) => pageData(await resolveTab(a.tab), { pick: a.pick === undefined ? undefined : str(a.pick, "pick"), max: a.max === undefined ? undefined : num(a.max, "max") }),
   },
   // The daemon's half of handoff (handoff.ts runs in the caller). away says
   // the caller found the user away; texted reports how its text went, and
@@ -1078,6 +1130,8 @@ type Extract = Shielded & { url: string; title: string; text: string };
 // text stay readable instead of arriving as escaped JSON strings.
 export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
+  const news = value && typeof value === "object" ? splitNews(value) : null;
+  if (news) return `${news.line}\n${formatResult(news.rest)}`;
   if (value && typeof value === "object") {
     const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
     const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
@@ -1121,7 +1175,7 @@ export function formatResult(value: unknown): string {
 export async function callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
   const tool = TOOLS[name];
   if (!tool) throw new Error(`unknown tool ${name}; tools: ${Object.keys(TOOLS).filter((k) => !TOOLS[k].hidden).join(", ")}`);
-  return tool.run(args);
+  return withTabNews(args.tab, () => tool.run(args));
 }
 
 type Step = { step: number; tool: string; value?: unknown; error?: string };

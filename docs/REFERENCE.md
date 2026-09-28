@@ -96,6 +96,15 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
+- A page's own script can open a tab later, outside any action (a sign-in
+  popup). One that a background tab of yours opens is yours too: your next
+  result carries `popup` with its `tab` and `url`. Close it like any other.
+  A tab the user's own tabs open stays his.
+- Safari sometimes swaps a tab for a new one under a new id (a page it
+  prepared ahead). Calls with the old id still reach it, and the result
+  carries `replaced: {from, to}`: use the new id from then on.
+- `open` and `goto` return the page's `title` once it has one of its own; a
+  page still without one after a moment returns none.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
@@ -240,8 +249,22 @@ Escalate in this order:
    the value of the last one comes back; `await` works at the top, and a
    promise is awaited. It sees the DOM; `page: true` runs it in the page's
    own world, where the site's script variables and functions are (YouTube
-   and Google included); a page whose security policy forbids eval outright
-   refuses it.
+   and Google included). A page whose security policy forbids eval runs it
+   in its own world instead; where that is refused too, the error says to
+   read with `snapshot`, `extract`, or `data`. Outside `page: true`, `sh`
+   has helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
+   open shadow roots too, `sh.text(el)` reads an element's text as
+   `extract` does (the whole page without `el`), `sh.jsonld()` lists the
+   page's JSON-LD, and `sh.wait(ms)` pauses (25 s at most).
+
+`data` returns what the page itself declares, as JSON: JSON-LD, microdata,
+meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the
+state a framework left in the page (Next.js, Nuxt, Remix, Apollo, Redux). On
+a shop, recipe, or article page it often holds the price, stock, or author
+without a snapshot. Values under names like token or csrf read `[hidden]`.
+Past `max` bytes (default 20000) the sources that fit come back whole and
+the rest are listed with their size and top keys; call again with `pick`, a
+path such as `next.props.pageProps.items[0]`, to read one part.
 
 A public page that needs no sign-in reads faster and cheaper without Safari:
 use `read`, `web_search`, or Iris first, and open Safari only when those are
@@ -335,6 +358,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `click` a target, `type` text into one (`append: true` keeps existing
   text), `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your
   tab.
+- `type` in a rich editor (a contenteditable chat box or document) goes
+  through the editor's own editing events, so the editor keeps the text;
+  `append: true` adds at the end.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
 - `type` and `select` on a label's ref act on the field it labels.
