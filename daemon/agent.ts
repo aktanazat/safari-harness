@@ -160,7 +160,7 @@ function trimMessages(messages: ChatMsg[], maxBytes = 60_000) {
 
 async function runTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   const local = CONTEXT_TOOLS[name];
-  return local ? local.run(args) : invoke(name, args);
+  return local ? local.run(args) : invoke(name, args, true);
 }
 
 // Runs the conversation on from where messages leave off, until the model

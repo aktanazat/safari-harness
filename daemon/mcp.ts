@@ -4,7 +4,9 @@
 import { join } from "node:path";
 import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { CALLER_GROUPS } from "./caller.ts";
-import { invoke } from "./call.ts";
+import { invoke, runsHere } from "./call.ts";
+import { RESTART, newListing, newer } from "./fresh.ts";
+import { beside, nameIn } from "./guard.ts";
 import { connectHost } from "./host.ts";
 import type { ReplSession } from "./repl.ts";
 
@@ -68,7 +70,8 @@ async function handle(msg: RpcMsg) {
     case "initialize":
       return reply(msg.id, {
         protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
+        // A deploy since this server started is announced (fresh.ts).
+        capabilities: { tools: { listChanged: true } },
         serverInfo: SERVER_INFO,
       });
     case "notifications/initialized":
@@ -76,15 +79,19 @@ async function handle(msg: RpcMsg) {
     case "ping":
       return reply(msg.id, {});
     case "tools/list":
-      return reply(msg.id, { tools: toolDefs() });
+      return reply(msg.id, { tools: newListing() ?? toolDefs() });
     case "tools/call": {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});
       try {
         await hostReady;
-        const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args);
+        // After a deploy, the code that runs here is out of date, and so is
+        // a call to a tool the daemon no longer has; the rest still work.
+        const update = await newer(() => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })}\n`));
+        if (update && (name === "repl" || runsHere(name, args) || nameIn(update.tools, name) === undefined)) throw new Error(RESTART);
+        const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args, true);
         return reply(msg.id, {
-          content: [{ type: "text", text: formatResult(value).slice(0, 100_000) }],
+          content: [{ type: "text", text: formatResult(update ? beside(value, "note", RESTART) : value).slice(0, 100_000) }],
         });
       } catch (e) {
         return reply(msg.id, {

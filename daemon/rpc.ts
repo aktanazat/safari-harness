@@ -49,9 +49,11 @@ async function back(base: string, ms: number): Promise<boolean> {
   return false;
 }
 
-export async function rpc(tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
+// model: the call is one a model wrote, which the daemon checks and
+// watches (guard.ts).
+export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : process.pid });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : process.pid, ...(model ? { model } : {}) });
   let res = await attempt(base, body);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body);
   if (res === "refused") throw new Error(`safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`);
