@@ -961,7 +961,10 @@ its own `safari` command.
   that copy stops the one left behind: its page listeners come off and a
   wait it held ends. A page open since before the release of September
   28, 2026 that added this keeps its old copy's listeners running beside
-  the new one until the page reloads; it answers nothing.
+  the new one until the page reloads; it answers nothing. Such a page
+  cannot message the extension: a tab its link or `window.open` makes
+  during an action still comes back as `newTab`, but one it opens later
+  on its own stays the user's until the page reloads.
 - "the user paused this task" or "the user stopped this task": see
   Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or
