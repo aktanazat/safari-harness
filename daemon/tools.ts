@@ -7,6 +7,7 @@ import { challengeOf, type Challenge } from "./challenge.ts";
 import { frontApp, inFront, input, notify, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
+import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
@@ -52,8 +53,10 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   return id;
 }
 
-export async function openTab(url: string, background = false): Promise<TabInfo> {
-  return (await bridge.request("tabs.open", [str(url, "url"), background])) as TabInfo;
+// Every tab opens in a window of the calling agent's own (spaces.ts).
+export async function openTab(url: string, background = false, group?: string): Promise<TabInfo> {
+  const window = await spaceWindow(group);
+  return (await bridge.request("tabs.open", [str(url, "url"), background, window])) as TabInfo;
 }
 
 // A native sheet on the tab (a sign-in or permission prompt) or an
@@ -683,10 +686,10 @@ export const TOOLS: Record<string, Tool> = {
   tabs: { desc: "List tabs: id, url, title, and which is in front.", params: {}, run: () => listTabs() },
   open: {
     desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
-    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, keep: { type: "boolean", description: "leave it open after you exit" }, snapshot: PAGE },
+    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open after you exit" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {
-      const t = await openTab(str(a.url, "url"), !!a.background);
+      const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"));
       // a tab opened in front is the user's to close
       if (a.background && !a.keep) own(t.id, currentOwner());
       return withPage(await withChallenge(t, t.id), t.id, a.snapshot);

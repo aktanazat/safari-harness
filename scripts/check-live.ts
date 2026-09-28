@@ -848,6 +848,45 @@ try {
   }
 }
 
+// ---------- each agent's own window ----------
+
+// Two agents, each a program that opens two background tabs through the CLI
+// and then keeps running: each pair lands in one window of that agent's own,
+// never the user's, while the app he has in front stays in front. Once an
+// agent exits, its tabs close and its window with them.
+type Placed = { id: number; windowId?: number; front?: boolean };
+async function agentWithTabs() {
+  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json"];
+  const child = Bun.spawn([process.execPath, "-e", `for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`], { stdout: "pipe", stderr: "ignore" });
+  const reader = child.stdout.getReader();
+  let out = "";
+  while (out.split("\n").length < 3) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += new TextDecoder().decode(value);
+  }
+  return { child, ids: out.trim().split("\n").map((line) => (JSON.parse(line) as { id: number }).id) };
+}
+const appBefore = await frontApp();
+const userWindow = ((await call("tabs")) as Placed[]).find((t) => t.front)?.windowId;
+const agents = await Promise.all([agentWithTabs(), agentWithTabs()]);
+try {
+  const placed = (await call("tabs")) as Placed[];
+  const [wa, wb] = agents.map((a) => [...new Set(a.ids.map((id) => placed.find((t) => t.id === id)?.windowId))]);
+  check("each agent's tabs share one window of its own, not the user's", wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { wa, wb, userWindow });
+  const appAfter = await frontApp();
+  check("agent windows open behind the user's app", appAfter === appBefore, { appBefore, appAfter });
+  for (const a of agents) a.child.kill();
+  let left = true;
+  for (let waited = 0; left && waited < 20000; waited += 1000) {
+    await Bun.sleep(1000);
+    left = ((await call("tabs")) as Placed[]).some((t) => t.windowId === wa[0] || t.windowId === wb[0]);
+  }
+  check("an agent's window closes once the agent exits", !left, { wa, wb });
+} finally {
+  for (const a of agents) a.child.kill();
+}
+
 // ---------- snapshot size ----------
 
 // A shop-like listing: every card links twice with a long tracking query,

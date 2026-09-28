@@ -8,6 +8,7 @@ const tabs = new Map<number, { id: number; url: string; title: string; active: b
   [101, { id: 101, url: "https://example.com/", title: "Example Domain", active: true, windowId: 1 }],
 ]);
 let nextTab = 102;
+let nextWindow = 2;
 
 type Wire = { id?: number; op?: string; args?: unknown[] };
 
@@ -23,13 +24,20 @@ ws.addEventListener("message", (ev) => {
   const args = (msg.args ?? []) as unknown[];
 
   if (msg.op === "ping") return reply("pong");
-  // One window, so its active tab is the one in front.
-  if (msg.op === "tabs.list") return reply([...tabs.values()].map((t) => ({ ...t, front: t.active })));
+  // Window 1 is the user's, the rest agents' (windows.open): the active tab
+  // of window 1 is the one in front.
+  if (msg.op === "tabs.list") return reply([...tabs.values()].map((t) => ({ ...t, front: t.active && t.windowId === 1 })));
   if (msg.op === "tabs.open") {
-    const t = { id: nextTab++, url: String(args[0]), title: "New", active: !args[1], windowId: 1 };
-    if (t.active) for (const other of tabs.values()) other.active = false;
+    const windowId = typeof args[2] === "number" ? args[2] : 1;
+    const t = { id: nextTab++, url: String(args[0]), title: "New", active: !args[1], windowId };
+    if (t.active) for (const other of tabs.values()) if (other.windowId === windowId) other.active = false;
     tabs.set(t.id, t);
     return reply(t);
+  }
+  if (msg.op === "windows.open") {
+    const t = { id: nextTab++, url: String(args[0]), title: "", active: true, windowId: nextWindow++ };
+    tabs.set(t.id, t);
+    return reply({ windowId: t.windowId, tabId: t.id });
   }
   if (msg.op === "tabs.close") { tabs.delete(Number(args[0])); return reply({ ok: true }); }
   if (msg.op === "tabs.navigate") {

@@ -581,20 +581,20 @@ async function handle(msg) {
       const tabs = await api.tabs.query({});
       // Every window has an active tab; front is the one in the window the
       // user had in front last, the tab tab: "front" names.
-      const focused = await api.windows.getLastFocused().then((w) => w.id, () => undefined);
+      const focused = await userWindow();
       return tabs
         .filter((t) => t.id !== undefined)
         .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}) }));
     }
     case "tabs.open": {
-      const [url, background] = args;
-      const tab = await api.tabs.create({ url: url || "about:blank", active: !background });
+      const [url, background, windowId] = args;
+      const tab = await api.tabs.create({ url: url || "about:blank", active: !background, ...(typeof windowId === "number" ? { windowId } : {}) });
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (background) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
       const t = await api.tabs.get(tab.id);
-      return { id: t.id, url: t.url, title: t.title };
+      return { id: t.id, url: t.url, title: t.title, windowId: t.windowId };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -718,10 +718,20 @@ async function handle(msg) {
       if (alone) await api.windows.update(t.windowId, { ...dims, state: "normal" });
       else {
         const w = await api.windows.create({ tabId, focused: false, ...dims });
+        await markAgentWindow(w.id);
         await api.windows.update(w.id, dims);
       }
       const r = await toTab(tabId, "tabInfo", []);
       return { ok: true, windowId: (await api.tabs.get(tabId)).windowId, viewport: r && r.value && r.value.viewport };
+    }
+    // A window of an agent's own (daemon/spaces.ts), made behind the user's
+    // without focus.
+    case "windows.open": {
+      const [url] = args;
+      const w = await api.windows.create({ url, focused: false });
+      await markAgentWindow(w.id);
+      const [tab] = w.tabs && w.tabs.length ? w.tabs : await api.tabs.query({ windowId: w.id });
+      return { windowId: w.id, tabId: tab.id };
     }
     case "ping":
       return "pong";
@@ -846,6 +856,46 @@ async function adopt() {
   return map;
 }
 api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
+
+// ---------- agent windows ----------
+// The windows made for agents (windows.open, window), which never hold the
+// user's front tab. Safari's getLastFocused names the newest window, even
+// one made behind his without focus, so the order he focused windows in is
+// kept here, and agent windows are left out when it is read.
+let listQueue = Promise.resolve();
+
+// Read-modify-write of one stored list, one change at a time.
+function updateList(key, change) {
+  const next = listQueue.then(async () => {
+    const list = (await store.get(key))[key] || [];
+    await store.set({ [key]: change(list) });
+  });
+  listQueue = next.catch(() => {});
+  return next;
+}
+
+function markAgentWindow(id) {
+  return updateList("agentWindows", (ids) => [...ids, id]);
+}
+
+api.windows.onFocusChanged.addListener((id) => {
+  if (id !== api.windows.WINDOW_ID_NONE) updateList("focusOrder", (ids) => [id, ...ids.filter((w) => w !== id)].slice(0, 10));
+});
+api.windows.onRemoved.addListener((id) => {
+  updateList("agentWindows", (ids) => ids.filter((w) => w !== id));
+  updateList("focusOrder", (ids) => ids.filter((w) => w !== id));
+});
+
+// The window the user had in front last.
+async function userWindow() {
+  const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
+    store.get(["focusOrder", "agentWindows"]),
+    api.windows.getAll(),
+    api.windows.getLastFocused().then((w) => w.id, () => undefined),
+  ]);
+  const ids = new Set(open.map((w) => w.id));
+  return [...focusOrder, last, ...ids].find((id) => ids.has(id) && !agentWindows.includes(id));
+}
 
 // ---------- tabs agents work in ----------
 // A tab the harness owns, opened, or sent a page request, and a tab one of

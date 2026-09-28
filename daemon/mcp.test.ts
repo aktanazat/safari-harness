@@ -29,14 +29,15 @@ import { expect, test } from "bun:test";
 // medical records page. Saying that net records from the start of the page
 // load, in every frame, with the start of each response body (74) brought it
 // to 17,822: an agent reads a failed request at once instead of starting
-// capture and reloading, as one could not on CVS's insurance form.
-// Passwords' done and one-touch pairing (62) brought it to 17,884: a locked
-// call pairs after the user's Touch ID, and a session lets go of the pairing
-// when done.
-// Letting open keep a tab (58) brought it to 17,942: the daemon closes an
+// capture and reloading, as one could not on CVS's insurance form. The
+// group param on open (88) brought it to 17,910: each task's tabs go in a
+// window of its own, never in the user's windows. Passwords'
+// done and one-touch pairing (62) brought it to 17,972: a locked call pairs
+// after the user's Touch ID, and a session lets go of the pairing when done.
+// Letting open keep a tab (58) brought it to 18,030: the daemon closes an
 // agent's background tabs once it exits or leaves them idle, and keep leaves
 // one open for the user.
-const TOOL_LIST_MAX_BYTES = 17_942;
+const TOOL_LIST_MAX_BYTES = 18_030;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
