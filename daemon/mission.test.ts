@@ -119,7 +119,7 @@ function pageOf(tab: number): URL {
   return new URL(page.url);
 }
 
-type Shown = { agent: { status: string; calls: { tool: string; held?: boolean }[] } };
+type Shown = { agent: { status: string; calls: { tool: string; args: string; held?: boolean }[] } };
 const shown = async (page: URL) => (await (await ask(`${page.origin}/space/state?id=${page.searchParams.get("id")}`)).json()) as Shown;
 
 // What a button on the page sends: the secret the page was served with,
@@ -224,9 +224,12 @@ test("what an agent types appears neither in its record nor in the pages' JSON, 
   const tab = await open(a.pid, "https://a.example/login");
   await call(a.pid, "type", { tab, ref: "e5", text: typed });
   await expect(call(a.pid, "type", { tab, ref: "gone", text: typed })).rejects.toThrow(typed);
+  // A key pressed alone is typing too, as with a code entered a digit at a time.
+  await call(a.pid, "press", { tab, key: "q" });
   const page = pageOf(tab);
   const record = (await shown(page)).agent.calls;
-  expect(record.map((c) => c.tool)).toEqual(["type", "type", "open"]);
+  expect(record.map((c) => c.tool)).toEqual(["press", "type", "type", "open"]);
+  expect(record[0].args).not.toContain("q");
   const everything = JSON.stringify(record) + (await (await ask(`${page.origin}/agents.json`)).text());
   expect(everything).not.toContain(typed);
 });
