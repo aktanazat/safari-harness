@@ -1,8 +1,18 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bridge, type ExtSocket } from "./bridge.ts";
+import { changeQueue, files } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { spaceTool } from "./spaces.ts";
 import { openTab } from "./tools.ts";
+
+// The keeper's files, away from the real ones (groups-off.json there would
+// make every window plain).
+const dir = mkdtempSync(join(tmpdir(), "spaces-test-"));
+Object.assign(files, { queue: join(dir, "groups.json"), off: join(dir, "groups-off.json"), keeper: join(dir, "keeper.pid"), log: join(dir, "keeper.log") });
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 type Tab = { id: number; url: string; windowId: number; active: boolean };
 
@@ -183,6 +193,18 @@ test("a window whose agent exits while its group is being made stays until the k
   const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
   expect(spaces.filter((x) => x.name === made.space.name || x.name === failed.space.name)).toMatchObject([{ name: made.space.name, ended: true }]);
   await spaceTool({ op: "gone", name: made.space.name });
+});
+
+// A deploy restarts the daemon while a long-lived agent's window is its
+// group: the agent's next window was named alike, the keeper waited on the
+// old group for good, and the old group's queue entry went with the wait.
+test("an agent's window takes a name no group still to be deleted has", async () => {
+  safari();
+  const q = agent();
+  changeQueue((x) => (x[`agent ${q.pid}`] = { owner: q.pid, since: 0 }));
+  const t = await runAs(q.pid, () => openTab("https://q.example/", true));
+  expect(t.space.name).toBe(`agent ${q.pid}, window 2`);
+  q.kill();
 });
 
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {

@@ -31,7 +31,7 @@
 import { randomUUID } from "node:crypto";
 import { bridge } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
-import { groupsOff } from "./groups.ts";
+import { groupsOff, readQueue } from "./groups.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import type { TabInfo } from "./tools.ts";
 
@@ -65,13 +65,21 @@ function nextSize(): Size {
 }
 
 // An assignment's name, which its tab group takes: the task's group, or
-// "agent", with the agent's process id, which keeps two agents apart. Quotes
-// would blur the name a delete's confirm sheet quotes, and % the one the
-// window's group picker spells.
+// "agent", with the agent's process id, which keeps two agents apart, and
+// a window number when a group of that name is still to be deleted
+// (groups.json) or a window has it: a restarted daemon gave an agent's new
+// window the name of the group its last run made, and the keeper then
+// waited on that group for good. Quotes would blur the name a delete's
+// confirm sheet quotes, and % the one the window's group picker spells.
 function spaceName(group: string | undefined, owner: number | undefined): string {
   const label = (group ?? "").replace(/[%"“”]/g, "").replace(/\s+/g, " ").trim().slice(0, 40).trim();
   const who = owner === undefined ? "agent" : `agent ${owner}`;
-  return label ? `${label} (${who})` : who;
+  const base = label ? `${label} (${who})` : who;
+  const taken = new Set([...Object.keys(readQueue()), ...[...spaces.values(), ...closing.values()].map((s) => s.name)]);
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}, window ${n}`)) n++;
+  return `${base}, window ${n}`;
 }
 
 const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`) ?? false;
