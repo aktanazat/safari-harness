@@ -404,6 +404,32 @@ await withPage(FRAMES, "", async (tab) => {
   const f = frame.result as { x: number; y: number; w: number; h: number };
   check("locate places a cross-origin frame's element inside that frame's box",
     box.x > f.x && box.y > f.y && box.x + box.width < f.x + f.w && box.y + box.height < f.y + f.h, { box, frame: f });
+  // Apple's sign-in form is a frame from another site: the login goes to
+  // that frame, as its own site's. An f<id>: expression runs in that frame.
+  const id = Number(ref.match(/^f(\d+):/)![1]);
+  await call("eval", { tab, expression: `f${id}:(() => { document.body.insertAdjacentHTML("beforeend", "<form><input name=username autocomplete=username><input type=password name=password></form>"); return 1; })()` });
+  const form = await call("login_form", { tab });
+  check("a sign-in form in an embedded frame belongs to that frame's own site",
+    form.site === "example.org" && form.frame === id && form.username === true && form.password === true, form);
+  const field = await call("wait", { tab, selector: "input[type=password]", ms: 3000 });
+  check("wait finds a selector only an embedded frame has", field.found === true, field);
+});
+
+// A frame that loads while a wait runs joins it: sign-in frames load last.
+await withPage("<p>no frame yet</p>", "", async (tab) => {
+  await call("eval", { tab, page: true, expression: "setTimeout(() => { const f = document.createElement('iframe'); f.src = 'https://example.org/'; document.body.append(f); }, 1000), 1" });
+  const late = await call("wait", { tab, text: "Learn more", ms: 10000 });
+  check("wait finds text in a frame that loads while it runs", late.found === true && late.waitedMs >= 500, late);
+});
+
+// Safari runs no animation in a background tab, so a form fading in stays
+// transparent there; it is shown all the same. A transparent field is not.
+const FADE = "<style>@keyframes sh-in { to { opacity: 1 } }</style>" +
+  '<div style="opacity:0;animation:sh-in .3s forwards"><input aria-label="Fading field"></div><input aria-label="Clear field" style="opacity:0">';
+
+await withPage(FADE, "", async (tab) => {
+  const s = (await call("snapshot", { tab })).snapshot;
+  check("a snapshot shows a form still fading in, but not a transparent field", /textbox "Fading field"/.test(s) && !/Clear field/.test(s), s);
 });
 
 // ---------- dialogs ----------

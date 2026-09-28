@@ -224,6 +224,20 @@ async function frameTokens(tabId) {
 
 const MARK = / @@frame:([a-z0-9]+)@@$/;
 
+// A frame that loaded before its parent's script listened may not have told
+// the parent which frame it is, so its lines have no place in the parent's
+// snapshot. The parent says hello to such frames (unlinked in content.js),
+// and one more snapshot, after their answers, places them.
+async function snapshotFrame(tabId, args, timeoutMs, frameId) {
+  let res = await toTab(tabId, "snapshot", args, timeoutMs, frameId);
+  if (res && res.value && res.value.unlinked) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    res = await toTab(tabId, "snapshot", args, timeoutMs, frameId);
+  }
+  if (res && res.value) delete res.value.unlinked;
+  return res;
+}
+
 // Puts each embedded frame's own snapshot under its <iframe> line, with
 // its refs prefixed by the frame's id. Frames nest, so this recurses.
 async function stitchFrames(tabId, snap, opts, tokens, depth) {
@@ -241,7 +255,7 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
     let inner = [];
     if (frameId !== undefined && depth < 4 && out.length < limit) {
       try {
-        const res = await toTab(tabId, "snapshot", [{ ...opts, root: undefined, refPrefix: `f${frameId}:`, maxNodes: Math.max(50, limit - out.length) }], 10000, frameId);
+        const res = await snapshotFrame(tabId, [{ ...opts, root: undefined, refPrefix: `f${frameId}:`, maxNodes: Math.max(50, limit - out.length) }], 10000, frameId);
         if (res && res.value && typeof res.value.snapshot === "string") {
           const child = await stitchFrames(tabId, res.value, opts, tokens, depth + 1);
           truncated ||= child.truncated;
@@ -261,15 +275,24 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
 
 const MISS = /^nothing on the page matches /;
 
-// Runs a DOM op in the frame its ref names; a text or selector the top page
-// lacks is tried in each embedded frame.
-async function relayOp(tabId, domOp, domArgs, timeoutMs) {
-  const { frameId, args } = frameOf(domArgs);
+// Runs a DOM op in the frame its ref names, or in frameId when the daemon
+// names the frame; a text or selector the top page lacks is tried in each
+// embedded frame. A snapshot takes in the frames' own snapshots, and a wait
+// watches every frame.
+async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
+  if (domOp === "wait") return waitInFrames(tabId, domArgs, timeoutMs);
+  if (domOp === "waitStop") {
+    for (const w of frameWaits.get(tabId)?.values() ?? []) w.stop();
+    return { value: { ok: true } };
+  }
+  const { frameId, args } = frame ? { frameId: frame, args: domArgs } : frameOf(domArgs);
+  if (domOp === "snapshot") {
+    const res = await snapshotFrame(tabId, args, timeoutMs, frameId);
+    if (res && res.value && typeof res.value.snapshot === "string") return { value: await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0) };
+    return res;
+  }
   const send = (id) => ACTIONS.has(domOp) ? act(tabId, domOp, args, timeoutMs, id) : toTab(tabId, domOp, args, timeoutMs, id);
   const res = await send(frameId);
-  if (domOp === "snapshot" && res && res.value && typeof res.value.snapshot === "string") {
-    return { value: await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0) };
-  }
   if (frameId === 0 && res && typeof res.error === "string" && MISS.test(res.error)) {
     const tokens = await frameTokens(tabId).catch(() => new Map());
     for (const id of tokens.values()) {
@@ -278,6 +301,62 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs) {
     }
   }
   return res;
+}
+
+// ---------- waiting in every frame ----------
+// A wait is answered by whichever frame shows the text or selector first (a
+// sign-in form often sits in an embedded frame), and a frame that loads
+// meanwhile joins in. The top page's answer stands for the whole tab: a
+// miss there (stopped, or ended by a newer wait) ends the wait. waitStop
+// from the daemon, at its time limit, ends it in every frame; the wait's id
+// keeps that from ending a newer wait in the same frame.
+const frameWaits = new Map(); // tabId -> Map of wait id -> { join, stop }
+
+function waitInFrames(tabId, args, timeoutMs) {
+  const id = nextId();
+  const deadline = Date.now() + timeoutMs;
+  const asked = new Set();
+  const waits = frameWaits.get(tabId) || new Map();
+  frameWaits.set(tabId, waits);
+  return new Promise((resolve, reject) => {
+    const end = (settle) => {
+      if (!waits.delete(id)) return;
+      if (waits.size === 0 && frameWaits.get(tabId) === waits) frameWaits.delete(tabId);
+      const stop = { __safariHarness: 1, id: nextId(), op: "waitStop", args: [id] };
+      for (const frameId of asked) api.tabs.sendMessage(tabId, stop, { frameId }).catch(() => {});
+      settle();
+    };
+    const join = (frameId) => {
+      asked.add(frameId);
+      toTab(tabId, "wait", [args[0] ?? null, args[1] ?? null, id], Math.max(deadline - Date.now(), 1000), frameId).then((res) => {
+        if (frameId === 0 || (res && res.value && res.value.found)) end(() => resolve(res));
+      }, (e) => { if (frameId === 0) end(() => reject(e)); });
+    };
+    waits.set(id, { join, stop: () => end(() => resolve({ value: { found: false } })) });
+    join(0);
+    frameTokens(tabId).then((tokens) => { for (const frameId of tokens.values()) if (waits.has(id)) join(frameId); }, () => {});
+  });
+}
+
+// Asks every frame of the tab at once what it holds (__safariHarnessProbe
+// in content.js), top page first: a sign-in form may sit in an embedded
+// frame of another site.
+async function probeFrames(tabId, what) {
+  keepAwake(tabId);
+  await waitReady(tabId, 15000);
+  const ask = () => api.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: (w) => (window.__safariHarnessProbe ? window.__safariHarnessProbe[w]() : null),
+    args: [what],
+  });
+  let results = await ask();
+  // Safari skipped injecting the top page's script (after a redirect): add it.
+  if (!results.some((r) => r.frameId === 0 && r.result)) {
+    await ensureContent(tabId, 0);
+    results = await ask();
+  }
+  const found = results.filter((r) => r.result);
+  return [...found.filter((r) => r.frameId === 0), ...found.filter((r) => r.frameId !== 0)].map((r) => ({ frame: r.frameId, ...r.result }));
 }
 
 // ---------- network and console capture ----------
@@ -499,12 +578,14 @@ async function handle(msg) {
       return { ok: true };
     }
     case "relay": {
-      const [tabId, domOp, domArgs, timeoutMs] = args;
+      const [tabId, domOp, domArgs, timeoutMs, frameId] = args;
       if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);
-      const res = await relayOp(tabId, domOp, domArgs, timeoutMs);
+      const res = await relayOp(tabId, domOp, domArgs, timeoutMs, frameId);
       if (res && res.error) throw new Error(res.error);
       return res && res.value;
     }
+    case "probe":
+      return probeFrames(args[0], args[1]);
     case "daemonPort": {
       port = args[0];
       await api.storage.local.set({ daemonPort: port });
@@ -613,11 +694,13 @@ api.tabs.onRemoved.addListener((id) => {
   awake.delete(id);
   store.remove(`dialogs:${id}`).catch(() => {});
 });
-// Embedded frames report too; only the top document makes the tab ready.
+// Embedded frames report too; only the top document makes the tab ready, and
+// a frame that loads while a wait runs (a sign-in frame) joins the wait.
 // Each gets back how to answer dialogs, if the harness owns its tab.
 api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
   if (!sender.frameId) markReady(sender.tab.id);
+  else for (const w of frameWaits.get(sender.tab.id)?.values() ?? []) w.join(sender.frameId);
   return policyOf(sender.tab.id).then((dialogs) => ({ dialogs }));
 });
 

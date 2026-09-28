@@ -74,7 +74,7 @@ function fakeHelper() {
       const d = createDecipheriv("aes-128-gcm", key, data.subarray(data.length - 16));
       d.setAuthTag(data.subarray(data.length - 32, data.length - 16));
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
-      queries.push(`${m.cmd} ${q.URL}`);
+      queries.push(`${m.cmd} ${q.URL ?? new URL(q.frameURLs[0]).hostname}`);
       // A code query answers with Entry_N keys, as the helper does for codes.
       const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] }
         : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
@@ -98,20 +98,26 @@ function fakeHelper() {
   return { queries };
 }
 
-// The Safari tab: a sign-in page whose fields record what was typed.
-function fakeTab(url: string) {
+// The Safari tab: a page whose sign-in form (in the top page, or in an
+// embedded frame from another site, as Apple's is) records what was typed.
+// As in the content script, a fill lands only when sent to the frame that
+// holds the form, for the site that frame is on.
+function fakeTab(url: string, form = { frame: 0, url }) {
   const page: { username?: string; password?: string; code?: string } = {};
   bridge.attach({
     send(data: string) {
-      const { id, args } = JSON.parse(data);
-      const [, op, opArgs] = args;
-      const value = op === "tabInfo" ? { url }
-        : op === "loginForm" ? { username: true, password: true }
-        : op === "fillLogin" ? (Object.assign(page, { username: opArgs[1], password: opArgs[2] }), { ok: true, filled: ["username", "password"] })
-        : op === "codeField" ? { found: true }
-        : op === "fillCode" ? (Object.assign(page, { code: opArgs[1] }), { ok: true, filled: ["code"] })
-        : null;
-      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+      const { id, op: outer, args } = JSON.parse(data);
+      const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
+      if (outer === "probe") {
+        const holds = args[1] === "login" ? { username: true, password: true } : { found: true };
+        const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
+        return answer({ value: form.frame ? frames : [frames[1]] });
+      }
+      const [, op, opArgs, , frame] = args;
+      if (frame !== form.frame || opArgs[0] !== new URL(form.url).hostname) return answer({ error: "nothing was filled" });
+      if (op === "fillLogin") Object.assign(page, { username: opArgs[1], password: opArgs[2] });
+      if (op === "fillCode") Object.assign(page, { code: opArgs[1] });
+      answer({ value: { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
     },
     close() {},
   });
@@ -156,6 +162,19 @@ test("fill on a page that is not https asks the helper for nothing", async () =>
   await expect(callTool("passwords", { do: "fill", tab: 7 })).rejects.toThrow("https");
   expect(helper.queries).toEqual([]);
   expect(page).toEqual({});
+});
+
+// Apple's sign-in form on appstoreconnect.apple.com is a frame from
+// idmsa.apple.com: what is saved for the frame's site goes into that frame.
+test("a sign-in form in an embedded frame gets the login and code saved for the frame's own site", async () => {
+  const helper = fakeHelper();
+  const page = fakeTab("https://appstoreconnect.apple.com/login", { frame: 5031, url: "https://idmsa.apple.com/appleauth/auth/signin" });
+  await callTool("passwords", { do: "pair" });
+  await callTool("passwords", { do: "unlock", code: CODE });
+  expect(await callTool("passwords", { do: "fill", tab: 7 })).toEqual({ filled: ["username", "password"], username: USER, site: "idmsa.apple.com" });
+  expect(await callTool("passwords", { do: "code", tab: 7 })).toEqual({ filled: ["code"], username: USER, site: "idmsa.apple.com" });
+  expect(page).toEqual({ username: USER, password: SECRET, code: OTP });
+  expect(helper.queries.map((q) => q.split(" ")[1])).toEqual(["idmsa.apple.com", "idmsa.apple.com", "idmsa.apple.com"]);
 });
 
 // Every agent shares the one pairing, so no call may end it; only the helper

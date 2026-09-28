@@ -79,9 +79,16 @@
     return INTERACTIVE_TAGS.has(el.tagName);
   }
 
+  // Opacity 0 hides an element, but not one fading in: Safari runs no
+  // animation in a hidden tab, so a form that fades in (Apple's sign-in
+  // frame) would stay transparent until the tab came to the front.
+  function transparent(el, style) {
+    return parseFloat(style.opacity) === 0 && !el.getAnimations().some((a) => a.playState === "running");
+  }
+
   function isVisible(el) {
     const style = window.getComputedStyle(el);
-    if (style.visibility === "hidden" || parseFloat(style.opacity) === 0) return false;
+    if (style.visibility === "hidden" || transparent(el, style)) return false;
     if (el.getClientRects().length === 0 && (style.display === "none" || style.position === "fixed")) return false;
     return true;
   }
@@ -272,6 +279,7 @@
   const frameToken = Math.random().toString(36).slice(2, 10);
   window.__safariHarnessFrame = frameToken;
   const childToken = new WeakMap(); // <iframe> -> its document's token
+  const greeted = new WeakSet(); // <iframe>s a snapshot found without a token and said hello to
   const offsetWaiters = new Map(); // request id -> resolve
 
   function frameElementOf(source) {
@@ -389,6 +397,11 @@
     // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
     // the extension knows which frame an action goes to.
     const prefix = opts.refPrefix || "";
+    // Frames printed without their token: a frame that loaded before this
+    // script listened may not have told it which frame it is. The walk says
+    // hello to each once, and the extension snapshots again after the
+    // answers, so their lines have a place.
+    let unlinked = 0;
 
     // Pass 1: the kept elements as a tree, with loose text and block edges
     // in page order. `named` holds the ancestors naming themselves by their
@@ -399,7 +412,7 @@
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
-        if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) return;
+        if (style.display === "none" || style.visibility === "hidden" || transparent(el, style)) return;
         if (style.position === "fixed" && el.getClientRects().length === 0) return;
       }
       const role = getExplicitRole(el);
@@ -436,6 +449,11 @@
       if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
         const d = inlineDoc(el);
         if (d) walk(d.body, node, [], false);
+        else if (!childToken.has(el) && !greeted.has(el)) {
+          greeted.add(el);
+          el.contentWindow?.postMessage({ __shHello: 1 }, "*");
+          unlinked++;
+        }
       }
       if (node.el !== el) return;
       if (node.text) {
@@ -567,7 +585,7 @@
       }
     };
     render(top, 0);
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n") };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}) };
   }
 
   // ---------- actions ----------
@@ -999,14 +1017,16 @@
     return { username: username ?? null, password };
   }
 
-  // The daemon passes the hostname the login is saved for; a page that has
-  // moved elsewhere gets nothing. The reply never carries what was typed.
-  function loginForm(host) {
-    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; try again` };
+  // Which frame's form a login goes into is the extension's to find: it asks
+  // every frame at once (probeFrames in background.js), and each says what
+  // it holds and which site it is on. The reply never carries what was typed.
+  function loginForm() {
     const f = loginFields();
-    return { username: f.username !== null, password: f.password !== null };
+    return { origin: location.origin, username: f.username !== null, password: f.password !== null };
   }
 
+  // The daemon sends the hostname the login is saved for to the frame that
+  // holds the form; a frame that has moved elsewhere gets nothing.
   function fillLogin(host, username, password) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const f = loginFields();
@@ -1034,10 +1054,12 @@
     return named ? [named] : [];
   }
 
-  function codeField(host) {
-    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; try again` };
-    return { found: codeFields().length > 0 };
+  function codeField() {
+    return { origin: location.origin, found: codeFields().length > 0 };
   }
+
+  // What the extension asks every frame at once, by name.
+  window.__safariHarnessProbe = { login: loginForm, code: codeField };
 
   function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
@@ -1261,10 +1283,11 @@
   // Resolves once the selector or text is on the page. It listens for DOM
   // changes instead of polling: Safari stops a content script's timers in a
   // hidden tab, and runs that tab's own work in late batches, but a change
-  // the page makes wakes an observer in the same task. The daemon owns the
-  // time limit and ends a wait early with waitStop; a newer wait ends an
-  // older one.
-  let pendingWait = null;
+  // the page makes wakes an observer in the same task. The extension asks
+  // every frame (waitInFrames in background.js), and the daemon owns the
+  // time limit: waitStop ends the wait with that id early. A newer wait ends
+  // an older one.
+  let pendingWait = null; // { id, done }
 
   // Text matches as a click's target does: case and spacing aside.
   function present(selector, text) {
@@ -1274,8 +1297,8 @@
     return [document.body, ...inlineBodies()].some((b) => b && norm(readText(b, (el) => el.innerText ?? "")).toLowerCase().includes(want));
   }
 
-  function waitFor(selector, text) {
-    pendingWait?.(false);
+  function waitFor(selector, text, id = null) {
+    pendingWait?.done(false);
     if (present(selector, text)) return { found: true };
     return new Promise((resolve) => {
       const opts = { childList: true, subtree: true, characterData: true, attributes: true };
@@ -1284,10 +1307,10 @@
       const observer = new MutationObserver(() => { watch(); if (present(selector, text)) done(true); });
       const done = (found) => {
         observer.disconnect();
-        if (pendingWait === done) pendingWait = null;
+        if (pendingWait?.done === done) pendingWait = null;
         resolve({ found });
       };
-      pendingWait = done;
+      pendingWait = { id, done };
       observer.observe(document.documentElement, opts);
       watch();
     });
@@ -1342,7 +1365,7 @@
       return { ok: true, result: safeClone(result) };
     },
     wait: waitFor,
-    waitStop: () => { pendingWait?.(false); return { ok: true }; },
+    waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
     clickAt: (x, y) => withOutcome(() => clickAt(x, y)),
@@ -1350,9 +1373,7 @@
     select: (ref, choice) => withOutcome(() => selectOption(ref, choice)),
     upload,
     history: historyGo,
-    loginForm,
     fillLogin,
-    codeField,
     fillCode,
     fillAddress,
     locate,

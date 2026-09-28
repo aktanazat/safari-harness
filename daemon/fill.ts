@@ -89,26 +89,29 @@ const BW_LOCKED: Record<string, string> = {
 
 type BwItem = { id: string; name: string; type: number; login?: { username?: string | null; password?: string | null } };
 
-// The tab's site comes from the tab, never from the caller, so a login only
-// reaches the site whose address Bitwarden has saved for it.
+// The site comes from the tab, never from the caller: the frame holding the
+// sign-in form, or the top page. So a login only reaches the site whose
+// address Bitwarden has saved for it.
 async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   const status = (JSON.parse(await bw(["status"])) as { status: string }).status;
   if (BW_LOCKED[status]) throw new Error(BW_LOCKED[status]);
   if (a.tab === undefined) throw new Error("bitwarden needs tab");
   const tab = Number(a.tab);
-  const info = (await rpc("info", { tab })) as { url: string };
-  const url = URL.parse(info.url);
-  if (!url || url.protocol !== "https:") throw new Error("Bitwarden logins are filled only on https pages");
-  const items = (JSON.parse(await bw(["list", "items", "--url", url.origin])) as BwItem[]).filter((i) => i.type === 1 && i.login);
+  const form = await rpc("login_form", { tab });
+  if (!form || typeof form !== "object" || !("site" in form) || typeof form.site !== "string" || !("frame" in form) || typeof form.frame !== "number") throw new Error("the tab's sign-in form did not answer; reload it with goto and try again");
+  const site = form.site;
+  const frame = form.frame;
+  const items = (JSON.parse(await bw(["list", "items", "--url", `https://${site}`])) as BwItem[]).filter((i) => i.type === 1 && i.login);
   const usernames = items.map((i) => i.login?.username ?? "").filter(Boolean);
-  if ((a.do ?? "fill") === "logins") return { site: url.hostname, usernames };
+  if ((a.do ?? "fill") === "logins") return { site, usernames };
   const wanted = a.username === undefined ? undefined : String(a.username);
   const chosen = wanted === undefined ? (items.length === 1 ? items[0] : undefined) : items.find((i) => i.login?.username === wanted);
   if (!chosen) {
-    throw new Error(items.length === 0 ? `Bitwarden has no login saved for ${url.hostname}` : wanted === undefined ? `several Bitwarden logins for ${url.hostname}; pass username: ${usernames.join(", ")}` : `no Bitwarden login ${wanted} for ${url.hostname}; saved: ${usernames.join(", ")}`);
+    throw new Error(items.length === 0 ? `Bitwarden has no login saved for ${site}` : wanted === undefined ? `several Bitwarden logins for ${site}; pass username: ${usernames.join(", ")}` : `no Bitwarden login ${wanted} for ${site}; saved: ${usernames.join(", ")}`);
   }
-  const res = (await rpc("login_fill", { tab, site: url.hostname, username: chosen.login?.username ?? null, password: chosen.login?.password ?? null })) as { filled?: string[] };
-  return { filled: res.filled ?? [], username: chosen.login?.username ?? "", site: url.hostname };
+  const res = await rpc("login_fill", { tab, frame, site, username: chosen.login?.username ?? null, password: chosen.login?.password ?? null });
+  const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
+  return { filled, username: chosen.login?.username ?? "", site };
 }
 
 export const FILL_TOOLS: Record<string, Tool> = {

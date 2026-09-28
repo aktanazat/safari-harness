@@ -396,20 +396,43 @@ function launchHelium(): Subprocess {
 
 export const passwords = new ApplePasswords();
 
-// ---------- a Safari tab's site ----------
+// ---------- a Safari tab's sign-in form ----------
 
-// The site a login may be used on comes from the tab itself, never from the
-// caller, so a saved login can only reach the site it was saved for.
-async function siteOf(tab: number): Promise<string> {
-  const info = await bridge.tab(tab, "tabInfo");
-  const url = URL.parse(info && typeof info === "object" && "url" in info && typeof info.url === "string" ? info.url : "");
-  if (!url || url.protocol !== "https:") throw new Error("Apple Passwords works only on https pages");
+// What a frame of the tab says it holds (probeFrames in background.js).
+type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean };
+
+function isProbe(p: unknown): p is Probe {
+  return !!p && typeof p === "object" && "frame" in p && typeof p.frame === "number" && "origin" in p && typeof p.origin === "string";
+}
+
+// Each frame of the tab that answered, top page first.
+async function probe(tab: number, what: "login" | "code"): Promise<Probe[]> {
+  const frames = await bridge.request("probe", [tab, what]);
+  return Array.isArray(frames) ? frames.filter(isProbe) : [];
+}
+
+// The site a login may be used on comes from the page itself, never from
+// the caller, so a saved login can only reach the site it was saved for.
+function httpsHost(origin: string): string {
+  const url = URL.parse(origin);
+  if (!url || url.protocol !== "https:") throw new Error("logins are filled only on https pages");
   return url.hostname;
+}
+
+// Where a login for this tab goes: the frame holding its sign-in form, top
+// page first, and that frame's own site (Apple's sign-in form on
+// appstoreconnect.apple.com is a frame from idmsa.apple.com). With no form,
+// the top page.
+export async function loginForm(tab: number): Promise<{ site: string; frame: number; username: boolean; password: boolean }> {
+  const frames = await probe(tab, "login");
+  const form = frames.find((f) => f.username || f.password) ?? frames[0];
+  if (!form) throw new Error("the page did not answer; reload it with goto and try again");
+  return { site: httpsHost(form.origin), frame: form.frame, username: form.username === true, password: form.password === true };
 }
 
 export async function loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
   if (!passwords.unlocked) throw passwords.lockedError();
-  const site = await siteOf(tab);
+  const { site } = await loginForm(tab);
   return { site, usernames: await passwords.logins(site) };
 }
 
@@ -417,33 +440,32 @@ export async function loginsFor(tab: number): Promise<{ site: string; usernames:
 // fields filled, never the password.
 export async function fill(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
   if (!passwords.unlocked) throw passwords.lockedError();
-  const site = await siteOf(tab);
-  const form = await bridge.tab(tab, "loginForm", [site]);
-  const hasPassword = !!form && typeof form === "object" && "password" in form && form.password === true;
-  const hasUsername = !!form && typeof form === "object" && "username" in form && form.username === true;
-  if (!hasPassword && !hasUsername) throw new Error("no sign-in form on this page");
+  const form = await loginForm(tab);
+  if (!form.password && !form.username) throw new Error("no sign-in form on this page");
+  const { site } = form;
   const saved = await passwords.logins(site);
   const login = username ?? (saved.length === 1 ? saved[0] : undefined);
   if (login === undefined) {
     throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
   }
   if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
-  const secret = hasPassword ? await passwords.password(site, login) : null;
-  const res = await bridge.tab(tab, "fillLogin", [site, login, secret]);
+  const secret = form.password ? await passwords.password(site, login) : null;
+  const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
   const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
   if (filled.length === 0) throw new Error("the page changed before the login was filled");
   return { filled, username: login, site };
 }
 
-// Types the site's current verification code into the tab's code field.
-// The result never carries the code.
+// Types the site's current verification code into the tab's code field,
+// in whichever frame holds it. The result never carries the code.
 export async function fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
   if (!passwords.unlocked) throw passwords.lockedError();
-  const site = await siteOf(tab);
-  const form = await bridge.tab(tab, "codeField", [site]);
-  if (!form || typeof form !== "object" || !("found" in form) || form.found !== true) throw new Error("no verification code field on this page");
+  const frames = await probe(tab, "code");
+  const field = frames.find((f) => f.found);
+  if (!field) throw new Error("no verification code field on this page");
+  const site = httpsHost(field.origin);
   const { code, username: login } = await passwords.oneTimeCode(site, username);
-  const res = await bridge.tab(tab, "fillCode", [site, code]);
+  const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
   const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
   if (filled.length === 0) throw new Error("the page changed before the code was filled");
   return { filled, username: login, site };

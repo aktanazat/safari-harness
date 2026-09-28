@@ -2,7 +2,7 @@
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
 import { bridge } from "./bridge.ts";
-import { fill, fillCode, loginsFor, passwords } from "./passwords.ts";
+import { fill, fillCode, loginForm, loginsFor, passwords } from "./passwords.ts";
 import { inFront } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
@@ -617,14 +617,24 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
     run: async (a) => relay(await resolveTab(a.tab as number | undefined), "fillAddress", [a.values, a.root ?? null]),
   },
+  // Where a login goes: the frame holding the tab's sign-in form and that
+  // frame's own site. Bitwarden's fill reads it, and so does a live check.
+  login_form: {
+    desc: "The frame holding the tab's sign-in form, and that frame's site.",
+    params: { tab: TAB },
+    required: ["tab"],
+    hidden: true,
+    run: (a) => loginForm(num(a.tab, "tab")),
+  },
   // A login the caller read from a password manager (Bitwarden), filled
-  // only while the page is on the site it was saved for.
+  // into the frame login_form named, only while it is on the site the
+  // login was saved for.
   login_fill: {
     desc: "Fill a login into the tab's sign-in form, only while the tab is on site.",
-    params: { tab: TAB, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
+    params: { tab: TAB, frame: { type: "number", description: "frame from login_form" }, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
     required: ["tab", "site"],
     hidden: true,
-    run: async (a) => relay(Number(a.tab), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null]),
+    run: async (a) => bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords. pair shows a 6-digit code on the Mac: ask the user for it, then unlock with code. fill enters the saved login for the tab's site into its sign-in form after the user approves with Touch ID; you never see the password. code fills the site's saved verification code the same way. logins lists saved usernames; status says why it is locked.",
