@@ -32,6 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
+import { filledOf, type Navigated } from "./navigated.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
@@ -645,8 +646,9 @@ export class ApplePasswords {
   }
 
   // Fills the saved login into the tab's sign-in form. The result names the
-  // fields filled, never the password.
-  async fill(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
+  // fields filled, never the password, and where the page went when the
+  // form submitted itself.
+  async fill(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string }> {
     await this.session();
     const form = await loginForm(tab);
     if (!form.password && !form.username) throw new Error("no sign-in form on this page");
@@ -659,14 +661,13 @@ export class ApplePasswords {
     if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
     const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
-    const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
-    if (filled.length === 0) throw new Error("the page changed before the login was filled");
-    return { filled, username: login, site };
+    const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
+    return { ...filledOf(res, sent, "login"), username: login, site };
   }
 
   // Types the site's current verification code into the tab's code field,
   // in whichever frame holds it. The result never carries the code.
-  async fillCode(tab: number, username?: string): Promise<{ filled: string[]; username: string; site: string }> {
+  async fillCode(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string }> {
     await this.session();
     const frames = await probe(tab, "code");
     const field = frames.find((f) => f.found);
@@ -674,9 +675,7 @@ export class ApplePasswords {
     const site = httpsHost(field.origin);
     const { code, username: login } = await this.oneTimeCode(site, username);
     const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
-    const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
-    if (filled.length === 0) throw new Error("the page changed before the code was filled");
-    return { filled, username: login, site };
+    return { ...filledOf(res, ["code"], "code"), username: login, site };
   }
 
   // The daemon is exiting. Helium, its helper, and the pairing stay up for

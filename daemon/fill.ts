@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { resolveTab, TAB, TOOLS, type TabInfo, type Tool } from "./tools.ts";
 import { addressBooks } from "./imessage.ts";
 import { rpc } from "./rpc.ts";
+import { navigatedOf } from "./navigated.ts";
 
 const execFileAsync = promisify(execFile);
 const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
@@ -116,9 +117,18 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   if (!chosen) {
     throw new Error(items.length === 0 ? `Bitwarden has no login saved for ${site}` : wanted === undefined ? `several Bitwarden logins for ${site}; pass username: ${usernames.join(", ")}` : `no Bitwarden login ${wanted} for ${site}; saved: ${usernames.join(", ")}`);
   }
-  const res = await rpc("login_fill", { tab, frame, site, username: chosen.login?.username ?? null, password: chosen.login?.password ?? null });
+  // Only the fields the form holds are sent, so a form that submits itself
+  // as it is filled is said to have got just those.
+  const res = await rpc("login_fill", {
+    tab,
+    frame,
+    site,
+    username: "username" in form && form.username === true ? chosen.login?.username ?? null : null,
+    password: "password" in form && form.password === true ? chosen.login?.password ?? null : null,
+  });
   const filled = res && typeof res === "object" && "filled" in res && Array.isArray(res.filled) ? res.filled.map(String) : [];
-  return { filled, username: chosen.login?.username ?? "", site };
+  const navigated = navigatedOf(res);
+  return { filled, ...(navigated ? { navigated } : {}), username: chosen.login?.username ?? "", site };
 }
 
 // Runs scripts/pairing and parses its one JSON line; failures carry its stderr.

@@ -174,8 +174,10 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 // The Safari tab: a page whose sign-in form (in the top page, or in an
 // embedded frame from another site, as Apple's is) records what was typed.
 // As in the content script, a fill lands only when sent to the frame that
-// holds the form, for the site that frame is on.
-function fakeTab(url: string, form = { frame: 0, url }) {
+// holds the form, for the site that frame is on. A form that submits itself
+// once filled takes the page away before it can answer, so the extension
+// answers where the page went instead (act in background.js).
+function fakeTab(url: string, form = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string } = {};
   bridge.attach({
     send(data: string) {
@@ -190,7 +192,7 @@ function fakeTab(url: string, form = { frame: 0, url }) {
       if (frame !== form.frame || opArgs[0] !== new URL(form.url).hostname) return answer({ error: "nothing was filled" });
       if (op === "fillLogin") Object.assign(page, { username: opArgs[1], password: opArgs[2] });
       if (op === "fillCode") Object.assign(page, { code: opArgs[1] });
-      answer({ value: { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
+      answer({ value: navigated ? { ok: true, navigated } : { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
     },
     close() {},
   });
@@ -218,6 +220,24 @@ test("code types the site's verification code into the page but never returns it
   const result = await p.fillCode(7);
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
+});
+
+const HOME = { url: `https://${SITE}/home`, title: "Home" };
+
+test("a login form that submits itself as it is filled reports the fields filled and where the page went", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`, undefined, HOME);
+  await paired(p);
+  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], navigated: HOME, username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+test("a code field that submits itself as it is filled reports the code filled and where the page went", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/verify`, undefined, HOME);
+  await paired(p);
+  expect(await p.fillCode(7)).toEqual({ filled: ["code"], navigated: HOME, username: USER, site: SITE });
+  expect(page).toEqual({ code: OTP });
 });
 
 test("a wrong code is refused and cannot be retried with the right one", async () => {

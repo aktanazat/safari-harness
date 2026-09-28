@@ -262,13 +262,17 @@ with `do: "read"`.
   It fetches with the page's cookies, so a signed-in file works. A name
   already taken gets ` (1)`. A download only the server starts, after a
   click the page cannot see, lands in `~/Downloads` through Safari itself.
+  A click that takes the tab to a file Safari shows itself (a PDF, an
+  image) saves that file; one that opens a page fails with the page's
+  address, and a file the site sent then is in `~/Downloads`.
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
   opening a page. `method` and `body` send a POST. From the CLI, pipe
   `safari fetch --json …` into a JSON parser; the plain output is not one
   JSON document.
 - `pdf` saves the page as a PDF (letter pages, like Export as PDF, from the
-  page's current HTML) and returns its path; `do: "read"` returns a PDF's
+  page's current HTML) and returns its path; a page that moves on while it
+  is read is saved as the page it moved to. `do: "read"` returns a PDF's
   text page by page: a local `path`, or the PDF the tab shows.
 - `cookies` with `do: "set"` adds a cookie for the tab's site (`name`,
   `value`); an extension cannot set an HttpOnly one.
@@ -307,7 +311,8 @@ Signing in, in this order:
      sign-in form's site; `passwords {do: "fill", tab}` fills the form
      (pass `username` when several are saved). The result names the fields
      filled, never the password, and the password may prompt for Touch ID.
-     The call waits about two minutes for it.
+     A form that submits itself once filled also returns `navigated`, the
+     page it went to. The call waits about two minutes for Touch ID.
    - `passwords {do: "code", tab}` does the same for a verification code
      the user keeps in Apple Passwords (an authenticator setup): it types
      the current code into the page's code field, one digit per box when
@@ -344,7 +349,8 @@ Signing in, in this order:
   site through the `bw` CLI. The user unlocks the vault in his terminal
   first (`bw login`, then `export BW_SESSION=$(bw unlock --raw)`); until then
   it says the vault is locked. Like Apple Passwords, it reports which fields
-  it filled, never the password.
+  it filled, never the password, and `navigated` when the form submitted
+  itself.
 - Addresses: `safari fill address --tab N` fills a checkout or signup form's
   empty name, address, email, and phone fields from the user's own card in
   Contacts (`--label work` picks another address on the card). It never
