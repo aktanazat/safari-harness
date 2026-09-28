@@ -563,7 +563,7 @@ export class ApplePasswords {
   private async session(): Promise<Session> {
     await this.settle();
     if (this.state.kind !== "unlocked") {
-      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. If it answers codeShown, ask the user for the 6-digit code their Mac shows and call passwords {do: "unlock", code}. Do not route around the lock.`);
+      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. The user types the code his Mac shows into a prompt there, never into the chat. Do not route around the lock.`);
     }
     this.hold();
     return this.state.session;
