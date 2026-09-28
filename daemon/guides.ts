@@ -1,5 +1,6 @@
-// The guides `safari guide` prints: docs/GUIDE.md for the helper as a
-// whole, docs/REPL.md for safari repl, and one per site in docs/sites/.
+// The guides `safari guide` prints: docs/GUIDE.md, the short card of rules;
+// docs/REFERENCE.md ("reference"), every tool in full; docs/REPL.md for
+// safari repl; and one per site in docs/sites/.
 
 import { readdir, readFile } from "node:fs/promises";
 
@@ -8,6 +9,7 @@ const DOCS = new URL("../docs/", import.meta.url);
 export async function guide(which?: string): Promise<string | null> {
   if (!which) return readFile(new URL("GUIDE.md", DOCS), "utf8");
   if (which === "repl") return readFile(new URL("REPL.md", DOCS), "utf8");
+  if (which === "reference") return readFile(new URL("REFERENCE.md", DOCS), "utf8");
   return siteGuide(which);
 }
 

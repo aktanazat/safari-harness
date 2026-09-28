@@ -8,6 +8,12 @@ A workspace host like `<workspace>.slack.com` matches this guide too.
 
 Signed out, the global throws "not signed in to Slack in Safari". A workspace whose stored session has expired says it needs a fresh sign-in. Ask the user to sign in to Slack in Safari, then run it again.
 
+## Signing in with Google
+- After the Google sign-in, the tab lands on `slack.com/signin?entry_point=redirect_flow#workspaces`: "Welcome back!", the Google account's email, and each workspace with its member count and an `Open` link.
+- The workspace is not signed in yet at that point, and `slack.listWorkspaces()` does not list it. Click the workspace's `Open` link (a one-time `app.slack.com/t/<team>/login/...` address that opens in a new tab). The new tab reads "Launching ..." with a "use Slack in your browser" link; after it, `listWorkspaces()` shows the workspace. Close the new tab.
+- In `safari repl`, catch that tab with `const [tab] = await Promise.all([page.waitForEvent("popup"), page.locator(ref).click()])`.
+- The user's 99 Point workspace signs in with his 99point.co Google account.
+
 ## In safari repl
 The `slack` global reads Slack through the session in Safari, from one background tab of its own; it boots the Slack client only when the stored workspaces are missing. Reading this way marks nothing as read.
 - `slack.listWorkspaces()`: the workspaces signed in: team id, name, domain, url, your user id, and which was used last.

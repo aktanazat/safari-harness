@@ -8,7 +8,7 @@ This is the user's health plan: MyChart messages, results, and the Kaiser pharma
 
 ## Signing in
 - The sign-in page is on `identityauth.kaiserpermanente.org`, with fields `#userid` and `#password` and a `#submitButton`. Two logins are saved in Apple Passwords for that host, so `passwords` `fill` needs `username`; without it the call names both and fills nothing.
-- `fill` waits for the user's Touch ID. The MCP call gives up after 30 s while the prompt is still up, but the fill lands once the user approves: read the password field's length from `eval` rather than calling `fill` again.
+- `fill` waits for the user's Touch ID. The call now waits about two minutes, so the fill usually finishes inside it. If it still times out, the fill can land once the user approves: check the password field in a `snapshot` (a filled one reads `filled`) before calling `fill` again.
 - After `#submitButton` the tab lands on a MyChart page (`/mychartcn/...`). The first page after sign-in can read "MyChart link error options"; loading `https://healthy.kaiserpermanente.org/mychartcn/Home` works.
 
 ## Finding pages
