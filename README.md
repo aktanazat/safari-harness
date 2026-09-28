@@ -58,6 +58,9 @@ daemon/
                     AddressBook, osascript)
   agent.ts          tool-calling loop for `safari do` (OpenAI-compatible API;
                     gets the Messages read tools, not send)
+  notes.ts          site notes: facts agents save with `learn`, handed to an
+                    agent on its first page on that site, and printed by
+                    `safari guide <site>`; refuses secret-looking facts
 cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket
@@ -183,6 +186,7 @@ safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
 safari --host studio tabs              # another Mac's Safari, through ssh
 safari host use studio                 # make it the default; `host use local` goes back
 safari guide gusto                     # one site's note: sign-in, paths, what to confirm
+safari learn cvs.com "Insurance card: Pharmacy > Insurance > Add card"   # a fact for later agents
 safari guide repl                      # the REPL's API and recovery steps
 safari imessage chats                  # recent conversations
 safari imessage code                   # wait for a sign-in code by text

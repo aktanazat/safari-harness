@@ -25,6 +25,11 @@ Turns
 Before a site
 - Run `safari guide <site>` (for example `safari guide gusto`). It says
   what failed before and what worked. `safari guide sites` lists them.
+- When you find out something about a site the hard way (a flow's steps,
+  a control that loads late, which account owns what), save it in one
+  sentence with `learn {site, fact}` (`safari learn <site> "<fact>"`),
+  never a secret. Your first `open`, `goto`, or `snapshot` there carries
+  what agents saved before, as `notes`.
 - A public page reads faster without Safari: try `read`, `web_search`, or
   Iris first. Save long text to a file instead of fetching it twice.
 

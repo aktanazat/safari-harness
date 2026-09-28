@@ -9,6 +9,7 @@ import { renderPdf, pdfText } from "./pdf.ts";
 import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
+import { firstNotes, learn } from "./notes.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -181,6 +182,13 @@ async function showTab(tab: number): Promise<unknown> {
 async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
   const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
   return challenge ? { ...r, challenge } : r;
+}
+
+// open, goto, and snapshot also carry what agents have learned about the
+// site, on the first result on it for each agent (notes.ts).
+function withNotes<T extends object>(result: T): T {
+  const notes = firstNotes("url" in result ? result.url : undefined);
+  return notes ? { ...result, notes } : result;
 }
 
 // The latest whole-page snapshot of each tab, for diff.
@@ -697,7 +705,7 @@ export const TOOLS: Record<string, Tool> = {
       const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"));
       // a tab opened in front is the user's to close
       if (a.background && !a.keep) own(t.id, currentOwner());
-      return withPage(await withChallenge(t, t.id), t.id, a.snapshot);
+      return withPage(withNotes(await withChallenge(t, t.id)), t.id, a.snapshot);
     },
   },
   close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
@@ -705,7 +713,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["tab", "url"],
-    run: action(async (a) => withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab)),
+    run: action(async (a) => withNotes(await withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab))),
   },
   activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
@@ -718,7 +726,7 @@ export const TOOLS: Record<string, Tool> = {
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
     },
     required: ["tab"],
-    run: (a) => snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }),
+    run: async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean })),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, or newTab if a tab opened (yours to close).",
@@ -922,13 +930,19 @@ export const TOOLS: Record<string, Tool> = {
     required: ["do"],
     run: applePasswords,
   },
+  learn: {
+    desc: "Save a site fact for later agents: a flow's steps, a control that loads late, which account owns what. Never a secret. Only site: list its notes; forget: n removes one.",
+    params: { site: { type: "string", description: "host or address" }, fact: { type: "string", description: "max 300 chars" }, forget: { type: "number", description: "note number" } },
+    required: ["site"],
+    run: learn,
+  },
 };
 
 export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge };
+type Snapshot = { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; notes?: string };
 type Extract = { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
@@ -940,7 +954,8 @@ export function formatResult(value: unknown): string {
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${v.snapshot}`;
+      const notes = v.notes ? `${v.notes}\n` : "";
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${notes}${v.snapshot}`;
     }
     if (typeof v.text === "string") {
       if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n\n${v.text}`;
