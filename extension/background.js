@@ -574,8 +574,8 @@ async function screenshot(tabId, opts) {
 async function handle(msg) {
   const { op, args = [] } = msg;
   // A tab id from before the extension reloaded names its tab's new id.
-  // Every op with a number first takes a tab id, but these two.
-  if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus") args[0] = await resolveTab(args[0]);
+  // Every op with a number first takes a tab id, but these three.
+  if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus" && op !== "windows.resolve") args[0] = await resolveTab(args[0]);
   switch (op) {
     case "tabs.list": {
       const tabs = await api.tabs.query({});
@@ -733,6 +733,12 @@ async function handle(msg) {
       const [tab] = w.tabs && w.tabs.length ? w.tabs : await api.tabs.query({ windowId: w.id });
       return { windowId: w.id, tabId: tab.id };
     }
+    // The id a window the daemon knew before the extension reloaded has
+    // now, or null once it is gone.
+    case "windows.resolve": {
+      const id = await resolveWindow(args[0]);
+      return (await api.windows.get(id).then(() => true, () => false)) ? id : null;
+    }
     case "ping":
       return "pong";
     default:
@@ -785,7 +791,7 @@ api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
   if (!sender.frameId) markReady(sender.tab.id);
   else for (const w of frameWaits.get(sender.tab.id)?.values() ?? []) w.join(sender.frameId);
-  return Promise.all([policyOf(sender.tab.id), drivenRead]).then(([dialogs]) => ({ dialogs, tab: sender.tab.id, net: dialogs !== null || drivenTabs.has(sender.tab.id) }));
+  return Promise.all([policyOf(sender.tab.id), drivenRead]).then(([dialogs]) => ({ dialogs, tab: sender.tab.id, window: sender.tab.windowId, net: dialogs !== null || drivenTabs.has(sender.tab.id) }));
 });
 
 // ---------- owned tabs ----------
@@ -818,57 +824,93 @@ async function inFront(tabId) {
   return t.active && t.windowId === await userWindow();
 }
 
-// ---------- tab ids across a reload ----------
-// Safari gives every tab a new id when the extension reloads (a deploy),
-// and agents still hold the old ones. Each page keeps the id its tab had
-// when it reported in (content.js), in the extension's own world, which
-// outlives the reload. The extension reads those marks once it is
-// reloaded, or at the first request for an id Safari no longer knows: each
-// old id maps to its tab's new id, and the marks become the new ids for the
-// next reload. The map lives in storage.local, which outlives a reload too;
-// an alias goes with its tab.
+// ---------- ids across a reload ----------
+// Safari gives every tab and window a new id when the extension reloads (a
+// deploy), and agents and the daemon still hold the old ones. Each page
+// keeps the ids its tab and window had when it reported in (content.js),
+// in the extension's own world, which outlives the reload. The extension
+// reads those marks once it is reloaded, or at the first request for a tab
+// or window Safari no longer knows: each old id maps to the new id, and the
+// marks become the new ids for the next reload. The maps live in
+// storage.local, which outlives a reload too; an alias goes with its tab.
+// A window is found through its pages, so an agent's window opens on one
+// (the daemon's /space), not on about:blank, which has no content script.
 let adopted = null;
 
 async function resolveTab(tabId) {
   if (await api.tabs.get(tabId).then(() => true, () => false)) return tabId;
   adopted ??= adopt();
-  return (await adopted)[tabId] ?? tabId;
+  return (await adopted).tabs[tabId] ?? tabId;
+}
+
+async function resolveWindow(windowId) {
+  if (await api.windows.get(windowId).then(() => true, () => false)) return windowId;
+  adopted ??= adopt();
+  return (await adopted).windows[windowId] ?? windowId;
 }
 
 async function adopt() {
-  const map = (await api.storage.local.get("tabAliases")).tabAliases || {};
-  const tabs = await api.tabs.query({});
-  const marks = await Promise.all(tabs.map((t) => api.scripting.executeScript({
+  const { tabAliases: tabs = {}, windowAliases: windows = {} } = await api.storage.local.get(["tabAliases", "windowAliases"]);
+  const open = await api.tabs.query({});
+  const marks = await Promise.all(open.map((t) => api.scripting.executeScript({
     target: { tabId: t.id, frameIds: [0] },
-    func: (id) => { const was = window.__safariHarnessTab; window.__safariHarnessTab = id; return was; },
-    args: [t.id],
+    func: (tab, win) => {
+      const was = { tab: window.__safariHarnessTab, window: window.__safariHarnessWindow };
+      window.__safariHarnessTab = tab;
+      window.__safariHarnessWindow = win;
+      return was;
+    },
+    args: [t.id, t.windowId],
   }).then(([r]) => r && r.result, () => undefined)));
-  for (const [i, t] of tabs.entries()) {
-    const was = marks[i];
-    if (typeof was !== "number" || was === t.id) continue;
-    for (const k of Object.keys(map)) if (map[k] === was) map[k] = t.id;
-    map[was] = t.id;
+  for (const [i, t] of open.entries()) {
+    alias(tabs, marks[i]?.tab, t.id);
+    alias(windows, marks[i]?.window, t.windowId);
   }
-  // an old id Safari has since given to another tab names that tab
-  for (const t of tabs) delete map[t.id];
-  await api.storage.local.set({ tabAliases: map });
-  if (Object.keys(map).length) log("tab ids after the reload", JSON.stringify(map));
-  return map;
+  // The agent windows, and the order he focused his in, by their new ids;
+  // queued, so they read the map as it is here.
+  const moved = { ...windows };
+  const lists = Promise.all([updateList("agentWindows", (ids) => ids.map((id) => moved[id] ?? id)), updateList("focusOrder", (ids) => ids.map((id) => moved[id] ?? id))]);
+  // an old id Safari has since given to another tab or window names that one
+  for (const t of open) {
+    delete tabs[t.id];
+    delete windows[t.windowId];
+  }
+  await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }), lists]);
+  if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs, windows }));
+  return { tabs, windows };
 }
 api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
+// A tab moved to another window (window, or the user dragging it) marks
+// that one.
+api.tabs.onAttached.addListener((tabId, { newWindowId }) => {
+  api.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    func: (win) => { if (window.__safariHarnessTab !== undefined) window.__safariHarnessWindow = win; },
+    args: [newWindowId],
+  }).catch(() => {});
+});
+
+// Maps the old id was to now, and every id that named was before to now.
+function alias(map, was, now) {
+  if (typeof was !== "number" || was === now) return;
+  for (const k of Object.keys(map)) if (map[k] === was) map[k] = now;
+  map[was] = now;
+}
 
 // ---------- agent windows ----------
 // The windows made for agents (windows.open, window), which never hold the
 // user's front tab. Safari's getLastFocused names the newest window, even
 // one made behind his without focus, so the order he focused windows in is
-// kept here, and agent windows are left out when it is read.
+// kept here, and agent windows are left out when it is read. Both lists
+// outlive a reload (adopt maps them to the new ids); a Safari that starts
+// again numbers its windows anew, and they start empty.
 let listQueue = Promise.resolve();
 
 // Read-modify-write of one stored list, one change at a time.
 function updateList(key, change) {
   const next = listQueue.then(async () => {
-    const list = (await store.get(key))[key] || [];
-    await store.set({ [key]: change(list) });
+    const list = (await api.storage.local.get(key))[key] || [];
+    await api.storage.local.set({ [key]: change(list) });
   });
   listQueue = next.catch(() => {});
   return next;
@@ -878,18 +920,30 @@ function markAgentWindow(id) {
   return updateList("agentWindows", (ids) => [...ids, id]);
 }
 
+api.runtime.onStartup.addListener(() => {
+  updateList("agentWindows", () => []);
+  updateList("focusOrder", () => []);
+  api.storage.local.remove(["tabAliases", "windowAliases"]).catch(() => {});
+});
 api.windows.onFocusChanged.addListener((id) => {
   if (id !== api.windows.WINDOW_ID_NONE) updateList("focusOrder", (ids) => [id, ...ids.filter((w) => w !== id)].slice(0, 10));
 });
 api.windows.onRemoved.addListener((id) => {
   updateList("agentWindows", (ids) => ids.filter((w) => w !== id));
   updateList("focusOrder", (ids) => ids.filter((w) => w !== id));
+  api.storage.local.get("windowAliases").then(({ windowAliases }) => {
+    if (!windowAliases) return;
+    for (const k of Object.keys(windowAliases)) if (windowAliases[k] === id) delete windowAliases[k];
+    return api.storage.local.set({ windowAliases });
+  }).catch(() => {});
 });
 
 // The window the user had in front last.
 async function userWindow() {
+  // Right after a reload, the lists hold the old ids until adopt maps them.
+  if (adopted) await adopted.catch(() => {});
   const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
-    store.get(["focusOrder", "agentWindows"]),
+    api.storage.local.get(["focusOrder", "agentWindows"]),
     api.windows.getAll(),
     api.windows.getLastFocused().then((w) => w.id, () => undefined),
   ]);

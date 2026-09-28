@@ -1524,11 +1524,12 @@
   // Tell the extension this document can take requests; this lands well
   // before the tab's "complete", which also waits on ads and trackers. A tab
   // the harness owns gets back how to answer its dialogs.
-  // It also keeps its tab's id, for the extension to map after it reloads
-  // (adopt in background.js).
+  // It also keeps its tab's and window's ids, for the extension to map
+  // after it reloads (adopt in background.js).
   api.runtime.sendMessage({ __safariHarnessReady: 1 }).then((r) => {
     if (!r) return;
     window.__safariHarnessTab = r.tab;
+    window.__safariHarnessWindow = r.window;
     if (r.dialogs) setDialogs(r.dialogs);
     if (r.net === false) document.dispatchEvent(new Event("__sh_net_off"));
   }, () => {});
