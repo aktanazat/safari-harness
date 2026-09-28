@@ -61,8 +61,13 @@ const USAGE = `safari — drive Safari from the terminal
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
 
+  Reads (snapshot eval extract fetch) take --save to write the whole output
+  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>,
+  and print only its path, size, and first 500 characters.
+
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
   safari extract --tab N [--selector s]      readable text
+  safari extract --as table --tab N          tables and card lists as JSON rows
   safari info --tab N                        url/title/scroll
   safari wait <ms> --tab N                   sleep in the page
   safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
@@ -78,6 +83,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
+  safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
+                                             read up to 20 pages at once, each in a
+                                             background tab that closes after
+                                             (--expression js, --as table, --concurrency 4)
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
@@ -161,6 +170,15 @@ function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
   return { tab: t === "front" ? t : Number(t) };
+}
+
+// --save writes a read's whole output to a new file in the saved folder;
+// --save=<path> names the file. A relative path is the terminal's, not the
+// daemon's.
+function saveArg(argv: string[]): Record<string, unknown> {
+  if (hasFlag("save", argv)) return { save: true };
+  const path = flag("save", argv);
+  return path === undefined ? {} : { save: resolve(path) };
 }
 
 // The tool a command runs, where its name differs.
@@ -463,7 +481,7 @@ async function main() {
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
   let tool = ALIAS[cmd] ?? cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
+  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
     case "tabs": break;
@@ -546,6 +564,7 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": args.url = positional[0]; break;
+    case "map": args.urls = positional; break;
     case "pdf": {
       args.do = positional[0] ?? "save";
       if (positional[1]) args.path = resolve(positional[1]);
@@ -582,7 +601,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

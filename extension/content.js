@@ -1307,6 +1307,7 @@
   // whole body (the first of many articles is a card, not the content).
   // query keeps the lines containing it, searched across the whole body.
   function extract(opts = {}) {
+    if (opts.as === "table") return tables(opts);
     let root;
     if (opts.selector) root = deepQuery(opts.selector);
     else if (opts.query) root = document.body;
@@ -1334,6 +1335,143 @@
       const t = line.toLowerCase();
       return alts.some((a) => t.includes(a));
     };
+  }
+
+  // ---------- tables as rows ----------
+  // extract with as: "table" reads the page's data as rows instead of text:
+  // each table (a <table>, or an element with the ARIA table or grid role),
+  // and each run of 3 or more cards of the same structure among siblings (a
+  // product grid, search results). The rules are fixed, so the same page
+  // always reads the same.
+
+  const TABLE_ROLES = "[role=table],[role=grid],[role=treegrid]";
+  const CELL_ROLES = "[role=cell],[role=gridcell],[role=columnheader],[role=rowheader]";
+  // A card with more fields than this is a section of the page, not a card.
+  const CARD_FIELDS_MAX = 40;
+
+  const cellText = (cell) => norm(cell.innerText || cell.textContent || "");
+  const keyOf = (el) => el.localName + (el.classList.length ? `.${el.classList[0]}` : "");
+  const drawn = (el) => el.getClientRects().length > 0;
+
+  // Tables and card lists under the root, in page order, each list once: a
+  // list inside a card of one already read is part of that card.
+  function tables(opts) {
+    const root = opts.selector ? deepQuery(opts.selector) : document.body;
+    if (!root) return { error: "no content root" };
+    const found = [];
+    const lists = [];
+    for (const el of [root, ...deepElements(root)]) {
+      const table = tableOf(el);
+      if (table) found.push(table);
+      else if (!lists.some((p) => p.contains(el))) {
+        const cards = cardsOf(el);
+        if (cards.length) lists.push(el);
+        found.push(...cards);
+      }
+    }
+    return { url: location.href, title: document.title, ...withinLimit(found, opts) };
+  }
+
+  // query keeps the rows containing it; maxBytes (default 20000) bounds the
+  // JSON of what is kept, and the first row past it ends the read.
+  function withinLimit(found, opts) {
+    const keep = opts.query ? queryMatch(opts.query) : () => true;
+    const limit = opts.maxBytes || 20000;
+    const out = [];
+    let used = 0;
+    for (const t of found) {
+      const rows = [];
+      let size = JSON.stringify({ ...t, rows }).length;
+      for (const row of t.rows) {
+        if (!keep(row.join(" | "))) continue;
+        size += JSON.stringify(row).length + 1;
+        if (used + size > limit) return { tables: rows.length ? [...out, { ...t, rows }] : out, truncated: true };
+        rows.push(row);
+      }
+      if (!rows.length) continue;
+      out.push({ ...t, rows });
+      used += size;
+    }
+    return { tables: out, truncated: false };
+  }
+
+  // A drawn table's rows, or null for anything else. A table that holds
+  // other tables, or says it is for layout, lays out the page instead.
+  function tableOf(el) {
+    if (el.tagName === "TABLE") {
+      if (el.matches("[role=presentation],[role=none]") || el.querySelector("table") || !drawn(el)) return null;
+      const rows = [...el.rows];
+      const thead = rows.filter((row) => row.parentElement.tagName === "THEAD").length;
+      const head = thead || (rows.length > 1 && [...rows[0].cells].every((c) => c.tagName === "TH") ? 1 : 0);
+      return asTable(el.caption ? cellText(el.caption) : "", spanGrid(rows), head);
+    }
+    if (!el.matches(TABLE_ROLES) || !drawn(el)) return null;
+    const rows = [...el.querySelectorAll("[role=row]")].filter((row) => row.closest(TABLE_ROLES) === el)
+      .map((row) => [...row.querySelectorAll(CELL_ROLES)].filter((c) => c.closest("[role=row]") === row));
+    const head = rows.length > 1 && rows[0].length && rows[0].every((c) => c.getAttribute("role") === "columnheader") ? 1 : 0;
+    return asTable(el.getAttribute("aria-label") || "", rows.map((cells) => cells.map(cellText)), head);
+  }
+
+  // A cell that spans rows or columns fills each slot it covers, so every
+  // row lines up with the headers (as pandas' read_html reads them).
+  function spanGrid(rows) {
+    const grid = rows.map(() => []);
+    rows.forEach((row, r) => {
+      let c = 0;
+      for (const cell of row.cells) {
+        while (grid[r][c] !== undefined) c++;
+        const text = cellText(cell);
+        const down = Math.min(Math.max(1, cell.rowSpan), rows.length - r);
+        const across = Math.max(1, cell.colSpan);
+        for (let dr = 0; dr < down; dr++) for (let dc = 0; dc < across; dc++) grid[r + dr][c + dc] = text;
+        c += across;
+      }
+    });
+    return grid;
+  }
+
+  // Header rows join by column: "Price" over "USD" reads "Price / USD"; a
+  // table without them has none. Rows are padded to one width; empty ones
+  // are dropped.
+  function asTable(caption, grid, head) {
+    const width = grid.reduce((w, row) => Math.max(w, row.length), 0);
+    const pad = (row) => Array.from({ length: width }, (_, c) => row[c] ?? "");
+    const headers = head ? pad([]).map((_, c) => [...new Set(grid.slice(0, head).map((row) => row[c] ?? "").filter(Boolean))].join(" / ")) : [];
+    const rows = grid.slice(head).map(pad).filter((row) => row.some(Boolean));
+    return rows.length ? { kind: "table", ...(caption ? { caption } : {}), headers, rows } : null;
+  }
+
+  // The card lists among el's children: 3 or more drawn children with the
+  // same tag, first class, and fields, each with 2 or more text fields (a
+  // menu of bare links is not data).
+  function cardsOf(el) {
+    if (el.children.length < 3 || el.closest(`table,select,svg,${TABLE_ROLES}`)) return [];
+    const lists = [];
+    for (const alike of Map.groupBy(el.children, keyOf).values()) {
+      if (alike.length < 3) continue;
+      const cards = alike.map((card) => (drawn(card) ? cardFields(card) : null))
+        .filter((fields) => fields && fields.filter((f) => !f.link).length >= 2);
+      for (const same of Map.groupBy(cards, (fields) => fields.map((f) => f.key).join(" ")).values()) {
+        if (same.length >= 3) lists.push({ kind: "cards", headers: same[0].map((f) => f.key), rows: same.map((fields) => fields.map((f) => f.value)) });
+      }
+    }
+    return lists;
+  }
+
+  // A card's fields in page order: the own text of each drawn element
+  // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class,
+  // and each link's address after its text. null when it has too many.
+  function cardFields(card) {
+    const fields = [];
+    const add = (el) => {
+      const own = norm([...el.childNodes].map((n) => (n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.nodeName === "BR" ? " " : "")).join(""));
+      if (own && drawn(el)) fields.push({ key: keyOf(el), value: own });
+      if (el.tagName === "A" && el.href) fields.push({ key: `${keyOf(el)} href`, value: el.href, link: true });
+      return fields.length <= CARD_FIELDS_MAX;
+    };
+    if (!add(card)) return null;
+    for (const el of deepElements(card)) if (!add(el)) return null;
+    return fields;
   }
 
   function tabInfo() {

@@ -118,6 +118,17 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
     await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
     let sent = false;
     try {
+      // A document known to answer takes the request at once: one trip, not
+      // a ping and then the request. One that takes nothing did not run it,
+      // and is asked as below.
+      const known = knownWay(tabId, frameId, op);
+      if (known) {
+        sent = true;
+        const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, msg, left(), frameId, known === "script"));
+        if (res !== undefined) return res;
+        sent = false;
+        ways.get(tabId)?.delete(frameId);
+      }
       // A page may hold no copy of the script that answers: one left behind
       // when the extension reloaded answers nothing, and Safari skips
       // injecting some pages (after a redirect). Put a fresh copy in.
@@ -128,6 +139,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
         send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
         if (!how) break;
       }
+      learnWay(tabId, frameId, how);
       sent = true;
       const res = await sendUntilNavigation(tabId, msg, left(), frameId, how === "script");
       if (res !== undefined) return res;
@@ -271,6 +283,45 @@ async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false)
     .catch((e) => send({ op: "note", kind: "inject failed", tab: tabId, frame: frameId, error: String(e) }));
   await Promise.race([inject, new Promise((resolve) => setTimeout(resolve, ms))]);
 }
+
+// ---------- one trip per request ----------
+// A request goes to a frame's document without a ping first once that
+// document is known to answer, and how: it reported in (content.js does as
+// it starts) or answered a ping. A new load in the tab forgets its frames,
+// whose new documents may hold no copy of the script yet. A document gone
+// without a load being seen takes nothing, which settles undefined, and the
+// request is then asked as before.
+const ways = new Map(); // tabId -> Map of frameId -> "message" | "script"
+
+function learnWay(tabId, frameId, how) {
+  if (!ways.has(tabId)) ways.set(tabId, new Map());
+  ways.get(tabId).set(frameId, how);
+}
+
+// How op may go to the frame's document unasked. Through executeScript, a
+// request left unanswered may have run before its page went away, so only a
+// read, which may be asked again, goes that way unasked.
+function knownWay(tabId, frameId, op) {
+  const how = ways.get(tabId)?.get(frameId);
+  return how === "message" || READS.has(op) ? how : undefined;
+}
+
+// A page that a dialog or a stuck load holds answers nothing. A request sent
+// without a ping first is followed by one after PING_MS: a page silent to
+// that too fails the request then, as the ping first would have, not at the
+// request's own limit, and a page busy with a long request (a wait, a slow
+// fetch) answers it and goes on.
+function unlessHeld(tabId, frameId, script, reply) {
+  const held = Promise.withResolvers();
+  const timer = setTimeout(() => ping(tabId, frameId, PING_MS, script).catch(held.reject), PING_MS);
+  return Promise.race([reply, held.promise]).finally(() => clearTimeout(timer));
+}
+
+api.tabs.onUpdated.addListener((id, info) => { if (info.status === "loading") ways.delete(id); });
+api.tabs.onRemoved.addListener((id) => { ways.delete(id); });
+api.runtime.onMessage.addListener((m, sender) => {
+  if (m && m.__safariHarnessReady === 1 && sender.tab) learnWay(sender.tab.id, sender.frameId || 0, "message");
+});
 
 // ---------- embedded frames ----------
 // A ref from an embedded frame reads "f<frameId>:<ref>"; actions on it go to

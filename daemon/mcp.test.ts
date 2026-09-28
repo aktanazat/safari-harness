@@ -39,8 +39,14 @@ import { expect, test } from "bun:test";
 // one open for the user. The learn tool (445) brought it to 18,475: an
 // agent keeps what it found out about a site (CVS's insurance-card flow, a
 // button that loads late) past compaction and for the next agent, instead
-// of spending the same turns finding it again.
-const TOOL_LIST_MAX_BYTES = 18_475;
+// of spending the same turns finding it again. Saving a read to a file (544:
+// save on extract, snapshot, eval, and fetch) brought it to 19,019: a long
+// page costs the model its path and first 500 characters instead of its
+// whole text. Reading tables as rows (105: extract's as) brought it to
+// 19,124: a table or product list comes back as rows to use, not text to
+// parse. The map tool (870) brought it to 19,994: one call reads 20 pages
+// that took 20 runs or 60 calls.
+const TOOL_LIST_MAX_BYTES = 19_994;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

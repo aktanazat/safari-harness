@@ -105,6 +105,8 @@ a step, `real_input`, `handoff`, and the Messages tools included.
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
   `query`, then `close`.
+- Read several pages the same way: `map` reads up to 20 in one call, a few
+  at a time (see Many pages at once).
 - Act on a page in one call when you know the labels: `open`, `click`
   `{ref: "Poetry"}`, `wait` for the text you expect, `extract`, `close`.
 - A step cannot use a ref number from a snapshot taken in the same `run`; use
@@ -166,8 +168,85 @@ Escalate in this order:
 
 A public page that needs no sign-in reads faster and cheaper without Safari:
 use `read`, `web_search`, or Iris first, and open Safari only when those are
-blocked or the page needs the user's session. Save long text you will need
-again to a file instead of fetching it twice.
+blocked or the page needs the user's session. Keep long text you will need
+again with `save` (next section) instead of fetching it twice.
+
+## Saving a read to a file
+
+`extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
+to a file, and the answer is only `{saved, bytes, head}`: the file's path, its
+size in bytes, and its first 500 characters. Read the parts you need from the
+file (grep it, or read a range) instead of carrying the page in context.
+
+- `save: true` writes a new file,
+  `~/.local/share/safari-harness/saved/<host>-<time>.<ext>`. `save:
+  "/abs/file"` writes that file, replacing one already there. A relative path
+  is refused: the daemon's folder is not yours.
+- A saved read is not cut at a reply's limit: `extract` and `fetch` read up to
+  2,000,000 characters, and `snapshot` up to 10,000 lines, unless you set
+  `maxBytes` or `maxNodes`. A read cut even there adds `truncated: true`, and a
+  snapshot's bot-check note stays.
+- The file holds `extract`'s text (`.txt`), `snapshot`'s outline (`.txt`),
+  `fetch`'s body as the server sent it (`.json`, `.html`, or `.txt`, from its
+  type), and `eval`'s value: a string as it is (`.txt`), anything else as JSON
+  (`.json`).
+- An error the page answers with (a `selector` that matches nothing) comes
+  back as it is, and nothing is written.
+- CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
+  path.
+
+## Tables and card lists as rows
+
+`extract` with `as: "table"` returns the page's data as rows instead of
+text: `{url, title, tables, truncated}`, each entry of `tables` in page
+order. The rules are fixed, so the same page always reads the same way.
+
+- A table (`kind: "table"`) is a `<table>`, or an element with the ARIA
+  `table`, `grid`, or `treegrid` role. It has `caption` when there is one,
+  `headers` (empty when it has no header row; two header rows join by
+  column, as `Price / USD`), and `rows`, each an array of cell text. A cell
+  that spans rows or columns fills each slot it covers, so every row lines
+  up with the headers. A table holding other tables or marked
+  `role="presentation"` lays out the page and is skipped, and so is a table
+  that is not drawn.
+- A card list (`kind: "cards"`) is 3 or more sibling elements with the same
+  structure: a product grid, search results, a list of orders. A card's
+  fields are the text of each element in it, in page order, each link's
+  address after the link's text. `headers` names each field by its
+  element's tag and first class (`h3`, `span.price`, `a href`). A card
+  whose structure differs (one with an extra badge) is left out, or forms a
+  list of its own. A list whose cards hold fewer than 2 pieces of text (a
+  menu of links) is skipped, and a list inside a card of another list is
+  part of that card.
+- `selector` narrows the read to one region, and may name the table or
+  list itself. `query` keeps the rows containing the text. `maxBytes`
+  (default 20000) bounds the JSON of what comes back; `truncated: true`
+  says rows were left out.
+- CLI: `safari extract --as table --tab N` prints one table per line of
+  JSON.
+
+## Many pages at once: map
+
+`map` reads up to 20 pages in one call. Give it `urls` and `what` to read
+each with: `extract` (the default), `snapshot`, `eval` with `expression`,
+or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
+page opens in a background tab in your window, is read, and closes, 4 at a
+time (`concurrency`, at most 6). It returns `pages` in the order of
+`urls`, each `{url, ok, value or error, ms}`.
+
+- A page that fails (an error from the page, a tab that went away) is
+  reported in its place, and the others are still read.
+- A bot check that stands in for a page is reported with `challenge` and
+  never waited on: nobody watches these tabs. Open that page yourself and
+  `handoff` it if the user should pass the check. A check in a box on a
+  page that otherwise reads normally is noted beside the page's value.
+- A tab that would not close says why in `closeError`.
+- `save: true` (the saved folder) or an absolute folder writes each page's
+  output to a file of its own there, as `save` does for one read; each
+  `value` is then `{saved, bytes, head}`.
+- `fetch` asks for each address again with its page's cookies and returns
+  the body as the server sends it.
+- CLI: `safari map <url>... [--what snapshot] [--save]`.
 
 ## Acting
 

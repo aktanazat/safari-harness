@@ -12,8 +12,9 @@ Tabs
   when your session ends anyway; `--keep` (CLI) leaves one open for him.
 
 Turns
-- Do one step in one call: `run` for several tools in order, `repl` for
-  loops, downloads, and a site's own API.
+- Do one step in one call: `run` for several tools in order, `map` for
+  the same read of many pages, `repl` for loops, downloads, and a site's
+  own API.
 - Never start a `safari` command in the background and poll it; every
   command already waits for its page. One session spent $8.35 over 36 turns
   that way for 49 seconds of browser work.
@@ -31,7 +32,8 @@ Before a site
   never a secret. Your first `open`, `goto`, or `snapshot` there carries
   what agents saved before, as `notes`.
 - A public page reads faster without Safari: try `read`, `web_search`, or
-  Iris first. Save long text to a file instead of fetching it twice.
+  Iris first. Keep long text with `save` instead of fetching it twice, and
+  read a table or product list with `extract` `as: "table"`.
 
 Signing in, in this order
 1. A session: most of his sites are already signed in.
