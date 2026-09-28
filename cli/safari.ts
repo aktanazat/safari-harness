@@ -83,6 +83,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
+  safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
+                                             read up to 20 pages at once, each in a
+                                             background tab that closes after
+                                             (--expression js, --as table, --concurrency 4)
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
@@ -557,6 +561,7 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": args.url = positional[0]; break;
+    case "map": args.urls = positional; break;
     case "pdf": {
       args.do = positional[0] ?? "save";
       if (positional[1]) args.path = resolve(positional[1]);

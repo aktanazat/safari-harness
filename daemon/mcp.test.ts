@@ -40,8 +40,10 @@ import { expect, test } from "bun:test";
 // snapshot, eval, and fetch) brought it to 18,574: a long page costs the
 // model its path and first 500 characters instead of its whole text.
 // Reading tables as rows (105: extract's as) brought it to 18,679: a table
-// or product list comes back as rows to use, not text to parse.
-const TOOL_LIST_MAX_BYTES = 18_679;
+// or product list comes back as rows to use, not text to parse. The map
+// tool (870) brought it to 19,549: one call reads 20 pages that took 20
+// runs or 60 calls.
+const TOOL_LIST_MAX_BYTES = 19_549;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

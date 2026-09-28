@@ -10,6 +10,7 @@ import { asExpression } from "./statements.ts";
 import { spaceWindow } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
+import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -814,6 +815,21 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab"],
     run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
   },
+  map: {
+    desc: `Read up to ${MAP_MAX_URLS} pages at once, each in a background tab that closes after: extract (default), snapshot, eval, or fetch. A failed page or a bot check is reported in its place; the rest go on.`,
+    params: {
+      urls: { type: "array", items: { type: "string" }, description: "addresses" },
+      what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
+      expression: { type: "string", description: "JS, for eval" },
+      selector: { type: "string", description: "for extract" },
+      query: { type: "string", description: "only lines containing this" },
+      as: { type: "string", enum: ["text", "table"], description: "for extract" },
+      concurrency: { type: "number", description: "default 4, max 6" },
+      save: { description: "true, or an absolute folder: a file per page" },
+    },
+    required: ["urls"],
+    run: (a) => mapPages(a, callTool),
+  },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
     desc: "Wait until text or a CSS selector is on the page (ms is the timeout: default 10000, max 30000), or with only ms, sleep. Returns found.",
@@ -952,7 +968,7 @@ type Extract = { url: string; title: string; text: string };
 export function formatResult(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; tables?: unknown[] };
+    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
@@ -972,6 +988,13 @@ export function formatResult(value: unknown): string {
       const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
       if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
       return lines.join("\n");
+    }
+    // map: each page under its address, as its read prints alone
+    if (Array.isArray(v.pages)) {
+      return v.pages.map((p) => {
+        const notes = [`${p.ms} ms`, ...(p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []), ...(p.closeError ? [`not closed: ${p.closeError}`] : [])];
+        return `## ${p.url} (${notes.join("; ")})\n${p.ok ? formatResult(p.value) : `error: ${p.error}`}`;
+      }).join("\n\n");
     }
     // extract as table: each table as one line of JSON
     if (Array.isArray(v.tables)) {

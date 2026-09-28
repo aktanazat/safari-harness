@@ -25,10 +25,10 @@ daemon/
   tools.ts          the Safari tools, each with its own input schema: run
                     (several tools in one call) tabs open close goto activate
                     snapshot click type press select hover upload history
-                    scroll eval fetch download dialog extract info wait handoff net
-                    console cookies shot pdf window passwords. Actions report
-                    `navigated`, `newTab`, and any `dialogs`; snapshots take
-                    in embedded frames
+                    scroll eval fetch download dialog extract map info wait
+                    handoff net console cookies shot pdf window passwords.
+                    Actions report `navigated`, `newTab`, and any `dialogs`;
+                    snapshots take in embedded frames
   caller.ts         tools that run in the calling process, which holds the
                     terminal's permissions (Messages, browsing history, the
                     real mouse and keyboard); a `run` with one of them runs
@@ -39,6 +39,8 @@ daemon/
   save.ts           save on extract, snapshot, eval, and fetch: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
+  map.ts            map: one read of each of up to 20 pages, a few at a time,
+                    each in a background tab that closes after
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
   safari-history.ts browsing_history over Safari's History.db (read-only)
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
@@ -164,6 +166,7 @@ safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7
 safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
 safari extract --as table --tab 7      # tables and product lists as rows of JSON
+safari map https://a.example https://b.example   # up to 20 pages at once
 safari eval "JSON.stringify(performance.timing)" --tab 7
 safari net read --tab 7                # the page's requests since it loaded, with the start of each body
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full

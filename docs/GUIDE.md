@@ -12,8 +12,9 @@ Tabs
   when your session ends anyway; `--keep` (CLI) leaves one open for him.
 
 Turns
-- Do one step in one call: `run` for several tools in order, `repl` for
-  loops, downloads, and a site's own API.
+- Do one step in one call: `run` for several tools in order, `map` for
+  the same read of many pages, `repl` for loops, downloads, and a site's
+  own API.
 - Never start a `safari` command in the background and poll it; every
   command already waits for its page. One session spent $8.35 over 36 turns
   that way for 49 seconds of browser work.

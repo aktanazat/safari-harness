@@ -91,6 +91,8 @@ a step, `real_input`, `handoff`, and the Messages tools included.
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
   `query`, then `close`.
+- Read several pages the same way: `map` reads up to 20 in one call, a few
+  at a time (see Many pages at once).
 - Act on a page in one call when you know the labels: `open`, `click`
   `{ref: "Poetry"}`, `wait` for the text you expect, `extract`, `close`.
 - A step cannot use a ref number from a snapshot taken in the same `run`; use
@@ -208,6 +210,29 @@ order. The rules are fixed, so the same page always reads the same way.
   says rows were left out.
 - CLI: `safari extract --as table --tab N` prints one table per line of
   JSON.
+
+## Many pages at once: map
+
+`map` reads up to 20 pages in one call. Give it `urls` and `what` to read
+each with: `extract` (the default), `snapshot`, `eval` with `expression`,
+or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
+page opens in a background tab in your window, is read, and closes, 4 at a
+time (`concurrency`, at most 6). It returns `pages` in the order of
+`urls`, each `{url, ok, value or error, ms}`.
+
+- A page that fails (an error from the page, a tab that went away) is
+  reported in its place, and the others are still read.
+- A bot check that stands in for a page is reported with `challenge` and
+  never waited on: nobody watches these tabs. Open that page yourself and
+  `handoff` it if the user should pass the check. A check in a box on a
+  page that otherwise reads normally is noted beside the page's value.
+- A tab that would not close says why in `closeError`.
+- `save: true` (the saved folder) or an absolute folder writes each page's
+  output to a file of its own there, as `save` does for one read; each
+  `value` is then `{saved, bytes, head}`.
+- `fetch` asks for each address again with its page's cookies and returns
+  the body as the server sends it.
+- CLI: `safari map <url>... [--what snapshot] [--save]`.
 
 ## Acting
 
