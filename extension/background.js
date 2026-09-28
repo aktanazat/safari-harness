@@ -553,23 +553,32 @@ async function handle(msg) {
       // resolve once Safari has dropped the tab, so a following list omits it
       let onRemoved;
       const gone = new Promise((resolve) => {
-        onRemoved = (id) => { if (id === tabId) resolve(); };
+        onRemoved = (id) => { if (id === tabId) resolve(true); };
         api.tabs.onRemoved.addListener(onRemoved);
       });
       // A native sheet on the tab (a sign-in or permission prompt) or a
       // window off screen can hold it open, and Safari then never answers:
       // on 09-27 three closes each hung 30 s behind an Apple sign-in sheet.
-      let timer;
-      const stuck = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Safari did not close the tab within 5 s: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help")), 5000);
-      });
+      // A tab of the harness's own is sent to a blank page then and closed
+      // again each second: Safari stops waiting on a page that does not
+      // answer a load (behind a print sheet, a close 7 s after the load
+      // went through in 21 ms; one 1 s after it still hung).
+      const timers = [];
+      const within = (p, ms) => Promise.race([p, new Promise((resolve) => timers.push(setTimeout(resolve, ms, false)))]);
       try {
-        await Promise.race([api.tabs.remove(tabId).then(() => gone), stuck]);
+        if (await within(api.tabs.remove(tabId).then(() => gone), 5000)) return { ok: true };
+        if (await ownsTab(tabId)) {
+          api.tabs.update(tabId, { url: "about:blank" }).catch(() => {});
+          for (let i = 0; i < 10; i++) {
+            if (await within(gone, 1000)) return { ok: true };
+            api.tabs.remove(tabId).catch(() => {});
+          }
+        }
+        throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
       } finally {
-        clearTimeout(timer);
+        for (const t of timers) clearTimeout(t);
         api.tabs.onRemoved.removeListener(onRemoved);
       }
-      return { ok: true };
     }
     case "tabs.navigate": {
       const [tabId, url] = args;

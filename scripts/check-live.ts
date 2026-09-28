@@ -732,6 +732,34 @@ try {
   for (const t of [owned, kept]) if (left.has(t)) await call("close", { tab: t });
 }
 
+// ---------- a tab a native sheet holds ----------
+
+// Safari answers no close while a print sheet is up. The harness's own tab
+// closes anyway: the extension loads a blank page in it, which Safari soon
+// stops waiting on. The sheet is counted through System Events, by the
+// window's title, and cancelled if the close failed.
+{
+  const title = `check-live-sheet-${Date.now()}`;
+  const osa = (script: string) => Bun.spawnSync(["osascript", "-e", `tell application "System Events" to tell process "Safari" to ${script}`], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+  const win = `(first window whose name is "${title}")`;
+  const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
+  try {
+    await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
+    await call("window", { tab, width: 420, height: 380 });
+    // an embedded page's print is Safari's own: dialogs.js answers the top page's
+    await call("eval", { tab, expression: "(() => { const f = document.createElement('iframe'); document.body.append(f); setTimeout(() => f.contentWindow.print(), 200); return 1; })()" });
+    await Bun.sleep(2500);
+    const sheets = osa(`count sheets of ${win}`);
+    const closed = await call("close", { tab }).then(() => true, (e: Error) => e.message);
+    check("a harness tab closes although a native sheet holds it", sheets === "1" && closed === true && !(await tabIds()).has(tab), { sheets, closed });
+  } finally {
+    if ((await tabIds()).has(tab)) {
+      osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${win})`);
+      await call("close", { tab }).catch(() => {});
+    }
+  }
+}
+
 // ---------- snapshot size ----------
 
 // A shop-like listing: every card links twice with a long tracking query,
