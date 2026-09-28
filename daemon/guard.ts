@@ -37,8 +37,6 @@ export function nameIn(names: string[], name: string): string | undefined {
 // select's option, imessage_search's text.
 const ALIASES: [string, string][] = [["go", "do"], ["value", "option"], ["query", "text"]];
 
-// Options a tool reads that its listing leaves out: a call may pass them.
-const UNLISTED: Record<string, string[]> = { fetch: ["headers", "base64"], snapshot: ["showHidden"], pdf: ["maxBytes"], cookies: ["domain", "path", "expires"] };
 // Tools that take the options of the tools they run: map gives each page's
 // read the options map does not take itself (map.ts).
 const PASSES: Record<string, string[]> = { map: READS };
@@ -59,7 +57,8 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
   if (!model) return { tool, args: given, notes: [] };
   const notes = tool === name ? [] : [`used ${tool} for ${name}`];
   const params = Object.keys(tools[tool].params);
-  const known = [...params, ...(UNLISTED[tool] ?? []), ...(PASSES[tool] ?? []).flatMap((t) => [...Object.keys(tools[t].params), ...(UNLISTED[t] ?? [])])];
+  const takes = (t: string) => [...Object.keys(tools[t].params), ...Object.keys(tools[t].unlisted ?? {})];
+  const known = [...takes(tool), ...(PASSES[tool] ?? []).flatMap(takes)];
   const aliases = ALIASES.filter(([alias, real]) => params.includes(real) && !known.includes(alias));
   const args: Record<string, unknown> = {};
   const from: Record<string, string> = {};

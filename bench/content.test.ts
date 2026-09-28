@@ -150,6 +150,14 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a rich editor's contenteditable with no role or label is a textbox with a ref, and typing on the ref reaches it",
+    page: "prosemirror.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: "[1] textbox\n  First line · Second line" } } },
+      { op: "type", args: ["1", "New notes"], answer: { value: { ok: true, kept: true } } },
+    ],
+  },
+  {
     name: "select picks an option by its label, with the change event the page listens for",
     page: "select.html",
     steps: [

@@ -59,11 +59,14 @@
     return el.closest("article, aside, main, nav, section, form");
   }
 
+  // A rich editor's editing host (ProseMirror's contenteditable div) is a
+  // text field without saying so; the paragraphs inside it are its text.
   function getExplicitRole(el) {
     const r = el.getAttribute && el.getAttribute("role");
     if (r) return r.split(/\s+/)[0];
     const fn = ROLE_MAP[el.tagName];
-    return fn ? fn(el) : null;
+    if (fn) return fn(el);
+    return el.isContentEditable && !el.parentElement?.isContentEditable ? "textbox" : null;
   }
 
   const NAMED_ROLES = new Set([
@@ -1198,6 +1201,7 @@
     try { caughtDownload = JSON.parse(e.detail); } catch { return; }
     pendingDownload?.(caughtDownload);
   });
+  document.addEventListener("__sh_popup", () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); });
   function catchDownloads(on) {
     document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
   }

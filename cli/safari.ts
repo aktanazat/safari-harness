@@ -218,14 +218,14 @@ const toolDef = (cmd: string): Tool | undefined => TOOLS[ALIAS[cmd] ?? cmd] ?? C
 // A tool's parameters given as --name value; a boolean one needs only --name.
 function flagArgs(tool: Tool, argv: string[]): Record<string, unknown> {
   const args: Record<string, unknown> = {};
-  for (const [name, p] of Object.entries(tool.params)) {
+  for (const [name, p] of Object.entries({ ...tool.params, ...tool.unlisted })) {
     if (p.type === "boolean") {
       if (hasFlag(name, argv)) args[name] = true;
       continue;
     }
     const v = flag(name, argv);
     if (v === undefined) continue;
-    args[name] = p.type === "number" ? Number(v) : p.type === "array" ? (v.startsWith("[") ? JSON.parse(v) : [v]) : v;
+    args[name] = p.type === "number" ? Number(v) : p.type === "object" ? JSON.parse(v) : p.type === "array" ? (v.startsWith("[") ? JSON.parse(v) : [v]) : v;
   }
   return args;
 }
@@ -698,7 +698,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "showHidden", "base64"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

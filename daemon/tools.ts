@@ -783,7 +783,7 @@ export async function dialogs(opts: { tab?: number; do?: string; text?: string }
 }
 
 type Param = {
-  type?: "string" | "number" | "boolean" | "array";
+  type?: "string" | "number" | "boolean" | "array" | "object";
   description: string;
   enum?: string[];
   items?: { type: "string" } | { type: "object"; properties: Record<string, { type: "string" | "object" }>; required: string[] };
@@ -791,6 +791,9 @@ type Param = {
 export type Tool = {
   desc: string;
   params: Record<string, Param>;
+  // options the tool reads that its listing leaves out, to keep the listing
+  // short: a call and the CLI may still pass them (guard.ts, cli/safari.ts)
+  unlisted?: Record<string, Param>;
   required?: string[];
   // reached by name over RPC, never listed to a model (the real-input tools use it)
   hidden?: true;
@@ -920,6 +923,7 @@ export const TOOLS: Record<string, Tool> = {
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
       save: SAVE,
     },
+    unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" } },
     required: ["tab"],
     run: saving("snapshot", async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }))),
   },
@@ -980,6 +984,7 @@ export const TOOLS: Record<string, Tool> = {
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
     params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" }, save: SAVE },
+    unlisted: { headers: { type: "object", description: "request headers" }, base64: { type: "boolean", description: "body as base64" } },
     required: ["tab", "url"],
     run: saving("fetch", (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean })),
   },
@@ -1081,6 +1086,7 @@ export const TOOLS: Record<string, Tool> = {
   cookies: {
     desc: "Cookies for the tab's site. Values are secrets: never repeat them. do: set adds one (not HttpOnly).",
     params: { tab: TAB, url: { type: "string", description: "another site's URL" }, do: { type: "string", enum: ["read", "set"], description: "default read" }, name: { type: "string", description: "to set" }, value: { type: "string", description: "to set" } },
+    unlisted: { domain: { type: "string", description: "to set" }, path: { type: "string", description: "to set" }, expires: { type: "number", description: "to set, seconds since 1970" } },
     required: ["tab"],
     run: (a) => a.do === "set"
       ? setCookie(a as { tab?: number; url?: string; name: string; value: string })
@@ -1095,6 +1101,7 @@ export const TOOLS: Record<string, Tool> = {
   pdf: {
     desc: "save prints the page to PDF; read returns a PDF's text (path, or the tab's PDF).",
     params: { tab: TAB, do: { type: "string", enum: ["save", "read"], description: "default save" }, path: { type: "string", description: "PDF to read" }, out: { type: "string", description: "PDF path" } },
+    unlisted: { maxBytes: { type: "number", description: "text limit for read" } },
     run: (a) => pdf(a as { tab?: number; do?: string; path?: string; out?: string }),
   },
   window: {

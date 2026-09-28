@@ -135,6 +135,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       // injecting some pages (after a redirect). Put a fresh copy in.
       let how = await reach(tabId, frameId, Math.min(PING_MS, left()));
       if (!how) {
+        if (frameId === 0 && (await api.tabs.get(tabId)).title === FAILED_PAGE) break;
         await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
         how = await reach(tabId, frameId, Math.min(PING_MS, left()));
         send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
@@ -152,11 +153,13 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
     }
   }
   const { url, title } = await api.tabs.get(tabId);
-  // Safari's own page for a site that never answered takes no script: a
-  // reload will not help, and the address is what went wrong.
-  if (title === "Failed to open page") throw new Error(`Safari could not open ${url}: the site did not answer`);
+  if (title === FAILED_PAGE) throw new Error(`Safari could not open ${url}: the site did not answer`);
   throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
 }
+
+// Safari's own page for a site that never answered takes no script: a
+// fresh copy will not help, and the address is what went wrong.
+const FAILED_PAGE = "Failed to open page";
 
 // How a copy of the script that answers is reached in the frame: by
 // message, through executeScript (a page open since before a reload), or
@@ -1177,9 +1180,7 @@ if (api.tabs.onReplaced) {
 // created; this looks a turn later and leaves that one to act. A tab the
 // user's own tabs open stays his. The daemon hears of it once it has an
 // address, which tells the agent what it is.
-api.tabs.onCreated.addListener((t) => {
-  const opener = t.openerTabId;
-  if (opener === undefined) return;
+function adoptPopup(t, opener) {
   setTimeout(async () => {
     if (drivenTabs.has(t.id) || !(await ownsTab(opener))) return;
     drive(t.id);
@@ -1189,6 +1190,33 @@ api.tabs.onCreated.addListener((t) => {
     const now = await api.tabs.get(t.id).catch(() => t);
     send({ op: "tab", kind: "popup", tab: t.id, opener, url: now.url || t.pendingUrl || "" });
   }, 0);
+}
+
+// Safari sets no openerTabId on a tab a script opens, so an owned page
+// says when it calls window.open (dialogs.js), and the tab made with no
+// opener within a second of that, before or after, is its popup.
+const POPUP_MS = 1000;
+let announced = null; // { opener, at }: an owned page just called window.open
+let unclaimed = null; // { tab, at }: a tab just made with no opener
+
+api.runtime.onMessage.addListener((m, sender) => {
+  if (!m || m.__safariHarnessPopup !== 1 || !sender.tab) return;
+  const opener = sender.tab.id;
+  if (unclaimed && Date.now() - unclaimed.at < POPUP_MS && unclaimed.tab.id !== opener) {
+    const t = unclaimed.tab;
+    unclaimed = null;
+    adoptPopup(t, opener);
+  } else announced = { opener, at: Date.now() };
+});
+
+api.tabs.onCreated.addListener((t) => {
+  let opener = t.openerTabId;
+  if (opener === undefined && announced && Date.now() - announced.at < POPUP_MS) {
+    opener = announced.opener;
+    announced = null;
+  }
+  if (opener === undefined) unclaimed = { tab: t, at: Date.now() };
+  else adoptPopup(t, opener);
 });
 
 // ---------- keeping owned tabs running ----------
