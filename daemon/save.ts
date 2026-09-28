@@ -47,13 +47,14 @@ export function targetOf(save: unknown, as: "file" | "folder"): Target {
 type File = { body: string | Uint8Array; ext: string };
 
 // What each read writes: extract its text (its tables as JSON), snapshot its
-// outline, fetch the body as sent, eval its value (a string as it is).
+// outline, fetch the body as sent, eval its value (a string as it is; an
+// expression with no value, such as a statement, as null).
 function fileOf(kind: SaveKind, r: Record<string, unknown>): File {
   if (kind === "snapshot" && typeof r.snapshot === "string") return { body: r.snapshot, ext: "txt" };
   if (kind === "extract" && typeof r.text === "string") return { body: r.text, ext: "txt" };
   if (kind === "fetch" && typeof r.text === "string") return { body: r.text, ext: extOf(r.type) };
   if (kind === "fetch" && typeof r.data === "string") return { body: Buffer.from(r.data, "base64"), ext: "bin" };
-  if (kind === "eval") return typeof r.result === "string" ? { body: r.result, ext: "txt" } : { body: JSON.stringify(r.result, null, 1), ext: "json" };
+  if (kind === "eval") return typeof r.result === "string" ? { body: r.result, ext: "txt" } : { body: JSON.stringify(r.result ?? null, null, 1), ext: "json" };
   return { body: JSON.stringify(r, null, 1), ext: "json" };
 }
 

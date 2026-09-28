@@ -47,11 +47,13 @@ test("a saved read answers with only the file's path, its size in bytes, and its
 });
 
 test("an expression's string value is saved as its text, any other value as JSON", async () => {
-  const [html, rows] = [join(dir, "page.html"), join(dir, "rows.json")];
+  const [html, rows, none] = [join(dir, "page.html"), join(dir, "rows.json"), join(dir, "none.json")];
   await callTool("eval", { tab: 1, expression: "html", save: html });
   await callTool("eval", { tab: 1, expression: "rows", save: rows });
+  await callTool("eval", { tab: 1, expression: "none", save: none });
   expect(readFileSync(html, "utf8")).toBe("<p>hi</p>");
   expect(JSON.parse(readFileSync(rows, "utf8"))).toEqual([{ a: 1 }]);
+  expect(JSON.parse(readFileSync(none, "utf8"))).toBeNull();
 });
 
 test("an error the page answers with comes back as it is, and no file is written", async () => {
