@@ -218,6 +218,10 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
     // an action answers an object; anything else is passed on as it came
     if (!res || !res.value || typeof res.value !== "object" || Array.isArray(res.value)) return res;
     const { expect, ...value } = res.value;
+    // A copy that answers through executeScript (a page open since before
+    // the extension reloaded) cannot message it, so the tab its link or
+    // window.open is making is announced from its answer instead.
+    if (expect === "tab" && opened === null && ways.get(tabId)?.get(frameId) === "script") announce(tabId);
     const ms = START_MS[expect];
     if (ms && opened === null && !navigated) {
       await new Promise((resolve) => {
@@ -1206,14 +1210,18 @@ function adoptPopup(t, opener) {
   }, 0);
 }
 
-api.runtime.onMessage.addListener((m, sender) => {
-  if (!m || m.__safariHarnessPopup !== 1 || !sender.tab) return;
-  const opener = sender.tab.id;
+// A page said a tab is coming. The tab made with no opener within
+// POPUP_MS, before or after, is its.
+function announce(opener) {
   if (unclaimed && Date.now() - unclaimed.at < POPUP_MS && unclaimed.tab.id !== opener) {
     const t = unclaimed.tab;
     unclaimed = null;
     adoptPopup(t, opener);
   } else announced = { opener, at: Date.now() };
+}
+
+api.runtime.onMessage.addListener((m, sender) => {
+  if (m && m.__safariHarnessPopup === 1 && sender.tab) announce(sender.tab.id);
 });
 
 api.tabs.onCreated.addListener((t) => {
