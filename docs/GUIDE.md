@@ -161,7 +161,9 @@ Wait for the page, not the clock.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
 - `wait` with only `ms` is a plain sleep. Use it only when nothing on the page
-  signals the change.
+  signals the change. In a CLI script, never put a shell `sleep` before a
+  command: `safari wait --text "<text>" --tab N` returns once the text is there,
+  and `click`, `goto`, and `open` already wait for a page they load.
 - A tab the harness opened in the background keeps running while hidden: its
   page reads as visible, and its timers and frame callbacks run as in a tab
   in front, so a web app redirects and fills in without coming to the front.
