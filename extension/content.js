@@ -1512,13 +1512,15 @@
 
   // A change-password (or sign-up) form: the new-password fields, marked
   // new-password or named like one (lichess's newPasswd1 and newPasswd2),
-  // and the current-password field beside them.
+  // and the current-password field beside them. A field showing its
+  // password as text counts when marked or named as one: mail.ru's reset
+  // shows the password it suggests, and names its repeat field only.
   function changeFields() {
-    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
     const hint = (el) => `${el.name} ${el.id}`;
-    const inputs = deepQueryAll("input[type=password]").filter(usable);
-    const marked = inputs.filter((el) => el.getAttribute("autocomplete") === "new-password");
-    const fresh = marked.length ? marked : inputs.filter((el) => /new|confirm|repeat|again|retype/i.test(hint(el)));
+    const secret = (el) => el.type === "password" || /-password$/.test(el.getAttribute("autocomplete") ?? "") || /passw|pwd/i.test(hint(el));
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el) && secret(el);
+    const inputs = deepQueryAll("input[type=password], input[type=text]").filter(usable);
+    const fresh = inputs.filter((el) => el.getAttribute("autocomplete") === "new-password" || /new|confirm|repeat|again|retype/i.test(hint(el)));
     const current = inputs.find((el) => !fresh.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(hint(el)))) ?? null;
     return { fresh, current };
   }

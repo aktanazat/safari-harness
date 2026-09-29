@@ -53,6 +53,15 @@ benchRows("content.js in WebKit", [
     }],
   },
   {
+    name: "a new password fills a form that shows it as text, into the field marked new-password and the repeat field named so",
+    page: "shown-password.html",
+    steps: [
+      { op: "fillNewPassword", args: ["", null, "correct horse"], answer: { value: { ok: true, filled: ["new password", "confirm password"] } } },
+      { op: "click", args: ["Change password"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Password changed") } } },
+    ],
+  },
+  {
     name: "typing on a label's ref types into the field it labels",
     page: "form.html",
     steps: [
