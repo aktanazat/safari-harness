@@ -973,8 +973,8 @@ export const TOOLS: Record<string, Tool> = {
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
   type: {
-    desc: "Set a field's text by ref; replaces it unless append. Never returns the text. {{code}} in text types a code texted to the user, unseen.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "passwords"], description: "code source: his texts, or Apple Passwords" }, snapshot: PAGE },
+    desc: "Set a field's text by ref; replaces it unless append. Never returns the text. {{code}} in text types a code texted to the user, unseen; with secret \"page\", the code tab from shows.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: his texts, tab from (an opened email), or Apple Passwords" }, from: { type: "number", description: "tab showing the code, for secret page" }, snapshot: PAGE },
     required: ["tab", "ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
   },

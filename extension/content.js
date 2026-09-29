@@ -1435,6 +1435,18 @@
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
     const before = el.isContentEditable ? "" : String(el.value || "");
+    // A code typed into the first of a row of one-character boxes (PayPal's
+    // six) goes one character to a box, as a person types it.
+    const row = opts.secret && text.length > 1 ? deepQueryAll("input").filter((b) => b.maxLength === 1 && !b.disabled && shown(b)) : [];
+    const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    if (boxes.length === text.length) {
+      for (const [i, box] of boxes.entries()) {
+        box.focus();
+        setValue(box, text[i], text[i]);
+        secretFilled.add(box);
+      }
+      return { ok: true, kept: boxes.every((b, i) => b.value === text[i]) };
+    }
     if (el.isContentEditable) {
       replaceEditable(el, text, opts.append);
     } else if ("value" in el) {

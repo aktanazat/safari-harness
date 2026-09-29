@@ -425,7 +425,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   for the text, types the code, and answers `typed: "code, 6 chars"`; the
   field then reads `filled` in snapshots. `secret: "passwords"` types the
   code his Apple Passwords keeps for the site instead, as
-  `passwords {do: "code"}` does. An emailed code has no route yet.
+  `passwords {do: "code"}` does. An emailed code: open the email in
+  another tab and pass `secret: "page", from: <that tab>`; the one code it
+  shows (4 to 8 digits standing alone, 6 when lengths differ) is typed, and
+  a page with more or none fails saying how many. A code typed into the
+  first of a row of one-character boxes goes one digit to a box.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options. On a dropdown the page draws itself it fails and says
   so: click the dropdown, then the option's ref in a fresh snapshot.

@@ -62,6 +62,16 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a code typed as a secret into the first of six one-character boxes goes one digit to a box",
+    page: "code-boxes.html",
+    steps: [
+      { op: "snapshot" }, // [1] Digit 1 of 6
+      { op: "type", args: ["1", "402913", { secret: true }], answer: { value: { ok: true, kept: true } } },
+      { op: "click", args: ["Submit"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
     name: "typing on a label's ref types into the field it labels",
     page: "form.html",
     steps: [
