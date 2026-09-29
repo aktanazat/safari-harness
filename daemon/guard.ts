@@ -34,9 +34,9 @@ export function nameIn(names: string[], name: string): string | undefined {
 
 // Names models reach for that the tools spell otherwise. Each is taken only
 // by a tool that has the second name and not the first: history's do,
-// select's option, imessage_search's text. action, code, note, and mode
-// each failed a call in the 09-27 to 09-29 logs.
-const ALIASES: [string, string][] = [["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["note", "fact"], ["mode", "what"]];
+// select's option, imessage_search's text. action, code, note, mode, and
+// js each failed a call in the 09-27 to 09-29 logs.
+const ALIASES: [string, string][] = [["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"]];
 
 // Tools that take the options of the tools they run: map gives each page's
 // read the options map does not take itself (map.ts).

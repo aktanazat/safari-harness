@@ -81,8 +81,10 @@ import { expect, test } from "bun:test";
 // is the next agent's one call, where each wrote its own again. Files on
 // imessage_send (190) brought it to 23,525: agents sent a photo through
 // Messages' AppleScript, and it arrived as an empty message marked
-// delivered.
-const TOOL_LIST_MAX_BYTES = 23_525;
+// delivered. Saying eval's page must answer within 30 s, and that wait with
+// only ms is no sleep (87), brought it to 23,612: an agent's 30 s scroll
+// loop failed whole on SoFi, and agents read wait {ms} as a sleep.
+const TOOL_LIST_MAX_BYTES = 23_612;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

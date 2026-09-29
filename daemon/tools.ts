@@ -1000,7 +1000,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait.",
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait. The page must answer within 30 s: split long loops across calls.",
     params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, save: SAVE },
     required: ["tab"],
     run: saving("eval", (a) => {
@@ -1057,7 +1057,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms, until the page goes quiet, ms at most. Text ignores case and spaces. Returns found.",
+    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms it is no sleep: it ends once the page goes quiet, ms at most. Text ignores case and spaces. Returns found.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
