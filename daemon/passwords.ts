@@ -46,6 +46,16 @@ const GRACE_MIN = 5;
 // one starting; a new Helium's bridge says hello within a second or two.
 const ADOPT_MS = 3000;
 const LINK_MS = 20000;
+// macOS asks the user for Touch ID before the helper hands out a password
+// or a code, and the helper answers nothing else until he acts: on 09-28 a
+// fill outlasted the agent's 60 s call, and every call for four minutes
+// after read "did not answer". So a call answers within ANSWER_MS, the
+// request goes on, and its answer waits for the call that asks again.
+const ANSWER_MS = 40000;
+// A password kept for that call lasts while the agent asks him and he
+// answers; a code changes every 30 s.
+const KEEP_PASSWORD_MS = 5 * 60_000;
+const KEEP_CODE_MS = 20000;
 // A handed-back session is proved by any query the helper answers under it.
 const PROOF_HOST = "example.com";
 
@@ -148,7 +158,12 @@ type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error)
 // What the bridge says as it connects: whether its helper, and so any
 // pairing, still runs, and the sealed session it keeps.
 type Hello = { helper?: unknown; stash?: unknown };
-type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string };
+type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; waiting?: string };
+// A request the Mac holds until the user approves it with Touch ID: what it
+// is for, the call that gets its answer, and how long an answer that lands
+// after that call gave up is kept for the next.
+type Ask = { key: string; what: string; again: string; keepMs: number };
+type Approval = Ask & { since: number; reply: Promise<Record<string, unknown>>; landed: boolean; gaveUp: boolean; drop?: () => void };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -159,15 +174,15 @@ function pakeOf(reply: HelperMsg): Record<string, unknown> {
 }
 
 // Whether p resolves within ms; its rejection throws.
-async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: Timer | undefined;
+async function within(p: Promise<unknown>, ms: number, timers = REAL_TIMERS): Promise<boolean> {
+  let cancel = () => {};
   const late = new Promise<boolean>((resolve) => {
-    timer = setTimeout(resolve, ms, false);
+    cancel = timers.after(ms, () => resolve(false));
   });
   try {
     return await Promise.race([p.then(() => true), late]);
   } finally {
-    clearTimeout(timer);
+    cancel();
   }
 }
 
@@ -222,6 +237,8 @@ export class ApplePasswords {
   private why = `it has not been paired since the harness started at ${localTime()}`;
   private helperSeen = false;
   private waiter: Waiter | null = null;
+  // The request waiting on Touch ID, or its answer kept for the next call.
+  private approval: Approval | null = null;
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
   // Agent sessions holding the pairing, by pid, each with its exit watch.
@@ -333,6 +350,7 @@ export class ApplePasswords {
     this.state = { kind: "idle" };
     this.why = why;
     this.stashKey = null;
+    this.approval = null;
     rmSync(this.keyFile, { force: true });
     this.link?.send(JSON.stringify({ stash: null }));
   }
@@ -357,10 +375,12 @@ export class ApplePasswords {
   async status(): Promise<Status> {
     await this.settle().catch(() => false);
     if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
+    const a = this.approval;
     return {
       unlocked: true,
       sessions: this.holders.size,
       ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
+      ...(a && !a.landed ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
     };
   }
 
@@ -370,8 +390,15 @@ export class ApplePasswords {
     w?.reject(e);
   }
 
+  // Replies carry no request id, so one request at a time, and none while
+  // the helper waits on Touch ID.
   private serial<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn);
+    const go = () => {
+      const a = this.approval;
+      if (a && !a.landed) throw new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
+      return fn();
+    };
+    const run = this.queue.then(go, go);
     this.queue = run.catch(() => {});
     return run;
   }
@@ -485,12 +512,13 @@ export class ApplePasswords {
     return this.link;
   }
 
-  // One request to the helper, and its reply.
-  private async exchange(link: HelperLink, cmd: number, body: Record<string, unknown>, timeoutMs: number, silence = "Apple's password helper did not answer"): Promise<HelperMsg> {
+  // One request to the helper, and its reply; with no timeoutMs, however
+  // long it takes.
+  private async exchange(link: HelperLink, cmd: number, body: Record<string, unknown>, timeoutMs?: number): Promise<HelperMsg> {
     const { promise, resolve, reject } = Promise.withResolvers<HelperMsg>();
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
       if (this.waiter?.cmd === cmd) this.waiter = null;
-      reject(new Error(silence));
+      reject(new Error("Apple's password helper did not answer"));
     }, timeoutMs);
     this.waiter = { cmd, resolve, reject };
     link.send(JSON.stringify({ helper: { cmd, ...body } }));
@@ -571,13 +599,13 @@ export class ApplePasswords {
 
   // An encrypted query under session s. An answer that is not under s means
   // the helper has lost the pairing, which then ends here too.
-  private async query(link: HelperLink, s: Session, cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs: number, silence?: string): Promise<Record<string, unknown>> {
+  private async query(link: HelperLink, s: Session, cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>> {
     const reply = await this.exchange(link, cmd, {
       tabId: 0,
       frameId: 0,
       url: host,
       payload: { QID: qid, SMSG: JSON.stringify({ TID: s.user, SDATA: seal(s.key, body).toString("base64") }) },
-    }, timeoutMs, silence);
+    }, timeoutMs);
     const payload = reply.payload;
     const raw = payload && typeof payload === "object" && "SMSG" in payload ? payload.SMSG : undefined;
     const smsg: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -602,39 +630,61 @@ export class ApplePasswords {
     });
   }
 
-  // macOS asks for Touch ID or the login password before the helper hands out
-  // a password, so allow the user two minutes to approve.
-  private password(host: string, username: string): Promise<string> {
-    return this.serial(async () => {
+  // A request the Mac may hold for Touch ID. The call answers within
+  // ANSWER_MS; one that gives up leaves the request waiting, and the next
+  // call that asks the same gets the answer once it lands.
+  private async approved(ask: Ask, request: (link: HelperLink, s: Session) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const a = await this.serial(async () => {
+      const kept = this.approval;
+      if (kept?.key === ask.key) return kept;
       const s = await this.session();
-      const res = await this.query(await this.ensureLink(), s, Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }, 120000,
-        "the Mac asked the user to approve with Touch ID and nobody did within 2 minutes; ask the user to approve, then fill again");
-      const entries: unknown[] = res.STATUS === STATUS_OK && Array.isArray(res.Entries) ? res.Entries : [];
-      const entry = entries[0];
-      if (!entry || typeof entry !== "object" || !("PWD" in entry) || typeof entry.PWD !== "string") {
-        throw new Error(`no saved password for ${username} on ${host}`);
-      }
-      return entry.PWD;
+      const next: Approval = { ...ask, since: this.timers.now(), reply: request(await this.ensureLink(), s), landed: false, gaveUp: false };
+      this.approval = next;
+      next.reply.then(() => {
+        next.landed = true;
+        if (!next.gaveUp || this.approval !== next) return;
+        next.drop = this.timers.after(next.keepMs, () => {
+          if (this.approval === next) this.approval = null;
+        });
+      }, () => {
+        if (this.approval === next) this.approval = null;
+      });
+      return next;
     });
+    if (!(await within(a.reply, ANSWER_MS, this.timers))) {
+      a.gaveUp = true;
+      throw new Error(`the Mac is asking the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}); ask him to approve, then call ${a.again} again`);
+    }
+    a.drop?.();
+    if (this.approval === a) this.approval = null;
+    return a.reply;
+  }
+
+  private async password(host: string, username: string): Promise<string> {
+    const res = await this.approved({ key: `password ${host} ${username}`, what: `a sign-in for ${host}`, again: "fill", keepMs: KEEP_PASSWORD_MS }, (link, s) =>
+      this.query(link, s, Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }));
+    const entries: unknown[] = res.STATUS === STATUS_OK && Array.isArray(res.Entries) ? res.Entries : [];
+    const entry = entries[0];
+    if (!entry || typeof entry !== "object" || !("PWD" in entry) || typeof entry.PWD !== "string") {
+      throw new Error(`no saved password for ${username} on ${host}`);
+    }
+    return entry.PWD;
   }
 
   // The current code from a verification-code setup saved for the site, for
-  // username when given. The helper may ask for Touch ID first.
-  private oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
-    return this.serial(async () => {
-      const s = await this.session();
-      const res = await this.query(await this.ensureLink(), s, Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }, 120000,
-        "the Mac asked the user to approve with Touch ID and nobody did within 2 minutes; ask the user to approve, then try again");
-      if (res.STATUS === STATUS_NONE) throw new Error(`no verification code saved for ${host}`);
-      if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
-      // Entries come as a list, or as Entry_0, Entry_1, ... keys.
-      const listed: unknown[] = Array.isArray(res.Entries) ? res.Entries : Object.keys(res).filter((k) => k.startsWith("Entry_")).map((k) => res[k]);
-      const codes = listed.flatMap((e) => e && typeof e === "object" && "code" in e && typeof e.code === "string"
-        ? [{ code: e.code, username: "username" in e && typeof e.username === "string" ? e.username : "" }] : []);
-      const pick = username === undefined ? codes[0] : codes.find((c) => c.username === username);
-      if (!pick) throw new Error(codes.length ? `no verification code for ${username} on ${host}; saved for: ${codes.map((c) => c.username).join(", ")}` : `no verification code saved for ${host}`);
-      return pick;
-    });
+  // username when given.
+  private async oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
+    const res = await this.approved({ key: `code ${host}`, what: `a verification code for ${host}`, again: "code", keepMs: KEEP_CODE_MS }, (link, s) =>
+      this.query(link, s, Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }));
+    if (res.STATUS === STATUS_NONE) throw new Error(`no verification code saved for ${host}`);
+    if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
+    // Entries come as a list, or as Entry_0, Entry_1, ... keys.
+    const listed: unknown[] = Array.isArray(res.Entries) ? res.Entries : Object.keys(res).filter((k) => k.startsWith("Entry_")).map((k) => res[k]);
+    const codes = listed.flatMap((e) => e && typeof e === "object" && "code" in e && typeof e.code === "string"
+      ? [{ code: e.code, username: "username" in e && typeof e.username === "string" ? e.username : "" }] : []);
+    const pick = username === undefined ? codes[0] : codes.find((c) => c.username === username);
+    if (!pick) throw new Error(codes.length ? `no verification code for ${username} on ${host}; saved for: ${codes.map((c) => c.username).join(", ")}` : `no verification code saved for ${host}`);
+    return pick;
   }
 
   // ---------- a Safari tab's sign-in form ----------

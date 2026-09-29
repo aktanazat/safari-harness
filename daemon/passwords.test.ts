@@ -104,8 +104,9 @@ function appleHelper(): Helper {
 
 // The bridge in Helium, dialing daemon p: it says hello (whether its helper
 // already runs, and the session it keeps), relays to the helper, and keeps
-// whatever session p hands it for the next daemon.
-function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = null as string | null } = {}) {
+// whatever session p hands it for the next daemon. With hold, the helper's
+// answers to one command wait for hold's approve.
+function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = null as string | null, hold = undefined as TouchId | undefined } = {}) {
   const kept = { stash, closed: false };
   p.attach({
     send(data: string) {
@@ -113,7 +114,9 @@ function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = 
       if ("stash" in msg) kept.stash = msg.stash;
       if (msg.helper) {
         const reply = helper.answer(msg.helper);
-        queueMicrotask(() => p.handleMessage(JSON.stringify({ helper: reply })));
+        const deliver = () => p.handleMessage(JSON.stringify({ helper: reply }));
+        if (msg.helper.cmd === hold?.cmd) hold.ask(deliver);
+        else queueMicrotask(deliver);
       }
     },
     close() {
@@ -122,6 +125,24 @@ function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = 
   });
   p.handleMessage(JSON.stringify({ hello: { helper: running, stash } }));
   return kept;
+}
+
+// The helper answers a password (command 5) only once the user approves
+// with Touch ID: approve is his approval. asked settles when such a
+// request comes.
+type TouchId = { cmd: number; asked: Promise<void>; ask: (deliver: () => void) => void; approve: () => void };
+function touchId(): TouchId {
+  const asked = Promise.withResolvers<void>();
+  const held: (() => void)[] = [];
+  return {
+    cmd: 5,
+    asked: asked.promise,
+    ask(deliver) {
+      held.push(deliver);
+      asked.resolve();
+    },
+    approve: () => held.shift()?.(),
+  };
 }
 
 // The grace period's clock, run by hand.
@@ -212,6 +233,47 @@ test("the code on the Mac unlocks, and fill types the password into the page but
   expect(page).toEqual({ username: USER, password: SECRET });
   expect(result).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(JSON.stringify(await p.loginsFor(7))).not.toContain(SECRET);
+});
+
+// On 09-28 a fill waited on Touch ID past the agent's 60 s call, so the
+// agent never read why, and every call after it read "did not answer".
+test("a fill waiting on Touch ID answers before the agent's call ends, and the same call once he approves returns the filled form", async () => {
+  const { p, clock } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  const answering = clock.armed();
+  const first = runAs(AGENT, () => p.fill(7));
+  await answering;
+  clock.runOut();
+  expect(await locked(first)).toStartWith(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`);
+  expect(page).toEqual({});
+  hold.approve();
+  expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+test("while the Mac waits on Touch ID, status and every other password call say what it waits on, at once", async () => {
+  const { p } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  void locked(runAs(AGENT, () => p.fill(7)));
+  await hold.asked;
+  const { waiting = "nothing" } = (await runAs(AGENT, () => p.status())) as { waiting?: string };
+  expect(waiting).toStartWith(`a sign-in for ${SITE}, since `);
+  const waits = `Apple's password helper is waiting for the user to approve a sign-in for ${SITE} with Touch ID`;
+  expect(await locked(runAs(AGENT, () => p.loginsFor(7)))).toStartWith(waits);
+  expect(await locked(runAs(AGENT, () => p.fillCode(7)))).toStartWith(waits);
+  expect(await locked(runAs(AGENT, () => p.pair()))).toStartWith(waits);
 });
 
 test("code types the site's verification code into the page but never returns it", async () => {

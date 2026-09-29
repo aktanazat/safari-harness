@@ -750,14 +750,20 @@ Signing in, in this order:
    sites the user uses are already signed in.
 2. Saved logins come from the user's Apple Passwords through the `passwords`
    tool:
-   - `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, or
-     `{unlocked: false, reason}`.
+   - `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, with
+     `waiting` while the Mac waits on Touch ID, or `{unlocked: false,
+     reason}`.
    - `passwords {do: "logins", tab}` lists the usernames saved for the
      sign-in form's site; `passwords {do: "fill", tab}` fills the form
      (pass `username` when several are saved). The result names the fields
-     filled, never the password, and the password may prompt for Touch ID.
-     A form that submits itself once filled also returns `navigated`, the
-     page it went to. The call waits about two minutes for Touch ID.
+     filled, never the password. A form that submits itself once filled
+     also returns `navigated`, the page it went to.
+   - The Mac may ask the user to approve the password with Touch ID. The
+     call waits 40 s for him, then says the Mac is asking while the request
+     goes on: ask him to approve, then call `fill` again. That call gets the
+     password he approved (kept 5 minutes) with no second prompt. Until he
+     acts, Apple's helper answers nothing else, so every `passwords` call
+     says what it waits on.
    - `passwords {do: "code", tab}` does the same for a verification code
      the user keeps in Apple Passwords (an authenticator setup): it types
      the current code into the page's code field, one digit per box when
