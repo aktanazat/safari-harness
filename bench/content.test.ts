@@ -186,6 +186,30 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click on a disabled button says it is disabled rather than that it pressed it",
+    page: "disabled.html",
+    steps: [
+      { op: "snapshot" }, // [5] button "Authorize" {disabled}
+      { op: "click", args: ["5"], answer: { error: "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" } },
+    ],
+  },
+  {
+    name: "typing into a disabled field says it is disabled rather than that the text was kept",
+    page: "disabled.html",
+    steps: [
+      { op: "snapshot" }, // [2] textbox "Name" {disabled}
+      { op: "type", args: ["2", "Ada"], answer: { error: "that field is disabled, so the page would ignore text typed into it" } },
+    ],
+  },
+  {
+    name: "select on a disabled list says it is disabled rather than that the option was chosen",
+    page: "disabled.html",
+    steps: [
+      { op: "snapshot" }, // [4] combobox "Plan" {disabled}
+      { op: "select", args: ["4", "Pro"], answer: { error: "that list is disabled, so the page would ignore a choice made in it" } },
+    ],
+  },
+  {
     name: "a wait for text answers found once the page's timer has added it",
     page: "wait.html",
     steps: [

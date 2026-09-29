@@ -1069,6 +1069,10 @@
   function click(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
+    // A disabled control ignores the click; saying ok sent an agent hunting
+    // for a cause for 23 turns on GitHub's Authorize, which is enabled only
+    // while its window is in front.
+    if (el.matches(":disabled")) return { error: "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" };
     watchTarget(el);
     // Reading the position below forces layout, so no frame wait is needed;
     // background tabs never run requestAnimationFrame, so waiting on one hangs.
@@ -1096,6 +1100,7 @@
   function selectOption(ref, choice) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
     watchTarget(el);
     if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
     const options = [...el.options];
@@ -1359,6 +1364,7 @@
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     el.focus();
     const before = el.isContentEditable ? "" : String(el.value || "");

@@ -421,6 +421,12 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options.
 - `type` and `select` on a label's ref act on the field it labels.
+- `click`, `type`, and `select` on a disabled control (the snapshot marks
+  it `{disabled}`) fail and say so: the page would ignore the action. A
+  page enables its button once its form is complete; a few enable one only
+  while its window is in front. GitHub's Authorize button stayed disabled
+  in an agent's tab through `activate`, and came on after `window`, then
+  `activate`.
 - `hover` opens menus that appear on mouse-over.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
