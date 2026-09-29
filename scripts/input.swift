@@ -240,6 +240,8 @@ func keyCombo(_ args: [String]) {
         guard let m = modifierKeys[p.lowercased()] else { fail("unknown modifier \(p): use cmd, shift, option, or ctrl", 2) }
         if !mods.contains(where: { $0.code == m.code }) { mods.append(m) }
     }
+    // On 09-28 an agent pressed "Shift" alone and read "unknown key Shift".
+    if modifierKeys[name.lowercased()] != nil { fail("\(name) is a modifier, which presses nothing alone: name it with its key, like \(name.lowercased())+A", 2) }
     requireAccess()
     if let code = namedKeys[name.lowercased()] {
         press(code, mods)
