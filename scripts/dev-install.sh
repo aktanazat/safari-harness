@@ -19,11 +19,12 @@
 #   - The app and extension, when extension/ or "Safari Harness/" differ
 #     from the installed ones, or the extension is not connected. Safari
 #     reloads the extension, which reconnects to the daemon.
-# Agent sessions already running keep their MCP server's code, and omp's
-# extension, until they start again; each server notices the new release
-# on its next call, asks its client to list the tools again, and answers
-# with a restart message (daemon/fresh.ts). deploys.log records each
-# deploy; the last releases stay for --rollback. One deploy runs at a time.
+# Agent sessions already running keep their MCP server process; before
+# each call it loads the daemon's release's daemon/mcp-tools.ts if that
+# differs from the code its calls run on, runs the call with it, and asks
+# its client to list the tools again (daemon/fresh.ts). deploys.log records
+# each deploy; the last releases stay for --rollback. One deploy runs at a
+# time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -1054,10 +1054,11 @@ its own `safari` command.
   snapshot.
 - "tab N is busy with …": another call is acting on that tab (see Acting).
   Use your own tab, or try again once it is done.
-- "the harness was updated since this MCP server started; restart the
-  Safari MCP server (or the agent)": a deploy happened during your session.
-  Calls the daemon runs still work, and carry this line as a `note`; the
-  ones the MCP server runs itself (Messages, history search, `real_input`,
-  `passwords`, `handoff`, `ask`, `repl`) and tools the new release dropped
-  fail until it restarts. The server also tells its client to list its
-  tools again, so a client that listens sees the new ones at once.
+- Tools that changed in a deploy during your session: the MCP server
+  runs each call with the release the daemon runs, loaded into its own
+  process, so no restart is needed. It also tells its client to list its
+  tools again; a client that does not listen shows the old descriptions
+  until the agent restarts. A REPL session starts over with no bindings
+  at its first call after a deploy. An MCP server started on a release
+  without `daemon/mcp-tools.ts` still refuses some tools after a deploy
+  with "restart the Safari MCP server"; restart the agent once.

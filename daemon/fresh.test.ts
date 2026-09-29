@@ -3,13 +3,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codeHash } from "./codehash.ts";
-import { RESTART } from "./fresh.ts";
 
 // An MCP server lives as long as its agent's session, across deploys
 // (fresh.ts). Here it runs as its client runs it, over stdio, against a
-// fake daemon: /health reports a release, and /rpc records each call and
-// answers with one tab. The new release's MCP server is a stand-in that
-// lists one tool.
+// fake daemon: /health reports a release, and /rpc answers every call with
+// one tab. The new release's mcp-tools.ts is a stand-in that
+// lists one tool and says which release ran each call.
 
 const REPO = realpathSync(join(import.meta.dir, ".."));
 const scratch = mkdtempSync(join(tmpdir(), "fresh-"));
@@ -18,21 +17,22 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const NEW_TOOLS = [{ name: "tabs", description: "[Safari] the new release's tabs", inputSchema: { type: "object", properties: {} } }];
 const release = join(scratch, "release");
 mkdirSync(join(release, "daemon"), { recursive: true });
-writeFileSync(join(release, "daemon", "mcp.ts"), `await Bun.stdin.text();\nconsole.log(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: ${JSON.stringify(NEW_TOOLS)} } }));\n`);
+writeFileSync(join(release, "daemon", "mcp-tools.ts"), `export const listTools = () => ${JSON.stringify(NEW_TOOLS)};
+export async function callTool(name: string, args: Record<string, unknown>) { return \`the new release ran \${name} \${JSON.stringify(args)}\`; }
+export async function closeSession() {}
+`);
 
 function daemon(code: string) {
-  const calls: unknown[] = [];
   const server = Bun.serve({
     port: 0,
-    async fetch(req) {
+    fetch(req) {
       const { pathname } = new URL(req.url);
-      if (pathname === "/health") return Response.json({ ok: true, code, root: release, tools: ["tabs", "open"] });
+      if (pathname === "/health") return Response.json({ ok: true, code, root: release });
       if (pathname !== "/rpc") return new Response("not found", { status: 404 });
-      calls.push(await req.json());
       return Response.json({ ok: true, value: [{ id: 3, url: "https://example.com/", title: "Example" }] });
     },
   });
-  return { calls, url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
 }
 
 type Message = {
@@ -90,23 +90,17 @@ function session(daemonUrl: string) {
 
 const listChanged = (seen: Message[]) => seen.filter((m) => m.method === "notifications/tools/list_changed");
 
-test("after a deploy, the server says so once, lists the new release's tools, and runs only what the daemon runs", async () => {
+test("after a deploy, the server runs every call with the new release's code, and says so to its client once", async () => {
   const fake = daemon("0000000000000000");
   const mcp = session(fake.url);
   expect((await mcp.request("initialize")).result?.capabilities).toEqual({ tools: { listChanged: true } });
-  // contacts runs in the server's own process, on the old release's code.
-  expect((await mcp.request("tools/call", { name: "contacts", arguments: { name: "Ann" } })).result).toEqual({ content: [{ type: "text", text: `error: ${RESTART}` }], isError: true });
-  // The daemon runs tabs on the new release, and the answer says to restart.
-  const tabs = (await mcp.request("tools/call", { name: "tabs", arguments: {} })).result;
-  expect(tabs?.isError).toBeUndefined();
-  expect(tabs?.content?.[0]?.text).toContain("https://example.com/");
-  expect(tabs?.content?.[0]?.text).toEndWith(`note: ${RESTART}`);
-  // The new release has no info tool.
-  expect((await mcp.request("tools/call", { name: "info", arguments: { tab: 3 } })).result).toEqual({ content: [{ type: "text", text: `error: ${RESTART}` }], isError: true });
+  // contacts runs in the server's own process: a text or a login must not
+  // wait for the agent to restart a server it cannot restart.
+  expect((await mcp.request("tools/call", { name: "contacts", arguments: { name: "Ann" } })).result).toEqual({ content: [{ type: "text", text: 'the new release ran contacts {"name":"Ann"}' }] });
+  expect((await mcp.request("tools/call", { name: "tabs", arguments: {} })).result).toEqual({ content: [{ type: "text", text: "the new release ran tabs {}" }] });
   expect((await mcp.request("tools/list")).result?.tools).toEqual(NEW_TOOLS);
   await mcp.end();
   fake.stop();
-  expect(fake.calls).toEqual([{ tool: "tabs", args: {}, caller: expect.any(Number), model: true }]);
   expect(listChanged(mcp.seen)).toHaveLength(1);
 });
 

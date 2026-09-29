@@ -80,7 +80,9 @@ daemon/
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
-                    tools itself)
+                    tools itself); lasts the agent's session across deploys
+  mcp-tools.ts      the tools one release offers over MCP; after a deploy the
+                    server loads the daemon's release's copy (fresh.ts)
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
                     and draft-then-approve sending (chat.db read-only,
                     AddressBook, osascript)
