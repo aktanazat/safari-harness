@@ -62,6 +62,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a new password fills a reset form whose only marked field is the repeat, into the unmarked field before it too",
+    page: "repeat-only.html",
+    steps: [
+      { op: "fillNewPassword", args: ["", null, "correct horse"], answer: { value: { ok: true, filled: ["new password", "confirm password"] } } },
+      { op: "click", args: ["Reset password"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Password reset") } } },
+    ],
+  },
+  {
     name: "a code typed as a secret into the first of six one-character boxes goes one digit to a box",
     page: "code-boxes.html",
     steps: [
@@ -180,6 +189,46 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "typing into a Flutter field reaches the page's own model once the page has taken the field, so its Log In sees the text",
+    page: "flutter-field.html",
+    steps: [
+      { op: "snapshot" }, // [1] User ID, [3] Log In
+      { op: "type", args: ["1", "ada"], answer: { value: { ok: true, kept: true } } },
+      { op: "click", args: ["3"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Signed in as ada") } } },
+    ],
+  },
+  {
+    name: "a login filled into Flutter fields reaches the page's own model",
+    page: "flutter-field.html",
+    steps: [
+      { op: "fillLogin", args: ["", "ada", "hunter2"], answer: { value: { ok: true, filled: ["username", "password"] } } },
+      { op: "click", args: ["Log In"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Signed in as ada with a password") } } },
+    ],
+  },
+  {
+    name: "a Flutter field the page holds already, after a click or a type, takes more text at once",
+    page: "flutter-field.html",
+    steps: [
+      { op: "snapshot" }, // [1] User ID, [3] Log In
+      { op: "click", args: ["1"] },
+      { op: "type", args: ["1", "ada"], answer: { value: { ok: true, kept: true } } },
+      { op: "type", args: ["1", " lovelace", { append: true }], answer: { value: { ok: true, kept: true } } },
+      { op: "click", args: ["3"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Signed in as ada lovelace") } } },
+    ],
+  },
+  {
+    name: "a new password filled into a Flutter field reaches the page's own model",
+    page: "flutter-field.html",
+    steps: [
+      { op: "fillNewPassword", args: ["", null, "correct horse"], answer: { value: { ok: true, filled: ["new password"] } } },
+      { op: "click", args: ["Save"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("New password saved") } } },
+    ],
+  },
+  {
     name: "a rich editor's contenteditable with no role or label is a textbox with a ref, and typing on the ref reaches it",
     page: "prosemirror.html",
     steps: [
@@ -285,9 +334,34 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "" } } }],
   },
   {
+    name: "a snapshot of a Flutter page clicks its Enable accessibility placeholder and waits for the controls Flutter then builds",
+    page: "flutter.html",
+    // Flutter builds them 50 ms after the click; the page shows words meanwhile
+    steps: [{ op: "snapshot", answer: { value: { snapshot: 'Code editor text.\n[1] button "Log In"' } } }],
+  },
+  {
+    name: "a query read of a page still drawing waits for the page to draw what it asks for",
+    page: "drawing.html",
+    steps: [{ op: "snapshot", args: [{ query: "next" }], answer: { value: { snapshot: '[1] button "Next"' } } }],
+  },
+  {
+    name: "a root read of a page with nothing on it yet waits for the root to be drawn",
+    page: "blank.html",
+    steps: [{ op: "snapshot", args: [{ root: "button" }], answer: { value: { snapshot: '[1] button "Sign in"' } } }],
+  },
+  {
     name: "extract reads the main region as drawn: shadow text in, hidden text and one-pixel decoys out",
     page: "extract.html",
     steps: [{ op: "extract", answer: { value: { text: "Pricing\n\nPro costs $12 a month.\n\nCode: BENCH\n\nBilled yearly" } } }],
+  },
+  {
+    name: "a root or selector that matches nothing on a drawn page is named in the error, with how to read the whole page",
+    page: "click.html",
+    steps: [
+      { op: "snapshot", args: [{ root: "main" }], answer: { error: 'nothing on the page matches root "main"; leave root out to read the whole page' } },
+      { op: "extract", args: [{ selector: "main" }], answer: { error: 'nothing on the page matches selector "main"; leave selector out to read the whole page' } },
+      { op: "extract", args: [{ selector: "main", as: "table" }], answer: { error: 'nothing on the page matches selector "main"; leave selector out to read the whole page' } },
+    ],
   },
   {
     name: "after a takeover, a window the page opens is announced to the extension once, by the fresh copy",
@@ -348,5 +422,33 @@ benchRows("content.js in WebKit", [
         },
       },
     }],
+  },
+  {
+    name: "a scroll the window cannot take scrolls the box under the middle of the window, and says what moved",
+    page: "inner-scroll.html",
+    steps: [{ op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "box", scrollY: 300, maxY: 2200 } } }],
+  },
+  {
+    name: "a scroll on a page that draws on a canvas goes to it as a wheel, which the page takes",
+    page: "canvas-scroll.html",
+    steps: [
+      { op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "wheel" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Drawn from 300") } } },
+    ],
+  },
+  {
+    name: "a scroll that moves nothing says so rather than that it scrolled",
+    page: "click.html",
+    steps: [{ op: "scroll", args: [0, 300], answer: { error: "nothing moved: the window is at scrollY 0 of 0, no box under its middle scrolls that way, and the page there does not take a wheel" } }],
+  },
+  {
+    name: "download on a link to the page itself clicks it and saves the file the page's script makes",
+    page: "js-download.html",
+    steps: [{ op: "download", args: ["Statement"], answer: { value: { name: "statement.pdf", type: "application/pdf" } } }],
+  },
+  {
+    name: "download on a button that opens a web page says so and what to do, rather than saving the page",
+    page: "js-download.html",
+    steps: [{ op: "download", args: ["Policy"], answer: { error: "the ref opens a web page, not a file: click it, and download the file from the page it opens" } }],
   },
 ]);

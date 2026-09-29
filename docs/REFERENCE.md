@@ -246,6 +246,9 @@ Read with `snapshot` when you do not yet know what is on the page.
   containing either alternative, as plain text, not a regular expression.
   `extract` takes the same `query`.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
+  A `root`, or an `extract` `selector`, that matches nothing fails and names
+  it: `nothing on the page matches root "main"; leave root out to read the
+  whole page`.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
 - A dropdown shows its value and option count, not each option. Use `select`.
@@ -261,6 +264,15 @@ Read with `snapshot` when you do not yet know what is on the page.
   page: snapshot, extract, wait, text and selector targets, and `upload`
   reach inside, so never walk `shadowRoot` by hand with `eval`. A closed
   shadow root stays unreadable.
+- A Flutter web app (GEICO's sign-in and policy pages, DartPad) draws on a
+  canvas and shows only an `Enable accessibility` button until that button
+  is pressed; Flutter then builds the controls a screen reader reads.
+  `snapshot` presses it and waits for them (a tenth of a second on
+  DartPad), so one call returns their refs. Flutter builds them only while
+  its tab draws: a tab the harness opened draws while hidden, a hidden tab
+  the user opened does not. There the read comes back without them, with a
+  `hint` to show the tab for a moment (`wait` with `front: true` and `ms:
+  1000`) and snapshot again.
 - `diff: true` returns only the lines that changed since your last snapshot
   of that tab (`- ` gone, `+ ` new): the cheap way to see what an action did.
 - Text no one sees stays out of `snapshot` and `extract`: `display: none`,
@@ -420,6 +432,12 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `type` answers `{ok, kept, typed: "N chars"}`, never the text. `kept` is
   false when the page changed or cut what you typed (a phone field adds
   dashes, a length limit drops the rest): snapshot to see it.
+- `type` into a Flutter field waits until the page has taken the field, a
+  frame after focus, so the page's own model keeps the text: text set
+  sooner was wiped, and GEICO's Log In read no username. A field the page
+  holds already (after a `click` on it, or a `type`) takes the text at
+  once. A field the page never takes (in a hidden tab the user opened,
+  which draws no frames) fails and says to `activate` the tab first.
 - A one-time code the site texted the user: write `{{code}}` where it
   goes, `type {tab, ref, text: "{{code}}"}`. The harness waits up to 30 s
   for the text, types the code, and answers `typed: "code, 6 chars"`; the
@@ -541,7 +559,9 @@ Wait for the page, not the clock.
   neither a word nor a control (a blank page, or Bank of America's sign-in,
   which shows just a skip link in a one-pixel box while it draws), waits
   for the page to draw: it answers once the page shows something, or after
-  2 s with what it has. A `root` or `query` read answers at once.
+  2 s with what it has. A `query` or `root` read of such a page waits the
+  same way, until a line matches or the root shows something; on a page a
+  person already sees, one that finds nothing answers at once.
 - Wait for the page's exact words. A site's email and its page often word
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.
@@ -597,13 +617,17 @@ with `do: "read"`.
 
 - `download` saves a file into `~/Downloads` and returns its path: pass the
   `ref` of a download link or of a button that makes a file, or a `url`.
-  It fetches with the page's cookies, so a signed-in file works. A name
-  already taken gets ` (1)`. A download only the server starts, after a
-  click the page cannot see, lands in `~/Downloads` through Safari itself.
-  A click that takes the tab to a file Safari shows itself (a PDF, an
-  image) saves that file; one that opens a page fails with the page's
-  address, and a file the site sent then is in `~/Downloads`. On your own
-  tab, `download` then returns that file instead of an error.
+  It fetches with the page's cookies, so a signed-in file works. A link to
+  the page itself (`href="#"`) is clicked like a button. A ref that leads
+  to a web page rather than a file (a document viewer) fails and says so,
+  where it once saved the page's HTML under the site's name: click it, and
+  download the file from the page it opens. A name already taken gets
+  ` (1)`. A download only the server starts, after a click the page cannot
+  see, lands in `~/Downloads` through Safari itself. A click that takes
+  the tab to a file Safari shows itself (a PDF, an image) saves that file;
+  one that opens a page fails with the page's address, and a file the site
+  sent then is in `~/Downloads`. On your own tab, `download` then returns
+  that file instead of an error.
 - `click`, `press`, and `download` on a tab you opened report the files
   Safari saved to `~/Downloads` while they ran, as
   `downloaded: [{path, bytes}]`. A download still under way when the
@@ -771,7 +795,9 @@ Signing in, in this order:
      sign-in form's site; `passwords {do: "fill", tab}` fills the form
      (pass `username` when several are saved). The result names the fields
      filled, never the password. A form that submits itself once filled
-     also returns `navigated`, the page it went to.
+     also returns `navigated`, the page it went to. A Flutter sign-in
+     (GEICO's) gets each field once the page has taken it, as `type` does,
+     so the page's own model sees the login.
    - The Mac may ask the user to approve the password with Touch ID. The
      call waits 40 s for him, then says the Mac is asking while the request
      goes on: ask him to approve, then call `fill` again. That call gets the
@@ -796,7 +822,8 @@ Signing in, in this order:
      the form next; if the site refuses the new password, the saved one is
      already new, so reset the password through the site's email link and
      call `change` again on its form. The result names the fields filled,
-     with `saved: true`, never a password.
+     with `saved: true`, never a password. A Flutter form gets each field
+     once the page has taken it, as `fill` does.
    - `passwords {do: "setup-code", tab}` turns on an authenticator-app
      code: with the site's QR code in view, it reads the code's key off a
      screenshot inside the daemon and hands it to Apple Passwords, as

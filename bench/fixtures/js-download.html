@@ -1,0 +1,18 @@
+<!doctype html>
+<title>JS download</title>
+<!-- GEICO's documents list (09-29): each document is a link to "#" or a
+     button, and the page's script does what it does. Statement makes a PDF
+     and saves it; Policy opens a viewer page, not a file. -->
+<a href="#" id="statement">Statement</a>
+<button id="policy">Policy</button>
+<script>
+  document.getElementById("statement").addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = "data:application/pdf;base64,JVBERi0xLjQK";
+    a.download = "statement.pdf";
+    a.click();
+  });
+  document.getElementById("policy").addEventListener("click", () => {
+    window.open("data:text/html,<h1>Policy viewer</h1>");
+  });
+</script>

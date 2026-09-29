@@ -713,10 +713,16 @@
   const norm = (t) => t.replace(/\s+/g, " ").trim();
   const clip = (t, max) => { t = norm(t); return t.length > max ? t.slice(0, max) + "…" : t; };
 
-  function outline(opts = {}) {
+  // A root or selector that matches nothing is named, with how to read the
+  // page without it: "root not found" left agents guessing (09-29).
+  function noMatch(option, selector) {
+    return { error: `nothing on the page matches ${option} "${selector}"; leave ${option} out to read the whole page` };
+  }
+
+  function outline(opts = {}, walkOnly = false) {
     pruneRefs();
     const root = opts.root ? deepQuery(opts.root) : document.body;
-    if (!root) return { error: "root not found" };
+    if (!root) return noMatch("root", opts.root);
     const maxLines = opts.maxNodes || 600;
     const query = opts.query ? queryMatch(opts.query) : null;
     // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
@@ -829,6 +835,8 @@
       } else if (node.name === null) node.name = (el.getAttribute("title") || "").trim();
     };
     walk(root, top, [], false, false);
+    // snapshot's check whether a person sees anything on the page yet
+    if (walkOnly) return { seen };
 
     // Pass 2: print. A ref is given only to a line that is printed.
     const lines = [];
@@ -947,36 +955,65 @@
   // A page still drawing can show for a moment nothing a person sees: a
   // sign-in page (Chase's) read as empty once, and the agent never looked
   // again; Bank of America's hold just a skip link, parked in a one-pixel
-  // box, until their script draws the rest. A whole-page read that finds
-  // no words or control a person sees reads again after each change the
-  // page makes, and answers once it finds some, or after DRAW_WAIT_MS with
-  // what it has. An embedded frame answers at once: an ad's frame may never
-  // draw. Safari stops a content script's timers in a hidden tab, so the
-  // limit also runs on an owned tab's ticks, and in any other hidden tab on
-  // a loop of messages, as withReceipt's watch does.
+  // box, until their script draws the rest. A read that finds nothing a
+  // person sees (under its root; for a query, no line) on a page without
+  // it reads again after each change the page makes, and answers once it
+  // finds some, or after DRAW_WAIT_MS with what it has: queries of
+  // suedax's profile answered empty four times while it drew its settings
+  // (09-29). On a page a person sees already, a query or root that finds
+  // nothing answers at once. An embedded frame answers at once: an ad's
+  // frame may never draw.
+  //
+  // Flutter draws its page on a canvas, and builds the controls a screen
+  // reader reads, the only ones a read sees, once its "Enable
+  // accessibility" placeholder is clicked: GEICO's sign-in read as that
+  // button alone (09-29). A read clicks it, and waits the same way for the
+  // controls, which come a frame later. A hidden tab draws no frames unless
+  // the harness opened it, so in the user's own they come once he shows
+  // it, and the read says so.
   const DRAW_WAIT_MS = 2000;
+  const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
   function snapshot(opts = {}) {
+    const top = window === window.top;
+    // Flutter's host element sits in the page itself, so only a page with
+    // one pays for a search of every shadow root (2 ms of a read of cnn.com).
+    const placeholder = top && document.querySelector("flutter-view, flt-glass-pane") ? deepQuery("flt-semantics-placeholder") : null;
+    placeholder?.click();
+    // Whether a read holds what it came for: Flutter's controls, else words
+    // or a control a person sees (under root) and, for a query, a line.
+    const found = (read, seen) => (placeholder ? deepQuery("flt-semantics") !== null : !read.error && seen && (!opts.query || read.nodes > 0));
     const { seen, ...snap } = outline(opts);
-    if (seen || snap.error || opts.root || opts.query || window !== window.top) return snap;
+    if (!top || found(snap, seen)) return snap;
+    if (!placeholder && (seen || (opts.root && outline({}, true).seen))) return snap;
+    let latest = snap;
+    return whenPage(() => {
+      const { seen: now, ...again } = outline(opts);
+      latest = again;
+      return found(again, now);
+    }, DRAW_WAIT_MS).then((held) => {
+      if (!held && placeholder && document.hidden && !tickPort) return { ...latest, hint: FLUTTER_UNDRAWN };
+      return latest;
+    });
+  }
+
+  // Resolves true once test holds for a batch of changes the page makes,
+  // or false after ms. Safari stops a content script's timers in a hidden
+  // tab, so the limit also runs on an owned tab's ticks, and in any other
+  // hidden tab on a loop of messages, as withReceipt's watch does.
+  function whenPage(test, ms) {
     return new Promise((resolve) => {
-      const until = Date.now() + DRAW_WAIT_MS;
-      let latest = snap;
+      const until = Date.now() + ms;
       const spin = document.hidden && !tickPort ? new MessageChannel() : null;
-      const done = () => {
+      const done = (held) => {
         clearTimeout(timer);
         document.removeEventListener("__sh_tick", check);
         spin?.port1.close();
         observer.disconnect();
-        resolve(latest);
+        resolve(held);
       };
-      const check = () => { if (Date.now() >= until) done(); };
-      const observer = watchPage((records) => {
-        if (!records.length) return;
-        const { seen: now, ...again } = outline(opts);
-        latest = again;
-        if (now) done();
-      });
-      const timer = setTimeout(done, DRAW_WAIT_MS);
+      const check = () => { if (Date.now() >= until) done(false); };
+      const observer = watchPage((records) => { if (records.length && test(records)) done(true); });
+      const timer = setTimeout(() => done(false), ms);
       document.addEventListener("__sh_tick", check);
       if (spin) {
         spin.port1.onmessage = () => {
@@ -1335,11 +1372,36 @@
     document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
   }
 
+  // A link to this page itself ("#", or no address of its own) is a button
+  // the page's script runs: fetched, it saved the page's HTML under the
+  // site's name, once per document (GEICO's documents list, 09-29). It is
+  // clicked like one.
+  function samePage(url) {
+    try {
+      const to = new URL(url);
+      const here = new URL(location.href);
+      to.hash = here.hash = "";
+      return to.href === here.href;
+    } catch {
+      return false;
+    }
+  }
+
+  // A web page is not the file a ref downloads: a link to a document
+  // viewer, or a window a click opens on one. One the site named for
+  // saving (a download attribute) stays a file.
+  function notPage(file, named) {
+    if (named || !/^text\/html\b/i.test(file.type ?? "")) return file;
+    return { error: "the ref opens a web page, not a file: click it, and download the file from the page it opens" };
+  }
+
   async function download(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
     const link = el.closest("a[href], area[href]");
-    if (link && !link.href.startsWith("javascript:")) return fetchFile(link.href, link.getAttribute("download") || "");
+    if (link && !link.href.startsWith("javascript:") && !samePage(link.href)) {
+      return notPage(await fetchFile(link.href, link.getAttribute("download") || ""), link.hasAttribute("download"));
+    }
     caughtDownload = null;
     catchDownloads(true);
     try {
@@ -1347,7 +1409,7 @@
       if (clicked && clicked.error) return clicked;
       const caught = caughtDownload ?? await new Promise((resolve) => { pendingDownload = resolve; });
       if (!caught) return { error: "the click started no download the page could see; it may be a server download: check ~/Downloads", clicked };
-      return fetchFile(caught.url, caught.name);
+      return notPage(await fetchFile(caught.url, caught.name), !!caught.name);
     } finally {
       pendingDownload = null;
       catchDownloads(false);
@@ -1403,6 +1465,37 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // Flutter's text fields (GEICO's sign-in) read what is typed only while
+  // the page holds the field, from a frame after it gains focus until it
+  // loses focus. Taking it, Flutter writes the text its own model holds
+  // over the field's, so a value set sooner is lost: GEICO's model stayed
+  // empty under a filled username (09-29). A field it holds already takes
+  // text at once: a focus again makes Flutter do nothing, and a second
+  // type into DartPad's field waited out the limit for a take (09-29). The
+  // page hears of focus from the focus event alone, which focus() fires
+  // neither on a field that has focus nor in a window in the back.
+  // Resolves whether the page holds the field.
+  function focusField(el) {
+    if (!el.closest("flt-semantics")) {
+      el.focus();
+      return true;
+    }
+    if (flutterHolds(el)) return true;
+    const taken = whenPage(() => flutterHolds(el), DRAW_WAIT_MS);
+    let focused = false;
+    const onFocus = () => { focused = true; };
+    el.addEventListener("focus", onFocus);
+    el.focus();
+    el.removeEventListener("focus", onFocus);
+    if (!focused) el.dispatchEvent(new FocusEvent("focus"));
+    return taken;
+  }
+  // Flutter cancels a mouse move on the field it holds, so the browser
+  // leaves the selection to it, and on no other field: the page's one sign
+  // that it holds a field (DartPad, 09-29).
+  const flutterHolds = (el) => !el.dispatchEvent(new MouseEvent("mousemove", { cancelable: true }));
+  const untaken = (field) => ({ error: `the page did not take ${field}, so it would not read text put there: Flutter takes a field only while its tab draws, and a hidden tab you did not open does not; activate the tab, then try again` });
+
   // A rich editor (ProseMirror, Lexical, Draft.js, Slate) keeps its own
   // model of the text and redraws the element from it, so an edit reaches it
   // only as input events: clearing the element's text behind its back left
@@ -1433,7 +1526,7 @@
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    el.focus();
+    if (!(await focusField(el))) return untaken("the field");
     const before = el.isContentEditable ? "" : String(el.value || "");
     // A code typed into the first of a row of one-character boxes (PayPal's
     // six) goes one character to a box, as a person types it.
@@ -1441,7 +1534,7 @@
     const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
     if (boxes.length === text.length) {
       for (const [i, box] of boxes.entries()) {
-        box.focus();
+        if (!(await focusField(box))) return untaken("a code box");
         setValue(box, text[i], text[i]);
         secretFilled.add(box);
       }
@@ -1491,13 +1584,13 @@
 
   // The daemon sends the hostname the login is saved for to the frame that
   // holds the form; a frame that has moved elsewhere gets nothing.
-  function fillLogin(host, username, password) {
+  async function fillLogin(host, username, password) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const f = loginFields();
     const filled = [];
     for (const [field, value, name] of [[f.username, username, "username"], [f.password, password, "password"]]) {
       if (!field || !value) continue;
-      field.focus();
+      if (!(await focusField(field))) return untaken(`the ${name} field`);
       setValue(field, value, value);
       filled.push(name);
     }
@@ -1526,15 +1619,20 @@
   // new-password or named like one (lichess's newPasswd1 and newPasswd2),
   // and the current-password field beside them. A field showing its
   // password as text counts when marked or named as one: mail.ru's reset
-  // shows the password it suggests, and names its repeat field only.
+  // shows the password it suggests, and names its repeat field only. A
+  // repeat field with no new one marked (Quest's and Covered California's
+  // password and confirmedPassword) takes its new one from the unmarked
+  // field before it.
   function changeFields() {
     const hint = (el) => `${el.name} ${el.id}`;
     const secret = (el) => el.type === "password" || /-password$/.test(el.getAttribute("autocomplete") ?? "") || /passw|pwd/i.test(hint(el));
     const usable = (el) => !el.disabled && !el.readOnly && shown(el) && secret(el);
     const inputs = deepQueryAll("input[type=password], input[type=text]").filter(usable);
-    const fresh = inputs.filter((el) => el.getAttribute("autocomplete") === "new-password" || /new|confirm|repeat|again|retype/i.test(hint(el)));
-    const current = inputs.find((el) => !fresh.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(hint(el)))) ?? null;
-    return { fresh, current };
+    const newly = (el) => el.getAttribute("autocomplete") === "new-password" || /new/i.test(hint(el));
+    const marked = inputs.filter((el) => newly(el) || /confirm|repeat|again|retype/i.test(hint(el)));
+    const current = inputs.find((el) => !marked.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(hint(el)))) ?? null;
+    const before = marked.length && !marked.some(newly) ? inputs.slice(0, inputs.indexOf(marked[0])).filter((el) => el !== current).at(-1) : undefined;
+    return { fresh: before ? [before, ...marked] : marked, current };
   }
 
   // What the daemon needs to make a password this form takes: how many new
@@ -1553,7 +1651,7 @@
 
   // Types the new password into every new-password field, and the current
   // one, when given, into its field.
-  function fillNewPassword(host, current, password) {
+  async function fillNewPassword(host, current, password) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const f = changeFields();
     if (!f.fresh.length) return { error: "the new-password field is gone; nothing was filled" };
@@ -1561,7 +1659,7 @@
     const fields = [[f.current, current, "current password"], ...f.fresh.map((el, i) => [el, password, i ? "confirm password" : "new password"])];
     for (const [field, value, name] of fields) {
       if (!field || !value) continue;
-      field.focus();
+      if (!(await focusField(field))) return untaken(`the ${name} field`);
       setValue(field, value, value);
       filled.push(name);
     }
@@ -1612,16 +1710,16 @@
   // What the extension asks every frame at once, by name.
   window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts };
 
-  function fillCode(host, code) {
+  async function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const fields = codeFields();
     if (!fields.length) return { error: "the code field is gone; nothing was filled" };
     const parts = fields.length === 1 ? [code] : [...code];
-    fields.forEach((field, i) => {
-      if (parts[i] === undefined) return;
-      field.focus();
+    for (const [i, field] of fields.entries()) {
+      if (parts[i] === undefined) continue;
+      if (!(await focusField(field))) return untaken("the code field");
       setValue(field, parts[i], parts[i]);
-    });
+    }
     return { ok: true, filled: ["code"] };
   }
 
@@ -1667,7 +1765,7 @@
   // Fills the page's empty address fields from values keyed by autocomplete
   // token, and chooses select options that match. The reply names the
   // fields, never what went in them.
-  function fillAddress(values, root) {
+  async function fillAddress(values, root) {
     const scope = root ? deepQuery(root) : document;
     if (!scope) return missing(root);
     const filled = [];
@@ -1690,7 +1788,7 @@
       const value = token === "country" && !el.getAttribute("autocomplete") ? values["country-name"] : values[token];
       if (!value) continue;
       if (el.value) { kept.push(token); continue; }
-      el.focus();
+      if (!(await focusField(el))) return untaken(`the ${token} field`);
       setValue(el, value, value);
       filled.push(token);
     }
@@ -1740,9 +1838,34 @@
     return key === "Enter" ? { ok: true, key, ...flags, expect: "script" } : { ok: true, key, ...flags };
   }
 
+  // A page that scrolls a box of its own (an app's pane) or draws on a
+  // canvas (Flutter) never moves the window: four scrolls of GEICO's
+  // policy pages each answered ok and moved nothing (09-29). The window
+  // scrolls when it can, else the box under the middle of the window that
+  // scrolls that way, else the element there gets a wheel, as a mouse over
+  // it would give, which a page that scrolls itself takes (cancels). The
+  // answer says which moved; a scroll that moved nothing is an error.
   function scrollBy(dx, dy) {
+    const x = window.scrollX;
+    const y = window.scrollY;
+    const maxY = () => Math.round(document.documentElement.scrollHeight - innerHeight);
     window.scrollBy({ left: dx, top: dy, behavior: "instant" });
-    return { ok: true, scrollY: Math.round(window.scrollY), maxY: Math.round(document.documentElement.scrollHeight - innerHeight) };
+    if (window.scrollX !== x || window.scrollY !== y) return { ok: true, moved: "window", scrollY: Math.round(window.scrollY), maxY: maxY() };
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const at = deepPoint(cx, cy);
+    const scrolls = (overflow) => /^(auto|scroll|overlay)$/.test(overflow);
+    for (let box = at; box; box = box.parentElement ?? box.getRootNode().host) {
+      const style = getComputedStyle(box);
+      if (!(dy && scrolls(style.overflowY)) && !(dx && scrolls(style.overflowX))) continue;
+      const left = box.scrollLeft;
+      const top = box.scrollTop;
+      box.scrollBy({ left: dx, top: dy, behavior: "instant" });
+      if (box.scrollLeft !== left || box.scrollTop !== top) return { ok: true, moved: "box", scrollY: Math.round(box.scrollTop), maxY: box.scrollHeight - box.clientHeight };
+    }
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, deltaX: dx, deltaY: dy, deltaMode: WheelEvent.DOM_DELTA_PIXEL });
+    if (at && !at.dispatchEvent(wheel)) return { ok: true, moved: "wheel" };
+    return { error: `nothing moved: the window is at scrollY ${Math.round(y)} of ${maxY()}, no box under its middle scrolls that way, and the page there does not take a wheel` };
   }
 
   // innerText, minus the words no one sees: boxes of at most one pixel,
@@ -1821,7 +1944,7 @@
       const articles = document.querySelectorAll("article");
       root = document.querySelector("main, [role=main]") || (articles.length === 1 ? articles[0] : document.body);
     }
-    if (!root) return { error: "no content root" };
+    if (!root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     let text = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     if (opts.query) text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
     const limit = opts.maxBytes || 20000;
@@ -1863,7 +1986,7 @@
   // list inside a card of one already read is part of that card.
   function tables(opts) {
     const root = opts.selector ? deepQuery(opts.selector) : document.body;
-    if (!root) return { error: "no content root" };
+    if (!root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     const found = [];
     const lists = [];
     for (const el of [root, ...deepElements(root)]) {
