@@ -165,7 +165,7 @@ async function change(a: Record<string, unknown>): Promise<unknown> {
     ? { why: "Apple's password helper is not running" }
     : await confirmSave(asked.helper, asked.site);
   if ("why" in pressed) {
-    await rpc("passwords", { do: "change-drop" });
+    await rpc("passwords", { do: "change-drop", tab: a.tab });
     throw new Error(`Apple Passwords did not confirm saving the new password for ${asked.site} (${pressed.why}); nothing was typed into the page. If its window asking to update the password is still up, press Not Now, then call change again`);
   }
   return rpc("passwords", { do: "change-type", tab: a.tab });

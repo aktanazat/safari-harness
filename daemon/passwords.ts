@@ -269,8 +269,9 @@ export class ApplePasswords {
   private waiter: Waiter | null = null;
   // The request waiting on Touch ID, or its answer kept for the next call.
   private approval: Approval | null = null;
-  // A changed password saved but not yet typed, until typeChange or CHANGE_MS.
-  private pendingChange: { tab: number; frame: number; fresh: number; site: string; login: string; current: string | null; secret: string; drop: () => void } | null = null;
+  // Changed passwords saved but not yet typed, by tab, until typeChange or
+  // CHANGE_MS: agents changing several sites at once each keep their own.
+  private pendingChanges = new Map<number, { frame: number; fresh: number; site: string; login: string; current: string | null; secret: string; drop: () => void }>();
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
   // Agent sessions holding the pairing, by pid, each with its exit watch.
@@ -821,10 +822,10 @@ export class ApplePasswords {
       current = await this.password(site, login, "change");
     }
     const secret = strongPassword(form.maxLength);
-    this.dropChange();
+    this.dropChange(tab);
     await this.save(site, login, secret);
-    const drop = this.timers.after(CHANGE_MS, () => this.dropChange());
-    this.pendingChange = { tab, frame: form.frame, fresh: form.fresh ?? 1, site, login, current, secret, drop };
+    const drop = this.timers.after(CHANGE_MS, () => this.dropChange(tab));
+    this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, site, login, current, secret, drop });
     const helper = runningHelper(this.profile);
     return { username: login, site, ...(helper ? { helper } : {}) };
   }
@@ -834,17 +835,17 @@ export class ApplePasswords {
   // current one into an empty current-password field. The result never
   // carries either password.
   async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true }> {
-    const c = this.pendingChange;
-    if (!c || c.tab !== tab) throw new Error("no password change waiting to be typed into this tab; call change again");
-    this.dropChange();
+    const c = this.pendingChanges.get(tab);
+    if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
+    this.dropChange(tab);
     const res = await bridge.tab(tab, "fillNewPassword", [c.site, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
     return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true };
   }
 
-  dropChange(): void {
-    this.pendingChange?.drop();
-    this.pendingChange = null;
+  dropChange(tab: number): void {
+    this.pendingChanges.get(tab)?.drop();
+    this.pendingChanges.delete(tab);
   }
 
   // The daemon is exiting. Helium, its helper, and the pairing stay up for

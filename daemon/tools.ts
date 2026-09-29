@@ -894,7 +894,7 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     case "change-type":
       return passwords.typeChange(await resolveTab(a.tab));
     case "change-drop":
-      return passwords.dropChange();
+      return passwords.dropChange(await resolveTab(a.tab));
     case "setup-code": {
       const tab = await resolveTab(a.tab);
       const url = (await listTabs()).find((t) => t.id === tab)?.url;
