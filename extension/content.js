@@ -1510,6 +1510,50 @@
     return { origin: location.origin, found: codeFields().length > 0 };
   }
 
+  // A change-password (or sign-up) form: the new-password fields, marked
+  // new-password or named like one (lichess's newPasswd1 and newPasswd2),
+  // and the current-password field beside them.
+  function changeFields() {
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
+    const hint = (el) => `${el.name} ${el.id}`;
+    const inputs = deepQueryAll("input[type=password]").filter(usable);
+    const marked = inputs.filter((el) => el.getAttribute("autocomplete") === "new-password");
+    const fresh = marked.length ? marked : inputs.filter((el) => /new|confirm|repeat|again|retype/i.test(hint(el)));
+    const current = inputs.find((el) => !fresh.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(hint(el)))) ?? null;
+    return { fresh, current };
+  }
+
+  // What the daemon needs to make a password this form takes: how many new
+  // fields, the shortest length they allow, and whether the current
+  // password is still to be typed. Never a value.
+  function changeForm() {
+    const { fresh, current } = changeFields();
+    const limits = fresh.map((el) => el.maxLength).filter((n) => n > 0);
+    return {
+      origin: location.origin,
+      fresh: fresh.length,
+      ...(limits.length ? { maxLength: Math.min(...limits) } : {}),
+      ...(current ? { current: current.value ? "filled" : "empty" } : {}),
+    };
+  }
+
+  // Types the new password into every new-password field, and the current
+  // one, when given, into its field.
+  function fillNewPassword(host, current, password) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const f = changeFields();
+    if (!f.fresh.length) return { error: "the new-password field is gone; nothing was filled" };
+    const filled = [];
+    const fields = [[f.current, current, "current password"], ...f.fresh.map((el, i) => [el, password, i ? "confirm password" : "new password"])];
+    for (const [field, value, name] of fields) {
+      if (!field || !value) continue;
+      field.focus();
+      setValue(field, value, value);
+      filled.push(name);
+    }
+    return { ok: true, filled };
+  }
+
   // What a bot check leaves in this frame (challenge.ts in the daemon names
   // the check): the frame's address and title, its text when that is short,
   // which of the markers show (a script or an iframe counts by being there),
@@ -1552,7 +1596,7 @@
   }
 
   // What the extension asks every frame at once, by name.
-  window.__safariHarnessProbe = { login: loginForm, code: codeField, challenge: challengeFacts };
+  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts };
 
   function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
@@ -2731,6 +2775,7 @@
     history: historyGo,
     fillLogin,
     fillCode,
+    fillNewPassword,
     fillAddress,
     locate,
     pressMark,

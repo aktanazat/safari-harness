@@ -865,9 +865,10 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
   return ops[key]({ tab: a.tab as number | undefined });
 }
 
-// passwords: pair, unlock, status, and done take no tab; logins, fill, and
-// code act on the tab's own site. Each agent session holds the pairing until
-// it calls done or exits, and the pairing ends a few minutes after the last.
+// passwords: pair, unlock, status, and done take no tab; logins, fill,
+// code, and change act on the tab's own site. Each agent session holds the
+// pairing until it calls done or exits, and the pairing ends a few minutes
+// after the last.
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   switch (a.do) {
     case "pair": {
@@ -886,8 +887,10 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
       return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "code":
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+    case "change":
+      return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     default:
-      throw new Error("do must be pair, unlock, status, done, logins, fill, or code");
+      throw new Error("do must be pair, unlock, status, done, logins, fill, code, or change");
   }
 }
 
@@ -1234,8 +1237,8 @@ export const TOOLS: Record<string, Tool> = {
     ),
   },
   passwords: {
-    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. Locked, these first pair: he approves with Touch ID and types the Mac's code into a prompt there; you get paired or why not. Call done when finished; status says why it is locked.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
+    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. change saves a new strong password for the login and types it into the page's new-password fields; submit the form yourself. Locked, these first pair: he approves with Touch ID and types the Mac's code into a prompt there; you get paired or why not. Call done when finished; status says why it is locked.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
     required: ["do"],
     run: applePasswords,
   },

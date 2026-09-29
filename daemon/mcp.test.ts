@@ -83,8 +83,11 @@ import { expect, test } from "bun:test";
 // Messages' AppleScript, and it arrived as an empty message marked
 // delivered. Saying eval's page must answer within 30 s, and that wait with
 // only ms is no sleep (87), brought it to 23,612: an agent's 30 s scroll
-// loop failed whole on SoFi, and agents read wait {ms} as a sleep.
-const TOOL_LIST_MAX_BYTES = 23_612;
+// loop failed whole on SoFi, and agents read wait {ms} as a sleep. change
+// on passwords (134) brought it to 23,746: an agent securing leaked
+// passwords had no way to set a new one without seeing it, and Safari
+// suggests a strong password only to a person at the page (09-29).
+const TOOL_LIST_MAX_BYTES = 23_746;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

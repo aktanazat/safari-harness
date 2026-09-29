@@ -52,10 +52,12 @@ type Helper = { queries: string[]; answer: (m: Sent) => Record<string, unknown> 
 
 // Apple's helper process: shows CODE, verifies the client's proof, and
 // answers encrypted queries for one saved login under the session it paired.
+// A save (command 6) replaces that login's password, as the helper does.
 function appleHelper(): Helper {
   const queries: string[] = [];
   let srp: { user: string; A: Buffer; B: Buffer; b: bigint; v: bigint; salt: Buffer } | null = null;
   let key: Buffer | null = null;
+  let saved = SECRET;
 
   const answer = (m: Sent): Record<string, unknown> => {
     const msg = m.msg && typeof m.msg === "object" && "PAKE" in m.msg ? m.msg : null;
@@ -91,10 +93,12 @@ function appleHelper(): Helper {
       d.setAuthTag(data.subarray(data.length - 32, data.length - 16));
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
       queries.push(`${m.cmd} ${q.URL ?? new URL(q.frameURLs[0]).hostname}`);
+      if (m.cmd === 6 && q.NUSR === USER) saved = q.NPWD;
       // A code query answers with Entry_N keys, as the helper does for codes.
       const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] }
         : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
-        : { STATUS: 0, Entries: [{ USR: q.USR, PWD: SECRET }] };
+        : m.cmd === 6 ? { STATUS: 0 }
+        : { STATUS: 0, Entries: [{ USR: q.USR, PWD: saved }] };
       const iv = randomBytes(16);
       const c = createCipheriv("aes-128-gcm", key, iv);
       const sealed = Buffer.concat([iv, c.update(JSON.stringify(out)), c.final(), c.getAuthTag()]);
@@ -198,18 +202,22 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 
 // The Safari tab: a page whose sign-in form (in the top page, or in an
 // embedded frame from another site, as Apple's is) records what was typed.
+// Its change-password form has an empty current-password field and two
+// new-password fields, which allow form.maxLength characters when given.
 // As in the content script, a fill lands only when sent to the frame that
 // holds the form, for the site that frame is on. A form that submits itself
 // once filled takes the page away before it can answer, so the extension
 // answers where the page went instead (act in background.js).
-function fakeTab(url: string, form = { frame: 0, url }, navigated?: { url: string; title: string }) {
-  const page: { username?: string; password?: string; code?: string } = {};
+function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number } = { frame: 0, url }, navigated?: { url: string; title: string }) {
+  const page: { username?: string; password?: string; code?: string; current?: string; fresh?: string } = {};
   connect({
     send(data: string) {
       const { id, op: outer, args } = JSON.parse(data);
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
       if (outer === "probe") {
-        const holds = args[1] === "login" ? { username: true, password: true } : { found: true };
+        const holds = args[1] === "login" ? { username: true, password: true }
+          : args[1] === "change" ? { fresh: 2, current: "empty", ...(form.maxLength ? { maxLength: form.maxLength } : {}) }
+          : { found: true };
         const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
         return answer({ value: form.frame ? frames : [frames[1]] });
       }
@@ -217,7 +225,9 @@ function fakeTab(url: string, form = { frame: 0, url }, navigated?: { url: strin
       if (frame !== form.frame || opArgs[0] !== new URL(form.url).hostname) return answer({ error: "nothing was filled" });
       if (op === "fillLogin") Object.assign(page, { username: opArgs[1], password: opArgs[2] });
       if (op === "fillCode") Object.assign(page, { code: opArgs[1] });
-      answer({ value: navigated ? { ok: true, navigated } : { ok: true, filled: op === "fillCode" ? ["code"] : ["username", "password"] } });
+      if (op === "fillNewPassword") Object.assign(page, { current: opArgs[1], fresh: opArgs[2] });
+      const filled = op === "fillCode" ? ["code"] : op === "fillNewPassword" ? ["current password", "new password", "confirm password"] : ["username", "password"];
+      answer({ value: navigated ? { ok: true, navigated } : { ok: true, filled } });
     },
     close() {},
   });
@@ -355,6 +365,33 @@ test("code types the site's verification code into the page but never returns it
   const result = await p.fillCode(7);
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
+});
+
+// The new password must be the one Apple Passwords keeps: a page given one
+// password while another is saved locks the user out of his account.
+test("change types the saved password into the current field and the password it saves into the new ones, and fill then types the new one", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/account/password`);
+  await paired(p);
+  expect(await p.change(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
+  expect(page.current).toBe(SECRET);
+  expect(page.fresh).not.toBe(SECRET);
+  await p.fill(7);
+  expect(page.password).toBe(page.fresh);
+});
+
+// One uppercase letter and one digit, the rest lowercase: Safari's shape,
+// which sites that ask for mixed characters take.
+test.each([
+  ["no length limit, three hyphenated groups of six", undefined, /^(?=[^A-Z]*[A-Z][^A-Z]*$)(?=\D*\d\D*$)[a-zA-Z\d]{6}-[a-zA-Z\d]{6}-[a-zA-Z\d]{6}$/],
+  ["a 16-character limit, 16 characters", 16, /^(?=[^A-Z]*[A-Z][^A-Z]*$)(?=\D*\d\D*$)[a-zA-Z\d]{16}$/],
+])("change on a form with %s makes a password of that shape", async (_, maxLength, shape) => {
+  const { p } = scratch();
+  const url = `https://${SITE}/account/password`;
+  const page = fakeTab(url, { frame: 0, url, maxLength });
+  await paired(p);
+  await p.change(7);
+  expect(page.fresh).toMatch(shape);
 });
 
 const HOME = { url: `https://${SITE}/home`, title: "Home" };

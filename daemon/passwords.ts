@@ -26,7 +26,7 @@
 // au2001/icloud-passwords-firefox.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -149,7 +149,7 @@ function open(key: Buffer, data: Buffer): unknown {
 
 // ---------- helper link ----------
 
-const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, DISABLED: 9, RELOGIN: 10, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
+const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, SAVE: 6, DISABLED: 9, RELOGIN: 10, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
 const STATUS_OK = 0;
 const STATUS_NONE = 3;
 
@@ -220,6 +220,32 @@ function openKept(key: Buffer, sealed: string): Kept {
   d.setAuthTag(data.subarray(data.length - 16));
   const k = JSON.parse(Buffer.concat([d.update(data.subarray(12, data.length - 16)), d.final()]).toString("utf8")) as { user: string; key: string; holders: number[] };
   return { user: k.user, key: Buffer.from(k.key, "base64"), holders: k.holders };
+}
+
+// ---------- strong passwords ----------
+
+const LOWER = "abcdefghijklmnopqrstuvwxyz";
+const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const DIGITS = "0123456789";
+// The fewest characters a made password has; a form that allows fewer is
+// refused rather than given a weak one.
+const MIN_MADE = 8;
+
+// Safari's strong-password shape: 18 lowercase letters, one of them made an
+// uppercase letter and another a digit, in three groups of six joined by
+// hyphens (xxxxxx-xxxxxx-xxxxxx), 20 characters. A form whose new-password
+// fields allow fewer gets as many as they allow, without hyphens. Each draw
+// is uniform (randomInt), so no character is likelier than another.
+function strongPassword(maxLength?: number): string {
+  const grouped = maxLength === undefined || maxLength >= 20;
+  const n = grouped ? 18 : maxLength;
+  if (n < MIN_MADE) throw new Error(`the new-password field takes at most ${n} characters, too few for a strong password`);
+  const chars = Array.from({ length: n }, () => LOWER[randomInt(LOWER.length)]);
+  const upper = randomInt(n);
+  const digit = (upper + 1 + randomInt(n - 1)) % n;
+  chars[upper] = UPPER[randomInt(UPPER.length)];
+  chars[digit] = DIGITS[randomInt(DIGITS.length)];
+  return grouped ? [0, 6, 12].map((i) => chars.slice(i, i + 6).join("")).join("-") : chars.join("");
 }
 
 export class ApplePasswords {
@@ -661,8 +687,8 @@ export class ApplePasswords {
     return a.reply;
   }
 
-  private async password(host: string, username: string): Promise<string> {
-    const res = await this.approved({ key: `password ${host} ${username}`, what: `a sign-in for ${host}`, again: "fill", keepMs: KEEP_PASSWORD_MS }, (link, s) =>
+  private async password(host: string, username: string, again = "fill"): Promise<string> {
+    const res = await this.approved({ key: `password ${host} ${username}`, what: `a sign-in for ${host}`, again, keepMs: KEEP_PASSWORD_MS }, (link, s) =>
       this.query(link, s, Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }));
     const entries: unknown[] = res.STATUS === STATUS_OK && Array.isArray(res.Entries) ? res.Entries : [];
     const entry = entries[0];
@@ -670,6 +696,17 @@ export class ApplePasswords {
       throw new Error(`no saved password for ${username} on ${host}`);
     }
     return entry.PWD;
+  }
+
+  // Saves secret as username's password for host: the entry Safari makes
+  // when a form takes a password it suggested (MAYBE_ADD, 4), which
+  // replaces the saved password of an existing login.
+  private async save(host: string, username: string, secret: string): Promise<void> {
+    const res = await this.serial(async () => {
+      const s = await this.session();
+      return this.query(await this.ensureLink(), s, Cmd.SAVE, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }, 10000);
+    });
+    if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords did not save the new password (status ${String(res.STATUS)}); nothing was typed into the page`);
   }
 
   // The current code from a verification-code setup saved for the site, for
@@ -696,6 +733,16 @@ export class ApplePasswords {
     return { site, usernames: await this.logins(site) };
   }
 
+  // The login a call means: the one named, else the only one saved.
+  private async chosenLogin(site: string, username?: string): Promise<{ login: string; saved: string[] }> {
+    const saved = await this.logins(site);
+    const login = username ?? (saved.length === 1 ? saved[0] : undefined);
+    if (login === undefined) {
+      throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
+    }
+    return { login, saved };
+  }
+
   // Fills the saved login into the tab's sign-in form. The result names the
   // fields filled, never the password, and where the page went when the
   // form submitted itself.
@@ -704,11 +751,7 @@ export class ApplePasswords {
     const form = await loginForm(tab);
     if (!form.password && !form.username) throw new Error("no sign-in form on this page");
     const { site } = form;
-    const saved = await this.logins(site);
-    const login = username ?? (saved.length === 1 ? saved[0] : undefined);
-    if (login === undefined) {
-      throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
-    }
+    const { login, saved } = await this.chosenLogin(site, username);
     if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
     const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
@@ -727,6 +770,31 @@ export class ApplePasswords {
     const { code, username: login } = await this.oneTimeCode(site, username);
     const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
     return { ...filledOf(res, ["code"], "code"), username: login, site };
+  }
+
+  // Makes a strong password, saves it to Apple Passwords as the login's
+  // password for the form's site, and types it into the tab's new-password
+  // fields, with the saved current password in an empty current-password
+  // field. It is saved before it is typed, as Safari saves the one it
+  // suggests, so no password the site takes lives only in the page; the
+  // current password is read first, while the saved one is still it. The
+  // result never carries either password.
+  async change(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true }> {
+    await this.session();
+    const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
+    if (!form) throw new Error("no new-password field on this page");
+    const site = httpsHost(form.origin);
+    const { login, saved } = await this.chosenLogin(site, username);
+    let current: string | null = null;
+    if (form.current === "empty") {
+      if (!saved.includes(login)) throw new Error(`the form asks for the current password, and no login ${login} is saved for ${site}; type it in first`);
+      current = await this.password(site, login, "change");
+    }
+    const secret = strongPassword(form.maxLength);
+    await this.save(site, login, secret);
+    const res = await bridge.tab(tab, "fillNewPassword", [site, current, secret], 30000, form.frame);
+    const sent = [...(current ? ["current password"] : []), "new password", ...(form.fresh === 1 ? [] : ["confirm password"])];
+    return { ...filledOf(res, sent, "new password"), username: login, site, saved: true };
   }
 
   // The daemon is exiting. Helium, its helper, and the pairing stay up for
@@ -829,14 +897,14 @@ export const passwords = new ApplePasswords();
 // ---------- a Safari tab's sign-in form ----------
 
 // What a frame of the tab says it holds (probeFrames in background.js).
-type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean };
+type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean; fresh?: number; maxLength?: number; current?: "empty" | "filled" };
 
 function isProbe(p: unknown): p is Probe {
   return !!p && typeof p === "object" && "frame" in p && typeof p.frame === "number" && "origin" in p && typeof p.origin === "string";
 }
 
 // Each frame of the tab that answered, top page first.
-async function probe(tab: number, what: "login" | "code"): Promise<Probe[]> {
+async function probe(tab: number, what: "login" | "code" | "change"): Promise<Probe[]> {
   const frames = await bridge.request("probe", [tab, what]);
   return Array.isArray(frames) ? frames.filter(isProbe) : [];
 }
