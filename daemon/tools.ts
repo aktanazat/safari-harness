@@ -20,9 +20,9 @@ import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./i
 import { firstNotes, learn } from "./notes.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
-import { checkCall, fromModel, guard } from "./guard.ts";
-import { inLane } from "./lanes.ts";
-import { urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
+import { beside, checkCall, fromModel, guard } from "./guard.ts";
+import { acts, inLane } from "./lanes.ts";
+import { urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
 import { redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
@@ -103,7 +103,8 @@ export async function closeTab(tab: number): Promise<unknown> {
 // Safari has given another tab since is left alone. A tab it cannot close
 // now (not connected, a sheet) is tried again each minute.
 const IDLE_MS = 20 * 60_000;
-type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true };
+// acted: an action has changed the page since it loaded (revived).
+type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
@@ -414,22 +415,28 @@ export async function tabInfo(opts: { tab?: number } = {}) {
   return relay(tab, "tabInfo");
 }
 
-// Sleep for ms, or wait until the page shows what the wait asks for (ms is
-// then the timeout, max 30000): a selector or text, the first of several
-// texts (any; which says which), text gone, an address (url: a part of it,
-// or /regex/), or a page that made no change for 500 ms (quiet). Text
-// matches case and spacing aside. The page reports the moment it sees it
-// (waitFor in content.js); the time limit is kept here, because Safari
-// stops a content script's timers in a hidden tab. The answer at the limit
-// does not wait for the page: a page still loading, or too busy to answer,
-// would otherwise hold the call past its limit. A miss says where the tab
-// is: often a redirect (signed out, sent to the home page).
-export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean }) {
+// Waits until the page shows what the wait asks for (ms is then the
+// timeout, max 30000): a selector or text, the first of several texts (any;
+// which says which), text gone, an address (url: a part of it, or
+// /regex/), or a page that made no change for 500 ms with no request to its
+// own site still out (quiet). Text matches case and spacing aside. The page
+// reports the moment it sees it (waitFor in content.js); the time limit is
+// kept here, because Safari stops a content script's timers in a hidden
+// tab. The answer at the limit does not wait for the page: a page still
+// loading, or too busy to answer, would otherwise hold the call past its
+// limit. A miss says where the tab is: often a redirect (signed out, sent
+// to the home page). A wait with only ms ends once the page is quiet, ms at
+// most: it slept all of it, and in the car and insurance searches of late
+// September such sleeps held agents about 9 minutes. A page that cannot be
+// watched still gets its ms, as a sleep did. On screen (front), it holds
+// the tab there all of ms: what it waits on is an animation, which a quiet
+// page does not rule out.
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; front?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  const until = waitsOnPage(opts);
-  if (!until && opts.ms === undefined) throw new Error("wait needs ms, selector, text, any, gone, url, or quiet");
+  const named = waitsOnPage(opts);
+  if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const limit = Math.min(opts.ms === undefined ? 10000 : num(opts.ms, "ms"), 30000);
-  if (!until) {
+  if (!named && opts.front) {
     await Bun.sleep(limit);
     return { ok: true };
   }
@@ -444,7 +451,7 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   }
   const start = Date.now();
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
-  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true };
+  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named };
   const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<{ found: boolean; which?: string }>;
   // A page that answers only after the limit (it navigated, and the new page
   // began the wait again) still holds a wait: end that one too.
@@ -452,6 +459,10 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   const timeUp = Promise.withResolvers<{ found: boolean; which?: string }>();
   const timer = setTimeout(() => { stop(); timeUp.resolve({ found: false }); }, limit);
   try {
+    if (!named) {
+      await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
+      return { ok: true, waitedMs: Date.now() - start };
+    }
     const { found, which } = await Promise.race([seen, timeUp.promise]);
     const waitedMs = Date.now() - start;
     if (found) return which === undefined ? { ok: true, found, waitedMs } : { ok: true, found, waitedMs, which };
@@ -1024,6 +1035,7 @@ export const TOOLS: Record<string, Tool> = {
     params: {
       urls: { type: "array", items: { type: "string" }, description: "addresses" },
       what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
+      wait: { type: "object", description: 'before each read, as wait takes it: {"text":"…"}' },
       expression: { type: "string", description: "JS, for eval" },
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
@@ -1032,13 +1044,13 @@ export const TOOLS: Record<string, Tool> = {
       save: { description: "true, or an absolute folder: a file per page" },
     },
     required: ["urls"],
-    // The model's map call was checked (guard.ts); its opens, reads, and
-    // closes are the harness's, and pass each read the options map has.
+    // The model's map call was checked (guard.ts); its opens, waits, reads,
+    // and closes are the harness's, and pass each read the options map has.
     run: (a) => mapPages(a, (tool, args) => callTool(tool, args, false)),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms, sleep. Text ignores case and spaces. Returns found.",
+    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms, until the page goes quiet, ms at most. Text ignores case and spaces. Returns found.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -1046,8 +1058,8 @@ export const TOOLS: Record<string, Tool> = {
       any: { type: "array", items: { type: "string" }, description: "texts; the first shown ends it" },
       gone: { type: "string", description: "text to disappear" },
       url: { type: "string", description: "part of the URL, or /regex/" },
-      quiet: { type: "boolean", description: "no page change for 0.5 s" },
-      ms: { type: "number", description: "timeout, or sleep length" },
+      quiet: { type: "boolean", description: "no change, and no request to its site, for 0.5 s" },
+      ms: { type: "number", description: "timeout" },
       front: { type: "boolean", description: "keep the tab on screen meanwhile" },
     },
     required: ["tab"],
@@ -1313,7 +1325,34 @@ export function formatResult(value: unknown): string {
 // answer has the secrets in its addresses cut (redact.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel()): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
-  return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => withTabNews(call.args.tab, () => TOOLS[call.tool].run(call.args)))));
+  return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => withTabNews(call.args.tab, () => revived(call.tool, call.args)))));
+}
+
+// A page an agent opened that stops answering (a dialog holds it, or it is
+// stuck loading) is loaded again and the read asked once more, as the error
+// tells the agent to do: in the car and insurance searches of late
+// September, agents spent 31 turns doing it by hand. Only a page no action
+// has changed since it loaded is loaded again, since that undoes the
+// action; an eval counts as a read here, as nearly every one is.
+const ASKED_AGAIN: Record<string, true> = { snapshot: true, extract: true, eval: true, data: true, info: true, wait: true, fetch: true };
+const HELD = /did not answer.*; reload it with goto and retry$/;
+
+async function revived(tool: string, args: Record<string, unknown>): Promise<unknown> {
+  const tab = followTab(Number(args.tab));
+  try {
+    const result = await TOOLS[tool].run(args);
+    // A goto, or an action that led to another page, leaves a fresh page.
+    const mine = harnessTabs.get(tab);
+    if (mine && tool !== "eval" && acts(tool, args)) mine.acted = tool === "goto" || navigatedOf(result) ? undefined : true;
+    return result;
+  } catch (e) {
+    const mine = harnessTabs.get(tab);
+    if (!Object.hasOwn(ASKED_AGAIN, tool) || !mine || mine.acted || !(e instanceof Error) || !HELD.test(e.message)) throw e;
+    const url = (await listTabs()).find((t) => t.id === tab)?.url;
+    if (!url?.startsWith("http")) throw e;
+    await navigate(tab, url);
+    return beside(await TOOLS[tool].run(args), "note", "the page did not answer, so it was loaded again first");
+  }
 }
 
 type Step = { step: number; tool: string; value?: unknown; error?: string };

@@ -72,8 +72,11 @@ import { expect, test } from "bun:test";
 // it to 22,561: ask lost its choices and its wait for a reply. The keep
 // tool, with close saying tabs close as the turn ends (300), brought it to
 // 22,861: tabs an agent left open as it replied piled up in his Safari
-// until it exited, while a form waiting on his answer has to stay.
-const TOOL_LIST_MAX_BYTES = 22_861;
+// until it exited, while a form waiting on his answer has to stay. A wait
+// on map, and a wait with only ms that ends on a quiet page (135), brought
+// it to 22,996: agents read pages a script draws late in one map call,
+// where they slept inside each page's eval or went page by page.
+const TOOL_LIST_MAX_BYTES = 22_996;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

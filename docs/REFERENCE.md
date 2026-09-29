@@ -375,6 +375,12 @@ page opens in a background tab in your window, is read, and closes, 4 at a
 time (`concurrency`, at most 6). It returns `pages` in the order of
 `urls`, each `{url, ok, value or error, ms}`.
 
+- `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":
+  ".listing"}`, `{"quiet": true}`), holds each read until its page shows
+  that. Pass it for pages whose script draws what you read after they
+  load (listings, prices, search results): read at once, they come back
+  empty. A page that never shows it is reported with the tab's address
+  and title instead of read. Never sleep inside `expression` for this.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read.
 - A bot check that stands in for a page is reported with `challenge` and
@@ -387,7 +393,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   `value` is then `{saved, bytes, head}`.
 - `fetch` asks for each address again with its page's cookies and returns
   the body as the server sends it.
-- CLI: `safari map <url>... [--what snapshot] [--save]`.
+- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--save]`.
 
 ## Acting
 
@@ -509,8 +515,9 @@ Wait for the page, not the clock.
   says `which`. `gone: "Loading"` waits for text to leave, `url` for a part
   of the address or a `/regex/` (pushState included), and `quiet: true`
   for 500 ms without a change to the page (clocks, progress bars, and video
-  aside). Given together, all must hold. `gone`, `url`, and `quiet` read
-  the top page, not its frames.
+  aside) and with no request to its own site still out. Given together,
+  all must hold. `gone`, `url`, and `quiet` read the top page, not its
+  frames.
 - A whole-page `snapshot` that finds nothing on the page yet reads it again
   for up to 2 s.
 - Wait for the page's exact words. A site's email and its page often word
@@ -524,12 +531,14 @@ Wait for the page, not the clock.
   new page is readable, without waiting for its ads and trackers.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
-- `wait` with only `ms` is a plain sleep. Use it only when nothing on the page
-  signals the change. In a CLI script, never put a shell `sleep` before a
-  command: `safari wait --text "<text>" --tab N` returns once the text is there,
-  and `click`, `goto`, and `open` already wait for a page they load.
-  Past a minute of such sleeps in 10 minutes, each answer carries a `hint`
-  to wait on text or a selector instead.
+- `wait` with only `ms` ends once the page goes quiet, `ms` at most. On a
+  page that cannot be watched it waits out all of `ms`. Prefer text or a
+  selector: a quiet page may not yet show what you came for. In a CLI
+  script, never put a shell `sleep` before a command: `safari wait --text
+  "<text>" --tab N` returns once the text is there, and `click`, `goto`, and
+  `open` already wait for a page they load. Past a minute of such waits in
+  10 minutes, each answer carries a `hint` to wait on text or a selector
+  instead.
 - The same call again and again with the same answer is a loop. The sixth
   in a row within 3 minutes (the same tool and arguments, and the same page
   or the same error) fails with what to do instead: "you called info on tab
@@ -980,7 +989,10 @@ its own `safari` command.
 - "the user paused this task" or "the user stopped this task": see
   Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or
-  a page stuck loading, holds it. Reload it with `goto` and retry.
+  a page stuck loading, holds it. A read of a tab you opened, when nothing
+  has acted on it since it loaded, loads the page again and reads once
+  more by itself; its answer then carries a `note`. Otherwise reload it
+  with `goto` and retry.
 - "Safari is not running": the tool has started Safari hidden, without
   taking the screen; call again in a few seconds.
 - "Safari extension not connected" while Safari runs, or `extension` is

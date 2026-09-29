@@ -86,7 +86,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
-  safari wait <ms> --tab N                   sleep in the page
+  safari wait <ms> --tab N                   until the page goes quiet, ms at most
   safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
@@ -106,7 +106,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
-                                             (--expression js, --as table, --concurrency 4)
+                                             (--expression js, --as table, --concurrency 4,
+                                             --wait '{"text":"Price"}' before each read)
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)

@@ -3,9 +3,11 @@
 // tab is the caller's meanwhile (open with background), so it still closes
 // if the caller exits first. A page that fails is reported in its place and
 // the others go on. So is a bot check: it is never waited on, since nobody
-// watches these tabs.
+// watches these tabs. With wait, each page is read once it shows what the
+// wait asks for: a page its script draws after it loads reads empty before.
 
 import type { Challenge } from "./challenge.ts";
+import { WAIT_NEEDS, waitsOnPage } from "./receipt.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind, type Target } from "./save.ts";
 
 export const MAP_MAX_URLS = 20;
@@ -23,8 +25,9 @@ const CHECKED: Record<"page" | "block", string> = {
 type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string }) & { challenge?: Challenge };
 export type Page = Outcome & { url: string; ms: number; closeError?: string };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
-// What map does with each page: the read, its arguments, where to save it.
-type Job = { read: SaveKind; args: Record<string, unknown>; target?: Target; call: Call };
+// What map does with each page: what it waits for, the read, its
+// arguments, where to save it.
+type Job = { wait?: Record<string, unknown>; read: SaveKind; args: Record<string, unknown>; target?: Target; call: Call };
 type Opened = { id: number; url?: string; challenge?: Challenge };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -35,16 +38,23 @@ function readOf(what: unknown): SaveKind {
   return read;
 }
 
+// What each page must show before it is read, as the wait tool takes it.
+function waitOf(wait: unknown): Record<string, unknown> {
+  if (!wait || typeof wait !== "object" || Array.isArray(wait)) throw new Error('wait must be an object, as the wait tool takes it: {"text": "…"}');
+  if (!waitsOnPage(wait) && !("ms" in wait)) throw new Error(WAIT_NEEDS);
+  return { ...wait };
+}
+
 // call runs one tool as the caller would (callTool): open, the read, close.
 export async function mapPages(a: Record<string, unknown>, call: Call): Promise<{ pages: Page[] }> {
-  const { urls, what = "extract", concurrency = AT_ONCE, save, ...args } = a;
+  const { urls, what = "extract", concurrency = AT_ONCE, save, wait, ...args } = a;
   if (!Array.isArray(urls) || urls.length === 0 || !urls.every((u): u is string => typeof u === "string")) throw new Error('map needs urls: ["https://…", …]');
   if (urls.length > MAP_MAX_URLS) throw new Error(`map reads at most ${MAP_MAX_URLS} pages a call; pass the rest to another`);
   const read = readOf(what);
   if (read === "eval" && typeof args.expression !== "string") throw new Error("what: eval needs expression");
   const atOnce = Number(concurrency);
   if (!Number.isFinite(atOnce)) throw new Error("concurrency must be a number");
-  const job: Job = { read, args, target: save === undefined || save === false ? undefined : targetOf(save, "folder"), call };
+  const job: Job = { wait: wait === undefined ? undefined : waitOf(wait), read, args, target: save === undefined || save === false ? undefined : targetOf(save, "folder"), call };
   const pages: Page[] = [];
   let next = 0;
   const worker = async () => {
@@ -73,9 +83,13 @@ async function visit(url: string, job: Job): Promise<Page> {
   return { ...outcome, url, ms, ...(closeError === undefined ? {} : { closeError }) };
 }
 
-async function readTab(opened: Opened, url: string, { read, args, target, call }: Job): Promise<Outcome> {
+async function readTab(opened: Opened, url: string, { wait, read, args, target, call }: Job): Promise<Outcome> {
   const check = opened.challenge;
   if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], challenge: check };
+  if (wait) {
+    const missed = missOf(await call("wait", { ...wait, tab: opened.id }));
+    if (missed) return check ? { ...missed, challenge: check } : missed;
+  }
   // fetch asks again for the address the tab opened, with its cookies: the
   // body as the server sends it, where the others read the page it drew.
   const value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
@@ -87,4 +101,13 @@ async function readTab(opened: Opened, url: string, { read, args, target, call }
 
 function pageError(value: unknown): { ok: false; error: string } | undefined {
   return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { ok: false, error: value.error } : undefined;
+}
+
+// A page that never showed what the wait asked for is most often another
+// page (a redirect, a page not found): the address and title say which.
+function missOf(seen: unknown): { ok: false; error: string } | undefined {
+  if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
+  const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
+  const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
+  return { ok: false, error: `it did not show what wait asked for; the tab is at ${at}${title}` };
 }

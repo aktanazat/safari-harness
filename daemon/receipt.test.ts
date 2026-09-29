@@ -170,15 +170,21 @@ test("a quiet wait ends 500 ms after the page's last change", () => {
 
 // ---------- through the tools ----------
 
-// Safari as the daemon sees it: a page op answers from answers[op], and
-// each request to the page is noted as [op, args].
+// Safari as the daemon sees it: a page op answers from answers[op], or
+// fails with what it throws, and each request to the page is noted as
+// [op, args].
 function safari(answers: Record<string, (args: unknown[]) => unknown>) {
   const sent: [string, unknown[]][] = [];
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
-      const value = op === "relay" ? (sent.push([args[1], args[2]]), answers[args[1]]?.(args[2]) ?? { ok: true }) : [];
-      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+      let reply: { value: unknown } | { error: string };
+      try {
+        reply = { value: op === "relay" ? (sent.push([args[1], args[2]]), answers[args[1]]?.(args[2]) ?? { ok: true }) : [] };
+      } catch (e) {
+        reply = { error: e instanceof Error ? e.message : String(e) };
+      }
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
     },
     close() {},
   });
@@ -212,6 +218,19 @@ test("a wait refuses what the page could not check", async () => {
   await expect(callTool("wait", { tab: 7, any: "Placed" })).rejects.toThrow("any must be a list of texts");
   await expect(callTool("wait", { tab: 7, any: [] })).rejects.toThrow("any must be a list of texts");
   await expect(callTool("wait", { tab: 7, url: "/(/" })).rejects.toThrow("is not a valid /regex/");
+});
+
+// A wait with only ms slept all of it: in the car search of 09-27, 107 such
+// waits held agents 6.8 minutes on pages long since drawn.
+test("a wait with only ms ends once the page settles, which it asks the page for", async () => {
+  const sent = safari({ wait: () => ({ found: true }) });
+  expect(await callTool("wait", { tab: 7, ms: 20000 })).toMatchObject({ ok: true });
+  expect(sent).toEqual([["wait", [null, { quiet: true }]]]);
+});
+
+test("a wait with only ms on a page that cannot be watched waits out its ms and does not fail", async () => {
+  safari({ wait: () => { throw new Error("Safari could not open https://down.example/: the site did not answer"); } });
+  expect(await callTool("wait", { tab: 7, ms: 50 })).toMatchObject({ ok: true });
 });
 
 test("a whole-page snapshot of a page with nothing on it yet reads it again", async () => {

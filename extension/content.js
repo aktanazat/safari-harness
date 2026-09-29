@@ -2138,11 +2138,13 @@
   //   text   the page shows it         any   it shows one of these (which)
   //   gone   it no longer shows it     url   the address has this part, or
   //   quiet  the page made no change          matches this /regex/
-  //          for 500 ms (QUIET_SPAN)
+  //          for 500 ms (QUIET_SPAN), with no request to its own site out
   // Text matches case and spacing aside (shows). gone, url, and quiet are
   // the top page's to decide: an embedded frame answers at once that it has
   // not seen them. quiet comes with time, so it also wakes on a timer, and
-  // on an owned tab's ticks where Safari holds the timer.
+  // on an owned tab's ticks where Safari holds the timer. A page still
+  // waiting on its own site (its listings, its prices) has not settled,
+  // whatever it shows meanwhile: such a request counts as a change.
   function waitFor(selector, spec, id = null) {
     pendingWait?.done(false);
     const want = spec ?? {};
@@ -2153,6 +2155,10 @@
       if (selector && deepQuery(selector) === null) return null;
       if (want.url != null && !urlMatch(location.href, want.url)) return null;
       if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
+      if (want.quiet && (hear(0)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
+        last = Date.now();
+        return null;
+      }
       if (want.text == null && want.gone == null && want.any == null) return { found: true };
       const page = pageText();
       if (want.text != null && !shows(page, want.text)) return null;

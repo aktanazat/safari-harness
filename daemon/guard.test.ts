@@ -80,18 +80,19 @@ test("a parameter the tool does not take fails before the page is asked, naming 
   expect(sent).toEqual([]);
 });
 
-test("sleeping past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {
+test("waiting on the clock past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {
   jest.useFakeTimers();
-  spyOn(Bun, "sleep").mockImplementation(async (ms) => {
-    jest.advanceTimersByTime(Number(ms));
+  // A page that never goes quiet holds a wait with only ms all of its ms.
+  safari((op, args) => {
+    if (op === "wait" && args[1] && typeof args[1] === "object" && !("text" in args[1] && args[1].text)) jest.advanceTimersByTime(30_000);
+    return { value: { found: true } };
   });
-  safari(() => ({ value: { found: true } }));
   const sleep = () => model(106, "wait", { tab: 7, ms: 30_000 });
-  expect(await sleep()).toEqual({ ok: true });
-  expect(await sleep()).toEqual({ ok: true });
-  expect(await sleep()).toEqual({ ok: true, hint: "you slept 90 s in the last 10 minutes; wait with text or selector instead: it returns as soon as the page shows it" });
+  expect(await sleep()).not.toHaveProperty("hint");
+  expect(await sleep()).not.toHaveProperty("hint");
+  expect(await sleep()).toMatchObject({ ok: true, hint: "you slept 90 s in the last 10 minutes; wait with text or selector instead: it returns as soon as the page shows it" });
   expect(await model(106, "wait", { tab: 7, text: "Saved" })).not.toHaveProperty("hint");
   // Sleeps older than 10 minutes no longer count.
   jest.advanceTimersByTime(10 * 60_000);
-  expect(await sleep()).toEqual({ ok: true });
+  expect(await sleep()).not.toHaveProperty("hint");
 });

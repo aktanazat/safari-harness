@@ -8,18 +8,22 @@ import { callTool } from "./tools.ts";
 import { mapPages, type Page } from "./map.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
-// answers with an error, a bot check stands in for it.
+// answers with an error, a bot check stands in for it, it never shows what
+// a wait asks for (a page that is not there).
 const GONE = "https://gone.example/";
 const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
+const LOST = "https://lost.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
-// once, or, while holding, when the test lets them.
-const tabs = new Map<number, { id: number; windowId: unknown; url: string }>();
+// once, or, while holding, when the test lets them. A wait is answered at
+// once, found on every page but LOST. Waits and reads are noted in order.
+const tabs = new Map<number, { id: number; windowId: unknown; url: string; title: string }>();
 const opened: number[] = [];
 const closed: number[] = [];
 const readUrls: string[] = [];
+const asked: string[] = [];
 const held: (() => void)[] = [];
 let holding = false;
 let stuck: string | undefined;
@@ -28,6 +32,7 @@ let nextTab = 0;
 function read(tab: number): { value?: unknown; error?: string } {
   const url = tabs.get(tab)?.url ?? "";
   readUrls.push(url);
+  asked.push(`read ${url}`);
   if (url === GONE) return { error: "no tab" };
   if (url === EMPTY) return { value: { error: "no content root" } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
@@ -35,12 +40,12 @@ function read(tab: number): { value?: unknown; error?: string } {
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
   if (op === "windows.open") {
-    tabs.set(900, { id: 900, windowId: 1, url: String(args[0]) });
+    tabs.set(900, { id: 900, windowId: 1, url: String(args[0]), title: "Page" });
     return { value: { windowId: 1, tabId: 900 } };
   }
   if (op === "tabs.list") return { value: [...tabs.values()] };
   if (op === "tabs.open") {
-    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]) };
+    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: args[0] === LOST ? "Page Not Found" : "Page" };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
     return { value: tab };
@@ -64,6 +69,12 @@ connect({
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     const reply = (r: { value?: unknown; error?: string }) => bridge.handleMessage(JSON.stringify({ id, ...r }));
     if (op !== "relay") return reply(answer(op, args));
+    if (args[1] === "wait") {
+      const url = tabs.get(Number(args[0]))?.url ?? "";
+      const [, want] = args[2] as [unknown, { text?: string }];
+      asked.push(`wait ${url} for ${want.text}`);
+      return reply({ value: { found: url !== LOST } });
+    }
     if (holding) held.push(() => reply(read(Number(args[0]))));
     else reply(read(Number(args[0])));
   },
@@ -167,5 +178,23 @@ test("map reads up to 20 pages a call and refuses more before opening any", asyn
   expect((await map({ urls: urls(20) })).every((p) => p.ok)).toBe(true);
   const before = opened.length;
   await expect(map({ urls: urls(21) })).rejects.toThrow("at most 20");
+  expect(opened.length).toBe(before);
+});
+
+// A page its script draws after it loads reads empty at first: on 01a0e50b
+// a map of a dealer's page read no phone numbers until the agent put a
+// 2.5 s sleep inside its expression.
+test("with wait, each page is read once it shows what wait asks for; one that never does is reported, not read", async () => {
+  asked.length = 0;
+  const pages = await map({ urls: ["https://shop.example/a", LOST], wait: { text: "Price" }, concurrency: 1 });
+  expect(asked).toEqual(["wait https://shop.example/a for Price", "read https://shop.example/a", `wait ${LOST} for Price`]);
+  expect(pages[0]).toMatchObject({ ok: true, value: { text: "text of https://shop.example/a" } });
+  expect(pages[1]).toMatchObject({ ok: false, error: `it did not show what wait asked for; the tab is at ${LOST} ("Page Not Found")` });
+});
+
+test("map refuses a wait that asks for nothing before opening any page", async () => {
+  const before = opened.length;
+  await expect(map({ urls: urls(2), wait: {} })).rejects.toThrow("wait needs ms, selector, text, any, gone, url, or quiet");
+  await expect(map({ urls: urls(2), wait: "Price" })).rejects.toThrow("wait must be an object");
   expect(opened.length).toBe(before);
 });

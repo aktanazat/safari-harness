@@ -193,7 +193,7 @@ function repeat(calls: Map<string, Streak>, key: string, outcome: string, now: n
   return times.length;
 }
 
-// A wait with only ms sleeps, whatever the page does. Its time counts
+// A wait with only ms names nothing the agent waits for. Its time counts
 // toward the owner's budget; past it, the answer carries the hint.
 function slept(owner: number, args: Record<string, unknown>, start: number, result: unknown): unknown {
   if (waitsOnPage(args)) return result;

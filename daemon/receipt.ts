@@ -167,8 +167,10 @@ export function withEffect(result: unknown): unknown {
   return led ? rest : { ...rest, ...effectOf(receipt) };
 }
 
-// Whether a wait has something on the page to wait for; one with only ms
-// sleeps.
+// Whether a wait names something on the page to wait for; one with only ms
+// waits for the page to settle, ms at most.
 export function waitsOnPage(a: { selector?: unknown; text?: unknown; any?: unknown; gone?: unknown; url?: unknown; quiet?: unknown }): boolean {
   return a.quiet === true || [a.selector, a.text, a.any, a.gone, a.url].some((v) => v !== undefined);
 }
+
+export const WAIT_NEEDS = "wait needs ms, selector, text, any, gone, url, or quiet";
