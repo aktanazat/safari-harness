@@ -44,8 +44,9 @@ type Group = "waiting" | "making" | "grouped" | "plain";
 // (grouped), is becoming one (making), will be one once the user is away
 // from the keys (waiting), or stays plain, and why.
 export type SpaceNote = { name: string; group: Group; why?: string };
-// id: this window alone, in its page's address
-type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void };
+// id: this window alone, in its page's address; said: the why an open last
+// gave its agent
+type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void; said?: string };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -172,7 +173,14 @@ function save() {
   }
 }
 
-export const spaceNote = (s: Space): SpaceNote => ({ name: s.name, group: s.group, ...(s.why ? { why: s.why } : {}) });
+// What an open says of its window. Why it stays plain is said once per
+// window and reason: on 09-29 each open of a car search repeated a day-old
+// reason (groups-off.json) that only the user can clear.
+export function spaceNote(s: Space): SpaceNote {
+  const why = s.why === s.said ? undefined : s.why;
+  s.said = s.why;
+  return { name: s.name, group: s.group, ...(why ? { why } : {}) };
+}
 
 // The window of a group a restarted daemon no longer knows, found by the
 // name and size its page's address carries.

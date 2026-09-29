@@ -82,13 +82,14 @@ Safari is the user's everyday browser, so treat his tabs as his.
   window until then. `open` says which under `space`: `group` is `waiting`,
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
-  `bun run helpers` has not built scripts/spaces, or groups are off). A
+  `bun run helpers` has not built scripts/spaces, or groups are off); a
+  window says each `why` on one open, not on every open after. A
   window whose task ends while it is `making` stays until the keeper is
   done. Your terminal makes and deletes the groups, through a keeper process
   `open` starts: each step waits until he is idle, the screen unlocked and
   Safari behind, and stops if his front app changes. A menu that will not
   close turns groups off until `~/.local/share/safari-harness/groups-off.json`,
-  which says why, is removed.
+  which says why, is removed; `safari doctor` warns while it is there.
 - When your process exits, or the window has held only its page for two
   minutes, the task ends. A plain window's page closes: the window goes with
   your last tab, and a tab you kept stays there for him. A tab group's tabs

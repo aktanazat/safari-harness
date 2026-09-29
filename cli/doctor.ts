@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { input } from "../daemon/front.ts";
+import { files, groupsOff } from "../daemon/groups.ts";
 import { openChatDb } from "../daemon/imessage.ts";
 import { daemonHttp, rpc } from "../daemon/rpc.ts";
 import type { TabInfo } from "../daemon/tools.ts";
@@ -48,6 +49,7 @@ export type Probes = {
   remoteAutomation: () => Promise<boolean>;
   freeBytes: () => Promise<number>;
   swapMb: () => Promise<number | undefined>;
+  groupsOff: () => string | undefined;
 };
 
 type Outcome<T> = { value: T } | { error: string };
@@ -133,6 +135,7 @@ const LIVE: Probes = {
     if (reading && typeof reading === "object" && "host" in reading && reading.host && typeof reading.host === "object" && "swap_used_mb" in reading.host && typeof reading.host.swap_used_mb === "number") return reading.host.swap_used_mb;
     throw new Error("its answer has no host.swap_used_mb");
   },
+  groupsOff,
 };
 
 function daemonCheck(health: Health | null, loaded: boolean): Check {
@@ -177,6 +180,14 @@ function passwordsCheck(got: Outcome<Pairing> | undefined): Check {
   if ("error" in got) return { name, status: "warn", detail: got.error };
   if (got.value.unlocked) return { name, status: "ok", detail: `paired with Apple Passwords; ${got.value.sessions ?? 0} session(s) hold it` };
   return { name, status: "ok", detail: `not paired now (${got.value.reason ?? "no reason given"}); the next passwords call asks for Touch ID, then pairs` };
+}
+
+// Group work turns off for good once Safari's menu stays open or it comes
+// to the front (groups.ts), until someone who has looked removes the flag:
+// agents only see it as a plain window, so the owner reads it here.
+function groupsCheck(off: string | undefined): Check {
+  if (off === undefined) return { name: "tab groups", status: "ok", detail: "each agent window becomes a tab group once the user leaves the keys alone" };
+  return { name: "tab groups", status: "warn", detail: off, fix: `look over Safari's tab groups, then: rm ${files.off}` };
 }
 
 function swapCheck(got: Outcome<number | undefined>): Check {
@@ -247,6 +258,7 @@ export async function doctor(probe: Probes = LIVE): Promise<Check[]> {
       ? { name: "disk", status: "fail", detail: `${(free / 1024 ** 3).toFixed(1)} GB free`, fix: "free up space: downloads, saved PDFs, and deploys need it" }
       : { name: "disk", status: "ok", detail: `${(free / 1024 ** 3).toFixed(1)} GB free` },
     swapCheck(swap),
+    groupsCheck(probe.groupsOff()),
     laneCheck(mcp, remote),
   ];
 }

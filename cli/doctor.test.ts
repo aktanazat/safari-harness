@@ -17,6 +17,7 @@ function healthy(): Probes {
     remoteAutomation: async () => false,
     freeBytes: async () => 150e9,
     swapMb: async () => 0,
+    groupsOff: () => undefined,
   };
 }
 
@@ -35,6 +36,8 @@ test("a working Mac fails nothing; Apple's lane off, an idle pairing, or no host
   expect(statuses(await examine({ ...healthy(), remoteAutomation: async () => true })).safaridriver).toBe("ok");
   expect(statuses(await examine({ ...healthy(), safaridriverMcp: async () => false, remoteAutomation: async () => true })).safaridriver).toBe("off");
   expect(statuses(await examine({ ...healthy(), swapMb: async () => undefined })).swap).toBe("skip");
+  // A day-old flag that turned tab groups off is the owner's to clear, so it shows here.
+  expect(statuses(await examine({ ...healthy(), groupsOff: () => "tab groups are off: Safari came to the front" }))["tab groups"]).toBe("warn");
 });
 
 test("with the daemon down, the fix fits why, and nothing that needs the daemon is asked", async () => {

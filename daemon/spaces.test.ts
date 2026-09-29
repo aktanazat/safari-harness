@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { changeQueue, files } from "./groups.ts";
+import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { spaceTool } from "./spaces.ts";
 import { openTab } from "./tools.ts";
@@ -128,6 +128,18 @@ test("an agent whose window the user closed gets a new one on its next open", as
   expect(next.windowId).not.toBe(first.windowId);
   expect(next.windowId).not.toBe(1);
   d.kill();
+});
+
+test("a window that stays plain says why on its first open, not on every open after", async () => {
+  safari();
+  turnOff("Safari's menu stayed open after delete");
+  const e = agent();
+  const first = await runAs(e.pid, () => openTab("https://e.example/1", true));
+  const second = await runAs(e.pid, () => openTab("https://e.example/2", true));
+  rmSync(files.off);
+  expect(first.space).toMatchObject({ group: "plain", why: expect.stringContaining("menu stayed open") });
+  expect(second.space).toEqual({ name: first.space.name, group: "plain" });
+  e.kill();
 });
 
 // A deploy reloads the extension, and Safari renumbers every window: before,
