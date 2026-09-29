@@ -165,8 +165,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              search messages
   safari imessage code [--seconds 30] [--since rowid]
                                              wait for a sign-in code by text
-  safari imessage send <to> <text> [--approved]
-                                             draft a text; sends only with --approved
+  safari imessage send <to> [text] [--file path]... [--approved]
+                                             draft a text and/or files; sends only with --approved
   safari contacts <name>                     phones and emails for a contact
   safari ask "<question>"                    away from the Mac, send the question to your phone
                                              (answer it back here); at the Mac, send nothing
@@ -198,6 +198,12 @@ function flag(name: string, argv: string[]): string | undefined {
 
 function hasFlag(name: string, argv: string[]): boolean {
   return argv.includes(`--${name}`);
+}
+
+// Every --file value, resolved against this terminal; undefined when none.
+function fileFlags(argv: string[]): string[] | undefined {
+  const files = argv.flatMap((a, i) => (a === "--file" && i + 1 < argv.length ? [argv[i + 1]] : a.startsWith("--file=") ? [a.slice(7)] : []));
+  return files.length ? files.map((f) => resolve(f)) : undefined;
 }
 
 function tabArg(argv: string[]): Record<string, unknown> {
@@ -561,7 +567,7 @@ async function main() {
       history: ["imessage_history", { chat: pos.join(" "), limit: numFlag("limit"), since: numFlag("since") }],
       search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), days: numFlag("days"), limit: numFlag("limit") }],
       code: ["imessage_wait_code", { seconds: numFlag("seconds"), since: numFlag("since") }],
-      send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), approved: hasFlag("approved", rest) }],
+      send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: hasFlag("approved", rest) }],
     };
     const call = sub ? calls[sub] : undefined;
     if (!call) fail("usage: safari imessage chats|history|search|code|send …, or safari contacts <name>", 2);

@@ -872,10 +872,15 @@ The `imessage_*` and `contacts` tools read the user's Messages on this Mac:
 - `imessage_search {text, from, days}`: search all conversations.
 - `imessage_wait_code`: see "Logged-in sites and secrets" above.
 - `contacts {name}`: phones and emails.
-- `imessage_send {to, text}`: returns a draft and sends nothing. Show the user
-  the recipient, the exact text, and the recent lines, and call again with
-  `approved: true` only after he says yes. One message per approval. It cannot
-  start a group chat.
+- `imessage_send {to, text, files}`: returns a draft and sends nothing. Show
+  the user the recipient, the exact text, the files, and the recent lines,
+  and call again with `approved: true` only after he says yes. One message
+  per approval, plus one per file; files (absolute paths) go first, each
+  confirmed before the next. It succeeds only once every file finished
+  uploading, and fails otherwise: a failed file stops the rest and the text.
+  Never send a file with Messages' own AppleScript: from outside
+  ~/Library/Messages it arrives as an empty message marked delivered. It
+  cannot start a group chat.
 - `ask {question}`: a question only the user can answer. At the Mac it
   sends nothing and returns `{atMac: true}`: ask in your own chat. Away from
   the Mac, it puts the question on his phone (Telegram) and returns `{sent:

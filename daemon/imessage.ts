@@ -1,14 +1,14 @@
 // Messages: read chats, history, and search from ~/Library/Messages/chat.db
-// (read-only), wait for sign-in codes, look up contacts, and send through the
-// Messages app. Reading needs Full Disk Access for the process that runs this,
-// so these tools run in the caller (terminal, MCP server) rather than in the
-// launchd daemon, which macOS denies. Sending needs the caller to be allowed to
-// control Messages, and returns a draft first.
+// (read-only), wait for sign-in codes, look up contacts, and send texts and
+// files through the Messages app. Reading needs Full Disk Access for the
+// process that runs this, so these tools run in the caller (terminal, MCP
+// server) rather than in the launchd daemon, which macOS denies. Sending needs
+// the caller to be allowed to control Messages, and returns a draft first.
 
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Tool } from "./tools.ts";
@@ -301,20 +301,45 @@ export async function waitCode(opts: { seconds?: number; since?: number } = {}) 
 
 // ---------- sending ----------
 
-// argv carries the text and target, so nothing is spliced into the script.
-const SEND_TO_CHAT = `on run argv
-  tell application "Messages" to send (item 1 of argv) to chat id (item 2 of argv)
-end run`;
-const SEND_TO_HANDLE = `on run argv
+// argv carries the text or file path and the target, so nothing is spliced
+// into the script.
+function sendScript(what: "text" | "file", to: "chat" | "handle"): string {
+  const item = what === "file" ? "(POSIX file (item 1 of argv)) as alias" : "item 1 of argv";
+  const target = to === "chat"
+    ? "send x to chat id (item 2 of argv)"
+    : "set svc to 1st account whose service type = iMessage\n    send x to participant (item 2 of argv) of svc";
+  return `on run argv
+  set x to ${item}
   tell application "Messages"
-    set svc to 1st account whose service type = iMessage
-    send (item 1 of argv) to participant (item 2 of argv) of svc
+    ${target}
   end tell
 end run`;
+}
+
+// Messages is sandboxed and reads a file handed to it by AppleScript only
+// under ~/Library/Messages. From ~/Pictures the send passes, and Messages
+// marks it delivered, as an empty bubble with no attachment row; from
+// elsewhere the transfer fails. So each file is copied into a folder of its
+// own here first; Messages copies it into its Attachments on taking it.
+const STAGING = join(HOME, "Library", "Messages", ".send-staging");
 
 // Our own newest message after a rowid, by its text.
 const OUR_ROW = "SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1";
 type OurRow = { is_sent: number; is_delivered: number; error: number };
+
+// Our own attachment after a rowid, by file name. A file went only when its
+// row reaches transfer_state 5; the message row alone says delivered even
+// for the empty bubble.
+const OUR_ATTACHMENT = `SELECT m.ROWID rowid, m.error, a.transfer_state state, a.total_bytes bytes FROM attachment a
+  JOIN message_attachment_join j ON j.attachment_id = a.ROWID JOIN message m ON m.ROWID = j.message_id
+  WHERE m.ROWID > ? AND m.is_from_me = 1 AND a.transfer_name = ? ORDER BY m.ROWID LIMIT 1`;
+type OurAttachment = { rowid: number; error: number; state: number; bytes: number };
+const TRANSFER_DONE = 5;
+const TRANSFER_FAILED = 6;
+// Messages writes the attachment row within a second or two of the send;
+// none by then means it dropped the file.
+const ATTACH_APPEAR_MS = 15000;
+const TRANSFER_MS = 120000;
 
 async function runSend(script: string, argv: string[]): Promise<void> {
   try {
@@ -326,13 +351,67 @@ async function runSend(script: string, argv: string[]): Promise<void> {
   }
 }
 
-export async function send(opts: { to: string; text: string; approved?: boolean }) {
+function newestRowid(): number {
+  const db = openChatDb();
+  try {
+    return (db.query("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get() as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
+type FileToSend = { path: string; name: string; bytes: number };
+
+function filesToSend(paths: unknown): FileToSend[] {
+  if (paths === undefined) return [];
+  if (!Array.isArray(paths)) throw new Error("files is a list of absolute file paths");
+  return paths.map((p) => {
+    const path = String(p);
+    if (!isAbsolute(path)) throw new Error(`give an absolute path, not ${path}`);
+    if (!existsSync(path)) throw new Error(`no file at ${path}`);
+    const st = statSync(path);
+    if (!st.isFile()) throw new Error(`${path} is not a file`);
+    if (st.size === 0) throw new Error(`${path} is empty`);
+    return { path, name: basename(path), bytes: st.size };
+  });
+}
+
+// Sends one file and waits for chat.db to show it went; returns the rowid of
+// its message, after which the next send's rows are looked for.
+async function sendFile(file: FileToSend, dir: string, index: number, chat: boolean, target: string, after: number, to: string): Promise<number> {
+  const own = join(dir, String(index));
+  mkdirSync(own);
+  const staged = join(own, file.name);
+  copyFileSync(file.path, staged);
+  await runSend(sendScript("file", chat ? "chat" : "handle"), [staged, target]);
+  const start = Date.now();
+  for (;;) {
+    await Bun.sleep(500);
+    const db = openChatDb();
+    let row: OurAttachment | null;
+    try {
+      row = db.query<OurAttachment, [number, string]>(OUR_ATTACHMENT).get(after, file.name);
+    } finally {
+      db.close();
+    }
+    const waited = Date.now() - start;
+    if (!row) {
+      if (waited > ATTACH_APPEAR_MS) throw new Error(`Messages took ${file.name} but attached nothing; ${to} may have got an empty message. Check imessage_history before trying again.`);
+      continue;
+    }
+    if (row.error || row.state === TRANSFER_FAILED) throw new Error(`Messages failed to send ${file.name} to ${to} (transfer state ${row.state}, error ${row.error})`);
+    if (row.state === TRANSFER_DONE) return row.rowid;
+    if (waited > TRANSFER_MS) throw new Error(`${file.name} was still uploading to ${to} after ${TRANSFER_MS / 1000} s (transfer state ${row.state}). Check imessage_history before trying again.`);
+  }
+}
+
+export async function send(opts: { to: string; text?: string; files?: string[]; approved?: boolean }) {
   const text = String(opts.text ?? "");
-  if (!text.trim()) throw new Error("send needs text");
+  const files = filesToSend(opts.files);
+  if (!text.trim() && !files.length) throw new Error("send needs text, files, or both");
   const to = String(opts.to ?? "").trim();
   const db = openChatDb();
-  let draft: { to: string; chat: string | null; service: string; text: string; recent: { from: string; text: string }[] };
-  let startRowid: number;
+  let draft: { to: string; chat: string | null; service: string; text: string; files: string[]; recent: { from: string; text: string }[] };
   try {
     const names = nameIndex(loadContacts());
     let c: ChatRow | null = null;
@@ -350,16 +429,47 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
           return { from: m.from, text: m.text.slice(0, 200) };
         })
       : [];
-    draft = { to: c ? describe(db, c, names).name : to, chat: c?.guid ?? null, service: c?.svc ?? "iMessage", text, recent };
-    startRowid = (db.query("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get() as { n: number }).n;
+    draft = {
+      to: c ? describe(db, c, names).name : to,
+      chat: c?.guid ?? null,
+      service: c?.svc ?? "iMessage",
+      text,
+      files: files.map((f) => `${f.path} (${Math.ceil(f.bytes / 1024)} KB)`),
+      recent,
+    };
   } finally {
     db.close();
   }
   if (opts.approved !== true) {
-    return { status: "draft", ...draft, next: "show the user this recipient, text, and recent lines; call again with approved: true only after they say yes" };
+    return { status: "draft", ...draft, next: "show the user this recipient, text, files, and recent lines; call again with approved: true only after they say yes" };
   }
-  const [script, target] = draft.chat ? [SEND_TO_CHAT, draft.chat] : [SEND_TO_HANDLE, to];
-  await runSend(script, [text, target]);
+  const chat = draft.chat !== null;
+  const target = draft.chat ?? to;
+  // Files first, each confirmed before the next, so a failed file stops the
+  // rest and the text.
+  const sent: { file: string; bytes: number }[] = [];
+  if (files.length) {
+    mkdirSync(STAGING, { recursive: true });
+    const dir = mkdtempSync(join(STAGING, "send-"));
+    try {
+      let after = newestRowid();
+      for (const [i, f] of files.entries()) {
+        try {
+          after = await sendFile(f, dir, i, chat, target, after, draft.to);
+        } catch (e) {
+          const went = sent.length ? ` Sent before it: ${sent.map((s) => s.file).join(", ")}.` : "";
+          throw new Error(`${e instanceof Error ? e.message : String(e)}${went}${text.trim() ? " The text was not sent." : ""}`);
+        }
+        sent.push({ file: f.name, bytes: f.bytes });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  if (!text.trim()) return { status: "sent", to: draft.to, files: sent };
+  const startRowid = newestRowid();
+  await runSend(sendScript("text", chat ? "chat" : "handle"), [text, target]);
+  const done = (status: string) => ({ status, to: draft.to, ...(sent.length ? { files: sent } : {}) });
   // Confirm from the database: the sent row appears within a few seconds.
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
@@ -368,13 +478,13 @@ export async function send(opts: { to: string; text: string; approved?: boolean 
     try {
       const row = check.query<OurRow, [number, string]>(OUR_ROW).get(startRowid, text);
       if (row?.error) throw new Error(`Messages reported error ${row.error} sending to ${draft.to}`);
-      if (row?.is_delivered) return { status: "delivered", to: draft.to };
-      if (row?.is_sent) return { status: "sent", to: draft.to };
+      if (row?.is_delivered) return done("delivered");
+      if (row?.is_sent) return done("sent");
     } finally {
       check.close();
     }
   }
-  return { status: "unconfirmed", to: draft.to, note: "handed to Messages; no sent receipt yet. Check imessage_history before retrying so it is not sent twice." };
+  return { ...done("unconfirmed"), note: "handed to Messages; no sent receipt yet. Check imessage_history before retrying so it is not sent twice." };
 }
 
 // ---------- tool table ----------
@@ -420,14 +530,15 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => contacts(a as { name: string }),
   },
   imessage_send: {
-    desc: "Send one text through Messages. Without approved it sends nothing and returns a draft: show the user the recipient, the exact text, and the recent lines, and call again with approved: true only after they say yes. Never set approved on your own.",
+    desc: "Send a text, files, or both through Messages; each file goes first as its own message. Without approved it sends nothing and returns a draft: show the user the recipient, the exact text, the files, and the recent lines, and call again with approved: true only after they say yes. Never set approved on your own. Fails unless every file finished uploading.",
     params: {
       to: { type: "string", description: "chat id, contact name matching one chat, or a phone/email for a new conversation" },
       text: { type: "string", description: "message text" },
+      files: { type: "array", items: { type: "string" }, description: "absolute file paths" },
       approved: { type: "boolean", description: "true only after the user approved this exact draft" },
     },
-    required: ["to", "text"],
-    run: (a) => send(a as { to: string; text: string; approved?: boolean }),
+    required: ["to"],
+    run: (a) => send(a as { to: string; text?: string; files?: string[]; approved?: boolean }),
   },
 };
 

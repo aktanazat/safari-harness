@@ -246,6 +246,7 @@ safari guide repl                      # the REPL's API and recovery steps
 safari imessage chats                  # recent conversations
 safari imessage code                   # wait for a sign-in code by text
 safari imessage send "+1…" "hi"        # prints a draft; add --approved to send
+safari imessage send "+1…" --file ~/Pictures/a.jpg   # a photo; succeeds only once it uploaded
 ```
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,

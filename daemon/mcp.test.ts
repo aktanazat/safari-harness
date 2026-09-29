@@ -78,8 +78,11 @@ import { expect, test } from "bun:test";
 // where they slept inside each page's eval or went page by page. Readers
 // (339), scripts saved with learn that eval and map run by name, brought
 // it to 23,335: the script one agent worked out to read a site's listings
-// is the next agent's one call, where each wrote its own again.
-const TOOL_LIST_MAX_BYTES = 23_335;
+// is the next agent's one call, where each wrote its own again. Files on
+// imessage_send (190) brought it to 23,525: agents sent a photo through
+// Messages' AppleScript, and it arrived as an empty message marked
+// delivered.
+const TOOL_LIST_MAX_BYTES = 23_525;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

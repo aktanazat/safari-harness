@@ -12,6 +12,6 @@ export function imessage(kit: SiteKit) {
     search: (text?: string, opts: { from?: string; days?: number; limit?: number } = {}) => call("imessage_search", { text, from: opts.from, days: opts.days, limit: opts.limit }),
     contacts: (name: string) => call("contacts", { name }),
     waitForCode: (opts: { seconds?: number; since?: number } = {}) => call("imessage_wait_code", { seconds: opts.seconds, since: opts.since }),
-    send: (to: string, text: string, opts: { approved?: boolean } = {}) => call("imessage_send", { to, text, approved: opts.approved === true }),
+    send: (to: string, text: string, opts: { files?: string[]; approved?: boolean } = {}) => call("imessage_send", { to, text, files: opts.files, approved: opts.approved === true }),
   };
 }
