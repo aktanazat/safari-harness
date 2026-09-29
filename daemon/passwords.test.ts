@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, jest, mock, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
+import { FILL_TOOLS } from "./fill.ts";
 import { runAs } from "./owner.ts";
+import * as pair from "./pair.ts";
 import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from "./passwords.ts";
+import * as daemonRpc from "./rpc.ts";
 
 // The passwords tool promises: only the code the Mac shows unlocks it, a
 // wrong code cannot be retried, a fill puts the password into the page
@@ -274,6 +277,75 @@ test("while the Mac waits on Touch ID, status and every other password call say 
   expect(await locked(runAs(AGENT, () => p.loginsFor(7)))).toStartWith(waits);
   expect(await locked(runAs(AGENT, () => p.fillCode(7)))).toStartWith(waits);
   expect(await locked(runAs(AGENT, () => p.pair()))).toStartWith(waits);
+});
+
+// setImmediate runs once every promise job has, and the fake clock leaves it be.
+const settled = () => new Promise<void>((r) => setImmediate(r));
+
+// A first call on the locked vault, as the caller runs it (pair.ts): the
+// daemon stays locked until unlock gets the code the Mac showed, the code
+// is read off the Mac's window, and the Touch ID prompt waits until the
+// test approves. The clock is the test's.
+function lockedVault() {
+  process.env.SAFARI_HARNESS_AWAY = "0";
+  jest.useFakeTimers();
+  let unlocked = false;
+  spyOn(daemonRpc, "rpc").mockImplementation(async (_tool: string, args: Record<string, unknown> = {}) => {
+    if (args.do === "status") return { unlocked };
+    if (args.do === "pair") return { codeShown: true, helper: 4242 };
+    if (args.do === "unlock") {
+      unlocked = args.code === CODE;
+      return { unlocked };
+    }
+    if (!unlocked) throw new Error("Apple Passwords is locked: never paired since the hidden helper started");
+    return { site: SITE, usernames: [USER] };
+  });
+  spyOn(pair, "readCode").mockResolvedValue(CODE);
+  const touch = Promise.withResolvers<Record<string, unknown> | undefined>();
+  return { prompts: spyOn(pair, "approve").mockReturnValue(touch.promise), approve: () => touch.resolve({ approved: true }) };
+}
+
+// After every test: the spies, the clock, the CLI switch, and the away flag go back.
+const away = process.env.SAFARI_HARNESS_AWAY;
+afterEach(() => {
+  mock.restore();
+  jest.useRealTimers();
+  pair.waitPairingOut(false);
+  if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
+  else process.env.SAFARI_HARNESS_AWAY = away;
+});
+
+// On 09-29 a first call that found the vault locked waited 44 s for Touch
+// ID and 13 s more for the code, and answered at 58 s: through MCP, 2 s
+// more and the agent's call would have ended with no answer.
+test("through MCP, a first call on the locked vault answers at 40 s with what the Mac waits on, and the next call gets the pairing he then approves, with no second prompt", async () => {
+  const vault = lockedVault();
+  let first: unknown;
+  void FILL_TOOLS.passwords.run({ do: "logins" }).then((answer) => {
+    first = answer;
+  });
+  await settled();
+  jest.advanceTimersByTime(40_000);
+  await settled();
+  expect(first).toEqual({ paired: false, why: expect.stringContaining("Touch ID") });
+  const second = FILL_TOOLS.passwords.run({ do: "logins" });
+  await settled();
+  vault.approve();
+  expect(await second).toEqual({ site: SITE, usernames: [USER] });
+  expect(vault.prompts).toHaveBeenCalledTimes(1);
+});
+
+// The CLI's process ends with its answer, and the prompt with it: an answer
+// at 40 s there took down the prompt he was about to approve.
+test("from the CLI, a first call on the locked vault waits the pairing out: he approves at 45 s and it returns the logins", async () => {
+  pair.waitPairingOut();
+  const vault = lockedVault();
+  const call = FILL_TOOLS.passwords.run({ do: "logins" });
+  await settled();
+  jest.advanceTimersByTime(45_000);
+  await settled();
+  vault.approve();
+  expect(await call).toEqual({ site: SITE, usernames: [USER] });
 });
 
 test("code types the site's verification code into the page but never returns it", async () => {

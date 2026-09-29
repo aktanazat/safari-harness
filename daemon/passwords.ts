@@ -51,7 +51,8 @@ const LINK_MS = 20000;
 // fill outlasted the agent's 60 s call, and every call for four minutes
 // after read "did not answer". So a call answers within ANSWER_MS, the
 // request goes on, and its answer waits for the call that asks again.
-const ANSWER_MS = 40000;
+// A first call that pairs keeps the same bound (pair.ts).
+export const ANSWER_MS = 40000;
 // A password kept for that call lasts while the agent asks him and he
 // answers; a code changes every 30 s.
 const KEEP_PASSWORD_MS = 5 * 60_000;
@@ -119,7 +120,7 @@ type State =
   | { kind: "unlocked"; session: Session };
 
 // "Sep 28, 8:40 PM": when a pairing ended, in the Mac's own time zone.
-function localTime(at = new Date()): string {
+export function localTime(at = new Date()): string {
   return at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
@@ -174,7 +175,7 @@ function pakeOf(reply: HelperMsg): Record<string, unknown> {
 }
 
 // Whether p resolves within ms; its rejection throws.
-async function within(p: Promise<unknown>, ms: number, timers = REAL_TIMERS): Promise<boolean> {
+export async function within(p: Promise<unknown>, ms: number, timers = REAL_TIMERS): Promise<boolean> {
   let cancel = () => {};
   const late = new Promise<boolean>((resolve) => {
     cancel = timers.after(ms, () => resolve(false));

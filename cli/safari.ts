@@ -19,6 +19,7 @@ import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../dae
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { nameIn } from "../daemon/guard.ts";
+import { waitPairingOut } from "../daemon/pair.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
@@ -401,6 +402,9 @@ async function fillCommand(argv: string[]) {
 }
 
 async function main() {
+  // This process ends with its answer, and a pairing prompt still up would
+  // end with it: a call that pairs waits until the pairing is done.
+  waitPairingOut();
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "help" || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
   if (rest.includes("--help")) {

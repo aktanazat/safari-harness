@@ -777,7 +777,12 @@ Signing in, in this order:
    read, a prompt on the Mac asks him to type the code, hidden as he types,
    and the digits go straight to the harness: the answer is
    `{paired: true}`, or `{paired: false, why}` when he cancels or 3 minutes
-   pass, never the code. Never ask for the code in the chat. While he is
+   pass, never the code. Never ask for the code in the chat. Through MCP
+   the call waits 40 s for him, as a `fill` does; past that, `why` says what
+   the Mac is asking him (Touch ID or the code) while the pairing goes on:
+   ask him to act on it, then call again, and that call waits on the same
+   pairing with no second prompt. The CLI's process ends with its answer,
+   so a CLI call waits until the pairing is done. While he is
    away from the Mac the call says he must come to it: the code shows only
    there. If the user declines Touch ID, the call fails: ask before
    trying again. Do not route around
