@@ -1537,7 +1537,7 @@
     // six) goes one character to a box, as a person types it.
     const row = opts.secret && text.length > 1 ? deepQueryAll("input").filter((b) => b.maxLength === 1 && !b.disabled && shown(b)) : [];
     const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
-    if (boxes.length === text.length) {
+    if (boxes.length && boxes.length === text.length) {
       for (const [i, box] of boxes.entries()) {
         if (!(await focusField(box))) return untaken("a code box");
         setValue(box, text[i], text[i]);
