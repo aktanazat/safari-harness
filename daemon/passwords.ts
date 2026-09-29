@@ -38,6 +38,7 @@ export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjla
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
 const HELPER = "/System/Cryptexes/App/System/Library/CoreServices/PasswordManagerBrowserExtensionHelper.app/Contents/MacOS/PasswordManagerBrowserExtensionHelper";
 const BRIDGE_SRC = join(import.meta.dir, "..", "passwords-bridge");
+const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
 // Opens the session the bridge keeps; lives in the Helium profile.
 const KEY_FILE = "harness-session.key";
 // How long the pairing outlasts the last session holding it.
@@ -149,7 +150,7 @@ function open(key: Buffer, data: Buffer): unknown {
 
 // ---------- helper link ----------
 
-const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, SAVE: 6, DISABLED: 9, RELOGIN: 10, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
+const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, SAVE: 6, DISABLED: 9, RELOGIN: 10, SET_UP_CODE: 13, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
 const STATUS_OK = 0;
 const STATUS_NONE = 3;
 
@@ -776,6 +777,27 @@ export class ApplePasswords {
     const { code, username: login } = await this.oneTimeCode(site, username);
     const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
     return { ...filledOf(res, ["code"], "code"), username: login, site };
+  }
+
+  // Hands the authenticator key in the QR code png shows to Apple
+  // Passwords, as Safari's Set Up Verification Code menu does (cmd 13,
+  // which the helper does not answer): the Passwords app opens a sheet to
+  // pick the login it goes with. The key never leaves the daemon; the
+  // result names only the issuer and account, which the code shows as text.
+  async setUpCode(site: string, png: Buffer): Promise<{ sent: true; site: string; issuer: string; account: string }> {
+    await this.session();
+    const read = Bun.spawnSync([PAIRING, "qr"], { stdin: png });
+    if (!read.success) throw new Error(`reading the page's QR codes failed: ${read.stderr.toString().trim()}`);
+    const { found } = JSON.parse(read.stdout.toString()) as { found: string[] };
+    const uri = found.find((m) => m.toLowerCase().startsWith("otpauth://totp/"));
+    if (!uri) throw new Error("no authenticator QR code in view on this page; open the site's authenticator-app step and scroll the code into view, then call again");
+    const parsed = new URL(uri);
+    const [labelIssuer = "", account = ""] = decodeURIComponent(parsed.pathname.slice(1)).split(/:(.*)/);
+    await this.serial(async () => {
+      await this.session();
+      (await this.ensureLink()).send(JSON.stringify({ helper: { cmd: Cmd.SET_UP_CODE, setUpTOTPPageURL: site, setUpTOTPURI: uri } }));
+    });
+    return { sent: true, site, issuer: parsed.searchParams.get("issuer") ?? labelIssuer, account: account || labelIssuer };
   }
 
   // Makes a strong password, saves it to Apple Passwords as the login's

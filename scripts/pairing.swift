@@ -14,9 +14,14 @@
 //                                 window asking to save a password for HOST,
 //                                 waiting up to MS (default 5000) for it:
 //                                 {"pressed": the button's title}
+//   pairing qr < PNG              the text of every QR code in the image on
+//                                 stdin: {"found": [...]}. The daemon reads
+//                                 an authenticator key this way, so the
+//                                 image never lands on disk.
 // Each command prints one JSON line. code and confirm need Accessibility
 // permission for the app that runs this.
 import ApplicationServices
+import CoreImage
 import Foundation
 import LocalAuthentication
 
@@ -144,11 +149,22 @@ func confirm(_ args: [String]) {
     fail("no window asking to save a password for \(host) showed in process \(pid)")
 }
 
+// ---------- qr ----------
+
+func qr() {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let image = CIImage(data: data) else { fail("stdin is not an image") }
+    guard let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]) else { fail("this Mac cannot read QR codes") }
+    let found = detector.features(in: image).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+    printJSON(["found": found])
+}
+
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
 case "approve": approve(rest)
 case "code": code(rest)
 case "confirm": confirm(rest)
-default: fail("usage: pairing approve REASON | code --pid N [--wait MS] | confirm --pid N --site HOST [--wait MS]", 2)
+case "qr": qr()
+default: fail("usage: pairing approve REASON | code --pid N [--wait MS] | confirm --pid N --site HOST [--wait MS] | qr < PNG", 2)
 }

@@ -139,7 +139,7 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     try {
       return await (a.do === "change" ? change(a, await status()) : rpc("passwords", a));
     } catch (e) {
-      if (!["logins", "fill", "code", "change"].includes(String(a.do)) || (await status()).unlocked === true) throw e;
+      if (!["logins", "fill", "code", "change", "setup-code"].includes(String(a.do)) || (await status()).unlocked === true) throw e;
     }
   } else if ((await status()).unlocked === true) {
     return { paired: true };

@@ -87,7 +87,9 @@ import { expect, test } from "bun:test";
 // on passwords (134) brought it to 23,746: an agent securing leaked
 // passwords had no way to set a new one without seeing it, and Safari
 // suggests a strong password only to a person at the page (09-29).
-const TOOL_LIST_MAX_BYTES = 23_746;
+// setup-code (109) brought it to 23,855: 40 sites offered an authenticator
+// app and the agent had no way to save one without reading its key.
+const TOOL_LIST_MAX_BYTES = 23_855;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

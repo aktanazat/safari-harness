@@ -793,9 +793,16 @@ Signing in, in this order:
      already new, so reset the password through the site's email link and
      call `change` again on its form. The result names the fields filled,
      with `saved: true`, never a password.
+   - `passwords {do: "setup-code", tab}` turns on an authenticator-app
+     code: with the site's QR code in view, it reads the code's key off a
+     screenshot inside the daemon and hands it to Apple Passwords, as
+     Safari's Set Up Verification Code menu does. The Passwords app opens
+     and asks which saved login the code is for; pick it there (macos-harness).
+     Then `code` types the first 6-digit code into the site's confirm field.
+     The result names the code's issuer and account, never its key.
    - The form may sit in an embedded frame; the tools find it in any frame
      of the tab, and the login's site is that frame's own address.
-3. When the vault is locked, `logins`, `fill`, `code`, `change`, and `pair` first ask
+3. When the vault is locked, `logins`, `fill`, `code`, `change`, `setup-code`, and `pair` first ask
    the user to approve with Touch ID (the prompt names the site), then pair,
    read the 6-digit code off the Mac's window, and go on; reading it needs
    the calling terminal's Accessibility permission. Where it cannot be
