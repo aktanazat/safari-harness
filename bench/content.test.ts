@@ -186,6 +186,36 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a dropdown the page draws itself gives each option floating over the page a ref, and a click on one picks it, while text under a hand cursor with no control behind it stays text",
+    page: "dropdown.html",
+    steps: [
+      { op: "snapshot" }, // [2] the list's trigger
+      { op: "click", args: ["2"] },
+      {
+        op: "snapshot",
+        answer: {
+          value: {
+            snapshot: [
+              '[1] label "Housing Status Choose"',
+              "  [2] div",
+              "    Choose",
+              "Plain text under a hand cursor.",
+              "A banner under the same hand.",
+              "[3] div",
+              "  Mortgage",
+              "[4] div",
+              "  Rent",
+              "[5] div",
+              "  Other",
+            ].join("\n"),
+          },
+        },
+      },
+      { op: "click", args: ["4"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw Rent") } } },
+    ],
+  },
+  {
     name: "a click on a disabled button says it is disabled rather than that it pressed it",
     page: "disabled.html",
     steps: [
@@ -217,6 +247,23 @@ benchRows("content.js in WebKit", [
       { op: "wait", args: [null, { text: "results are ready" }], answer: { value: { found: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Results are ready") } } },
     ],
+  },
+  {
+    name: "a snapshot of a page still drawing, with only a control no one sees on it yet, waits for the page to draw",
+    page: "drawing.html",
+    // the page draws 800 ms after it loads
+    steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] link "Skip to main content"\nh1 "Verify your identity"\n[2] button "Next"' } } }],
+  },
+  {
+    name: "a snapshot of a page with nothing on it yet waits for the page to draw",
+    page: "blank.html",
+    // the page draws its form 800 ms after it loads
+    steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] button "Sign in"' } } }],
+  },
+  {
+    name: "a snapshot of a page that never draws answers, with nothing, once the wait runs out",
+    page: "empty.html",
+    steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "" } } }],
   },
   {
     name: "extract reads the main region as drawn: shadow text in, hidden text and one-pixel decoys out",

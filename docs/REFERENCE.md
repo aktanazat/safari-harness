@@ -227,7 +227,9 @@ Read with `snapshot` when you do not yet know what is on the page.
   page's own text print without one, each piece of text once, where it
   sits. A link's address follows its name. Table cells join with ` | `.
   A control with no role (a span with a click handler) gets a ref when it
-  shows a hand cursor and has a label, title, or test id.
+  shows a hand cursor and has a label, title, or test id. In a list that
+  floats over the page, such as a dropdown's options or a menu, the hand
+  alone is enough.
 - Refs belong to the page that gave them. A ref still works after the page
   draws its element anew, as a framework does when it redraws a list or a
   form: the action goes to the one element that looks the same, with the
@@ -246,6 +248,9 @@ Read with `snapshot` when you do not yet know what is on the page.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
 - A dropdown shows its value and option count, not each option. Use `select`.
+  A dropdown the page draws itself, with no `<select>` behind it, opens on
+  `click`: snapshot again, and each option in the list it opens has a ref
+  to click.
 - Embedded frames print under their `iframe` line. Refs inside a frame from
   another site look like `f3:12`; use them like any ref. Text and selector
   targets also reach into frames. Sign-in forms inside frames (Apple's
@@ -421,7 +426,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   code his Apple Passwords keeps for the site instead, as
   `passwords {do: "code"}` does. An emailed code has no route yet.
 - `select` picks a dropdown option by its label. A wrong label returns the
-  list of options.
+  list of options. On a dropdown the page draws itself it fails and says
+  so: click the dropdown, then the option's ref in a fresh snapshot.
 - `type` and `select` on a label's ref act on the field it labels.
 - `click`, `type`, and `select` on a disabled control (the snapshot marks
   it `{disabled}`) fail and say so: the page would ignore the action. A
@@ -526,8 +532,11 @@ Wait for the page, not the clock.
   aside) and with no request to its own site still out. Given together,
   all must hold. `gone`, `url`, and `quiet` read the top page, not its
   frames.
-- A whole-page `snapshot` that finds nothing on the page yet reads it again
-  for up to 2 s.
+- A whole-page `snapshot` of a page that shows nothing a person sees yet,
+  neither a word nor a control (a blank page, or Bank of America's sign-in,
+  which shows just a skip link in a one-pixel box while it draws), waits
+  for the page to draw: it answers once the page shows something, or after
+  2 s with what it has. A `root` or `query` read answers at once.
 - Wait for the page's exact words. A site's email and its page often word
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.

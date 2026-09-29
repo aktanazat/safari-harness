@@ -90,7 +90,8 @@
   // A control the page made of a plain element, with no role or tab stop
   // and its click handler added from script (CloudKit's "Add field" span),
   // shows only as a hand cursor. It counts when the page also names it,
-  // for assistive tech or its tests: plain text under a hand cursor stays
+  // for assistive tech or its tests (a snapshot also counts one floating
+  // over the page: handStarts): plain text under a hand cursor stays
   // text. Inside a control that shows the hand (inHand), the hand is that
   // control's.
   function isInteractive(el, style, inHand = false) {
@@ -101,6 +102,20 @@
     if (INTERACTIVE_TAGS.has(el.tagName)) return true;
     if (inHand || !(el.hasAttribute("aria-label") || el.hasAttribute("title") || el.hasAttribute("data-testid"))) return false;
     return (style ?? (el.ownerDocument.defaultView || window).getComputedStyle(el)).cursor === "pointer";
+  }
+
+  // In a list floating over the page, a dropdown's options or a menu, the
+  // hand alone marks a control: DriveCentric draws each option as a div
+  // with no role, tab stop, or name, its click handler added from script.
+  // There the element where the hand starts counts in a snapshot; one that
+  // only inherits the hand does not, so a page that shows the hand
+  // everywhere marks nothing. A layer floats when it is fixed, or placed
+  // absolutely with a z-index.
+  const floats = (style) => style.position === "fixed" || (style.position === "absolute" && style.zIndex !== "auto");
+  function handStarts(el, style, inHand) {
+    if (inHand || style.cursor !== "pointer") return false;
+    const up = el.parentElement ?? el.getRootNode().host;
+    return (up.ownerDocument.defaultView || window).getComputedStyle(up).cursor !== "pointer";
   }
 
   // Opacity 0 hides an element, but not one fading in: Safari runs no
@@ -698,7 +713,7 @@
   const norm = (t) => t.replace(/\s+/g, " ").trim();
   const clip = (t, max) => { t = norm(t); return t.length > max ? t.slice(0, max) + "…" : t; };
 
-  function snapshot(opts = {}) {
+  function outline(opts = {}) {
     pruneRefs();
     const root = opts.root ? deepQuery(opts.root) : document.body;
     if (!root) return { error: "root not found" };
@@ -712,12 +727,15 @@
     // hello to each once, and the extension snapshots again after the
     // answers, so their lines have a place.
     let unlinked = 0;
+    // Whether the walk met words or a control a person sees (snapshot waits
+    // on a page without them).
+    let seen = false;
 
     // Pass 1: the kept elements as a tree, with loose text and block edges
     // in page order. `named` holds the ancestors naming themselves by their
     // text; each gathers the text inside it.
     const top = { kids: [] };
-    const walk = (el, parent, named, inItem, inHand, muted = false) => {
+    const walk = (el, parent, named, inItem, inHand, muted = false, afloat = false) => {
       // Never drawn, hidden or not: showHidden would print a page's script
       // source and style rules as its text.
       if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
@@ -736,11 +754,13 @@
       const boxed = muted || (!opts.showHidden && unseenBox(el, style));
       if ((hidden || boxed) && (el.tagName === "IFRAME" || el.tagName === "FRAME")) return;
       const role = getExplicitRole(el);
-      const actionable = ACTION_ROLES.has(role) || isInteractive(el, style, inHand) || el.tagName === "IFRAME" || el.tagName === "FRAME";
+      const aloft = afloat || floats(style);
+      const actionable = ACTION_ROLES.has(role) || isInteractive(el, style, inHand) || el.tagName === "IFRAME" || el.tagName === "FRAME" || (aloft && handStarts(el, style, inHand));
       let node = parent;
       if (!hidden && (actionable || (role && NAMED_ROLES.has(role)))) {
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
         parent.kids.push(node);
+        seen ||= actionable && !boxed;
         if (node.name === null && namedByContent(el)) {
           node.text = [];
           named = [...named, node];
@@ -760,7 +780,10 @@
         if (!/\S/.test(t)) return add(t);
         if (hidden) return;
         quiet ??= boxed || (!opts.showHidden && faintText(el, style));
-        if (!quiet) return add(t);
+        if (!quiet) {
+          seen = true;
+          return add(t);
+        }
         for (const n of named) n.text.push(t);
       };
       if (!/^(SELECT|TEXTAREA|IMG|svg|INPUT)$/.test(el.tagName)) {
@@ -772,7 +795,7 @@
           if (child.nodeType === Node.TEXT_NODE) words(child.nodeValue);
           else if (child.nodeType === Node.ELEMENT_NODE) {
             if (child.tagName === "BR") add(BREAK);
-            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"), boxed);
+            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"), boxed, aloft);
           }
         }
         if (block) add(edge);
@@ -918,7 +941,51 @@
       }
     };
     render(top, 0);
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}) };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}), seen };
+  }
+
+  // A page still drawing can show for a moment nothing a person sees: a
+  // sign-in page (Chase's) read as empty once, and the agent never looked
+  // again; Bank of America's hold just a skip link, parked in a one-pixel
+  // box, until their script draws the rest. A whole-page read that finds
+  // no words or control a person sees reads again after each change the
+  // page makes, and answers once it finds some, or after DRAW_WAIT_MS with
+  // what it has. An embedded frame answers at once: an ad's frame may never
+  // draw. Safari stops a content script's timers in a hidden tab, so the
+  // limit also runs on an owned tab's ticks, and in any other hidden tab on
+  // a loop of messages, as withReceipt's watch does.
+  const DRAW_WAIT_MS = 2000;
+  function snapshot(opts = {}) {
+    const { seen, ...snap } = outline(opts);
+    if (seen || snap.error || opts.root || opts.query || window !== window.top) return snap;
+    return new Promise((resolve) => {
+      const until = Date.now() + DRAW_WAIT_MS;
+      let latest = snap;
+      const spin = document.hidden && !tickPort ? new MessageChannel() : null;
+      const done = () => {
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", check);
+        spin?.port1.close();
+        observer.disconnect();
+        resolve(latest);
+      };
+      const check = () => { if (Date.now() >= until) done(); };
+      const observer = watchPage((records) => {
+        if (!records.length) return;
+        const { seen: now, ...again } = outline(opts);
+        latest = again;
+        if (now) done();
+      });
+      const timer = setTimeout(done, DRAW_WAIT_MS);
+      document.addEventListener("__sh_tick", check);
+      if (spin) {
+        spin.port1.onmessage = () => {
+          check();
+          spin.port2.postMessage(null);
+        };
+        spin.port2.postMessage(null);
+      }
+    });
   }
 
   // ---------- actions ----------

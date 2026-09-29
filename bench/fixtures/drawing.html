@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Drawing</title>
+<!-- Bank of America's sign-in pages: the page as served holds only a skip
+     link, parked in a one-pixel box, and empty containers its script fills
+     once its code arrives. -->
+<style>
+  .ada-hidden { clip: rect(1px, 1px, 1px, 1px); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; width: 1px; }
+</style>
+<a class="ada-hidden" href="#skip-to-h1">Skip to main content</a>
+<div id="app"></div>
+<script>
+  setTimeout(() => {
+    document.getElementById("app").innerHTML = '<h1 id="skip-to-h1">Verify your identity</h1><button>Next</button>';
+  }, 800);
+</script>

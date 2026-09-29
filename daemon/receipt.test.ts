@@ -232,16 +232,3 @@ test("a wait with only ms on a page that cannot be watched waits out its ms and 
   safari({ wait: () => { throw new Error("Safari could not open https://down.example/: the site did not answer"); } });
   expect(await callTool("wait", { tab: 7, ms: 50 })).toMatchObject({ ok: true });
 });
-
-test("a whole-page snapshot of a page with nothing on it yet reads it again", async () => {
-  let reads = 0;
-  const page = () => (++reads < 3 ? { url: "https://bank.example/", title: "Sign in", nodes: 0, truncated: false, snapshot: "" } : { url: "https://bank.example/", title: "Sign in", nodes: 1, truncated: false, snapshot: '[1] button "Sign in"' });
-  safari({ snapshot: page });
-  expect(await callTool("snapshot", { tab: 8 })).toMatchObject({ nodes: 1, snapshot: '[1] button "Sign in"' });
-  expect(reads).toBe(3);
-  // a part of the page is read once: an empty part is an answer
-  reads = 0;
-  safari({ snapshot: page });
-  expect(await callTool("snapshot", { tab: 8, query: "Sign in" })).toMatchObject({ nodes: 0 });
-  expect(reads).toBe(1);
-});

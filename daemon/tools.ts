@@ -270,24 +270,15 @@ function withNotes<T extends object>(result: T): T {
 // The latest whole-page snapshot of each tab, for diff.
 const lastSnapshot = new Map<number, string>();
 
-// A whole page with nothing on it yet is read again, every EMPTY_POLL_MS
-// for EMPTY_WAIT_MS at most: a sign-in page still drawing (Chase's) read
-// as empty once, and the agent never looked again.
-const EMPTY_WAIT_MS = 2000;
-const EMPTY_POLL_MS = 200;
-
 export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
-  // answer, it added 5 of the 14 ms a snapshot of cnn.com took.
-  const read = async () => shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
-  let snap = await read();
+  // answer, it added 5 of the 14 ms a snapshot of cnn.com took. A page still
+  // drawing is read once: its own snapshot waits for it (snapshot in
+  // content.js), and a second wait here doubled the time a blank page took
+  // to answer.
+  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
   if (opts.root !== undefined || opts.query !== undefined) return snap;
-  const until = Date.now() + EMPTY_WAIT_MS;
-  while (snap.nodes === 0 && Date.now() < until) {
-    await Bun.sleep(EMPTY_POLL_MS);
-    snap = await read();
-  }
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
   if (!opts.diff || before === undefined) return snap;

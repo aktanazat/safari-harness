@@ -1,0 +1,39 @@
+<!doctype html>
+<title>Dropdown</title>
+<!-- DriveCentric's dropdowns (Angular): the trigger is a div with a tab
+     stop, and its options open in an overlay at the end of the body, each
+     a div inside a component host, with no role, tab stop, or name. Only
+     the page's CSS shows the hand, and the click handler is added from
+     script. -->
+<style>
+  .overlay { position: fixed; inset: 0; z-index: 1000; pointer-events: none; }
+  .pane { position: absolute; top: 48px; left: 8px; pointer-events: auto; background: white; }
+  list-item { display: block; }
+  .item, .card { cursor: pointer; }
+  .banner { position: fixed; bottom: 0; z-index: 10; }
+</style>
+<label>Housing Status <div tabindex="0" id="trigger">Choose</div></label>
+<!-- Text under a hand cursor with no control behind it, and a fixed banner
+     inside it, as on a page that shows the hand everywhere so iPhones send
+     clicks from any element. -->
+<div class="card">Plain text under a hand cursor.<p class="banner">A banner under the same hand.</p></div>
+<p id="said"></p>
+<script>
+  document.getElementById("trigger").addEventListener("click", () => {
+    const overlay = Object.assign(document.createElement("div"), { className: "overlay" });
+    const pane = Object.assign(document.createElement("div"), { className: "pane" });
+    for (const choice of ["Mortgage", "Rent", "Other"]) {
+      const host = document.createElement("list-item");
+      const item = Object.assign(document.createElement("div"), { className: "item" });
+      item.append(Object.assign(document.createElement("span"), { textContent: choice }));
+      item.addEventListener("click", () => {
+        document.getElementById("said").textContent = `Page saw ${choice}`;
+        overlay.remove();
+      });
+      host.append(item);
+      pane.append(host);
+    }
+    overlay.append(pane);
+    document.body.append(overlay);
+  });
+</script>
