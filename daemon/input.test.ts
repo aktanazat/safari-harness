@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { invoke } from "./call.ts";
 import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { INPUT_TOOLS } from "./input.ts";
@@ -15,8 +16,9 @@ import { callTool } from "./tools.ts";
 
 const GHOSTTY = "com.mitchellh.ghostty";
 
-// Safari's answer to press_mark, and the helper's to press.
-type Page = { picker?: boolean; press?: { pressed: boolean; why?: string } };
+// Safari's answer to press_mark, the errors the page threw by press_done,
+// the helper's answer to press, and the page area of Safari's front window.
+type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number } };
 type Mac = {
   app: string;
   // helper commands, and what Safari was asked of its tabs and pages, in order
@@ -51,8 +53,9 @@ function mac(page: Page = {}): Mac {
       if (op === "tabs.activate") return ((frontWindow = show(args[0])), answer({ ok: true }));
       const dom = op === "relay" ? args[1] : undefined;
       if (dom === "pressMark") return answer(page.picker ? { picker: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
-      if (dom === "pressDone") return answer(true);
+      if (dom === "pressDone") return answer(page.errors ?? []);
       if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
+      if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
       if (dom === "eval") return answer({ result: { marks, focus: true } });
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));
     },
@@ -66,7 +69,7 @@ function mac(page: Page = {}): Mac {
       m.pressedIn = m.shows(2);
       return page.press ?? { pressed: true };
     }
-    if (args[0] === "webarea") return { x: 0, y: 100, width: 1200, height: 800 };
+    if (args[0] === "webarea") return page.area ?? { x: 0, y: 100, width: 1200, height: 800 };
     // the helper's closing F20, which the page counts
     if (args[0] === "click") marks++;
     return {};
@@ -134,4 +137,30 @@ test("the tab Safari shows while it is the app in front takes the real mouse: ac
   m.app = front.SAFARI;
   expect(await click(3)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect(m.asked.filter((a) => a.startsWith("pressMark"))).toEqual([]);
+});
+
+test("the real mouse clicks where the tab's page is: negative points on a display above the main one, and nothing where Safari's front window shows a page of another shape", async () => {
+  const page: Page = { area: { x: 29, y: -1340, width: 1200, height: 800 } };
+  const m = mac(page);
+  expect(await click(21, { count: 2 })).toEqual({ ok: true, at: { x: 169, y: -1280 } });
+  page.area = { x: 29, y: -1340, width: 1600, height: 800 };
+  await expect(click(21, { count: 2 })).rejects.toThrow();
+  expect(run(m, "click")).toEqual([["click", "169", "-1280", "--count", "2", "--button", "left"]]);
+});
+
+test("x and y are a point of the tab's viewport in CSS px, as click takes them: the real mouse clicks it at the page's zoom, and a point outside the viewport gets nothing clicked", async () => {
+  const m = mac({ area: { x: 0, y: 100, width: 1800, height: 1200 } });
+  expect(await invoke("real_input", { tab: 21, do: "click", x: 358, y: 542 }, true)).toEqual({ ok: true, at: { x: 537, y: 913 } });
+  await expect(invoke("real_input", { tab: 21, do: "click", x: 1250, y: 542 }, true)).rejects.toThrow();
+  expect({ marked: m.asked.filter((a) => a.startsWith("pressMark")), clicks: run(m, "click") }).toEqual({ marked: [], clicks: [["click", "537", "913", "--count", "1", "--button", "left"]] });
+});
+
+test("a press the page refused for want of focus answers with its error and a next step: Safari in front and a real click, or the user", async () => {
+  const error = "unhandled rejection: The document is not focused.";
+  mac({ errors: [error] });
+  const { next, ...rest } = (await click(21)) as { next?: string };
+  expect({ rest, tools: ["activate", "real_input", "handoff"].filter((t) => new RegExp(`\\b${t}\\b`).test(next ?? "")) }).toEqual({
+    rest: { ok: true, background: true, pageErrors: [error] },
+    tools: ["activate", "real_input", "handoff"],
+  });
 });

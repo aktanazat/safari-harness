@@ -84,6 +84,16 @@ test("errors the page threw come beside the effect, and do not make one", () => 
   expect(effectOf({ ...QUIET, added: 3, errors: ["boom"] })).toEqual({ effect: { added: 3 }, pageErrors: ["boom"] });
 });
 
+test("a page that refused for want of focus or a real click says what the step needs: Safari in front and a real click, or the user", () => {
+  const names = (next?: string) => ["activate", "real_input", "handoff"].filter((t) => new RegExp(`\\b${t}\\b`).test(next ?? ""));
+  for (const error of ["unhandled rejection: The document is not focused.", "unhandled rejection: The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.", "NotAllowedError: denied"]) {
+    // the page took the focus and still refused: that effect is no answer
+    const got = effectOf({ ...QUIET, focus: "page", errors: [error] });
+    expect([error, got.pageErrors, names(got.next)]).toEqual([error, [error], ["activate", "real_input", "handoff"]]);
+  }
+  expect(effectOf({ ...QUIET, focus: "page", errors: ["TypeError: x is undefined"] }).next).toBeUndefined();
+});
+
 test("failed requests lead the net lines, paths without their queries, then the rest, then those still out", () => {
   const got = effectOf({
     ...QUIET,

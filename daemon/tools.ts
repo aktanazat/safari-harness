@@ -821,6 +821,10 @@ export const TAB: Param = { description: 'tab id from open, or "front"' };
 // close, activate, and window act only on a tab the agent opened
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 export const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
+// A point of the tab's viewport in CSS px, as the page's clientX and
+// clientY count it: click's x and y, and real_input's (input.ts).
+export const X: Param = { type: "number", description: "page x, without ref" };
+export const Y: Param = { type: "number", description: "page y, without ref" };
 const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
 const SAVE: Param = { description: "true, or an absolute file path: write the whole output there; returns its path, size, and first 500 characters" };
 
@@ -968,7 +972,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
-    params: { tab: TAB, ref: REF, x: { type: "number", description: "page x, without ref" }, y: { type: "number", description: "page y, without ref" }, snapshot: PAGE },
+    params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
     required: ["tab"],
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
@@ -1152,18 +1156,32 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "width", "height"],
     run: (a) => viewport(a as { tab: number; width: number; height: number }),
   },
+  // For real_input's real mouse (input.ts): a point comes back as a box of
+  // no size, with the top viewport's size as an element's box has it.
   locate: {
-    desc: "An element's box in the top page's viewport, scrolled into view.",
-    params: { tab: TAB, ref: REF },
-    required: ["ref"],
+    desc: "An element's box in the top page's viewport, scrolled into view, or a point of it; with the viewport's size.",
+    params: { tab: TAB, ref: REF, x: X, y: Y },
     hidden: true,
     // A tab just brought to the front may not have drawn yet; a real click
     // before it has lands on the tab shown before.
     run: async (a) => {
       const tab = await resolveTab(a.tab);
       await relay(tab, "painted", [], 3000).catch(() => {});
-      return relay(tab, "locate", [str(String(a.ref), "ref")]);
+      if (a.ref !== undefined) return relay(tab, "locate", [str(String(a.ref), "ref")]);
+      const { viewport } = (await relay(tab, "tabInfo")) as { viewport?: { w: number; h: number } };
+      return { x: num(a.x, "x"), y: num(a.y, "y"), width: 0, height: 0, innerWidth: viewport?.w, innerHeight: viewport?.h };
     },
+  },
+  // The id a tab has now, for the tools that run in the caller (input.ts):
+  // the daemon alone hears the new id a deploy gave a tab the agent still
+  // calls by its old one (continuity.ts), and the answer then carries
+  // replaced.
+  resolve_tab: {
+    desc: "The id a tab has now, for an id from before Safari gave it a new one, or \"front\".",
+    params: { tab: TAB },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => ({ tab: await resolveTab(a.tab) }),
   },
   // real_input's click on a tab not in front (input.ts) goes through
   // Safari's accessibility tree, which holds only the tab each window
@@ -1192,11 +1210,11 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
     run: async (a) => relay(await resolveTab(a.tab), "pressMark", [str(String(a.ref), "ref")]),
   },
-  // Unmarked once the press has reached it, or after ms. The answer is no
-  // object, so news of a tab the press opened waits for the agent's next
-  // call (withTabNews).
+  // Unmarked once the press has reached it, or after ms. The answer is the
+  // errors the page threw from the mark on, a list and no object, so news
+  // of a tab the press opened waits for the agent's next call (withTabNews).
   press_done: {
-    desc: "Unmark an element once the press has reached it, or after ms.",
+    desc: "Unmark an element once the press has reached it, or after ms; list the errors the page threw since the mark.",
     params: { tab: TAB, ref: REF, mark: { type: "string", description: "from press_mark" }, ms: { type: "number", description: "longest wait for the press" } },
     required: ["tab", "ref", "mark", "ms"],
     hidden: true,

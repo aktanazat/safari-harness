@@ -50,6 +50,23 @@ export type Effect = {
 
 export const NO_EFFECT = "the page did not react; the control may need a real click (real_input), a different target (a child or parent), or the page may be busy";
 
+// A page that refused what an action started because Safari did not have
+// it in front, or because no real click started it: a passkey, Touch ID,
+// or security key request (navigator.credentials), the clipboard, playback.
+// WebKit refuses such a call with a NotAllowedError, and dialogs.js keeps
+// an unhandled rejection's message, which leaves the name out.
+const REFUSED = /document is not focused|NotAllowedError|not allowed by the user agent or the platform in the current context/i;
+const NEEDS_FRONT = "the page refused because Safari was not in front or the click was not real: activate, then real_input; a passkey or Touch ID prompt that then opens needs the user (handoff)";
+
+// The page's errors as an action's answer carries them, their secret
+// parameters cut as addresses' are (redact.ts), and the next step when one
+// is such a refusal. click, press, and select answer with them here, and
+// so does real_input's press (input.ts).
+export function pageErrorsOf(errors: string[]): { pageErrors?: string[]; next?: string } {
+  if (!errors.length) return {};
+  return { pageErrors: errors.map(redactUrl), ...(errors.some((e) => REFUSED.test(e)) ? { next: NEEDS_FRONT } : {}) };
+}
+
 // content.js carries site, keepRequest, and urlMatch with these bodies,
 // between its "tested with daemon/receipt.test.ts" markers: the page tells
 // with them whether it is still waiting on a request and whether a wait's
@@ -137,8 +154,10 @@ export function stateLines(changes: StateChange[]): string[] {
 
 // The effect a raw receipt shows, or "none" with the next thing to try.
 // The page's uncaught errors come beside it, since a handler that threw is
-// often why nothing happened. Page text in it (a name, a link's address, an
-// error) has its secret parameters cut, as addresses are (redact.ts).
+// often why nothing happened; one that says the page refused for want of
+// focus or a real click sets the next step even beside an effect. Page text
+// in it (a name, a link's address, an error) has its secret parameters cut,
+// as addresses are (redact.ts).
 export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: string; pageErrors?: string[] } {
   const states = stateLines(raw.states).map(redactUrl);
   const net = raw.requests === null ? [] : netLines(raw.requests, raw.pending ?? [], raw.page);
@@ -152,7 +171,7 @@ export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: str
     ...(raw.dialog !== null ? { dialog: redactUrl(raw.dialog) } : {}),
     ...(net.length ? { net } : {}),
   };
-  const errors = raw.errors.length ? { pageErrors: raw.errors.map(redactUrl) } : {};
+  const errors = pageErrorsOf(raw.errors);
   return Object.keys(effect).length ? { effect, ...errors } : { effect: "none", next: NO_EFFECT, ...errors };
 }
 

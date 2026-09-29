@@ -813,7 +813,7 @@ export class ApplePasswords {
   async change(tab: number, username?: string): Promise<{ username: string; site: string; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
-    if (!form) throw new Error("no new-password field on this page");
+    if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
     const site = httpsHost(form.origin);
     const { login, saved } = await this.chosenLogin(site, username);
     let current: string | null = null;

@@ -480,9 +480,17 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   answered. A confirm or prompt is dismissed unless you first call `dialog`
   with `do: "accept"` (and `text` for a prompt's answer); `do: "dismiss"`
   goes back. The same page leaving with unsaved changes does not ask.
-- `click` with x/y only when a ref cannot reach the target.
+- `click` with x/y only when a ref cannot reach the target. x and y are CSS
+  pixels in the tab's viewport, as the page's `clientX` and `clientY` count
+  them; `real_input` takes the same.
 - `scroll` is rarely needed: snapshots include off-screen elements, and
-  clicks scroll to their target.
+  clicks scroll to their target. It scrolls the window; on a page whose
+  window does not move (an app that scrolls a pane of its own, a Flutter
+  page drawn on a canvas) it scrolls the box under the middle of the
+  window, or else gives the page there a wheel, as a mouse would. `moved`
+  says which (`window`, `box`, or `wheel`), with `scrollY` and `maxY` of
+  what scrolled. A scroll that moves nothing fails and says where the
+  window is.
 - Every action reports what it caused: `navigated` (this tab loaded a new
   page) or `newTab`. Pass `snapshot: true` to get the resulting page in the
   same call; that is the fastest way to act and then read.
@@ -506,6 +514,12 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   try: a real click (`real_input`), a child or parent of the control, or a
   moment for a busy page. An effect shows the page moved, not that it did
   what you meant: confirm what matters with a `wait` or a snapshot.
+- A page error saying the page refused for want of focus or a real click
+  ("The document is not focused", a `NotAllowedError`), as a passkey,
+  Touch ID, or clipboard call does in a tab Safari does not have in front
+  or after a scripted click, sets `next` even beside an effect: `activate`,
+  then `real_input`; a passkey or Touch ID prompt that then opens needs the
+  user (`handoff`).
 - One acting call runs on a tab at a time: `click`, `type`, `press`,
   `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`,
   `login_fill`, `autofill`, and `dialog` or `passwords` when they act.
@@ -514,29 +528,39 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   and `handoff` never wait, and a `run`'s steps take the tab one at a
   time. Open your own tab rather than share one.
 - `real_input` uses the real mouse and keyboard, so the page sees trusted
-  events: `do: "click"` a ref (`count: 2` double-clicks, `button: "right"`),
-  `do: "type"` text at a ref or where the caret is, `do: "key"` a key or
-  combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it only when `click`, `type`,
-  or `press` did nothing on a site that ignores scripted events. Never use
-  it inside a bot check (see "Bot checks and steps only the user can do").
-  A single left click on a tab that is not in front is pressed through
-  Safari's accessibility tree and answers `background: true`: nothing
-  comes to the front, and the pointer stays put. The page gets a trusted
-  mousedown, mouseup, and click at the element's middle, with no pointer
-  events and a `detail` of 0. A tab behind another in its agent window is
-  shown there for the click. The real mouse clicks instead, and the answer
-  has `at`, for a double or right click, a select, a date, color, or file
-  input, an element Safari cannot press (a canvas), a tab behind another
-  in one of the user's windows, and the tab in front while Safari is: a
-  site that needs pointer events or a focused window gets them after
-  `activate`. The real mouse and keys bring Safari and the tab to the front
-  for about half a second, then give back the user's tab, app, and
-  pointer. Such a call waits until the page has received every key before
-  giving the tab back, so nothing lands in the user's tab; the page sees
-  one extra press of F20, a key no Mac keyboard has. Keys go only to a page
-  with keyboard focus: if Safari's address or find bar has it, the call
-  fails and nothing is typed. The app running the MCP server or CLI needs
-  Accessibility permission.
+  events: `do: "click"` a ref, or a point `x`, `y` as `click` takes them
+  (for a page drawn on a canvas, with no refs); `count: 2` double-clicks,
+  `button: "right"`. `do: "type"` types text at a ref or where the caret
+  is, `do: "key"` a key or combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it
+  only when `click`, `type`, or `press` did nothing on a site that ignores
+  scripted events. Never use it inside a bot check (see "Bot checks and
+  steps only the user can do").
+  A single left click on a ref in a tab that is not in front is pressed
+  through Safari's accessibility tree and answers `background: true`:
+  nothing comes to the front, and the pointer stays put. The page gets a
+  trusted mousedown, mouseup, and click at the element's middle, with no
+  pointer events and a `detail` of 0. A tab behind another in its agent
+  window is shown there for the click. The errors the page threw in the
+  300 ms after come as `pageErrors`, with `next` when the page refused for
+  want of focus, as above. The real mouse clicks instead, and the answer
+  has `at`, for a point, a double or right click, a select, a date,
+  color, or file input, an element Safari cannot press (a canvas), a tab
+  behind another in one of the user's windows, and the tab in front while
+  Safari is: a site that needs pointer events or a focused window gets
+  them after `activate`. `at` is in screen points across all displays,
+  negative on a display above or left of the main one. The real mouse
+  clicks only where Safari's front window shows the tab's page. When that
+  window shows a page of another size (another window came in front) or
+  none (a Touch ID, passkey, or permission prompt covers it), nothing is
+  clicked and the call fails saying so; only the user can answer such a
+  prompt (`handoff`). The real mouse and keys bring Safari and the tab to
+  the front for about half a second, then give back the user's tab, app,
+  and pointer. Such a call waits until the page has received every key
+  before giving the tab back, so nothing lands in the user's tab; the page
+  sees one extra press of F20, a key no Mac keyboard has. Keys go only to
+  a page with keyboard focus: if Safari's address or find bar has it, the
+  call fails and nothing is typed. The app running the MCP server or CLI
+  needs Accessibility permission.
 
 ## Waiting
 

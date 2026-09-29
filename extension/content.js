@@ -649,7 +649,7 @@
   // { picker: true }.
   const PICKER_INPUTS = new Set(["date", "datetime-local", "month", "week", "time", "color", "file"]);
   const picker = (el) => el?.localName === "select" || (el?.localName === "input" && PICKER_INPUTS.has(el.type));
-  const presses = new Map(); // mark -> { el, heard (a promise), listen }
+  const presses = new Map(); // mark -> { el, heard (a promise), listen, since }
   function pressMark(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
@@ -660,22 +660,27 @@
     const listen = (e) => { if (e.isTrusted) heard.resolve(); };
     el.classList.add(mark);
     el.addEventListener("click", listen, true);
-    presses.set(mark, { el, heard: heard.promise, listen });
+    presses.set(mark, { el, heard: heard.promise, listen, since: Date.now() });
     return { mark, width: outerWidth, height: outerHeight };
   }
 
   // Takes the class and the listener off once the press has reached the
   // element, or after ms: WebKit looks for the listener when it runs the
-  // press, which may come after the helper has returned. A mark this frame
-  // does not hold is another frame's, which relayOp then asks.
+  // press, which may come after the helper has returned. Answers with the
+  // errors the page threw from the mark on (dialogs.js), after a press that
+  // came has had the receipt's shortest watch to show them: a page that
+  // refuses a passkey or clipboard call for want of focus says so then. A
+  // mark this frame does not hold is another frame's, which relayOp then
+  // asks.
   async function pressDone(ref, mark, ms) {
     const p = presses.get(mark);
     if (!p) return missing(ref);
     presses.delete(mark);
-    await Promise.race([p.heard, sleep(ms)]);
+    const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
     p.el.classList.remove(mark);
     p.el.removeEventListener("click", p.listen, true);
-    return true;
+    if (came) await sleep(RECEIPT_SPAN.min);
+    return hear(p.since)?.errors ?? [];
   }
 
   // Safari runs no extension script in srcdoc and about:blank frames, so
