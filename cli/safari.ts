@@ -80,7 +80,8 @@ const USAGE = `safari — drive Safari from the terminal
   its path, size, and first 500 characters.
 
   safari eval <js> --tab N [--page]          run JS, print the last value as JSON
-                                             (code from --file path, or stdin when omitted)
+                                             (code from --file path, or stdin when omitted;
+                                             --reader name runs a script saved with learn)
   safari extract --tab N [--selector s]      readable text
   safari extract --as table --tab N          tables and card lists as JSON rows
   safari data --tab N [--pick path] [--max bytes]
@@ -608,6 +609,12 @@ async function main() {
     }
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
     case "eval": {
+      // a reader saved for the site (learn) is the code
+      const reader = flag("reader", rest);
+      if (reader !== undefined) {
+        args.reader = reader;
+        break;
+      }
       // --file, or stdin, carries a script with no quoting to get right
       const file = flag("file", rest);
       args.expression = file !== undefined ? await Bun.file(resolve(file)).text() : positional.join(" ") || (await readStdin());

@@ -75,8 +75,11 @@ import { expect, test } from "bun:test";
 // until it exited, while a form waiting on his answer has to stay. A wait
 // on map, and a wait with only ms that ends on a quiet page (135), brought
 // it to 22,996: agents read pages a script draws late in one map call,
-// where they slept inside each page's eval or went page by page.
-const TOOL_LIST_MAX_BYTES = 22_996;
+// where they slept inside each page's eval or went page by page. Readers
+// (339), scripts saved with learn that eval and map run by name, brought
+// it to 23,335: the script one agent worked out to read a site's listings
+// is the next agent's one call, where each wrote its own again.
+const TOOL_LIST_MAX_BYTES = 23_335;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

@@ -37,22 +37,22 @@ Turns
 Before a site
 - Run `safari guide <site>` (for example `safari guide gusto`). It says
   what failed before and what worked. `safari guide sites` lists them.
-- When you find out something about a site the hard way (a flow's steps,
-  a control that loads late, which account owns what), save it in one
-  sentence with `learn {site, fact}` (`safari learn <site> "<fact>"`),
-  never a secret. Your first `open`, `goto`, or `snapshot` there carries
-  what agents saved before, as `notes`.
+- Learned something about a site the hard way (a flow's steps, a control
+  that loads late, which account owns what)? Save it in one sentence,
+  never a secret: `learn {site, fact}` (`safari learn <site> "<fact>"`);
+  a script that reads its data: `learn {site, reader, expression}`. Your
+  first `open`, `goto`, or `snapshot` there carries what was saved, as
+  `notes`.
 - A public page reads faster without Safari: try `read`, `web_search`, or
   Iris first. Keep long text with `save` instead of fetching it twice, and
   read a table or product list with `extract` `as: "table"`.
 
 Signing in, in this order
 1. A session: most of his sites are already signed in.
-2. `passwords` `fill` with his saved login. When it is locked, the call
-   asks him for Touch ID and pairs; the Mac asks him for its code in a
-   prompt there, so never ask for it in the chat. If it answers
-   `paired: false`, tell him why. Do not route around it. Call
-   `passwords` `done` when you no longer need it.
+2. `passwords` `fill` with his saved login. Locked, the call asks him for
+   Touch ID and pairs; the Mac asks for its code in a prompt there, so
+   never ask for it in the chat. On `paired: false`, tell him why; never
+   route around it. Call `passwords` `done` when you no longer need it.
 3. A passkey or Touch ID: click the site's passkey button, then `handoff`
    so he can touch the sensor.
 4. A text code: `imessage_wait_code`, then type it in.

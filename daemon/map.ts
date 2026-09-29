@@ -51,7 +51,7 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
   if (!Array.isArray(urls) || urls.length === 0 || !urls.every((u): u is string => typeof u === "string")) throw new Error('map needs urls: ["https://…", …]');
   if (urls.length > MAP_MAX_URLS) throw new Error(`map reads at most ${MAP_MAX_URLS} pages a call; pass the rest to another`);
   const read = readOf(what);
-  if (read === "eval" && typeof args.expression !== "string") throw new Error("what: eval needs expression");
+  if (read === "eval" && typeof args.expression !== "string" && typeof args.reader !== "string") throw new Error("what: eval needs expression, or reader");
   const atOnce = Number(concurrency);
   if (!Number.isFinite(atOnce)) throw new Error("concurrency must be a number");
   const job: Job = { wait: wait === undefined ? undefined : waitOf(wait), read, args, target: save === undefined || save === false ? undefined : targetOf(save, "folder"), call };

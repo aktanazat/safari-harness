@@ -644,27 +644,56 @@ plain sentence of at most 300 characters.
 
 - `site` is a host or an address; `www.` is dropped, so `www.cvs.com` and
   `cvs.com` share notes, while a subdomain (`acme.slack.com`) keeps its own.
+  A page on a subdomain gets the notes of each site above it too: notes on
+  `geico.com` come with `ecams.geico.com`.
 - The same fact is kept once. A site keeps 50; the 51st pushes out the
   oldest.
 - `learn {site}` alone (CLI `safari learn cvs.com`) lists the site's notes,
-  numbered; `learn {site, forget: n}` (CLI `--forget n`) removes note n.
+  numbered, and its readers; `learn {site, forget: n}` (CLI `--forget n`)
+  removes note n.
 - Never a secret: a fact that looks like a password, a verification code,
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").
 - Notes come to you by themselves: your first `open`, `goto`, or
-  `snapshot` on a site with notes carries `notes`, one line (a snapshot
-  prints it under its header). Three or fewer short notes come in full;
-  more come as a count, `site notes for cvs.com: 5; read them with guide
-  cvs.com`, which `safari guide cvs.com` prints. Each agent gets the line
-  once per site.
-- `safari guide <site>` prints the bundled guide, then the notes learned
-  on that host; by name (`safari guide slack`) it also shows the notes of
-  each subdomain its hosts cover. `safari guide sites` ends with the hosts
-  that have notes.
+  `snapshot` on a site with notes carries `notes`, a line per site (a
+  snapshot prints it under its header). A site's notes come in full while
+  they run to 900 characters in all (three notes at their longest); more
+  come as a count, `site notes for cvs.com: 5; read them with guide
+  cvs.com`, which `safari guide cvs.com` prints. Each agent gets a site's
+  line once, whichever of its subdomains it opens first.
+- `safari guide <site>` prints the bundled guide, then the notes and
+  readers saved for that host; by name (`safari guide slack`) it also
+  shows those of each subdomain its hosts cover. `safari guide sites` ends
+  with the hosts that have notes or readers.
 - They are plain files, one per host, in
   `~/.local/share/safari-harness/notes/<host>.md`, a line per fact with its
-  date and the name of the agent's program (`omp`, `claude`). The daemon
-  keeps them on the Mac whose Safari it drives.
+  date and the name of the agent's program (`omp`, `claude`), and readers
+  in `<host>.readers.json` beside it. The daemon keeps them on the Mac
+  whose Safari it drives.
+
+### Readers
+
+A script you worked out to read a site's data (its listings from a page
+variable, a price history from the API the page calls), save as a reader,
+so the next agent runs it by name instead of working it out again:
+`learn {site, reader: "listings", expression: "<js>"}` (CLI `safari learn
+carfax.com --reader listings --expression "<js>"`), with `page: true` when
+it reads the page's own script variables.
+
+- `eval {tab, reader: "listings"}` (CLI `safari eval --tab N --reader
+  listings`) runs the reader saved for the tab's site, or for a site above
+  it, in the world it was saved for. `map {urls, what: "eval", reader}`
+  runs it on each page.
+- Your first `open`, `goto`, or `snapshot` on the site names its readers
+  in `notes`: `readers saved for carfax.com: listings; run one with eval
+  {tab, reader: "<name>"}`.
+- A name is a letter, then up to 39 letters, digits, `-`, or `_`; a script
+  is at most 10,000 characters. Saving under a name already saved replaces
+  it.
+  `learn {site, reader}` without `expression` shows the code;
+  `learn {site, forget: "listings"}` removes it.
+- Never a secret: a script that looks like it holds a password, code,
+  card number, or token is refused, as a fact is.
 
 ## Teach and replay
 

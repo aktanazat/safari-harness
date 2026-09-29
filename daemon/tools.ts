@@ -17,7 +17,7 @@ import { spaceNote, spaceTool, spaceWindow, windowOwners, type SpaceNote } from 
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
-import { firstNotes, learn } from "./notes.ts";
+import { firstNotes, learn, readerFor } from "./notes.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { beside, checkCall, fromModel, guard } from "./guard.ts";
@@ -400,6 +400,15 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
     throw e;
   });
   return answer.catch(async (e: unknown) => { throw await unanswered(e); });
+}
+
+// eval {reader} runs the script an agent saved for the tab's site, or a
+// site above it (learn), in the world it was saved for.
+async function runReader(tab: number | undefined, name: string) {
+  const id = await resolveTab(tab);
+  const { url } = (await relay(id, "tabInfo")) as { url?: string };
+  const reader = readerFor(url ?? "", name);
+  return evaluate({ tab: id, expression: reader.expression, page: reader.page });
 }
 
 // as: "table" reads the page's tables and repeated card lists as rows.
@@ -1001,9 +1010,16 @@ export const TOOLS: Record<string, Tool> = {
   },
   eval: {
     desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, extract with query: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait.",
-    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, save: SAVE },
-    required: ["tab", "expression"],
-    run: saving("eval", (a) => evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page })),
+    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, save: SAVE },
+    required: ["tab"],
+    run: saving("eval", (a) => {
+      if (a.reader === undefined) {
+        if (a.expression === undefined) throw new Error("eval needs expression, or reader: a script saved with learn");
+        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page });
+      }
+      if (a.expression !== undefined) throw new Error("give expression or reader, not both");
+      return runReader(a.tab as number | undefined, str(a.reader, "reader"));
+    }),
   },
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
@@ -1036,7 +1052,7 @@ export const TOOLS: Record<string, Tool> = {
       urls: { type: "array", items: { type: "string" }, description: "addresses" },
       what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
       wait: { type: "object", description: 'before each read, as wait takes it: {"text":"…"}' },
-      expression: { type: "string", description: "JS, for eval" },
+      expression: { type: "string", description: "JS, for eval (or reader)" },
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
       as: { type: "string", enum: ["text", "table"], description: "for extract" },
@@ -1233,8 +1249,15 @@ export const TOOLS: Record<string, Tool> = {
     run: applePasswords,
   },
   learn: {
-    desc: "Save a site fact for later agents: a flow's steps, a control that loads late, which account owns what. Never a secret. Only site: list its notes; forget: n removes one.",
-    params: { site: { type: "string", description: "host or address" }, fact: { type: "string", description: "max 300 chars" }, forget: { type: "number", description: "note number" } },
+    desc: "Save a site fact for later agents: a flow's steps, a control that loads late, which account owns what. Never a secret. Only site: list its notes and readers; forget: n removes one. reader + expression saves a script for eval {reader}.",
+    params: {
+      site: { type: "string", description: "host or address" },
+      fact: { type: "string", description: "max 300 chars" },
+      forget: { description: "note number, or reader name" },
+      reader: { type: "string", description: "script name" },
+      expression: { type: "string", description: "the reader's JS" },
+      page: { type: "boolean", description: "reader runs in the page's own world" },
+    },
     required: ["site"],
     run: learn,
   },
