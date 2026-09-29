@@ -38,6 +38,9 @@ function connect() {
       send({ op: "hello", role: "extension", ua: navigator.userAgent });
       if (awake.size > 0) send({ op: "ticks", on: true });
       sendRecordings().catch(() => {});
+      // the new ids a reload gave the tabs (sendIds); an adopt not begun
+      // yet sends them itself once it ends
+      adopted?.then(sendIds, () => {});
     };
     ws.onmessage = (ev) => {
       let msg;
@@ -47,8 +50,9 @@ function connect() {
         if (msg.id !== undefined) send({ id: msg.id, value });
       }, (err) => {
         const text = String(err && err.message || err);
-        // Safari gives every tab a new id when the extension restarts.
-        if (msg.id !== undefined) send({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed, or Safari gave every tab a new id when the extension restarted; find it with tabs" : text });
+        // An id Safari no longer knows that no reload maps (adopt): the tab
+        // closed, Safari has quit since, or its page kept no mark.
+        if (msg.id !== undefined) send({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user; a tab you need past your turn must be kept with keep; find it with tabs, or open it again" : text });
       });
     };
     ws.onclose = () => { ws = null; scheduleReconnect(); };
@@ -1018,6 +1022,10 @@ async function inFront(tabId) {
 // or window Safari no longer knows: each old id maps to the new id, and the
 // marks become the new ids for the next reload. The maps live in
 // storage.local, which outlives a reload too; an alias goes with its tab.
+// The daemon is told each old tab id's new one (sendIds), so what it keeps
+// per tab, and the ids agents hold, follow their tabs. What is kept here in
+// session storage (the tabs the harness owns, and those it drives) does
+// not: Safari empties session storage when it unloads the extension.
 // A window is found through its pages, so an agent's window opens on one
 // (the daemon's /space), not on about:blank, which has no content script.
 let adopted = null;
@@ -1062,7 +1070,16 @@ async function adopt() {
   }
   await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }), lists]);
   if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs, windows }));
-  return { tabs, windows };
+  const ids = { tabs, windows };
+  sendIds(ids);
+  return ids;
+}
+
+// The daemon keeps tab ids too (tools.ts), and agents hold them: it is told
+// each old id and its tab's id now once they are read, and again each time
+// it connects, since a restarted daemon has only its own list of tabs.
+function sendIds({ tabs }) {
+  if (Object.keys(tabs).length > 0) send({ op: "tab", kind: "renumbered", tabs });
 }
 api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
 // A tab moved to another window (window, or the user dragging it) marks

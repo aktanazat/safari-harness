@@ -11,6 +11,8 @@
 //   extension -> daemon  {op:"tab", kind:"replaced", from, to}  Safari swapped a tab
 //   extension -> daemon  {op:"tab", kind:"popup", tab, opener, url}  an owned
 //                        tab's page opened another outside an action
+//   extension -> daemon  {op:"tab", kind:"renumbered", tabs}  each old tab id
+//                        and its tab's id now, after the extension reloaded
 //   extension -> daemon  {op:"recording", recording}  what the user did once
 //                        in teach mode, to save (recordings.ts)
 
@@ -55,6 +57,7 @@ type WireMessage = {
   tab?: unknown;
   opener?: unknown;
   url?: unknown;
+  tabs?: unknown;
   recording?: unknown;
 };
 
@@ -69,12 +72,20 @@ function asWire(raw: string): WireMessage | null {
 }
 
 // A change to the agents' tabs the extension saw (see continuity.ts).
-export type TabEvent = { kind: "replaced"; from: number; to: number } | { kind: "popup"; tab: number; opener: number; url: string };
+export type TabEvent =
+  | { kind: "replaced"; from: number; to: number }
+  | { kind: "popup"; tab: number; opener: number; url: string }
+  | { kind: "renumbered"; tabs: Map<number, number> };
 
 function tabEvent(m: WireMessage): TabEvent | null {
   const isId = (v: unknown): v is number => Number.isSafeInteger(v);
   if (m.kind === "replaced" && isId(m.from) && isId(m.to)) return { kind: "replaced", from: m.from, to: m.to };
   if (m.kind === "popup" && isId(m.tab) && isId(m.opener)) return { kind: "popup", tab: m.tab, opener: m.opener, url: typeof m.url === "string" ? m.url : "" };
+  if (m.kind === "renumbered" && m.tabs && typeof m.tabs === "object") {
+    const tabs = new Map<number, number>();
+    for (const [from, to] of Object.entries(m.tabs)) if (isId(Number(from)) && isId(to)) tabs.set(Number(from), to);
+    return { kind: "renumbered", tabs };
+  }
   return null;
 }
 
@@ -86,9 +97,10 @@ type Pending = {
   sock: ExtSocket;
 };
 
-// What a socket last said about itself: its user agent, and whether it wants
-// ticks. A socket waiting to take over is heard only once it has.
-type Said = { ua?: string; ticks: boolean };
+// What a socket last said about itself: its user agent, whether it wants
+// ticks, and the new ids a reload gave the tabs. A socket waiting to take
+// over is heard only once it has.
+type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
 
 export class Bridge {
   private sock: ExtSocket | null = null;
@@ -143,6 +155,7 @@ export class Bridge {
     this.refusing = false;
     this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
     this.ticks(said?.ticks ?? false);
+    if (said?.renumbered) this.onTab(said.renumbered);
     if (old) {
       const lost = this.drop(old, "the Safari extension restarted before it answered; try again");
       try { old.close(); } catch {}
@@ -198,7 +211,13 @@ export class Bridge {
     }
     if (msg.op === "tab") {
       const event = tabEvent(msg);
-      if (event) this.onTab(event);
+      if (!event) return;
+      // new ids are those of the Safari behind the connected socket
+      if (event.kind === "renumbered" && from !== this.sock) {
+        if (from) this.said.set(from, { ticks: false, ...this.said.get(from), renumbered: event });
+        return;
+      }
+      this.onTab(event);
       return;
     }
     if (msg.op === "recording") {

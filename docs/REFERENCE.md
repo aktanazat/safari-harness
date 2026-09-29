@@ -124,8 +124,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   result carries `popup` with its `tab` and `url`. Close it like any other.
   A tab the user's own tabs open stays his.
 - Safari sometimes swaps a tab for a new one under a new id (a page it
-  prepared ahead). Calls with the old id still reach it, and the result
-  carries `replaced: {from, to}`: use the new id from then on.
+  prepared ahead), and gives every tab a new id when the extension reloads
+  (each deploy of it). Calls with the old id still reach the tab, and the
+  result carries `replaced: {from, to}`: use the new id from then on. The
+  tab stays yours: it closes when your turn ends, its dialogs are still
+  answered, and its popups are still yours. After a reload, an answer you
+  set with `dialog` is back to the default: set it again.
 - `open` and `goto` return the page's `title` once it has one of its own; a
   page still without one after a moment returns none.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,
@@ -1126,6 +1130,12 @@ its own `safari` command.
   cannot message the extension: a tab its link or `window.open` makes
   during an action still comes back as `newTab`, but one it opens later
   on its own stays the user's until the page reloads.
+- "that tab is gone": the tab was closed at the end of your turn, after 20
+  minutes unused, or by the user, or Safari quit since. Keep a tab you need
+  past your turn with `keep`. An extension reload loses no tab: old ids
+  still reach every tab whose page ran the harness's script, which leaves
+  out a blank tab, Safari's own pages, and a page that failed to load. Find
+  the page with `tabs`, or open it again.
 - "the user paused this task" or "the user stopped this task": see
   Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or

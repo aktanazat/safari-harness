@@ -1,10 +1,12 @@
 // Tabs that change under an agent. Safari may swap a tab for another under a
-// new id (a page it prepared ahead, shown in the tab's place): a call with
-// the old id reaches the new tab, and its result says replaced: {from, to},
-// so the agent can move to the new id. A popup an agent's page opens later,
-// outside any action (a sign-in window a script opens), is that agent's tab
-// too, and the agent's next result says popup: {tab, url}. The extension
-// reports both (background.js); tools.ts moves what it keeps per tab.
+// new id (a page it prepared ahead, shown in the tab's place), and gives
+// every tab a new id when the extension reloads (a deploy of it): a call
+// with an old id reaches the tab under its new one, and its result says
+// replaced: {from, to}, so the agent can move to the new id. A popup an
+// agent's page opens later, outside any action (a sign-in window a script
+// opens), is that agent's tab too, and the agent's next result says popup:
+// {tab, url}. The extension reports all three (background.js); tools.ts
+// moves what it keeps per tab.
 
 import { bridge } from "./bridge.ts";
 import { currentOwner } from "./owner.ts";
@@ -15,8 +17,9 @@ type News = { replaced?: Replaced; popup?: Popup };
 
 // Old id to newest, for the extension connection it was reported on. Once
 // the extension connects again, Safari may have started over and given an
-// old id to another tab; the extension's own aliases (background.js) still
-// lead an old id to its new tab while Safari runs.
+// old id to another tab; a reloaded extension says again, each time it
+// connects, which tab each old id names now (recordRenumbered), and its own
+// aliases (background.js) lead an old id to its new tab while Safari runs.
 const moved = new Map<number, { to: number; connectedAt: number | undefined }>();
 // Popups not yet reported, by the agent that owns them.
 const popups = new Map<number, Popup[]>();
@@ -27,6 +30,13 @@ export function recordReplaced(from: number, to: number): void {
   const connectedAt = bridge.extensionInfo?.connectedAt;
   for (const [old, m] of moved) if (m.to === from && m.connectedAt === connectedAt) moved.set(old, { to, connectedAt });
   moved.set(from, { to, connectedAt });
+}
+
+// Every tab's id after the extension reloaded, by the id it had before; the
+// extension has followed the swaps between already.
+export function recordRenumbered(tabs: Map<number, number>): void {
+  const connectedAt = bridge.extensionInfo?.connectedAt;
+  for (const [from, to] of tabs) moved.set(from, { to, connectedAt });
 }
 
 // The id a tab has now: a replaced one's newest id, or the id as it is.
@@ -65,7 +75,7 @@ export function splitNews(value: News): { line: string; rest: object } | null {
   const { replaced, popup, ...rest } = value;
   if (!replaced && !popup) return null;
   const lines = [
-    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}: Safari replaced it; use ${replaced.to}`] : []),
+    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}: Safari gave it a new id; use ${replaced.to}`] : []),
     ...(popup ? [`your page opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}; it is yours to use and close`] : []),
   ];
   return { line: lines.join("\n"), rest };

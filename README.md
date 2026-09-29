@@ -192,8 +192,9 @@ new one, and calls made meanwhile wait for it. If the new one does not
 come up, the previous release is put back. When the extension or the app
 changed, the app is installed over `/Applications` and Safari reloads the
 extension, which gives every tab a new id; the extension maps the ids
-agents hold to the new ones. An agent session keeps its MCP server's code,
-and omp's extension, until it restarts.
+agents hold to the new ones and tells the daemon, so each agent keeps its
+tabs. An agent session keeps its MCP server's code, and omp's extension,
+until it restarts.
 
 `scripts/dev-install.sh --rollback` goes back to the release before;
 `~/.local/share/safari-harness/deploys.log` lists every deploy. The five

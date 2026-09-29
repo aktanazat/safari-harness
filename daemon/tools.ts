@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { loginForm, passwords } from "./passwords.ts";
 import { challengeOf, type Challenge } from "./challenge.ts";
-import { followTab, queuePopup, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, notify, raiseSafari, SAFARI, show } from "./front.ts";
@@ -209,16 +209,35 @@ function save() {
 }
 
 // ---------- tabs that change id, and popups (continuity.ts) ----------
-// What the daemon keeps per tab follows a tab Safari swapped for another. A
-// popup an agent's tab opened on its own is that agent's, as a tab its click
-// opens is (action); one the user's own tabs open stays his.
+// What the daemon keeps per tab follows a tab Safari swapped for another,
+// and every tab once a reloaded extension says their new ids. A popup an
+// agent's tab opened on its own is that agent's, as a tab its click opens
+// is (action); one the user's own tabs open stays his.
 bridge.onTab = (e) => {
   if (e.kind === "replaced") {
     recordReplaced(e.from, e.to);
-    if (move(harnessTabs, e.from, e.to)) save();
-    move(lastSnapshot, e.from, e.to);
-    move(handoffs, e.from, e.to);
+    if (moveKept(e.from, e.to)) save();
     note("replaced", { from: e.from, to: e.to });
+    return;
+  }
+  if (e.kind === "renumbered") {
+    recordRenumbered(e.tabs);
+    // The reloaded extension no longer knows which tabs the harness owns
+    // (it lists them in session storage, which Safari empties), so it would
+    // refuse their closes at a turn's end, an exit, or 20 idle minutes,
+    // answer none of their dialogs, log none of their requests, and leave
+    // their popups the user's. Telling it how to answer a tab's dialogs
+    // owns the tab again (background.js), with the answer a tab opens
+    // with. A tab reported again, as the extension connects again, has
+    // moved here already and keeps what its agent has set since.
+    let owned = false;
+    for (const [from, to] of e.tabs) {
+      if (!moveKept(from, to)) continue;
+      owned = true;
+      void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
+    }
+    if (owned) save();
+    note("renumbered", { tabs: Object.fromEntries(e.tabs) });
     return;
   }
   const from = harnessTabs.get(e.opener);
@@ -227,6 +246,13 @@ bridge.onTab = (e) => {
   if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
   note("popup", { tab: e.tab, opener: e.opener });
 };
+
+// Says whether the tab is one the harness opened.
+function moveKept(from: number, to: number): boolean {
+  move(lastSnapshot, from, to);
+  move(handoffs, from, to);
+  return move(harnessTabs, from, to);
+}
 
 function move<V>(map: Map<number, V>, from: number, to: number): boolean {
   const v = map.get(from);

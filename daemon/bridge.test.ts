@@ -106,3 +106,23 @@ test("a request made while the extension reconnects goes out once it is back", a
   expect(await asked).toBe("tabs");
   expect(ext.asked).toEqual(["tabs.list"]);
 });
+
+// An extension that reloads can connect again before the daemon notices its
+// old socket is dead, and says at once which new id each tab has: those
+// ids are the new connection's, as its ticks are.
+test("the tab ids a reloaded extension sends while its dead socket still holds the connection count once it takes over", async () => {
+  const bridge = new Bridge(5);
+  const heard: { tabs: Map<number, number>; connectedAt: number | undefined }[] = [];
+  bridge.onTab = (e) => { if (e.kind === "renumbered") heard.push({ tabs: e.tabs, connectedAt: bridge.extensionInfo?.connectedAt }); };
+  const gone = extension(bridge);
+  const back = extension(bridge);
+  bridge.attach(gone.sock);
+  const before = bridge.extensionInfo?.connectedAt;
+  // connections are told apart by the millisecond they began
+  for (const began = Date.now(); Date.now() === began; );
+  bridge.attach(back.sock);
+  back.says({ op: "tab", kind: "renumbered", tabs: { 3: 10 } });
+  await gone.closed;
+  expect(heard).toEqual([{ tabs: new Map([[3, 10]]), connectedAt: bridge.extensionInfo?.connectedAt }]);
+  expect(bridge.extensionInfo?.connectedAt).not.toBe(before);
+});

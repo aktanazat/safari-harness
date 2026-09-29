@@ -18,7 +18,9 @@
 #     the previous release is put back.
 #   - The app and extension, when extension/ or "Safari Harness/" differ
 #     from the installed ones, or the extension is not connected. Safari
-#     reloads the extension, which reconnects to the daemon.
+#     reloads the extension, which reconnects to the daemon. Safari gives
+#     every tab a new id then; the extension tells the daemon each old id's
+#     new one, so agents keep their tabs and the ids they hold still work.
 # Agent sessions already running keep their MCP server process; before
 # each call it loads the daemon's release's daemon/mcp-tools.ts if that
 # differs from the code its calls run on, runs the call with it, and asks
