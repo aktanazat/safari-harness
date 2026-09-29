@@ -20,15 +20,17 @@ const execFileAsync = promisify(execFile);
 const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
 // How long the prompt waits for him.
 const PROMPT_S = 180;
+// How long a save waits for the helper's window asking to update it.
+const SAVE_WINDOW_MS = 20000;
 
 export type Paired = { paired: true } | { paired: false; why: string };
 
 // Runs file and resolves to its stdout. A pairing can outlive the call that
 // started it (the MCP server answers at ANSWER_MS and goes on), and a
 // prompt still up when this process exits could pair nothing, so it goes
-// down then, or when signal aborts.
-async function run(file: string, args: string[], timeout: number, signal?: AbortSignal): Promise<string> {
-  const running = execFileAsync(file, args, { timeout, signal });
+// down then.
+async function run(file: string, args: string[], timeout: number): Promise<string> {
+  const running = execFileAsync(file, args, { timeout });
   const kill = () => running.child.kill();
   process.once("exit", kill);
   try {
@@ -39,9 +41,9 @@ async function run(file: string, args: string[], timeout: number, signal?: Abort
 }
 
 // Runs scripts/pairing and parses its one JSON line; failures carry its stderr.
-async function pairing(args: string[], timeout: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function pairing(args: string[], timeout: number): Promise<Record<string, unknown>> {
   try {
-    return JSON.parse(await run(PAIRING, args, timeout, signal));
+    return JSON.parse(await run(PAIRING, args, timeout));
   } catch (e) {
     const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
     throw new Error(`pairing ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
@@ -61,11 +63,15 @@ export async function readCode(helper: number): Promise<string | undefined> {
 }
 
 // Presses Update Password in the helper's window that asks to save one for
-// site, which holds the save of a changed password (passwords.ts change),
-// until signal aborts. Resolves to whether it pressed.
-export async function confirmSave(helper: number, site: string, signal: AbortSignal): Promise<boolean> {
-  const pressed = await pairing(["confirm", "--pid", String(helper), "--site", site, "--wait", String(ANSWER_MS * 2)], ANSWER_MS * 2 + 5000, signal).catch(() => undefined);
-  return typeof pressed?.pressed === "string";
+// site, the only sign a changed password saved (passwords.ts change),
+// waiting up to SAVE_WINDOW_MS for it.
+export async function confirmSave(helper: number, site: string): Promise<{ pressed: string } | { why: string }> {
+  try {
+    const done = await pairing(["confirm", "--pid", String(helper), "--site", site, "--wait", String(SAVE_WINDOW_MS)], SAVE_WINDOW_MS + 5000);
+    return { pressed: String(done.pressed) };
+  } catch (e) {
+    return { why: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // The prompt's text goes in as an argument, so none of it is read as

@@ -58,6 +58,8 @@ export const ANSWER_MS = 40000;
 // answers; a code changes every 30 s.
 const KEEP_PASSWORD_MS = 5 * 60_000;
 const KEEP_CODE_MS = 20000;
+// How long a changed password waits for its save to be confirmed.
+const CHANGE_MS = 60_000;
 // A handed-back session is proved by any query the helper answers under it.
 const PROOF_HOST = "example.com";
 
@@ -267,6 +269,8 @@ export class ApplePasswords {
   private waiter: Waiter | null = null;
   // The request waiting on Touch ID, or its answer kept for the next call.
   private approval: Approval | null = null;
+  // A changed password saved but not yet typed, until typeChange or CHANGE_MS.
+  private pendingChange: { tab: number; frame: number; fresh: number; site: string; login: string; current: string | null; secret: string; drop: () => void } | null = null;
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
   // Agent sessions holding the pairing, by pid, each with its exit watch.
@@ -627,15 +631,15 @@ export class ApplePasswords {
     return this.state.session;
   }
 
+  // A helper request carrying body sealed under session s.
+  private sealed(s: Session, qid: string, host: string, body: Record<string, unknown>): Record<string, unknown> {
+    return { tabId: 0, frameId: 0, url: host, payload: { QID: qid, SMSG: JSON.stringify({ TID: s.user, SDATA: seal(s.key, body).toString("base64") }) } };
+  }
+
   // An encrypted query under session s. An answer that is not under s means
   // the helper has lost the pairing, which then ends here too.
   private async query(link: HelperLink, s: Session, cmd: number, qid: string, host: string, body: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>> {
-    const reply = await this.exchange(link, cmd, {
-      tabId: 0,
-      frameId: 0,
-      url: host,
-      payload: { QID: qid, SMSG: JSON.stringify({ TID: s.user, SDATA: seal(s.key, body).toString("base64") }) },
-    }, timeoutMs);
+    const reply = await this.exchange(link, cmd, this.sealed(s, qid, host, body), timeoutMs);
     const payload = reply.payload;
     const raw = payload && typeof payload === "object" && "SMSG" in payload ? payload.SMSG : undefined;
     const smsg: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -701,19 +705,17 @@ export class ApplePasswords {
     return entry.PWD;
   }
 
-  // Saves secret as username's password for host: the entry Safari makes
-  // when a form takes a password it suggested (MAYBE_ADD, 4), which
-  // replaces the saved password of an existing login once the user, or the
-  // caller for him (fill.ts), presses Update Password in the helper's own
-  // window; the helper answers nothing until then.
+  // Asks Apple Passwords to save secret as username's password for host:
+  // the entry Safari makes when a form takes a password it suggested
+  // (MAYBE_ADD, 4). The helper then asks in its own window whether to
+  // update or save it, and answers the request neither way (Apple's own
+  // extension ignores cmd 6 replies; on 09-29 a save it made waited 20 s
+  // for none), so only the window's button says whether it saved.
   private async save(host: string, username: string, secret: string): Promise<void> {
-    const res = await this.serial(async () => {
+    await this.serial(async () => {
       const s = await this.session();
-      return this.query(await this.ensureLink(), s, Cmd.SAVE, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }, 20000);
-    }).catch((e: unknown) => {
-      throw new Error(`Apple Passwords did not save the new password (${e instanceof Error ? e.message : String(e)}); if its window asking to update the password for ${host} is still up, press Not Now; nothing was typed into the page`);
+      (await this.ensureLink()).send(JSON.stringify({ helper: { cmd: Cmd.SAVE, ...this.sealed(s, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }) } }));
     });
-    if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords did not save the new password (status ${String(res.STATUS)}); nothing was typed into the page`);
   }
 
   // The current code from a verification-code setup saved for the site, for
@@ -800,14 +802,14 @@ export class ApplePasswords {
     return { sent: true, site, issuer: parsed.searchParams.get("issuer") ?? labelIssuer, account: account || labelIssuer };
   }
 
-  // Makes a strong password, saves it to Apple Passwords as the login's
-  // password for the form's site, and types it into the tab's new-password
-  // fields, with the saved current password in an empty current-password
-  // field. It is saved before it is typed, as Safari saves the one it
+  // Changing a password, first half: makes a strong password, asks Apple
+  // Passwords to save it as the login's password for the form's site, and
+  // keeps it for typeChange. The caller (fill.ts) presses Update Password
+  // in the helper's window, the only sign the save took, then calls
+  // typeChange. It is saved before it is typed, as Safari saves the one it
   // suggests, so no password the site takes lives only in the page; the
-  // current password is read first, while the saved one is still it. The
-  // result never carries either password.
-  async change(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true }> {
+  // current password is read first, while the saved one is still it.
+  async change(tab: number, username?: string): Promise<{ username: string; site: string; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page");
@@ -819,10 +821,30 @@ export class ApplePasswords {
       current = await this.password(site, login, "change");
     }
     const secret = strongPassword(form.maxLength);
+    this.dropChange();
     await this.save(site, login, secret);
-    const res = await bridge.tab(tab, "fillNewPassword", [site, current, secret], 30000, form.frame);
-    const sent = [...(current ? ["current password"] : []), "new password", ...(form.fresh === 1 ? [] : ["confirm password"])];
-    return { ...filledOf(res, sent, "new password"), username: login, site, saved: true };
+    const drop = this.timers.after(CHANGE_MS, () => this.dropChange());
+    this.pendingChange = { tab, frame: form.frame, fresh: form.fresh ?? 1, site, login, current, secret, drop };
+    const helper = runningHelper(this.profile);
+    return { username: login, site, ...(helper ? { helper } : {}) };
+  }
+
+  // Changing a password, second half, once its save was confirmed: types
+  // the new password into the tab's new-password fields, and the saved
+  // current one into an empty current-password field. The result never
+  // carries either password.
+  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true }> {
+    const c = this.pendingChange;
+    if (!c || c.tab !== tab) throw new Error("no password change waiting to be typed into this tab; call change again");
+    this.dropChange();
+    const res = await bridge.tab(tab, "fillNewPassword", [c.site, c.current, c.secret], 30000, c.frame);
+    const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
+    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true };
+  }
+
+  dropChange(): void {
+    this.pendingChange?.drop();
+    this.pendingChange = null;
   }
 
   // The daemon is exiting. Helium, its helper, and the pairing stay up for

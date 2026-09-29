@@ -889,6 +889,12 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "change":
       return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+    // The halves of change the caller runs around the helper's window
+    // (fill.ts); not in the tool's enum.
+    case "change-type":
+      return passwords.typeChange(await resolveTab(a.tab));
+    case "change-drop":
+      return passwords.dropChange();
     case "setup-code": {
       const tab = await resolveTab(a.tab);
       const url = (await listTabs()).find((t) => t.id === tab)?.url;

@@ -52,14 +52,15 @@ type Helper = { queries: string[]; answer: (m: Sent) => Record<string, unknown> 
 
 // Apple's helper process: shows CODE, verifies the client's proof, and
 // answers encrypted queries for one saved login under the session it paired.
-// A save (command 6) replaces that login's password, as the helper does.
+// A save (command 6) replaces that login's password and, as the helper
+// does, gets no answer.
 function appleHelper(): Helper {
   const queries: string[] = [];
   let srp: { user: string; A: Buffer; B: Buffer; b: bigint; v: bigint; salt: Buffer } | null = null;
   let key: Buffer | null = null;
   let saved = SECRET;
 
-  const answer = (m: Sent): Record<string, unknown> => {
+  const answer = (m: Sent): Record<string, unknown> | undefined => {
     const msg = m.msg && typeof m.msg === "object" && "PAKE" in m.msg ? m.msg : null;
     if (m.cmd === 14) return { cmd: 14, capabilities: { shouldUseBase64: true } };
     if (m.cmd === 2 && msg) {
@@ -93,11 +94,13 @@ function appleHelper(): Helper {
       d.setAuthTag(data.subarray(data.length - 32, data.length - 16));
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
       queries.push(`${m.cmd} ${q.URL ?? new URL(q.frameURLs[0]).hostname}`);
-      if (m.cmd === 6 && q.NUSR === USER) saved = q.NPWD;
+      if (m.cmd === 6) {
+        if (q.NUSR === USER) saved = q.NPWD;
+        return undefined;
+      }
       // A code query answers with Entry_N keys, as the helper does for codes.
       const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] }
         : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
-        : m.cmd === 6 ? { STATUS: 0 }
         : { STATUS: 0, Entries: [{ USR: q.USR, PWD: saved }] };
       const iv = randomBytes(16);
       const c = createCipheriv("aes-128-gcm", key, iv);
@@ -121,6 +124,7 @@ function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = 
       if ("stash" in msg) kept.stash = msg.stash;
       if (msg.helper) {
         const reply = helper.answer(msg.helper);
+        if (!reply) return;
         const deliver = () => p.handleMessage(JSON.stringify({ helper: reply }));
         if (msg.helper.cmd === hold?.cmd) hold.ask(deliver);
         else queueMicrotask(deliver);
@@ -368,12 +372,15 @@ test("code types the site's verification code into the page but never returns it
 });
 
 // The new password must be the one Apple Passwords keeps: a page given one
-// password while another is saved locks the user out of his account.
-test("change types the saved password into the current field and the password it saves into the new ones, and fill then types the new one", async () => {
+// password while another is saved locks the user out of his account. So
+// nothing is typed until the caller has confirmed the save.
+test("change saves a new password and types nothing; typeChange then types the saved one into the current field and the new one into the others, and fill types the new one", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
-  expect(await p.change(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
+  expect(await p.change(7)).toMatchObject({ username: USER, site: SITE });
+  expect(page.fresh).toBeUndefined();
+  expect(await p.typeChange(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
   expect(page.current).toBe(SECRET);
   expect(page.fresh).not.toBe(SECRET);
   await p.fill(7);
@@ -391,6 +398,7 @@ test.each([
   const page = fakeTab(url, { frame: 0, url, maxLength });
   await paired(p);
   await p.change(7);
+  await p.typeChange(7);
   expect(page.fresh).toMatch(shape);
 });
 

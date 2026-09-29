@@ -131,45 +131,44 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
 // Mac shows is read off its window or typed by him into a prompt there.
 // The agent learns only whether it paired, and the call goes on.
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
-  const status = async () => {
-    const s = await rpc("passwords", { do: "status" });
-    return s && typeof s === "object" ? (s as { unlocked?: boolean; helper?: number }) : {};
+  const unlocked = async () => {
+    const status = await rpc("passwords", { do: "status" });
+    return !!status && typeof status === "object" && "unlocked" in status && status.unlocked === true;
   };
+  const call = () => (a.do === "change" ? change(a) : rpc("passwords", a));
   if (a.do !== "pair") {
     try {
-      return await (a.do === "change" ? change(a, await status()) : rpc("passwords", a));
+      return await call();
     } catch (e) {
-      if (!["logins", "fill", "code", "change", "setup-code"].includes(String(a.do)) || (await status()).unlocked === true) throw e;
+      if (!["logins", "fill", "code", "change", "setup-code"].includes(String(a.do)) || (await unlocked())) throw e;
     }
-  } else if ((await status()).unlocked === true) {
+  } else if (await unlocked()) {
     return { paired: true };
   }
   const tab = a.tab === undefined ? undefined : await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]).catch(() => undefined);
   const form = tab === undefined ? undefined : await rpc("login_form", { tab }).catch(() => undefined);
   const site = form && typeof form === "object" && "site" in form && typeof form.site === "string" ? ` to sign in to ${form.site}` : "";
   const paired = await pairPasswords(site);
-  return a.do === "pair" || !paired.paired ? paired : rpc("passwords", a);
+  return a.do === "pair" || !paired.paired ? paired : call();
 }
 
 // A changed password is saved the way Safari saves one it suggested, and
 // Apple's helper then asks in its own window whether to update the saved
-// one, answering nothing until a button is pressed. Nobody watches that
-// window for an agent, so while the call runs, its Update Password is
-// pressed here, where the terminal's Accessibility access is; only the
-// window naming the tab's site.
-async function change(a: Record<string, unknown>, status: { helper?: number }): Promise<unknown> {
-  const tabs = (await rpc("tabs")) as TabInfo[];
-  const tab = await resolveTab(a.tab, async () => tabs);
-  const url = tabs.find((t) => t.id === tab)?.url;
-  if (status.helper === undefined || !url) return rpc("passwords", a);
-  const stop = new AbortController();
-  const pressed = confirmSave(status.helper, new URL(url).hostname, stop.signal);
-  try {
-    return await rpc("passwords", a);
-  } finally {
-    stop.abort();
-    await pressed;
+// one, and never answers the request: that window's button is the only
+// sign it saved. Nobody watches the window for an agent, so its Update
+// Password is pressed here, where the terminal's Accessibility access is,
+// only in the window naming the form's site, and only then is the new
+// password typed into the page.
+async function change(a: Record<string, unknown>): Promise<unknown> {
+  const asked = (await rpc("passwords", a)) as { site: string; helper?: number };
+  const pressed = asked.helper === undefined
+    ? { why: "Apple's password helper is not running" }
+    : await confirmSave(asked.helper, asked.site);
+  if ("why" in pressed) {
+    await rpc("passwords", { do: "change-drop" });
+    throw new Error(`Apple Passwords did not confirm saving the new password for ${asked.site} (${pressed.why}); nothing was typed into the page. If its window asking to update the password is still up, press Not Now, then call change again`);
   }
+  return rpc("passwords", { do: "change-type", tab: a.tab });
 }
 
 export const FILL_TOOLS: Record<string, Tool> = {
