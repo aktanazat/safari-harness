@@ -785,7 +785,10 @@ Signing in, in this order:
      password for the form's site, and types it into every new-password
      field. An empty current-password field gets the saved password (which
      may need Touch ID, as `fill` does). Pass `username` when several
-     logins are saved. It saves before it types, as Safari does, so submit
+     logins are saved. Apple's helper asks in its own window whether to
+     update the saved password; the call presses Update Password there,
+     only in the window naming the tab's site, which needs the calling
+     terminal's Accessibility permission. It saves before it types, as Safari does, so submit
      the form next; if the site refuses the new password, the saved one is
      already new, so reset the password through the site's email link and
      call `change` again on its form. The result names the fields filled,

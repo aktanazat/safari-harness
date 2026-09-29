@@ -9,8 +9,13 @@
 //   pairing code --pid N [--wait MS]
 //                                 the code process N's window shows, waiting
 //                                 up to MS (default 5000) for it: {"code"}
-// Each command prints one JSON line. code needs Accessibility permission for
-// the app that runs this.
+//   pairing confirm --pid N --site HOST [--wait MS]
+//                                 presses the default button of process N's
+//                                 window asking to save a password for HOST,
+//                                 waiting up to MS (default 5000) for it:
+//                                 {"pressed": the button's title}
+// Each command prints one JSON line. code and confirm need Accessibility
+// permission for the app that runs this.
 import ApplicationServices
 import Foundation
 import LocalAuthentication
@@ -99,10 +104,51 @@ func code(_ args: [String]) {
     fail("no pairing code showed in a window of process \(pid)")
 }
 
+// ---------- confirm ----------
+
+// Words the texts put in curly quotes: the helper names the login and the
+// site that way, “user” on “site”.
+func quoted(_ texts: [String]) -> [String] {
+    texts.flatMap { text in
+        text.split(separator: "“").dropFirst().compactMap { part in part.split(separator: "”", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) }
+    }
+}
+
+// A save the harness makes (MAYBE_ADD) waits on the helper's own "update
+// the password saved for ... ?" window, which answers nothing until a
+// button is pressed. Only a window naming HOST, or a domain HOST is under,
+// is pressed, and only its default button (Update Password or Save), found
+// by role, not by its translated title.
+func confirm(_ args: [String]) {
+    requireAccess()
+    guard let raw = option(args, "--pid"), let pid = pid_t(raw), pid > 1, let host = option(args, "--site"), !host.isEmpty else {
+        fail("usage: pairing confirm --pid N --site HOST [--wait MS]", 2)
+    }
+    let wait = Double(option(args, "--wait") ?? "5000") ?? 5000
+    let app = AXUIElementCreateApplication(pid)
+    let deadline = Date().addingTimeInterval(wait / 1000)
+    repeat {
+        for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+            guard quoted(texts(window)).contains(where: { host == $0 || host.hasSuffix("." + $0) }) else { continue }
+            guard let found = attribute(window, kAXDefaultButtonAttribute), CFGetTypeID(found) == AXUIElementGetTypeID() else {
+                fail("the helper's window for \(host) has no default button")
+            }
+            let button = found as! AXUIElement
+            let title = attribute(button, kAXTitleAttribute) as? String ?? ""
+            guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { fail("could not press \(title) in the helper's window") }
+            printJSON(["pressed": title])
+            exit(0)
+        }
+        usleep(100_000)
+    } while Date() < deadline
+    fail("no window asking to save a password for \(host) showed in process \(pid)")
+}
+
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
 case "approve": approve(rest)
 case "code": code(rest)
-default: fail("usage: pairing approve REASON | code --pid N [--wait MS]", 2)
+case "confirm": confirm(rest)
+default: fail("usage: pairing approve REASON | code --pid N [--wait MS] | confirm --pid N --site HOST [--wait MS]", 2)
 }

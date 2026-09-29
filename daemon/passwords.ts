@@ -159,7 +159,7 @@ type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error)
 // What the bridge says as it connects: whether its helper, and so any
 // pairing, still runs, and the sealed session it keeps.
 type Hello = { helper?: unknown; stash?: unknown };
-type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; waiting?: string };
+type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; waiting?: string; helper?: number };
 // A request the Mac holds until the user approves it with Touch ID: what it
 // is for, the call that gets its answer, and how long an answer that lands
 // after that call gave up is kept for the next.
@@ -403,11 +403,13 @@ export class ApplePasswords {
     await this.settle().catch(() => false);
     if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
     const a = this.approval;
+    const helper = runningHelper(this.profile);
     return {
       unlocked: true,
       sessions: this.holders.size,
       ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
       ...(a && !a.landed ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
+      ...(helper ? { helper } : {}),
     };
   }
 
@@ -700,11 +702,15 @@ export class ApplePasswords {
 
   // Saves secret as username's password for host: the entry Safari makes
   // when a form takes a password it suggested (MAYBE_ADD, 4), which
-  // replaces the saved password of an existing login.
+  // replaces the saved password of an existing login once the user, or the
+  // caller for him (fill.ts), presses Update Password in the helper's own
+  // window; the helper answers nothing until then.
   private async save(host: string, username: string, secret: string): Promise<void> {
     const res = await this.serial(async () => {
       const s = await this.session();
-      return this.query(await this.ensureLink(), s, Cmd.SAVE, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }, 10000);
+      return this.query(await this.ensureLink(), s, Cmd.SAVE, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }, 20000);
+    }).catch((e: unknown) => {
+      throw new Error(`Apple Passwords did not save the new password (${e instanceof Error ? e.message : String(e)}); if its window asking to update the password for ${host} is still up, press Not Now; nothing was typed into the page`);
     });
     if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords did not save the new password (status ${String(res.STATUS)}); nothing was typed into the page`);
   }
