@@ -1,8 +1,9 @@
 import { afterEach, expect, jest, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
+import { checkCall } from "./guard.ts";
 import { runAs } from "./owner.ts";
-import { callTool } from "./tools.ts";
+import { callTool, TOOLS } from "./tools.ts";
 
 // Calls a model wrote are checked and watched (guard.ts); /rpc marks them
 // so with callTool's third argument. Safari is a fake that answers each
@@ -78,6 +79,17 @@ test("a parameter the tool does not take fails before the page is asked, naming 
   const sent = safari(() => ({ value: { ok: true } }));
   await expect(model(105, "select", { tab: 7, ref: "3", optoin: "Blue" })).rejects.toThrow("unknown parameter optoin for select; did you mean option? (params: tab, ref, option, snapshot)");
   expect(sent).toEqual([]);
+});
+
+// Names agents wrote in the 09-27 to 09-29 logs, each a failed call.
+test.each([
+  ["eval", "code", "expression"],
+  ["history", "action", "do"],
+  ["passwords", "action", "do"],
+  ["learn", "note", "fact"],
+  ["map", "mode", "what"],
+])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
+  expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });
 
 test("waiting on the clock past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {
