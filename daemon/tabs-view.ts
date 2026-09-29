@@ -1,6 +1,6 @@
 // What the tabs tool shows its caller. An agent sees its own tabs: those in
-// its windows (spaces.ts) and the background tabs it opened (tools.ts),
-// wherever they went. Of the user's tabs it sees his front tab, which
+// its windows (spaces.ts) and the tabs it opened (tools.ts), wherever they
+// went. Of the user's tabs it sees his front tab, which
 // "front" names, and a count; host lists those on one site and all lists
 // every tab, a tab not its own cut to its origin and path. A research agent
 // once listed his whole Safari six times over, and a leak check sent his

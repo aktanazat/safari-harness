@@ -139,7 +139,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
     return failed(e, tab, at, rec.steps[at - 1], quiet, done, call);
   }
   // The tab it opened is done with; a close that fails leaves it to close
-  // with the caller's other background tabs.
+  // with the caller's other tabs.
   if (!given) await call("close", { tab }).catch(() => {});
   return { ok: true, ...done, ...(value === undefined ? {} : { value }) };
 }

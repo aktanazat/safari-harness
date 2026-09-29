@@ -588,9 +588,9 @@ const SCRIPT = String.raw`
     resume: () => "Resumed.",
     drive: (out) => out.tab === null ? "Paused. It has no tab open to hand you." : "Paused, with its tab in front. Give it back when you are done.",
     giveback: () => "Given back. It carries on.",
-    stop: () => "Stopped. Its background tabs close, and its calls fail from now on.",
+    stop: () => "Stopped. Its tabs close, and its calls fail from now on.",
   };
-  const ARMING = "Press again to stop it. Its background tabs close, and its calls fail from now on.";
+  const ARMING = "Press again to stop it. Its tabs close, and its calls fail from now on.";
   let timer = 0;
   let loading = false;
   let again = false;

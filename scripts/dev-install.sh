@@ -7,10 +7,10 @@
 # A deploy takes a commit, never the working tree: it copies the commit into
 # ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
 # and points ~/.local/share/safari-harness/current at it in one step. The
-# CLI (~/.bun/bin/safari), omp's safari MCP server and the launchd jobs (the
-# daemon and routines) all run from current, so edits in a checkout reach
-# no one until they are committed and deployed. Then only what changed
-# restarts:
+# CLI (~/.bun/bin/safari), omp's safari MCP server and extension, and the
+# launchd jobs (the daemon and routines) all run from current, so edits in
+# a checkout reach no one until they are committed and deployed. Then only
+# what changed restarts:
 #   - The daemon, when what it runs (daemon/codehash.ts) differs from what
 #     the running daemon reports, or its launchd job runs something else.
 #     It finishes its calls in flight first, and calls that arrive meanwhile
@@ -19,11 +19,11 @@
 #   - The app and extension, when extension/ or "Safari Harness/" differ
 #     from the installed ones, or the extension is not connected. Safari
 #     reloads the extension, which reconnects to the daemon.
-# Agent sessions already running keep their MCP server's code until they
-# start again; each server notices the new release on its next call, asks
-# its client to list the tools again, and answers with a restart message
-# (daemon/fresh.ts). deploys.log records each deploy; the last releases
-# stay for --rollback. One deploy runs at a time.
+# Agent sessions already running keep their MCP server's code, and omp's
+# extension, until they start again; each server notices the new release
+# on its next call, asks its client to list the tools again, and answers
+# with a restart message (daemon/fresh.ts). deploys.log records each
+# deploy; the last releases stay for --rollback. One deploy runs at a time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,6 +37,7 @@ BASE="${SAFARI_HARNESS_HTTP:-http://127.0.0.1:37334}"
 JOBS="$HOME/Library/LaunchAgents"
 DAEMON=at.aktan.safari-harness.daemon
 MCP="$HOME/.omp/agent/mcp.json"
+EXTENSIONS="$HOME/.omp/agent/extensions"
 # releases kept besides the current one, however old
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
@@ -134,7 +135,7 @@ else
   full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
   sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
   git -C "$ROOT" cat-file -e "$full:daemon/codehash.ts" 2>/dev/null || { echo "$sha predates deploys by release; deploy a later commit" >&2; exit 1; }
-  left="$(git -C "$ROOT" status --porcelain -- daemon cli extension "Safari Harness" scripts passwords-bridge docs package.json | wc -l | tr -d ' ')"
+  left="$(git -C "$ROOT" status --porcelain -- daemon cli extension "Safari Harness" scripts passwords-bridge docs omp package.json | wc -l | tr -d ' ')"
   [ "$left" = 0 ] || echo "note: $left uncommitted change(s) in the checkout are not deployed"
   if [ ! -d "$RELEASES/$sha" ]; then
     tmp="$(mktemp -d "$RELEASES/.new.XXXXXX")"
@@ -179,6 +180,9 @@ echo "current: release $sha"
 [ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
 [ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
   echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
+# omp tells the daemon as each turn ends, which closes the tabs of the turn
+# (omp/index.ts); a session loads it as it starts
+[ ! -d "$EXTENSIONS" ] || [ "$(readlink "$EXTENSIONS/safari-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/safari-harness"
 for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
   [ -f "$plist" ] || continue
   label="$(basename "$plist" .plist)"

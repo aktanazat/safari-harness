@@ -745,11 +745,12 @@ async function handle(msg) {
         .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}), ...(t.active && t.windowId === shown ? { shown: true } : {}) }));
     }
     case "tabs.open": {
-      const [url, background, windowId] = args;
+      // owned: the daemon may close it, and its dialogs are answered here
+      const [url, background, windowId, owned = background] = args;
       const tab = await api.tabs.create({ url: url || "about:blank", active: !background, ...(typeof windowId === "number" ? { windowId } : {}) });
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
-      if (background) await ownTab(tab.id);
+      if (owned) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
       const t = await titled(tab.id);
       return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId };

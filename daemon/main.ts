@@ -11,6 +11,8 @@
 //     /rpc           {tool,args,caller} -> {ok,value|error}   (CLI + MCP client)
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
+//     /turn-end      {owner} omp handed the turn back: close that agent's
+//                    tabs (omp/index.ts)
 //     /shutdown      {reason} stop once the calls in flight finish
 //     /space         the live page an agent window opens on, with its state
 //                    and controls; /agents, every agent at work (mission.ts)
@@ -18,7 +20,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
-import { TOOLS, callTool, loadTabs } from "./tools.ts";
+import { TOOLS, callTool, endTurn, loadTabs } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent } from "./journal.ts";
@@ -205,6 +207,15 @@ const rpcServer = Bun.serve({
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
       }
+    }
+    // An omp turn ended (omp/index.ts), and with it its agent's use of the
+    // tabs it opened. omp's own pid names it: its tabs are those of its
+    // children (owner.ts).
+    if (url.pathname === "/turn-end" && req.method === "POST") {
+      const owner = safeParse(await req.text())?.owner;
+      if (!Number.isInteger(owner) || Number(owner) <= 1) return Response.json({ ok: false, error: "owner must be a process id" }, { status: 400 });
+      endTurn(Number(owner));
+      return Response.json({ ok: true });
     }
     if (url.pathname === "/shutdown" && req.method === "POST") {
       const reason = safeParse(await req.text())?.reason;

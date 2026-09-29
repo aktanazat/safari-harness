@@ -58,8 +58,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   never a read of whatever tab is in front.
 - `tab: "front"` (CLI `--tab front`) names the user's front tab on purpose:
   the active tab of the Safari window he had in front last. Use it only when
-  he asks about the page he is looking at. `close`, `activate`, and `window`
-  take only a tab id.
+  he asks about the page he is looking at. `close`, `keep`, `activate`, and
+  `window` take only a tab id.
 - `tabs` lists your own tabs (those you opened, and any tab in your
   windows), then his front tab as `{id, windowId, active, front}`, then one
   line: `the user has N other tabs; pass host: "github.com" to see those on
@@ -91,22 +91,26 @@ Safari is the user's everyday browser, so treat his tabs as his.
   which says why, is removed.
 - When your process exits, or the window has held only its page for two
   minutes, the task ends. A plain window's page closes: the window goes with
-  your last tab, and a tab you opened in front stays there for him. A tab
-  group's tabs left for him (opened in front, or `keep`) move to windows of
-  their own, then the group is deleted with its page, again only while he is
-  away from the keys. A group that cannot go yet waits in
+  your last tab, and a tab you kept stays there for him. A tab group's tabs
+  left for him (kept) move to windows of their own, then the group is
+  deleted with its page, again only while he is away from the keys. A
+  group that cannot go yet waits in
   `~/.local/share/safari-harness/groups.json` for the next keeper.
-- Close your tab with `close` when the task ends, on success or failure.
-  Background tabs you opened (and tabs they opened) close within a few
-  seconds after your agent process exits (omp, claude, codex, a bun or
-  python script, or the terminal's login session), whether you called them
-  through MCP or the CLI, so a one-shot task can finish with its answer
-  instead of a `close` call. The daemon keeps that list across its own
-  restarts. A background tab nobody has used for 20 minutes closes too,
-  unless the user has it in front. `keep: true` on `open` (CLI `safari open
-  <url> --bg --keep`) leaves a tab open for the user to finish himself. Tabs
-  opened in front and tabs on another Mac (`--host`) are never closed this
-  way.
+- Your tabs close when your turn ends: as omp hands the turn back to the
+  user, it tells the daemon (`omp/index.ts`), which closes every tab you
+  opened, and tabs they opened, whether you called it through MCP or the
+  CLI. A finished task needs no `close` call. One the user has in front
+  stays until he has left it for 20 minutes. Outside omp they close within
+  a few seconds after your agent process exits (claude, codex, a bun or
+  python script, or the terminal's login session); the daemon keeps that
+  list across its own restarts. A tab nobody has used for 20 minutes
+  closes too, unless the user has it in front.
+- Keep a tab only while it waits on the user: a page he asked to see, or a
+  form waiting on his answer. `keep: true` on `open` (CLI `safari open
+  <url> --keep`), or `keep {tab}` once you know (CLI `safari keep <tab>`),
+  leaves it open past your turn and your exit; close it yourself once he
+  is done with it. Tabs on another Mac (`--host`) close only once nobody
+  has used them for 20 minutes.
 - A native sheet (a sign-in or permission prompt) can keep Safari from
   closing a tab. A tab the harness opened still closes, within about 15 s;
   `close` on any other tab so held, or in a window off screen, fails within
@@ -148,9 +152,9 @@ the same buttons.
 - Let me drive: he takes over the tab you used last, brought to the front
   of its window, and you are paused until he presses Give back.
 - Stop: every later call fails with "the user stopped this task from its
-  window; stop and tell the user what you had done". Your background tabs
-  close; the window keeps its page, marked stopped, and goes two minutes
-  later or when your process exits. It lasts until your process exits.
+  window; stop and tell the user what you had done". Your tabs close; the
+  window keeps its page, marked stopped, and goes two minutes later or
+  when your process exits. It lasts until your process exits.
   Stop there: tell him what you finished and what you did not.
 - Calls with no agent process behind them show under "no agent" and
   cannot be paused or stopped.

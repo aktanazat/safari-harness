@@ -8,8 +8,9 @@ Tabs
 - `open` returns a tab id. Pass it as `tab` to every call; a call without
   one is an error. `tab: "front"` is his own front tab: use it only when he
   asks about the page he is on. Never navigate, type in, or close his tabs.
-- Close the tabs you open, on success or failure. Background tabs close
-  when your session ends anyway; `--keep` (CLI) leaves one open for him.
+- Your tabs close when your turn ends, on success or failure. Keep one
+  only while it waits on the user, a page he asked to see or a form
+  waiting on his answer: `keep {tab}`, or `keep` on `open`.
 - The user can pause or stop you from your window's first tab. When a
   call fails saying so, do what it says: wait and call again, or stop and
   report.

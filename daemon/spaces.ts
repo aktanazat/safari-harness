@@ -19,9 +19,9 @@
 //
 // When the agent exits, or its window has held nothing but its page for
 // IDLE_MS, the assignment ends. A plain window's page closes: the window
-// goes with the agent's last tab (close-on-exit, tools.ts), and a tab it
-// opened in front stays there for the user. A group waits for the keeper,
-// which moves every tab but the page out to windows of the user's own
+// goes with the agent's last tab (tools.ts closes them), and a tab it kept
+// stays there for the user. A group waits for the keeper, which moves
+// every tab but the page out to windows of the user's own
 // (release) and deletes the group, closing the page with it. So does a
 // window the keeper is making a group of, until it says how that went:
 // closed under its steps, the window left a group no one deleted. Only a

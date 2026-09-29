@@ -47,6 +47,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari goto <url> --tab N                  navigate
   safari back|forward|reload --tab N         history
   safari close <tab>                         close a tab
+  safari keep <tab>                          leave a tab open for the user when your
+                                             turn ends
   safari focus <tab>                         activate a tab
   safari snapshot --tab N [--query text] [--root sel] [--diff]
                                              page outline with [ref]s
@@ -65,9 +67,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari scroll <dy> --tab N                 scroll
 
   Page commands need --tab N, the id open printed, or --tab front for the
-  tab the user has in front. Background tabs a command opens (--bg) close
-  once the program that ran safari exits, or after 20 minutes unused;
-  --keep leaves them open.
+  tab the user has in front. Tabs a command opens close when omp's turn
+  ends, once the program that ran safari exits, or after 20 minutes
+  unused; --keep on open, or safari keep <tab>, leaves one open for him.
 
   Actions (open goto back forward reload click clickat type press select
   hover upload) take --snapshot to print the resulting page too.
@@ -575,7 +577,7 @@ async function main() {
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
-    case "close": case "focus": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
+    case "close": case "focus": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);
       if (root) args.root = root;

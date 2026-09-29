@@ -183,7 +183,7 @@ test("a call held for a minute and a half fails with the pause message", async (
   }
 });
 
-test("a stopped agent's next call fails with the stop message and its background tabs close, while another agent's stay", async () => {
+test("a stopped agent's next call fails with the stop message and its tabs close, while another agent's stay", async () => {
   const [a, b] = [agent(), agent()];
   const aTab = await open(a.pid, "https://a.example/");
   const bTab = await open(b.pid, "https://b.example/");

@@ -75,10 +75,11 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
 }
 
 // Every tab opens in a window of the calling agent's own (spaces.ts), which
-// the result names.
-export async function openTab(url: string, background = false, group?: string): Promise<TabInfo & { space: SpaceNote }> {
+// the result names. The extension answers an owned tab's dialogs, keeps it
+// running while hidden, and lets the daemon close it (background.js).
+export async function openTab(url: string, background = false, group?: string, owned = background): Promise<TabInfo & { space: SpaceNote }> {
   const space = await spaceWindow(group);
-  const t = (await bridge.request("tabs.open", [str(url, "url"), background, space.window])) as TabInfo;
+  const t = (await bridge.request("tabs.open", [str(url, "url"), background, space.window, owned])) as TabInfo;
   return { ...t, space: spaceNote(space) };
 }
 
@@ -93,9 +94,10 @@ export async function closeTab(tab: number): Promise<unknown> {
   return res;
 }
 
-// A background tab an agent opens closes once that agent exits (owner.ts),
-// or once it sits untouched for IDLE_MS while the user does not have it in
-// front; keep leaves it open. Tabs a click opens from one inherit its
+// A tab an agent opens closes when the agent hands its turn back to the
+// user (endTurn), once it exits (owner.ts), or once it sits untouched for
+// IDLE_MS; a turn's end and IDLE_MS spare a tab the user has in front. keep
+// leaves a tab open for him. Tabs a click opens from one inherit its
 // owner. The list is kept in a file, so a restarted daemon still closes
 // them, and the extension closes only a tab the harness owns, so an id
 // Safari has given another tab since is left alone. A tab it cannot close
@@ -138,11 +140,28 @@ function orphan(owner: number) {
   void sweep();
 }
 
-// The user stopped owner from its window (mission.ts): its background tabs
-// close now, as they would once it exits.
+// The user stopped owner from its window (mission.ts): its tabs close now,
+// as they would once it exits.
 export function closeTabsOf(owner: number): void {
   watches.get(owner)?.();
   orphan(owner);
+}
+
+// owner handed its turn back to the user (main.ts, told by omp/index.ts):
+// it is done with its tabs, as if it had left them for IDLE_MS. Before,
+// they stayed open until it exited or left them for 20 minutes; his order
+// of 09-28 is to close a tab once it has served its purpose.
+export function endTurn(owner: number): void {
+  for (const t of harnessTabs.values()) if (t.owner === owner) t.used = 0;
+  void sweep();
+}
+
+// A tab the user is to see or answer outlives its agent's turn and its
+// exit, as one opened with keep does. The extension still answers its
+// dialogs, so the agent can go on in it once he has answered.
+export function keepTab(tab: number): { ok: true } {
+  forget(followTab(tab));
+  return { ok: true };
 }
 
 async function sweep() {
@@ -875,12 +894,13 @@ export const TOOLS: Record<string, Tool> = {
   },
   open: {
     desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
-    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open after you exit" }, snapshot: PAGE },
+    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open for the user" }, snapshot: PAGE },
     required: ["url"],
     run: async (a) => {
-      const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"));
-      // a tab opened in front is the user's to close
-      if (a.background && !a.keep) own(t.id, currentOwner());
+      // A kept tab is the user's to close; one kept in front also shows him
+      // its dialogs.
+      const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
+      if (!a.keep) own(t.id, currentOwner());
       return withPage(withNotes(await withChallenge(t, t.id)), t.id, a.snapshot);
     },
   },
@@ -893,6 +913,12 @@ export const TOOLS: Record<string, Tool> = {
     run: spaceTool,
   },
   close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
+  keep: {
+    desc: "Leave a tab you opened open for the user when your turn ends: a page he asked to see, or a form waiting on his answer. Your other tabs close then.",
+    params: { tab: OWN_TAB },
+    required: ["tab"],
+    run: async (a) => keepTab(num(a.tab, "tab")),
+  },
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },

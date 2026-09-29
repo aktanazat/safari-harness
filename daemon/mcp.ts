@@ -43,7 +43,7 @@ const REPL_TOOL: Tool = {
 };
 
 const SESSION_NOTES: Record<string, string> = {
-  close: " Not needed once you have the answer: background tabs close themselves when this session ends. Reply instead.",
+  close: " Not needed once you have the answer: your tabs close themselves when your turn ends. Reply instead.",
 };
 
 // Caller tools run here, not in the daemon: this process inherits the

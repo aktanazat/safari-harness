@@ -69,8 +69,11 @@ import { expect, test } from "bun:test";
 // click stays in the background (53) brought it to 22,730: an agent clicks
 // a site that ignores scripted clicks without taking the user's screen.
 // Alerts moving to Telegram, where the user cannot answer (-169), brought
-// it to 22,561: ask lost its choices and its wait for a reply.
-const TOOL_LIST_MAX_BYTES = 22_561;
+// it to 22,561: ask lost its choices and its wait for a reply. The keep
+// tool, with close saying tabs close as the turn ends (300), brought it to
+// 22,861: tabs an agent left open as it replied piled up in his Safari
+// until it exited, while a form waiting on his answer has to stay.
+const TOOL_LIST_MAX_BYTES = 22_861;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

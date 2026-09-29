@@ -53,8 +53,8 @@ afterAll(async () => {
 });
 const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
 // the tab the stand-in handed out last is the one just opened
-const open = async (background = true) => {
-  await as("open", { url: "https://a.example/", background });
+const open = async (background = true, keep = false) => {
+  await as("open", { url: "https://a.example/", background, keep });
   return nextTab;
 };
 
@@ -106,9 +106,9 @@ test("a popup an agent's tab opens on its own is that agent's, and its next resu
   expect(await as("info", { tab: opener })).not.toHaveProperty("popup");
 });
 
-test("a popup from a tab the agent opened in front, which is the user's, is left alone", async () => {
-  const front = await open(false);
-  fromExtension({ kind: "popup", tab: 270, opener: front, url: "https://login.example/" });
+test("a popup from a tab the agent kept for the user, which is his, is left alone", async () => {
+  const kept = await open(false, true);
+  fromExtension({ kind: "popup", tab: 270, opener: kept, url: "https://login.example/" });
   expect(owners()).not.toContainKey("270");
-  expect(await as("info", { tab: front })).not.toHaveProperty("popup");
+  expect(await as("info", { tab: kept })).not.toHaveProperty("popup");
 });
