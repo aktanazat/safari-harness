@@ -351,14 +351,16 @@ order. The rules are fixed, so the same page always reads the same way.
   `role="presentation"` lays out the page and is skipped, and so is a table
   that is not drawn.
 - A card list (`kind: "cards"`) is 3 or more sibling elements with the same
-  structure: a product grid, search results, a list of orders. A card's
-  fields are the text of each element in it, in page order, each link's
-  address after the link's text. `headers` names each field by its
-  element's tag and first class (`h3`, `span.price`, `a href`). A card
-  whose structure differs (one with an extra badge) is left out, or forms a
-  list of its own. A list whose cards hold fewer than 2 pieces of text (a
-  menu of links) is skipped, and a list inside a card of another list is
-  part of that card.
+  tag and first class: a product grid, search results, a list of orders. A
+  card's fields are the text of each element in it, in page order, each
+  link's address after the link's text. `headers` names each field by its
+  element's tag and first class after its parent's (`h3`,
+  `div.pricing > span.val`, `a href`); a name a card repeats is numbered
+  (`span.spec 2`). Cards whose fields differ (one with a "Price drop"
+  badge, a sponsored one) share the list: `headers` holds every field any
+  card has, and a card without one has `""` there. A list whose cards hold
+  fewer than 2 pieces of text (a menu of links) is skipped, and a list
+  inside a card of another list is part of that card.
 - `selector` narrows the read to one region, and may name the table or
   list itself. `query` keeps the rows containing the text. `maxBytes`
   (default 20000) bounds the JSON of what comes back; `truncated: true`

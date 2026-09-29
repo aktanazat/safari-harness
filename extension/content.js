@@ -1721,7 +1721,7 @@
   // ---------- tables as rows ----------
   // extract with as: "table" reads the page's data as rows instead of text:
   // each table (a <table>, or an element with the ARIA table or grid role),
-  // and each run of 3 or more cards of the same structure among siblings (a
+  // and each run of 3 or more cards of the same kind among siblings (a
   // product grid, search results). The rules are fixed, so the same page
   // always reads the same.
 
@@ -1823,8 +1823,8 @@
   }
 
   // The card lists among el's children: 3 or more drawn children with the
-  // same tag, first class, and fields, each with 2 or more text fields (a
-  // menu of bare links is not data).
+  // same tag and first class, each with 2 or more text fields (a menu of
+  // bare links is not data).
   function cardsOf(el) {
     if (el.children.length < 3 || el.closest(`table,select,svg,${TABLE_ROLES}`)) return [];
     const lists = [];
@@ -1832,22 +1832,52 @@
       if (alike.length < 3) continue;
       const cards = alike.map((card) => (drawn(card) ? cardFields(card) : null))
         .filter((fields) => fields && fields.filter((f) => !f.link).length >= 2);
-      for (const same of Map.groupBy(cards, (fields) => fields.map((f) => f.key).join(" ")).values()) {
-        if (same.length >= 3) lists.push({ kind: "cards", headers: same[0].map((f) => f.key), rows: same.map((fields) => fields.map((f) => f.value)) });
-      }
+      if (cards.length >= 3) lists.push(cardList(cards));
     }
     return lists;
   }
 
+  // One list for cards whose fields differ (one with an extra badge): its
+  // headers are every field any card has, in page order, and a card without
+  // a field has "" there. A key a card repeats is numbered ("span.spec",
+  // "span.spec 2"), so each value keeps a column.
+  function cardList(cards) {
+    const keyed = cards.map((fields) => {
+      const seen = new Map();
+      return fields.map(({ key, value }) => {
+        const n = (seen.get(key) ?? 0) + 1;
+        seen.set(key, n);
+        return [n > 1 ? `${key} ${n}` : key, value];
+      });
+    });
+    const headers = [];
+    for (const fields of keyed) {
+      let at = 0;
+      for (const [key] of fields) {
+        const i = headers.indexOf(key);
+        if (i < 0) headers.splice(at++, 0, key);
+        else at = i + 1;
+      }
+    }
+    return { kind: "cards", headers, rows: keyed.map((fields) => {
+      const byKey = new Map(fields);
+      return headers.map((h) => byKey.get(h) ?? "");
+    }) };
+  }
+
   // A card's fields in page order: the own text of each drawn element
-  // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class,
-  // and each link's address after its text. null when it has too many.
+  // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class
+  // after its parent's (a price and a mileage in one class of span keep
+  // apart), and each link's address after its text. null when it has too
+  // many.
   function cardFields(card) {
     const fields = [];
     const add = (el) => {
+      const up = el === card ? null : el.parentElement ?? el.getRootNode().host;
+      const key = up && up !== card ? `${keyOf(up)} > ${keyOf(el)}` : keyOf(el);
       const own = norm([...el.childNodes].map((n) => (n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.nodeName === "BR" ? " " : "")).join(""));
-      if (own && drawn(el)) fields.push({ key: keyOf(el), value: own });
-      if (el.tagName === "A" && el.href) fields.push({ key: `${keyOf(el)} href`, value: el.href, link: true });
+      if (own && drawn(el)) fields.push({ key, value: own });
+      if (el.tagName === "A" && el.href) fields.push({ key: `${key} href`, value: el.href, link: true });
       return fields.length <= CARD_FIELDS_MAX;
     };
     if (!add(card)) return null;

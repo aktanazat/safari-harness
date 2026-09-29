@@ -260,4 +260,27 @@ benchRows("content.js in WebKit", [
       },
     ],
   },
+  {
+    name: "a card list reads every card, one with an extra field too, each field in a column of its own by where it sits",
+    page: "cards.html",
+    steps: [{
+      op: "extract",
+      args: [{ as: "table" }],
+      answer: {
+        value: {
+          truncated: false,
+          tables: [{
+            kind: "cards",
+            headers: ["p.sponsored", "a.card-link href", "a.card-link > h3.title", "div.drop > span.val", "div.info > span.val", "div.pricing > span.val", "span.spec", "span.spec 2"],
+            rows: [
+              ["", "file:///cars/101", "2021 BMW M340i", "", "24,100 mi", "$38,900", "AWD", "Automatic"],
+              ["", "file:///cars/102", "2022 BMW M340i", "Price drop", "18,020 mi", "$41,250", "RWD", "Automatic"],
+              ["", "file:///cars/103", "2020 BMW M340i", "", "40,870 mi", "$33,500", "AWD", "Manual"],
+              ["Sponsored", "file:///cars/104", "2023 BMW M340i", "", "9,310 mi", "$47,995", "AWD", "Automatic"],
+            ],
+          }],
+        },
+      },
+    }],
+  },
 ]);
