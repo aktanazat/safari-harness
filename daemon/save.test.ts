@@ -42,9 +42,9 @@ test("a saved read holds the whole output, past the limit a reply is cut at", as
   expect(readFileSync(path, "utf8")).toBe(TEXT);
 });
 
-test("a saved read answers with only the file's path, its size in bytes, and its first 500 characters", async () => {
+test("a saved read answers with only the file's path, the page's address, its size in bytes, and its first 500 characters", async () => {
   const path = join(dir, "reply.txt");
-  expect(await callTool("extract", { tab: 1, save: path })).toEqual({ saved: path, bytes: Buffer.byteLength(TEXT), head: TEXT.slice(0, 500) });
+  expect(await callTool("extract", { tab: 1, save: path })).toEqual({ saved: path, url: "https://shop.example/items", bytes: Buffer.byteLength(TEXT), head: TEXT.slice(0, 500) });
 });
 
 test("an expression's string value is saved as its text, any other value as JSON", async () => {

@@ -4,7 +4,8 @@
 // notification, watches the page, and gives back the tab and app the user
 // had in front once they are done. This half alerts their phone when they
 // are away from the Mac, once per handoff, with a picture of the page. They
-// cannot answer the alert; the handoff ends when the page clears.
+// cannot answer the alert; the handoff ends when the page clears, or shows
+// the text until names.
 
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,10 +38,11 @@ async function alertUser(tab: number, h: Handed): Promise<string> {
   }
 }
 
-async function handoff(tab: number, why: string, ms = 60000): Promise<Handed> {
+async function handoff(tab: number, why: string, ms = 60000, until?: string): Promise<Handed> {
   const end = Date.now() + Math.min(ms, LIMIT_MS);
-  const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number }) => (await rpc("handoff_wait", { tab, why, ...o })) as Handed;
-  const first = await wait({ ms: 0 });
+  const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number; until?: string }) => (await rpc("handoff_wait", { tab, why, ...o })) as Handed;
+  // until goes with the call that starts the handoff; the later ones join it
+  const first = await wait({ ms: 0, ...(until === undefined ? {} : { until }) });
   let h = first;
   while (!h.done) {
     const alerted = h.alert ? await alertUser(tab, h).catch((e: Error) => `not sent: ${e.message}`) : undefined;
@@ -54,9 +56,11 @@ async function handoff(tab: number, why: string, ms = 60000): Promise<Handed> {
 }
 
 // joined is this call's own (its later slices join its handoff too); id is
-// only how they name it.
+// only how they name it. alerted is always there: on 09-29 two handoffs
+// that ran out said nothing of the user's phone, so the agent could not
+// tell a user at the Mac from an alert that never went.
 function answer(h: Handed, first: Handed): Handed {
-  const out: Handed = { ...h };
+  const out: Handed = { ...h, alerted: h.alerted ?? "not sent: at the Mac" };
   delete out.id;
   if (!first.joined) delete out.joined;
   return out;
@@ -64,14 +68,15 @@ function answer(h: Handed, first: Handed): Handed {
 
 export const HANDOFF_TOOLS: Record<string, Tool> = {
   handoff: {
-    desc: "For a step only the user can do: a bot check (challenge in a result), a passkey, Touch ID. Shows them the tab and why, and alerts their phone if they are away (they cannot answer it); returns when done; done: false: call again.",
-    params: { tab: TAB, why: { type: "string", description: "what to do, for the notice" }, ms: { type: "number", description: "default 60000, max 110000" } },
+    desc: "For a step only the user can do: a bot check (challenge in a result), a passkey, Touch ID. Shows them the tab and why, and alerts their phone if they are away; returns when done; done: false: call again.",
+    params: { tab: TAB, why: { type: "string", description: "what to do, for the notice" }, ms: { type: "number", description: "default 60000, max 110000" }, until: { type: "string", description: "text shown once done" } },
     required: ["tab", "why"],
     run: async (a) => {
       if (typeof a.why !== "string") throw new Error("why must be a string");
+      if (a.until !== undefined && typeof a.until !== "string") throw new Error("until must be text the page shows once the user is done");
       const ms = a.ms === undefined ? undefined : Number(a.ms);
       if (ms !== undefined && !Number.isFinite(ms)) throw new Error("ms must be a number");
-      return handoff(await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]), a.why, ms);
+      return handoff(await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]), a.why, ms, a.until);
     },
   },
 };

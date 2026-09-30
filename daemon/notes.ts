@@ -290,16 +290,17 @@ async function agentName(): Promise<string> {
 
 // The sites each agent has been told about, so a site's notes and readers
 // come once per agent: with the first open, goto, or snapshot result on it
-// or on one of its subdomains. Calls with no agent known (another Mac's)
-// share one list.
+// or on one of its subdomains. A page not found there brings them again
+// (again), since a note may say why the page is missing. Calls with no
+// agent known (another Mac's) share one list.
 const told = new Map<number | undefined, Set<string>>();
 
 // The lines for a result on the page at url, for its host and each site
-// above it with notes or readers the agent has not had: the notes
-// themselves up to INLINE_CHARS, else their count, and the readers' names.
-// undefined when there are none. A file that cannot be read costs its
-// lines, not the result.
-export function firstNotes(url: unknown): string | undefined {
+// above it with notes or readers the agent has not had, or, with again,
+// has: the notes themselves up to INLINE_CHARS, else their count, and the
+// readers' names. undefined when there are none. A file that cannot be read
+// costs its lines, not the result.
+export function firstNotes(url: unknown, again = false): string | undefined {
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return undefined;
   let host: string;
   try {
@@ -317,7 +318,7 @@ export function firstNotes(url: unknown): string | undefined {
   }
   const lines: string[] = [];
   for (const site of sitesOf(host)) {
-    if (sites.has(site)) continue;
+    if (sites.has(site) && !again) continue;
     sites.add(site);
     try {
       lines.push(...linesFor(site));
@@ -328,12 +329,15 @@ export function firstNotes(url: unknown): string | undefined {
   return lines.length ? lines.join("\n") : undefined;
 }
 
+// Notes past INLINE_CHARS come as a count and the call that reads them,
+// learn with only site, which every agent has: on 09-29 an agent over MCP
+// called guide, a CLI command, and was told there is no such tool.
 function linesFor(site: string): string[] {
   const notes = readNotes(site);
   const readers = Object.keys(readReaders(site));
   const chars = notes.reduce((sum, n) => sum + n.fact.length, 0);
   return [
-    ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with guide ${site}`]),
+    ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with learn {site: "${site}"}`]),
     ...(readers.length ? [`readers saved for ${site}: ${readers.join(", ")}; run one with eval {tab, reader: "<name>"}`] : []),
   ];
 }

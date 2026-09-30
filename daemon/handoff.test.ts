@@ -19,7 +19,7 @@ import { callTool } from "./tools.ts";
 // and the clock are fakes: a test moves the clock on once every call it
 // made has been taken up.
 
-type Page = { url: string; check?: "box" | "block" };
+type Page = { url: string; check?: "box" | "block"; text?: string };
 type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; use(tab: number): void };
 const MAIL = "com.apple.mail";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -27,9 +27,10 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAY
 // Mail is in front. Safari's window shows the user's tab 3; the agent's tab
 // sits alone in an agent window behind it, which never holds the front tab,
 // on a page with a Cloudflare box, or a Cloudflare block, while page.check
-// says so. Safari shows the window of the tab activated last. The Mac
-// records the tabs the harness activates, the app in front, the notices,
-// and the alerts, each with whether its picture was there to send.
+// says so; a wait for text answers at once whether page.text holds it.
+// Safari shows the window of the tab activated last. The Mac records the
+// tabs the harness activates, the app in front, the notices, and the
+// alerts, each with whether its picture was there to send.
 function mac(tab: number, page: Page): Mac {
   const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
   let shown = 1;
@@ -48,6 +49,7 @@ function mac(tab: number, page: Page): Mac {
         const frames = page.check === "box" ? ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2"] : [];
         return answer({ value: [{ frame: 0, url: page.url, title: "Sign in", text: page.check === "block" ? "Sorry, you have been blocked" : "Sign in", markers: [], answered: [], frames }] });
       }
+      if (op === "relay" && args[1] === "wait") return answer({ value: { found: (page.text ?? "").includes(args[2][1].text) } });
       if (op === "shot") return answer({ value: { data: PNG } });
       answer({ error: `no ${op} here` });
     },
@@ -174,8 +176,35 @@ test("a user at the Mac gets the notice and no alert", async () => {
   await t;
   page.check = undefined;
   await tick();
-  expect(await handed).toMatchObject({ done: true });
+  expect(await handed).toMatchObject({ done: true, alerted: expect.stringMatching(/^not sent/) });
   expect(m).toMatchObject({ notices: ["Clear the check"], texts: [] });
+});
+
+// A card form or a Touch ID prompt may leave the address as it was: on
+// 09-29 two GEICO handoffs ran out at 110 s on the page where they began.
+test("with until, the user is done once the page shows that text, at the same address", async () => {
+  const page: Page = { url: "https://shop.example/billing", text: "Add a card" };
+  mac(77, page);
+  const t = taken(waits("Save the card"));
+  let result: unknown;
+  const handed = HANDOFF_TOOLS.handoff.run({ tab: 77, why: "Save the card", ms: 10000, until: "Card saved" }).then((r) => (result = r));
+  await t;
+  await tick();
+  expect(result).toBeUndefined();
+  page.text = "Card saved";
+  // the look already under way saw the page before; the next one sees it
+  await tick();
+  await tick();
+  expect(await handed).toMatchObject({ done: true, url: "https://shop.example/billing" });
+});
+
+test("until text the page shows already is refused, with no tab raised and no notice", async () => {
+  const m = mac(78, { url: "https://shop.example/billing", text: "Card saved" });
+  const handed = HANDOFF_TOOLS.handoff.run({ tab: 78, why: "Save the card", ms: 10000, until: "Card saved" }).then(() => "handed off", (e: Error) => e.message);
+  await settled();
+  await tick(10000);
+  expect(await handed).toContain("already shows");
+  expect(m).toMatchObject({ activated: [], notices: [] });
 });
 
 test("a user away from the Mac gets one alert with a picture of the page, however many calls wait on the handoff", async () => {

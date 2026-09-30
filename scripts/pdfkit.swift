@@ -1,8 +1,8 @@
 // PDF helper for the daemon, which runs headless under launchd.
 //   pdfkit render HTMLFILE BASEURL OUT.pdf [--width 1280]
-//     Lays the HTML out in an offscreen WKWebView and prints it to a paginated
-//     US Letter PDF, like Safari's File > Export as PDF. Prints
-//     {"path","pages","bytes"}.
+//     Lays the HTML out in an offscreen WKWebView, its own scripts off, and
+//     prints it to a paginated US Letter PDF, like Safari's File > Export as
+//     PDF. Prints {"path","pages","bytes"}.
 //   pdfkit text PDF [--max-bytes 200000]
 //     Extracts the text of every page with PDFKit, pages separated by "\n\f\n".
 //     Prints {"pages","text","truncated"}.
@@ -78,7 +78,13 @@ final class Renderer: NSObject {
     init(width: CGFloat, out: URL) {
         self.out = out
         let frame = NSRect(x: 0, y: 0, width: width, height: 1000)
-        web = WKWebView(frame: frame, configuration: WKWebViewConfiguration())
+        // The HTML is the page as its tab showed it, and its own scripts, run
+        // again here, may redraw it: on 09-29 GEICO's printed as its notice
+        // that the browser was too old. Scripts this helper runs (settledJS)
+        // still work.
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
+        web = WKWebView(frame: frame, configuration: config)
         // Printing lays out through the view's window; it never appears on screen.
         window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = web

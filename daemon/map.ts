@@ -23,12 +23,14 @@ const CHECKED: Record<"page" | "block", string> = {
 };
 
 type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string }) & { challenge?: Challenge };
-export type Page = Outcome & { url: string; ms: number; closeError?: string };
+// title: the page's as it opened, which an eval or fetch read does not
+// carry, where the address may have led to a sign-in or a page not found
+export type Page = Outcome & { url: string; title?: string; ms: number; closeError?: string };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for, the read, its
 // arguments, where to save it.
 type Job = { wait?: Record<string, unknown>; read: SaveKind; args: Record<string, unknown>; target?: Target; call: Call };
-type Opened = { id: number; url?: string; challenge?: Challenge };
+type Opened = { id: number; url?: string; title?: string; challenge?: Challenge };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -69,18 +71,20 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
 async function visit(url: string, job: Job): Promise<Page> {
   const started = performance.now();
   let tab: number | undefined;
+  let title: string | undefined;
   let outcome: Outcome;
   try {
-    // open answers {id, url, challenge?} or throws; callTool types every answer unknown
+    // open answers {id, url, title, challenge?} or throws; callTool types every answer unknown
     const opened = (await job.call("open", { url, background: true })) as Opened;
     tab = opened.id;
+    title = opened.title;
     outcome = await readTab(opened, url, job);
   } catch (e) {
     outcome = { ok: false, error: messageOf(e) };
   }
   const ms = Math.round(performance.now() - started);
   const closeError = tab === undefined ? undefined : await job.call("close", { tab }).then(() => undefined, messageOf);
-  return { ...outcome, url, ms, ...(closeError === undefined ? {} : { closeError }) };
+  return { ...outcome, url, ...(title ? { title } : {}), ms, ...(closeError === undefined ? {} : { closeError }) };
 }
 
 async function readTab(opened: Opened, url: string, { wait, read, args, target, call }: Job): Promise<Outcome> {

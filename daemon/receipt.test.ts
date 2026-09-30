@@ -242,3 +242,12 @@ test("a wait with only ms on a page that cannot be watched waits out its ms and 
   safari({ wait: () => { throw new Error("Safari could not open https://down.example/: the site did not answer"); } });
   expect(await callTool("wait", { tab: 7, ms: 50 })).toMatchObject({ ok: true });
 });
+
+// Late in September agents waited on words no page shows ("zzqq1" to
+// "zzqq48") to sleep, 15 minutes of it, and asked for more than 30000 ms.
+test("a text wait the page never meets says those words never showed, and an ms past 30000 says it was cut", async () => {
+  safari({ wait: () => ({ found: false }) });
+  expect(await callTool("wait", { tab: 7, text: "zzqq1", ms: 60000 })).toMatchObject({ ok: true, found: false, hint: expect.stringContaining("never showed those words"), note: expect.stringContaining("at most 30000") });
+  const selector = await callTool("wait", { tab: 7, selector: "#done", ms: 1000 });
+  expect(JSON.stringify(selector)).not.toMatch(/never showed|at most 30000/);
+});

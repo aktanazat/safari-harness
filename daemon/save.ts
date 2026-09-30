@@ -93,18 +93,20 @@ async function write(target: Target, url: string, file: File): Promise<string> {
 
 // The read's result, written to target. An error the page answered with is
 // no output: it comes back as it is, and nothing is written. A result cut
-// short even at the raised limit says so, and a bot-check note stays.
-// pageUrl names the file of a read whose result carries no address (eval).
+// short even at the raised limit says so, and a bot-check note stays. The
+// answer says which page was read, as the read's own did: pageUrl gives the
+// address of a read whose result carries none (eval), and names its file.
 export async function saveOutput(kind: SaveKind, result: unknown, target: Target, pageUrl: () => Promise<string>): Promise<unknown> {
   if (!result || typeof result !== "object" || Array.isArray(result)) return result;
   const r = result as Record<string, unknown>;
   if (typeof r.error === "string") return r;
   const file = fileOf(kind, r);
-  const url = typeof r.url === "string" ? r.url : "dir" in target ? await pageUrl() : "";
+  const url = typeof r.url === "string" ? r.url : await pageUrl();
   const saved = await write(target, url, file);
   const text = typeof file.body === "string" ? file.body : "";
   return {
     saved,
+    ...(url ? { url } : {}),
     bytes: typeof file.body === "string" ? Buffer.byteLength(file.body) : file.body.byteLength,
     head: text.slice(0, HEAD_CHARS),
     ...(r.truncated === true ? { truncated: true } : {}),

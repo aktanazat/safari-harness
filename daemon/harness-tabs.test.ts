@@ -9,8 +9,11 @@ import { callTool, endTurn, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 1, 2, 3...; a click in tab 1
 // opens tab 100; every close succeeds and is noted, except that the tab the
-// user has in front stays when the close is for a tab left idle.
+// user has in front stays when the close is for a tab left idle. The tab
+// list is showing, and a call to a closed tab fails as the extension's does.
 const closes: unknown[][] = [];
+const gone = new Set<number>();
+let showing: { id: number; url: string }[] = [];
 let nextTab = 0;
 let nextWindow = 0;
 let hisFront: number | undefined;
@@ -18,7 +21,8 @@ let onClose = () => {};
 function answer(op: string, args: unknown[]): unknown {
   if (op === "windows.open") return { windowId: ++nextWindow, tabId: 900 + nextWindow };
   if (op === "tabs.open") return { id: ++nextTab, windowId: args[2] };
-  if (op === "tabs.list" || op === "probe") return [];
+  if (op === "tabs.list") return showing;
+  if (op === "probe") return [];
   if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
   if (op === "tabs.close" && args[1] === "idle" && args[0] === hisFront) return { ok: false, front: true };
   return { ok: true };
@@ -26,7 +30,9 @@ function answer(op: string, args: unknown[]): unknown {
 const ext = {
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
-    bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) }));
+    const value = answer(op, args);
+    if (op === "tabs.close" && !(typeof value === "object" && value !== null && "front" in value)) gone.add(Number(args[0]));
+    bridge.handleMessage(JSON.stringify(op === "relay" && gone.has(Number(args[0])) ? { id, error: "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user" } : { id, value }));
     if (op === "tabs.close") {
       closes.push(args);
       onClose();
@@ -107,6 +113,22 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
   agent.kill();
   other.kill();
   await closedAs("owned", [hisFront, others]);
+});
+
+// Late in September a chat tab closed while its agent waited 50 minutes on
+// a subagent, and "that tab is gone" alone cost it 10 turns to recover.
+test("a call to a tab the harness closed says why and when, and what the tab showed", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  await runAs(agent.pid, () => callTool("open", { url: "https://chat.example/c/1", background: true }));
+  const tab = nextTab;
+  showing = [{ id: tab, url: "https://chat.example/c/1" }];
+  endTurn(agent.pid);
+  await closedAs("idle", [tab]);
+  await settled();
+  showing = [];
+  const later = runAs(agent.pid, () => callTool("extract", { tab }));
+  await expect(later).rejects.toThrow(new RegExp(`^that tab is gone: tab ${tab} was closed as its agent's turn ended at .+ \\(it showed https://chat\\.example/c/1\\); open it again$`));
+  agent.kill();
 });
 
 // He quit Safari: a sweep that asked it anything would start it again. An

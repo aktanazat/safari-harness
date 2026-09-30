@@ -76,8 +76,9 @@ test.each([
 });
 
 // A stand-in Safari: open hands out tabs 1, 2, 3... at the address asked
-// for, a snapshot and info read that address, and eval runs its code the
-// way content.js does, noting which world ran it.
+// for, titled as a page not found at an address ending /missing, a
+// snapshot and info read that address, and eval runs its code the way
+// content.js does, noting which world ran it.
 const urls = new Map<number, string>();
 let nextTab = 0;
 let world = "";
@@ -89,7 +90,7 @@ connect({
     else if (op === "tabs.list" || op === "probe") value = [];
     else if (op === "tabs.open") {
       urls.set(++nextTab, String(args[0]));
-      value = { id: nextTab, url: args[0], windowId: args[2] };
+      value = { id: nextTab, url: args[0], title: String(args[0]).endsWith("/missing") ? "Page not found | Robinhood" : "Page", windowId: args[2] };
     } else if (op === "relay" && args[1] === "snapshot") value = { url: urls.get(Number(args[0])), title: "Page", nodes: 1, truncated: false, snapshot: '[1] button "Go"' };
     else if (op === "relay" && args[1] === "tabInfo") value = { url: urls.get(Number(args[0])), title: "Page" };
     else if ((op === "relay" && args[1] === "eval") || op === "evalPage") {
@@ -133,7 +134,7 @@ test("past 900 characters, a site's notes come as their count and where to read 
   for (const c of ["a", "b", "c"]) await learn({ site: "gusto.com", fact: `${c} `.repeat(150).trim().padEnd(300, c) });
   await learn({ site: "gusto.com", fact: "d" });
   const tab = await agent()("open", { url: "https://gusto.com/payroll" });
-  expect(tab.notes).toBe("site notes for gusto.com: 4; read them with guide gusto.com");
+  expect(tab.notes).toBe('site notes for gusto.com: 4; read them with learn {site: "gusto.com"}');
 });
 
 // GEICO's quote ran on ecams.geico.com and edgecustomer.geico.com, and
@@ -144,6 +145,25 @@ test("a site's notes come with the first page on any of its subdomains, once", a
   const tab = await call("open", { url: "https://ecams.geico.com/quote" });
   expect(tab.notes).toBe("site notes for geico.com: (1) The quote asks for the garaging address twice");
   expect(await call("open", { url: "https://edgecustomer.geico.com/start" })).not.toHaveProperty("notes");
+});
+
+// On 09-29 an agent was told Robinhood's notes on its first open, then met
+// three pages not found there, and none said them again.
+test("a page not found on a site brings its notes again", async () => {
+  await learn({ site: "robinhood.com", fact: "The Gold Card is managed in the app only" });
+  const call = agent();
+  expect((await call("open", { url: "https://robinhood.com/account" })).notes).toBe("site notes for robinhood.com: (1) The Gold Card is managed in the app only");
+  expect(await call("open", { url: "https://robinhood.com/account/gold" })).not.toHaveProperty("notes");
+  expect((await call("open", { url: "https://robinhood.com/missing" })).notes).toBe("site notes for robinhood.com: (1) The Gold Card is managed in the app only");
+});
+
+// Read through head -c 400 on 09-29, an open lost its notes behind the
+// long details of its window.
+test("an open's notes come before the details of its window", async () => {
+  await learn({ site: "robinhood.com", fact: "The Gold Card is managed in the app only" });
+  const keys = Object.keys(await agent()("open", { url: "https://robinhood.com/account" }));
+  expect(keys.indexOf("notes")).toBeGreaterThan(-1);
+  expect(keys.indexOf("notes")).toBeLessThan(keys.indexOf("space"));
 });
 
 test("a reader saved for a site runs by name on its subdomains' pages, in the world it was saved for", async () => {

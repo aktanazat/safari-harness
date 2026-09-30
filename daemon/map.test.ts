@@ -127,6 +127,13 @@ test("a page that fails is reported in its place, and the others are still read"
   expect(pages[2]).toMatchObject({ error: "no content root" });
 });
 
+// An eval or fetch read carries no title, and an address may have led to a
+// page not found.
+test("each page carries the title its tab opened with", async () => {
+  const pages = await map({ urls: ["https://shop.example/a", LOST], what: "eval", expression: "document.title" });
+  expect(pages.map((p) => [p.url, p.title])).toEqual([["https://shop.example/a", "Page"], [LOST, "Page Not Found"]]);
+});
+
 test("every tab map opens is closed, a failed page's and a bot check's included", async () => {
   const before = opened.length;
   await map({ urls: ["https://shop.example/a", GONE, EMPTY, WALLED] });

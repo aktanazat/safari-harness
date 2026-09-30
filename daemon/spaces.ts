@@ -44,9 +44,8 @@ type Group = "waiting" | "making" | "grouped" | "plain";
 // (grouped), is becoming one (making), will be one once the user is away
 // from the keys (waiting), or stays plain, and why.
 export type SpaceNote = { name: string; group: Group; why?: string };
-// id: this window alone, in its page's address; said: the why an open last
-// gave its agent
-type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void; said?: string };
+// id: this window alone, in its page's address
+type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -173,12 +172,24 @@ function save() {
   }
 }
 
-// What an open says of its window. Why it stays plain is said once per
-// window and reason: on 09-29 each open of a car search repeated a day-old
-// reason (groups-off.json) that only the user can clear.
+// The reasons each agent has been told for a window staying plain, so each
+// comes once per agent, not once per window: on 09-29 agent 21859's windows
+// 681333, 693176, and 801195 each repeated a day-old reason
+// (groups-off.json), 330 characters that only the user can act on. Calls
+// with no agent known share one list.
+const told = new Map<number | undefined, Set<string>>();
+
+// What an open says of its window, with why it stays plain the first time
+// its agent meets that reason.
 export function spaceNote(s: Space): SpaceNote {
-  const why = s.why === s.said ? undefined : s.why;
-  s.said = s.why;
+  let reasons = told.get(s.owner);
+  if (!reasons) {
+    reasons = new Set();
+    told.set(s.owner, reasons);
+    if (s.owner !== undefined) watchOwner(s.owner, () => told.delete(s.owner));
+  }
+  const why = s.why === undefined || reasons.has(s.why) ? undefined : s.why;
+  if (why) reasons.add(why);
   return { name: s.name, group: s.group, ...(why ? { why } : {}) };
 }
 

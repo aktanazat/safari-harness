@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changeQueue, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, type Answer, type Helper } from "./groups.ts";
+import { changeQueue, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Helper } from "./groups.ts";
 import { pass, type Daemon, type SpaceState } from "./keeper.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "groups-test-"));
@@ -164,6 +164,20 @@ test("a menu that will not close turns group work off, and no later step opens o
   expect(groupsOff()).toContain("menu stayed open");
   expect(await makeGroup(g, 7, "next (agent 42)")).toEqual({ done: false, why: groupsOff()!, wait: false });
   expect(s.menus).toBe(1);
+});
+
+// A flag no one removes ends after a day: on 09-29 one from the day before
+// still kept every agent's windows plain.
+test("group work turned off comes back on a day later", () => {
+  turnOff("Safari's menu stayed open after delete");
+  const raisedAgo = (hours: number) => {
+    const at = new Date(Date.now() - hours * 60 * 60_000);
+    utimesSync(files.off, at, at);
+  };
+  raisedAgo(23);
+  expect(groupsOff()).toContain("menu stayed open");
+  raisedAgo(25);
+  expect(groupsOff()).toBeUndefined();
 });
 
 test("without the helper built, a waiting window stays plain and says how to build it", async () => {

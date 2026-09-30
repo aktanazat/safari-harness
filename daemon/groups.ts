@@ -13,8 +13,10 @@
 //
 // A menu never stays open: every dismissal is read back within 500 ms,
 // with one more Escape if the menu is still there (scripts/spaces.swift).
-// If it still is, group work stops for good (the flag in files.off), and
-// every later window stays plain, until someone who has looked removes it.
+// If it still is, group work stops for a day (the flag in files.off), and
+// every window made meanwhile stays plain, unless someone who has looked
+// removes the flag sooner: on 09-29 a flag from the day before still kept
+// every agent's windows plain, and no one had looked.
 //
 // Never guess which group: the sidebar's menu serves its selected row, so a
 // delete goes ahead only with the one group of that exact name selected
@@ -23,7 +25,7 @@
 // agent-sweep-4. Anything else ends the menu, and the group stays queued.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -85,11 +87,13 @@ export function startHelper(path = HELPER): { helper: Helper; stop: () => void }
   return { helper, stop: () => child.stdin.end() };
 }
 
-// Why group work is off, if it is.
+// Why group work is off, if it is: for a day after the flag went up.
+const OFF_MS = 24 * 60 * 60_000;
 export function groupsOff(): string | undefined {
   try {
+    if (Date.now() - statSync(files.off).mtimeMs > OFF_MS) return undefined;
     const { why } = JSON.parse(readFileSync(files.off, "utf8")) as { why: string };
-    return `tab groups are off: ${why} (remove ${files.off} to turn them back on)`;
+    return `tab groups are off: ${why}; they come back on a day after that (remove ${files.off} to turn them on now)`;
   } catch {
     return undefined;
   }
