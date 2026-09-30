@@ -174,14 +174,15 @@ async function start() {
   const waiting = new Map<string, (answer: Answer) => void>();
   // What background.js tells the daemon unasked.
   const told: { op: string; [key: string]: unknown }[] = [];
-  let socket: Socket | undefined;
+  const sockets: Socket[] = [];
   class Socket {
     static CONNECTING = 0;
     static OPEN = 1;
     readyState = Socket.CONNECTING;
     onopen = () => {};
     onmessage = (_ev: { data: string }) => {};
-    constructor() { socket = this; }
+    onclose = () => {};
+    constructor() { sockets.push(this); }
     send(data: string) {
       const m = JSON.parse(data) as { id?: string; op: string; value?: unknown; error?: string };
       if (m.id !== undefined) waiting.get(m.id)?.({ value: m.value, error: m.error });
@@ -194,8 +195,8 @@ async function start() {
     browser, Socket, clock.setTimeout, clock.clearTimeout, () => 0, { now: () => clock.now }, { log: () => {} },
   );
   await settle();
-  if (!socket) throw new Error("background.js opened no socket to the daemon");
-  const open = socket;
+  const [open] = sockets;
+  if (!open) throw new Error("background.js opened no socket to the daemon");
   open.readyState = Socket.OPEN;
   open.onopen();
 
@@ -204,6 +205,7 @@ async function start() {
     clock,
     trips,
     told,
+    sockets,
     // A tab showing a page whose script reported in to this background page,
     // or, reported false, to an earlier run of it (Safari stops an idle one).
     open(url: string, reported = true): Tab {
@@ -279,6 +281,8 @@ async function start() {
       open.readyState = Socket.OPEN;
       open.onopen();
     },
+    // The keepalive alarm wakes the extension, which connects unless it is.
+    wake() { browser.alarms.onAlarm.fire({ name: "sh-keepalive" }); },
     // Safari loads the extension again (a deploy), its tabs still open, and
     // empties session storage; the background page's variables stay here.
     reloaded() {
@@ -506,4 +510,21 @@ test("a reloaded extension tells the daemon each tab's new id, and again each ti
   await b.clock.advance(0);
   const renumbered = { op: "tab", kind: "renumbered", tabs: { 3: tab.id } };
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([renumbered, renumbered]);
+});
+
+// 09-29: a closing socket's close event came after the extension had
+// opened its replacement; it dropped the replacement and opened a third,
+// and the daemon swapped sockets every 1.5 s, failing every request.
+test("an old socket closing after its replacement opened leaves the replacement connected", async () => {
+  const b = await start();
+  b.drop();
+  b.wake();
+  await b.clock.advance(0);
+  const [old, now] = b.sockets;
+  if (!old || !now) throw new Error("the alarm opened no second socket");
+  now.readyState = 1;
+  now.onopen();
+  old.onclose();
+  await b.clock.advance(60_000);
+  expect(b.sockets.length).toBe(2);
 });

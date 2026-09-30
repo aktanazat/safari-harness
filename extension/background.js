@@ -22,17 +22,26 @@ async function getPort() {
   }
 }
 
+// Each socket's handlers act on that socket alone. They once used the
+// latest one: an old socket closing after its replacement opened dropped
+// the new one and opened a third, and a request's answer went out on
+// whichever socket was newest. The daemon then saw each socket miss its
+// ping and swapped them every 1.5 s, failing every request (09-29).
 function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   getPort().then((p) => {
+    // another wake-up may have connected while the port was read
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     port = p;
+    let sock;
     try {
-      ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      sock = new WebSocket(`ws://127.0.0.1:${port}`);
     } catch (e) {
       scheduleReconnect();
       return;
     }
-    ws.onopen = () => {
+    ws = sock;
+    sock.onopen = () => {
       backoff = 500;
       log("connected to daemon on", port);
       send({ op: "hello", role: "extension", ua: navigator.userAgent });
@@ -42,21 +51,26 @@ function connect() {
       // yet sends them itself once it ends
       adopted?.then(sendIds, () => {});
     };
-    ws.onmessage = (ev) => {
+    sock.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
       if (msg.op === "tick") return tick();
+      const answer = (obj) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(obj)); };
       handle(msg).then((value) => {
-        if (msg.id !== undefined) send({ id: msg.id, value });
+        if (msg.id !== undefined) answer({ id: msg.id, value });
       }, (err) => {
         const text = String(err && err.message || err);
         // An id Safari no longer knows that no reload maps (adopt): the tab
         // closed, Safari has quit since, or its page kept no mark.
-        if (msg.id !== undefined) send({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user; a tab you need past your turn must be kept with keep; find it with tabs, or open it again" : text });
+        if (msg.id !== undefined) answer({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user; a tab you need past your turn must be kept with keep; find it with tabs, or open it again" : text });
       });
     };
-    ws.onclose = () => { ws = null; scheduleReconnect(); };
-    ws.onerror = () => { try { ws.close(); } catch {} };
+    sock.onclose = () => {
+      if (ws !== sock) return;
+      ws = null;
+      scheduleReconnect();
+    };
+    sock.onerror = () => { try { sock.close(); } catch {} };
   });
 }
 
