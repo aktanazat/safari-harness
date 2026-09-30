@@ -95,6 +95,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari wait --any '["a","b"]' | --gone t | --url part|/re/ | --quiet --tab N
                                              the first text shown (which), text gone,
                                              an address, or 0.5 s without a change
+  safari wait --changed [--ms 25000] --tab N new lines since the last look (added):
+                                             a chat's reply; call again until found
   safari net read|start|stop --tab N         fetch/XHR since the page loaded
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
@@ -771,7 +773,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "showHidden", "base64", "front"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "changed", "showHidden", "base64", "front"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

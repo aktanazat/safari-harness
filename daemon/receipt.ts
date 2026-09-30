@@ -189,8 +189,8 @@ export function withEffect(result: unknown): unknown {
 
 // Whether a wait names something on the page to wait for; one with only ms
 // waits for the page to settle, ms at most.
-export function waitsOnPage(a: { selector?: unknown; text?: unknown; any?: unknown; gone?: unknown; url?: unknown; quiet?: unknown }): boolean {
-  return a.quiet === true || [a.selector, a.text, a.any, a.gone, a.url].some((v) => v !== undefined);
+export function waitsOnPage(a: { selector?: unknown; text?: unknown; any?: unknown; gone?: unknown; url?: unknown; quiet?: unknown; changed?: unknown }): boolean {
+  return a.quiet === true || a.changed === true || [a.selector, a.text, a.any, a.gone, a.url].some((v) => v !== undefined);
 }
 
-export const WAIT_NEEDS = "wait needs ms, selector, text, any, gone, url, or quiet";
+export const WAIT_NEEDS = "wait needs ms, selector, text, any, gone, url, quiet, or changed";

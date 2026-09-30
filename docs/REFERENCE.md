@@ -624,6 +624,13 @@ Wait for the page, not the clock.
   `already: true`: it waited for no change. Text such as "Reward" can match
   a menu item ("Rules & Rewards"), so wait for words only the next page
   shows. `gone` on text that was never on the page says so in a `hint`.
+- `changed: true` waits for lines new to the page (to the `selector`'s
+  element, when given) and returns them as `added`: a person's reply in a
+  support chat. The page keeps its last look between calls, as the last
+  changed wait found it or as your last `type` there began, so a reply
+  that lands between two waits still counts; call it again (25 s keeps a
+  shell call in the foreground) until `found`. The lines you typed, typing
+  notes, and read receipts or times alone are not new lines.
 - `any: ["Order placed", "Payment declined"]` ends on the first shown and
   says `which`; `text: "a|b"` does the same. `gone: "Loading"` waits for
   text to leave, `url` for a part of the address or a `/regex/` (pushState

@@ -1592,6 +1592,7 @@
     el.scrollIntoView({ block: "center", behavior: "instant" });
     if (!(await focusField(el))) return untaken("the field");
     lastTyped = el;
+    lookBeforeTyping(opts.secret ? null : text);
     const before = el.isContentEditable ? "" : String(el.value || "");
     const alerts = new Map(deepQueryAll("[role=alert]").map((a) => [a, textOf(a, 160)]));
     // A code typed into a box of a row of code boxes (PayPal's, Delta's)
@@ -2568,6 +2569,57 @@
     return [text, ...deepQueryAll("flt-semantics[aria-label], flt-semantics [aria-label]").map((el) => el.getAttribute("aria-label"))].join("\n");
   }
 
+  // wait {changed}: lines new to the page (or to the selector's element)
+  // since the last look. A person's reply in a support chat comes when it
+  // comes: in Robinhood's chats an agent spent about 53 turns and 15
+  // minutes of sleeps waiting on guessed clock times and made-up words
+  // (09-29). The last look stays in the page between calls, so a reply that
+  // lands between two 30 s waits still counts. It is the text as the last
+  // changed wait found it, or as the last type began, or else as this wait
+  // begins. Lines the agent typed, typing notes, and read receipts and
+  // times alone are not a reply.
+  const lastLook = new Map(); // region: "" for the page, else a selector -> its lines
+  const typedLines = [];
+  const linesOf = (text) => String(text ?? "").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  function regionText(key) {
+    if (key === "") return pageText();
+    const el = deepQuery(key);
+    return el ? readText(el, (e) => e.innerText ?? "") : "";
+  }
+  function lookBeforeTyping(text) {
+    for (const key of new Set(["", ...lastLook.keys()])) lastLook.set(key, linesOf(regionText(key)));
+    if (text === null) return;
+    typedLines.push(...linesOf(text).map((l) => l.toLowerCase()));
+    typedLines.splice(0, Math.max(0, typedLines.length - 20));
+  }
+  const TIMES = /\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|\b\d+\s*(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)\s+ago\b/gi;
+  const STATUS = /^(?:\s|[·•,:|-]|read|seen|delivered|sent|edited|just now|now|today|yesterday)*$/i;
+  function reply(line) {
+    const bare = line.replace(TIMES, " ").replace(/\s+/g, " ").trim().toLowerCase();
+    if (STATUS.test(bare) || /\btyping\b/.test(bare)) return false;
+    return !typedLines.some((t) => bare === t || ((bare.endsWith(t) || bare.startsWith(t)) && bare.length - t.length <= 16));
+  }
+  function newLines(before, now) {
+    const left = new Map();
+    for (const l of before) left.set(l, (left.get(l) ?? 0) + 1);
+    return now.filter((l) => {
+      const n = left.get(l) ?? 0;
+      left.set(l, n - 1);
+      return n <= 0;
+    });
+  }
+  // The new lines, a chat's worth: the latest 40, 4000 characters at most.
+  function addedOf(lines) {
+    const out = [];
+    let size = 0;
+    for (const l of lines.slice(-40).reverse()) {
+      if (size + l.length > 4000) break;
+      out.unshift(l);
+      size += l.length;
+    }
+    return out;
+  }
+
   // A request out longer than this is a long poll (Gmail keeps its /sync/
   // and /cloudsearch/request ones open), not a page still loading: wait's
   // quiet counts only younger ones. Gmail's quiet waits answered found
@@ -2579,6 +2631,8 @@
   //   gone   it no longer shows it     url   the address has this part, or
   //   quiet  the page made no change          matches this /regex/
   //          for 500 ms (QUIET_SPAN), with no request to its own site out
+  //   changed  lines new since the last look (added; see lastLook), in the
+  //          selector's element when there is one
   // Text matches case and spacing aside (shows). gone, url, and quiet are
   // the top page's to decide: an embedded frame answers at once that it has
   // not seen them. quiet comes with time, so it also wakes on a timer, and
@@ -2591,18 +2645,13 @@
     if (window !== window.top && (want.gone != null || want.url != null || want.quiet)) return { found: false };
     const start = Date.now();
     let last = start;
+    const region = selector ?? "";
+    if (want.changed && !lastLook.has(region)) lastLook.set(region, linesOf(regionText(region)));
     // Text "a|b" is met by either part, split as a query's is, and the
     // answer says which: a wait on "a|b" as a query reads it never met
     // (09-29).
     const texts = want.text == null ? null : alternatives(want.text);
-    const met = () => {
-      if (selector && deepQuery(selector) === null) return null;
-      if (want.url != null && !urlMatch(location.href, want.url)) return null;
-      if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
-      if (want.quiet && (hear(Date.now() - PENDING_MS)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
-        last = Date.now();
-        return null;
-      }
+    const words = () => {
       if (texts === null && want.gone == null && want.any == null) return { found: true };
       const page = pageText();
       const said = texts?.find((t) => shows(page, t));
@@ -2612,9 +2661,28 @@
       const which = want.any.find((t) => shows(page, t));
       return which === undefined ? null : { found: true, which };
     };
+    const met = () => {
+      if (selector && deepQuery(selector) === null) return null;
+      if (want.url != null && !urlMatch(location.href, want.url)) return null;
+      if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
+      if (want.quiet && (hear(Date.now() - PENDING_MS)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
+        last = Date.now();
+        return null;
+      }
+      if (!want.changed) return words();
+      const lines = linesOf(regionText(region));
+      const added = newLines(lastLook.get(region), lines).filter(reply);
+      if (added.length === 0) return null;
+      const m = words();
+      if (m === null) return null;
+      lastLook.set(region, lines);
+      return { ...m, added: addedOf(added) };
+    };
     // A wait met as it begins says so: Visible's text to go answered found
-    // in 2 ms, though it had never shown (09-29).
+    // in 2 ms, though it had never shown (09-29). New lines found at once
+    // came before the wait began, as a chat's reply may: that is no miss.
     const now = met();
+    if (now && want.changed) return now;
     if (now) return { ...now, already: true, ...(want.gone != null ? { hint: `"${want.gone}" was not on the page as the wait began: it went before, or never showed; to know the next page is up, wait for text it shows` } : {}) };
     return new Promise((resolve) => {
       let timer = null;

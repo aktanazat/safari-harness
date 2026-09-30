@@ -18,3 +18,4 @@ Robinhood blocks page scripts on its support pages, so `repl` evaluate fails the
 - Past chats: robinhood.com/account/help > Your support chats. A chat reopens directly at robinhood.com/chat-support/<id>. /us/en/support/contact/ has no chat.
 - Ask the bot for an agent, then click "Chat with an agent"; "<name> is reviewing your case" means a person joined. "Get a call back" works 7 AM-9 PM ET only. A closed chat disables its message box.
 - Each sent message shows a failed POST .../messages/ in net, yet it is delivered.
+- To wait on the agent's reply, call `wait {changed: true, ms: 25000}` and read `added`; call it again until `found`. Never wait on the clock or made-up words.

@@ -406,6 +406,27 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a changed wait answers the chat's reply, not the line the agent sent, a typing note, or a read receipt",
+    page: "chat.html",
+    steps: [
+      { op: "type", args: ["Message", "please waive the fee"] },
+      { op: "click", args: ["Send"] }, // echoes the line 1 s later, then a receipt, then the reply
+      { op: "wait", args: [null, { changed: true }], timeout: 3000, answer: { value: { found: true, added: ["Agent: Your fee was waived"] } } },
+    ],
+  },
+  {
+    name: "a changed wait counts a reply that came between two waits",
+    page: "chat.html",
+    steps: [
+      { op: "type", args: ["Message", "hello"] },
+      { op: "click", args: ["Send"] },
+      { op: "wait", args: [null, { changed: true }], timeout: 3000, answer: { value: { found: true, added: ["Agent: Your fee was waived"] } } },
+      { op: "click", args: ["Later"] }, // replies 300 ms later
+      { op: "wait", args: [null, { text: "A second reply" }], timeout: 2000 },
+      { op: "wait", args: [null, { changed: true }], timeout: 2000, answer: { value: { found: true, added: ["Agent: A second reply"] } } },
+    ],
+  },
+  {
     name: "a wait for text on a Flutter page finds words that only its semantics labels hold",
     page: "flutter-label.html",
     steps: [{ op: "wait", args: [null, { text: "Get an Email" }], timeout: 2000, answer: { value: { found: true } } }],

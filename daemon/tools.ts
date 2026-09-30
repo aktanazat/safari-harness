@@ -490,12 +490,17 @@ export async function tabInfo(opts: { tab?: number } = {}) {
 }
 
 // What the page answers a wait with (waitFor in content.js): already, that
-// what it waited for held as it began; hint, a line for the model.
-type Seen = { found: boolean; which?: string; already?: boolean; hint?: string };
+// what it waited for held as it began; added, the lines new since the last
+// look of a changed wait; hint, a line for the model.
+type Seen = { found: boolean; which?: string; already?: boolean; added?: string[]; hint?: string };
 
 // A text wait the page never met. Late in September agents waited on words
 // no page shows ("zzqq1" to "zzqq48") to sleep, 15 minutes of it.
 const NEVER_SHOWN = "the page never showed those words; open and goto already wait for the page, and words it cannot show only make a sleep: wait on words a snapshot showed";
+
+// A changed wait with no new lines yet. The page keeps its last look, so
+// the next call still catches a reply that comes in between.
+const NOTHING_NEW = "no new lines yet; call wait with changed again, and a reply that comes in between still counts";
 
 // Waits until the page shows what the wait asks for (ms is then the
 // timeout, max 30000): a selector or text, the first of several texts (any;
@@ -513,7 +518,7 @@ const NEVER_SHOWN = "the page never showed those words; open and goto already wa
 // watched still gets its ms, as a sleep did. On screen (front), it holds
 // the tab there all of ms: what it waits on is an animation, which a quiet
 // page does not rule out.
-export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; front?: boolean }) {
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const named = waitsOnPage(opts);
   if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
@@ -537,7 +542,7 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   }
   const start = Date.now();
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
-  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named };
+  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named, ...(opts.changed === true ? { changed: true } : {}) };
   const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<Seen>;
   // A page that answers only after the limit (it navigated, and the new page
   // began the wait again) still holds a wait: end that one too.
@@ -549,12 +554,12 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
       await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
       return { ok: true, waitedMs: Date.now() - start, ...cut };
     }
-    const { found, which, already, hint } = await Promise.race([seen, timeUp.promise]);
+    const { found, which, already, added, hint } = await Promise.race([seen, timeUp.promise]);
     const waitedMs = Date.now() - start;
-    if (found) return { ok: true, found, waitedMs, ...(which === undefined ? {} : { which }), ...(already ? { already } : {}), ...(hint === undefined ? {} : { hint }) };
+    if (found) return { ok: true, found, waitedMs, ...(which === undefined ? {} : { which }), ...(already ? { already } : {}), ...(added === undefined ? {} : { added }), ...(hint === undefined ? {} : { hint }) };
     const now = (await listTabs()).find((t) => t.id === tab);
-    const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true;
-    const hints = [hint, words ? NEVER_SHOWN : undefined].filter((h) => h !== undefined);
+    const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
+    const hints = [hint, words ? NEVER_SHOWN : undefined, opts.changed === true ? NOTHING_NEW : undefined].filter((h) => h !== undefined);
     return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title, ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
   } finally {
     clearTimeout(timer);
@@ -1196,7 +1201,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait until the page shows text or a CSS selector, one of any (which), no more gone text, a url, or goes quiet; ms is the timeout (default 10000, max 30000). With only ms it is no sleep: it ends once the page goes quiet, ms at most. Text ignores case and spaces. Returns found.",
+    desc: "Wait for text or a selector on the page, one of any (which), gone text to go, a url, new lines (changed), or quiet; ms: timeout (default 10000, max 30000). Only ms: ends once quiet. Text ignores case and spaces.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -1204,7 +1209,8 @@ export const TOOLS: Record<string, Tool> = {
       any: { type: "array", items: { type: "string" }, description: "texts; the first shown ends it" },
       gone: { type: "string", description: "text to disappear" },
       url: { type: "string", description: "part of the URL, or /regex/" },
-      quiet: { type: "boolean", description: "no change, and no request to its site, for 0.5 s" },
+      quiet: { type: "boolean", description: "no change or request to its site for 0.5 s" },
+      changed: { type: "boolean", description: "new lines since last look (added)" },
       ms: { type: "number", description: "timeout" },
       front: { type: "boolean", description: "keep the tab on screen meanwhile" },
     },

@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 import { mapPages, type Page } from "./map.ts";
+import { WAIT_NEEDS } from "./receipt.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
@@ -201,7 +202,7 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
 
 test("map refuses a wait that asks for nothing before opening any page", async () => {
   const before = opened.length;
-  await expect(map({ urls: urls(2), wait: {} })).rejects.toThrow("wait needs ms, selector, text, any, gone, url, or quiet");
+  await expect(map({ urls: urls(2), wait: {} })).rejects.toThrow(WAIT_NEEDS);
   await expect(map({ urls: urls(2), wait: "Price" })).rejects.toThrow("wait must be an object");
   expect(opened.length).toBe(before);
 });

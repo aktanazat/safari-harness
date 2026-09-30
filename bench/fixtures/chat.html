@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Support chat</title>
+<main id="log"><p>Agent: How can I help?</p></main>
+<textarea aria-label="Message"></textarea>
+<button onclick="send()">Send</button>
+<button onclick="setTimeout(() => add('Agent: A second reply'), 300)">Later</button>
+<script>
+  const log = document.getElementById("log");
+  const add = (text) => log.append(Object.assign(document.createElement("p"), { textContent: text }));
+  // As a support chat answers: the sender's own line and a read receipt
+  // once the server has it (after the click's 800 ms watch), a typing
+  // note, then the reply in its place.
+  function send() {
+    const box = document.querySelector("textarea");
+    const line = "You: " + box.value;
+    box.value = "";
+    setTimeout(() => add(line), 1000);
+    setTimeout(() => add("Read 1:05 AM"), 1050);
+    setTimeout(() => add("Agent is typing…"), 1100);
+    setTimeout(() => { log.lastChild.remove(); add("Agent: Your fee was waived"); }, 1400);
+  }
+</script>
