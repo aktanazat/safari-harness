@@ -132,9 +132,14 @@ func confirm(_ args: [String]) {
     let wait = Double(option(args, "--wait") ?? "5000") ?? 5000
     let app = AXUIElementCreateApplication(pid)
     let deadline = Date().addingTimeInterval(wait / 1000)
+    // what the helper's windows named, for the error when none is HOST's
+    var seen: [String] = []
     repeat {
+        seen = []
         for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
-            guard quoted(texts(window)).contains(where: { host == $0 || host.hasSuffix("." + $0) }) else { continue }
+            let named = quoted(texts(window))
+            seen += named
+            guard named.contains(where: { host == $0 || host.hasSuffix("." + $0) }) else { continue }
             guard let found = attribute(window, kAXDefaultButtonAttribute), CFGetTypeID(found) == AXUIElementGetTypeID() else {
                 fail("the helper's window for \(host) has no default button")
             }
@@ -146,7 +151,7 @@ func confirm(_ args: [String]) {
         }
         usleep(100_000)
     } while Date() < deadline
-    fail("no window asking to save a password for \(host) showed in process \(pid)")
+    fail("no window asking to save a password for \(host) showed in process \(pid)" + (seen.isEmpty ? "" : "; its windows named \(seen.joined(separator: ", "))"))
 }
 
 // ---------- qr ----------
