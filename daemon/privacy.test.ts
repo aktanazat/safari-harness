@@ -96,6 +96,7 @@ test("type answers how much it typed and whether the field kept it, never the te
 test("addresses keep an order id and lose a code, a state, and a token, whatever their case", () => {
   expect(redactUrl("https://example.com/cb?code=x&order=7&State=y#access_token=t&expires=3600")).toBe("https://example.com/cb?code=...&order=7&State=...#access_token=...&expires=3600");
   expect(redactUrl("https://shop.example/?zipcode=95616&encode=1&codes=2")).toBe("https://shop.example/?zipcode=95616&encode=1&codes=2");
+  expect(redactUrl("https://sso.example/mfa?securityCode=721&x=1&verification_code=9&passcode=5&promo_code=SAVE")).toBe("https://sso.example/mfa?securityCode=...&x=1&verification_code=...&passcode=...&promo_code=SAVE");
   expect(redacted({ url: "https://a.example/?sig=abc", snapshot: '[3] link "Back" /cb?code=abc&order=7\n[4] link "Next" /p?page=2', steps: [{ value: { url: "https://b.example/?token=t" } }] })).toEqual({
     url: "https://a.example/?sig=...",
     snapshot: '[3] link "Back" /cb?code=...&order=7\n[4] link "Next" /p?page=2',

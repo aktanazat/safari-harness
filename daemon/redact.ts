@@ -4,9 +4,11 @@
 // in the caller): a tab list once carried an OAuth state token into a
 // subagent, and a history search returned sign-in code= addresses. A
 // parameter is cut only when its whole name is one of these, in any case,
-// so an order number or a zipcode stays readable.
+// so an order number or a zipcode stays readable. A form sent by Enter puts
+// its fields in the address: Garmin's sign-in went to ?securityCode=<the
+// emailed code> (09-30), so a code named for what it secures is cut too.
 
-const NAMES = ["code", "state", "token", "access_token", "id_token", "refresh_token", "sig", "signature", "session", "auth", "password", "otp"];
+const NAMES = ["code", "state", "token", "access_token", "id_token", "refresh_token", "sig", "signature", "session", "auth", "password", "otp", "(?:security|verification|verify|otp|mfa|auth|authorization|one_?time|pass)[_-]?code"];
 
 // A parameter starts after ?, &, or # (a sign-in's tokens often ride in the
 // fragment). In a line of page text its value ends where the address does:
