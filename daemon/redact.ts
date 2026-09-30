@@ -58,3 +58,45 @@ function redactSnapshot(text: string): string {
   const end = text.indexOf("\n");
   return end < 0 ? redactTitle(text) : redactTitle(text.slice(0, end)) + redactUrl(text.slice(end));
 }
+
+// Secrets the harness typed into a tab: a code it filled in for {{code}}
+// (secret.ts), a password or code from Apple Passwords (passwords.ts), a
+// login from Bitwarden (login_fill), a card. A page can show one again
+// where no field mask reaches: USCIS names its code field by a label that
+// repeats the code, and a snapshot printed it past the field's {filled}
+// (USCIS, 09-30). Every answer from the tab has them cut to "..."
+// (bridge.ts): its request log, console, and page-world script answer
+// there too, which content.js's own cut never sees. They are kept in
+// memory only, until the harness closes the tab (tools.ts) or the daemon
+// stops. A text under 3 characters is not kept: a cut of every "4" would
+// garble the page and hide next to nothing.
+export const tabSecrets = new Map<number, Set<string>>();
+
+export function keepSecret(tab: number, ...texts: unknown[]): void {
+  const kept = tabSecrets.get(tab) ?? new Set<string>();
+  for (const t of texts) if (typeof t === "string" && t.length >= 3) kept.add(t);
+  if (kept.size > 0) tabSecrets.set(tab, kept);
+}
+
+// A text of digits is cut only where it stands as a number of its own: a
+// card's security code of 234 leaves a total of $1,234.56 whole.
+function secretPattern(t: string): string {
+  return /^\d+$/.test(t) ? `(?<!\\d|\\d[.,])${t}(?![.,]?\\d)` : t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// value with each secret typed into tab cut from its strings, however
+// deep, the longest first, so a code inside a longer secret cannot split
+// it; but for a file's bytes (a top-level data, in base64), which a cut
+// would break.
+export function unsecret(tab: number, value: unknown): unknown {
+  const kept = tabSecrets.get(tab);
+  if (!kept) return value;
+  const secrets = new RegExp([...kept].sort((a, b) => b.length - a.length).map(secretPattern).join("|"), "g");
+  const cut = (v: unknown, top: boolean): unknown => {
+    if (typeof v === "string") return v.replace(secrets, "...");
+    if (Array.isArray(v)) return v.map((x) => cut(x, false));
+    if (v === null || typeof v !== "object") return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]));
+  };
+  return cut(value, true);
+}

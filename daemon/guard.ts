@@ -117,6 +117,15 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
   return { tool, args, notes };
 }
 
+// Check a run before any step acts (USCIS / EOIR, 09-30). Its tabs may
+// come from earlier steps, so only the other required arguments are due.
+export function checkStep(tools: Record<string, Tool>, name: string, given: Record<string, unknown>): Checked {
+  const call = checkCall(tools, name, given, true);
+  const missing = (tools[call.tool].required ?? []).filter((key) => key !== "tab" && call.args[key] === undefined);
+  if (missing.length) throw new Error(`${call.tool} needs ${missing.join(" and ")}`);
+  return call;
+}
+
 // real_input called in the shape of another tool: its verb as a parameter
 // (type: "hello", as the type tool takes text), or press for its key; net
 // and console with their verb as a flag (start: true). Each failed a call

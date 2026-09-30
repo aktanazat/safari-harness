@@ -1,0 +1,13 @@
+<!doctype html>
+<title>Echoed code</title>
+<!-- USCIS's sign-in code step (09-30): the code field is named by its label
+     and the line under it, which repeats what is in the field, so its name
+     carried a code typed as a secret past the field's {filled}. The last
+     line holds numbers with the code's digits inside them, not the code. -->
+<label id="label" for="code">Secure Verification Code*</label>
+<input id="code" aria-labelledby="label echo">
+<p id="echo">required</p>
+<p>Case 1402913; balance 402913.50</p>
+<script>
+  code.addEventListener("input", () => { echo.textContent = `required ${code.value}`; });
+</script>

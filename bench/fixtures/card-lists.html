@@ -1,0 +1,25 @@
+<!doctype html>
+<title>Payment</title>
+<form id="pay">
+  <label>Birth year <select name="born"><option value="">Year</option><option>1990</option><option>2029</option></select></label>
+  <label>First name <input name="first" autocomplete="cc-given-name"></label>
+  <label>Last name <input name="last" autocomplete="cc-family-name"></label>
+  <label>Card number <input name="card_number" autocomplete="off"></label>
+  <label>Expiration month <select name="exp_month">
+    <option value="">Month</option>
+    <option value="0">01 - January</option><option value="1">02 - February</option><option value="2">03 - March</option>
+    <option value="3">04 - April</option><option value="4">05 - May</option><option value="5">06 - June</option>
+    <option value="6">07 - July</option><option value="7">08 - August</option><option value="8">09 - September</option>
+    <option value="9">10 - October</option><option value="10">11 - November</option><option value="11">12 - December</option>
+  </select></label>
+  <label>Expiration year <select name="exp_year"><option value="">Year</option><option>2028</option><option>2029</option><option>2030</option></select></label>
+  <label>CVV <input name="cvv" type="password" maxlength="4"></label>
+  <button type="button" id="check">Check</button>
+</form>
+<p id="out"></p>
+<script>
+  document.getElementById("check").addEventListener("click", () => {
+    const f = document.getElementById("pay").elements;
+    document.getElementById("out").textContent = `Card ending ${f.card_number.value.slice(-4)}, month ${f.exp_month.selectedOptions[0].textContent}, year ${f.exp_year.value}, code length ${f.cvv.value.length}, holder ${f.first.value} / ${f.last.value}, birth year "${f.born.value}".`;
+  });
+</script>

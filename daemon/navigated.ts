@@ -12,6 +12,15 @@ export function navigatedOf(res: unknown): Navigated | undefined {
   return { url: to.url, title: "title" in to && typeof to.title === "string" ? to.title : "" };
 }
 
+// An action that opened a tab answers with that tab, { newTab: { id, url,
+// title } } (act in background.js).
+export function newTabOf(res: unknown): { id: number } | undefined {
+  if (!res || typeof res !== "object" || !("newTab" in res)) return undefined;
+  const t = res.newTab;
+  if (!t || typeof t !== "object" || !("id" in t) || typeof t.id !== "number") return undefined;
+  return { id: t.id };
+}
+
 // What a fill reports: the fields the page says it filled, or, when a form
 // that submits itself took the page away before it could say, the fields
 // sent to it and where the page went.

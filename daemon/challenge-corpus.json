@@ -9,11 +9,11 @@
    "#sec-if-cpt-container",
    "iframe[title='Challenge Content']",
    "#px-captcha",
-   "script[src*='.token.awswaf.com/'][src*='/challenge.js']",
-   "script[src*='.captcha.awswaf.com/']",
+   "#captcha-container .amzn-captcha-modal",
    "script[src*='/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/ips.js']",
    ".cf-turnstile",
    ":has(> [name='cf-turnstile-response'])",
+   ".amzn-captcha-modal",
    ".geetest_box",
    ".geetest_panel_box"
   ],
@@ -363,23 +363,18 @@
    ]
   },
   {
-   "name": "aws-waf-challenge",
+   "name": "aws-waf-silent-challenge",
    "source": {
     "url": "https://docs.capmonster.cloud/docs/captchas/amazon-task/",
     "built": "2026-09-28"
    },
-   "expect": {
-    "kind": "aws-waf",
-    "where": "page"
-   },
+   "expect": null,
    "frames": [
     {
      "url": "https://www.example.com/",
      "title": "",
      "text": "",
-     "markers": [
-      "script[src*='.token.awswaf.com/'][src*='/challenge.js']"
-     ],
+     "markers": [],
      "answered": [],
      "frames": []
     }
@@ -401,8 +396,8 @@
      "title": "",
      "text": "",
      "markers": [
-      "script[src*='.captcha.awswaf.com/']",
-      "script[src*='.token.awswaf.com/'][src*='/challenge.js']"
+      "#captcha-container .amzn-captcha-modal",
+      ".amzn-captcha-modal"
      ],
      "answered": [],
      "frames": []
@@ -539,7 +534,7 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://newassets.hcaptcha.com/captcha/v1/b9ca2a6602c2bf69741b771db488f3001ea35b08/static/hcaptcha.html#frame=checkbox&id=0oposmomr57p&host=accounts.hcaptcha.com&sentry=true&reportapi=…&recaptchacompat=true&custom=False&hl=en&tplinks=on&andint=off&pstissuer=…&sitekey=…&theme=light&origin=…&clientOptions=…"
+      "https://newassets.hcaptcha.com/captcha/v1/b9ca2a6602c2bf69741b771db488f3001ea35b08/static/hcaptcha.html#frame=checkbox&id=0niyie6brjjl&host=accounts.hcaptcha.com&sentry=true&reportapi=…&recaptchacompat=true&custom=False&hl=en&tplinks=on&andint=off&pstissuer=…&sitekey=…&theme=light&origin=…&clientOptions=…"
      ]
     }
    ]
@@ -580,7 +575,7 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=invisible&sa=action&anchor-ms=20000&execute-ms=30000&cb=lhmw6tg7sqa"
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=invisible&sa=action&anchor-ms=20000&execute-ms=30000&cb=scn3wbg0pawr"
      ]
     }
    ]
@@ -665,7 +660,7 @@
     {
      "url": "https://www.walmart.com/",
      "title": "Walmart | Save Money. Live better.",
-     "text": "Skip to Main Content Pickup or delivery? … • … • Reorder My Items Sign In Account 0 $0.00 Departments Services Rollbacks & More Halloween Get it Fast Pharmacy New Arrivals Toy Shop Game Day Meals Made Easy My Items Walmart+ More Walmart | Save Money. Live better. Save more. A lot more. Annual members can save $380 per year! Try Walmart+ for $1 Try Walmart+ for $1 Style that fits every story Introducing Scenario Shop now Shop now Workout clothes to accessories The active edit Shop all Shop all Car seats, clothes & more Major savings end Sept. 30! Shop now Shop now Get Bricktember savings Find LEGO® in the Toy Shop Shop now Shop now Save up to $250 on 3 select items Free furniture shipping & assembly* Shop now Shop now Decor, food & more Get everything for fall, fast Shop now Shop now Build a boo basket Shop now Shop now Seasonal hosting essentials Shop now Shop now Bedding & decor Luxe bedroom refresh Shop now Shop now",
+     "text": "",
      "markers": [],
      "answered": [],
      "frames": []
@@ -685,7 +680,9 @@
      "text": "",
      "markers": [],
      "answered": [],
-     "frames": []
+     "frames": [
+      "https://accounts.google.com/gsi/iframe/select?client_id=…&ux_mode=popup&ui_mode=card&as=…&bs=…&channel_id=…&origin=…&oauth2_auth_url=…"
+     ]
     }
    ]
   },
@@ -734,8 +731,8 @@
    "frames": [
     {
      "url": "https://www.cvs.com/account-login/look-up",
-     "title": "Sign in or create an account | CVS Pharmacy",
-     "text": "Skip to main content Sign in or create an account First, we’ll check to see if you already have an account or ExtraCare® membership. Mobile number or email Keep me signed in By continuing, you agree to our Terms of Use andPrivacy Policy Continue Need help? Read our frequently asked questions",
+     "title": "lookup.page.title | CVS Pharmacy",
+     "text": "Skip to main content Sign in or create an account Need help? Read our frequently asked questions",
      "markers": [],
      "answered": [],
      "frames": []
@@ -823,7 +820,7 @@
     {
      "url": "https://example.com/",
      "title": "Example Domain",
-     "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+     "text": "This domain is for use in documentation examples without needing permission. This is not a service, avoid relying on it for testing and monitoring purposes. هذا النطاق مُخصص للاستخدام في أمثلة التوثيق دون الحاجة إلى إذن. هذه ليست خدمة، يُرجى تجنب الاعتماد عليها لأغراض الاختبار والمراقبة. 该域名仅用于文档示例，无需获得许可。这并非一项服务，请勿将其用于测试和监控目的。 L’usage de ce domaine est réservé à des exemples de documentation, sans autorisation préalable. Il ne s’agit pas d’un service ; son utilisation à des fins de test ou de surveillance est à éviter. Данный домен предназначен для использования в примерах документации без необходимости получения предварительного разрешения. Это не сервис; не рекомендуется его использование для тестирования и мониторинга. Este dominio está destinado al uso en ejemplos de documentación sin necesidad de permiso. Esto no es un servicio, evitar utilizarlo para realizar pruebas o monitoreos. Learn more",
      "markers": [],
      "answered": [],
      "frames": []
@@ -847,7 +844,7 @@
      "markers": [],
      "answered": [],
      "frames": [
-      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&cb=8ycw0wpvrmdu"
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=…&co=…&hl=en&v=kemdRjWFxNjgsGdhRslyEPwU&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&cb=2ei77xn9scm0"
      ]
     }
    ]

@@ -69,7 +69,7 @@ function build(): string {
 const skip = unbuildable();
 // The test reporter names no skipped test, so the reason is printed once.
 if (skip !== null) console.warn(`the WebKit bench is skipped: ${skip}`);
-const runner = skip === null ? build() : "";
+export const runner = skip === null ? build() : "";
 const page = (name: string) => pathToFileURL(join(import.meta.dir, "fixtures", name)).href;
 
 // The answers in order: the load's, then one per step. Frame tokens are

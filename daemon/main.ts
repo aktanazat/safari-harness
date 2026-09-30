@@ -30,6 +30,7 @@ import { missionRoute, watched } from "./mission.ts";
 import { saveRecording } from "./recordings.ts";
 import { notify } from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
+import { loadsFile, openLoads } from "./loads.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -54,6 +55,9 @@ note("start", {
 // restart still closes them (tools.ts, spaces.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
 loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`));
+// The extension reports every load in its owned tabs (bridge.ts), including
+// loads no tool caused, so browsing_history can leave those visits out.
+openLoads(loadsFile(httpPort));
 // What the user taught in a tab (teach mode) is saved as he stops it; a
 // notification tells him its name, or why it was not saved.
 bridge.onRecording = (recording) => {

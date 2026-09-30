@@ -1,5 +1,12 @@
 import { expect } from "bun:test";
+import { PROBE } from "../daemon/challenge.ts";
 import { benchRows } from "./bench.ts";
+
+// net-body.html's two response bodies, and how the request log names each:
+// its address's first 500 characters, and the page's stopped clock.
+const SMALL_BODY = "small-" + "s".repeat(5000);
+const LARGE_BODY = "large-" + "l".repeat(100_000);
+const loggedAs = (body: string) => ({ url: `data:text/plain,${body}`.slice(0, 500) + "…", t: 1000 });
 
 // content.js as it answers in Safari's WebKit, one page per behavior in
 // bench/fixtures. Refs count from 1 in each fresh page; a comment on a
@@ -107,6 +114,26 @@ benchRows("content.js in WebKit", [
       { op: "type", args: ["1", "402913", { secret: true }], answer: { value: { ok: true, kept: true } } },
       { op: "click", args: ["Submit"] },
       { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
+    name: "a code typed as a secret is cut from what the page answers, where the page repeats it in the field's name and its text, and a longer number holding its digits stays whole",
+    page: "echo-code.html",
+    steps: [
+      { op: "snapshot" }, // [2] textbox "Secure Verification Code* required"
+      { op: "type", args: ["2", "402913", { secret: true }], answer: { value: { ok: true, kept: true } } },
+      { op: "snapshot", answer: { value: { snapshot: expect.not.stringContaining("required 402913") } } },
+      { op: "extract", answer: { value: { text: expect.not.stringContaining("required 402913") } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Case 1402913; balance 402913.50") } } },
+    ],
+  },
+  {
+    name: "a field named for a code that holds digits the page put there shows only as filled, its name without them, and a ZIP code and a text area stay readable",
+    page: "filled-code.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.not.stringContaining("402913") } } },
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining("95616") } } },
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining("width=560") } } },
     ],
   },
   {
@@ -283,6 +310,34 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "select on a combobox the page draws opens it, waits for its list, and clicks the option its label names, not one of another list",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [3] the nationality box
+      { op: "select", args: ["3", "Kyrgyzstan"], answer: { value: { ok: true, value: "KIRGHIZIA (KYRGYZSTAN) (KG)" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw KG") } } },
+    ],
+  },
+  {
+    name: "select on a combobox whose list is open already picks from the list it names",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [4] City
+      { op: "select", args: ["4", "lyon"], answer: { value: { ok: true, value: "Lyon" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw Lyon") } } },
+    ],
+  },
+  {
+    name: "select on a combobox with an option its list lacks names the options it has, and a second select picks from the list left open",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [3] the nationality box
+      { op: "select", args: ["3", "Peru"], answer: { error: expect.stringContaining("BRAZIL (BR) | CANADA (CA) | KIRGHIZIA (KYRGYZSTAN) (KG)") } },
+      { op: "select", args: ["3", "canada"], answer: { value: { ok: true, value: "CANADA (CA)" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw CA") } } },
+    ],
+  },
+  {
     name: "a dropdown the page draws itself gives each option floating over the page a ref, and a click on one picks it, while text under a hand cursor with no control behind it stays text",
     page: "dropdown.html",
     steps: [
@@ -313,11 +368,21 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a thread row named by a summary hidden in it gets a ref with that name, its checkbox stays a control of its own, and a click on the row opens the thread with the box left unticked",
+    page: "gmail-row.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.stringMatching(/\[1\] row "unread, Ada Parker, Garden plans for the weekend, 10:15 AM, [^"\n]*"\n\s*\[2\] checkbox\n/) } } },
+      { op: "click", args: ["1"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Opened thread") } } },
+      { op: "snapshot", args: [{ query: "checkbox" }], answer: { value: { snapshot: "[2] checkbox" } } },
+    ],
+  },
+  {
     name: "a click on a disabled button says it is disabled rather than that it pressed it",
     page: "disabled.html",
     steps: [
       { op: "snapshot" }, // [5] button "Authorize" {disabled}
-      { op: "click", args: ["5"], answer: { error: "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" } },
+      { op: "click", args: ["5"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
@@ -376,6 +441,75 @@ benchRows("content.js in WebKit", [
     steps: [
       { op: "type", args: ["input[type=email]", "ada@example.com"], answer: { value: { ok: true, kept: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Dialog saw ada@example.com") } } },
+    ],
+  },
+  {
+    name: "a text wait reads the title when none of its words are in the body",
+    page: "title-only.html",
+    steps: [
+      { op: "wait", args: [null, { any: ["Search results", "No messages matched"] }], timeout: 300, answer: { value: { found: true, which: "Search results" } } },
+      { op: "wait", args: [null, { gone: "Search results" }], answer: { value: { found: true } } },
+    ],
+  },
+  {
+    name: "a text wait ignores invisible mail padding and soft hyphens",
+    page: "padded.html",
+    steps: [{ op: "wait", args: [null, { text: "USCIS told many people" }], timeout: 300, answer: { value: { found: true } } }],
+  },
+  {
+    name: "a snapshot query ignores invisible mail padding in both the page and query",
+    page: "padded.html",
+    steps: [{ op: "snapshot", args: [{ query: "USCIS told\u200B many people" }], answer: { value: { snapshot: expect.stringContaining("USCIS") } } }],
+  },
+  {
+    name: "an extract query ignores invisible mail padding in both the page and query",
+    page: "padded.html",
+    steps: [{ op: "extract", args: [{ query: "USCIS told\u2060 many people" }], answer: { value: { text: expect.stringContaining("USCIS") } } }],
+  },
+  {
+    name: "a missed wait reports the changed title and new and removed lines",
+    page: "wait-late.html",
+    steps: [
+      { op: "click", args: ["Search"] },
+      { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
+      { takeover: true },
+      { sent: true, answer: { value: [
+        { load: 1, message: { __safariHarnessReady: 1 } },
+        { load: 2, message: { __safariHarnessReady: 1 } },
+        { load: 1, answer: { value: { found: false, meanwhile: ["title was: Request pending", "new: No case found", "gone: Checking the request"] } } },
+      ] } },
+    ],
+  },
+  {
+    name: "a missed wait caps its summary at three lines and keeps the latest addition",
+    page: "wait-late.html",
+    steps: [
+      { op: "click", args: ["Move"] },
+      { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
+      { takeover: true },
+      { sent: true, answer: { value: [
+        { load: 1, message: { __safariHarnessReady: 1 } },
+        { load: 2, message: { __safariHarnessReady: 1 } },
+        { load: 1, answer: { value: { found: false, meanwhile: [expect.stringMatching(/^url was: .*\/wait-late.html$/), "title was: Request pending", "new: Last update"] } } },
+      ] } },
+    ],
+  },
+  {
+    name: "a wait after a no-op action does not mistake the old heading for a result",
+    page: "no-op-submit.html",
+    steps: [
+      { op: "wait", args: [null, { look: "submit" }] },
+      { op: "click", args: ["Submit"] },
+      { op: "wait", args: [null, { any: ["Case Information", "No case found"], after: "submit" }], timeout: 100, answer: { error: "bench: wait did not answer within 100 ms" } },
+    ],
+  },
+  {
+    name: "a wait after an action finds new text even when it arrived during the action",
+    page: "no-op-submit.html",
+    steps: [
+      { op: "wait", args: [null, { look: "respond" }] },
+      { op: "click", args: ["Respond"] },
+      { op: "wait", args: [null, { any: ["Case Information", "No case found"], after: "respond" }], answer: { value: { found: true, which: "No case found" } } },
     ],
   },
   {
@@ -486,6 +620,39 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: "Reports\n\nReport 1234 was resolved." } } }],
   },
   {
+    name: "AWS's token script on a page tells no bot check, and its puzzle tells one once drawn",
+    page: "aws-waf.html",
+    // the page draws AWS's puzzle 500 ms after it loads
+    steps: [
+      { op: "eval", args: [`window.__safariHarnessProbe.challenge(${JSON.stringify(PROBE)})`], answer: { value: { ok: true, result: { markers: [] } } } },
+      { op: "wait", args: [null, { text: "Solve the puzzle" }], timeout: 2000, answer: { value: { found: true } } },
+      {
+        op: "eval",
+        args: [`window.__safariHarnessProbe.challenge(${JSON.stringify(PROBE)})`],
+        answer: { value: { ok: true, result: { markers: ["#captcha-container .amzn-captcha-modal", ".amzn-captcha-modal"] } } },
+      },
+    ],
+  },
+  {
+    name: "extract of a page that says it is loading waits for its text, and leaves the loading line out",
+    page: "loading.html",
+    // the case comes 1 s after the page loads
+    steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^(?![\s\S]*loading)[\s\S]*Case was received\./) } } }],
+  },
+  {
+    name: "an open waits while the page says it is loading, and says when it no longer is",
+    page: "loading.html",
+    steps: [{ op: "loaded", args: [3000], answer: { value: { loading: false } } }],
+  },
+  {
+    name: "a page still busy at the limit is read, and said to be still loading",
+    page: "busy.html",
+    steps: [
+      { op: "extract", answer: { value: { text: "Your cases", loading: true } } },
+      { op: "loaded", args: [300], answer: { value: { loading: true } } },
+    ],
+  },
+  {
     name: "an extract query that matches no line says so in a note, a leading (?i) is dropped, and a query written as a regex is told it is plain text",
     page: "click.html",
     steps: [
@@ -590,5 +757,61 @@ benchRows("content.js in WebKit", [
     name: "download on a button that opens a web page says so and what to do, rather than saving the page",
     page: "js-download.html",
     steps: [{ op: "download", args: ["Policy"], answer: { error: expect.stringContaining("opens a web page, not a file") } }],
+  },
+  {
+    name: "a response body longer than the log's start comes back whole",
+    page: "net-body.html",
+    steps: [
+      { op: "wait", args: [null, { text: "done" }] }, // both bodies read by the page
+      { op: "netBody", args: [loggedAs(SMALL_BODY)], answer: { value: { text: SMALL_BODY, truncated: false, arriving: false } } },
+    ],
+  },
+  {
+    name: "a response body past 90,000 characters comes back cut there, and says it was cut",
+    page: "net-body.html",
+    steps: [
+      { op: "wait", args: [null, { text: "done" }] },
+      { op: "netBody", args: [loggedAs(LARGE_BODY)], answer: { value: { text: LARGE_BODY.slice(0, 90_000), truncated: true, arriving: false } } },
+    ],
+  },
+  {
+    name: "fillCard puts the card's number, expiry in the field's own shape, code, name, and billing ZIP in a checkout, leaves a gift card and the shipping ZIP alone, and no answer holds the number or code",
+    page: "card-form.html",
+    steps: [
+      { op: "fillCard", args: ["", { number: "4242424242424242", month: 7, year: 2029, csc: "123", name: "Ada Lovelace", zip: "94107" }, ["4242424242424242", "123"]], answer: { value: { ok: true, filled: ["number", "expiry", "security code", "name", "zip"] } } },
+      { op: "snapshot", answer: { value: { snapshot: expect.not.stringMatching(/4242424242424242|value="123"/) } } },
+      { op: "click", args: ["Check"] },
+      { op: "extract", answer: { value: { text: expect.stringMatching(/ending 4242, expiring 07 \/ 29, code (?!123)\S*, for Ada Lovelace, billing ZIP 94107\. Gift card "", shipping ZIP ""\./) } } },
+      { op: "extract", answer: { value: { text: expect.not.stringContaining("4242424242424242") } } },
+    ],
+  },
+  {
+    name: "fillCard on a page no longer on the site the card was sent for fills nothing",
+    page: "card-form.html",
+    steps: [
+      { op: "fillCard", args: ["shop.example", { number: "4242424242424242", month: 7, year: 2029, csc: "123", name: "Ada Lovelace", zip: "94107" }, []], answer: { error: expect.stringContaining("nothing was filled") } },
+      { op: "click", args: ["Check"] },
+      { op: "extract", answer: { value: { text: expect.stringMatching(/Got card\s+ending , expiring , code , for , billing ZIP \./) } } },
+    ],
+  },
+  {
+    name: "fillCard picks the month and year in lists, splits the name into first and last, finds an unmarked number field by its label, and leaves a birth year alone",
+    page: "card-lists.html",
+    steps: [
+      { op: "fillCard", args: ["", { number: "4242424242424242", month: 7, year: 2029, csc: "123", name: "Ada Lovelace", zip: "94107" }, ["4242424242424242", "123"]], answer: { value: { ok: true, filled: ["first name", "last name", "number", "expiry month", "expiry year", "security code"] } } },
+      { op: "click", args: ["Check"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining('Card ending 4242, month 07 - July, year 2029, code length 3, holder Ada / Lovelace, birth year "".') } } },
+    ],
+  },
+  {
+    name: "fillCard fills a card processor's frame, the expiry as its MM/YYYY, and the page around it, which holds no card fields, takes nothing",
+    page: "card-frames.html",
+    frames: 1,
+    steps: [
+      { op: "fillCard", args: ["", { number: "4242424242424242", month: 7, year: 2029, csc: "123", name: "Ada Lovelace", zip: "94107" }, ["4242424242424242", "123"]], answer: { error: "the card fields are gone; nothing was filled" } },
+      { op: "fillCard", args: ["", { number: "4242424242424242", month: 7, year: 2029, csc: "123", zip: "94107" }, ["4242424242424242", "123"]], frame: "card-processor.html", answer: { value: { ok: true, filled: ["number", "expiry", "security code", "zip"] } } },
+      { op: "click", args: ["Check"], frame: "card-processor.html" },
+      { op: "extract", frame: "card-processor.html", answer: { value: { text: expect.stringContaining("Card ending 4242, expiring 07/2029, code length 3, ZIP 94107.") } } },
+    ],
   },
 ]);

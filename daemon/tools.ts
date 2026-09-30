@@ -3,11 +3,11 @@
 
 import { bridge } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeOf, type Challenge } from "./challenge.ts";
+import { challengeOf, settledChallenge, type Challenge } from "./challenge.ts";
 import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
-import { frontApp, inFront, notify, raiseSafari, SAFARI, show } from "./front.ts";
+import { frontApp, inFront, input, notify, raiseSafari, SAFARI, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
@@ -15,15 +15,15 @@ import { asExpression } from "./statements.ts";
 import { unanswered } from "./unanswered.ts";
 import { spaceNote, spaceTool, spaceWindow, windowOwners, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
-import { filledOf, navigatedOf } from "./navigated.ts";
+import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
-import { firstNotes, learn, readerFor } from "./notes.ts";
+import { firstNotes, learn, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
-import { beside, checkCall, fromModel, guard } from "./guard.ts";
+import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, inLane } from "./lanes.ts";
 import { urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
-import { redacted, redactUrl } from "./redact.ts";
+import { keepSecret, redacted, redactUrl, tabSecrets } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { replay } from "./replay.ts";
@@ -120,6 +120,8 @@ const closedTabs = new Map<number, Closed>();
 const CLOSED_KEPT = 500;
 
 function recordClosed(tab: number, why: string, url?: string) {
+  // what was typed there as a secret goes with it (redact.ts)
+  tabSecrets.delete(tab);
   closedTabs.delete(tab);
   closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }) });
   // a Map keeps its keys in the order they went in, the oldest first
@@ -275,6 +277,7 @@ bridge.onTab = (e) => {
 function moveKept(from: number, to: number): boolean {
   move(lastSnapshot, from, to);
   move(handoffs, from, to);
+  move(tabSecrets, from, to);
   return move(harnessTabs, from, to);
 }
 
@@ -295,19 +298,53 @@ export async function activateTab(tab: number): Promise<unknown> {
 }
 
 // The tab shows in its window, and the window and Safari come to the front:
-// the user sees the tab.
+// the user sees the tab. An agent window comes onto the main display too,
+// and stays there: Safari puts agent windows where it likes (on 09-30 all
+// of them at -1410, on a display above the main one), and on 09-28
+// GitHub's Authorize stayed disabled in one off the main display until
+// `window`, then `activate`. His own windows stay where he put them.
 async function showTab(tab: number): Promise<unknown> {
-  const res = await activateTab(tab);
+  const shown = (await activateTab(tab)) as { windowId: number; width: number; height: number };
   await raiseSafari();
-  return res;
+  if (!windowOwners().has(shown.windowId)) return { ok: true };
+  return { ok: true, window: await ontoMainDisplay(tab, shown) };
 }
 
-// open, goto, snapshot, and a missed wait say when the tab shows a bot check
-// (challenge.ts): the agent hands it to the user with handoff. A result still
-// coming has its probe sent beside it.
+type Rect = { x: number; y: number; width: number; height: number };
+
+// Moves an agent window, found by its size (scripts/input window), inside
+// the part of the main display the menu bar and Dock leave free: no further
+// than that takes, and at its own size, by which its keeper finds it
+// (spaces.ts); a window of no size gets 1000 by 800. Safari counts left and
+// top from the top-left of the screen the window is on. Answers where the
+// window is, in global points from the main display's top-left.
+async function ontoMainDisplay(tab: number, size: { width: number; height: number }): Promise<Rect> {
+  const { window: w, screen, visible: v } = (await input(["window", String(size.width), String(size.height)])) as Record<"window" | "screen" | "visible", Rect>;
+  const width = w.width || 1000;
+  const height = w.height || 800;
+  const x = Math.max(v.x, Math.min(w.x, v.x + v.width - width));
+  const y = Math.max(v.y, Math.min(w.y, v.y + v.height - height));
+  if (x !== w.x || y !== w.y || width !== w.width || height !== w.height) {
+    await bridge.request("tabs.activate", [tab, { left: x - screen.x, top: y - screen.y, width, height }]);
+  }
+  return { x, y, width, height };
+}
+
+// snapshot and a missed wait say when the tab shows a bot check
+// (challenge.ts), as open and goto do: the agent hands it to the user with
+// handoff. A result still coming has its probe sent beside it.
 async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
   const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
   return challenge ? { ...r, challenge } : r;
+}
+
+// open and goto wait out a Cloudflare check that lets the browser through
+// (settledChallenge), and then answer with the page behind it.
+async function afterWall(t: TabInfo, tab: number): Promise<object> {
+  const { challenge, top } = await settledChallenge(tab);
+  const { title: _, ...rest } = t;
+  const page = top ? { ...rest, url: top.url, ...(top.title ? { title: top.title } : {}) } : t;
+  return challenge ? { ...page, challenge } : page;
 }
 
 // open, goto, and snapshot also carry what agents have learned about the
@@ -378,6 +415,8 @@ export async function type(opts: { tab?: number; ref: number | string; text: str
   const tab = await resolveTab(opts.tab);
   const text = str(opts.text, "text");
   if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new Error("a code is filled in by the safari CLI or MCP tools, not over the daemon's port: call type through them");
+  // the tab's answers have it cut after the page moves on too (redact.ts)
+  if (opts.secret === true) keepSecret(tab, text);
   const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true }]);
   if (!answer || typeof answer !== "object" || !("ok" in answer)) return answer;
   return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
@@ -491,8 +530,8 @@ export async function tabInfo(opts: { tab?: number } = {}) {
 
 // What the page answers a wait with (waitFor in content.js): already, that
 // what it waited for held as it began; added, the lines new since the last
-// look of a changed wait; hint, a line for the model.
-type Seen = { found: boolean; which?: string; already?: boolean; added?: string[]; hint?: string };
+// look of a changed wait; meanwhile, what changed during a missed wait.
+type Seen = { found: boolean; which?: string; already?: boolean; added?: string[]; hint?: string; meanwhile?: string[] };
 
 // A text wait the page never met. Late in September agents waited on words
 // no page shows ("zzqq1" to "zzqq48") to sleep, 15 minutes of it.
@@ -502,6 +541,10 @@ const NEVER_SHOWN = "the page never showed those words; open and goto already wa
 // the next call still catches a reply that comes in between.
 const NOTHING_NEW = "no new lines yet; call wait with changed again, and a reply that comes in between still counts";
 
+// Let a stopped page send its change summary, without letting a page held
+// by navigation or a dialog hold the caller indefinitely (USCIS, 09-30).
+const STOPPED_MS = 1000;
+
 // Waits until the page shows what the wait asks for (ms is then the
 // timeout, max 30000): a selector or text, the first of several texts (any;
 // which says which), text gone, an address (url: a part of it, or
@@ -509,17 +552,17 @@ const NOTHING_NEW = "no new lines yet; call wait with changed again, and a reply
 // own site still out (quiet). Text matches case and spacing aside. The page
 // reports the moment it sees it (waitFor in content.js); the time limit is
 // kept here, because Safari stops a content script's timers in a hidden
-// tab. The answer at the limit does not wait for the page: a page still
-// loading, or too busy to answer, would otherwise hold the call past its
-// limit. A miss says where the tab is: often a redirect (signed out, sent
+// tab. At the limit the page gets at most a second to report what changed.
+// A miss also says where the tab is: often a redirect (signed out, sent
 // to the home page). A wait with only ms ends once the page is quiet, ms at
 // most: it slept all of it, and in the car and insurance searches of late
 // September such sleeps held agents about 9 minutes. A page that cannot be
 // watched still gets its ms, as a sleep did. On screen (front), it holds
 // the tab there all of ms: what it waits on is an animation, which a quiet
 // page does not rule out.
-export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean }) {
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
   const tab = await resolveTab(opts.tab);
+  if (opts.look !== undefined) return relay(tab, "wait", [null, { look: opts.look }]);
   const named = waitsOnPage(opts);
   if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const asked = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
@@ -542,25 +585,33 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   }
   const start = Date.now();
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
-  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named, ...(opts.changed === true ? { changed: true } : {}) };
+  const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named, ...(opts.changed === true ? { changed: true } : {}), ...(opts.after === undefined ? {} : { after: opts.after }) };
   const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<Seen>;
   // A page that answers only after the limit (it navigated, and the new page
   // began the wait again) still holds a wait: end that one too.
   seen.catch(stop);
   const timeUp = Promise.withResolvers<Seen>();
-  const timer = setTimeout(() => { stop(); timeUp.resolve({ found: false }); }, limit);
+  let late = false;
+  let timer = setTimeout(() => {
+    late = true;
+    stop();
+    if (named) timer = setTimeout(() => timeUp.resolve({ found: false }), STOPPED_MS);
+    else timeUp.resolve({ found: false });
+  }, limit);
   try {
     if (!named) {
       await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
       return { ok: true, waitedMs: Date.now() - start, ...cut };
     }
-    const { found, which, already, added, hint } = await Promise.race([seen, timeUp.promise]);
+    const { found: met, which, already, added, hint, meanwhile } = await Promise.race([seen.catch((e) => { if (late) return timeUp.promise; throw e; }), timeUp.promise]);
+    const found = met && !late;
     const waitedMs = Date.now() - start;
     if (found) return { ok: true, found, waitedMs, ...(which === undefined ? {} : { which }), ...(already ? { already } : {}), ...(added === undefined ? {} : { added }), ...(hint === undefined ? {} : { hint }) };
     const now = (await listTabs()).find((t) => t.id === tab);
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
-    const hints = [hint, words ? NEVER_SHOWN : undefined, opts.changed === true ? NOTHING_NEW : undefined].filter((h) => h !== undefined);
-    return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title, ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
+    const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
+    const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined].filter((h) => h !== undefined);
+    return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
   } finally {
     clearTimeout(timer);
   }
@@ -692,6 +743,26 @@ export async function netStop(opts: { tab?: number } = {}) {
 export async function netRead(opts: { tab?: number } = {}) {
   const tab = await resolveTab(opts.tab);
   return relay(tab, "netRead");
+}
+
+// One request's whole body, as the page's world keeps it (dialogs.js):
+// body is the request's place in the list read gives (from its end when
+// below 0), or part of its url, naming the latest request with it. To read
+// a server action's answer whole, an agent patched the page's fetch
+// through eval (USCIS, 09-30).
+export async function netBody(opts: { tab?: number; body: unknown; do?: unknown }) {
+  if (opts.do !== undefined && opts.do !== "read") throw new Error("body goes with do: read");
+  const which = opts.body;
+  if (typeof which !== "number" && typeof which !== "string") throw new Error("body is a request's index in the list, or part of its url");
+  const tab = await resolveTab(opts.tab);
+  const { entries } = (await relay(tab, "netRead")) as { entries: { url: string; t: number; frame?: number; body?: string }[] };
+  const byIndex = typeof which === "number" || /^-?\d+$/.test(which);
+  const entry = byIndex ? entries.at(Number(which)) : entries.findLast((e) => e.url.includes(String(which)));
+  if (!entry) throw new Error(byIndex ? `no request at ${which}: the list has ${entries.length}` : `no request in the list has ${which} in its url`);
+  const kept = (await bridge.tab(tab, "netBody", [{ url: entry.url, t: entry.t }], undefined, entry.frame)) as { text: string; truncated: boolean; arriving: boolean };
+  const note = kept.truncated ? `the body runs past ${kept.text.length} characters; this is its start` : kept.arriving ? "the body is still arriving; this is what came so far" : undefined;
+  const { body: _, ...request } = entry;
+  return { ...request, text: kept.text, ...(note === undefined ? {} : { note }) };
 }
 
 export async function consoleStart(opts: { tab?: number } = {}) {
@@ -956,7 +1027,7 @@ const SAVE: Param = { description: "true, or an absolute path for the whole outp
 // the agent a separate snapshot call.
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   if (!want) return result;
-  const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
+  const opened = newTabOf(result)?.id;
   const page = (await relay(opened ?? tab, "snapshot", [{}])) as Snapshot;
   return { ...(result as object), page: shieldSnapshot(page) };
 }
@@ -966,9 +1037,9 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     const tab = await resolveTab(a.tab);
     // A click, a key, or an option answers with what it did to the page.
     const result = withEffect(await run({ ...a, tab }));
-    const opened = (result as { newTab?: { id: number } } | null)?.newTab?.id;
+    const opened = newTabOf(result);
     const from = harnessTabs.get(tab);
-    if (opened !== undefined && from) own(opened, from.owner);
+    if (opened && from) own(opened.id, from.owner);
     return withPage(result, tab, a.snapshot);
   };
 }
@@ -1035,11 +1106,23 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   }
 }
 
+// What of a card is cut from a tab's answers once it is filled in: its
+// number as sent and as pages group it (4-4-4-4, American Express's
+// 4-6-5), and its security code.
+function cardSecrets(card: Record<string, unknown>): string[] {
+  const number = typeof card.number === "string" ? card.number : "";
+  const groups = number.length === 15 ? [number.slice(0, 4), number.slice(4, 10), number.slice(10)] : (number.match(/.{1,4}/g) ?? []);
+  return [number, groups.join(" "), groups.join("-"), typeof card.csc === "string" ? card.csc : ""].filter((s) => s !== "");
+}
+
 export const TOOLS: Record<string, Tool> = {
   run: {
-    desc: 'Run several of these tools in one call, in order, stopping at the first error; each call saved is a model turn saved. Steps without tab use the tab the run opened, else the last named. Open, read, and close in one call: [{"tool":"open","args":{"url":"https://example.com","background":true}},{"tool":"extract"},{"tool":"close"}]',
+    desc: 'Check all steps, then run in order until an error. A text wait after an action counts new lines only. Missing tab uses the latest opened or named tab. Example: [{"tool":"open","args":{"url":"https://example.com"}},{"tool":"extract"},{"tool":"close"}]',
     params: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" } }, required: ["tool"] }, description: "{tool, args} objects; args as that tool takes them" } },
     required: ["steps"],
+    // real: true sends the steps' click and type on a ref as real input;
+    // such a run goes step by step from the caller (call.ts).
+    unlisted: { real: { type: "boolean", description: "clicks and typing on refs go as real input" } },
     run: (a) => runSteps(a.steps),
   },
   tabs: {
@@ -1056,7 +1139,7 @@ export const TOOLS: Record<string, Tool> = {
       // its dialogs.
       const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
       if (!a.keep) own(t.id, currentOwner());
-      return withPage(withNotes(await withChallenge(t, t.id)), t.id, a.snapshot);
+      return withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
     },
   },
   // Agent windows and their tab groups, for the keeper (keeper.ts).
@@ -1078,9 +1161,9 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["tab", "url"],
-    run: action(async (a) => withNotes(await withChallenge(await navigate(a.tab, str(a.url, "url")), a.tab))),
+    run: action(async (a) => withNotes(await afterWall(await navigate(a.tab, str(a.url, "url")), a.tab))),
   },
-  activate: { desc: "Bring a tab, its window, and Safari to the front.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
+  activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
   snapshot: {
     desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs outlast redraws; snapshot again to see what an action changed.",
     params: {
@@ -1201,7 +1284,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait for text or a selector on the page, one of any (which), gone text to go, a url, new lines (changed), or quiet; ms: timeout (default 10000, max 30000). Only ms: ends once quiet. Text ignores case and spaces.",
+    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 30000; only ms: ends once quiet. A miss says what changed.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -1215,6 +1298,7 @@ export const TOOLS: Record<string, Tool> = {
       front: { type: "boolean", description: "keep the tab on screen meanwhile" },
     },
     required: ["tab"],
+    unlisted: { look: { type: "string", description: "run's token for the look before an action" }, after: { type: "string", description: "match words new since the run's look" } },
     run: async (a) => {
       const o = { ...(a as Parameters<typeof wait>[0] & { front?: boolean }), tab: await resolveTab(a.tab) };
       return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
@@ -1246,10 +1330,10 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }) }),
   },
   net: {
-    desc: "The page's fetch/XHR requests since it began loading, in every frame: url, method, status, time, and the start of a text or JSON body. start clears the list; stop ends it.",
-    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" } },
+    desc: "Fetch/XHR requests since page load, in all frames, with each text/JSON body's start. start clears; stop ends.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, body: { description: "index or url part: its whole body" } },
     required: ["tab"],
-    run: (a) => capture({ start: netStart, read: netRead, stop: netStop }, a),
+    run: (a) => (a.body === undefined ? capture({ start: netStart, read: netRead, stop: netStop }, a) : netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do })),
   },
   console: {
     desc: "Record the page's console messages: start, then read.",
@@ -1310,6 +1394,22 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab"],
     hidden: true,
     run: async (a) => ({ tab: await resolveTab(a.tab) }),
+  },
+  // The site marked for real input (learn {site, real: true}; notes.ts)
+  // that a tab's page is on, or null: the caller asks before it sends a
+  // model's click or type on a ref (call.ts). The tabs are listed only once
+  // a site is marked.
+  real_site: {
+    desc: "The site marked for real input that a tab's page is on, or null.",
+    params: { tab: TAB },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => {
+      const marked = realInputSites();
+      if (marked.size === 0) return null;
+      const tab = await resolveTab(a.tab);
+      return realInputSite((await listTabs()).find((t) => t.id === tab)?.url, marked) ?? null;
+    },
   },
   // real_input's click on a tab not in front (input.ts) goes through
   // Safari's accessibility tree, which holds only the tab each window
@@ -1388,15 +1488,52 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: TAB, frame: { type: "number", description: "frame from login_form" }, site: { type: "string", description: "hostname" }, username: { type: "string", description: "username" }, password: { type: "string", description: "password" } },
     required: ["tab", "site"],
     hidden: true,
-    run: async (a) => filledOf(
-      await bridge.tab(num(a.tab, "tab"), "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
-      [...(a.username ? ["username"] : []), ...(a.password ? ["password"] : [])],
-      "login",
-    ),
+    run: async (a) => {
+      const tab = num(a.tab, "tab");
+      keepSecret(tab, a.password);
+      return filledOf(
+        await bridge.tab(tab, "fillLogin", [str(a.site, "site"), a.username ?? null, a.password ?? null], 30000, a.frame === undefined ? 0 : num(a.frame, "frame")),
+        [...(a.username ? ["username"] : []), ...(a.password ? ["password"] : [])],
+        "login",
+      );
+    },
+  },
+  // Where a card goes: each frame of the tab holding card fields, with its
+  // origin and which fields it holds, never a value (cardForm in
+  // content.js). The caller sends a card only to a frame on a site it
+  // trusts with one (cards.ts).
+  card_form: {
+    desc: "The tab's frames holding card fields, each with its origin and fields.",
+    params: { tab: TAB },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => {
+      const frames = await bridge.request("probe", [num(a.tab, "tab"), "card"]);
+      return Array.isArray(frames) ? frames : [];
+    },
+  },
+  // A card the caller read from the user's keychain (cards.ts), filled
+  // into one frame card_form named, only while that frame is on site. Its
+  // number and security code are cut from the tab's answers from then on.
+  // It answers which fields took it, and the refs of those that did not.
+  card_fill: {
+    desc: "Fill a card into a frame's card fields, only while the frame is on site.",
+    params: { tab: TAB, frame: { type: "number", description: "frame from card_form" }, site: { type: "string", description: "hostname" }, card: { description: "number, month, year, csc, name, zip" } },
+    required: ["tab", "site", "card"],
+    hidden: true,
+    run: async (a) => {
+      const tab = num(a.tab, "tab");
+      const card = a.card && typeof a.card === "object" ? Object.fromEntries(Object.entries(a.card)) : {};
+      const secrets = cardSecrets(card);
+      keepSecret(tab, ...secrets);
+      return bridge.tab(tab, "fillCard", [str(a.site, "site"), card, secrets], 30000, a.frame === undefined ? 0 : num(a.frame, "frame"));
+    },
   },
   passwords: {
-    desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. change saves a new strong password for the login and types it into the page's new-password fields; submit the form yourself. A site stating password rules: set them as the field's passwordrules first. setup-code gives the authenticator QR code in view to the Passwords app; then code confirms it. Locked, these first pair: he approves with Touch ID and types the Mac's code into a prompt there; you get paired or why not. Call done when finished; status says why it is locked.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" }, site: { type: "string", description: "change: host the login is saved for, if not the page's" } },
+    desc: "Sign in and pay with the user's Apple Passwords and cards; you never see a password or card digit: never ask for one. fill puts his login for the tab's site in its form, code its 2FA code, logins its usernames. change saves and types a new strong password into the new-password fields; you submit. Stated password rules go in the field's passwordrules first. setup-code saves the authenticator QR in view; code confirms it. Locked, these pair first: he approves with Touch ID and types the Mac's code. cards lists cards; card-fill fills one in; card-save has him type one at the Mac. done when finished; status says why locked.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "change: login's host if not the page's" }, card: { type: "string", description: "label or last 4" } },
+    // what card-save saves, when the user gave the card in chat
+    unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],
     run: applePasswords,
   },
@@ -1410,6 +1547,9 @@ export const TOOLS: Record<string, Tool> = {
       expression: { type: "string", description: "the reader's JS" },
       page: { type: "boolean", description: "reader runs in the page's own world" },
     },
+    // true marks the site for real input, false unmarks it (notes.ts); the
+    // CLI passes it as text, --real true.
+    unlisted: { real: { description: "true marks the site for real input; false unmarks it" } },
     required: ["site"],
     run: learn,
   },
@@ -1433,6 +1573,20 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "target"],
     hidden: true,
     run: async (a) => relay(await resolveTab(a.tab), "lookalikes", [a.target]),
+  },
+  // What the caller typed into the tab as a secret, as the code it fills in
+  // for {{code}} (secret.ts), or with the real keyboard: the tab's answers
+  // have it cut (redact.ts).
+  keep_secret: {
+    desc: "Cut texts typed as secrets from the tab's answers.",
+    params: { tab: TAB, texts: { type: "array", items: { type: "string" }, description: "the secrets" } },
+    required: ["tab", "texts"],
+    hidden: true,
+    run: async (a) => {
+      if (!Array.isArray(a.texts)) throw new Error("texts must be a list");
+      keepSecret(await resolveTab(a.tab), ...a.texts);
+      return { ok: true };
+    },
   },
 };
 
@@ -1476,7 +1630,7 @@ export function formatResult(value: unknown): string {
     }
     if (Array.isArray(v.steps)) {
       const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
-      if (v.notRun) lines.push(`stopped: the ${v.notRun} later step${v.notRun === 1 ? "" : "s"} did not run`);
+      if (v.notRun) lines.push(`stopped: the ${v.notRun} other step${v.notRun === 1 ? "" : "s"} did not run`);
       return lines.join("\n");
     }
     // map: each page under its title and address, as its read prints alone;
@@ -1572,27 +1726,51 @@ const TIDY: Record<string, true> = { close: true, keep: true };
 // wherever it runs, but for repl, which runs in its own session
 // (mcp-tools.ts, safari repl): on 09-29 an agent put repl in a run twice and
 // was offered replay.
-export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool): Promise<Steps> {
+export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool, check: (tool: string, args: Record<string, unknown>) => Checked = (t, a) => checkStep(TOOLS, t, a)): Promise<Steps> {
   if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
+  // Catch a bad later step before an earlier one submits a form (09-30).
+  const planned: { tool: string; args: Record<string, unknown>; checked: Checked }[] = [];
+  for (const [i, raw] of steps.entries()) {
+    let tool = "?";
+    try {
+      const step = stepOf(raw);
+      tool = step.tool;
+      if (tool.toLowerCase() === "repl") throw new Error("repl is its own call, not a run step: call repl {code} (in a shell, safari repl) apart from the run");
+      planned.push({ ...step, checked: check(tool, step.args) });
+    } catch (e) {
+      return { steps: [{ step: i + 1, tool, error: e instanceof Error ? e.message : String(e) }], notRun: steps.length - 1 };
+    }
+  }
   const done: Step[] = [];
   const opened: number[] = [];
   // each tab a close step shut, with that step's number
   const closed = new Map<string, number>();
   let named: unknown;
   let failed = false;
-  for (const [i, raw] of (steps as unknown[]).entries()) {
+  for (const [i, step] of planned.entries()) {
     let tool = "?";
     try {
-      const step = stepOf(raw);
       tool = step.tool;
       if (failed && !Object.hasOwn(TIDY, tool)) continue;
-      if (tool === "repl") throw new Error("repl is its own call, not a run step: call repl {code} (in a shell, safari repl) apart from the run");
       named = step.args.tab ?? named;
       const live = (t: unknown) => t !== undefined && !closed.has(String(t));
       const tab = step.args.tab ?? opened.findLast(live) ?? (live(named) ? named : undefined);
       const shut = step.args.tab === undefined ? undefined : closed.get(String(step.args.tab));
       if (shut !== undefined) throw new Error(`tab ${tab} was closed in step ${shut}; name a tab still open, or open the page again`);
+      const next = planned[i + 1];
+      const acting = acts(step.checked.tool, step.checked.args) || step.checked.tool === "real_input";
+      if (acting && next?.checked.tool === "wait" && (next.checked.args.text !== undefined || next.checked.args.any !== undefined) && String(next.args.tab ?? tab) === String(tab)) {
+        // Look before the action, in every frame: a wait on EOIR's old
+        // heading otherwise claimed Submit had worked (09-30).
+        const token = crypto.randomUUID();
+        await call("wait", { tab, look: token });
+        next.args = { ...next.args, after: token };
+      }
       let value = await call(tool, tab === undefined ? step.args : { ...step.args, tab });
+      if (step.checked.tool === "wait" && step.args.after !== undefined && value && typeof value === "object" && "found" in value && value.found === false) {
+        const meanwhile = "meanwhile" in value && Array.isArray(value.meanwhile) ? value.meanwhile.join("; ") : "";
+        throw new Error(`no new matching text appeared after the preceding action${meanwhile ? `; ${meanwhile}` : ""}`);
+      }
       if (tool === "open" && value && typeof value === "object" && "id" in value && typeof value.id === "number") opened.push(value.id);
       if (tool === "close" && tab !== undefined) closed.set(String(tab), i + 1);
       if (step.args.tab !== undefined && opened.length > 0 && !Object.hasOwn(TIDY, tool) && !opened.some((id) => String(id) === String(step.args.tab))) value = beside(value, "note", `tab ${step.args.tab} is not one this run opened (${opened.join(", ")})`);

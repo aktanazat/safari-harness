@@ -80,7 +80,7 @@ async function start() {
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
   const onMessage = new Hook<[unknown, Sender]>();
-  const onUpdated = new Hook<[number, { status: string; url?: string }]>();
+  const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number]>();
   const hook = () => new Hook<unknown[]>();
@@ -227,10 +227,15 @@ async function start() {
     },
     // The tab loads doc; Safari skips putting the script in some pages.
     navigate(tab: Tab, doc: Doc, script = true) {
-      onUpdated.fire(tab.id, { status: "loading", url: doc.url });
+      onUpdated.fire(tab.id, { status: "loading", url: doc.url }, { url: doc.url });
       tab.doc = doc;
       if (script) copyIn(tab, doc);
-      onUpdated.fire(tab.id, { status: "complete" });
+      onUpdated.fire(tab.id, { status: "complete" }, row(tab));
+    },
+    // Safari also reports URL changes within one document, and may repeat
+    // a URL or load-complete update without a new visit.
+    update(tab: Tab, info: { status?: string; url?: string }) {
+      onUpdated.fire(tab.id, info, row(tab));
     },
     // The page changes and Safari puts its script in, before the tab's new
     // load is seen.
@@ -496,6 +501,61 @@ test("a popup an owned page opens on its own goes to the agent, and one the user
   ]);
 });
 
+// 09-30: tool-result logging missed loads an agent made through eval or
+// real input, and a page's later redirects and refreshes.
+test("an owned tab reports each load and same-document address change once, even outside a tool call", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  await b.own(tab);
+  await b.clock.advance(60_000);
+  b.navigate(tab, new Doc("https://example.com/redirected"));
+  b.update(tab, { url: tab.doc.url, status: "complete" });
+  await b.clock.advance(20_000);
+  // A reload may report no URL until complete, even on a page with no
+  // content script. Keep the load's start time when completion is late.
+  b.update(tab, { status: "loading" });
+  await b.clock.advance(30_000);
+  b.update(tab, { status: "complete" });
+  await b.clock.advance(20_000);
+  b.update(tab, { url: "https://example.com/route#result" });
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.op === "load")).toEqual([
+    { op: "load", url: "https://example.com/redirected", from: 60_000, to: 60_000 },
+    { op: "load", url: "https://example.com/redirected", from: 80_000, to: 110_000 },
+    { op: "load", url: "https://example.com/route#result", from: 130_000, to: 130_000 },
+  ]);
+});
+
+test("reading the user's tab does not make its later visits the agent's", async () => {
+  const b = await start();
+  const his = b.open("https://example.com/");
+  await b.ask(his, "snapshot");
+  b.navigate(his, new Doc("https://example.com/private"));
+  await b.clock.advance(20_000);
+  b.update(his, { url: "https://example.com/private#later" });
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.op === "load")).toEqual([]);
+});
+
+test("a popup that finished loading before the harness claimed it is recorded once, and later loads are recorded too", async () => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  await b.clock.advance(60_000);
+  b.announce(opener);
+  const popup = b.create();
+  b.navigate(popup, new Doc("https://example.com/signed-in"));
+  await b.clock.advance(0);
+  b.update(popup, { url: popup.doc.url, status: "complete" });
+  await b.clock.advance(20_000);
+  b.navigate(popup, new Doc("https://example.com/account"));
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.op === "load")).toEqual([
+    { op: "load", url: "https://example.com/signed-in", from: 60_000, to: 60_000 },
+    { op: "load", url: "https://example.com/account", from: 80_000, to: 80_000 },
+  ]);
+});
+
 // A deploy reloads the extension, and Safari gives every tab a new id; the
 // daemon, and agents through it, still hold the old ones. An extension that
 // kept the new ids to itself would leave the daemon behind, and a daemon
@@ -527,4 +587,20 @@ test("an old socket closing after its replacement opened leaves the replacement 
   old.onclose();
   await b.clock.advance(60_000);
   expect(b.sockets.length).toBe(2);
+});
+
+test("stopping a wait keeps the top page's change summary", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const waiting = Promise.withResolvers<unknown>();
+  tab.doc.does = (op) => {
+    if (op === "wait") return waiting.promise;
+    if (op === "waitStop") waiting.resolve({ found: false, meanwhile: ["new: No case found"] });
+    return { ok: true };
+  };
+  const answer = b.ask(tab, "wait", [null, { text: "Case details" }]);
+  await b.clock.advance(0);
+  await b.ask(tab, "waitStop");
+  await b.clock.advance(0);
+  expect(await answer).toEqual({ value: { found: false, meanwhile: ["new: No case found"] } });
 });

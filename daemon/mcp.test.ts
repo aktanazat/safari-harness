@@ -95,6 +95,9 @@ import { expect, test } from "bun:test";
 // than the sign-in page left the saved login holding the old password.
 // Saying a site's stated password rules go in passwordrules (76) brought
 // it to 24,186: Costco refused the made password for want of a symbol.
+// Cards share passwords' actions and add no top-level tool. Tightening
+// that tool's own description and parameters pays for its card actions
+// and selector; the byte limit stays unchanged.
 const TOOL_LIST_MAX_BYTES = 24_186;
 
 async function toolList(): Promise<unknown> {

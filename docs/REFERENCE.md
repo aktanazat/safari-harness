@@ -136,7 +136,11 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - Use `tabs` when the user refers to a page he already has open. Read that tab,
   but do not navigate it, type into it, or close it unless he asked.
 - `open` with `background: true` keeps his current tab in front.
-- `activate` brings Safari and the tab's window to the front.
+- `activate` brings Safari and the tab's window to the front. A window of
+  yours also comes onto the main display, inside the part the menu bar and
+  Dock leave free, at its own size, and stays there; the answer's `window`
+  is where it is now, in screen points. The user's own windows stay where
+  he put them.
 
 ## Mission control: the user watches and holds you
 
@@ -194,9 +198,10 @@ guide repl` has the whole API and what to do when a run goes wrong.
 
 ## Several steps in one call
 
-Every tool call costs a model turn of a few seconds. `run` does several tools
-in one call, in order. After the first error it skips the remaining steps
-except `close` and `keep`, so a failed run never leaves its tab open. A step
+`run` checks every step's tool, parameter names, and required arguments
+before doing anything. A bad later step leaves all earlier steps untouched;
+`tab` can still come from an earlier step. Once running, the first error
+skips the remaining steps except `close` and `keep`, so cleanup still runs. A step
 without `tab` uses the tab the run's latest `open` made, else the last tab a
 step named, unless the run closed it; a step naming a tab the run closed
 fails with `tab N was closed in step M`, and one naming a tab the run did
@@ -204,6 +209,13 @@ not open gets a note. Every tool but `repl` can be a step, `real_input`,
 `handoff`, and the Messages tools included. From a shell, steps whose text
 holds quotes go in a file (`safari run --steps-file steps.json`) or on
 stdin (`--steps -`); a bare JSON array as the argument works too.
+With `real: true`, a run sends its steps' `click` and `type` on a ref as
+real input, as on a site marked for it (see "Acting").
+A text wait immediately after an action on the same tab reads only lines
+new since that action began, including text that arrived before the action
+answered. An old page heading is not evidence that a Submit worked. If this
+wait expires, the run stops except for `close` and `keep`. A standalone wait,
+or one after a read, can still match text already shown.
 
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
@@ -271,8 +283,10 @@ Read with `snapshot` when you do not yet know what is on the page.
 - `extract` reads a dialog open over the page first (its `note` says
   `selector: "body"` reads the page behind it), else the page's `main` or
   only article, else the whole page when `main` holds little of its text.
-  A page with no text yet, or only loading placeholders, gets up to 2 s to
-  draw; placeholder lines are left out, with a `note`.
+  A page with no text yet, loading placeholders or lines such as "The page
+  is loading. Please wait", or `aria-busy` on its main region or body, gets
+  up to 2 s to draw; those lines are left out, with a `note`, and
+  `loading: true` says the page was still loading then.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
   A `root`, or an `extract` `selector`, that matches nothing fails and names
   it: `nothing on the page matches root "main"; leave root out to read the
@@ -432,10 +446,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   and title instead of read. Never sleep inside `expression` for this.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read.
-- A bot check that stands in for a page is reported with `challenge` and
-  never waited on: nobody watches these tabs. Open that page yourself and
-  `handoff` it if the user should pass the check. A check in a box on a
-  page that otherwise reads normally is noted beside the page's value.
+- A bot check that stands in for a page is waited on as `open` waits on
+  one, then reported with `challenge` if it is still up; its page is not
+  read. Open that page yourself and `handoff` it if the user should pass
+  the check. A check in a box on a page that otherwise reads normally is
+  noted beside the page's value.
 - A tab that would not close says why in `closeError`.
 - `save: true` (the saved folder) or an absolute folder writes each page's
   output to a file of its own there, as `save` does for one read; each
@@ -475,8 +490,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - A one-time code the site texted the user: write `{{code}}` where it
   goes, `type {tab, ref, text: "{{code}}"}`. The harness waits up to 30 s
   for the text, types the code, and answers `typed: "code, 6 chars"`; the
-  field then reads `filled` in snapshots. `secret: "passwords"` types the
-  code his Apple Passwords keeps for the site instead, as
+  field then reads `filled` in snapshots, and the tab's answers have the
+  code cut (see "Logged-in sites and secrets"). `secret: "passwords"`
+  types the code his Apple Passwords keeps for the site instead, as
   `passwords {do: "code"}` does. An emailed code: open the email in
   another tab and pass `secret: "page", from: <that tab>`; the one code it
   shows (4 to 8 digits standing alone, 6 when lengths differ, or 6 to 8
@@ -486,8 +502,13 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   to 8 boxes (each one character, or named like "Digit 1 of 6") goes one
   digit to a box, and every box in the row is kept secret.
 - `select` picks a dropdown option by its label. A wrong label returns the
-  list of options. On a dropdown the page draws itself it fails and says
-  so: click the dropdown, then the option's ref in a fresh snapshot.
+  list of options. On a combobox the page draws itself (role combobox) it
+  clicks the box open, finds the list the box names (aria-controls,
+  aria-owns) or the listbox that appeared, matches labels as on a
+  `<select>`, and clicks the option; the answer's `value` is its label. A
+  wrong label leaves that list open, and a second `select` picks from it.
+  On any other dropdown the page draws, click it, then the option's ref in
+  a fresh snapshot.
 - `type` and `select` on a label's ref act on the field it labels.
 - A `click` on a control still disabled after `type` filled every field of
   its form says the page did not take scripted typing: type into its fields
@@ -498,9 +519,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `click`, `type`, and `select` on a disabled control (the snapshot marks
   it `{disabled}`) fail and say so: the page would ignore the action. A
   page enables its button once its form is complete; a few enable one only
-  while its window is in front. GitHub's Authorize button stayed disabled
-  in an agent's tab through `activate`, and came on after `window`, then
-  `activate`.
+  while its window is in front, as GitHub's Authorize does: `activate` the
+  tab first.
 - `hover` opens menus that appear on mouse-over.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
@@ -559,6 +579,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   try: a real click (`real_input`), a child or parent of the control, or a
   moment for a busy page. An effect shows the page moved, not that it did
   what you meant: confirm what matters with a `wait` or a snapshot.
+  `none` does not prove nothing was sent: a request to another site (a form
+  behind hCaptcha) or a handler slower than the 0.8 s the receipt watches
+  goes unseen, so look before you repeat a submit.
 - A page error saying the page refused for want of focus or a real click
   ("The document is not focused", a `NotAllowedError`), as a passkey,
   Touch ID, or clipboard call does in a tab Safari does not have in front
@@ -567,7 +590,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   user (`handoff`).
 - One acting call runs on a tab at a time: `click`, `type`, `press`,
   `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`,
-  `login_fill`, `autofill`, and `dialog` or `passwords` when they act.
+  `login_fill`, `card_fill`, `autofill`, and `dialog` or `passwords` when they act.
   Another acting call on that tab waits its turn, up to 10 s, then fails
   with "tab N is busy with click from omp pid P for S s". Reads, `wait`,
   and `handoff` never wait, and a `run`'s steps take the tab one at a
@@ -575,8 +598,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `real_input` uses the real mouse and keyboard, so the page sees trusted
   events: `do: "click"` a ref, or a point `x`, `y` as `click` takes them
   (for a page drawn on a canvas, with no refs); `count: 2` double-clicks,
-  `button: "right"`. `do: "type"` types text at a ref or where the caret
-  is, `do: "key"` a key or combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it
+  `button: "right"`. `do: "type"` types text at a ref in place of the
+  field's text (a click, then Cmd+A; `append: true` keeps it) or where the
+  caret is, `do: "key"` a key or combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it
   only when `click`, `type`, or `press` did nothing on a site that ignores
   scripted events. Never use it inside a bot check (see "Bot checks and
   steps only the user can do").
@@ -606,6 +630,16 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   a page with keyboard focus: if Safari's address or find bar has it, the
   call fails and nothing is typed. The app running the MCP server or CLI
   needs Accessibility permission.
+- A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
+  egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
+  once real input worked there: `learn {site, real: true}` (CLI `safari
+  learn <site> --real true`). From then on a model's `click` and `type`
+  with a ref on the site and its subdomains go as real input and only so,
+  with a `note` saying so; `select`, clicks at a point, a `{{code}}` type,
+  the REPL, and a site's own helpers stay scripted. `learn {site, real:
+  false}` undoes it. Nothing
+  retries a scripted click with real input by itself: after `effect:
+  "none"` a real click could submit a form twice.
 
 ## Waiting
 
@@ -613,17 +647,19 @@ Wait for the page, not the clock.
 
 - `wait` with `text` or `selector` returns the moment it appears, even in a
   background tab, and catches text that shows only briefly. Text matches in
-  any case and spacing ("M240i" finds "M240 i"), in the page and in its
-  embedded frames. `ms` is the timeout (default 10000, max 30000; a longer
-  one is cut, and the answer says so: call again to wait longer); the call
-  ends then even if the page is too busy to answer. The result says
-  `found: true|false`. A text wait that misses says the page never showed
-  those words: wait on words a snapshot showed, never on made-up words to
-  sleep.
+  any case and spacing ("M240i" finds "M240 i"), ignoring invisible padding
+  and soft hyphens, in the page, its title, and embedded frames. Snapshot
+  and extract queries ignore the same invisible characters. `ms` is the
+  timeout (default 10000, max 30000; a longer one is cut, and the answer
+  says so). At the limit, the page gets at most one more second to report
+  what changed. The result says `found: true|false`. A text wait that misses
+  says those words did not appear; never use made-up words to sleep.
 - A wait whose condition already holds as it begins answers at once with
   `already: true`: it waited for no change. Text such as "Reward" can match
   a menu item ("Rules & Rewards"), so wait for words only the next page
   shows. `gone` on text that was never on the page says so in a `hint`.
+  In a `run`, a text wait immediately after an action counts only new lines
+  since the action began, not an unchanged heading or menu.
 - `changed: true` waits for lines new to the page (to the `selector`'s
   element, when given) and returns them as `added`: a person's reply in a
   support chat. The page keeps its last look between calls, as the last
@@ -633,7 +669,7 @@ Wait for the page, not the clock.
   notes, and read receipts or times alone are not new lines.
 - `any: ["Order placed", "Payment declined"]` ends on the first shown and
   says `which`; `text: "a|b"` does the same. `gone: "Loading"` waits for
-  text to leave, `url` for a part of the address or a `/regex/` (pushState
+  body text to leave (not the title), `url` for a part of the address or a `/regex/` (pushState
   included), and `quiet: true` for 500 ms without a change to the page
   (clocks, progress bars, and video aside) and with no request to its own
   site still out (one out past 2 s, such as a long poll, does not count).
@@ -650,11 +686,16 @@ Wait for the page, not the clock.
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.
 - A page that navigates during a wait is read again after each load. A miss
-  also gives the tab's `url` and `title`: a sign-in redirect or a bounce to
-  the home page shows there, so read them before waiting again. A miss on a
-  bot check also carries `challenge`.
+  gives the tab's `url` and `title`. When the top page answers the stop,
+  `meanwhile` gives at most three lines: an address or title change, then
+  the latest added or removed text, or that the page did not change.
+  It covers the document being watched, not a document a navigation
+  destroyed. Read it before waiting again. A miss on a bot check also
+  carries `challenge`.
 - `open`, `goto`, `history`, and any action that loads a page return once the
-  new page is readable, without waiting for its ads and trackers.
+  new page is readable, without waiting for its ads and trackers. `open` and
+  `goto` also wait up to 5 s while the page says it is loading (as
+  `extract` reads it); `loading: true` means it still was.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
 - `wait` with only `ms` ends once the page goes quiet, `ms` at most. On a
@@ -696,6 +737,15 @@ list, so the next read shows only what follows; `do: "stop"` ends it on this
 page. It sees fetch and XHR only: not page loads, images, scripts, or web
 workers. `console` records console messages from `do: "start"`; read them
 with `do: "read"`.
+
+`net {tab, body}` returns one request's whole text or JSON response:
+`body` is its place in the list (from the end below 0: `-1` is the
+latest) or part of its url (the latest request with it). The answer is the
+request's entry with the body as `text`. The page keeps the whole bodies
+of its latest 10 such responses, each up to 90,000 characters; a longer
+one comes back cut there with a `note` saying so, and one still arriving
+comes back as far as it came, with a note. An older request's body is
+gone: the call says so. CLI: `safari net read --body -1 --tab N`.
 
 ## Files, PDFs, and requests
 
@@ -747,9 +797,17 @@ with `do: "read"`.
 - `window` gives your tab its own window of a given size, so the page lays
   out as it would on a phone or small laptop. Use it only on your own tab.
 - `browsing_history` searches Safari's history by title or address, newest
-  first, one row per address with its last visit and visit count (30 days
-  by default). It reads Safari's history file, so the terminal needs Full
-  Disk Access.
+  first, one row per address with the user's last visit and visit count (30
+  days by default), under `history`. The visits agents made are left out and
+  counted in `agentVisitsLeftOut`: Safari's load and address-change events
+  in harness-owned tabs are noted, including `eval` navigation, real input,
+  later redirects, refreshes, and same-page address changes. Reading one
+  of the user's tabs does not make its visits the agent's. A matching visit
+  within 10 s of a noted load is left out with its redirects, as is every
+  visit to the daemon's own pages. The daemon keeps the latest
+  10,000 to 20,000 loads, their addresses cut as answers are, in
+  `~/.local/share/safari-harness/loads-<port>.jsonl`. It reads Safari's
+  history file, so the terminal needs Full Disk Access.
 
 ## Site guides
 
@@ -776,6 +834,9 @@ plain sentence of at most 300 characters.
 - `learn {site}` alone (CLI `safari learn cvs.com`) lists the site's notes,
   numbered, and its readers; `learn {site, forget: n}` (CLI `--forget n`)
   removes note n.
+- `learn {site, real: true}` (CLI `--real true`) marks the site for real
+  input (see "Acting"), and `real: false` unmarks it; `learn {site}` shows
+  the mark.
 - Never a secret: a fact that looks like a password, a verification code,
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").
@@ -863,7 +924,19 @@ The tabs carry the user's real sessions. Never print passwords, one-time codes,
 session cookies, or tokens. The `cookies` tool returns cookie values: use it
 only when the task needs one, and never put the values in a reply or a file.
 Snapshots show a password, card number, or one-time-code field only as
-`filled`, so an autofilled secret stays off the transcript.
+`filled`, so an autofilled secret stays off the transcript. So does a field
+named for a code (code, verification, OTP, PIN, CVC; not a ZIP, postal,
+promo, gift, or country code) once it holds digits, and its name loses its
+value.
+A secret the harness types into a tab (`{{code}}`, `type`'s
+`secret: true`, a `passwords` fill, code, change, or card-fill, a Bitwarden password)
+is cut to `...` from everything that tab answers after, errors too, however
+the page shows it again: snapshots and their changes, `extract`,
+`element`, `data`, `wait`, `eval` (`page: true` too), `net`, `console`,
+`dialog`, and a `repl` on the tab. A secret of digits is cut only where it
+stands alone, so a total of `$1,234.56` stays whole beside a code of
+`234`. The list lives in the harness's memory until it closes the tab. A
+screenshot, and a new tab showing the same page, still show it.
 Every answer cuts the value of an address parameter named `code`, `state`,
 `token`, `access_token`, `id_token`, `refresh_token`, `sig`, `signature`,
 `session`, `auth`, `password`, or `otp`, in any case, to `...`: in tabs,
@@ -897,15 +970,18 @@ Signing in, in this order:
      the current code into the page's code field, one digit per box when
      the page splits it, and never returns it.
    - `passwords {do: "change", tab}` changes the password on a
-     change-password or sign-up form: it makes a strong password in
+     change-password, reset, or sign-up form: it makes a strong password in
      Safari's shape (shorter, without hyphens, when the fields allow fewer
-     than 20 characters), saves it to Apple Passwords as the login's
-     password for the form's site, and types it into every new-password
-     field. An empty current-password field gets the saved password (which
-     may need Touch ID, as `fill` does). Pass `username` when several
-     logins are saved, and `site` (a host) when the login is saved for
-     another site than the reset page's, so that entry is the one updated;
-     a form asking the current password takes only its own site's login.
+     than 20 characters), saves it to Apple Passwords as the password of
+     the one login saved on the page's site, for the page's host or for
+     another of the site's hosts (FHDA and ETS reset on a host of their
+     own), and types it into every new-password field. An empty
+     current-password field gets the saved password (which may need Touch
+     ID, as `fill` does). With several such logins, or none, it names the
+     logins Apple Passwords lists and saves nothing: pass `username`, and
+     `site`, the host the login is saved for (Paradox resets on another
+     site), or the page's own host for a new login. Given another host as
+     `site`, a form asking the current password is refused.
      A site that states rules the made password misses (Costco wants one
      of `!@#$&`) takes them as the new-password field's `passwordrules`
      attribute in Apple's syntax, set with `eval` before `change`
@@ -975,6 +1051,48 @@ Signing in, in this order:
   Contacts (`--label work` picks another address on the card). It never
   touches card-number fields and never submits.
 
+Payment cards use the same `passwords` tool, but live in this Mac's
+keychain, not Apple Passwords:
+
+- `passwords {do: "cards"}` lists each card's label, brand, last four,
+  expiry, and name without asking for Touch ID. Fill a saved card by its
+  label; never ask the user to paste its digits into chat.
+- `passwords {do: "card-save", card: "Work"}` opens a window on the Mac
+  where he types the card. The number and CVC are hidden as he types.
+  If he already gave a card, `number`, `exp` (MM/YY), `cvc`, `name`, and
+  `zip` save it directly. `card` names it; saving under an existing label
+  replaces that card. The CVC is stored too.
+- `passwords {do: "card-fill", tab, card: "Work"}` fills the number,
+  expiry (a single field or separate month/year lists), CVC, name, and
+  billing ZIP. `card` also accepts the last four or the listed id; leave
+  it out only when one card is saved.
+- The top page must use https. Its own host and subdomains, and embedded
+  Stripe, Braintree, and Adyen payment frames, may receive card data.
+  Other frames are skipped and named. Each frame receives only the
+  fields it asks for, and a frame that has moved to another host is refused.
+- The first fill asks Touch ID. One approval covers fills for five
+  minutes in that MCP session; the next fill after that asks again.
+  `done` or ending the session ends the approval. Each CLI call is a
+  separate process, so it cannot reuse the previous call's approval.
+  No Mac login password substitutes for Touch ID.
+- A call waiting on Touch ID answers after 25 seconds with `waiting`;
+  ask him to approve, then call `card-fill` again. The CLI waits for his
+  answer. When he is away and no approval is open, filling is refused.
+- The result names fields, never their values. A text field the page
+  rejects gets real keystrokes; `typed` says those keys were sent, not
+  that the page kept them. Check the page before continuing. Missing
+  fields stay in `unfilled`. Never ask for digits in chat to finish one.
+- The number and CVC are cut from the tab's later text answers too.
+  This needs copies in the tab's secret scrubber until the tab closes;
+  no card is cached for another fill. Screenshots are not scrubbed.
+  During the approval's five minutes, anything driving that MCP session
+  can fill saved cards without another Touch ID.
+- `passwords {do: "card-rm", card: "Work"}` removes the saved card after
+  Touch ID. The card helper ships inside Safari Harness.app and needs
+  its signed keychain entitlement; there is no file-storage fallback.
+- Filling never presses Pay. Check the order and amount, ask the user
+  in chat, and wait for his yes before the final payment click.
+
 ## Bot checks and steps only the user can do
 
 The harness never solves a bot check: CAPTCHAs, "drag the puzzle piece",
@@ -992,6 +1110,11 @@ check, no solving services.
   page that otherwise reads (often on a form, such as an unanswered
   Cloudflare Turnstile), and `"block"` when the site has turned the
   browser away: no one can clear that, so report it.
+- `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check,
+  which often lets Safari through by itself, and answer with the page behind
+  it; a `challenge: {kind: "cloudflare", where: "page"}` was still up at 8 s.
+- `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
+  merely loads AWS's scripts.
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
 - `handoff {tab, why}` hands the tab to the user: it brings Safari and the
@@ -1092,9 +1215,14 @@ safari routine remove price-watch
 - The saved prompt lives in `~/.local/share/safari-harness/routines/<name>.md`.
   It is plain text you can edit. It starts with a fixed preamble: own tab,
   close it after, no irreversible actions, end with a summary.
-- Each run writes its full output to
-  `~/Library/Logs/safari-harness/routines/<name>-<time>.log`. `routine list`
-  shows the latest run and its exit code.
+- Each run writes a log to
+  `~/Library/Logs/safari-harness/routines/<name>-<time>.log`: one line per
+  tool call (time, tool, a short form of its arguments, `ok` or `error`,
+  and how long it took in ms), then omp's full output. The arguments show
+  a tab, ref, url, or selector, with secrets in an address cut; typed text,
+  code, and any other string show only as their length. The log keeps the
+  first 400 calls or 64 KB of them, then says the rest went unlogged.
+  `routine list` shows the latest run and its exit code.
 - A task that should speak only when a value changes is better as a watch
   (below): no model, and an alert only when the value changes.
 - A bot check or a locked vault in a routine is reported in its summary,

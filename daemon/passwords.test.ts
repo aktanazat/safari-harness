@@ -10,6 +10,7 @@ import { FILL_TOOLS } from "./fill.ts";
 import { runAs } from "./owner.ts";
 import * as pair from "./pair.ts";
 import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from "./passwords.ts";
+import { tabSecrets } from "./redact.ts";
 import * as daemonRpc from "./rpc.ts";
 
 // The passwords tool promises: only the code the Mac shows unlocks it, a
@@ -51,10 +52,10 @@ type Sent = Record<string, unknown> & { cmd: number };
 type Helper = { queries: string[]; answer: (m: Sent) => Record<string, unknown> };
 
 // Apple's helper process: shows CODE, verifies the client's proof, and
-// answers encrypted queries for one saved login under the session it paired.
-// A save (command 6) replaces that login's password and, as the helper
-// does, gets no answer.
-function appleHelper(): Helper {
+// answers encrypted queries under the session it paired: it lists logins,
+// and USER's on SITE has a password. A save (command 6) replaces that
+// password and, as the helper does, gets no answer.
+function appleHelper(logins = [{ USR: USER, sites: [SITE] }]): Helper {
   const queries: string[] = [];
   let srp: { user: string; A: Buffer; B: Buffer; b: bigint; v: bigint; salt: Buffer } | null = null;
   let key: Buffer | null = null;
@@ -99,7 +100,7 @@ function appleHelper(): Helper {
         return undefined;
       }
       // A code query answers with Entry_N keys, as the helper does for codes.
-      const out = m.cmd === 4 ? { STATUS: 0, Entries: [{ USR: USER, sites: [SITE] }] }
+      const out = m.cmd === 4 ? { STATUS: 0, Entries: logins }
         : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
         : { STATUS: 0, Entries: [{ USR: q.USR, PWD: saved }] };
       const iv = randomBytes(16);
@@ -226,6 +227,9 @@ function fakeTab(url: string, form: { frame: number; url: string; maxLength?: nu
         const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
         return answer({ value: form.frame ? frames : [frames[1]] });
       }
+      // The page repeats what was typed into it, as USCIS's code field did
+      // (09-30); the tab's answers must not.
+      if (args[1] === "extract") return answer({ value: { text: Object.values(page).join(" ") } });
       const [, op, opArgs, , frame] = args;
       if (frame !== form.frame || opArgs[0] !== new URL(form.url).hostname) return answer({ error: "nothing was filled" });
       if (op === "fillLogin") Object.assign(page, { username: opArgs[1], password: opArgs[2] });
@@ -251,6 +255,7 @@ test("the code on the Mac unlocks, and fill types the password into the page but
   expect(page).toEqual({ username: USER, password: SECRET });
   expect(result).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(JSON.stringify(await p.loginsFor(7))).not.toContain(SECRET);
+  expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
 });
 
 // On 09-28 a fill waited on Touch ID past the agent's 60 s call, so the
@@ -337,7 +342,8 @@ function lockedVault() {
   return { prompts: spyOn(pair, "approve").mockReturnValue(touch.promise), approve: () => touch.resolve({ approved: true }) };
 }
 
-// After every test: the spies, the clock, the CLI switch, and the away flag go back.
+// After every test: the spies, the clock, the CLI switch, and the away flag
+// go back, and the secrets typed into tab 7 are dropped.
 const away = process.env.SAFARI_HARNESS_AWAY;
 afterEach(() => {
   mock.restore();
@@ -345,6 +351,7 @@ afterEach(() => {
   pair.waitPairingOut(false);
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
+  tabSecrets.clear();
 });
 
 // On 09-29 a first call that found the vault locked waited 44 s for Touch
@@ -387,12 +394,13 @@ test("code types the site's verification code into the page but never returns it
   const result = await p.fillCode(7);
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
+  expect(await bridge.tab(7, "extract")).toEqual({ text: "..." });
 });
 
 // The new password must be the one Apple Passwords keeps: a page given one
 // password while another is saved locks the user out of his account. So
 // nothing is typed until the caller has confirmed the save.
-test("change saves a new password and types nothing; typeChange then types the saved one into the current field and the new one into the others, and fill types the new one", async () => {
+test("change saves a new password and types nothing; typeChange then types the saved one into the current field and the new one into the others, and the tab's answers show neither, and fill types the new one", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
@@ -401,13 +409,14 @@ test("change saves a new password and types nothing; typeChange then types the s
   expect(await p.typeChange(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
   expect(page.current).toBe(SECRET);
   expect(page.fresh).not.toBe(SECRET);
+  expect(await bridge.tab(7, "extract")).toEqual({ text: "... ..." });
   await p.fill(7);
   expect(page.password).toBe(page.fresh);
 });
 
-// FHDA's campus login is saved for its sign-in host, and its reset page is
-// on another (09-29): saved for the reset page's host, the new password
-// left the sign-in entry holding the old one.
+// Paradox's login is saved for login.paradoxplaza.com, and its reset page
+// is on paradoxinteractive.com (09-29): saved for the reset page's host,
+// the new password left the sign-in entry holding the old one.
 test("change on a reset page on another host, given the login's site, updates that site's saved login and types into the reset page", async () => {
   const { p } = scratch();
   const reset = "https://reset.example.org/new-password";
@@ -427,6 +436,60 @@ test("change on a form asking the current password refuses another site's login,
   await paired(p);
   expect(await locked(p.change(7, undefined, SITE))).toStartWith("the form asks for the current password, which is filled only on the site it is saved for");
   expect(page).toEqual({});
+});
+
+// FHDA's campus login and ETS's (09-29) are saved for their sign-in hosts
+// and reset on another host of the same site: saved for the reset
+// page's host, the new password made a second entry, and the real login
+// kept the old one. A form there asking the current password gets it as
+// fill would give it to that page.
+test.each([
+  ["a reset form", "none", null],
+  ["a form asking the current password", undefined, SECRET],
+] as const)("change on %s on another host of the login's site updates that login with no site given", async (_, current, typed) => {
+  const { p } = scratch();
+  const url = "https://reset.example.com/password";
+  const page = fakeTab(url, { frame: 0, url, current });
+  await paired(p);
+  expect(await p.change(7)).toMatchObject({ username: USER, site: SITE });
+  await p.typeChange(7);
+  expect(page.current).toBe(typed);
+  const signIn = fakeTab(`https://${SITE}/signin`);
+  await p.fill(7);
+  expect(signIn.password).toBe(page.fresh);
+});
+
+// The second entry FHDA's change made for its reset page's host (09-29)
+// sits beside the real login: updating either alone leaves the one the
+// site signs in with holding a password it no longer takes, so neither is
+// guessed.
+test("change refuses, saving nothing, when several logins of the page's site fit, one on its own host, and site then picks the one", async () => {
+  const { p } = scratch();
+  const url = "https://reset.example.com/password";
+  const page = fakeTab(url, { frame: 0, url, current: "none" });
+  const { helper } = await paired(p, appleHelper([{ USR: USER, sites: [SITE] }, { USR: USER, sites: ["reset.example.com"] }]));
+  const refused = await locked(p.change(7, USER));
+  expect(refused).toContain(SITE);
+  expect(helper.queries.filter((q) => q.startsWith("6 "))).toEqual([]);
+  expect(await p.change(7, USER, SITE)).toMatchObject({ username: USER, site: SITE });
+  await p.typeChange(7);
+  const signIn = fakeTab(`https://${SITE}/signin`);
+  await p.fill(7, USER);
+  expect(signIn.password).toBe(page.fresh);
+});
+
+// A login saved only on another site may be another account, so change
+// names it and saves nothing, where it made a new entry for the page's
+// host; site then names the login's host, or the page's own for a new one.
+test("change refuses, saving nothing, when no login of the page's site is saved, naming the one listed, and site then saves", async () => {
+  const { p } = scratch();
+  const url = "https://reset.example.org/password";
+  fakeTab(url, { frame: 0, url, current: "none" });
+  const { helper } = await paired(p);
+  expect(await locked(p.change(7))).toContain(SITE);
+  expect(helper.queries.filter((q) => q.startsWith("6 "))).toEqual([]);
+  expect(await p.change(7, USER, "reset.example.org")).toMatchObject({ username: USER, site: "reset.example.org" });
+  expect(helper.queries.filter((q) => q.startsWith("6 "))).toHaveLength(1);
 });
 
 // One uppercase letter and one digit, the rest lowercase: Safari's shape,

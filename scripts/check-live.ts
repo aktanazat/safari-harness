@@ -17,6 +17,8 @@ import { frontApp, inFront } from "../daemon/front.ts";
 import { dataFile } from "../daemon/phone.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
+// When this run began: the pages it opens are visited after.
+const STARTED = Date.now();
 
 type Tab = { id: number; active: boolean; front?: boolean };
 
@@ -592,15 +594,29 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
 
 // A page that fetches as it loads, served here. A harness tab's log has the
 // call without any start; a tab no agent works in (made through AppleScript
-// in this check's own window) keeps the page's own fetch.
+// in this check's own window) keeps the page's own fetch. The page also
+// fetches a body the server sends in parts, which the WebKit bench cannot
+// make: net's body gives it whole.
 {
   const hits: string[] = [];
+  const parts = Array.from({ length: 5 }, (_, i) => `part ${i} `.padEnd(1000, "."));
   const server = Bun.serve({
     port: 0,
     fetch(req) {
       const path = new URL(req.url).pathname;
       hits.push(path);
-      return path === "/" ? new Response('<title>at load</title><script>fetch("/at-load")</script>', { headers: { "content-type": "text/html" } }) : new Response("ok");
+      if (path === "/streamed") {
+        return new Response(new ReadableStream({
+          async start(c) {
+            for (const p of parts) {
+              c.enqueue(new TextEncoder().encode(p));
+              await Bun.sleep(30);
+            }
+            c.close();
+          },
+        }), { headers: { "content-type": "text/plain" } });
+      }
+      return path === "/" ? new Response('<title>at load</title><script>fetch("/at-load"); fetch("/streamed")</script>', { headers: { "content-type": "text/html" } }) : new Response("ok");
     },
   });
   const url = `http://127.0.0.1:${server.port}/`;
@@ -615,6 +631,12 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
       net = (await call("net", { tab, do: "read" })).entries;
     }
     check("a harness tab's log has the fetch its page made as it loaded", net.some((e) => e.url === `${url}at-load`), net);
+    let streamed: { text?: string; note?: string } = {};
+    for (let i = 0; i < 30 && streamed.text !== parts.join(""); i++) {
+      await Bun.sleep(100);
+      streamed = await call("net", { tab, body: "/streamed" }).catch((e: Error) => ({ note: e.message }));
+    }
+    check("net's body gives a body the server sent in parts whole", streamed.text === parts.join(""), { length: streamed.text?.length, note: streamed.note });
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
     const before = new Set((await listed()).map((t) => t.id));
@@ -898,9 +920,12 @@ await withPage(SHOWN, SHOWN_JS, async (tab) => {
 
 // ---------- browsing history ----------
 
-// Runs in this process: reading History.db needs the terminal's Full Disk Access.
-const visits = (await CALLER_TOOLS.browsing_history.run({ text: "example.com", days: 1 })) as { url: string }[];
-check("browsing_history finds the page these checks just opened", visits.some((v) => v.url.startsWith("https://example.com/")), visits.slice(0, 3));
+// Runs in this process: reading History.db needs the terminal's Full Disk
+// Access. The pages these checks opened are an agent's visits, not the
+// user's: none shows as his since the run began, and they are counted.
+const answer = (await CALLER_TOOLS.browsing_history.run({ text: "example.com", days: 1 })) as { history: { url: string; lastVisit: string }[]; agentVisitsLeftOut: number };
+const ours = answer.history.filter((p) => p.url === "https://example.com/" && Date.parse(p.lastVisit) >= STARTED);
+check("browsing_history leaves out the pages these checks opened, and counts them", ours.length === 0 && answer.agentVisitsLeftOut > 0, { ours, agentVisitsLeftOut: answer.agentVisitsLeftOut });
 
 // ---------- tabs close with the program that opened them ----------
 

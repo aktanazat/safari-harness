@@ -2,9 +2,10 @@
 // in a background tab of the caller's agent window, is read, and closes. The
 // tab is the caller's meanwhile (open with background), so it still closes
 // if the caller exits first. A page that fails is reported in its place and
-// the others go on. So is a bot check: it is never waited on, since nobody
-// watches these tabs. With wait, each page is read once it shows what the
-// wait asks for: a page its script draws after it loads reads empty before.
+// the others go on. So is a bot check still up once open has waited on it
+// (settledChallenge): nobody watches these tabs to clear one. With wait,
+// each page is read once it shows what the wait asks for: a page its script
+// draws after it loads reads empty before.
 
 import type { Challenge } from "./challenge.ts";
 import { WAIT_NEEDS, waitsOnPage } from "./receipt.ts";

@@ -7,20 +7,31 @@ import * as imessage from "./imessage.ts";
 import { recent } from "./journal.ts";
 import { watched } from "./mission.ts";
 import * as daemonRpc from "./rpc.ts";
+import { tabSecrets } from "./redact.ts";
 import { callTool } from "./tools.ts";
 
-// A stand-in page that keeps what each type put in its field, and shows
-// shown when read; and a daemon port that records each call as the daemon
-// does (mission.ts).
+// A stand-in page that keeps what each type put in its field, shows shown
+// when read, takes a login, and whose request log and own script repeat
+// the code, as USCIS's code field repeated it in its name (09-30); and a
+// daemon port that records each call as the daemon does (mission.ts).
+// CUT_NET is the request log with the code cut, and a longer number
+// holding its digits whole.
 const CODE = "402913";
 const fields: unknown[] = [];
 let shown = "";
+const answers: Record<string, unknown> = {
+  netRead: { entries: [{ url: "https://my.example/verify", t: 1, body: `{"code":"${CODE}","case":"1${CODE}"}` }] },
+  evalPage: { ok: true, result: `Secure Verification Code required ${CODE}` },
+  fillLogin: { ok: true, filled: ["password"] },
+};
+const CUT_NET = { entries: [{ url: "https://my.example/verify", t: 1, body: `{"code":"...","case":"1${CODE}"}` }] };
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
-    const read = op === "relay" && args[1] === "extract";
-    if (op === "relay" && !read) fields.push(args[2]);
-    const value = read ? { title: "Your code", url: "https://mail.example/1", text: shown } : op === "relay" ? { ok: true, kept: true } : [];
+    const ask = op === "relay" ? String(args[1]) : op;
+    const known = Object.hasOwn(answers, ask);
+    if (op === "relay" && ask !== "extract" && !known) fields.push(args[2]);
+    const value = ask === "extract" ? { title: "Your code", url: "https://mail.example/1", text: shown } : known ? answers[ask] : op === "relay" ? { ok: true, kept: true } : [];
     queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
   },
   close() {},
@@ -28,6 +39,7 @@ connect({
 afterEach(() => {
   mock.restore();
   fields.length = 0;
+  tabSecrets.clear();
 });
 const watchedPort = () => spyOn(daemonRpc, "rpc").mockImplementation((tool: string, args: Record<string, unknown> = {}, model = false) => watched(process.pid, tool, args, () => callTool(tool, args, model)));
 
@@ -91,4 +103,23 @@ test("{{code}} in real_input's text types the code the page shows with the real 
   const result = await invoke("real_input", { tab: 6001, ref: "1", type: "{{code}}", secret: "page", from: 6002 }, true);
   expect(result).toEqual({ ok: true, typed: "code, 6 chars", note: 'used do "type" and text for type' });
   expect(typed).toEqual([{ tab: 6001, ref: "1", do: "type", text: CODE }]);
+  expect(await callTool("net", { tab: 6001 })).toEqual(CUT_NET);
+});
+
+// USCIS named its code field by a label that repeats the code, and a
+// snapshot printed it (09-30); a page's request log and its own script can
+// hold it too. The email tab still gives it, for a second try.
+test("a code typed as a secret is cut from what its tab answers after, the request log and page script too, and the email tab still gives it", async () => {
+  shown = `Enter this code: ${CODE}`;
+  watchedPort();
+  await invoke("type", { tab: 6003, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true);
+  expect(await callTool("net", { tab: 6003 })).toEqual(CUT_NET);
+  expect(await callTool("eval", { tab: 6003, expression: "document.title", page: true })).toEqual({ ok: true, result: "Secure Verification Code required ..." });
+  expect(await invoke("type", { tab: 6003, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true)).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
+});
+
+test("a text an agent types as a secret itself, or a password filled from Bitwarden, is cut from what its tab answers after", async () => {
+  await callTool("type", { tab: 6004, ref: "1", text: CODE, secret: true });
+  await callTool("login_fill", { tab: 6005, site: "my.example", password: CODE });
+  expect([await callTool("net", { tab: 6004 }), await callTool("net", { tab: 6005 })]).toEqual([CUT_NET, CUT_NET]);
 });

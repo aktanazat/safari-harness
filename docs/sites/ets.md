@@ -8,4 +8,4 @@ The ETS account behind test registration signs in on ereg.ets.org, but password 
 
 ## Password reset
 - idaas.ets.org: Sign In > Forgot Password?, enter the username, then "Check Your Email". The link comes within about a minute as "ETS Password Reset Link" from IDaaS-noreply.
-- The login is saved for ereg.ets.org, so call `passwords change` with site ereg.ets.org. Without it a new, wrong entry is made for idaas.ets.org.
+- The login is saved for ereg.ets.org, so call `passwords change` with site ereg.ets.org. Without it, change refuses while the entry a 09-29 reset made for idaas.ets.org remains.

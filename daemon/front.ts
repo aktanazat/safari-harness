@@ -17,9 +17,13 @@ const INPUT = join(import.meta.dir, "..", "scripts", "input");
 export const SAFARI = "com.apple.Safari";
 
 // Runs the helper and parses its one JSON line; failures carry its stderr.
-export async function input(args: string[], timeout = 10000): Promise<unknown> {
+// Typed text goes on stdin, unchanged and without an added newline: cards
+// use this path too, and process arguments expose their digits (09-30).
+export async function input(args: string[], timeout = 10000, stdin?: string): Promise<unknown> {
   try {
-    const { stdout } = await execFileAsync(INPUT, args, { timeout });
+    const running = execFileAsync(INPUT, args, { timeout });
+    running.child.stdin?.end(stdin);
+    const { stdout } = await running;
     return JSON.parse(stdout);
   } catch (e) {
     const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";

@@ -56,10 +56,12 @@ const RULES: Rule[] = [
     text: /\b(press|activate) (&|and) hold\b/i,
     markers: ["#px-captcha"],
   },
-  // AWS WAF's CAPTCHA wall runs captcha.js from its captcha host, and its
-  // silent wall runs challenge.js from its token host as the whole page. A
-  // page that only uses AWS's SDK loads challenge.js from sdk.awswaf.com.
-  { kind: "aws-waf", where: "page", markers: ["script[src*='.captcha.awswaf.com/']"], topMarkers: ["script[src*='.token.awswaf.com/'][src*='/challenge.js']"] },
+  // AWS WAF's CAPTCHA wall draws its puzzle into #captcha-container once the
+  // page loads. Its scripts prove nothing: a page that calls AWS's API loads
+  // challenge.js from the token host as well, and every USCIS account page
+  // did, so each read as a wall (09-30). Its silent wall, an empty page that
+  // reloads itself once challenge.js has a token, asks the user nothing.
+  { kind: "aws-waf", where: "page", topMarkers: ["#captcha-container .amzn-captcha-modal"] },
   // Kasada answers a first visit with a blank page that runs ips.js from
   // this fixed path. Every page it guards loads the same page again in a
   // hidden frame, so only the top page running it is the wall.
@@ -93,6 +95,9 @@ const RULES: Rule[] = [
     frames: /^https:\/\/challenges\.cloudflare\.com\//,
     answer: "[name='cf-turnstile-response']",
   },
+  // AWS's CAPTCHA API (jsapi.js, which USCIS's pages load) draws the same
+  // puzzle in a box of the page's own.
+  { kind: "aws-waf", where: "box", markers: [".amzn-captcha-modal"] },
   { kind: "arkose", where: "box", frames: /^https:\/\/([\w-]+\.)*(arkoselabs\.com|funcaptcha\.com)\// },
   { kind: "geetest", where: "box", markers: [".geetest_box", ".geetest_panel_box"] },
   // A short page asking the reader to prove they are a person, from a vendor
@@ -133,12 +138,40 @@ function isFacts(f: unknown): f is Facts {
     && "frames" in f && Array.isArray(f.frames);
 }
 
-// The check the tab shows, if any, or null when the top page did not answer
-// within 2 s (the tab is busy, loading, or gone). A note on another tool's
-// result reads null as none rather than failing that tool; handoff waits on.
-export async function challengeOf(tab: number): Promise<Challenge | null | undefined> {
+// What every frame of the tab shows, top page first, or null when the top
+// page did not answer within 2 s (the tab is busy, loading, or gone).
+async function framesOf(tab: number): Promise<Facts[] | null> {
   const frames = await bridge.request("probe", [tab, "challenge", PROBE], 2000).catch(() => []);
   const facts = Array.isArray(frames) ? frames.filter(isFacts) : [];
   // the extension lists the top page, frame 0, first
-  return facts[0] && "frame" in facts[0] && facts[0].frame === 0 ? classify(facts) : null;
+  return facts[0] && "frame" in facts[0] && facts[0].frame === 0 ? facts : null;
+}
+
+// The check the tab shows, if any, or null when the top page did not
+// answer. A note on another tool's result reads null as none rather than
+// failing that tool; handoff waits on.
+export async function challengeOf(tab: number): Promise<Challenge | null | undefined> {
+  const frames = await framesOf(tab);
+  return frames && classify(frames);
+}
+
+// Cloudflare's wall checks the browser by itself and lets one it trusts
+// through to the page: egov.uscis.gov's was the first open's answer on
+// 09-30 and gone when the agent opened the page again 34 s later. open and
+// goto wait on it up to SETTLE_MS, through its reload to the page (whose top
+// page answers no probe meanwhile), and answer with what the tab shows then:
+// the page behind the wall, as top, or the check. A wall that has drawn its
+// Turnstile box is waited on too: in background tabs on 09-30, walls there
+// and on travel.state.gov drew theirs after 3.5 to 5.6 s, and egov's then
+// let the browser through by itself at about 40 s.
+const SETTLE_MS = 8000;
+export async function settledChallenge(tab: number): Promise<{ challenge: Challenge | null | undefined; top?: Facts }> {
+  const until = Date.now() + SETTLE_MS;
+  for (let waited = false; ; waited = true) {
+    const frames = await framesOf(tab);
+    const challenge = frames && classify(frames);
+    const checking = frames ? challenge?.kind === "cloudflare" && challenge.where === "page" : waited;
+    if (!checking || Date.now() >= until) return { challenge, ...(waited && frames ? { top: frames[0] } : {}) };
+    await Bun.sleep(500);
+  }
 }

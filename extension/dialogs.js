@@ -207,8 +207,21 @@
   const LOG_MAX = 100;
   const URL_MAX = 500;
   const BODY_MAX = 300;
+  // The whole text of the latest KEPT_MAX text or JSON bodies, up to
+  // KEPT_TEXT_MAX characters each, for net's body: to read one server
+  // action's answer whole, an agent patched the page's fetch through eval
+  // (USCIS, 09-30). 90,000 characters and the request's fields fit in the
+  // 100,000 an MCP answer holds (callTool in mcp-tools.ts).
+  const KEPT_MAX = 10;
+  const KEPT_TEXT_MAX = 90_000;
+  const kept = []; // { entry, text, truncated, arriving }
+  const keep = (k) => {
+    kept.push(k);
+    if (kept.length > KEPT_MAX) kept.shift();
+    return k;
+  };
   const listen = EventTarget.prototype.addEventListener;
-  const decoder = new TextDecoder();
+  const Decoder = TextDecoder;
   const textual = (type) => /^text\/|[/+]json\b/i.test(type ?? "");
   const cut = (s, max) => (s.length > max ? s.slice(0, max) + "…" : s);
   const address = (url) => {
@@ -225,14 +238,29 @@
     return true;
   };
 
+  // The copy is read to its end or KEPT_TEXT_MAX; one no longer kept stops
+  // once its start is read.
   const fetched = (entry, start, res) => {
     entry.status = res.status;
     if (!record(entry, start) || !textual(res.headers.get("content-type"))) return;
     const reader = res.clone().body?.getReader();
-    reader?.read()
-      .then(({ value }) => { if (value) entry.body = cut(decoder.decode(value.subarray(0, BODY_MAX * 4)), BODY_MAX); })
+    if (!reader) return;
+    const k = keep({ entry, text: "", truncated: false, arriving: true });
+    const decoder = new Decoder();
+    const more = ({ done, value }) => {
+      k.text += decoder.decode(value, { stream: !done });
+      entry.body = cut(k.text.slice(0, BODY_MAX + 1), BODY_MAX);
+      k.truncated = k.text.length > KEPT_TEXT_MAX;
+      if (k.truncated) k.text = k.text.slice(0, KEPT_TEXT_MAX);
+      if (done || k.truncated || !kept.includes(k)) return;
+      return reader.read().then(more);
+    };
+    reader.read().then(more)
       .catch(() => {})
-      .finally(() => reader.cancel().catch(() => {}));
+      .finally(() => {
+        k.arriving = false;
+        reader.cancel().catch(() => {});
+      });
   };
   const XHR = XMLHttpRequest.prototype;
   const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send };
@@ -279,7 +307,11 @@
     else entry.error = "no response";
     if (!record(entry, start) || !answered) return;
     const type = xhr.responseType;
-    if ((type === "" || type === "text") && textual(xhr.getResponseHeader("content-type"))) entry.body = cut(xhr.responseText.slice(0, BODY_MAX + 1), BODY_MAX);
+    if ((type === "" || type === "text") && textual(xhr.getResponseHeader("content-type"))) {
+      const text = xhr.responseText;
+      entry.body = cut(text.slice(0, BODY_MAX + 1), BODY_MAX);
+      keep({ entry, text: text.slice(0, KEPT_TEXT_MAX), truncated: text.length > KEPT_TEXT_MAX, arriving: false });
+    }
   };
   ours.open = wrap(plain.open, (open, self, args) => {
     try { ended(self); } catch {}
@@ -315,7 +347,19 @@
   document.addEventListener("__sh_net_off", () => {
     net.on = false;
     net.log.length = 0;
+    kept.length = 0;
     swap(ours, plain);
+  });
+  // net's body (netBody in content.js asks, with the request's address and
+  // the time the log wrote it): the kept text, or why there is none. The
+  // answer goes back within the ask.
+  document.addEventListener("__sh_net_body_ask", (e) => {
+    let ask;
+    try { ask = JSON.parse(e.detail); } catch { return; }
+    const k = kept.findLast((x) => x.entry.url === ask.url && x.entry.t === ask.t);
+    tell("__sh_net_body_answer", k
+      ? { text: k.text, truncated: k.truncated, arriving: k.arriving }
+      : { error: `that request's body is not kept: net keeps the text or JSON bodies of the page's latest ${KEPT_MAX} such responses` });
   });
   swap(plain, ours);
 

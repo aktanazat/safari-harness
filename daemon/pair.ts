@@ -120,6 +120,12 @@ export function waitPairingOut(on = true): void {
   waitOut = on;
 }
 
+// Whether this process waits a prompt out: a card fill that asks Touch ID
+// waits as a pairing does (cards.ts).
+export function waitsOut(): boolean {
+  return waitOut;
+}
+
 // Pairs for a call that found Apple Passwords locked; site ends the reason
 // the Touch ID prompt gives. Throws when he declines Touch ID. On 09-29 a
 // first call waited 44 s for his Touch ID and 13 s more for the code, and

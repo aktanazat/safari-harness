@@ -9,4 +9,4 @@ MyPortal signs in on ssoshib.fhda.edu with the 8-digit campus ID (CWID) as the u
 ## Password reset
 - selfservice.aws.fhda.edu/resetpwd: a Cloudflare check clears by itself in seconds. Type the campus ID and click Go!.
 - Pick the contact by its label, and read the page before the next click. The phone options place a voice call at once. Choose the uppercase "By e-mail" address; it reaches Gmail as "Password Reset Request".
-- The link opens #/newpw with New and Confirm fields. Call `passwords change` with site ssoshib.fhda.edu and the campus ID as username, so the MyPortal login updates. Done at "Password Change Completed".
+- The link opens #/newpw with New and Confirm fields. Call `passwords change` with site ssoshib.fhda.edu and the campus ID as username, so the MyPortal login updates: without site it refuses while the entry a 09-29 reset made for selfservice.aws.fhda.edu remains. Done at "Password Change Completed".

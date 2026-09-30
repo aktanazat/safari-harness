@@ -37,6 +37,9 @@ export async function typeSecret(a: Record<string, unknown>, model: boolean, put
   const text = typeof a.text === "string" ? a.text : "";
   if (!text.includes(CODE)) throw new Error(`put ${CODE} in text where the code goes`);
   const code = source === "sms" ? await textedCode() : await shownCode(a.from, model);
+  // however the page shows it again, the tab's answers have it cut from
+  // here on (redact.ts)
+  await rpc("keep_secret", { tab: a.tab, texts: [code] });
   const answer = await put(text.replaceAll(CODE, code));
   return answer && typeof answer === "object" && "ok" in answer ? { ...answer, typed: `code, ${code.length} chars` } : answer;
 }

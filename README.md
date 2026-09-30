@@ -63,7 +63,9 @@ daemon/
   mission.ts        the live page each agent window opens on, and /agents:
                     what each agent did, with Pause, Stop, and Let me drive
   pdf.ts            save a page as PDF and read PDFs, through scripts/pdfkit
-  safari-history.ts browsing_history over Safari's History.db (read-only)
+  safari-history.ts browsing_history over Safari's History.db (read-only),
+                    without the visits agents made
+  loads.ts          the pages agents' tabs load, noted for browsing_history
   challenge.ts      names a bot check (CAPTCHA or wall) from what each frame
                     shows, for challenge in results and for handoff
   input.ts          real_input: the real mouse and keyboard through
@@ -221,6 +223,7 @@ safari extract --as table --tab 7      # tables and product lists as rows of JSO
 safari map https://a.example https://b.example   # up to 20 pages at once
 safari eval "JSON.stringify(performance.timing)" --tab 7
 safari net read --tab 7                # the page's requests since it loaded, with the start of each body
+safari net read --body -1 --tab 7      # the latest request's whole body; or --body <part of its url>
 safari shot --out page.png --tab 7     # what the tab shows; --ref R, --annotate, --full
 safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
 safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf

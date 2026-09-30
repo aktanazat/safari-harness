@@ -62,10 +62,10 @@ async function pageState(tab: number, want: { focus: boolean; after: number; ms:
 // tab can come back. A page does not see keys that go into an embedded
 // frame, so that wait ends after half a second. Its failure is ignored: the
 // input is already sent, and an error would invite a retry that repeats it.
-async function post(tab: number, args: string[], keys: boolean, timeout?: number): Promise<void> {
+async function post(tab: number, args: string[], keys: boolean, timeout?: number, stdin?: string): Promise<void> {
   const before = await pageState(tab, { focus: keys, after: -1, ms: keys ? 1000 : 0 });
   if (keys && !before.focus) throw new Error("the page does not have keyboard focus, so no keys were sent; click a field with real_input first");
-  await input(args, timeout);
+  await input(args, timeout, stdin);
   await pageState(tab, { focus: false, after: before.marks, ms: 500 }).catch(() => {});
 }
 
@@ -180,9 +180,15 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const text = a.text;
     if (typeof text !== "string") throw new Error("type needs text");
     await inFront(tab, VIA_RPC, async () => {
-      if (a.ref !== undefined) await clickAt(tab, a, 1, "left");
+      if (a.ref !== undefined) {
+        await clickAt(tab, a, 1, "left");
+        // Text typed at a ref replaces the field's, as type's does unless
+        // append: a click leaves the caret where it lands, and on 09-30 a
+        // field on my.uscis.gov took the text only after Cmd+A (USCIS, 09-30).
+        if (a.append !== true) await post(tab, ["key", "cmd+a"], true);
+      }
       // A character takes about 60 ms (input.swift); allow twice that.
-      await post(tab, ["type", text], true, 10000 + text.length * 120);
+      await post(tab, ["type"], true, 10000 + text.length * 120, text);
     });
     return { ok: true };
   },
@@ -206,8 +212,8 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       count: { type: "number", description: "2 or 3: double or triple click" },
       button: { type: "string", enum: ["left", "right"], description: "default left" },
     },
-    // click's x and y, which its listing describes
-    unlisted: { x: X, y: Y },
+    // click's x and y, which its listing describes, and type's append
+    unlisted: { x: X, y: Y, append: { type: "boolean", description: "keep the field's text" } },
     required: ["tab", "do"],
     run: async (a) => {
       const act = typeof a.do === "string" ? REAL[a.do] : undefined;

@@ -4,7 +4,7 @@
 // run reads one value off a page and alerts the user when it changes
 // (daemon/watch.ts).
 
-import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -234,8 +234,10 @@ export async function routineRemove(name: string | undefined): Promise<string> {
 }
 
 // Runs one routine now, in the foreground: headless omp with the saved
-// prompt, or a watch's read. Output goes to a timestamped log;
-// `<name>.last` records the latest outcome.
+// prompt, or a watch's read. Output goes to a timestamped log: the safari
+// MCP server omp starts writes a line there for each tool call
+// (daemon/mcp.ts), and omp's own output follows. `<name>.last` records the
+// latest outcome.
 export async function routineRun(name: string | undefined): Promise<{ code: number; log: string; note?: string }> {
   const n = checkName(name);
   const promptPath = join(ROUTINES, `${n}.md`);
@@ -260,11 +262,11 @@ export async function routineRun(name: string | undefined): Promise<{ code: numb
     cwd: HOME,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PATH, HOME },
+    env: { ...process.env, PATH, HOME, SAFARI_ROUTINE_LOG: log },
     maxBuffer: 64 * 1024 * 1024,
   });
   const code = r.status ?? 1;
-  await writeFile(log, `${r.stdout ?? ""}${r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""}`);
+  await appendFile(log, `${r.stdout ?? ""}${r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""}`);
   await writeFile(join(dir, `${n}.last`), `${new Date().toISOString()} exit ${code} ${log}\n`);
   return { code, log };
 }

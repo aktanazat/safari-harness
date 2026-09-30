@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Net body</title>
+<p id="state">loading</p>
+<script>
+// The page's clock stands still, so a row can name each request by the time
+// the log wrote it: dialogs.js reads Date.now in the page's world.
+Date.now = () => 1000;
+// Two text bodies: one longer than the log's 300-character start, one past
+// the 90,000 characters net keeps of a body.
+const bodies = ["small-" + "s".repeat(5000), "large-" + "l".repeat(100000)];
+Promise.all(bodies.map((b) => fetch("data:text/plain," + b).then((r) => r.text())))
+  .then(() => { document.getElementById("state").textContent = "done"; });
+</script>

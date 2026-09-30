@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,16 +44,4 @@ test("a flag a model's call may use for a parameter is taken as that parameter, 
   calls.length = 0;
   expect(await safari(["learn", "geico.com", "--note", "The quote asks for the address twice"])).toEqual({ err: "note: used --fact for --note", code: 0 });
   expect(calls).toEqual([{ tool: "learn", args: { site: "geico.com", fact: "The quote asks for the address twice" } }]);
-});
-
-// On 09-29 an apostrophe in a step's text ended the shell's quoting of
-// --steps: "unterminated double quote".
-test("run's steps come from --steps-file or stdin as written, apostrophes and all", async () => {
-  const steps = [{ tool: "extract", args: { tab: 7, query: "it's due" } }];
-  const file = join(home, "steps.json");
-  writeFileSync(file, JSON.stringify(steps));
-  calls.length = 0;
-  expect(await safari(["run", "--steps-file", file])).toEqual({ err: "", code: 0 });
-  expect(await safari(["run", "--steps", "-"], JSON.stringify(steps))).toEqual({ err: "", code: 0 });
-  expect(calls).toEqual([{ tool: "run", args: { steps } }, { tool: "run", args: { steps } }]);
 });

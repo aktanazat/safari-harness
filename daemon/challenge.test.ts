@@ -63,3 +63,12 @@ test("an invisible check and a wall inside an embedded frame are not reported", 
   expect(classify(tab("https://shop.example.com/", "Sign in", { frames: [HCAPTCHA.replace("frame=checkbox", "frame=checkbox-invisible")] }))).toBeUndefined();
   expect(classify(tab("https://shop.example.com/", "Shop", {}, { url: "https://ads.example.net/x?__cf_chl_rt_tk=1", title: "Just a moment..." }))).toBeUndefined();
 });
+
+// USCIS's signed-in pages load AWS's token script and show no check (09-30).
+// AWS's check is its puzzle once drawn: where its CAPTCHA draws it, in
+// place of the page, or in the box its CAPTCHA API draws on a page that
+// otherwise reads.
+test("AWS's puzzle is a check once drawn, in place of the page or in a box on it", () => {
+  expect(classify(tab("https://shop.example.com/", "", { markers: ["#captcha-container .amzn-captcha-modal", ".amzn-captcha-modal"] }))).toEqual({ kind: "aws-waf", where: "page" });
+  expect(classify(tab("https://my.example.gov/account", "Account", { markers: [".amzn-captcha-modal"] }))).toEqual({ kind: "aws-waf", where: "box" });
+});

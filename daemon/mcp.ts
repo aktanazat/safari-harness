@@ -2,8 +2,10 @@
 // (omp, Claude Code, Cursor, ...). One JSON-RPC message per line. The tools
 // themselves come from mcp-tools.ts of the newest release (fresh.ts).
 
+import { appendFileSync } from "node:fs";
 import { closeAll, fresh, tools } from "./fresh.ts";
 import { connectHost } from "./host.ts";
+import { redactUrl } from "./redact.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
@@ -25,6 +27,35 @@ function replyErr(id: number | string | undefined, code: number, message: string
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n");
 }
 
+// A routine's run (cli/launchd.ts) names its log in SAFARI_ROUTINE_LOG, and
+// each call goes there on a line of its own, before the model's summary: a
+// run's log held only that summary, with no trace of which call failed or
+// how long each took (USCIS, 09-30). A string is shown only for these
+// names, with any secret in an address cut; any other is given as its
+// length, since a type's text or a repl's code can hold a password. The
+// log stops at 400 lines or 64 KB, so a looping run cannot fill the disk.
+const ROUTINE_LOG = process.env.SAFARI_ROUTINE_LOG;
+const SHOWN: Record<string, true> = { tab: true, ref: true, do: true, url: true, key: true, selector: true, option: true, root: true, query: true, pick: true, site: true };
+const LOG_MAX_LINES = 400;
+const LOG_MAX_BYTES = 64 * 1024;
+let logRoom = { lines: LOG_MAX_LINES, bytes: LOG_MAX_BYTES };
+
+function shown(key: string, value: unknown): string {
+  if (typeof value === "string") return SHOWN[key] === true ? JSON.stringify(redactUrl(value).slice(0, 80)) : `(${value.length} chars)`;
+  if (Array.isArray(value)) return `[${value.length}]`;
+  return value !== null && typeof value === "object" ? "{…}" : String(value);
+}
+
+function logCall(name: string, args: Record<string, unknown>, status: "ok" | "error", ms: number) {
+  if (!ROUTINE_LOG || logRoom.lines < 0) return;
+  const said = Object.entries(args).map(([k, v]) => `${k.slice(0, 20)}=${shown(k, v)}`).join(" ");
+  const line = `${new Date().toISOString().slice(11, 23)} ${name.slice(0, 40)} ${said.slice(0, 300)} ${status} ${Math.round(ms)} ms\n`;
+  logRoom = { lines: logRoom.lines - 1, bytes: logRoom.bytes - Buffer.byteLength(line) };
+  const fits = logRoom.lines >= 0 && logRoom.bytes >= 0;
+  if (!fits) logRoom.lines = -1;
+  appendFileSync(ROUTINE_LOG, fits ? line : `later calls not logged: the log keeps ${LOG_MAX_LINES} lines or ${LOG_MAX_BYTES / 1024} KB of them\n`);
+}
+
 async function handle(msg: RpcMsg) {
   switch (msg.method) {
     case "initialize":
@@ -43,11 +74,15 @@ async function handle(msg: RpcMsg) {
     case "tools/call": {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});
+      const began = performance.now();
       try {
         await hostReady;
         const release = await fresh(() => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })}\n`));
-        return reply(msg.id, { content: [{ type: "text", text: await release.callTool(name, args) }] });
+        const text = await release.callTool(name, args);
+        logCall(name, args, "ok", performance.now() - began);
+        return reply(msg.id, { content: [{ type: "text", text }] });
       } catch (e) {
+        logCall(name, args, "error", performance.now() - began);
         return reply(msg.id, {
           content: [{ type: "text", text: `error: ${String(e instanceof Error ? e.message : e)}` }],
           isError: true,

@@ -11,15 +11,18 @@
 //   input click X Y [--count N] [--button left|right]
 //   input move X Y
 //   input drag X1 Y1 X2 Y2
-//   input type TEXT
+//   input type                    UTF-8 text on stdin, through EOF
 //   input key SPEC                Enter, Tab, Escape, Backspace, ArrowUp, cmd+a, shift+Tab
 //   input front                   {"bundleId"} of the frontmost app
 //   input activate BUNDLEID       brings that app to the front
+//   input window W H              Safari's window of that size, the screen
+//                                 holding most of it, and the main display's
+//                                 free part: {"window","screen","visible"}
 // Points are global screen points with the origin at the top-left of the main
 // display, the space of both the Accessibility API and CGEvent. Each command
 // prints one JSON line. click, type, and key end with a press of F20 (see
-// mark). All but front and activate need Accessibility permission for the
-// app that runs this.
+// mark). All but front, activate, and window need Accessibility permission
+// for the app that runs this.
 import AppKit
 import ApplicationServices
 
@@ -226,9 +229,14 @@ func keyFor(_ ch: Character) -> (CGKeyCode, [Modifier]) {
 // back while the next key was on its way, and a card number landed with its
 // first digit last (2026-09-29).
 func typeText(_ args: [String]) {
-    guard args.count == 1 else { fail("usage: input type TEXT", 2) }
+    guard args.isEmpty else { fail("usage: input type (UTF-8 text on stdin)", 2) }
+    // Card fills use this path too: arguments expose the text to other
+    // processes, so accept it only on stdin (09-30).
+    guard let text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else {
+        fail("type needs UTF-8 text on stdin", 2)
+    }
     requireAccess()
-    for ch in args[0] {
+    for ch in text {
         switch ch {
         case "\n", "\r", "\r\n": press(36, [])
         case "\t": press(48, [])
@@ -239,7 +247,7 @@ func typeText(_ args: [String]) {
         pause(40)
     }
     mark()
-    printJSON(["typed": args[0].count])
+    printJSON(["typed": text.count])
 }
 
 // A key or combo: "Enter", "/", "?", "A", "cmd+shift+z", "Cmd+K". Inside a
@@ -308,6 +316,42 @@ func activate(_ args: [String]) {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
     }
     fail("\(args[0]) did not come to the front")
+}
+
+// ---------- window ----------
+
+func rectJSON(_ r: CGRect) -> [String: Any] {
+    ["x": r.minX, "y": r.minY, "width": r.width, "height": r.height]
+}
+
+// AppKit counts screen rects up from the bottom of the main display.
+func topDown(_ r: NSRect) -> CGRect {
+    CGRect(x: r.minX, y: NSScreen.screens[0].frame.maxY - r.maxY, width: r.width, height: r.height)
+}
+
+// Where Safari's window of W by H points is (an agent window's size is its
+// own, daemon/spaces.ts): its frame; the screen holding most of it, from
+// whose top-left Safari's windows.update counts a window's left and top;
+// and the part of the main display the menu bar and Dock leave free.
+// Safari keeps small windows at the same level, a link's status bar among
+// them, so the size picks the window; of two that share it, the one in
+// front. Window bounds and screens need no permission.
+func window(_ args: [String]) {
+    guard args.count == 2, let w = Double(args[0]), let h = Double(args[1]) else { fail("usage: input window W H", 2) }
+    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+    let found = list.lazy.compactMap { info -> CGRect? in
+        guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safari.processIdentifier,
+              (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+              let r = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              abs(r.width - w) < 1, abs(r.height - h) < 1 else { return nil }
+        return r
+    }.first
+    guard let frame = found else { fail("no Safari window of \(args[0]) by \(args[1]) is on screen") }
+    let share = { (s: CGRect) -> CGFloat in s.intersection(frame).width * s.intersection(frame).height }
+    let screen = NSScreen.screens.map { topDown($0.frame) }.max { share($0) < share($1) }!
+    printJSON(["window": rectJSON(frame), "screen": rectJSON(screen), "visible": rectJSON(topDown(NSScreen.screens[0].visibleFrame))])
 }
 
 // ---------- webarea ----------
@@ -436,5 +480,6 @@ case "type": typeText(rest)
 case "key": keyCombo(rest)
 case "front": front()
 case "activate": activate(rest)
-default: fail("usage: input webarea | press MARK W H | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type TEXT | key SPEC | front | activate BUNDLEID", 2)
+case "window": window(rest)
+default: fail("usage: input webarea | press MARK W H | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type (UTF-8 text on stdin) | key SPEC | front | activate BUNDLEID | window W H", 2)
 }

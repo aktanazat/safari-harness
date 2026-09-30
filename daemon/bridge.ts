@@ -15,8 +15,11 @@
 //                        and its tab's id now, after the extension reloaded
 //   extension -> daemon  {op:"recording", recording}  what the user did once
 //                        in teach mode, to save (recordings.ts)
+//   extension -> daemon  {op:"load", url, from, to}  an owned tab loaded a page
 
 import { note } from "./journal.ts";
+import { unsecret } from "./redact.ts";
+import { noteLoad } from "./loads.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -101,6 +104,13 @@ type Pending = {
 // ticks, and the new ids a reload gave the tabs. A socket waiting to take
 // over is heard only once it has.
 type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
+
+// The requests a tab's page answers, the tab first among their arguments:
+// its content script (relay), its own world's script (evalPage, pageData),
+// its dialogs, and its frames (probe). Each answer has what the harness
+// typed there as a secret cut (redact.ts): a request log, a console, and
+// the page's own script answer here without passing content.js's cut.
+const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true };
 
 export class Bridge {
   private sock: ExtSocket | null = null;
@@ -209,6 +219,12 @@ export class Bridge {
       note(msg.kind, Object.fromEntries(Object.entries(msg).filter(([k]) => k !== "op" && k !== "kind")));
       return;
     }
+    if (msg.op === "load") {
+      if (from && from === this.sock && typeof msg.url === "string" && typeof msg.from === "number" && Number.isFinite(msg.from) && typeof msg.to === "number" && Number.isFinite(msg.to) && msg.from <= msg.to) {
+        noteLoad({ from: msg.from, to: msg.to, urls: [msg.url] });
+      }
+      return;
+    }
     if (msg.op === "tab") {
       const event = tabEvent(msg);
       if (!event) return;
@@ -283,7 +299,12 @@ export class Bridge {
     }, timeoutMs);
     this.pending.set(id, { resolve, reject, timer, sock });
     sock.send(JSON.stringify({ id, op, args }));
-    return promise;
+    if (!Object.hasOwn(FROM_TAB, op)) return promise;
+    const tab = Number(args[0]);
+    return promise.then((v) => unsecret(tab, v), (e: unknown) => {
+      if (e instanceof Error) e.message = String(unsecret(tab, e.message));
+      throw e;
+    });
   }
 
   // relay a DOM op into the content script of a specific tab: its top page,

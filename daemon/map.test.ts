@@ -1,4 +1,4 @@
-import { expect, setSystemTime, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +10,13 @@ import { WAIT_NEEDS } from "./receipt.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
-// a wait asks for (a page that is not there).
+// a wait asks for (a page that is not there). CLEARING's check lets the
+// browser through on the tab's fourth probe.
 const GONE = "https://gone.example/";
 const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
+const CLEARING = "https://clearing.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
@@ -29,6 +31,7 @@ const held: (() => void)[] = [];
 let holding = false;
 let stuck: string | undefined;
 let nextTab = 0;
+const probes = new Map<number, number>();
 
 function read(tab: number): { value?: unknown; error?: string } {
   const url = tabs.get(tab)?.url ?? "";
@@ -59,8 +62,12 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     return { value: { ok: true } };
   }
   if (op === "probe") {
-    const url = tabs.get(Number(args[0]))?.url;
-    return { value: url === WALLED ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : [] };
+    const tab = Number(args[0]);
+    const url = tabs.get(tab)?.url;
+    const seen = (probes.get(tab) ?? 0) + 1;
+    probes.set(tab, seen);
+    const walled = url === WALLED || (url === CLEARING && seen <= 3);
+    return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
   return { value: { ok: true } };
 }
@@ -84,6 +91,26 @@ connect({
 
 // the answers settle in microtasks, which all run before the next turn
 const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+// A map on the fake clock, which moves on 500 ms at a time once the pages
+// have answered all they were asked: open waits on a bot check (challenge.ts).
+async function waited<T>(run: Promise<T>): Promise<T> {
+  let done = false;
+  const end = () => {
+    done = true;
+  };
+  void run.then(end, end);
+  while (!done) {
+    await settled();
+    jest.advanceTimersByTime(500);
+  }
+  return run;
+}
+
 // map as its tool runs it: each page's open, read, and close go through callTool
 const map = async (args: Record<string, unknown>) => (await mapPages(args, callTool)).pages;
 const urls = (n: number) => Array.from({ length: n }, (_, i) => `https://shop.example/item/${i}`);
@@ -136,22 +163,33 @@ test("each page carries the title its tab opened with", async () => {
 });
 
 test("every tab map opens is closed, a failed page's and a bot check's included", async () => {
+  jest.useFakeTimers();
   const before = opened.length;
-  await map({ urls: ["https://shop.example/a", GONE, EMPTY, WALLED] });
+  await waited(map({ urls: ["https://shop.example/a", GONE, EMPTY, WALLED] }));
   const mine = opened.slice(before);
   expect(mine.length).toBe(4);
   expect(closed.filter((t) => mine.includes(t)).sort()).toEqual(mine.sort());
   expect([...tabs.keys()]).toEqual([900]);
 });
 
-// Nobody watches these tabs, so a check is not waited on: the agent decides
-// whether to open that page and hand it to the user.
+// Nobody watches these tabs, so a check still up once open has waited on it
+// is reported: the agent decides whether to open that page and hand it to
+// the user.
 test("a bot check is reported on its page and its page is never read", async () => {
+  jest.useFakeTimers();
   readUrls.length = 0;
-  const pages = await map({ urls: [WALLED, "https://shop.example/a"] });
+  const pages = await waited(map({ urls: [WALLED, "https://shop.example/a"] }));
   expect(pages[0]).toMatchObject({ url: WALLED, ok: false, challenge: { kind: "cloudflare", where: "page" } });
   expect(pages[1].ok).toBe(true);
   expect(readUrls).toEqual(["https://shop.example/a"]);
+});
+
+// egov.uscis.gov's wall let Safari through by itself (09-30).
+test("a bot check that lets the browser through is waited out, and its page is read", async () => {
+  jest.useFakeTimers();
+  const [page] = await waited(map({ urls: [CLEARING] }));
+  expect(page).toMatchObject({ url: CLEARING, ok: true, value: { text: `text of ${CLEARING}` } });
+  expect(page).not.toHaveProperty("challenge");
 });
 
 test("a tab that will not close is reported on its page, and every page still answers", async () => {

@@ -1,0 +1,59 @@
+<!doctype html>
+<title>Combobox</title>
+<!-- EOIR's nationality list (React, 09-30): a combobox input with no name
+     beside its placeholder text. A mousedown on it draws its list of
+     options at the end of the page a moment later; a click on an option
+     shows it in the box. This box names its list nowhere (no
+     aria-controls). A city box has its list open already, and names it. A
+     mousedown on either box while its list is open closes the list, as
+     React's comboboxes do. A list of recent searches is a listbox too, on
+     show all along. -->
+<ul role="listbox" aria-label="Recent searches">
+  <li role="option">Last search: Oslo</li>
+</ul>
+<div><span id="nationality">-- Select Nationality --</span> <input role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
+<input role="combobox" aria-label="City" aria-expanded="true" aria-controls="cities">
+<ul role="listbox" id="cities">
+  <li role="option">Lyon</li>
+  <li role="option">Paris</li>
+</ul>
+<p id="said"></p>
+<script>
+  const said = document.getElementById("said");
+  const box = document.querySelector("[aria-autocomplete]");
+  let menu = null;
+  function close() {
+    menu.remove();
+    menu = null;
+    box.setAttribute("aria-expanded", "false");
+  }
+  function draw() {
+    menu = document.createElement("div");
+    menu.setAttribute("role", "listbox");
+    for (const [label, code] of [["BRAZIL (BR)", "BR"], ["CANADA (CA)", "CA"], ["KIRGHIZIA (KYRGYZSTAN) (KG)", "KG"]]) {
+      const option = Object.assign(document.createElement("div"), { textContent: label });
+      option.setAttribute("role", "option");
+      option.addEventListener("click", () => {
+        document.getElementById("nationality").textContent = label;
+        said.textContent = `Page saw ${code}`;
+        close();
+      });
+      menu.append(option);
+    }
+    document.body.append(menu);
+    box.setAttribute("aria-expanded", "true");
+  }
+  box.addEventListener("mousedown", () => (menu ? close() : setTimeout(draw, 50)));
+
+  const city = document.querySelector("[aria-label=City]");
+  const cities = document.getElementById("cities");
+  city.addEventListener("mousedown", () => {
+    cities.hidden = !cities.hidden;
+    city.setAttribute("aria-expanded", String(!cities.hidden));
+  });
+  for (const option of cities.querySelectorAll("[role=option]")) {
+    option.addEventListener("click", () => {
+      said.textContent = `Page saw ${option.textContent}`;
+    });
+  }
+</script>

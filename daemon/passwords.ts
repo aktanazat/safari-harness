@@ -33,6 +33,8 @@ import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
+import { site as siteOf } from "./receipt.ts";
+import { keepSecret } from "./redact.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
@@ -709,15 +711,19 @@ export class ApplePasswords {
     return { ...out };
   }
 
-  // Usernames saved for a site. Never includes passwords.
-  private logins(host: string): Promise<string[]> {
+  // Logins saved for a site, each with the hosts it is saved for. The
+  // helper lists those saved for the site's other hosts too:
+  // www.discover.com and card.discover.com listed the same three (09-29).
+  // Never includes passwords.
+  private logins(host: string): Promise<{ username: string; sites: string[] }[]> {
     return this.serial(async () => {
       const s = await this.session();
       const res = await this.query(await this.ensureLink(), s, Cmd.LOGIN_NAMES, "CmdGetLoginNames4URL", host, { ACT: 5, URL: host }, 10000);
       if (res.STATUS === STATUS_NONE) return [];
       if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
       const entries: unknown[] = Array.isArray(res.Entries) ? res.Entries : [];
-      return entries.flatMap((e) => (e && typeof e === "object" && "USR" in e && typeof e.USR === "string" ? [e.USR] : []));
+      return entries.flatMap((e) => (e && typeof e === "object" && "USR" in e && typeof e.USR === "string"
+        ? [{ username: e.USR, sites: "sites" in e && Array.isArray(e.sites) ? e.sites.filter((s): s is string => typeof s === "string") : [] }] : []));
     });
   }
 
@@ -796,17 +802,43 @@ export class ApplePasswords {
   async loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
     await this.session();
     const { site } = await loginForm(tab);
-    return { site, usernames: await this.logins(site) };
+    return { site, usernames: (await this.logins(site)).map((l) => l.username) };
   }
 
   // The login a call means: the one named, else the only one saved.
   private async chosenLogin(site: string, username?: string): Promise<{ login: string; saved: string[] }> {
-    const saved = await this.logins(site);
+    const saved = (await this.logins(site)).map((l) => l.username);
     const login = username ?? (saved.length === 1 ? saved[0] : undefined);
     if (login === undefined) {
       throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
     }
     return { login, saved };
+  }
+
+  // The login a change on host means, and the host it is saved for: the
+  // one entry names, else the only one saved for host's site, on host or
+  // another of its hosts. FHDA's campus login and ETS's (09-29) are
+  // saved for their sign-in hosts and reset on another; saved for the reset
+  // page's host, the new password made a second entry and the real one kept
+  // the old. Several, as that second entry and the real one now are, or
+  // none, as when Paradox resets its login.paradoxplaza.com login on
+  // paradoxinteractive.com, are not guessed at: the call names those listed
+  // and what to pass, and saves nothing.
+  private async changedLogin(host: string, username?: string, entry?: string): Promise<{ login: string; site: string; saved: boolean }> {
+    if (entry !== undefined) {
+      const site = httpsHost(`https://${entry}`);
+      const { login, saved } = await this.chosenLogin(site, username);
+      return { login, site, saved: saved.includes(login) };
+    }
+    const listed = await this.logins(host);
+    const fits = listed.flatMap((l) => {
+      const site = l.sites.includes(host) ? host : l.sites.find((s) => siteOf(s) === siteOf(host));
+      return site === undefined || (username !== undefined && l.username !== username) ? [] : [{ login: l.username, site }];
+    });
+    if (fits.length === 1) return { ...fits[0], saved: true };
+    if (fits.length) throw new Error(`several saved logins fit ${host}: ${fits.map((f) => `${f.login} on ${f.site}`).join(", ")}; pass the username and site of the one to change`);
+    const seen = listed.map((l) => `${l.username} on ${l.sites.join(", ")}`).join("; ");
+    throw new Error(`no login${username === undefined ? "" : ` ${username}`} is saved for ${host} or another ${siteOf(host)} host${seen ? `; listed: ${seen}` : ""}; pass site: the host the login is saved for, with its username, or ${host} to save a new login`);
   }
 
   // Fills the saved login into the tab's sign-in form. The result names the
@@ -820,6 +852,7 @@ export class ApplePasswords {
     const { login, saved } = await this.chosenLogin(site, username);
     if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
+    keepSecret(tab, secret);
     const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
     const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
     return { ...filledOf(res, sent, "login"), username: login, site };
@@ -834,6 +867,7 @@ export class ApplePasswords {
     if (!field) throw new Error("no verification code field on this page");
     const site = httpsHost(field.origin);
     const { code, username: login } = await this.oneTimeCode(site, username);
+    keepSecret(tab, code);
     const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
     return { ...filledOf(res, ["code"], "code"), username: login, site };
   }
@@ -860,27 +894,25 @@ export class ApplePasswords {
   }
 
   // Changing a password, first half: makes a strong password, asks Apple
-  // Passwords to save it as the login's password for the form's site, or
-  // for entry, the site the login is saved for when the reset page is on
-  // another (FHDA's campus login reset on its own host left the old entry
-  // stale), and keeps it for typeChange. The caller (fill.ts) presses
-  // Update Password in the helper's window, the only sign the save took,
-  // then calls typeChange. It is saved before it is typed, as Safari saves
-  // the one it suggests, so no password the site takes lives only in the
-  // page; the current password is read first, while the saved one is
-  // still it, and only for the form's own site.
+  // Passwords to save it as the password of the login changedLogin names,
+  // for the host that login is saved for, and keeps it for typeChange. The
+  // caller (fill.ts) presses Update Password in the helper's window, the
+  // only sign the save took, then calls typeChange. It is saved before it
+  // is typed, as Safari saves the one it suggests, so no password the site
+  // takes lives only in the page; the current password is read first,
+  // while the saved one is still it, and only as the helper gives it to the
+  // form's own host, as fill does: never for a site the caller names.
   async change(tab: number, username?: string, entry?: string): Promise<{ username: string; site: string; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
     const own = httpsHost(form.origin);
-    const site = entry === undefined ? own : httpsHost(`https://${entry}`);
-    if (site !== own && form.current === "empty") throw new Error(`the form asks for the current password, which is filled only on the site it is saved for; call change without site`);
-    const { login, saved } = await this.chosenLogin(site, username);
+    const { login, site, saved } = await this.changedLogin(own, username, entry);
     let current: string | null = null;
     if (form.current === "empty") {
-      if (!saved.includes(login)) throw new Error(`the form asks for the current password, and no login ${login} is saved for ${site}; type it in first`);
-      current = await this.password(site, login, "change");
+      if (entry !== undefined && site !== own) throw new Error("the form asks for the current password, which is filled only on the site it is saved for; call change without site");
+      if (!saved) throw new Error(`the form asks for the current password, and no login ${login} is saved for ${site}; type it in first`);
+      current = await this.password(own, login, "change");
     }
     const secret = strongPassword(form.maxLength, form.rules);
     this.dropChange(tab);
@@ -899,6 +931,7 @@ export class ApplePasswords {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
+    keepSecret(tab, c.current, c.secret);
     const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
     return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true };

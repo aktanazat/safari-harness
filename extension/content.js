@@ -92,15 +92,17 @@
   // shows only as a hand cursor. It counts when the page also names it,
   // for assistive tech or its tests (a snapshot also counts one floating
   // over the page: handStarts): plain text under a hand cursor stays
-  // text. Inside a control that shows the hand (inHand), the hand is that
-  // control's.
+  // text. A name another element holds counts: each Gmail thread row is
+  // named by a summary hidden in it, and a click on the row opens the
+  // thread (09-30). Inside a control that shows the hand (inHand), the
+  // hand is that control's.
   function isInteractive(el, style, inHand = false) {
     if (el.tabIndex >= 0 && !el.hasAttribute("disabled")) return true;
     const role = getExplicitRole(el);
     if (role && ["button", "link", "textbox", "checkbox", "radio", "combobox", "listbox", "menuitem", "tab", "slider", "switch"].includes(role)) return true;
     if (el.onclick || el.onmousedown || el.onpointerdown) return true;
     if (INTERACTIVE_TAGS.has(el.tagName)) return true;
-    if (inHand || !(el.hasAttribute("aria-label") || el.hasAttribute("title") || el.hasAttribute("data-testid"))) return false;
+    if (inHand || !(el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby") || el.hasAttribute("title") || el.hasAttribute("data-testid"))) return false;
     return (style ?? (el.ownerDocument.defaultView || window).getComputedStyle(el)).cursor === "pointer";
   }
 
@@ -210,10 +212,13 @@
 
   // The name an element states itself: aria-labelledby, aria-label, an
   // image's alt, or a field's label. null when its name comes from its
-  // content or title.
+  // content or title. A control in a row that takes the row's own label
+  // is a part of the row: Gmail's checkbox names itself by its thread's
+  // summary, the row carries that name, and a click meant for the thread
+  // only ticked the box (09-30).
   function ownName(el) {
     const labelledby = el.getAttribute("aria-labelledby");
-    if (labelledby) {
+    if (labelledby && labelledby !== el.parentElement?.closest("[role=row]")?.getAttribute("aria-labelledby")) {
       const parts = labelledby.split(/\s+/)
         .map((id) => el.getRootNode().getElementById(id))
         .filter(Boolean)
@@ -260,10 +265,55 @@
   // A field whose value is a secret: its value is never printed, only
   // whether it is filled. Autofill puts these in without the agent typing,
   // and a show-password toggle turns a password field into a text field. A
-  // field the harness typed a code into (type's secret) is one too.
-  const secretFilled = new WeakSet();
+  // field the harness filled with a secret (keepSecret) is one too.
+  const secretFields = new WeakSet();
   function secretField(el) {
-    return secretFilled.has(el) || el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+    return secretFields.has(el) || el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+  }
+
+  // What the harness types as a secret (type's secret, a saved login or
+  // code, a card) never comes back from this page, wherever the page shows
+  // it: USCIS names its code field by a label that repeats the code, so a
+  // snapshot printed it past the field's {filled} (USCIS, 09-30). fields
+  // are where it went; every answer has texts cut (unsecret, in answer).
+  // They last as long as this page. A text under 3 characters is not kept:
+  // a cut of every "4" would garble the page and hide next to nothing.
+  const secretTexts = new Set();
+  function keepSecret(fields, ...texts) {
+    for (const f of fields) secretFields.add(f);
+    for (const t of texts) if (typeof t === "string" && t.length >= 3) secretTexts.add(t);
+  }
+
+  // A text of digits is cut only where it stands as a number of its own: a
+  // card's security code of 234 leaves a total of $1,234.56 whole.
+  const secretPattern = (t) => /^\d+$/.test(t) ? `(?<!\\d|\\d[.,])${t}(?![.,]?\\d)` : t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // value with each kept text cut to "...", however deep, the longest
+  // first, so a code inside a longer secret cannot split it; but for a
+  // file's bytes (a top-level data, in base64), which a cut would break.
+  function unsecret(value) {
+    if (!secretTexts.size) return value;
+    const secrets = new RegExp([...secretTexts].sort((a, b) => b.length - a.length).map(secretPattern).join("|"), "g");
+    const cut = (v, top) => typeof v === "string" ? v.replace(secrets, "...")
+      : Array.isArray(v) ? v.map((x) => cut(x, false))
+      : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]))
+      : v;
+    return cut(value, true);
+  }
+
+  // An input named for a code shows only that it is filled once it holds
+  // digits, and its name loses its value (head, in outline): a code the
+  // user or the page put in, which the harness never typed, is a secret
+  // too (USCIS, 09-30). A term must start a word, so "shipping" holds no
+  // pin; a zip, postal, promo, or phone country code stays readable, as
+  // address fill types those and an agent checks them, and so does a text
+  // area, as a code editor's.
+  const CODE_NAME = /\b(code|otp|verification|passcode|cvc|cvv|csc)|\bpin\b|security.?code/i;
+  const OPEN_CODE = /\b(zip|postal|promo|coupon|discount|voucher|gift|country|area)/i;
+  function holdsCode(el, v) {
+    if (el.tagName !== "INPUT" || !/\d/.test(v)) return false;
+    const name = accessibleName(el);
+    return CODE_NAME.test(name) && !OPEN_CODE.test(name);
   }
 
   function stateOf(el) {
@@ -275,7 +325,7 @@
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       if (el.getRootNode().activeElement === el) s.push("focused");
       const v = /^(submit|reset|button|image)$/.test(el.type) ? "" : el.value; // a button's value is its name
-      if (v) s.push(secretField(el) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
+      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
       const sel = el.selectedOptions[0];
@@ -866,7 +916,10 @@
       const st = stateOf(n.el);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
-      const name = n.name ? clip(n.name, TEXT_MAX) : "";
+      // a field shown only as filled has its value cut from its name too:
+      // USCIS named its code field "…required <the code>" (09-30)
+      const echoed = st.includes("filled") && n.el.value.length >= 3;
+      const name = n.name ? clip(echoed ? n.name.replaceAll(n.el.value, "...") : n.name, TEXT_MAX) : "";
       const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
       return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
     };
@@ -1209,20 +1262,24 @@
     // A disabled control ignores the click; saying ok sent an agent hunting
     // for a cause for 23 turns on GitHub's Authorize, which is enabled only
     // while its window is in front.
-    if (el.matches(":disabled")) return { error: typedForm(el) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" };
+    if (el.matches(":disabled")) return { error: typedForm(el) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call activate)" };
     watchTarget(el);
-    // Reading the position below forces layout, so no frame wait is needed;
-    // background tabs never run requestAnimationFrame, so waiting on one hangs.
+    clickElement(el);
+    return { ok: true };
+  }
+
+  // A click at the middle of el, where a person clicks. Reading the
+  // position forces layout, so no frame wait is needed; background tabs
+  // never run requestAnimationFrame, so waiting on one hangs. The topmost
+  // element at that point gets the click only when it is part of el (an
+  // overlay inside a link); anything else is a cover that would swallow
+  // the click, so el itself gets it.
+  function clickElement(el) {
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const { x, y } = centerOf(el);
-    // The topmost element at that point gets the click only when it is part
-    // of the target (an overlay inside a link); anything else is a cover
-    // that would swallow the click, so click the target itself.
     const hit = deepPoint(x, y);
-    const target = hit && el.contains(hit) ? hit : el;
-    fireClick(target, x, y);
+    fireClick(hit && el.contains(hit) ? hit : el, x, y);
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
-    return { ok: true };
   }
 
   function hover(ref) {
@@ -1234,22 +1291,80 @@
     return { ok: true };
   }
 
-  function selectOption(ref, choice) {
-    const el = fieldOf(resolve(ref));
-    if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
-    watchTarget(el);
-    if (el.tagName !== "SELECT") return { error: "not a <select>; click it, then click the option in a fresh snapshot" };
-    const options = [...el.options];
+  // The option a choice names among a list's { label, value } options: its
+  // label or value in any case, else the first whose label holds it. A
+  // <select>'s options and a combobox's are matched alike.
+  function optionNamed(options, choice) {
     const want = String(choice).trim().toLowerCase();
-    const opt = options.find((o) => o.label.trim().toLowerCase() === want || o.value.toLowerCase() === want) ??
+    return options.find((o) => o.label.toLowerCase() === want || o.value.toLowerCase() === want) ??
       options.find((o) => o.label.toLowerCase().includes(want));
-    if (!opt) return { error: `no option "${choice}"; options: ${options.slice(0, 40).map((o) => o.label.trim()).join(" | ")}` };
+  }
+
+  const noOption = (choice, options) => ({ error: `no option "${choice}"; options: ${options.slice(0, 40).map((o) => o.label).join(" | ")}` });
+
+  function selectOption(el, choice) {
+    watchTarget(el);
+    const options = [...el.options].map((o) => ({ label: o.label.trim(), value: o.value }));
+    const opt = optionNamed(options, choice);
+    if (!opt) return noOption(choice, options);
     // the native setter, so framework value trackers see a real change
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, opt.value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { ok: true, value: opt.label.trim() };
+    return { ok: true, value: opt.label };
+  }
+
+  // A combobox draws its list of options itself: EOIR's nationality box
+  // (React) draws it after a click, and select answered that it was no
+  // <select> (09-30). Its list is the one it names (aria-controls,
+  // aria-owns), read at each look, since React names it only once it is
+  // open. Else, a closed box is clicked open, and its list is a listbox that
+  // was not on show before; an open box's is the one it showed an earlier
+  // select, which a choice the list lacked left open. The option is
+  // clicked, as a person picks it, and the answer is its label.
+  const LIST_WAIT_MS = 3000;
+  const comboLists = new WeakMap(); // box -> the list it showed for select
+  async function comboOption(box, choice) {
+    const lists = () => deepQueryAll("[role=listbox]").filter(shown);
+    const named = () => {
+      const ids = ["aria-controls", "aria-owns"].flatMap((a) => (box.getAttribute(a) ?? "").split(/\s+/));
+      return lists().find((l) => l.id && ids.includes(l.id));
+    };
+    let list;
+    if (box.getAttribute("aria-expanded") === "true") {
+      const kept = comboLists.get(box);
+      list = named() ?? (kept && shown(kept) ? kept : undefined);
+    } else {
+      const before = new Set(lists());
+      const listOf = () => named() ?? lists().find((l) => !before.has(l));
+      clickElement(box);
+      list = listOf();
+      if (!list) await whenPage(() => (list = listOf()) !== undefined, LIST_WAIT_MS);
+    }
+    if (!list) return { error: "found no list of options for that combobox: if it lists options as you type, type into it and select again; else click the option in a fresh snapshot" };
+    comboLists.set(box, list);
+    const options = deepQueryAll("[role=option]", list).filter(shown).map((el) => {
+      const label = accessibleName(el);
+      return { el, label, value: label };
+    });
+    const opt = optionNamed(options, choice);
+    if (!opt) return noOption(choice, options);
+    return withReceipt(() => withOutcome(() => {
+      watchTarget(box);
+      clickElement(opt.el);
+      return { ok: true, value: opt.label };
+    }));
+  }
+
+  // select takes a <select>, a label of one, or a combobox, resolved before
+  // the first await (answer).
+  function selectIn(ref, choice) {
+    const el = fieldOf(resolve(ref));
+    if (!el) return missing(ref);
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (el.tagName === "SELECT") return withReceipt(() => withOutcome(() => selectOption(el, choice)));
+    if (getExplicitRole(el) === "combobox") return comboOption(el, choice);
+    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
   }
 
   // files: [{ name, type, data (base64) }]. File inputs are usually hidden
@@ -1613,7 +1728,7 @@
     } else {
       return { error: "element is not editable" };
     }
-    if (opts.secret) for (const f of row.includes(el) ? row : [el]) secretFilled.add(f);
+    if (opts.secret) keepSecret(row.includes(el) ? row : [el], text);
     // Whether the field holds the text once the page has had a moment with
     // it: a page may reformat it (a phone field adds dashes) or cut it (a
     // length limit). The text itself never comes back: type once echoed a
@@ -1665,6 +1780,7 @@
   async function fillLogin(host, username, password) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const f = loginFields();
+    if (f.password) keepSecret([f.password], password);
     const filled = [];
     for (const [field, value, name] of [[f.username, username, "username"], [f.password, password, "password"]]) {
       if (!field || !value) continue;
@@ -1747,6 +1863,7 @@
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const f = changeFields();
     if (!f.fresh.length) return { error: "the new-password field is gone; nothing was filled" };
+    keepSecret([f.current, ...f.fresh].filter(Boolean), current, password);
     const filled = [];
     const fields = [[f.current, current, "current password"], ...f.fresh.map((el, i) => [el, password, i ? "confirm password" : "new password"])];
     for (const [field, value, name] of fields) {
@@ -1800,12 +1917,13 @@
   }
 
   // What the extension asks every frame at once, by name.
-  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts };
+  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts, card: cardForm };
 
   async function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
     const fields = codeFields();
     if (!fields.length) return { error: "the code field is gone; nothing was filled" };
+    keepSecret(fields, code);
     const parts = fields.length === 1 ? [code] : [...code];
     for (const [i, field] of fields.entries()) {
       if (parts[i] === undefined) continue;
@@ -1885,6 +2003,163 @@
       filled.push(token);
     }
     return { filled, kept, cardFieldsLeftAlone: cards };
+  }
+
+  // ---------- card fill ----------
+
+  // What a card field wants: the last word of its autocomplete ("billing
+  // cc-number"), else what its name, id, label, or placeholder says, which
+  // is never a gift card's, a bank account's, or a birth date's. A list
+  // under one expiry label is its month or its year by what it offers. A
+  // weak word (a bare "Month", a "security code") is a card's only in the
+  // frame that holds the card's number.
+  const CARD_TOKENS = ["cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-name", "cc-given-name", "cc-family-name", "postal-code"];
+  const CARD_HINTS = [
+    ["cc-csc", /cvv|cvc|csc|\bcid\b|card.?(code|verification)|verification.?(number|value)/i],
+    ["cc-exp-month", /exp\w*.?(month|mm\b)/i],
+    ["cc-exp-year", /exp\w*.?(year|yy)/i],
+    ["cc-exp", /expir|exp.?date|valid.?(thru|through|until)|mm.?\/?.?yy|\bexp\b/i],
+    ["cc-name", /name.?on.?(the.?)?card|card.?holder|holder.?name|\bcc.?name/i],
+    ["cc-number", /card.?(number|no\b|num)|\bcc.?num|number.?on.?card|\bpan\b|(credit|debit).?card/i],
+    ["postal-code", /zip|postal|post.?code/i],
+    ["cc-csc", /security.?code|verification.?code/i, "weak"],
+    ["cc-exp-month", /\bmonth\b/i, "weak"],
+    ["cc-exp-year", /\byear\b/i, "weak"],
+  ];
+  const NOT_CARD = /gift|voucher|coupon|promo|loyalty|member|reward|account.?(number|no\b)|routing|iban|birth|\bdob\b/i;
+  const CARD_NAMES = { "cc-number": "number", "cc-exp": "expiry", "cc-exp-month": "expiry month", "cc-exp-year": "expiry year", "cc-csc": "security code", "cc-name": "name", "cc-given-name": "first name", "cc-family-name": "last name", "postal-code": "zip" };
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const twoDigits = (n) => String(n % 100).padStart(2, "0");
+
+  function cardToken(el) {
+    const auto = (el.getAttribute("autocomplete") ?? "").trim().toLowerCase().split(/\s+/).pop() ?? "";
+    if (CARD_TOKENS.includes(auto)) return { token: auto, weak: false };
+    const words = fieldWords(el);
+    const hint = (auto && auto !== "on" && auto !== "off") || NOT_CARD.test(words) ? undefined : CARD_HINTS.find(([, re]) => re.test(words));
+    if (!hint) return { token: null, weak: false };
+    return { token: hint[0] === "cc-exp" && el.tagName === "SELECT" ? expiryPart(el) : hint[0], weak: Boolean(hint[2]) };
+  }
+
+  function expiryPart(select) {
+    const n = [...select.options].map((o) => Number.parseInt(o.value || o.textContent, 10)).filter(Number.isFinite);
+    return n.some((v) => v > 12) ? "cc-exp-year" : "cc-exp-month";
+  }
+
+  // This frame's card fields, the first of each kind. A ZIP is the card's
+  // where its autocomplete says billing, else the first after the card's
+  // number in its form that is no shipping or delivery ZIP.
+  function paymentFields() {
+    const found = new Map();
+    const weak = [];
+    const zips = [];
+    for (const el of deepQueryAll("input, select")) {
+      if (el.disabled || el.readOnly || !shown(el) || /^(hidden|submit|button|checkbox|radio|file|image|reset)$/.test(el.type)) continue;
+      const { token, weak: unsure } = cardToken(el);
+      if (token === "postal-code") zips.push(el);
+      else if (token && !found.has(token)) {
+        found.set(token, el);
+        if (unsure) weak.push(token);
+      }
+    }
+    const number = found.get("cc-number");
+    if (!number) for (const t of weak) found.delete(t);
+    const shipping = (el) => /\bshipping\b/i.test(el.getAttribute("autocomplete") ?? "") || /ship|deliver/i.test(fieldWords(el));
+    const zip = zips.find((el) => /\bbilling\b/i.test(el.getAttribute("autocomplete") ?? ""))
+      ?? (number && zips.find((el) => !shipping(el) && el.form === number.form && number.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (zip) found.set("postal-code", zip);
+    return found;
+  }
+
+  // Which card fields this frame holds, and the site it is on: the daemon
+  // sends a card only to frames on a site it trusts with one. Never a value.
+  function cardForm() {
+    return { origin: location.origin, fields: [...paymentFields().keys()] };
+  }
+
+  // An expiry field's text in the shape its placeholder or label shows
+  // (MM/YY, MM / YY, MMYY, MM/YYYY), else the one its length allows.
+  function expiryText(el, month, year) {
+    const mm = twoDigits(month);
+    const shape = /MM(\s*[/.-]?\s*)(YYYY|YY|AAAA|AA|JJJJ|JJ)/i.exec(fieldWords(el));
+    if (shape) return mm + shape[1] + (shape[2].length === 4 ? String(year) : twoDigits(year));
+    const max = el.maxLength;
+    return max === 4 ? mm + twoDigits(year) : max === 6 ? `${mm}${year}` : max === 7 ? `${mm}/${year}` : `${mm}/${twoDigits(year)}`;
+  }
+
+  // The option a person would pick: by what it shows, then by its value,
+  // so a list whose values count months from 0 gets July by its name.
+  function pickOption(select, test) {
+    const options = [...select.options].filter((o) => !o.disabled);
+    return options.find((o) => test(o.textContent.trim())) ?? options.find((o) => test(o.value.trim())) ?? null;
+  }
+
+  // What a card field gets: a text for a field, an option for a list.
+  function cardValue(token, el, card) {
+    const [given = "", ...family] = String(card.name ?? "").trim().split(/\s+/);
+    const list = el.tagName === "SELECT";
+    switch (token) {
+      case "cc-number": return card.number;
+      case "cc-csc": return card.csc;
+      case "cc-name": return card.name;
+      case "cc-given-name": return given;
+      case "cc-family-name": return family.join(" ");
+      case "postal-code": return card.zip;
+      case "cc-exp": return card.month && card.year ? expiryText(el, card.month, card.year) : undefined;
+      case "cc-exp-month":
+        if (!card.month) return undefined;
+        return list ? pickOption(el, (t) => new RegExp(`^0?${card.month}(?!\\d)`).test(t) || t.toLowerCase().startsWith(MONTHS[card.month - 1])) : twoDigits(card.month);
+      case "cc-exp-year": {
+        if (!card.year) return undefined;
+        if (list) return pickOption(el, (t) => t === String(card.year) || t === twoDigits(card.year));
+        const words = fieldWords(el);
+        return el.maxLength === 2 || (/\bYY\b/i.test(words) && !/YYYY/i.test(words)) ? twoDigits(card.year) : String(card.year);
+      }
+    }
+    return undefined;
+  }
+
+  // Fills this frame's card fields: the number, the expiry in the field's
+  // own shape, the security code, the name, and the billing ZIP. The daemon
+  // sends the card only to a frame on a site it trusts with it (cards.ts),
+  // and a frame that has moved elsewhere since gets nothing. The number and
+  // code stay secrets of this page (keepSecret). The reply names the fields,
+  // never what went in them. A text field the page did not keep a moment
+  // later comes back with its ref, for the keys a person presses
+  // (real_input, cards.ts): a card processor's frame may take nothing else.
+  // A list with no option for the card's month or year comes back without.
+  async function fillCard(host, card, secrets = []) {
+    if (location.hostname !== host || (host && location.protocol !== "https:")) return { error: `the page moved to ${location.host}; nothing was filled` };
+    const fields = paymentFields();
+    keepSecret(["cc-number", "cc-csc", "cc-exp", "cc-exp-month", "cc-exp-year"].map((t) => fields.get(t)).filter(Boolean), ...secrets);
+    const set = [];
+    const missed = [];
+    for (const [token, el] of fields) {
+      const value = cardValue(token, el, card);
+      if (value === undefined || value === "") continue;
+      if (el.tagName === "SELECT") {
+        const option = typeof value === "string" ? chooseOption(el, [value]) : value;
+        if (!option) {
+          missed.push({ field: CARD_NAMES[token], token });
+          continue;
+        }
+        el.value = option.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        set.push([token, el, option.value]);
+        continue;
+      }
+      if (!(await focusField(el))) return untaken(`the card's ${CARD_NAMES[token]} field`);
+      setValue(el, value, value);
+      set.push([token, el, value]);
+    }
+    if (!set.length && !missed.length) return { error: "the card fields are gone; nothing was filled" };
+    await whenPage(() => false, RECEIPT_SPAN.min);
+    const filled = [];
+    for (const [token, el, value] of set) {
+      if (el.tagName === "SELECT" ? el.value === value : keeps(el.value, value)) filled.push(CARD_NAMES[token]);
+      else missed.push(el.tagName === "SELECT" ? { field: CARD_NAMES[token], token } : { field: CARD_NAMES[token], token, ref: ensureRef(el) });
+    }
+    return { ok: true, filled, ...(missed.length ? { missed } : {}) };
   }
 
   // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
@@ -2026,15 +2301,30 @@
 
   // A line of only invisible characters (zero-width ones, a soft hyphen) is
   // a loading skeleton's: HackerOne's and PayPal's pages held lines of
-  // U+200C where their text would come (09-29).
-  const FILLER = /^(?:[ \u00AD\u200B-\u200D\u2060\uFEFF]|\u034F)+$/;
+  // U+200C where their text would come (09-29). A line that only says the
+  // page is loading stands in for text too: USCIS's case pages read "The
+  // page is loading. Please wait and do not refresh the page." between
+  // their real lines while the rest came (09-30). Invisible characters are
+  // read as spaces here, using the matching rules' one list (INVISIBLE).
+  const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
 
   // An element's text as extract returns it: spaces and blank lines run
-  // together, skeleton lines left out, and whether there were any.
+  // together, skeleton and loading lines left out, and whether there were any.
   function tidyText(root) {
     const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
-    const text = lines.filter((l) => !FILLER.test(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, filler: lines.some((l) => FILLER.test(l)) };
+    const skeleton = (l) => FILLER.test(l.replace(INVISIBLE, " "));
+    const text = lines.filter((l) => !skeleton(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, filler: lines.some(skeleton) };
+  }
+
+  // A page that marks its main region or body aria-busy is still filling in.
+  const ariaBusy = () => !!document.querySelector("body[aria-busy='true'], main[aria-busy='true'], [role='main'][aria-busy='true']");
+
+  // Whether the page says it is still loading: skeleton or loading lines in
+  // what extract reads, or aria-busy.
+  function stillLoading() {
+    const { root } = contentRoot();
+    return ariaBusy() || (!!root && tidyText(root).filler);
   }
 
   // What extract reads by default: a dialog open over the page (claude.ai's
@@ -2056,20 +2346,23 @@
   }
 
   // query keeps the lines containing it, searched across the whole body. A
-  // default read that finds no text, or skeleton lines, waits for the page
-  // to draw, as snapshot does.
+  // default read that finds no text, skeleton or loading lines, or a busy
+  // page waits for the page to draw, as snapshot does, and says when it was
+  // still loading at the limit.
   async function extract(opts = {}) {
     if (opts.as === "table") return tables(opts);
     let at = opts.selector ? { root: deepQuery(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
     if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     let read = tidyText(at.root);
-    if (!opts.selector && !opts.query && window === window.top && (!read.text || read.filler)) {
+    const waits = !opts.selector && !opts.query && window === window.top;
+    if (waits && (!read.text || read.filler || ariaBusy())) {
       await whenPage(() => {
         at = contentRoot();
         read = tidyText(at.root);
-        return read.text !== "" && !read.filler;
+        return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
+    const loading = waits && (read.filler || ariaBusy());
     let { text } = read;
     const notes = [at.note];
     if (opts.query) {
@@ -2087,6 +2380,7 @@
       text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
       truncated: text.length > limit,
       ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
+      ...(loading ? { loading: true } : {}),
       ...(opts.query && !text ? regexHint(opts.query) : {}),
     };
   }
@@ -2098,11 +2392,12 @@
   }
 
   // A query's test for one line: "a|b" matches a line containing either
-  // alternative, as plain text, case-insensitive.
+  // alternative, case and invisible mail padding aside (Gmail, 09-30).
   function queryMatch(query) {
-    const alts = alternatives(query).map((a) => a.toLowerCase());
+    const plain = (t) => t.replace(INVISIBLE, "").toLowerCase().replace(/\s+/g, " ");
+    const alts = alternatives(query).map(plain);
     return (line) => {
-      const t = line.toLowerCase();
+      const t = plain(line);
       return alts.some((a) => t.includes(a));
     };
   }
@@ -2346,10 +2641,14 @@
     return busy ? start + span.max : Math.min(start + span.max, Math.max(start + span.min, last + span.quiet));
   }
 
+  // Gmail pads previews with U+034F and U+200C (09-30). The same invisible
+  // characters are ignored by waits, queries, and loading skeleton reads.
+  const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]|\u034F/g;
+
   // Whether the page's text shows want, case and spacing aside: "M240i"
   // finds "M240 i", and a name the page breaks over two lines is found.
   function shows(page, want) {
-    const squash = (t) => String(t).toLowerCase().replace(/\s+/g, "");
+    const squash = (t) => String(t).replace(INVISIBLE, "").toLowerCase().replace(/\s+/g, "");
     return squash(page).includes(squash(want));
   }
   // ---- tested with daemon/receipt.test.ts: end ----
@@ -2394,20 +2693,32 @@
     return el;
   }
 
-  // What the page's world (dialogs.js) saw since `since`: the requests the
-  // page made, those still out, and the errors it did not catch. It answers
-  // within the ask. A page open since before the extension was has no
-  // dialogs.js, and answers nothing.
-  function hear(since) {
-    let heard = null;
+  // Asks the page's world (dialogs.js), which answers within the ask. A
+  // page open since before the extension was has no dialogs.js, and
+  // answers nothing: undefined.
+  function askPage(ask, answer, detail) {
+    let heard;
     const take = (e) => {
-      if (heard !== null || typeof e.detail !== "string") return;
+      if (heard !== undefined || typeof e.detail !== "string") return;
       try { heard = JSON.parse(e.detail); } catch {}
     };
-    document.addEventListener("__sh_receipt_answer", take);
-    document.dispatchEvent(new CustomEvent("__sh_receipt_ask", { detail: JSON.stringify({ since }) }));
-    document.removeEventListener("__sh_receipt_answer", take);
+    document.addEventListener(answer, take);
+    document.dispatchEvent(new CustomEvent(ask, { detail: JSON.stringify(detail) }));
+    document.removeEventListener(answer, take);
     return heard;
+  }
+
+  // What the page's world saw since `since`: the requests the page made,
+  // those still out, and the errors it did not catch.
+  function hear(since) {
+    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since });
+  }
+
+  // One response's whole text, as the page's world kept it: that of the
+  // request at key.url that the log wrote at key.t (net's body).
+  function netBody(key) {
+    return askPage("__sh_net_body_ask", "__sh_net_body_answer", key)
+      ?? { error: "this page keeps no request bodies: reload it (history, do: reload), then use net again" };
   }
 
   // The control an action is about to use, and those whose state it
@@ -2558,6 +2869,7 @@
   // time limit: waitStop ends the wait with that id early. A newer wait ends
   // an older one.
   let pendingWait = null; // { id, done }
+  let actLook = null; // { token, lines }, the run's look before its action
 
   // The text of the page and of the frames in it that share its origin. A
   // Flutter page's words are its semantics nodes' labels, which hold no
@@ -2565,8 +2877,14 @@
   // wait for it never met (09-29).
   function pageText() {
     const text = [document.body, ...inlineBodies()].map((b) => (b ? readText(b, (el) => el.innerText ?? "") : "")).join("\n");
-    if (!document.querySelector("flutter-view, flt-glass-pane")) return text;
-    return [text, ...deepQueryAll("flt-semantics[aria-label], flt-semantics [aria-label]").map((el) => el.getAttribute("aria-label"))].join("\n");
+    const labels = document.querySelector("flutter-view, flt-glass-pane") ? deepQueryAll("flt-semantics[aria-label], flt-semantics [aria-label]").map((el) => el.getAttribute("aria-label")) : [];
+    return [text, ...labels].join("\n").replace(INVISIBLE, "");
+  }
+
+  // Gmail's "Search results" was only in the tab's title (09-30).
+  // gone still reads only the body: a title can outlive the form it names.
+  function titled(page) {
+    return window === window.top ? `${document.title.replace(INVISIBLE, "")}\n${page}` : page;
   }
 
   // wait {changed}: lines new to the page (or to the selector's element)
@@ -2620,6 +2938,19 @@
     return out;
   }
 
+  // A miss used to say nothing about the page's unexpected next state
+  // (USCIS's passkey offer, 09-30). Keep the latest news, three lines at most.
+  function meanwhileOf(before) {
+    const now = linesOf(pageText());
+    const lines = [
+      ...(before.url === location.href ? [] : [`url was: ${clip(before.url, 120)}`]),
+      ...(before.title === document.title ? [] : [`title was: ${clip(before.title, 120)}`]),
+      ...addedOf(newLines(before.lines, now)).reverse().map((l) => `new: ${clip(l, 120)}`),
+      ...addedOf(newLines(now, before.lines)).reverse().map((l) => `gone: ${clip(l, 120)}`),
+    ];
+    return lines.length ? lines.slice(0, 3) : ["the page did not change"];
+  }
+
   // A request out longer than this is a long poll (Gmail keeps its /sync/
   // and /cloudsearch/request ones open), not a page still loading: wait's
   // quiet counts only younger ones. Gmail's quiet waits answered found
@@ -2642,6 +2973,13 @@
   function waitFor(selector, spec, id = null) {
     pendingWait?.done(false);
     const want = spec ?? {};
+    if (want.look != null) {
+      actLook = { token: want.look, lines: linesOf(titled(pageText())) };
+      return { found: true };
+    }
+    // A run takes this look before its action, not after its receipt:
+    // text that arrived during the action still counts (EOIR, 09-30).
+    const after = want.after != null && actLook?.token === want.after ? actLook.lines : null;
     if (window !== window.top && (want.gone != null || want.url != null || want.quiet)) return { found: false };
     const start = Date.now();
     let last = start;
@@ -2653,10 +2991,11 @@
     const texts = want.text == null ? null : alternatives(want.text);
     const words = () => {
       if (texts === null && want.gone == null && want.any == null) return { found: true };
-      const page = pageText();
+      const body = pageText();
+      const page = after === null ? titled(body) : newLines(after, linesOf(titled(body))).join("\n");
       const said = texts?.find((t) => shows(page, t));
       if (texts !== null && said === undefined) return null;
-      if (want.gone != null && shows(page, want.gone)) return null;
+      if (want.gone != null && shows(body, want.gone)) return null;
       if (want.any == null) return texts !== null && texts.length > 1 ? { found: true, which: said } : { found: true };
       const which = want.any.find((t) => shows(page, t));
       return which === undefined ? null : { found: true, which };
@@ -2684,6 +3023,7 @@
     const now = met();
     if (now && want.changed) return now;
     if (now) return { ...now, already: true, ...(want.gone != null ? { hint: `"${want.gone}" was not on the page as the wait began: it went before, or never showed; to know the next page is up, wait for text it shows` } : {}) };
+    const before = { lines: linesOf(pageText()), url: location.href, title: document.title };
     return new Promise((resolve) => {
       let timer = null;
       const arm = () => {
@@ -2708,7 +3048,7 @@
         if (pendingWait === mine) pendingWait = null;
         resolve(answer);
       };
-      const mine = { id, done: (found) => done({ found }) };
+      const mine = { id, done: (found) => done({ found, ...(window === window.top ? { meanwhile: meanwhileOf(before) } : {}) }) };
       pendingWait = mine;
       // the address can change with no change to the page (pushState)
       if (want.url != null) navigation.addEventListener("currententrychange", check);
@@ -3134,17 +3474,21 @@
     },
     wait: waitFor,
     waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
+    // open and goto wait, within their limit, while the page says it is
+    // still loading, and say whether it still was (USCIS, 09-30).
+    loaded: async (ms) => ({ loading: stillLoading() && !(await whenPage(() => !stillLoading(), ms)) }),
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
     clickAt: (x, y) => withReceipt(() => withOutcome(() => clickAt(x, y))),
     hover,
-    select: (ref, choice) => withReceipt(() => withOutcome(() => selectOption(ref, choice))),
+    select: selectIn,
     upload,
     history: historyGo,
     fillLogin,
     fillCode,
     fillNewPassword,
     fillAddress,
+    fillCard,
     locate,
     pressMark,
     pressDone,
@@ -3158,6 +3502,7 @@
     element: elementInfo,
     lookalikes,
     record,
+    netBody,
   };
   // Ops that may raise a dialog; the page's dialogs are armed while they run.
   const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download"]);
@@ -3213,21 +3558,22 @@
     if (!fn) return Promise.resolve({ id: msg.id, error: `unknown op ${msg.op}` });
     // Handlers report expected failures (stale ref, no such option) as
     // { error }; send those as errors so callers never mistake them for success.
+    // Neither carries a secret the harness typed on this page (unsecret).
     const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
-      ? { id: msg.id, error: value.error }
-      : { id: msg.id, value: safeClone(withHeal(value, healed)) };
+      ? { id: msg.id, error: unsecret(value.error) }
+      : { id: msg.id, value: unsecret(safeClone(withHeal(value, healed))) };
     let out;
     healedNow = null;
     try {
       out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
     } catch (e) {
-      return Promise.resolve({ id: msg.id, error: String(e && e.message || e) });
+      return Promise.resolve({ id: msg.id, error: unsecret(String(e && e.message || e)) });
     }
     // Every handler resolves its target before its first await, so a heal
     // made now is this request's.
     const healed = healedNow;
     if (out && typeof out.then === "function") {
-      return out.then(settle, (err) => ({ id: msg.id, error: String(err && err.message || err) }));
+      return out.then(settle, (err) => ({ id: msg.id, error: unsecret(String(err && err.message || err)) }));
     }
     return Promise.resolve(settle(out));
   }

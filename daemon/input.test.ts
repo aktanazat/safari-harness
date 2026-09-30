@@ -1,9 +1,13 @@
-import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
 import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { INPUT_TOOLS } from "./input.ts";
+import { runAs } from "./owner.ts";
 import * as daemonRpc from "./rpc.ts";
 import * as spaces from "./spaces.ts";
 import { callTool } from "./tools.ts";
@@ -17,12 +21,15 @@ import { callTool } from "./tools.ts";
 const GHOSTTY = "com.mitchellh.ghostty";
 
 // Safari's answer to press_mark, the errors the page threw by press_done,
-// the helper's answer to press, and the page area of Safari's front window.
-type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number } };
+// the helper's answer to press, the page area of Safari's front window, and
+// what the page did on each scripted click, in order (withReceipt in
+// extension/content.js; nothing by default).
+type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[] };
 type Mac = {
   app: string;
   // helper commands, and what Safari was asked of its tabs and pages, in order
   helper: string[][];
+  typed: (string | undefined)[];
   asked: string[];
   // the tab agent window 2 showed when the helper pressed
   pressedIn?: number;
@@ -31,10 +38,16 @@ type Mac = {
 
 // Ghostty is in front. The user's window 1, Safari's front window, shows his
 // tab 3, with his tab 4 behind it. Agent window 2 shows its own page, tab
-// 20, with the agent's tab 21 behind it. Showing a tab sets it active in its
-// window; activating one also makes its window Safari's front window.
+// 20, with the agent's tab 21 behind it, on a subdomain of court.example.
+// Showing a tab sets it active in its window; activating one also makes its
+// window Safari's front window.
 function mac(page: Page = {}): Mac {
-  const tabs = [{ id: 3, windowId: 1, active: true }, { id: 4, windowId: 1, active: false }, { id: 20, windowId: 2, active: true }, { id: 21, windowId: 2, active: false }];
+  const tabs = [
+    { id: 3, windowId: 1, active: true, url: "https://example.com/" },
+    { id: 4, windowId: 1, active: false, url: "https://example.com/" },
+    { id: 20, windowId: 2, active: true, url: "https://other.example/" },
+    { id: 21, windowId: 2, active: false, url: "https://portal.court.example/case" },
+  ];
   let frontWindow = 1;
   let marks = 0;
   const show = (id: number) => {
@@ -42,7 +55,7 @@ function mac(page: Page = {}): Mac {
     for (const t of tabs) if (t.windowId === windowId) t.active = t.id === id;
     return windowId;
   };
-  const m: Mac = { app: GHOSTTY, helper: [], asked: [], shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
+  const m: Mac = { app: GHOSTTY, helper: [], typed: [], asked: [], shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
@@ -57,12 +70,15 @@ function mac(page: Page = {}): Mac {
       if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
       if (dom === "eval") return answer({ result: { marks, focus: true } });
+      if (dom === "click") return answer({ ok: true, receipt: { ...QUIET, ...page.clicked?.shift() } });
+      if (dom === "type") return answer({ ok: true, kept: true });
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));
     },
     close() {},
   });
-  spyOn(front, "input").mockImplementation(async (args) => {
+  spyOn(front, "input").mockImplementation(async (args, _timeout, stdin) => {
     m.helper.push(args);
+    if (args[0] === "type") m.typed.push(stdin);
     if (args[0] === "front") return { bundleId: m.app };
     if (args[0] === "activate") m.app = args[1];
     if (args[0] === "press") {
@@ -79,11 +95,29 @@ function mac(page: Page = {}): Mac {
   return m;
 }
 
+// Sites marked for real input live in a notes directory of each test's own
+// (notes.ts).
+const notesBefore = process.env.SAFARI_HARNESS_NOTES;
+let notes = "";
+beforeEach(() => {
+  notes = mkdtempSync(join(tmpdir(), "real-input-"));
+  process.env.SAFARI_HARNESS_NOTES = notes;
+});
 afterEach(() => {
   mock.restore();
+  rmSync(notes, { recursive: true, force: true });
+});
+afterAll(() => {
+  if (notesBefore === undefined) delete process.env.SAFARI_HARNESS_NOTES;
+  else process.env.SAFARI_HARNESS_NOTES = notesBefore;
 });
 
+// A scripted click's receipt from a page that showed nothing.
+const QUIET = { added: 0, removed: 0, changed: 0, url: null, focus: null, states: [], dialog: null, page: "https://other.example/", requests: [], pending: [], errors: [] };
+
 const click = (tab: number, more: Record<string, unknown> = {}) => INPUT_TOOLS.real_input.run({ tab, do: "click", ref: "#go", ...more });
+const mark = (site: string, real: boolean) => runAs(process.pid, () => callTool("learn", { site, real }));
+const scripted = (m: Mac) => m.asked.filter((a) => /^(click|type) /.test(a));
 const run = (m: Mac, verb: string) => m.helper.filter((c) => c[0] === verb);
 
 test("a single click on a tab behind is pressed where it is: the answer says so, and no app or window comes forward", async () => {
@@ -163,4 +197,100 @@ test("a press the page refused for want of focus answers with its error and a ne
     rest: { ok: true, background: true, pageErrors: [error] },
     tools: ["activate", "real_input", "handoff"],
   });
+});
+
+test("real typing replaces the field before typing exact Unicode and newlines through stdin, not arguments; append skips Cmd+A", async () => {
+  const m = mac();
+  const text = " Zoë 李𐐷\ne\u0301\tline two\r\n";
+  const appended = " suite\n";
+  await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text });
+  await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: appended, append: true });
+  expect(m.helper.filter((c) => ["click", "key", "type"].includes(c[0])).map((c) => (c[0] === "key" ? `key ${c[1]}` : c[0]))).toEqual(["click", "key cmd+a", "type", "click", "type"]);
+  expect({ args: run(m, "type"), stdin: m.typed }).toEqual({ args: [["type"], ["type"]], stdin: [text, appended] });
+});
+
+// Exercise front.input's actual pipe into a child process, without posting
+// keys to the user's Mac. The helper reports its arguments separately from
+// its stdin so text exposed on the command line cannot pass this check.
+test.each([" Zoë 李𐐷\ne\u0301\tline two\r\n", ""])("the native input transport keeps %j exact on stdin and out of process arguments", async (text) => {
+  mkdirSync(join(notes, "daemon"));
+  mkdirSync(join(notes, "scripts"));
+  copyFileSync(join(import.meta.dir, "front.ts"), join(notes, "daemon", "front.ts"));
+  writeFileSync(join(notes, "scripts", "input"), `#!${process.execPath}\nconst args = process.argv.slice(2);\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify({ args, text }));\n`, { mode: 0o700 });
+  writeFileSync(join(notes, "transport.ts"), 'import { input } from "./daemon/front.ts";\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify(await input(["type"], 1000, text)));\n');
+  const proc = Bun.spawn([process.execPath, join(notes, "transport.ts")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  try {
+    proc.stdin.write(text);
+    proc.stdin.end();
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect({ code, err }).toEqual({ code: 0, err: "" });
+    expect(JSON.parse(out)).toEqual({ args: ["type"], text });
+  } finally {
+    if (proc.exitCode === null) {
+      proc.kill();
+      await proc.exited;
+    }
+  }
+});
+
+// EOIR's Submit and egov.uscis.gov's Check Status ignored scripted clicks,
+// and my.uscis.gov kept no scripted text, where real input worked (09-30).
+test("on a site marked for real input, a model's click on a ref is pressed for real and never scripted, on its subdomains too; the harness's own clicks, and a model's once unmarked, stay scripted", async () => {
+  const m = mac();
+  await mark("court.example", true);
+  expect(await invoke("click", { tab: 21, ref: "#submit" }, true)).toMatchObject({ ok: true, background: true, note: expect.stringContaining("court.example") });
+  expect({ pressed: run(m, "press").length, scripted: scripted(m) }).toEqual({ pressed: 1, scripted: [] });
+  await invoke("click", { tab: 21, ref: "#submit" });
+  await mark("court.example", false);
+  await invoke("click", { tab: 21, ref: "#submit" }, true);
+  expect({ pressed: run(m, "press").length, scripted: scripted(m) }).toEqual({ pressed: 1, scripted: ["click 21", "click 21"] });
+});
+
+// A click the page seemed to ignore may still have sent a form: effect
+// "none" cannot see a request to another site, or a handler slower than
+// the receipt (receipt.ts). A real click after it could send it twice.
+test("on a site not marked, a model's click is scripted alone: one the page ignored answers effect none, one that acted its effect, and no real press or click follows either", async () => {
+  const m = mac({ clicked: [{}, { added: 2 }] });
+  await mark("court.example", true);
+  expect(await invoke("click", { tab: 20, ref: "#go" }, true)).toMatchObject({ ok: true, effect: "none" });
+  expect(await invoke("click", { tab: 20, ref: "#go" }, true)).toMatchObject({ ok: true, effect: { added: 2 } });
+  expect({ scripted: scripted(m), real: [...run(m, "press"), ...run(m, "click")] }).toEqual({ scripted: ["click 20", "click 20"], real: [] });
+});
+
+test("a run with real: true sends its clicks and typing on refs as real input, with nothing scripted", async () => {
+  const m = mac();
+  await invoke("run", { real: true, steps: [{ tool: "click", args: { tab: 20, ref: "#name" } }, { tool: "type", args: { tab: 20, ref: "#name", text: "Ada" } }] }, true);
+  expect({ scripted: scripted(m), real: m.helper.filter((c) => ["press", "click", "key", "type"].includes(c[0])).map((c) => c[0]) }).toEqual({ scripted: [], real: ["press", "click", "key", "type"] });
+});
+
+test("a model run without real honors a marked site for click and type, leaves other sites scripted, and an internal run stays scripted", async () => {
+  const m = mac();
+  await mark("court.example", true);
+  const steps = [
+    { tool: "click", args: { tab: 21, ref: "#name" } },
+    { tool: "type", args: { ref: "#name", text: "Ada" } },
+    { tool: "click", args: { tab: 20, ref: "#go" } },
+  ];
+  expect(await invoke("run", { steps }, true)).toMatchObject({
+    steps: [{ value: { ok: true, background: true } }, { value: { ok: true } }, { value: { effect: "none" } }],
+    notRun: 0,
+  });
+  expect(scripted(m)).toEqual(["click 20"]);
+  expect(await invoke("run", { steps })).toMatchObject({
+    steps: [{ value: { effect: "none" } }, { value: { kept: true } }, { value: { effect: "none" } }],
+    notRun: 0,
+  });
+  expect(scripted(m)).toEqual(["click 20", "click 21", "type 21", "click 20"]);
+  expect(m.helper.filter((c) => ["press", "click", "key", "type"].includes(c[0])).map((c) => c[0])).toEqual(["press", "click", "key", "type"]);
+  expect(m.typed).toEqual(["Ada"]);
+});
+
+test("a caller run checks later arguments before sending any real input", async () => {
+  const m = mac();
+  const result = await invoke("run", { steps: [
+    { tool: "real-input", args: { tab: 21, action: "click", ref: "#submit" } },
+    { tool: "press", args: { tab: 21 } },
+  ] }, true);
+  expect(result).toMatchObject({ steps: [{ step: 2, tool: "press", error: expect.any(String) }], notRun: 1 });
+  expect({ helper: m.helper, page: m.asked }).toEqual({ helper: [], page: [] });
 });

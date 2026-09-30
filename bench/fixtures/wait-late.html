@@ -1,0 +1,5 @@
+<!doctype html>
+<title>Request pending</title>
+<p id="result">Checking the request</p>
+<button onclick="setTimeout(() => { document.title = 'Request finished'; document.getElementById('result').textContent = 'No case found'; }, 1000)">Search</button>
+<button onclick="setTimeout(() => { location.hash = 'finished'; document.title = 'Request finished'; document.getElementById('result').innerHTML = '<p>First update</p><p>Second update</p><p>Third update</p><p>Last update</p>'; }, 1000)">Move</button>

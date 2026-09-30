@@ -145,6 +145,13 @@ test("the page's text matches case and spacing aside", () => {
   for (const [page, want, found] of rows) expect([page, want, inPage.shows(page, want)]).toEqual([page, want, found]);
 });
 
+test("the page matches invisible padding and soft hyphens as text, not glyphs", () => {
+  for (const invisible of ["\u00AD", "\u034F", "\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF"]) {
+    expect(inPage.shows(`USCIS${invisible} told many peo${invisible}ple`, "USCIS told many people")).toBe(true);
+    expect(inPage.shows("USCIS told many people", `USCIS told${invisible} many people`)).toBe(true);
+  }
+});
+
 // ---------- when a watch of the page ends ----------
 
 // A fake clock walks a millisecond at a time; the page changed at the
@@ -250,4 +257,20 @@ test("a text wait the page never meets says those words never showed, and an ms 
   expect(await callTool("wait", { tab: 7, text: "zzqq1", ms: 60000 })).toMatchObject({ ok: true, found: false, hint: expect.stringContaining("never showed those words"), note: expect.stringContaining("at most 30000") });
   const selector = await callTool("wait", { tab: 7, selector: "#done", ms: 1000 });
   expect(JSON.stringify(selector)).not.toMatch(/never showed|at most 30000/);
+});
+
+test("a timed-out wait returns what the page changed before it stopped", async () => {
+  let waiting: string | undefined;
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay" && args[1] === "wait") { waiting = id; return; }
+      queueMicrotask(() => {
+        if (op === "relay" && args[1] === "waitStop") bridge.handleMessage(JSON.stringify({ id: waiting, value: { found: false, meanwhile: ["new: No case found", "gone: Checking"] } }));
+        bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? { ok: true } : [] }));
+      });
+    },
+    close() {},
+  });
+  expect(await callTool("wait", { tab: 7, text: "Case details", ms: 50 })).toMatchObject({ found: false, meanwhile: ["new: No case found", "gone: Checking"] });
 });

@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CALLER_TOOLS } from "./caller.ts";
 import { keeperRunning } from "./groups.ts";
-import { beside, checkCall, nameIn } from "./guard.ts";
+import { beside, checkCall, checkStep, nameIn } from "./guard.ts";
 import { rpc } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
 import { secretType, typeSecret } from "./secret.ts";
@@ -17,26 +17,55 @@ export type Invoke = (tool: string, args: Record<string, unknown>) => Promise<un
 
 const CALLER_NAMES = Object.keys(CALLER_TOOLS);
 const DAEMON_NAMES = Object.keys(TOOLS);
+const STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
 
 // A call that runs in this process: a caller tool, a type that fills in a
-// code (secret.ts), or a run with one among its steps, however a model
-// wrote their names (browsing-history).
+// code (secret.ts), or a run with one among its steps or with real: true,
+// however a model wrote their names (browsing-history).
 export function runsHere(tool: string, args: Record<string, unknown>): boolean {
   return callerSteps(tool, args) || nameIn(CALLER_NAMES, tool) !== undefined || secretType(tool, args);
 }
 
 function callerSteps(tool: string, args: Record<string, unknown>): boolean {
   const steps = args.steps;
-  return tool === "run" && Array.isArray(steps) && steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && runsHere(s.tool, "args" in s && s.args && typeof s.args === "object" ? (s.args as Record<string, unknown>) : {}));
+  return nameIn(DAEMON_NAMES, tool) === "run" && Array.isArray(steps) && (args.real === true || steps.some((s: unknown) => !!s && typeof s === "object" && "tool" in s && typeof s.tool === "string" && runsHere(s.tool, "args" in s && s.args && typeof s.args === "object" ? (s.args as Record<string, unknown>) : {})));
+}
+
+// A model's click or type on a ref goes as real input (real_input), and
+// only so, on a site marked for it (learn {site, real: true}; notes.ts) or
+// in a run with real: true: on 09-30 EOIR's Submit and egov.uscis.gov's
+// Check Status ignored scripted clicks, and my.uscis.gov kept no scripted
+// text. Answers the real_input call it becomes and why, or undefined. The
+// harness's own calls (a site's helpers) go as written.
+async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<{ args: Record<string, unknown>; snapshot: boolean; why: string } | undefined> {
+  const name = nameIn(DAEMON_NAMES, tool);
+  if (name !== "click" && name !== "type") return undefined;
+  const { snapshot, ...a } = checkCall(TOOLS, tool, args, true).args;
+  if (a.ref === undefined) return undefined;
+  const site = real ? undefined : await rpc("real_site", { tab: a.tab });
+  if (!real && typeof site !== "string") return undefined;
+  return { args: { ...a, do: name }, snapshot: snapshot === true, why: real ? "sent as real input: the run has real: true" : `sent as real input: ${String(site)} is marked for it (learn)` };
 }
 
 // model: the call is one a model wrote. The daemon checks the calls it
-// runs (guard.ts), and this process the ones that run here.
-export async function invoke(tool: string, args: Record<string, unknown>, model = false): Promise<unknown> {
-  // The daemon cannot run a caller tool, so a run with one among its steps
-  // goes step by step from here, each step where it runs.
-  if (callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model));
+// runs (guard.ts), and this process the ones that run here. real: the call
+// is a step of a run with real: true (asReal).
+export async function invoke(tool: string, args: Record<string, unknown>, model = false, real = false): Promise<unknown> {
+  // Model runs stay here so each step checks the site's real-input mark,
+  // even without real: true (EOIR, 09-30). Internal runs keep the scripted
+  // daemon path unless they explicitly contain a caller tool.
+  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => {
+    const { secret: _secret, from: _from, ...rest } = a;
+    return checkStep(STEP_TOOLS, t, secretType(t, a) && nameIn(CALLER_NAMES, t) !== undefined ? rest : a);
+  });
   const coded = secretType(tool, args);
+  // A type that fills in a code keeps its own way (secret.ts): nothing
+  // reaches the daemon before the code has come.
+  const routed = model && !coded ? await asReal(tool, args, real) : undefined;
+  if (routed) {
+    const result = beside(await invoke("real_input", routed.args, model), "note", routed.why);
+    return routed.snapshot ? { ...(result as object), page: await rpc("snapshot", { tab: routed.args.tab }) } : result;
+  }
   if (nameIn(CALLER_NAMES, tool) === undefined) {
     if (coded) {
       const a = checkCall(TOOLS, tool, args, model).args;

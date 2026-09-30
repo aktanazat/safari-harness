@@ -98,6 +98,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari wait --changed [--ms 25000] --tab N new lines since the last look (added):
                                              a chat's reply; call again until found
   safari net read|start|stop --tab N         fetch/XHR since the page loaded
+  safari net read --body I|URL-PART --tab N  one request's whole body: its index, or
+                                             part of its url (the latest with it)
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
   safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]
@@ -164,6 +166,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari learn <site> "<fact>"               save a fact about a site for later agents
                                              (at most 300 characters; never a secret)
   safari learn <site> [--forget <n>]         list a site's notes; remove note n
+  safari learn <site> --real true|false      a model's click and type there go as real input
 
   safari imessage chats [--limit N]          recent conversations
   safari imessage history <chat> [--limit N] [--since rowid]
@@ -685,9 +688,12 @@ async function main() {
       if (hasFlag("front", rest)) args.front = true;
       break;
     }
-    case "net": case "console":
+    case "net": case "console": {
       if (positional[0]) args.do = positional[0];
+      const body = flag("body", rest);
+      if (cmd === "net" && body !== undefined) args.body = body;
       break;
+    }
     case "cookies": {
       const u = flag("url", rest);
       if (u) args.url = u;

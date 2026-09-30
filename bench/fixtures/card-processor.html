@@ -1,0 +1,14 @@
+<!doctype html>
+<title>Card</title>
+<label>Card number <input id="number" autocomplete="cc-number"></label>
+<label>Expiry <input id="exp" autocomplete="cc-exp" placeholder="MM/YYYY" maxlength="7"></label>
+<label>Security code <input id="csc" autocomplete="cc-csc"></label>
+<label>ZIP <input id="zip" autocomplete="postal-code"></label>
+<button type="button" id="check">Check</button>
+<p id="out"></p>
+<script>
+  document.getElementById("check").addEventListener("click", () => {
+    const value = (id) => document.getElementById(id).value;
+    document.getElementById("out").textContent = `Card ending ${value("number").slice(-4) || "none"}, expiring ${value("exp") || "never"}, code length ${value("csc").length}, ZIP ${value("zip") || "none"}.`;
+  });
+</script>

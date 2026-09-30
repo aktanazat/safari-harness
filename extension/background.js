@@ -110,7 +110,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "netBody"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -308,6 +308,20 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
   });
 }
 
+// A page that says it is still loading (a skeleton or "The page is loading.
+// Please wait" line where its text will come, or aria-busy) is waited on
+// for up to LOADING_MS within the open's limit, and the answer says when it
+// still was (USCIS, 09-30). A page with a "Loading…" line that never goes
+// (a widget below the fold) would otherwise hold every open its whole 15 s.
+// A page no copy of the script took the message in (a PDF) settles at once.
+const LOADING_MS = 5000;
+async function pageLoading(tabId, until) {
+  const ms = Math.min(until - Date.now(), LOADING_MS);
+  if (ms <= 0) return false;
+  const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "loaded", args: [ms] }, ms + 500).catch(() => undefined);
+  return res?.value?.loading === true;
+}
+
 // Puts a copy of content.js in the frame, where Safari left none; with
 // takeOver, a fresh one that takes over from any copy already there (see
 // the claim at the top of content.js). The copy is marked this load's. A
@@ -485,11 +499,18 @@ function prefixed(res, frameId) {
 // sign-in form often sits in an embedded frame), and a frame that loads
 // meanwhile joins in. The top page's answer stands for the whole tab: a
 // miss there (stopped, or ended by a newer wait) ends the wait. waitStop
-// from the daemon, at its time limit, ends it in every frame; the wait's id
-// keeps that from ending a newer wait in the same frame.
+// from the daemon asks the top page to end it and report what changed,
+// then ends the other frames. The id keeps that from ending a newer wait.
 const frameWaits = new Map(); // tabId -> Map of wait id -> { join, stop }
 
-function waitInFrames(tabId, args, timeoutMs) {
+async function waitInFrames(tabId, args, timeoutMs) {
+  // A run's look before an action must reach every current frame before
+  // the action starts; the first frame's answer alone is not enough.
+  if (args[1]?.look != null) {
+    const tokens = await frameTokens(tabId);
+    const [top] = await Promise.all([0, ...tokens.values()].map((frameId) => toTab(tabId, "wait", args, timeoutMs, frameId)));
+    return top;
+  }
   const id = nextId();
   const deadline = Date.now() + timeoutMs;
   const asked = new Set();
@@ -509,7 +530,7 @@ function waitInFrames(tabId, args, timeoutMs) {
         if (frameId === 0 || (res && res.value && res.value.found)) end(() => resolve(res));
       }, (e) => { if (frameId === 0) end(() => reject(e)); });
     };
-    waits.set(id, { join, stop: () => end(() => resolve({ value: { found: false } })) });
+    waits.set(id, { join, stop: () => toTab(tabId, "waitStop", [id], 1000, 0).catch(() => end(() => resolve({ value: { found: false } }))) });
     join(0);
     frameTokens(tabId).then((tokens) => { for (const frameId of tokens.values()) if (waits.has(id)) join(frameId); }, () => {});
   });
@@ -784,13 +805,15 @@ async function handle(msg) {
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
+      const until = Date.now() + 15000;
       await waitReady(tab.id, 15000);
+      const loading = await pageLoading(tab.id, until);
       const t = await titled(tab.id);
       if (failedPage(t)) {
         api.tabs.remove(t.id).catch(() => {});
         throw unopened(url);
       }
-      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId };
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}) };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -831,17 +854,22 @@ async function handle(msg) {
       ready.set(tabId, false);
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
+      const until = Date.now() + 20000;
       await waitReady(tabId, 20000);
+      const loading = await pageLoading(tabId, until);
       const t = await titled(tabId);
       if (failedPage(t)) throw unopened(url);
-      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}) };
+      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}) };
     }
+    // With bounds, the window moves as well: left and top count from the
+    // top-left of the screen it is on (daemon/tools.ts, showTab). The
+    // answer carries the window's size, by which the daemon finds it.
     case "tabs.activate": {
-      const [tabId] = args;
+      const [tabId, bounds] = args;
       const t = await api.tabs.get(tabId);
-      await api.windows.update(t.windowId, { focused: true });
+      const w = await api.windows.update(t.windowId, bounds ? { focused: true, ...bounds, state: "normal" } : { focused: true });
       await api.tabs.update(tabId, { active: true });
-      return { ok: true };
+      return { ok: true, windowId: t.windowId, width: w.width, height: w.height };
     }
     // Shows a tab in its window and leaves the window where it is:
     // real_input presses an element through its window's accessibility
@@ -998,6 +1026,7 @@ api.tabs.onUpdated.addListener((id, info) => {
 api.tabs.onRemoved.addListener((id) => {
   markReady(id);
   ready.delete(id);
+  pageLoads.delete(id);
   awake.delete(id);
   if (drivenTabs.delete(id)) store.set({ driven: [...drivenTabs] }).catch(() => {});
   store.remove(`dialogs:${id}`).catch(() => {});
@@ -1036,8 +1065,48 @@ async function ownsTab(tabId) {
 async function ownTab(tabId) {
   const policy = (await policyOf(tabId)) || { accept: false, text: null };
   await store.set({ [`dialogs:${tabId}`]: policy });
+  // A fast open or popup may have loaded before its ownership was saved.
+  const load = pageLoads.get(tabId);
+  if (load) await reportLoad(tabId, load);
+  else {
+    const tab = await api.tabs.get(tabId);
+    if (tab.status === "complete") loaded(tabId, tab.url);
+  }
   await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
 }
+
+// On 09-30 the daemon noted only loads a tool answered with: eval, a later
+// redirect or refresh, and real input still looked like the user's visits.
+// Safari's tab updates see all of those. drivenTabs is not ownership: an
+// agent may read the user's tab without making its later visits the agent's.
+const pageLoads = new Map();
+
+function loaded(tabId, url, at = Date.now()) {
+  if (!url) return;
+  const before = pageLoads.get(tabId);
+  if (before?.url === url) return;
+  const load = { url, from: before?.url ? at : before?.from ?? at, to: at, loading: before?.loading ?? false, sent: false };
+  pageLoads.set(tabId, load);
+  void reportLoad(tabId, load);
+}
+
+async function reportLoad(tabId, load) {
+  if (!load.url || load.sent || !(await ownsTab(tabId)) || load.sent) return;
+  load.sent = send({ op: "load", url: load.url, from: load.from, to: load.to });
+}
+
+api.tabs.onUpdated.addListener((tabId, info, tab) => {
+  const at = Date.now();
+  // A reload visits the same address again. URL and complete updates of
+  // that one load, including Safari's repeated unchanged URL, do not.
+  if (info.status === "loading" && !pageLoads.get(tabId)?.loading) pageLoads.set(tabId, { from: at, loading: true });
+  if (info.url || info.status === "complete") loaded(tabId, info.url || tab.url, at);
+  if (info.status === "complete") {
+    const load = pageLoads.get(tabId);
+    if (load) load.loading = false;
+  }
+});
+
 
 // The daemon's own closes (an agent gone, a tab left idle) take only a tab
 // the harness owns, so an id Safari has since given another tab is left
@@ -1210,6 +1279,7 @@ function drive(tabId) {
 // and the daemon moves what it keeps (continuity.ts).
 if (api.tabs.onReplaced) {
   api.tabs.onReplaced.addListener(async (added, removed) => {
+    pageLoads.delete(removed);
     send({ op: "tab", kind: "replaced", from: removed, to: added });
     for (const map of [awake, frameWaits]) {
       if (!map.has(removed)) continue;

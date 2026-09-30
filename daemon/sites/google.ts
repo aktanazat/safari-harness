@@ -137,11 +137,15 @@ async function accountIndex(accounts: GoogleAccounts, account: number | string |
 export type GmailSender = { name: string; email: string };
 export type GmailThreadSummary = { id: string; threadId: string; from: string; fromEmail: string; senders: GmailSender[]; subject: string; snippet: string; date: string; unread: boolean };
 export type GmailSearch = { results: GmailThreadSummary[]; hasMore: boolean; total: number | null; nextOffset: number };
+export type GmailWait = { status: "received"; results: GmailThreadSummary[]; since: number } | { status: "timeout"; since: number; note: string };
 export type GmailAttachment = { name: string; id: string; size: string; url: string };
 export type GmailMessage = { from: GmailSender; to: GmailSender[]; cc: GmailSender[]; replyTo?: GmailSender[]; date: string; body: string; quotedOnly?: true; bodyHtml?: string; attachments: GmailAttachment[] };
 export type GmailThread = { id: string; threadId: string; subject: string; messages: GmailMessage[]; attachments: (GmailAttachment & { message: number })[] };
 
-type ListPage = { counter: string | null; empty: boolean; rows: GmailThreadSummary[] };
+// A list row as the page reads it: its date as the row shows it, and last,
+// the id of its thread's newest message (matchedAt).
+type ListRow = GmailThreadSummary & { last: string };
+type ListPage = { counter: string | null; empty: boolean; rows: ListRow[] };
 
 // The thread list Gmail shows, once the view for the current hash is in.
 // Gmail keeps a div[role=main] per view it has rendered, hidden when
@@ -171,6 +175,7 @@ function readListExpression(token: string): string {
       snippet: (r.querySelector('.y2')?.textContent ?? '').replace(/^\\s*-\\s*/, '').trim(),
       date: r.querySelector('td.xW span[title]')?.getAttribute('title') ?? r.querySelector('td.xW span')?.textContent ?? '',
       unread: r.classList.contains('zE'),
+      last: idEl?.getAttribute('data-legacy-last-non-draft-message-id') ?? '',
     };
   }) };
 })()`;
@@ -224,6 +229,29 @@ function isoDate(s: string): string {
   return Number.isNaN(t) ? s : new Date(t).toISOString();
 }
 
+// When a row's newest match came, as the earliest and the latest it can
+// be. The row shows that message's date to the minute, and carries the id
+// of its thread's newest message, whose time in ms sits above the id's low
+// 20 bits: a search for someone's mail shows their message's date though
+// the owner replied since (2026-09-30). An id time in the shown minute or
+// the one before is taken for the match's own, as the newest message never
+// comes before the newest match and Gmail dated one of 50 messages in the
+// minute after its id's time, 158 ms later (2026-09-30); a reply in the
+// match's own minute passes for a match.
+function matchedAt(row: ListRow): [number, number] {
+  const shown = Date.parse(row.date.replace(" at ", " "));
+  const last = /^[0-9a-f]{12,20}$/i.test(row.last) ? Number(BigInt(`0x${row.last}`) >> 20n) : NaN;
+  return last >= shown - 60_000 && last < shown + 60_000 ? [last, last] : [shown, shown + 59_999];
+}
+
+// A list row as the methods return it: the snippet tidied, and dated at
+// its newest match, to the ms where the id tells it.
+function summary(row: ListRow): GmailThreadSummary {
+  const { last: _, ...rest } = row;
+  const [at] = matchedAt(row);
+  return { ...rest, snippet: tidy(row.snippet), date: Number.isNaN(at) ? row.date : new Date(at).toISOString() };
+}
+
 // The hex id Gmail's URLs take, from that id, "thread-f:<decimal>", the
 // decimal alone, or a URL carrying th=<hex>.
 function legacyThreadId(id: string): string {
@@ -243,6 +271,10 @@ function pageCounter(counter: string | null): { first: number; last: number; tot
   return { first: num(m[1]), last: num(m[2]), total: m[3] === "many" ? null : num(m[3]) };
 }
 
+// A look for new mail is one Gmail search, about 0.6 s (2026-09-30), so a
+// 25 s wait with looks two seconds apart searches about ten times.
+const LOOK_MS = 2_000;
+
 export function gmail(kit: SiteKit) {
   const accounts = googleAccounts(kit);
   // The tab Gmail last settled in and the account it landed on there, and
@@ -250,6 +282,8 @@ export function gmail(kit: SiteKit) {
   // one (kit.ts) has settled on nothing yet.
   let shown: { tab: number; account: number } | undefined;
   let pageSize = 50;
+  // Looks for new mail so far (waitForMail).
+  let looks = 0;
 
   // The tab as the browser lists it; undefined once it is gone.
   async function listed(tab: number): Promise<{ id: number; url?: string; title?: string } | undefined> {
@@ -352,7 +386,7 @@ export function gmail(kit: SiteKit) {
       }
       total = counter?.total ?? null;
       const rows = list.rows.slice(at - start, at - start + (limit - results.length));
-      results.push(...rows.map((r) => ({ ...r, snippet: tidy(r.snippet), date: isoDate(r.date) })));
+      results.push(...rows.map(summary));
       at += rows.length;
       hasMore = at < end || (counter !== null && (counter.total === null ? list.rows.length >= pageSize : counter.total > at));
     }
@@ -416,6 +450,35 @@ export function gmail(kit: SiteKit) {
       const q = query.trim();
       if (!q) throw new Error("search needs a query");
       return listFrom(await accountIndex(accounts, account), `#search/${encodeURIComponent(q).replace(/%20/g, "+")}`, opts.offset ?? 0, opts.limit ?? 50);
+    },
+
+    // Waits for new mail matching a Gmail search (from:apple.com), for an
+    // agent waiting on a code, a link, or a reply: the threads with a
+    // matching message after since (ms since 1970 or an ISO date; without
+    // it, the minute before the call, as a code often lands first), in the
+    // shape search returns, and the since to pass to the next wait. After
+    // ms (default 25 s, at most 30 s) with nothing new it times out with the
+    // since it had, so mail that lands between waits still counts. Agents
+    // polled Gmail by hand with guessed sleeps until then (2026-09-30).
+    async waitForMail(account: number | string, query: string, opts: { since?: number | string; ms?: number } = {}): Promise<GmailWait> {
+      const q = query.trim();
+      if (!q) throw new Error("waitForMail needs a query, such as from:apple.com");
+      const n = await accountIndex(accounts, account);
+      const since = opts.since === undefined ? Date.now() - 60_000 : new Date(opts.since).getTime();
+      if (Number.isNaN(since)) throw new Error(`since is ms since 1970 or an ISO date, not ${JSON.stringify(opts.since)}`);
+      const end = Date.now() + Math.min(Math.max(Number(opts.ms ?? 25_000), 0), 30_000);
+      for (;;) {
+        // Gmail's after: cut falls up to a minute from the times its rows
+        // show (2026-09-30), so the search reaches five minutes back and the
+        // rows' own times decide. Gmail searches again only for a hash it
+        // does not show, so each look starts a second before the last.
+        const after = Math.floor(since / 1000) - 300 - (looks++ % 60);
+        const { rows } = await showList(n, `#search/${encodeURIComponent(`(${q}) after:${after}`).replace(/%20/g, "+")}`);
+        const fresh = rows.filter((r) => matchedAt(r)[0] > since);
+        if (fresh.length) return { status: "received", results: fresh.map(summary), since: Math.max(...fresh.map((r) => matchedAt(r)[1])) };
+        if (Date.now() + LOOK_MS > end) return { status: "timeout", since, note: "no new mail yet; call waitForMail again with this since, and mail that lands in between still counts" };
+        await Bun.sleep(LOOK_MS);
+      }
     },
 
     // Every message of a thread, with the body as plain text (bodyHtml too

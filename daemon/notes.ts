@@ -43,6 +43,17 @@ export function siteHost(site: string): string {
   return host;
 }
 
+// The host of a page's address; undefined for a page with none
+// (about:blank) or none plain (an IPv6 address), which has no notes.
+function pageHost(url: unknown): string | undefined {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return undefined;
+  try {
+    return siteHost(url);
+  } catch {
+    return undefined;
+  }
+}
+
 function readNotes(host: string): Note[] {
   let text: string;
   try {
@@ -66,11 +77,18 @@ function writeNotes(host: string, notes: Note[]) {
   writeFileSync(fileOf(host), `# ${host}\n\n${notes.map((n) => `- ${n.date} [${n.agent}] ${n.fact}`).join("\n")}\n`);
 }
 
-// Hosts with notes or readers, for `safari guide`.
+// Hosts with notes, readers, or a mark for real input, for `safari guide`.
 export function notedHosts(): string[] {
+  const hosts = notesFiles().flatMap((f) => {
+    const kind = [READERS, REAL_INPUT, ".md"].find((k) => f.endsWith(k));
+    return kind ? [f.slice(0, -kind.length)] : [];
+  });
+  return [...new Set(hosts)].sort();
+}
+
+function notesFiles(): string[] {
   try {
-    const hosts = readdirSync(notesDir()).flatMap((f) => (f.endsWith(READERS) ? [f.slice(0, -READERS.length)] : f.endsWith(".md") ? [f.slice(0, -3)] : []));
-    return [...new Set(hosts)].sort();
+    return readdirSync(notesDir());
   } catch (e) {
     if (e instanceof Error && "code" in e && e.code === "ENOENT") return [];
     throw e;
@@ -78,13 +96,15 @@ export function notedHosts(): string[] {
 }
 
 // A host's notes as `safari guide` prints them, numbered as forget takes
-// them, then its readers; null when it has neither.
+// them, then its readers and its mark for real input; null when it has none.
 export function notesSection(host: string): string | null {
   const notes = readNotes(host);
   const readers = Object.entries(readReaders(host));
+  const real = readReal(host);
   const sections = [
     ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent})`).join("\n")}`] : []),
     ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${r.date}, ${r.agent})`).join("\n")}`] : []),
+    ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); learn {site: "${host}", real: false} undoes it.`]),
   ];
   return sections.length ? sections.join("\n\n") : null;
 }
@@ -141,6 +161,53 @@ export function readerFor(url: string, name: string): Reader {
   }
   const saved = sites.flatMap((site) => Object.keys(readReaders(site)));
   throw new Error(`no reader ${name} saved for ${host}; ${saved.length ? `saved: ${saved.join(", ")}` : "save one with learn {site, reader, expression}"}`);
+}
+
+// ---------- real input ----------
+
+// A site whose controls ignore scripted input: on 09-30 EOIR's Submit and
+// egov.uscis.gov's Check Status did nothing on a scripted click, and a field
+// on my.uscis.gov kept none of the scripted text, where real input worked
+// at once. learn {site, real: true} marks the site, and a model's click and
+// type with a ref on it then go as real input and only so (call.ts). It is
+// never a retry after a scripted try the page seemed to ignore: effect
+// "none" cannot see a request to another site or a handler slower than the
+// receipt (receipt.ts), so a retry could send a form twice.
+const REAL_INPUT = ".real-input";
+const realOf = (host: string) => join(notesDir(), `${host}${REAL_INPUT}`);
+
+// When and by which agent a host was marked, as "<date> <agent>"; null
+// when it is not.
+function readReal(host: string): string | null {
+  try {
+    return readFileSync(realOf(host), "utf8").trim();
+  } catch (e) {
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+function markReal(host: string, agent: string): string {
+  mkdirSync(notesDir(), { recursive: true });
+  writeFileSync(realOf(host), `${new Date().toLocaleDateString("sv")} ${agent.replace(/\s/g, "") || "unknown"}\n`);
+  return `marked ${host} for real input: a model's click and type with a ref there and on its subdomains go as real input (real_input), never scripted first`;
+}
+
+function unmarkReal(host: string): string {
+  rmSync(realOf(host), { force: true });
+  return `unmarked ${host}: click and type there go as scripted input again`;
+}
+
+// The sites marked for real input.
+export function realInputSites(): Set<string> {
+  return new Set(notesFiles().flatMap((f) => (f.endsWith(REAL_INPUT) ? [f.slice(0, -REAL_INPUT.length)] : [])));
+}
+
+// The site among marked that the page at url is on, itself or a site
+// above it; undefined when it is on none.
+export function realInputSite(url: unknown, marked: Set<string>): string | undefined {
+  const host = pageHost(url);
+  return host === undefined ? undefined : sitesOf(host).find((site) => marked.has(site));
 }
 
 // ---------- secrets ----------
@@ -262,14 +329,22 @@ function forgetReader(host: string, name: string): string {
 // {site} alone lists the site's notes and readers. {site, reader,
 // expression} saves a reader (page: true runs it in the page's own world),
 // {site, reader} shows its code, and {site, forget: "<name>"} removes it.
+// {site, real: true} marks the site for real input, and real: false
+// unmarks it.
 // What is saved names the agent that learned it by its process name.
 export async function learn(a: Record<string, unknown>): Promise<string> {
   if (typeof a.site !== "string") throw new Error("site must be a string: a host like cvs.com, or an address");
   const host = siteHost(a.site);
-  const given = ["fact", "reader", "forget"].filter((k) => a[k] !== undefined);
-  if (given.length > 1) throw new Error(`give one of fact, reader, or forget, not ${given.join(" and ")}`);
+  const given = ["fact", "reader", "forget", "real"].filter((k) => a[k] !== undefined);
+  if (given.length > 1) throw new Error(`give one of fact, reader, forget, or real, not ${given.join(" and ")}`);
   if (typeof a.forget === "string" && !/^\s*\d+\s*$/.test(a.forget)) return forgetReader(host, a.forget);
   if (a.forget !== undefined) return forget(host, Number(a.forget));
+  if (a.real !== undefined) {
+    // The CLI passes --real true as text, as it passes --forget 2.
+    const on = String(a.real).trim().toLowerCase();
+    if (on !== "true" && on !== "false") throw new Error("real is true or false");
+    return on === "true" ? markReal(host, await agentName()) : unmarkReal(host);
+  }
   if (a.reader !== undefined) {
     if (typeof a.reader !== "string") throw new Error("reader must be a string: the reader's name");
     if (a.expression === undefined) return showReader(host, a.reader);
@@ -301,14 +376,8 @@ const told = new Map<number | undefined, Set<string>>();
 // readers' names. undefined when there are none. A file that cannot be read
 // costs its lines, not the result.
 export function firstNotes(url: unknown, again = false): string | undefined {
-  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return undefined;
-  let host: string;
-  try {
-    host = siteHost(url);
-  } catch {
-    // an address with no plain host (an IPv6 one) has no notes
-    return undefined;
-  }
+  const host = pageHost(url);
+  if (host === undefined) return undefined;
   const owner = currentOwner();
   let sites = told.get(owner);
   if (!sites) {
@@ -339,5 +408,6 @@ function linesFor(site: string): string[] {
   return [
     ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with learn {site: "${site}"}`]),
     ...(readers.length ? [`readers saved for ${site}: ${readers.join(", ")}; run one with eval {tab, reader: "<name>"}`] : []),
+    ...(readReal(site) === null ? [] : [`real input for ${site}: a model's click and type with a ref here go as real input`]),
   ];
 }
