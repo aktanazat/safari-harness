@@ -109,13 +109,14 @@ const NET_LINES_MAX = 10;
 
 // The requests a receipt reports: failed ones first ("failed: POST
 // /api/cart 500"), then the rest, then those still out ("pending: GET
-// /api/list"). A path stands without its query, which can carry a token; a
-// request to another host of the site names that host.
+// /api/list"). A path stands without its query, which can carry a token, and
+// with a token in it cut (redact.ts); a request to another host of the site
+// names that host.
 export function netLines(requests: NetEntry[], pending: NetEntry[], page: string): string[] {
   const host = URL.parse(page)?.host;
   const where = (e: NetEntry) => {
     const u = new URL(e.url);
-    return u.host === host ? u.pathname : `${u.host}${u.pathname}`;
+    return redactUrl(u.host === host ? u.pathname : `${u.host}${u.pathname}`);
   };
   const done = requests.filter((e) => keepRequest(e, page));
   const failed = done.filter((e) => e.error !== undefined || (e.status ?? 0) >= 400);
