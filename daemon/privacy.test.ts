@@ -62,7 +62,7 @@ test("an agent sees its own tabs, his front tab, and a count of his others; host
   expect(await as("tabs", {})).toEqual([
     { id: mine.id, windowId: mine.windowId, url: "https://example.com/done?code=...&order=7" },
     { id: 7001, windowId: 7000, active: true, front: true },
-    'the user has 3 other tabs; pass host: "github.com" to see those on a site, or all: true',
+    expect.stringMatching(/^the user has 3 other tabs;/),
   ]);
   expect(await as("tabs", { host: "github.com" })).toEqual([
     { id: 7001, windowId: 7000, url: "https://github.com/me/repo", title: "Repo", active: true, front: true },

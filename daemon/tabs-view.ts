@@ -43,7 +43,7 @@ export async function tabsView(tabs: TabInfo[], owners: Map<number, number | und
   return [
     ...mine,
     ...(front ? [{ id: front.id, windowId: front.windowId, active: true, front: true }] : []),
-    ...(his > 0 ? [`the user has ${his} other tab${his === 1 ? "" : "s"}; pass host: "github.com" to see those on a site, or all: true`] : []),
+    ...(his > 0 ? [`the user has ${his} other tab${his === 1 ? "" : "s"}; pass host: "github.com" (CLI --site github.com) to see those on a site, or all: true`] : []),
   ];
 }
 

@@ -67,8 +67,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   `window` take only a tab id.
 - `tabs` lists your own tabs (those you opened, and any tab in your
   windows), then his front tab as `{id, windowId, active, front}`, then one
-  line: `the user has N other tabs; pass host: "github.com" to see those on
-  a site, or all: true`. `host` (CLI `--site github.com`) lists his tabs on
+  line: `the user has N other tabs; pass host: "github.com" (CLI --site
+  github.com) to see those on a site, or all: true`. `host` (CLI `--site
+  github.com`; `--host` names another Mac) lists his tabs on
   that site and its subdomains; `all` (CLI `--all`) lists every tab. His
   tabs never show a query string or fragment. The user at his own
   terminal, and a caller with no agent behind it, get the full list.
