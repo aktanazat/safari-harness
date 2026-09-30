@@ -238,8 +238,10 @@ const MIN_MADE = 8;
 // uppercase letter and another a digit, in three groups of six joined by
 // hyphens (xxxxxx-xxxxxx-xxxxxx), 20 characters. A form whose new-password
 // fields allow fewer gets as many as they allow, without hyphens. Each draw
-// is uniform (randomInt), so no character is likelier than another.
-function strongPassword(maxLength?: number): string {
+// is uniform (randomInt), so no character is likelier than another. A form
+// with passwordrules gets a password made to them (ruledPassword).
+function strongPassword(maxLength?: number, rules?: string): string {
+  if (rules) return ruledPassword(rules, maxLength);
   const grouped = maxLength === undefined || maxLength >= 20;
   const n = grouped ? 18 : maxLength;
   if (n < MIN_MADE) throw new Error(`the new-password field takes at most ${n} characters, too few for a strong password`);
@@ -249,6 +251,51 @@ function strongPassword(maxLength?: number): string {
   chars[upper] = UPPER[randomInt(UPPER.length)];
   chars[digit] = DIGITS[randomInt(DIGITS.length)];
   return grouped ? [0, 6, 12].map((i) => chars.slice(i, i + 6).join("")).join("-") : chars.join("");
+}
+
+const SPECIAL = "-~!@#$%^&*_+=`|(){}[:;\"'<>,.?]";
+const CLASSES: Record<string, string> = { lower: LOWER, upper: UPPER, digit: DIGITS, special: SPECIAL, "ascii-printable": LOWER + UPPER + DIGITS + SPECIAL, unicode: LOWER + UPPER + DIGITS + SPECIAL };
+
+// A password made to a form's passwordrules, in Apple's syntax
+// (minlength: 8; maxlength: 16; required: [!@#$&]), which Safari follows.
+// Costco wants one of !@#$& and says so only in words, so an agent sets
+// the attribute from them (09-29). It is 20 characters where the rules
+// allow, lowercase letters where allowed, with one character from each
+// required set, and an uppercase letter and a digit where allowed.
+function ruledPassword(rules: string, maxLength?: number): string {
+  let min = 20;
+  let max = maxLength ?? Infinity;
+  const required: string[] = [];
+  let allowed = "";
+  for (const part of rules.split(";")) {
+    const at = part.indexOf(":");
+    if (at < 0) continue;
+    const key = part.slice(0, at).trim().toLowerCase();
+    const value = part.slice(at + 1);
+    const set = [...new Set((value.match(/\[[^\]]*\]|[a-z-]+/gi) ?? []).flatMap((t) => [...(t.startsWith("[") ? t.slice(1, -1) : CLASSES[t.toLowerCase()] ?? "")]))].join("");
+    if (key === "minlength") min = Math.max(min, Number.parseInt(value, 10) || 0);
+    else if (key === "maxlength") max = Math.min(max, Number.parseInt(value, 10) || max);
+    else if (key === "required" && set) required.push(set);
+    else if (key === "allowed") allowed += set;
+  }
+  const n = Math.min(min, max);
+  const permitted = new Set(required.join("") + allowed || CLASSES["ascii-printable"]);
+  const only = (chars: string) => [...chars].filter((c) => permitted.has(c)).join("");
+  const base = only(LOWER) || [...permitted].join("");
+  const sets = [...required];
+  for (const chars of [UPPER, DIGITS]) {
+    const set = only(chars);
+    if (set && !sets.some((s) => [...s].every((c) => chars.includes(c)))) sets.push(set);
+  }
+  if (n < Math.max(MIN_MADE, sets.length)) throw new Error(`the form allows at most ${n} characters, too few for a strong password that meets its rules`);
+  const chars = Array.from({ length: n }, () => base[randomInt(base.length)]);
+  const spots = Array.from({ length: n }, (_, i) => i);
+  for (const [i, set] of sets.entries()) {
+    const j = i + randomInt(n - i);
+    [spots[i], spots[j]] = [spots[j], spots[i]];
+    chars[spots[i]] = set[randomInt(set.length)];
+  }
+  return chars.join("");
 }
 
 export class ApplePasswords {
@@ -826,7 +873,7 @@ export class ApplePasswords {
       if (!saved.includes(login)) throw new Error(`the form asks for the current password, and no login ${login} is saved for ${site}; type it in first`);
       current = await this.password(site, login, "change");
     }
-    const secret = strongPassword(form.maxLength);
+    const secret = strongPassword(form.maxLength, form.rules);
     this.dropChange(tab);
     await this.save(site, login, secret);
     const drop = this.timers.after(CHANGE_MS, () => this.dropChange(tab));
@@ -953,7 +1000,7 @@ export const passwords = new ApplePasswords();
 // ---------- a Safari tab's sign-in form ----------
 
 // What a frame of the tab says it holds (probeFrames in background.js).
-type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean; fresh?: number; maxLength?: number; current?: "empty" | "filled" };
+type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean; fresh?: number; maxLength?: number; rules?: string; current?: "empty" | "filled" };
 
 function isProbe(p: unknown): p is Probe {
   return !!p && typeof p === "object" && "frame" in p && typeof p.frame === "number" && "origin" in p && typeof p.origin === "string";

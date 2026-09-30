@@ -1641,15 +1641,17 @@
   }
 
   // What the daemon needs to make a password this form takes: how many new
-  // fields, the shortest length they allow, and whether the current
-  // password is still to be typed. Never a value.
+  // fields, the shortest length they allow, their passwordrules, and
+  // whether the current password is still to be typed. Never a value.
   function changeForm() {
     const { fresh, current } = changeFields();
     const limits = fresh.map((el) => el.maxLength).filter((n) => n > 0);
+    const rules = fresh.map((el) => el.getAttribute("passwordrules")).find(Boolean);
     return {
       origin: location.origin,
       fresh: fresh.length,
       ...(limits.length ? { maxLength: Math.min(...limits) } : {}),
+      ...(rules ? { rules } : {}),
       ...(current ? { current: current.value ? "filled" : "empty" } : {}),
     };
   }

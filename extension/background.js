@@ -36,7 +36,7 @@ function connect() {
     let sock;
     try {
       sock = new WebSocket(`ws://127.0.0.1:${port}`);
-    } catch (e) {
+    } catch {
       scheduleReconnect();
       return;
     }

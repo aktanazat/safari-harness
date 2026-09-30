@@ -846,7 +846,13 @@ Signing in, in this order:
      logins are saved, and `site` (a host) when the login is saved for
      another site than the reset page's, so that entry is the one updated;
      a form asking the current password takes only its own site's login.
-     Apple's helper asks in its own window whether to
+     A site that states rules the made password misses (Costco wants one
+     of `!@#$&`) takes them as the new-password field's `passwordrules`
+     attribute in Apple's syntax, set with `eval` before `change`
+     (`minlength: 8; maxlength: 16; required: lower; required: [!@#$&]`):
+     the password then has one character from each required set, an
+     uppercase letter and a digit where allowed, and 20 characters where
+     the lengths allow. Apple's helper asks in its own window whether to
      update the saved password; the call presses Update Password there,
      only in the window naming the login's site, which needs the calling
      terminal's Accessibility permission. It saves before it types, as Safari does, so submit

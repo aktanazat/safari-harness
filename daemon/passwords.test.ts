@@ -213,7 +213,7 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 // holds the form, for the site that frame is on. A form that submits itself
 // once filled takes the page away before it can answer, so the extension
 // answers where the page went instead (act in background.js).
-function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number; current?: "none" } = { frame: 0, url }, navigated?: { url: string; title: string }) {
+function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number; rules?: string; current?: "none" } = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string; current?: string; fresh?: string } = {};
   connect({
     send(data: string) {
@@ -221,7 +221,7 @@ function fakeTab(url: string, form: { frame: number; url: string; maxLength?: nu
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
       if (outer === "probe") {
         const holds = args[1] === "login" ? { username: true, password: true }
-          : args[1] === "change" ? { fresh: 2, ...(form.current === "none" ? {} : { current: "empty" }), ...(form.maxLength ? { maxLength: form.maxLength } : {}) }
+          : args[1] === "change" ? { fresh: 2, ...(form.current === "none" ? {} : { current: "empty" }), ...(form.maxLength ? { maxLength: form.maxLength } : {}), ...(form.rules ? { rules: form.rules } : {}) }
           : { found: true };
         const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
         return answer({ value: form.frame ? frames : [frames[1]] });
@@ -421,6 +421,22 @@ test.each([
   const { p } = scratch();
   const url = `https://${SITE}/account/password`;
   const page = fakeTab(url, { frame: 0, url, maxLength });
+  await paired(p);
+  await p.change(7);
+  await p.typeChange(7);
+  expect(page.fresh).toMatch(shape);
+});
+
+// Costco refused Safari's shape: it wants one of !@#$&, and 8 to 16
+// characters (09-29).
+test.each([
+  ["a required symbol set and a 16-character limit", "minlength: 8; maxlength: 16; required: lower; required: upper; required: digit; required: [!@#$&];", undefined, /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$&])[a-zA-Z\d!@#$&]{16}$/],
+  ["a symbol set required and letters and digits allowed, under the field's 12-character limit", "required: [!@#$&]; allowed: lower, upper, digit", 12, /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$&])[a-zA-Z\d!@#$&]{12}$/],
+  ["digits only", "required: digit; minlength: 6; maxlength: 8", undefined, /^\d{8}$/],
+])("change on a form whose passwordrules ask %s makes a password meeting them", async (_, rules, maxLength, shape) => {
+  const { p } = scratch();
+  const url = `https://${SITE}/account/password`;
+  const page = fakeTab(url, { frame: 0, url, maxLength, rules });
   await paired(p);
   await p.change(7);
   await p.typeChange(7);

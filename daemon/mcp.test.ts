@@ -93,7 +93,9 @@ import { expect, test } from "bun:test";
 // codes by email, and the agent could only type them by reading them.
 // passwords site (94) brought it to 24,110: a reset page on another host
 // than the sign-in page left the saved login holding the old password.
-const TOOL_LIST_MAX_BYTES = 24_110;
+// Saying a site's stated password rules go in passwordrules (76) brought
+// it to 24,186: Costco refused the made password for want of a symbol.
+const TOOL_LIST_MAX_BYTES = 24_186;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
