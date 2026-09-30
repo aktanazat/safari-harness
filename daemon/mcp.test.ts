@@ -91,7 +91,9 @@ import { expect, test } from "bun:test";
 // app and the agent had no way to save one without reading its key. type's
 // secret "page" (161) brought it to 24,016: PayPal and mail.ru send their
 // codes by email, and the agent could only type them by reading them.
-const TOOL_LIST_MAX_BYTES = 24_016;
+// passwords site (94) brought it to 24,110: a reset page on another host
+// than the sign-in page left the saved login holding the old password.
+const TOOL_LIST_MAX_BYTES = 24_110;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

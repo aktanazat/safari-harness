@@ -918,7 +918,7 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     case "code":
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "change":
-      return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+      return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"), a.site === undefined ? undefined : str(a.site, "site"));
     // The halves of change the caller runs around the helper's window
     // (fill.ts); not in the tool's enum.
     case "change-type":
@@ -1294,7 +1294,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   passwords: {
     desc: "Sign in with the user's Apple Passwords; you never see a password. fill enters the saved login for the tab's site into its sign-in form, code its saved verification code, logins lists saved usernames. change saves a new strong password for the login and types it into the page's new-password fields; submit the form yourself. setup-code gives the authenticator QR code in view to the Passwords app; then code confirms it. Locked, these first pair: he approves with Touch ID and types the Mac's code into a prompt there; you get paired or why not. Call done when finished; status says why it is locked.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" } },
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code"], description: "step" }, code: { type: "string", description: "the 6 digits the user reads off the Mac" }, tab: TAB, username: { type: "string", description: "which saved login, when there are several" }, site: { type: "string", description: "change: host the login is saved for, if not the page's" } },
     required: ["do"],
     run: applePasswords,
   },

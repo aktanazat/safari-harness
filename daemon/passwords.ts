@@ -271,7 +271,7 @@ export class ApplePasswords {
   private approval: Approval | null = null;
   // Changed passwords saved but not yet typed, by tab, until typeChange or
   // CHANGE_MS: agents changing several sites at once each keep their own.
-  private pendingChanges = new Map<number, { frame: number; fresh: number; site: string; login: string; current: string | null; secret: string; drop: () => void }>();
+  private pendingChanges = new Map<number, { frame: number; fresh: number; host: string; site: string; login: string; current: string | null; secret: string; drop: () => void }>();
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
   // Agent sessions holding the pairing, by pid, each with its exit watch.
@@ -804,17 +804,22 @@ export class ApplePasswords {
   }
 
   // Changing a password, first half: makes a strong password, asks Apple
-  // Passwords to save it as the login's password for the form's site, and
-  // keeps it for typeChange. The caller (fill.ts) presses Update Password
-  // in the helper's window, the only sign the save took, then calls
-  // typeChange. It is saved before it is typed, as Safari saves the one it
-  // suggests, so no password the site takes lives only in the page; the
-  // current password is read first, while the saved one is still it.
-  async change(tab: number, username?: string): Promise<{ username: string; site: string; helper?: number }> {
+  // Passwords to save it as the login's password for the form's site, or
+  // for entry, the site the login is saved for when the reset page is on
+  // another (FHDA's campus login reset on its own host left the old entry
+  // stale), and keeps it for typeChange. The caller (fill.ts) presses
+  // Update Password in the helper's window, the only sign the save took,
+  // then calls typeChange. It is saved before it is typed, as Safari saves
+  // the one it suggests, so no password the site takes lives only in the
+  // page; the current password is read first, while the saved one is
+  // still it, and only for the form's own site.
+  async change(tab: number, username?: string, entry?: string): Promise<{ username: string; site: string; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
-    const site = httpsHost(form.origin);
+    const own = httpsHost(form.origin);
+    const site = entry === undefined ? own : httpsHost(`https://${entry}`);
+    if (site !== own && form.current === "empty") throw new Error(`the form asks for the current password, which is filled only on the site it is saved for; call change without site`);
     const { login, saved } = await this.chosenLogin(site, username);
     let current: string | null = null;
     if (form.current === "empty") {
@@ -825,7 +830,7 @@ export class ApplePasswords {
     this.dropChange(tab);
     await this.save(site, login, secret);
     const drop = this.timers.after(CHANGE_MS, () => this.dropChange(tab));
-    this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, site, login, current, secret, drop });
+    this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, host: own, site, login, current, secret, drop });
     const helper = runningHelper(this.profile);
     return { username: login, site, ...(helper ? { helper } : {}) };
   }
@@ -838,7 +843,7 @@ export class ApplePasswords {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
-    const res = await bridge.tab(tab, "fillNewPassword", [c.site, c.current, c.secret], 30000, c.frame);
+    const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
     return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true };
   }

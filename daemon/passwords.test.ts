@@ -95,7 +95,7 @@ function appleHelper(): Helper {
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
       queries.push(`${m.cmd} ${q.URL ?? new URL(q.frameURLs[0]).hostname}`);
       if (m.cmd === 6) {
-        if (q.NUSR === USER) saved = q.NPWD;
+        if (q.NUSR === USER && q.NURL === SITE) saved = q.NPWD;
         return undefined;
       }
       // A code query answers with Entry_N keys, as the helper does for codes.
@@ -206,13 +206,14 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 
 // The Safari tab: a page whose sign-in form (in the top page, or in an
 // embedded frame from another site, as Apple's is) records what was typed.
-// Its change-password form has an empty current-password field and two
-// new-password fields, which allow form.maxLength characters when given.
+// Its change-password form has an empty current-password field, unless
+// current is "none", and two new-password fields, which allow
+// form.maxLength characters when given.
 // As in the content script, a fill lands only when sent to the frame that
 // holds the form, for the site that frame is on. A form that submits itself
 // once filled takes the page away before it can answer, so the extension
 // answers where the page went instead (act in background.js).
-function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number } = { frame: 0, url }, navigated?: { url: string; title: string }) {
+function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number; current?: "none" } = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string; current?: string; fresh?: string } = {};
   connect({
     send(data: string) {
@@ -220,7 +221,7 @@ function fakeTab(url: string, form: { frame: number; url: string; maxLength?: nu
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
       if (outer === "probe") {
         const holds = args[1] === "login" ? { username: true, password: true }
-          : args[1] === "change" ? { fresh: 2, current: "empty", ...(form.maxLength ? { maxLength: form.maxLength } : {}) }
+          : args[1] === "change" ? { fresh: 2, ...(form.current === "none" ? {} : { current: "empty" }), ...(form.maxLength ? { maxLength: form.maxLength } : {}) }
           : { found: true };
         const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
         return answer({ value: form.frame ? frames : [frames[1]] });
@@ -385,6 +386,30 @@ test("change saves a new password and types nothing; typeChange then types the s
   expect(page.fresh).not.toBe(SECRET);
   await p.fill(7);
   expect(page.password).toBe(page.fresh);
+});
+
+// FHDA's campus login is saved for its sign-in host, and its reset page is
+// on another (09-29): saved for the reset page's host, the new password
+// left the sign-in entry holding the old one.
+test("change on a reset page on another host, given the login's site, updates that site's saved login and types into the reset page", async () => {
+  const { p } = scratch();
+  const reset = "https://reset.example.org/new-password";
+  const page = fakeTab(reset, { frame: 0, url: reset, current: "none" });
+  await paired(p);
+  expect(await p.change(7, undefined, SITE)).toMatchObject({ username: USER, site: SITE });
+  await p.typeChange(7);
+  expect(page.fresh).toBeString();
+  const signIn = fakeTab(`https://${SITE}/signin`);
+  await p.fill(7);
+  expect(signIn.password).toBe(page.fresh);
+});
+
+test("change on a form asking the current password refuses another site's login, so it is never typed there", async () => {
+  const { p } = scratch();
+  const page = fakeTab("https://reset.example.org/account/password");
+  await paired(p);
+  expect(await locked(p.change(7, undefined, SITE))).toStartWith("the form asks for the current password, which is filled only on the site it is saved for");
+  expect(page).toEqual({});
 });
 
 // One uppercase letter and one digit, the rest lowercase: Safari's shape,
