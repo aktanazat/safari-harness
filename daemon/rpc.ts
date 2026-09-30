@@ -5,12 +5,23 @@
 //
 // Every call carries this process's pid, from which the daemon finds the
 // agent it works for (owner.ts), except one bound for another Mac, whose
-// daemon cannot see this Mac's processes. A call the daemon never took,
-// refused while it restarts or answered 503 while it finishes its calls in
-// flight first, is made again, once, as soon as a daemon answers again.
+// daemon cannot see this Mac's processes. A process that works for itself
+// says so (ownCalls). A call the daemon never took, refused while it
+// restarts or answered 503 while it finishes its calls in flight first, is
+// made again, once, as soon as a daemon answers again.
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
+}
+
+// A named REPL session's process (repl-host.ts) outlives the command that
+// started it, which is the agent the daemon would find above it: its tabs
+// would close once that command exited, after the session's first call.
+// It owns its calls instead, so what they leave lasts until it ends.
+let ownsCalls = false;
+
+export function ownCalls(): void {
+  ownsCalls = true;
 }
 
 type Missed = "refused" | "restarting";
@@ -53,7 +64,7 @@ async function back(base: string, ms: number): Promise<boolean> {
 // watches (guard.ts).
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : process.pid, ...(model ? { model } : {}) });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : process.pid, ...(ownsCalls ? { own: true } : {}), ...(model ? { model } : {}) });
   let res = await attempt(base, body);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body);
   if (res === "refused") throw new Error(`safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`);

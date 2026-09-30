@@ -1,10 +1,11 @@
 // Named REPL sessions. Each runs in a process of its own, started by the
 // first call that names it, so its bindings and tabs last from one call to
-// the next, whichever terminal or agent makes it. The process answers on a
-// unix socket only its user can open, and ends after half an hour unused,
-// closing the tabs it opened. It is started from the caller, so it has the
-// caller's permissions (Full Disk Access for imessage), which the daemon
-// under launchd lacks.
+// the next, whichever terminal or agent makes it. The process owns its
+// calls (ownCalls in rpc.ts), so its tabs are its own and not those of the
+// command that started it. It answers on a unix socket only its user can
+// open, and ends after half an hour unused, closing the tabs it opened. It
+// is started from the caller, so it has the caller's permissions (Full
+// Disk Access for imessage), which the daemon under launchd lacks.
 //
 //   bun daemon/repl-host.ts <id>     serve session <id> (callers start this)
 
@@ -15,6 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
+import { ownCalls } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
 const IDLE_MS = 30 * 60_000;
@@ -115,6 +117,7 @@ export async function closeSession(id: string): Promise<string> {
 }
 
 async function serve(id: string): Promise<void> {
+  ownCalls();
   const host = await connectHost(process.env.SAFARI_HARNESS_HOST);
   const session = new ReplSession(id, { cwd: process.cwd() });
   const started = new Date().toISOString();

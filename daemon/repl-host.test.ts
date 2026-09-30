@@ -1,0 +1,146 @@
+import { afterAll, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+// A named REPL session is a process of its own that the first `safari repl
+// --session` command starts and leaves running (repl-host.ts); each command
+// exits once it has its answer. Here the daemon runs in a process of its
+// own with a stand-in extension on its socket, as in renumber-caller.test.ts,
+// and each command is a child process. repl-host.ts reads HOME for its
+// sockets as it loads, so only the children, whose HOME is a scratch folder,
+// import it.
+
+const HOST = join(import.meta.dir, "repl-host.ts");
+const SESSION = JSON.stringify("lasting");
+
+type Row = { id: number; url: string; title: string; windowId: number; active: boolean };
+let rows: Row[] = [];
+let lastId = 7000;
+const closed: number[] = [];
+let heardClose = () => {};
+
+function answer(op: string, args: unknown[]): { value: unknown } | { error: string } {
+  if (op === "tabs.list") return { value: rows };
+  if (op === "windows.open") {
+    const windowId = ++lastId;
+    rows.push({ id: ++lastId, url: String(args[0]), title: "", windowId, active: true });
+    return { value: { windowId } };
+  }
+  if (op === "tabs.open") {
+    const row = { id: ++lastId, url: String(args[0]), title: "", windowId: Number(args[2]), active: false };
+    rows.push(row);
+    return { value: row };
+  }
+  if (op === "tabs.close") {
+    closed.push(Number(args[0]));
+    rows = rows.filter((r) => r.id !== args[0]);
+    heardClose();
+    return { value: { ok: true } };
+  }
+  if (op === "relay" && args[1] === "tabInfo") {
+    const row = rows.find((r) => r.id === args[0]);
+    return row ? { value: { url: row.url, title: row.title, ready: "complete" } } : { error: `Tab '${String(args[0])}' was not found` };
+  }
+  if (op === "probe") return { value: [] };
+  return { error: `no ${op} here` };
+}
+
+const probes = [Bun.serve({ port: 0, fetch: () => new Response() }), Bun.serve({ port: 0, fetch: () => new Response() })];
+const [wsPort, httpPort] = probes.map((s) => s.port);
+await Promise.all(probes.map((s) => s.stop(true)));
+// A unix socket's path must fit in 104 bytes, so the scratch HOME is short.
+const home = mkdtempSync("/tmp/repl-host-");
+const state = join(home, ".local/share/safari-harness");
+mkdirSync(state, { recursive: true });
+// A keeper counts as running, so none starts to group a window in the real
+// Safari (claimSpaces in call.ts).
+writeFileSync(join(state, "keeper.pid"), String(process.pid));
+const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
+  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  stdout: "pipe",
+  stderr: "inherit",
+});
+const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${httpPort}` };
+
+// What the daemon has logged, a line at a time, and a wake-up for what
+// waits on a line.
+const logged: string[] = [];
+let ended = false;
+let heard = () => {};
+void (async () => {
+  let rest = "";
+  for await (const text of daemon.stdout.pipeThrough(new TextDecoderStream())) {
+    const lines = (rest + text).split("\n");
+    rest = lines.pop() ?? "";
+    logged.push(...lines);
+    heard();
+  }
+  ended = true;
+  heard();
+})();
+
+function logs(what: string): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  heard = () => {
+    if (logged.some((l) => l.split("[safari-harness] ")[1]?.startsWith(what))) resolve();
+    else if (ended) reject(new Error(`the daemon exited before it logged ${what}`));
+  };
+  heard();
+  return promise;
+}
+
+await logs("extension+cdp ws");
+const extension = new WebSocket(`ws://127.0.0.1:${wsPort}/`, { headers: { origin: "safari-web-extension://stand-in" } });
+extension.onmessage = (e) => {
+  const { id, op, args } = JSON.parse(String(e.data)) as { id?: string; op: string; args?: unknown[] };
+  if (id !== undefined) extension.send(JSON.stringify({ id, ...answer(op, args ?? []) }));
+};
+await logs("connect");
+
+// A `safari repl` command: a process of its own that calls repl-host.ts and
+// exits once it has the answer, as the CLI does.
+async function command(call: string): Promise<unknown> {
+  const script = `const repl = await import(${JSON.stringify(HOST)});
+await Bun.write(Bun.stdout, JSON.stringify(await repl.${call}));
+process.exit(0);`;
+  const p = Bun.spawn([process.execPath, "-e", script], { env, stdout: "pipe", stderr: "inherit" });
+  const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  return JSON.parse(out);
+}
+
+// Settles once the daemon's owner sweep has run since now: an agent (a
+// process whose child calls) opens a tab and is killed, and its tab closes
+// in the first sweep that finds it gone, after the tabs of every agent that
+// ended before it. The daemon names the agent as the call arrives, so the
+// child is done with then.
+async function ownerSweep(): Promise<void> {
+  const agent = Bun.spawn([process.execPath, "-e", "await Bun.write(Bun.stdout, `${Bun.spawn(['sleep', '60']).pid}\\n`); await Bun.sleep(60_000)"], { stdout: "pipe" });
+  const { value } = await agent.stdout.getReader().read();
+  const caller = Number(new TextDecoder().decode(value).trim());
+  const res = await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://marker.example/", background: true }, caller }) });
+  const { value: tab } = (await res.json()) as { value: { id: number } };
+  process.kill(caller, 9);
+  const gone = Promise.withResolvers<void>();
+  heardClose = () => {
+    if (closed.includes(tab.id)) gone.resolve();
+  };
+  agent.kill(9);
+  await gone.promise;
+}
+
+afterAll(async () => {
+  const [session] = (await command("listSessions()")) as { pid: number }[];
+  if (session) process.kill(session.pid, 9);
+  extension.close();
+  daemon.kill();
+  await daemon.exited;
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("a named session's tab still answers in its next call after the command that started the session has exited", async () => {
+  const first = await command(`runInSession(${SESSION}, "const p = await openTab('https://a.example/'); p.id")`);
+  expect(first).toEqual({ output: expect.any(String), started: true });
+  await ownerSweep();
+  const second = await command(`runInSession(${SESSION}, "(await page.info()).url")`);
+  expect(second).toEqual({ output: "https://a.example/", started: false });
+}, 30_000);

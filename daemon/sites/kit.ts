@@ -1,9 +1,10 @@
 // Plumbing shared by the REPL's site globals (slack, gmail, notion, ...).
 // Each site works through a background tab of its own on that site, opened
-// on first use and closed with the REPL session, so its requests carry the
-// owner's Safari session the way the site's own page would, and no tab the
-// owner is using is touched. Anything that sends or posts goes through
-// draftOrSend: it returns the exact draft until the owner approves it.
+// on first use (and again, once, if it is gone) and closed with the REPL
+// session, so its requests carry the owner's Safari session the way the
+// site's own page would, and no tab the owner is using is touched. Anything
+// that sends or posts goes through draftOrSend: it returns the exact draft
+// until the owner approves it.
 
 import type { Invoke } from "../call.ts";
 
@@ -17,28 +18,62 @@ export class NotSignedIn extends Error {
 export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number };
 export type FetchResult = { status: number; url: string; type: string | null; text: string; truncated: boolean };
 
+// The extension's answer for a tab that no longer exists (background.js):
+// the owner closed it, or it sat unused for 20 minutes (tools.ts).
+const GONE = /that tab is gone/;
+
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
+  // Where each origin's tab opens: the address its site last asked for.
+  private homes = new Map<string, string>();
+  // The origin of every tab the kit opened, gone ones included.
+  private origins = new Map<number, string>();
   private lastRequest = new Map<string, number>();
+  // Tool calls for the sites. A call on a kit tab that is gone never ran,
+  // so it runs once more in the tab that takes its place; gone again, the
+  // error stands.
+  readonly invoke: Invoke;
 
   // owned is told about each tab opened, so the REPL can close it with the
   // session even if close() is never reached.
-  constructor(readonly invoke: Invoke, private owned: (tab: number) => void = () => {}) {}
+  constructor(private send: Invoke, private owned: (tab: number) => void = () => {}) {
+    this.invoke = async (tool, args) => {
+      try {
+        return await send(tool, args);
+      } catch (e) {
+        const gone = Number(args.tab);
+        const origin = this.origins.get(gone);
+        if (origin === undefined || !(e instanceof Error && GONE.test(e.message))) throw e;
+        return send(tool, { ...args, tab: await this.reopen(origin, gone) });
+      }
+    };
+  }
 
   // A background tab on origin ("https://app.slack.com"), opened at url on
   // first use and reused after. Requests go out from its page.
-  tab(origin: string, url = `${origin}/`): Promise<number> {
+  tab(origin: string, url?: string): Promise<number> {
+    if (url !== undefined) this.homes.set(origin, url);
     let tab = this.tabs.get(origin);
     if (!tab) {
-      tab = this.invoke("open", { url, background: true }).then((t) => {
-        const id = (t as { id: number }).id;
-        this.owned(id);
-        return id;
+      tab = this.send("open", { url: this.homes.get(origin) ?? `${origin}/`, background: true }).then((t) => {
+        // open answers with the tab it made: {id, url, title} (tools.ts).
+        const opened = t as { id: number };
+        this.origins.set(opened.id, origin);
+        this.owned(opened.id);
+        return opened.id;
       });
       this.tabs.set(origin, tab);
       tab.catch(() => this.tabs.delete(origin));
     }
     return tab;
+  }
+
+  // The tab in place of gone, origin's tab that no longer exists: a new one
+  // where the site last asked, or the one another call already opened.
+  async reopen(origin: string, gone: number): Promise<number> {
+    const tab = this.tabs.get(origin);
+    if (tab && (await tab) === gone && this.tabs.get(origin) === tab) this.tabs.delete(origin);
+    return this.tab(origin);
   }
 
   // A request from the site's own page, with its cookies.
@@ -79,7 +114,8 @@ export class SiteKit {
   async close(): Promise<void> {
     const tabs = await Promise.allSettled(this.tabs.values());
     this.tabs.clear();
-    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.invoke("close", { tab: t.value }).catch(() => {}) : undefined)));
+    // A tab already gone needs no closing, and no new tab to close.
+    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.send("close", { tab: t.value }).catch(() => {}) : undefined)));
   }
 }
 

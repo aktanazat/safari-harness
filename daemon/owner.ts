@@ -1,8 +1,10 @@
 // Who a call works for: the agent process behind it. The calling side
 // (rpc.ts) sends its own pid with every call; the daemon finds the agent
-// above it (ownerOf) and runs the call inside runAs, so any code under it
-// can ask currentOwner(), and work a call leaves behind (a background tab,
-// an unlocked password vault) can end when that agent exits (watchOwner).
+// above it (ownerOf), or takes that pid itself from a process that owns
+// its calls (a named REPL session), and runs the call inside runAs, so any
+// code under it can ask currentOwner(), and work a call leaves behind (a
+// background tab, an unlocked password vault) can end when that agent
+// exits (watchOwner).
 
 import { AsyncLocalStorage } from "node:async_hooks";
 

@@ -26,6 +26,32 @@ function decodeEntities(s: string): string {
   });
 }
 
+// Characters that show as nothing, which mail templates put between words
+// and pad the preview line with: zero-width spaces and joiners, word
+// joiners, byte order marks, combining grapheme joiners, soft hyphens.
+// Figure spaces pad it too. Agents stripped them by hand in about 50
+// scripts.
+const FILLER = /[\u200b-\u200d\u2060\ufeff\u00ad]|\u034f/g;
+
+// Text as it reads: no filler, figure and no-break spaces as spaces, no
+// line that padding alone made, lines trimmed, and runs of blank lines
+// shrunk to one.
+function tidy(text: string): string {
+  return text
+    .split("\n")
+    .flatMap((line) => {
+      const kept = line.replace(FILLER, "").replace(/\u2007/g, " ");
+      return kept !== line && kept.trim() === "" ? [] : [kept];
+    })
+    .join("\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // Plain text from a mail body or a document: blocks and <br> break lines,
 // list items get a dash, cells get a tab, runs of blank lines shrink to one.
 function htmlToText(html: string): string {
@@ -37,13 +63,7 @@ function htmlToText(html: string): string {
     .replace(/<\/t[dh]>/gi, "\t")
     .replace(/<\/?(p|div|tr|li|h[1-6]|blockquote|pre|table|ul|ol|section|article|header|footer)\b[^>]*>/gi, "\n")
     .replace(/<[^>]+>/g, "");
-  return decodeEntities(text)
-    .replace(/\u00a0/g, " ")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return tidy(decodeEntities(text));
 }
 
 // A JavaScript string literal's contents ("\x3d", "\u00e9", "\/") as text.
@@ -115,11 +135,11 @@ async function accountIndex(accounts: GoogleAccounts, account: number | string |
 // ---------- Gmail ----------
 
 export type GmailSender = { name: string; email: string };
-export type GmailThreadSummary = { id: string; threadId: string; from: string; senders: GmailSender[]; subject: string; snippet: string; date: string; unread: boolean };
+export type GmailThreadSummary = { id: string; threadId: string; from: string; fromEmail: string; senders: GmailSender[]; subject: string; snippet: string; date: string; unread: boolean };
 export type GmailSearch = { results: GmailThreadSummary[]; hasMore: boolean; total: number | null; nextOffset: number };
 export type GmailAttachment = { name: string; id: string; size: string; url: string };
-export type GmailMessage = { from: GmailSender; to: GmailSender[]; cc: GmailSender[]; replyTo?: GmailSender[]; date: string; body: string; bodyHtml?: string; attachments: GmailAttachment[] };
-export type GmailThread = { id: string; threadId: string; subject: string; messages: GmailMessage[] };
+export type GmailMessage = { from: GmailSender; to: GmailSender[]; cc: GmailSender[]; replyTo?: GmailSender[]; date: string; body: string; quotedOnly?: true; bodyHtml?: string; attachments: GmailAttachment[] };
+export type GmailThread = { id: string; threadId: string; subject: string; messages: GmailMessage[]; attachments: (GmailAttachment & { message: number })[] };
 
 type ListPage = { counter: string | null; empty: boolean; rows: GmailThreadSummary[] };
 
@@ -145,6 +165,7 @@ function readListExpression(token: string): string {
       id: idEl?.getAttribute('data-legacy-thread-id') ?? '',
       threadId: (idEl?.getAttribute('data-thread-id') ?? '').replace(/^#/, ''),
       from: senders.map((s) => s.textContent.trim()).join(', '),
+      fromEmail: senders.map((s) => s.getAttribute('email') ?? '').join(', '),
       senders: senders.map((s) => ({ name: s.getAttribute('name') ?? '', email: s.getAttribute('email') ?? '' })),
       subject: r.querySelector('.bog')?.textContent.trim() ?? '',
       snippet: (r.querySelector('.y2')?.textContent ?? '').replace(/^\\s*-\\s*/, '').trim(),
@@ -224,9 +245,17 @@ function pageCounter(counter: string | null): { first: number; last: number; tot
 
 export function gmail(kit: SiteKit) {
   const accounts = googleAccounts(kit);
-  // The account the Gmail tab is on, and Gmail's list page size once seen.
-  let shown: number | undefined;
+  // The tab Gmail last settled in and the account it landed on there, and
+  // Gmail's list page size once seen. A tab that takes the place of a gone
+  // one (kit.ts) has settled on nothing yet.
+  let shown: { tab: number; account: number } | undefined;
   let pageSize = 50;
+
+  // The tab as the browser lists it; undefined once it is gone.
+  async function listed(tab: number): Promise<{ id: number; url?: string; title?: string } | undefined> {
+    const tabs = (await kit.invoke("tabs", {})) as { id: number; url?: string; title?: string }[];
+    return tabs.find((t) => t.id === tab);
+  }
 
   // Where the tab is once Gmail has loaded. A Gmail load can bounce through
   // accounts.google.com (a session refresh) before it lands, and the page
@@ -237,8 +266,7 @@ export function gmail(kit: SiteKit) {
     let changed = Date.now();
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
-      const tabs = (await kit.invoke("tabs", {})) as { id: number; url?: string; title?: string }[];
-      const t = tabs.find((x) => x.id === tab);
+      const t = await listed(tab);
       if (!t) throw new Error("the Gmail tab was closed");
       if (t.url !== url) {
         url = t.url ?? "";
@@ -252,16 +280,19 @@ export function gmail(kit: SiteKit) {
     throw new Error("Gmail did not finish loading in time");
   }
 
+  // The Gmail tab, on account. The tab of an earlier call can be gone
+  // since (closed, or 20 minutes unused): a new one takes its place at the
+  // account's inbox, and like any new tab it settles before it is read.
   async function mailTab(account: number): Promise<number> {
     const home = `${MAIL}/mail/u/${account}/#inbox`;
-    const tab = await kit.tab(MAIL, home);
-    if (shown !== account) {
-      if (shown !== undefined) await kit.invoke("goto", { tab, url: home });
-      const where = await settled(tab);
-      const at = /\/mail\/u\/(\d+)\//.exec(where)?.[1];
-      if (at !== String(account)) throw new Error(`no Google account at index ${account} in Safari (Gmail opened /u/${at ?? "?"}/ instead)`);
-      shown = account;
-    }
+    let tab = await kit.tab(MAIL, home);
+    if (!(await listed(tab))) tab = await kit.reopen(MAIL, tab);
+    if (shown?.tab === tab && shown.account === account) return tab;
+    if (shown?.tab === tab) await kit.invoke("goto", { tab, url: home });
+    const at = /\/mail\/u\/(\d+)\//.exec(await settled(tab))?.[1];
+    // Gmail lands on another account when this one is not signed in.
+    shown = { tab, account: Number(at) };
+    if (at !== String(account)) throw new Error(`no Google account at index ${account} in Safari (Gmail opened /u/${at ?? "?"}/ instead)`);
     return tab;
   }
 
@@ -321,7 +352,7 @@ export function gmail(kit: SiteKit) {
       }
       total = counter?.total ?? null;
       const rows = list.rows.slice(at - start, at - start + (limit - results.length));
-      results.push(...rows.map((r) => ({ ...r, date: isoDate(r.date) })));
+      results.push(...rows.map((r) => ({ ...r, snippet: tidy(r.snippet), date: isoDate(r.date) })));
       at += rows.length;
       hasMore = at < end || (counter !== null && (counter.total === null ? list.rows.length >= pageSize : counter.total > at));
     }
@@ -333,31 +364,39 @@ export function gmail(kit: SiteKit) {
     const raw = await kit.eval<RawThread>(MAIL, readThreadExpression(`${MAIL}/mail/u/${account}/?view=pt&search=all&th=${id}`));
     if (raw.status === 401 || raw.status === 403 || !raw.url.startsWith(MAIL)) throw new NotSignedIn("Gmail", `HTTP ${raw.status}`);
     if (raw.status !== 200 || !raw.messages) throw new Error(`Gmail answered HTTP ${raw.status} for thread ${id} in account ${account}`);
+    const messages = raw.messages.map((m): GmailMessage => {
+      const [from] = parseAddresses(m.from);
+      const line = (label: string) => m.lines.find((l) => l.toLowerCase().startsWith(`${label}:`))?.slice(label.length + 1) ?? "";
+      const replyTo = parseAddresses(line("reply-to"));
+      const body = htmlToText(m.body);
+      return {
+        from: from ?? { name: m.from, email: "" },
+        to: parseAddresses(line("to")),
+        cc: parseAddresses(line("cc")),
+        ...(replyTo.length ? { replyTo } : {}),
+        date: isoDate(m.date),
+        body,
+        // The print view shows text quoted from earlier messages as this
+        // line; a message that is only the line brings no words of its own.
+        ...(body === "[Quoted text hidden]" ? { quotedOnly: true as const } : {}),
+        ...(wantHtml ? { bodyHtml: m.body } : {}),
+        attachments: m.attachments.map((a) => {
+          // The print view's links carry the account's ik key; the
+          // download works without it, so it stays out of what we return.
+          const u = new URL(a.url, `${MAIL}/mail/u/${account}/`);
+          for (const p of ["ik", "ui"]) u.searchParams.delete(p);
+          return { name: a.name, id: u.searchParams.get("attid") ?? "", size: a.size, url: u.href };
+        }),
+      };
+    });
     return {
       id,
       threadId: `thread-f:${BigInt(`0x${id}`)}`,
       subject: raw.subject ?? "",
-      messages: raw.messages.map((m) => {
-        const [from] = parseAddresses(m.from);
-        const line = (label: string) => m.lines.find((l) => l.toLowerCase().startsWith(`${label}:`))?.slice(label.length + 1) ?? "";
-        const replyTo = parseAddresses(line("reply-to"));
-        return {
-          from: from ?? { name: m.from, email: "" },
-          to: parseAddresses(line("to")),
-          cc: parseAddresses(line("cc")),
-          ...(replyTo.length ? { replyTo } : {}),
-          date: isoDate(m.date),
-          body: htmlToText(m.body),
-          ...(wantHtml ? { bodyHtml: m.body } : {}),
-          attachments: m.attachments.map((a) => {
-            // The print view's links carry the account's ik key; the
-            // download works without it, so it stays out of what we return.
-            const u = new URL(a.url, `${MAIL}/mail/u/${account}/`);
-            for (const p of ["ik", "ui"]) u.searchParams.delete(p);
-            return { name: a.name, id: u.searchParams.get("attid") ?? "", size: a.size, url: u.href };
-          }),
-        };
-      }),
+      messages,
+      // Every message's attachments in one list, each naming its message by
+      // index: an agent that looked only here once found no contract.
+      attachments: messages.flatMap((m, message) => m.attachments.map((a) => ({ ...a, message }))),
     };
   }
 
@@ -366,7 +405,7 @@ export function gmail(kit: SiteKit) {
   }
 
   return {
-    // Newest inbox threads: id, from, subject, snippet, date, unread.
+    // Newest inbox threads: id, from, fromEmail, subject, snippet, date, unread.
     async getInbox(account: number | string = 0, opts: { offset?: number; limit?: number } = {}): Promise<GmailSearch> {
       return listFrom(await accountIndex(accounts, account), "#inbox", opts.offset ?? 0, opts.limit ?? 50);
     },
@@ -380,20 +419,23 @@ export function gmail(kit: SiteKit) {
     },
 
     // Every message of a thread, with the body as plain text (bodyHtml too
-    // with html: true) and its attachments. Read from Gmail's print view,
-    // which leaves the thread's unread state alone.
+    // with html: true) and its attachments, which the thread also lists all
+    // together. Read from Gmail's print view, which leaves the thread's
+    // unread state alone.
     async getThread(account: number | string, threadId: string, opts: { html?: boolean } = {}): Promise<GmailThread> {
       return thread(await accountIndex(accounts, account), legacyThreadId(threadId), !!opts.html);
     },
 
-    // Saves an attachment (its url from getThread, or {threadId, attachmentId})
-    // into ~/Downloads under its own name, or at out; returns the saved file.
+    // Saves an attachment (its url from getThread, an inline image's src
+    // from bodyHtml, or {threadId, attachmentId}) into ~/Downloads under its
+    // own name, or at out; returns the saved file.
     async downloadAttachment(account: number | string, attachment: string | { threadId: string; attachmentId: string }, opts: { out?: string } = {}) {
       const n = await accountIndex(accounts, account);
       const tab = await mailTab(n);
       const base = `${MAIL}/mail/u/${n}/`;
+      // A src copied out of bodyHtml has its & written as &amp;.
       const url = typeof attachment === "string"
-        ? new URL(attachment, base)
+        ? new URL(decodeEntities(attachment), base)
         : new URL(`?view=att&th=${legacyThreadId(attachment.threadId)}&attid=${encodeURIComponent(attachment.attachmentId)}&disp=attd&safe=1&zw`, base);
       if (url.origin !== MAIL) throw new Error("attachment must be a Gmail attachment url");
       for (const p of ["ik", "ui"]) url.searchParams.delete(p);
