@@ -57,6 +57,13 @@ health() { curl -s --max-time 2 "$BASE/health" | jq -r "$1 // empty" 2>/dev/null
 trash() { mv "$1" "$HOME/.Trash/safari-harness-$(basename "$1")-$(date +%s)"; }
 # job LABEL: the program its launchd job runs
 job() { plutil -extract ProgramArguments.1 raw "$JOBS/$1.plist" 2>/dev/null || true; }
+# strays: each registered copy of the app, its extension, or an app inside
+# it, other than the installed one
+strays() {
+  lsregister -dump | sed -n 's/^path: *\(.*Safari Harness[^/]*\.app\(ex\)\{0,1\}\) (0x[0-9a-f]*)$/\1/p' | while IFS= read -r copy; do
+    case "$copy" in "$APP" | "$APP"/*) ;; *) echo "$copy" ;; esac
+  done
+}
 
 # point RELEASE: current becomes it in one step (a rename over the link);
 # when each release was last current orders them for pruning
@@ -166,9 +173,6 @@ if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -
       exit 1
     fi
     built="$tmp/Build/Products/Debug/Safari Harness.app"
-    # Xcode registers what it builds, and Safari must find one copy only
-    pluginkit -r "$built/Contents/PlugIns/Safari Harness Extension.appex" 2>/dev/null || true
-    lsregister -u "$built" 2>/dev/null || true
     # kept as a zip (which Safari never finds) for a rollback to install
     mkdir -p "$DATA/apps"
     ditto -c -k --keepParent "$built" "$app.part"
@@ -176,6 +180,23 @@ if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -
     trash "$tmp"
     tmp=""
   fi
+fi
+
+# Xcode registers each copy of the app it builds, and a copy deleted later
+# stays registered. At launch Safari looks for the app of every copy of the
+# extension, and one it cannot find gets the extension turned off by name,
+# the installed one's too (09-30). So every deploy unregisters each copy
+# but the installed one, whoever built it, before installing.
+found="$(strays)"
+if [ -n "$found" ]; then
+  while IFS= read -r copy; do
+    case "$copy" in *.appex) pluginkit -r "$copy" 2>/dev/null || true ;; esac
+    lsregister -u "$copy" 2>/dev/null || true
+  done <<<"$found"
+  echo "unregistered stray copies of the app:"
+  sed 's/^/  /' <<<"$found"
+  left="$(strays)"
+  [ -z "$left" ] || { echo "still registered, so Safari turns the extension off when it next starts:" >&2; sed 's/^/  /' <<<"$left" >&2; }
 fi
 
 point "$sha"

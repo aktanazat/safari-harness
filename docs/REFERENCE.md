@@ -1357,6 +1357,14 @@ its own `safari` command.
 - `extension disconnected` on every call: two copies of the app are
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.
+- Safari turns "Safari Harness Bridge" off each time it starts: a build of
+  the app that was since deleted is still registered, and Safari, finding
+  that copy's extension but not its app, turns the extension off by name.
+  Each deploy unregisters every copy but `/Applications/Safari Harness.app`.
+  By hand: `lsregister -dump | grep 'path: .*Safari Harness'` lists the
+  copies; run `lsregister -u PATH` on each other app (lsregister is in
+  `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support`),
+  then turn the Bridge back on.
 - "stale ref": the ref's element left the page, the page drew several
   lookalikes in its place, or the tab loaded a new page. Take a new
   snapshot.
