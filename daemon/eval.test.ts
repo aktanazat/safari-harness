@@ -1,22 +1,28 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
 
 // A page that runs what eval sends the way content.js and pageEval do: new
 // Function("return (" + code + ")"), with a promise awaited. frame is the
-// frame the last request went to.
+// frame the last request went to. Code not done by the limit the daemon
+// gives is answered then, as background.js answers it.
 let frame: unknown;
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
-    // relay: [tab, "eval", [code], ms, frame]; evalPage: [tab, code, frame]
+    // relay: [tab, "eval", [code], ms, frame]; evalPage: [tab, code, frame, ms]
     const [code, at] = op === "relay" ? [(args[2] as string[])[0], args[4]] : [args[1], args[2]];
     frame = at;
     const answer = (reply: object) => bridge.handleMessage(JSON.stringify({ id, ...reply }));
+    const late = typeof args[3] === "number" ? setTimeout(() => answer({ error: "your code ran past its limit" }), args[3]) : undefined;
+    const end = (reply: object) => {
+      clearTimeout(late);
+      answer(reply);
+    };
     Promise.resolve()
       .then(() => new Function(`return (${code})`)())
-      .then((result) => answer({ value: { ok: true, result: result ?? null } }), (e) => answer({ error: String(e instanceof Error ? e.message : e) }));
+      .then((result) => end({ value: { ok: true, result: result ?? null } }), (e) => end({ error: String(e instanceof Error ? e.message : e) }));
   },
   close() {},
 });
@@ -69,5 +75,30 @@ test("the prefix of a frame's refs runs a script in that frame, in either world"
     expect(frame).toBe(3);
     expect(await run("const b = 2; b", page)).toBe(2);
     expect(frame).toBe(0);
+  }
+});
+
+// On 09-30 page-world code past 30 s was told only that the daemon's
+// request timed out: the page's answer at eval's limit must come first.
+test("code past eval's limit gets the page's answer in either world, not the daemon's time-out", async () => {
+  jest.useFakeTimers();
+  try {
+    for (const page of [false, true]) {
+      let error: unknown;
+      const ran = run("new Promise(() => {})", page).catch((e: unknown) => {
+        error = e;
+      });
+      for (let ms = 0; error === undefined && ms < 40_000; ms += 500) {
+        // the answers settle in microtasks, which all run before the next turn
+        const turn = Promise.withResolvers<void>();
+        setImmediate(turn.resolve);
+        await turn.promise;
+        jest.advanceTimersByTime(500);
+      }
+      await ran;
+      expect(String(error)).toMatch(/ran past/);
+    }
+  } finally {
+    jest.useRealTimers();
   }
 });

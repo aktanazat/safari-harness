@@ -13,7 +13,8 @@ import { remoteCall } from "./host.ts";
 import { secretType, typeSecret } from "./secret.ts";
 import { TOOLS, runSteps } from "./tools.ts";
 
-export type Invoke = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
+// model: the call counts as the model's own, as invoke's does.
+export type Invoke = (tool: string, args: Record<string, unknown>, model?: boolean) => Promise<unknown>;
 
 const CALLER_NAMES = Object.keys(CALLER_TOOLS);
 const DAEMON_NAMES = Object.keys(TOOLS);

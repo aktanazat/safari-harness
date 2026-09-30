@@ -1,0 +1,28 @@
+<!doctype html>
+<title>Supplemental Background</title>
+<!-- Knight-Hennessy's Slate form (09-30): a row's popup is a div with
+     role=dialog, so the CSS root "dialog" found nothing in it, and a Save it
+     refuses opens a second dialog over it. The closed <dialog> is one a page
+     keeps for later, which a read of the open dialog passes over. -->
+<main>
+  <h1>Supplemental Background</h1>
+  <p>How did you fund your undergraduate education?</p>
+  <a href="#mother">Mother</a>
+</main>
+<dialog><p>Your session is about to expire.</p></dialog>
+<div role="dialog" aria-labelledby="popup-title">
+  <h2 id="popup-title">Parent/Guardian Details 2027</h2>
+  <label>Relationship <input value="Mother"></label>
+  <label>Occupation/Title <input></label>
+  <button type="button" id="save">Save</button>
+  <button type="button">Cancel</button>
+</div>
+<script>
+  save.addEventListener("click", () => {
+    const refused = document.createElement("div");
+    refused.setAttribute("role", "alertdialog");
+    refused.setAttribute("aria-label", "Missing answers");
+    refused.innerHTML = "<p>1 required field was not completed.</p><button type=button>OK</button>";
+    document.body.append(refused);
+  });
+</script>

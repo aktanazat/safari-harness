@@ -69,11 +69,14 @@ class Doc {
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
+  // Safari lets the extension put no script in a blank tab, and says so.
+  shut = false;
   does: (op: string) => unknown = () => ({ url: this.url });
   constructor(readonly url: string, readonly live = true) {}
 }
 
-type Tab = { id: number; doc: Doc };
+// window: the window it is in, 1 unless a test says otherwise.
+type Tab = { id: number; doc: Doc; window?: number };
 
 async function start() {
   const clock = new Clock();
@@ -99,7 +102,7 @@ async function start() {
     return tab;
   };
   // A tab as Safari describes it; none here is the one in front of its window.
-  const row = (tab: Tab) => ({ id: tab.id, windowId: 1, url: tab.doc.url, title: "", status: "complete", active: false });
+  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: "", status: "complete", active: false });
 
   // What content.js does as it starts: take the page's claim unless another
   // copy holds it, answer through __safariHarnessRun, and, where its world's
@@ -119,7 +122,7 @@ async function start() {
     w.__safariHarnessRun = (m: Msg) => (w.__safariHarnessInjected === claim ? answer(m) : null);
     if (!doc.live) return;
     doc.listeners.push((m) => (m.__safariHarness === 1 && w.__safariHarnessInjected === claim ? answer(m) : undefined));
-    if (report) onMessage.fire({ __safariHarnessReady: 1 }, { tab: { id: tab.id, windowId: 1 }, frameId: 0 });
+    if (report) onMessage.fire({ __safariHarnessReady: 1 }, { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId: 0 });
   }
 
   const browser = {
@@ -135,6 +138,16 @@ async function start() {
       get: async (id: number) => row(tabOf(id)),
       // what Safari finds for a filter on active and windowId
       query: async (q: { active?: boolean; windowId?: number } = {}) => [...tabs.values()].map(row).filter((t) => t.active === (q.active ?? t.active) && t.windowId === (q.windowId ?? t.windowId)),
+      // A tab the harness opens. Safari may tell of a tab before the call
+      // that made it answers; here it always does, makeMs on.
+      create: async ({ url, windowId = 1 }: { url: string; windowId?: number }) => {
+        await made();
+        const tab = { id: nextTab++, doc: new Doc(url), window: windowId };
+        tabs.set(tab.id, tab);
+        browser.tabs.onCreated.fire({ id: tab.id, windowId });
+        copyIn(tab, tab.doc);
+        return row(tab);
+      },
       // A message no copy took settles undefined; one to a held page, never.
       sendMessage: (id: number, m: Msg) => {
         const doc = tabOf(id).doc;
@@ -150,6 +163,7 @@ async function start() {
     scripting: {
       executeScript: async ({ target, func, args = [], files }: Inject) => {
         const tab = tabOf(target.tabId);
+        if (tab.doc.shut) throw new Error("Invalid call to scripting.executeScript(). This extension does not have access to this tab.");
         const doc = tab.doc;
         if (files) {
           copyIn(tab, doc);
@@ -167,7 +181,22 @@ async function start() {
       },
     },
     storage: { local: storage, session },
-    windows: { onFocusChanged: hook(), onRemoved: hook(), WINDOW_ID_NONE: -1 },
+    windows: {
+      onFocusChanged: hook(),
+      onRemoved: hook(),
+      WINDOW_ID_NONE: -1,
+      // A window the harness opens on a page, told of as tabs.create's is.
+      create: async ({ url }: { url: string }) => {
+        await made();
+        const tab = { id: nextTab++, doc: new Doc(url), window: nextWindow++ };
+        tabs.set(tab.id, tab);
+        browser.tabs.onCreated.fire({ id: tab.id, windowId: tab.window });
+        copyIn(tab, tab.doc);
+        return { id: tab.window, tabs: [row(tab)] };
+      },
+      update: async (id: number) => ({ id }),
+      get: async (id: number) => ({ id }),
+    },
   };
 
   let seq = 0;
@@ -201,15 +230,31 @@ async function start() {
   open.onopen();
 
   let nextTab = 10;
+  let nextWindow = 100;
+  // How long Safari takes to make a tab or window the harness asks for.
+  let makeMs = 0;
+  const made = () => new Promise<void>((resolve) => (makeMs ? clock.setTimeout(resolve, makeMs) : resolve()));
+  // A request as the daemon sends it (bridge.request).
+  const request = (op: string, args: unknown[]): Promise<Answer> => {
+    const id = `d${++seq}`;
+    const answer = Promise.withResolvers<Answer>();
+    waiting.set(id, answer.resolve);
+    open.onmessage({ data: JSON.stringify({ id, op, args }) });
+    return answer.promise;
+  };
   return {
     clock,
     trips,
     told,
     sockets,
+    // Safari takes ms to make each tab or window the harness asks for.
+    slowMakes(ms: number) {
+      makeMs = ms;
+    },
     // A tab showing a page whose script reported in to this background page,
     // or, reported false, to an earlier run of it (Safari stops an idle one).
-    open(url: string, reported = true): Tab {
-      const tab = { id: nextTab++, doc: new Doc(url) };
+    open(url: string, reported = true, window = 1): Tab {
+      const tab = { id: nextTab++, doc: new Doc(url), window };
       tabs.set(tab.id, tab);
       copyIn(tab, tab.doc, reported);
       return tab;
@@ -245,12 +290,9 @@ async function start() {
     },
     // A page request as the daemon sends it (bridge.tab).
     ask(tab: Tab, op: string, args: unknown[] = []): Promise<Answer> {
-      const id = `d${++seq}`;
-      const answer = Promise.withResolvers<Answer>();
-      waiting.set(id, answer.resolve);
-      open.onmessage({ data: JSON.stringify({ id, op: "relay", args: [tab.id, op, args, 30000, 0] }) });
-      return answer.promise;
+      return request("relay", [tab.id, op, args, 30000, 0]);
     },
+    request,
     // He clicks the toolbar button with tab in front.
     toolbar(tab: Tab) {
       onClicked.fire({ id: tab.id, url: tab.doc.url, title: "Example" });
@@ -261,16 +303,18 @@ async function start() {
     },
     // Safari makes a tab: one a page opened, or one of its own making (a
     // tab group's), with its opener when Safari says it; its page reports in.
-    create(opener?: Tab): Tab {
-      const tab = { id: nextTab++, doc: new Doc("https://example.com/popup") };
+    // A blank one loads nothing and takes no script.
+    create(opener?: Tab, blank = false, window = 1): Tab {
+      const tab = { id: nextTab++, doc: new Doc(blank ? "" : "https://example.com/popup"), window };
+      tab.doc.shut = blank;
       tabs.set(tab.id, tab);
-      browser.tabs.onCreated.fire({ id: tab.id, windowId: 1, ...(opener ? { openerTabId: opener.id } : {}) });
-      copyIn(tab, tab.doc);
+      browser.tabs.onCreated.fire({ id: tab.id, windowId: window, ...(opener ? { openerTabId: opener.id } : {}) });
+      if (!blank) copyIn(tab, tab.doc);
       return tab;
     },
     // The page in tab says a tab it opens is coming (content.js).
     announce(tab: Tab) {
-      onMessage.fire({ __safariHarnessPopup: 1 }, { tab: { id: tab.id, windowId: 1 }, frameId: 0 });
+      onMessage.fire({ __safariHarnessPopup: 1 }, { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId: 0 });
     },
     // A tab the harness opened, whose dialogs and popups are its own.
     own(tab: Tab) {
@@ -382,6 +426,44 @@ test("a known page that stops answering fails at the ping time, not at the reque
   b.ask(tab, "tabInfo").then((a) => { answer = a; });
   await b.clock.advance(10000);
   expect(answer?.error).toStartWith("the page at https://example.com/ did not answer within 5 s");
+});
+
+// On 09-30 an eval that scrolled and slept in a loop ran past its 30 s on a
+// page that answered all along, and was told the page did not answer
+// (01a0f039). A page a dialog holds still fails at the ping.
+test("an eval past its limit blames the code on a page that answers, and the page on one that is held", async () => {
+  const b = await start();
+  const busy = b.open("https://example.com/");
+  busy.doc.does = () => never();
+  const held = b.open("https://example.org/");
+  held.doc.held = true;
+  let ran: Answer | undefined;
+  let stuck: Answer | undefined;
+  b.ask(busy, "eval", ["1"]).then((a) => { ran = a; });
+  b.ask(held, "eval", ["1"]).then((a) => { stuck = a; });
+  await b.clock.advance(31_000);
+  expect(ran?.error).toMatch(/ran past 30 s/);
+  expect(ran?.error).not.toMatch(/did not answer/);
+  expect(stuck?.error).toMatch(/did not answer within 5 s/);
+});
+
+// eval with page: true runs by executeScript, which has no limit of its
+// own: on 09-30 page-world code past 30 s got only the daemon's time-out.
+test("a page-world eval answers its value, and past its limit blames the code on a page that answers and the page on one that is held", async () => {
+  const b = await start();
+  const busy = b.open("https://example.com/");
+  const held = b.open("https://example.org/");
+  held.doc.held = true;
+  const endless = "new Promise(() => {})";
+  let ran: Answer | undefined;
+  let stuck: Answer | undefined;
+  b.request("evalPage", [busy.id, endless, 0, 30000]).then((a) => { ran = a; });
+  b.request("evalPage", [held.id, endless, 0, 30000]).then((a) => { stuck = a; });
+  expect((await b.request("evalPage", [busy.id, "1 + 1", 0, 30000])).value).toEqual({ ok: true, result: 2 });
+  await b.clock.advance(31_000);
+  expect(ran?.error).toMatch(/ran past 30 s/);
+  expect(ran?.error).not.toMatch(/did not answer/);
+  expect(stuck?.error).toMatch(/did not answer within 5 s/);
 });
 
 test("a stale ref or a heal in an embedded frame names the ref as the agent sent it, with the frame's prefix", async () => {
@@ -499,6 +581,112 @@ test("a popup an owned page opens on its own goes to the agent, and one the user
     { op: "tab", kind: "popup", tab: first.id, opener: owned.id, url: "https://example.com/popup" },
     { op: "tab", kind: "popup", tab: second.id, opener: owned.id, url: "https://example.com/popup" },
   ]);
+});
+
+// 09-30: a blank tab taken as an owned page's popup never reported in, and
+// each request to it waited 15 s for a page before failing (01a0f14c).
+test("a blank tab a click opens answers a request at once once the click has taken it", async () => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  const made: Tab[] = [];
+  opener.doc.does = (op) => (op === "click" ? (b.announce(opener), made.push(b.create(undefined, true)), { ok: true, expect: "tab" }) : {});
+  const click = b.ask(opener, "click", ["1"]);
+  await b.clock.advance(30_000);
+  const [blank] = made;
+  if (!blank) throw new Error("the click opened no tab");
+  expect((await click).value).toMatchObject({ newTab: { id: blank.id } });
+  let answer: Answer | undefined;
+  b.ask(blank, "tabInfo").then((a) => { answer = a; });
+  await b.clock.advance(0);
+  expect(answer?.error).toMatch(/did not answer/);
+});
+
+test("a blank tab an owned page opens on its own answers a request at once once taken", async () => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  b.announce(opener);
+  const blank = b.create(undefined, true);
+  await b.clock.advance(10_000);
+  let answer: Answer | undefined;
+  b.ask(blank, "tabInfo").then((a) => { answer = a; });
+  await b.clock.advance(0);
+  expect(answer?.error).toMatch(/did not answer/);
+});
+
+// 09-30: a tab the harness made itself was taken for an owned page's popup
+// when the page said one was coming in the same second, and the page's own
+// tab then went to no one. A page's tab Safari tells of while the harness
+// still waits on its own goes to the page, as of when Safari made it.
+const harnessMakes: [string, string, unknown[], number][] = [
+  ["open", "tabs.open", ["https://example.com/other", true, 1], 0],
+  ["an agent's window", "windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 0],
+  ["an agent's window Safari takes a while to open", "windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 1500],
+];
+
+test.each(harnessMakes)("a tab the harness makes for %s is no page's popup, and the page's own tab still is", async (_what, op, args, ms) => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  b.slowMakes(ms);
+  b.announce(opener);
+  const made = b.request(op, args);
+  await b.clock.advance(0);
+  const popup = b.create();
+  await b.clock.advance(10_000);
+  expect((await made).error).toBeUndefined();
+  expect(b.told.filter((m) => m.kind === "popup")).toEqual([{ op: "tab", kind: "popup", tab: popup.id, opener: opener.id, url: "https://example.com/popup" }]);
+});
+
+// 09-30: a blank tab Safari made while the keeper made a window's tab group
+// went to an agent as an owned page's popup (01a0f14c).
+test("a tab Safari makes in a window while the keeper makes its tab group is no page's popup, and once that step ends one is again", async () => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  await b.request("windows.regrouping", [1, true]);
+  b.announce(opener);
+  b.create(undefined, true);
+  await b.clock.advance(10_000);
+  await b.request("windows.regrouping", [1, false]);
+  b.announce(opener);
+  const popup = b.create();
+  await b.clock.advance(10_000);
+  expect(b.told.filter((m) => m.kind === "popup")).toEqual([{ op: "tab", kind: "popup", tab: popup.id, opener: opener.id, url: "https://example.com/popup" }]);
+});
+
+// A keeper stopped midway never says its step ended; the window's pages
+// must not lose their popups to the user for good.
+test("a window whose tab group step never ends takes a page's tab again a minute on", async () => {
+  const b = await start();
+  const opener = b.open("https://example.com/");
+  await b.own(opener);
+  await b.request("windows.regrouping", [1, true]);
+  await b.clock.advance(60_000);
+  b.announce(opener);
+  const popup = b.create();
+  await b.clock.advance(10_000);
+  expect(b.told.filter((m) => m.kind === "popup")).toEqual([{ op: "tab", kind: "popup", tab: popup.id, opener: opener.id, url: "https://example.com/popup" }]);
+});
+
+// 09-30: a second page's word that a tab is coming, in the same second,
+// replaced the first's, and the first page's tab went to the second page,
+// which may be another agent's.
+test("a page's tab goes to that page when another page, in its own window, says a tab is coming in the same second", async () => {
+  const b = await start();
+  const mine = b.open("https://example.com/");
+  const theirs = b.open("https://example.org/", true, 2);
+  await b.own(mine);
+  await b.own(theirs);
+  const made: Tab[] = [];
+  mine.doc.does = (op) => (op === "click" ? (b.announce(mine), b.announce(theirs), made.push(b.create(), b.create(undefined, false, 2)), { ok: true, expect: "tab" }) : {});
+  const click = b.ask(mine, "click", ["1"]);
+  await b.clock.advance(10_000);
+  const [own, other] = made;
+  if (!own || !other) throw new Error("the click opened no tabs");
+  expect((await click).value).toMatchObject({ newTab: { id: own.id } });
+  expect(b.told.filter((m) => m.kind === "popup")).toEqual([{ op: "tab", kind: "popup", tab: other.id, opener: theirs.id, url: "https://example.com/popup" }]);
 });
 
 // 09-30: tool-result logging missed loads an agent made through eval or

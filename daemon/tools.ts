@@ -509,7 +509,9 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   const tab = await resolveTab(opts.tab);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
-  const inPage = () => bridge.request("evalPage", [tab, code, Number(frame)], 30000).catch((e: unknown) => {
+  // The extension gets eval's limit too, and answers first, as through
+  // bridge.tab: code past it is told so, not that the request timed out.
+  const inPage = () => bridge.request("evalPage", [tab, code, Number(frame), 30000], 32000).catch((e: unknown) => {
     throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(EVAL_BLOCKED) : e;
   });
   const answer = opts.page ? inPage() : bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
@@ -1241,7 +1243,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; ref?: string; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait. The page must answer within 30 s: split long loops across calls.",
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait. Your code must end within 30 s: split long loops across calls.",
     params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, save: SAVE },
     required: ["tab"],
     run: saving("eval", (a) => {

@@ -66,7 +66,12 @@ outside the page: read `document`, `window` and the rest through
   waitForLoadState waitForURL keyboard.press keyboard.type mouse.click
   setViewportSize bringToFront close`, and Playwright's shorthands
   `page.click(target)`, `page.fill(target, text)`, `page.type(target, text)`.
-  `waitForTimeout(ms)` ends as soon as the page is quiet, ms at most.
+  `waitForTimeout(ms)` ends as soon as the page is quiet, ms at most; past
+  a minute of such waits in 10 minutes, the output says to wait on text or
+  a selector (`waitForSelector`) instead. `waitForURL` takes a function, a
+  RegExp, or Playwright's url glob (`**` any text, `*` any text but `/`,
+  `{a,b}` either, `?` itself; it covers the whole url); text with no `*` or
+  `{` matches any url containing it.
 - Downloads: `const [d] = await Promise.all([page.waitForEvent('download'),
   page.locator('Export').click()]); await d.saveAs('report.csv')`.
 - New windows: start `page.waitForEvent('popup')` before the click that

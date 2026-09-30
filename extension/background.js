@@ -165,6 +165,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       if (res !== undefined) return res;
       break;
     } catch (e) {
+      if (e.timedOut && op === "eval") throw ranPast(timeoutMs);
       if (!e.navigated) throw e;
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
@@ -185,6 +186,12 @@ function failedPage(t) {
   return t.title === "Failed to open page" || (t.title ?? "").startsWith("safari-resource:");
 }
 const unopened = (url) => new Error(`Safari could not open ${url}: the site did not answer`);
+
+// An eval the page took but did not finish in time is the agent's code
+// running long: a page that answers nothing fails its ping first, in words
+// of its own. On 09-30 evals that scrolled and slept in a loop were told
+// the page did not answer (01a0f039, 01a0f031).
+const ranPast = (ms) => new Error(`your code ran past ${Math.round(ms / 1000)} s; the page answered and is fine. Keep sleeps and long loops out of eval: a loop across steps goes in repl, and wait {text} waits for words the page will show`);
 
 // Whether the tab still holds the frame: one the page took away (GEICO's,
 // 09-29) answers nothing, while the page itself may be fine.
@@ -271,6 +278,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       if (await ownsTab(tabId)) await ownTab(opened);
       await waitReady(opened, Math.min(20000, deadline - Date.now()));
       const t = await api.tabs.get(opened);
+      readyUnlessLoading(t);
       value.newTab = { id: t.id, url: t.url, title: t.title };
     }
     return { value };
@@ -373,6 +381,21 @@ function unlessHeld(tabId, frameId, script, reply) {
   const held = Promise.withResolvers();
   const timer = setTimeout(() => ping(tabId, frameId, PING_MS, script).catch(held.reject), PING_MS);
   return Promise.race([reply, held.promise]).finally(() => clearTimeout(timer));
+}
+
+// Code in the page's own world runs by executeScript, which has no limit:
+// it gets eval's here, as a relayed eval does in toTab, and a page silent
+// to a ping after PING_MS fails it then, as above; one that navigates
+// meanwhile is left to the script's answer. On 09-30 page-world code past
+// 30 s was told only that the daemon's request timed out.
+function pageTimed(tabId, frameId, ms, run) {
+  const stop = Promise.withResolvers();
+  const held = setTimeout(() => reach(tabId, frameId, PING_MS).catch((e) => e.navigated || stop.reject(e)), PING_MS);
+  const late = setTimeout(() => stop.reject(ranPast(ms)), ms);
+  return Promise.race([run, stop.promise]).finally(() => {
+    clearTimeout(held);
+    clearTimeout(late);
+  });
 }
 
 api.tabs.onUpdated.addListener((id, info) => { if (info.status === "loading") ways.delete(id); });
@@ -785,8 +808,8 @@ async function screenshot(tabId, opts) {
 async function handle(msg) {
   const { op, args = [] } = msg;
   // A tab id from before the extension reloaded names its tab's new id.
-  // Every op with a number first takes a tab id, but these three.
-  if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus" && op !== "windows.resolve") args[0] = await resolveTab(args[0]);
+  // Every op with a number first takes a tab id, but these four.
+  if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus" && op !== "windows.resolve" && op !== "windows.regrouping") args[0] = await resolveTab(args[0]);
   switch (op) {
     case "tabs.list": {
       const tabs = await api.tabs.query({});
@@ -801,7 +824,7 @@ async function handle(msg) {
     case "tabs.open": {
       // owned: the daemon may close it, and its dialogs are answered here
       const [url, background, windowId, owned = background] = args;
-      const tab = await api.tabs.create({ url: url || "about:blank", active: !background, ...(typeof windowId === "number" ? { windowId } : {}) });
+      const [tab] = await harnessMade(async () => [await api.tabs.create({ url: url || "about:blank", active: !background, ...(typeof windowId === "number" ? { windowId } : {}) })]);
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
@@ -921,9 +944,9 @@ async function handle(msg) {
       return res && res.value;
     }
     case "evalPage": {
-      const [tabId, src, frameId] = args;
+      const [tabId, src, frameId, timeoutMs] = args;
       keepAwake(tabId);
-      const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] });
+      const [r] = await pageTimed(tabId, frameId, timeoutMs, api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] }));
       if (!r) throw new Error("the page did not run it");
       if (r.result && r.result.error) throw new Error(r.result.error);
       return r.result;
@@ -969,17 +992,28 @@ async function handle(msg) {
     case "windows.open": {
       const [url, size] = args;
       const dims = size ? { width: Math.round(size.width), height: Math.round(size.height) } : {};
-      const w = await api.windows.create({ url, focused: false, ...dims });
-      await markAgentWindow(w.id);
-      if (size) await api.windows.update(w.id, dims);
-      const [tab] = w.tabs && w.tabs.length ? w.tabs : await api.tabs.query({ windowId: w.id });
-      return { windowId: w.id, tabId: tab.id };
+      const [tab] = await harnessMade(async () => {
+        const w = await api.windows.create({ url, focused: false, ...dims });
+        return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
+      });
+      await markAgentWindow(tab.windowId);
+      if (size) await api.windows.update(tab.windowId, dims);
+      return { windowId: tab.windowId, tabId: tab.id };
     }
     // The id a window the daemon knew before the extension reloaded has
     // now, or null once it is gone.
     case "windows.resolve": {
       const id = await resolveWindow(args[0]);
       return (await api.windows.get(id).then(() => true, () => false)) ? id : null;
+    }
+    // The tab group keeper begins, or is done, making a window's tab group
+    // (spaces.ts); a tab Safari makes in the window meanwhile is its own.
+    case "windows.regrouping": {
+      const [windowId, on] = args;
+      const id = await resolveWindow(windowId);
+      if (on) regrouping.set(id, Date.now());
+      else regrouping.delete(id);
+      return { ok: true };
     }
     // A tab an agent opened for the user leaves the agent's window, which
     // goes with its tab group, for one of his own; only while it is still
@@ -1029,6 +1063,7 @@ api.tabs.onRemoved.addListener((id) => {
   pageLoads.delete(id);
   awake.delete(id);
   if (drivenTabs.delete(id)) store.set({ driven: [...drivenTabs] }).catch(() => {});
+  harnessTabs.delete(id);
   store.remove(`dialogs:${id}`).catch(() => {});
   api.storage.local.get("tabAliases").then(({ tabAliases }) => {
     if (!tabAliases) return;
@@ -1236,6 +1271,7 @@ api.windows.onFocusChanged.addListener((id) => {
 api.windows.onRemoved.addListener((id) => {
   updateList("agentWindows", (ids) => ids.filter((w) => w !== id));
   updateList("focusOrder", (ids) => ids.filter((w) => w !== id));
+  regrouping.delete(id);
   api.storage.local.get("windowAliases").then(({ windowAliases }) => {
     if (!windowAliases) return;
     for (const k of Object.keys(windowAliases)) if (windowAliases[k] === id) delete windowAliases[k];
@@ -1313,13 +1349,61 @@ if (api.tabs.onReplaced) {
 // Safari sets no openerTabId on a tab a page opens, so the page says one is
 // coming: a window.open (dialogs.js), or an action whose link or form opens
 // a tab (withOutcome in content.js). The tab made with no opener within a
-// second of that, before or after, is that page's. One nothing announced
-// is nobody's: Safari makes tabs of its own (the tab group keeper's New
-// Tab Group made one while a replay clicked, and the click took it).
+// second of that, before or after, is that page's (pairIn). One nothing
+// announced is nobody's: Safari makes tabs of its own (the tab group
+// keeper's New Tab Group made one while a replay clicked, and the click
+// took it).
 const POPUP_MS = 1000;
 const acting = new Map(); // tabId -> act's claim, while an action on it runs
-let announced = null; // { opener, at }: a page just said a tab is coming
-let unclaimed = null; // { tab, at }: a tab just made with no opener
+// Each page's word and each tab made with no opener, with its window. With
+// one of each, a second page's word in the same second replaced the
+// first's, and the first page's tab went to the second page, which may be
+// another agent's (09-30).
+const announced = new Map(); // opener tabId -> { windowId, at }
+const unclaimed = new Map(); // tabId -> { tab, windowId, at }
+// Tabs the harness makes (tabs.open, windows.open), and those Safari makes
+// in a window while the keeper makes its tab group (spaces.ts), are no
+// page's. On 09-30 a blank tab made while the keeper made a window's group
+// went to an agent as a popup, which it could neither read nor close
+// (01a0f14c); the page of an agent's window could go the same way.
+const harnessTabs = new Set();
+const creating = new Set(); // calls making tabs, each settled once they are in harnessTabs
+const regrouping = new Map(); // windowId -> when the keeper began making its tab group
+// A step that never tells its end (a keeper stopped midway) leaves the
+// window's tabs a page's again after this; one takes seconds.
+const REGROUP_MS = 60_000;
+
+// Makes tabs through Safari, which may tell of one (onCreated) before the
+// call that made it answers: a tab made while one runs waits for it.
+async function harnessMade(make) {
+  let done;
+  const settled = new Promise((resolve) => { done = resolve; });
+  creating.add(settled);
+  try {
+    const made = await make();
+    for (const t of made) harnessTabs.add(t.id);
+    return made;
+  } finally {
+    creating.delete(settled);
+    done();
+  }
+}
+
+// The entries said or made within POPUP_MS of now; the rest are forgotten.
+function recent(entries, now = Date.now()) {
+  for (const [id, e] of entries) if (now - e.at >= POPUP_MS) entries.delete(id);
+  return [...entries];
+}
+
+// The id of entries ([id, { windowId }]) to pair with: the latest in
+// windowId, as a page's tab opens beside it; with none there, the only
+// one, when nothing else waits on this side (alone): a popup window. Any
+// other would be a guess between pages, or between tabs.
+function pairIn(entries, windowId, alone) {
+  const here = entries.filter(([, e]) => e.windowId === windowId);
+  if (here.length) return here.at(-1)[0];
+  return alone && entries.length === 1 ? entries[0][0] : undefined;
+}
 
 // The tab goes to the action running on its opener. Outside an action, one
 // an owned tab's page opens on its own (a sign-in popup a script opens
@@ -1335,33 +1419,54 @@ function adoptPopup(t, opener) {
     if (ready.get(t.id) !== true) ready.set(t.id, false);
     await ownTab(t.id);
     await waitReady(t.id, 3000);
-    const now = await api.tabs.get(t.id).catch(() => t);
-    send({ op: "tab", kind: "popup", tab: t.id, opener, url: now.url || t.pendingUrl || "" });
+    const now = await api.tabs.get(t.id).catch(() => null);
+    if (now) readyUnlessLoading(now);
+    send({ op: "tab", kind: "popup", tab: t.id, opener, url: (now ?? t).url || t.pendingUrl || "" });
   }, 0);
 }
 
-// A page said a tab is coming. The tab made with no opener within
-// POPUP_MS, before or after, is its.
-function announce(opener) {
-  if (unclaimed && Date.now() - unclaimed.at < POPUP_MS && unclaimed.tab.id !== opener) {
-    const t = unclaimed.tab;
-    unclaimed = null;
-    adoptPopup(t, opener);
-  } else announced = { opener, at: Date.now() };
+// A tab a page opens is not ready until its page reports in (claim in act,
+// adoptPopup). One that reads "complete" once that wait ends is loading
+// nothing more: a blank one takes no script, so it never reports in, and
+// each request to it waited 15 s for a page before failing (01a0f14c,
+// 09-30). It is ready as it stands; a load in it later is waited for.
+function readyUnlessLoading(t) {
+  if (t.status === "complete") markReady(t.id);
+}
+
+// A page said a tab is coming: one made with no opener within POPUP_MS
+// before is its, else one made after (onCreated).
+function announce(opener, windowId) {
+  const alone = recent(announced).length === 0;
+  const id = pairIn(recent(unclaimed).filter(([tabId]) => tabId !== opener), windowId, alone);
+  if (id === undefined) {
+    announced.set(opener, { windowId, at: Date.now() });
+    return;
+  }
+  const { tab } = unclaimed.get(id);
+  unclaimed.delete(id);
+  adoptPopup(tab, opener);
 }
 
 api.runtime.onMessage.addListener((m, sender) => {
-  if (m && m.__safariHarnessPopup === 1 && sender.tab) announce(sender.tab.id);
+  if (m && m.__safariHarnessPopup === 1 && sender.tab) announce(sender.tab.id, sender.tab.windowId);
 });
 
-api.tabs.onCreated.addListener((t) => {
-  let opener = t.openerTabId;
-  if (announced && Date.now() - announced.at < POPUP_MS && (opener === undefined || opener === announced.opener)) {
-    opener = announced.opener;
-    announced = null;
+api.tabs.onCreated.addListener(async (t) => {
+  // As of when Safari told of the tab, not after the wait on the harness's
+  // own calls below: a page's word could expire meanwhile.
+  const at = Date.now();
+  const since = regrouping.get(t.windowId);
+  if (since !== undefined && at - since < REGROUP_MS) harnessTabs.add(t.id);
+  if (creating.size) await Promise.all(creating);
+  if (harnessTabs.has(t.id)) return;
+  const opener = t.openerTabId ?? pairIn(recent(announced, at), t.windowId, recent(unclaimed, at).length === 0);
+  if (opener === undefined) {
+    unclaimed.set(t.id, { tab: t, windowId: t.windowId, at });
+    return;
   }
-  if (opener === undefined) unclaimed = { tab: t, at: Date.now() };
-  else adoptPopup(t, opener);
+  announced.delete(opener);
+  adoptPopup(t, opener);
 });
 
 // ---------- keeping owned tabs running ----------

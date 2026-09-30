@@ -614,6 +614,23 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Billing\s+Max plan, renews Oct 1\.\s+Close$/), note: expect.any(String) } } }],
   },
   {
+    name: "a root or selector of dialog reads the dialog open over the page, a div, and neither a closed dialog element nor the page behind it",
+    page: "slate-dialog.html",
+    steps: [
+      { op: "snapshot", args: [{ root: "dialog" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*(fund|expire))[\s\S]*Parent\/Guardian Details 2027[\s\S]*Save/) } } },
+      { op: "extract", args: [{ selector: "dialog" }], answer: { value: { text: expect.stringMatching(/^(?![\s\S]*(fund|expire))[\s\S]*Parent\/Guardian Details 2027[\s\S]*Occupation/) } } },
+    ],
+  },
+  {
+    name: "a root named as a click's answer names a dialog reads that dialog beneath a second one, which a root of dialog reads",
+    page: "slate-dialog.html",
+    steps: [
+      { op: "click", args: ["Save"] }, // opens "1 required field was not completed." over the popup
+      { op: "snapshot", args: [{ root: "dialog" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Parent)[\s\S]*1 required field/) } } },
+      { op: "snapshot", args: [{ root: 'dialog "Parent/Guardian Details 2027"' }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*required field)[\s\S]*Occupation/) } } },
+    ],
+  },
+  {
     name: "extract reads the whole page when its main region holds little of its text, and says so",
     page: "thin-main.html",
     steps: [{ op: "extract", answer: { value: { text: expect.stringContaining("renews October 12"), note: expect.any(String) } } }],
@@ -817,6 +834,21 @@ benchRows("content.js in WebKit", [
       { op: "fillCard", args: ["", { number: "4242424242424242", month: 7, year: 2029, csc: "123", zip: "94107" }, ["4242424242424242", "123"]], frame: "card-processor.html", answer: { value: { ok: true, filled: ["number", "expiry", "security code", "zip"] } } },
       { op: "click", args: ["Check"], frame: "card-processor.html" },
       { op: "extract", frame: "card-processor.html", answer: { value: { text: expect.stringContaining("Card ending 4242, expiring 07/2029, code length 3, ZIP 94107.") } } },
+    ],
+  },
+  // On 09-30 (01a0f14c) a[href="/apply/frm?…"], copied from a snapshot,
+  // matched nothing on Slate, whose links say href="frm?…": the snapshot
+  // shows where a link goes, and CSS compared the attribute as written.
+  {
+    name: "a selector's href matches a link written relative, by the address it resolves to, in either form a snapshot shows",
+    page: "relative-link.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('link "Activities" /apply/frm?6c134363') } } },
+      { op: "click", args: ['a[href="/apply/frm?6c134363"]'] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Opened Activities") } } },
+      { op: "click", args: ["nav a[href='file:///apply/frm?b8062e25']"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Opened Read This First") } } },
+      { op: "click", args: ['a[href="/apply/frm?0000"]'], answer: { error: expect.stringMatching(/^nothing on the page matches/) } },
     ],
   },
 ]);

@@ -40,6 +40,29 @@ function targetOf(target: unknown): string {
   return m ? m[1] : t;
 }
 
+// A url glob as Playwright reads one: ** is any text, * any text but "/",
+// {a,b} either choice, \ keeps the next character as it is, and ? is itself.
+// The glob covers the whole url. waitForURL('**/apply/frm?<id>') ran out its
+// 30 s on that very address, the glob read as text to find (09-30).
+function globRegExp(glob: string): RegExp {
+  const literal = (c: string) => c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  let re = "";
+  let group = false;
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "\\" && i + 1 < glob.length) re += literal(glob[++i]);
+    else if (c === "*" && glob[i + 1] === "*") {
+      while (glob[i + 1] === "*") i++;
+      re += ".*";
+    } else if (c === "*") re += "[^/]*";
+    else if (c === "{") [group, re] = [true, re + "(?:"];
+    else if (c === "}" && group) [group, re] = [false, re + ")"];
+    else if (c === "," && group) re += "|";
+    else re += literal(c);
+  }
+  return new RegExp(`^${re}$`);
+}
+
 // fs functions whose first two arguments are both paths.
 const TWO_PATHS = new Set(["copyFile", "cp", "rename", "link"]);
 
@@ -351,15 +374,20 @@ export class Page {
   }
   // Ends once the page is quiet, ms at most, as a wait with only ms does
   // (tools.ts): fixed sleeps in scripts held agents over a minute. The wait
-  // tool takes 30 s at a time.
+  // tool takes 30 s at a time. Each part goes as the model's own wait: a
+  // script's pause is the agent's sleep, and on 09-30 scripts slept 161 s
+  // in 46 of them past the budget whose hint (guard.ts) never reached them.
   async waitForTimeout(ms: number): Promise<void> {
+    let hint: unknown;
     for (let left = Number(ms); left > 0; ) {
       const part = Math.min(left, 30_000);
-      const r = (await this.session.call("wait", { tab: this.id, ms: part })) as { waitedMs?: number };
+      const r = (await this.session.call("wait", { tab: this.id, ms: part }, true)) as { waitedMs?: number; hint?: unknown };
+      if (r?.hint !== undefined) hint = r.hint;
       const waited = r?.waitedMs ?? part;
-      if (waited < part) return;
+      if (waited < part) break;
       left -= waited;
     }
+    this.session.showHint(hint);
   }
   async waitForLoadState(_state?: string, opts: { timeout?: number } = {}): Promise<void> {
     const limit = opts.timeout ?? 30_000;
@@ -372,7 +400,10 @@ export class Page {
   async waitForURL(want: unknown, opts: { timeout?: number } = {}): Promise<void> {
     const limit = opts.timeout ?? 30_000;
     const start = Date.now();
-    const matches = (u: string) => (typeof want === "function" ? Boolean(want(new URL(u))) : Object.prototype.toString.call(want) === "[object RegExp]" ? (want as RegExp).test(u) : u === String(want) || u.includes(String(want)));
+    // Text with no * or {} is still found anywhere in the url, as before.
+    const text = String(want);
+    const glob = typeof want === "string" && /[*{]/.test(want) ? globRegExp(want) : null;
+    const matches = (u: string) => (typeof want === "function" ? Boolean(want(new URL(u))) : Object.prototype.toString.call(want) === "[object RegExp]" ? (want as RegExp).test(u) : glob ? glob.test(u) : u === text || u.includes(text));
     while (!matches((await this.info()).url)) {
       if (Date.now() - start > limit) throw new Error(`url did not match within ${Math.round(limit / 1000)} s; it is ${this.#url}`);
       await Bun.sleep(250);
@@ -557,8 +588,8 @@ export class ReplSession {
     }
   }
 
-  call(tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    return this.#invoke(tool, args);
+  call(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
+    return this.#invoke(tool, args, model);
   }
 
   get page(): Page | undefined {
@@ -569,6 +600,12 @@ export class ReplSession {
   // result's notes go to the script's output even if it prints nothing.
   showNotes(result: unknown): void {
     if (result && typeof result === "object" && "notes" in result && typeof result.notes === "string") this.#out.push(result.notes);
+  }
+
+  // A hint beside a result goes to the script's output on a line of its
+  // own, as formatResult prints one (tools.ts).
+  showHint(hint: unknown): void {
+    if (typeof hint === "string") this.#out.push(`hint: ${hint}`);
   }
 
   // Runs one call's code after any earlier call has finished.
@@ -685,6 +722,10 @@ export class ReplSession {
     const row = (await this.#rows(true)).find((r) => r.id === id);
     if (!row) throw new Error(`no open tab ${String(targetId)}; see listBrowserTabs()`);
     const p = this.#attached(row);
+    // The tab list cuts a tab not this session's to origin and path, and a
+    // named session is its own owner: an agent's own tab lost its query
+    // (09-30). info answers with the tab's full address.
+    await p.info();
     this.#page = p;
     return p;
   }

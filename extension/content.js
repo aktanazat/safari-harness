@@ -781,7 +781,7 @@
 
   function outline(opts = {}, walkOnly = false) {
     pruneRefs();
-    const root = opts.root ? deepQuery(opts.root) : document.body;
+    const root = opts.root ? rootFor(opts.root) : document.body;
     if (!root) return noMatch("root", opts.root);
     const maxLines = opts.maxNodes || 600;
     const query = opts.query ? queryMatch(opts.query) : null;
@@ -1132,12 +1132,46 @@
 
   // A selector's first shown match, one in the open dialog first: SUECU's
   // sign-in typed into the page's own email field, behind the dialog that
-  // asked for it (09-29).
+  // asked for it (09-29). A selector that matches nothing is tried once more
+  // with its links matched by where they go.
   function bySelector(selector) {
     let all;
     try { all = deepQueryAll(selector); } catch { return null; }
+    if (!all.length) all = byHref(selector);
     const box = openDialog();
     return (box && all.find((el) => box.contains(el) && shown(el))) ?? all.find(shown) ?? all[0] ?? null;
+  }
+
+  // The selector's matches with each [href=V] widened to the href attributes
+  // on the page that resolve to V's address. CSS compares the attribute as
+  // written: Slate writes href="frm?…", the snapshot shows /apply/frm?…, and
+  // a[href="/apply/frm?…"] copied from it matched nothing (09-30).
+  const HREF_EQUALS = /\[\s*href\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^\s\]"']+))\s*\]/g;
+  function byHref(selector) {
+    const resolved = (href) => {
+      try { return new URL(href, document.baseURI).href; } catch { return null; }
+    };
+    let written = null;
+    const widened = selector.replace(HREF_EQUALS, (whole, dq, sq, bare) => {
+      const want = resolved((dq ?? sq ?? bare).replace(/\\(.)/g, "$1"));
+      written ??= [...new Set(deepQueryAll("[href]").map((el) => el.getAttribute("href")))];
+      const same = want === null ? [] : written.filter((href) => resolved(href) === want);
+      return same.length ? `:is(${same.map((href) => `[href="${CSS.escape(href)}"]`).join(",")})` : whole;
+    });
+    if (widened === selector) return [];
+    try { return deepQueryAll(widened); } catch { return []; }
+  }
+
+  // A read's root or selector. "dialog" is the dialog open over the page, and
+  // the name an action's answer gives one (dialog "Parent/Guardian Details
+  // 2027") is that dialog, found as the answer found it: Slate's popups are
+  // divs, so the CSS "dialog" matched nothing and the name was not CSS
+  // (09-30). Any other selector is CSS.
+  function rootFor(selector) {
+    const want = selector.trim();
+    if (want === "dialog") return openDialog() ?? deepQuery(selector);
+    if (!/^[\w-]+ ".*"$/s.test(want)) return deepQuery(selector);
+    return deepQueryAll(DIALOG_BOXES).filter(shown).findLast((box) => named(box) === want) ?? null;
   }
 
   // Controls whose name is the text win, then any element whose own text it
@@ -2352,7 +2386,7 @@
   // still loading at the limit.
   async function extract(opts = {}) {
     if (opts.as === "table") return tables(opts);
-    let at = opts.selector ? { root: deepQuery(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
+    let at = opts.selector ? { root: rootFor(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
     if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     let read = tidyText(at.root);
     const waits = !opts.selector && !opts.query && window === window.top;
@@ -2427,7 +2461,7 @@
   // Tables and card lists under the root, in page order, each list once: a
   // list inside a card of one already read is part of that card.
   function tables(opts) {
-    const root = opts.selector ? deepQuery(opts.selector) : document.body;
+    const root = opts.selector ? rootFor(opts.selector) : document.body;
     if (!root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     const found = [];
     const lists = [];

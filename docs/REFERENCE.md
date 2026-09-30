@@ -14,8 +14,9 @@ Three ways in:
 - **CLI.** `safari <command>` runs one tool and prints JSON. Good for scripts and
   quick checks. `safari --help` lists every command, and `safari <command>
   --help` its parameters, which also work as flags (`click --ref 3`). Any
-  tool runs by name: `safari passwords --do logins --tab N`. Pass `--json`
-  when a program reads the output.
+  tool runs by name: `safari passwords --do logins --tab N`. A call's JSON
+  goes through `safari call <tool> '<json>'`; given as a command's word it
+  is refused. Pass `--json` when a program reads the output.
 - **Routines.** A saved task plus a schedule, run unattended by headless omp
   with the same tools. See "Routines" below.
 
@@ -293,7 +294,11 @@ Read with `snapshot` when you do not yet know what is on the page.
   is loading. Please wait", or `aria-busy` on its main region or body, gets
   up to 2 s to draw; those lines are left out, with a `note`, and
   `loading: true` says the page was still loading then.
-- `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
+- `root` (a CSS selector) narrows the snapshot to one region. `root: "dialog"`
+  reads the dialog open over the page, the one an action's answer names, even
+  when the site draws it with divs, and the name that answer gives
+  (`dialog "Parent/Guardian Details 2027"`) reads that dialog. An `extract`
+  `selector` takes the same two.
   A `root`, or an `extract` `selector`, that matches nothing fails and names
   it: `nothing on the page matches root "main"; leave root out to read the
   whole page`.
@@ -362,7 +367,10 @@ Escalate in this order:
    another program, hand over a script with `safari eval --file path` (or
    pipe it in) instead of escaping it onto one line; `--save <path>` names
    the file the answer goes to. A script that does not parse fails with the
-   error in its statements.
+   error in its statements. Code gets 30 s: past that the error says your
+   code ran long, and that the page answered. Keep sleeps and long loops
+   out of `eval`: a loop across steps goes in `repl`, and `wait {text}`
+   waits for words the page will show.
 
 `data` returns what the page itself declares, as JSON: JSON-LD, microdata,
 meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the
@@ -452,6 +460,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   and title instead of read. Never sleep inside `expression` for this.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read.
+- The call answers by 50 s, inside the 60 s an MCP client may give it,
+  with the pages read so far. A page not read by then is reported in its
+  place as unfinished: map those again, in a call with fewer pages. One
+  still being read goes on, and its tab closes when it ends; with `save`,
+  it writes no file.
 - A bot check that stands in for a page is waited on as `open` waits on
   one, then reported with `challenge` if it is still up; its page is not
   read. Open that page yourself and `handoff` it if the user should pass
@@ -521,7 +534,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   with `real_input` and the ref, then click again.
 - A button made of an `input` is named by its value ("Place order"), an
   image button by its alt. A CSS selector that matches a field in the open
-  dialog and one behind it acts on the dialog's.
+  dialog and one behind it acts on the dialog's. A selector's `[href="..."]`
+  also matches a link by where it goes, so the address a snapshot shows
+  (`a[href="/apply/frm?id"]`) finds a link written `href="frm?id"`.
 - `click`, `type`, and `select` on a disabled control (the snapshot marks
   it `{disabled}`) fail and say so: the page would ignore the action. A
   page enables its button once its form is complete; a few enable one only
@@ -714,7 +729,8 @@ Wait for the page, not the clock.
   still lists a `pending` request answers with `next` saying to `wait
   --quiet` (or on text), which returns when that request's change lands.
   Past a minute of such waits in 10 minutes, each answer carries a `hint`
-  to wait on text or a selector instead.
+  to wait on text or a selector instead. A script's `page.waitForTimeout`
+  counts toward the same minute, and its output carries the same hint.
 - The same call again and again with the same answer is a loop. The sixth
   in a row within 3 minutes (the same tool and arguments, and the same page
   or the same error) fails with what to do instead: "you called info on tab
@@ -858,9 +874,10 @@ plain sentence of at most 300 characters.
   agent gets a site's line once, whichever of its subdomains it opens
   first, and again on a page not found there.
 - `safari guide <site>` prints the bundled guide, then the notes and
-  readers saved for that host; by name (`safari guide slack`) it also
-  shows those of each subdomain its hosts cover. `safari guide sites` ends
-  with the hosts that have notes or readers.
+  readers saved for that host and its subdomains (`uscis.gov` shows
+  `my.uscis.gov`'s); by name (`safari guide slack`), those of every host
+  its guide covers. `safari guide sites` ends with the hosts that have
+  notes or readers.
 - They are plain files, one per host, in
   `~/.local/share/safari-harness/notes/<host>.md`, a line per fact with its
   date and the name of the agent's program (`omp`, `claude`), and readers

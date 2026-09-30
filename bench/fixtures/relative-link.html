@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Slate writes its form links relative to /apply/ (href="frm?…"); the
+     snapshot shows each as the path it resolves to. -->
+<base href="file:///apply/">
+<title>Read This First</title>
+</head>
+<body>
+<nav>
+  <a href="frm?b8062e25" onclick="return go(this)">Read This First</a>
+  <a href="frm?6c134363" onclick="return go(this)">Activities</a>
+</nav>
+<p id="out">No form opened</p>
+<script>
+  function go(a) {
+    document.getElementById("out").textContent = "Opened " + a.textContent;
+    return false;
+  }
+</script>
+</body>
+</html>

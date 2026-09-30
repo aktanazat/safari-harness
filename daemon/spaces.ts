@@ -89,6 +89,15 @@ const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`
 
 const listTabs = async () => (await bridge.request("tabs.list")) as TabInfo[];
 
+// The keeper begins, or is done, making space's window a tab group. The
+// extension takes no tab Safari makes in the window meanwhile for a page's
+// popup (09-30: a blank one went to an agent, which could neither read nor
+// close it; 01a0f14c). A quit Safari hears nothing, and one that cannot
+// answer does not hold up the keeper.
+async function regrouping(space: Space, on: boolean) {
+  if (bridge.connected) await bridge.request("windows.regrouping", [space.window, on]).catch(() => undefined);
+}
+
 // The tabs in space's window, which the window's new id names after an
 // extension reload.
 async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
@@ -233,6 +242,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (!live) return { ok: false };
       live.group = "making";
       save();
+      await regrouping(live, true);
       return { ok: true };
     case "grouped":
     case "plain":
@@ -240,6 +250,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const held = closing.get(name);
       const s = live ?? (held?.group === "making" ? held : undefined);
       if (!s) return { ok: false };
+      await regrouping(s, false);
       s.group = a.op;
       s.why = a.op === "plain" ? String(a.why ?? "") : undefined;
       if (s === held && a.op !== "grouped") {

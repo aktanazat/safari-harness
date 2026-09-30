@@ -21,6 +21,8 @@ type Tab = { id: number; url: string; windowId: number; active: boolean };
 function safari() {
   const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", windowId: 1, active: true }]]);
   const closed: number[] = [];
+  // Windows the extension holds the keeper to be making a tab group of.
+  const regrouping = new Set<number>();
   // What the extension maps the ids it had before a reload to (adopt in
   // background.js).
   const oldTabs = new Map<number, number>();
@@ -54,6 +56,11 @@ function safari() {
       if (t && t.windowId === windowId) t.windowId = next++;
       return { ok: true };
     },
+    "windows.regrouping": ([id, on]) => {
+      if (on) regrouping.add(id as number);
+      else regrouping.delete(id as number);
+      return { ok: true };
+    },
   };
   const sock: ExtSocket = {
     send(data) {
@@ -73,7 +80,7 @@ function safari() {
       tabs.set(oldTabs.get(t.id)!, { ...t, id: oldTabs.get(t.id)!, windowId: oldWindows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, reload, oldTabs };
+  return { tabs, closed, sock, reload, oldTabs, regrouping };
 }
 
 // An agent process, to open tabs for and then end.
@@ -211,6 +218,23 @@ test("a window whose agent exits while its group is being made stays until the k
   const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
   expect(spaces.filter((x) => x.name === made.space.name || x.name === failed.space.name)).toMatchObject([{ name: made.space.name, ended: true }]);
   await spaceTool({ op: "gone", name: made.space.name });
+});
+
+// 09-30: a blank tab Safari made while the keeper made a window's tab group
+// went to an agent as a page's popup (01a0f14c). The extension leaves out
+// tabs made in that window while it holds the keeper to be at work there.
+test("the extension hears a window's tab group is being made from making until the keeper says how that went", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => openTab("https://grouping.example/", true, "grouping"));
+  const { name } = t.space;
+  expect(await spaceTool({ op: "making", name })).toEqual({ ok: true });
+  expect([...s.regrouping]).toEqual([t.windowId]);
+  await spaceTool({ op: "plain", name, why: "the new group took no name" });
+  expect([...s.regrouping]).toEqual([]);
+  const page = pageIn(s.tabs, t.windowId)!;
+  g.kill();
+  await until(() => s.closed.includes(page.id));
 });
 
 // A deploy restarts the daemon while a long-lived agent's window is its
