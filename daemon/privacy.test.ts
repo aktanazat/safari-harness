@@ -100,6 +100,9 @@ test("addresses keep an order id and lose a code, a state, and a token, whatever
   expect(redactUrl("https://id.example/auth/reset-password/-CElcrj8NPTkN8ov1orV?redirectTo=/oauth?view=login%26state=eyJsb2dp%26scope=openid")).toBe("https://id.example/auth/reset-password/...?redirectTo=/oauth?view=login%26state=...%26scope=openid");
   expect(redactUrl("/docs/reset/overview and /orders/confirm/12345")).toBe("/docs/reset/overview and /orders/confirm/12345");
   expect(redacted({ title: "https://auth.example/u/login?state=hKFo2SA", text: "a state=x in words" })).toEqual({ title: "https://auth.example/u/login?state=...", text: "a state=x in words" });
+  expect(redacted({ title: "255551 is your password reset code - me@example.com - Mail" })).toEqual({ title: "... is your password reset code - me@example.com - Mail" });
+  expect(redacted({ title: "Order 20260930 shipped - Mail" })).toEqual({ title: "Order 20260930 shipped - Mail" });
+  expect(redacted({ snapshot: "# 255551 is your code - Mail — https://mail.example/u/2\n[1] button \"Reply\"\ncase 1234 filed" })).toEqual({ snapshot: "# ... is your code - Mail — https://mail.example/u/2\n[1] button \"Reply\"\ncase 1234 filed" });
   expect(redacted({ url: "https://a.example/?sig=abc", snapshot: '[3] link "Back" /cb?code=abc&order=7\n[4] link "Next" /p?page=2', steps: [{ value: { url: "https://b.example/?token=t" } }] })).toEqual({
     url: "https://a.example/?sig=...",
     snapshot: '[3] link "Back" /cb?code=...&order=7\n[4] link "Next" /p?page=2',
