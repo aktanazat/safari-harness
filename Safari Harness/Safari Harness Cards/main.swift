@@ -1,12 +1,15 @@
 // The user's payment cards, kept in this Mac's keychain for the harness to
 // fill checkout forms with (daemon/cards.ts), so an agent pays without seeing
-// a card's digits. Each card is a data-protection keychain item in this app's
-// own keychain group, which only an app signed with its entitlement reaches.
-// A provisioning profile grants that entitlement, so this is an Xcode target
-// embedded in Safari Harness.app rather than a script. A card's data opens
-// only with Touch ID; what names it (brand, last 4, expiry, name on the
-// card) sits in the item's attributes, which open without it, so listing
-// never asks. The Mac's login password does not substitute for Touch ID.
+// a card's digits. Each card is two data-protection keychain items in this
+// app's own keychain group, which only an app signed with its entitlement
+// reaches. A provisioning profile grants that entitlement, so this is an
+// Xcode target embedded in Safari Harness.app rather than a script. A card's
+// data opens only with Touch ID, and the keychain lists no item guarded so
+// without asking for it: with one card saved, a list that may not ask failed
+// as if the Mac were locked (09-30). What names the card (brand, last 4,
+// expiry, name on the card) is its own item, open while the Mac is unlocked,
+// so listing never asks. The Mac's login password does not substitute for
+// Touch ID.
 //   list                  {"cards": [{id, label, brand, last4, exp, name}]}
 //   save                  the card as JSON on stdin, {number, exp, csc, and
 //                         optionally name, zip, label}: {"saved": card}. It
@@ -26,7 +29,10 @@ import Foundation
 import LocalAuthentication
 import Security
 
+// A card's data, behind Touch ID, and what names it, each item under the
+// card's id.
 let service = "at.aktan.safari-harness.card"
+let labelService = "at.aktan.safari-harness.card-label"
 // How long one Touch ID opens reads for (owner's choice, 10-01).
 let approvalSeconds: TimeInterval = 5 * 60
 // A prompt nobody answers is taken down after this.
@@ -63,7 +69,7 @@ func answer(_ body: () throws -> [String: Any]) -> Never {
 
 // ---------- a card ----------
 
-// What names a card, in its item's attributes: agents see this.
+// What names a card, in its label item: agents see this.
 struct Label: Codable {
     let label: String
     let brand: String
@@ -72,7 +78,7 @@ struct Label: Codable {
     let name: String
 }
 
-// What fills a card in, in its item's data: behind Touch ID.
+// What fills a card in, in its card item: behind Touch ID.
 struct Secret: Codable {
     let number: String
     let month: Int
@@ -156,8 +162,8 @@ func card(from input: [String: Any]) throws -> (Label, Secret) {
 
 // ---------- the keychain ----------
 
-func query(_ extra: [CFString: Any] = [:]) -> CFDictionary {
-    var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecUseDataProtectionKeychain: true]
+func query(_ of: String, _ extra: [CFString: Any] = [:]) -> CFDictionary {
+    var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: of, kSecUseDataProtectionKeychain: true]
     q.merge(extra) { $1 }
     return q as CFDictionary
 }
@@ -181,13 +187,13 @@ struct Stored {
     let label: Label
 }
 
-// Every saved card by its attributes. The context forbids a prompt, so a
+// Every saved card by its label item. The context forbids a prompt, so a
 // list can never ask for Touch ID.
 func stored() throws -> [Stored] {
     let context = LAContext()
     context.interactionNotAllowed = true
     var out: CFTypeRef?
-    let status = SecItemCopyMatching(query([kSecMatchLimit: kSecMatchLimitAll, kSecReturnAttributes: true, kSecUseAuthenticationContext: context]), &out)
+    let status = SecItemCopyMatching(query(labelService, [kSecMatchLimit: kSecMatchLimitAll, kSecReturnAttributes: true, kSecUseAuthenticationContext: context]), &out)
     if status == errSecItemNotFound { return [] }
     guard status == errSecSuccess, let items = out as? [[String: Any]] else { throw keychainFailure(status, "list the cards") }
     return try items.map { item in
@@ -208,28 +214,39 @@ func find(_ id: String) throws -> Stored {
     return card
 }
 
-// The card goes in as a new item, and only then does the one it replaces go.
+// The card goes in as new items, and only then does the one it replaces go.
 func save(_ input: [String: Any]) throws -> [String: Any] {
     let (label, secret) = try card(from: input)
     var error: Unmanaged<CFError>?
     guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .biometryAny, &error) else {
         throw Failure("the keychain could not make the card's access rule: \(error.map { $0.takeRetainedValue().localizedDescription } ?? "no reason given")")
     }
+    let data = try JSONEncoder().encode(secret)
+    let names = try JSONEncoder().encode(label)
     let replaced = try stored().filter { $0.label.label == label.label }
     let id = UUID().uuidString
-    let item: [CFString: Any] = [
-        kSecAttrAccount: id,
-        kSecAttrLabel: "Safari Harness card \(label.label)",
-        kSecAttrGeneric: try JSONEncoder().encode(label),
-        kSecAttrAccessControl: access,
-        kSecValueData: try JSONEncoder().encode(secret),
-    ]
-    let status = SecItemAdd(query(item), nil)
+    let status = SecItemAdd(query(service, [kSecAttrAccount: id, kSecAttrAccessControl: access, kSecValueData: data]), nil)
     guard status == errSecSuccess else { throw keychainFailure(status, "save the card") }
+    let named = SecItemAdd(query(labelService, [kSecAttrAccount: id, kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly, kSecAttrGeneric: names]), nil)
+    guard named == errSecSuccess else {
+        _ = SecItemDelete(query(service, [kSecAttrAccount: id]))
+        throw keychainFailure(named, "save the card")
+    }
     var saved = described(Stored(id: id, label: label))
-    let left = replaced.filter { SecItemDelete(query([kSecAttrAccount: $0.id])) != errSecSuccess }
+    let left = replaced.filter { forget($0.id, nil) != errSecSuccess }
     if !left.isEmpty { saved["note"] = "an older card saved as \(label.label) could not be removed; remove it with rm \(left.map(\.id).joined(separator: ", "))" }
     return saved
+}
+
+// Deletes the card under id, its data first: a label left naming nothing
+// goes with the next rm, but data left without its label no command
+// reaches. Its data being gone already is no error.
+func forget(_ id: String, _ context: LAContext?) -> OSStatus {
+    var card: [CFString: Any] = [kSecAttrAccount: id]
+    if let context { card[kSecUseAuthenticationContext] = context }
+    let status = SecItemDelete(query(service, card))
+    guard status == errSecSuccess || status == errSecItemNotFound else { return status }
+    return SecItemDelete(query(labelService, [kSecAttrAccount: id]))
 }
 
 // Asks Touch ID, with the reason finishing "Safari Harness Cards is trying
@@ -266,7 +283,7 @@ func authenticate(_ context: LAContext, reason: String) throws {
 
 func secret(_ id: String, _ context: LAContext) throws -> [String: Any] {
     var out: CFTypeRef?
-    let status = SecItemCopyMatching(query([kSecAttrAccount: id, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne, kSecUseAuthenticationContext: context]), &out)
+    let status = SecItemCopyMatching(query(service, [kSecAttrAccount: id, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne, kSecUseAuthenticationContext: context]), &out)
     guard status == errSecSuccess, let data = out as? Data else { throw keychainFailure(status, "read the card") }
     let s = try JSONDecoder().decode(Secret.self, from: data)
     return ["number": s.number, "month": s.month, "year": s.year, "csc": s.csc, "name": s.name, "zip": s.zip]
@@ -274,8 +291,9 @@ func secret(_ id: String, _ context: LAContext) throws -> [String: Any] {
 
 func remove(_ id: String) throws -> [String: Any] {
     let card = try find(id)
-    try authenticate(LAContext(), reason: "remove your card \(card.label.label) from Safari Harness")
-    let status = SecItemDelete(query([kSecAttrAccount: id]))
+    let context = LAContext()
+    try authenticate(context, reason: "remove your card \(card.label.label) from Safari Harness")
+    let status = forget(id, context)
     guard status == errSecSuccess else { throw keychainFailure(status, "remove the card") }
     return described(card)
 }
