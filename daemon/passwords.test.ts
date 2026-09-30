@@ -294,6 +294,23 @@ test("while the Mac waits on Touch ID, status and every other password call say 
   expect(await locked(runAs(AGENT, () => p.pair()))).toStartWith(waits);
 });
 
+// On 09-29 five password-reset agents shared one Mac, and each call held
+// up by another's Touch ID told its agent to ask him to approve a site it
+// was not working on.
+test("another agent's call held up by a Touch ID wait hears that the wait is not its own", async () => {
+  const { p } = scratch();
+  fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  void locked(runAs(AGENT, () => p.fill(7)));
+  await hold.asked;
+  expect(await locked(runAs(OTHER, () => p.fill(7)))).toStartWith(`another agent's request (a sign-in for ${SITE}) is waiting for the user to approve it with Touch ID`);
+});
+
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
 const settled = () => new Promise<void>((r) => setImmediate(r));
 

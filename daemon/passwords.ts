@@ -52,8 +52,10 @@ const LINK_MS = 20000;
 // fill outlasted the agent's 60 s call, and every call for four minutes
 // after read "did not answer". So a call answers within ANSWER_MS, the
 // request goes on, and its answer waits for the call that asks again.
-// A first call that pairs keeps the same bound (pair.ts).
-export const ANSWER_MS = 40000;
+// A first call that pairs keeps the same bound (pair.ts). It is under 30 s,
+// where omp moves a shell command to the background: at 40 s each fill
+// that waited on him cost the agent an extra turn (09-29).
+export const ANSWER_MS = 25000;
 // A password kept for that call lasts while the agent asks him and he
 // answers; a code changes every 30 s.
 const KEEP_PASSWORD_MS = 5 * 60_000;
@@ -167,7 +169,9 @@ type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: st
 // is for, the call that gets its answer, and how long an answer that lands
 // after that call gave up is kept for the next.
 type Ask = { key: string; what: string; again: string; keepMs: number };
-type Approval = Ask & { since: number; reply: Promise<Record<string, unknown>>; landed: boolean; gaveUp: boolean; drop?: () => void };
+// owner: the agent whose call asked (owner.ts), so another agent's call it
+// holds up hears that the wait is not its own.
+type Approval = Ask & { since: number; owner: number | undefined; reply: Promise<Record<string, unknown>>; landed: boolean; gaveUp: boolean; drop?: () => void };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -473,11 +477,16 @@ export class ApplePasswords {
   }
 
   // Replies carry no request id, so one request at a time, and none while
-  // the helper waits on Touch ID.
+  // the helper waits on Touch ID. On 09-29 agents resetting passwords were
+  // told to ask him to approve sites other agents had asked for.
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const go = () => {
       const a = this.approval;
-      if (a && !a.landed) throw new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
+      if (a && !a.landed) {
+        const since = localTime(new Date(a.since));
+        if (a.owner !== currentOwner()) throw new Error(`another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call did not run; call again once he has, or sign in another way (the site's emailed code or reset link)`);
+        throw new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
+      }
       return fn();
     };
     const run = this.queue.then(go, go);
@@ -720,7 +729,7 @@ export class ApplePasswords {
       const kept = this.approval;
       if (kept?.key === ask.key) return kept;
       const s = await this.session();
-      const next: Approval = { ...ask, since: this.timers.now(), reply: request(await this.ensureLink(), s), landed: false, gaveUp: false };
+      const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), landed: false, gaveUp: false };
       this.approval = next;
       next.reply.then(() => {
         next.landed = true;
