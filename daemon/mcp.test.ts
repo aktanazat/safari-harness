@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { CALLER_TOOLS } from "./caller.ts";
+import { checkCall } from "./guard.ts";
+import { TOOLS } from "./tools.ts";
 
 // MCP clients put the whole tool list in front of the model on every turn, so
 // each byte here is paid on every step of every browsing task. The list was
@@ -113,4 +116,17 @@ async function toolList(): Promise<unknown> {
 test("the MCP tool list stays small", async () => {
   const bytes = new TextEncoder().encode(JSON.stringify(await toolList())).length;
   expect(bytes).toBeLessThanOrEqual(TOOL_LIST_MAX_BYTES);
+});
+
+// On 09-30 (01a0f145) omp refused real_input {action: "click"} for want of
+// do, checking the listed required parameters before the call left it; the
+// daemon, which takes action as do, never saw it.
+test("a call that names do as action passes the listed required parameters, and the daemon takes it as do", async () => {
+  const listed = (await toolList()) as { name: string; inputSchema: { required?: string[] } }[];
+  const missing = (name: string, args: Record<string, unknown>) => (listed.find((t) => t.name === name)?.inputSchema.required ?? []).filter((k) => !(k in args));
+  const real = { tab: 451444, action: "click", ref: "17" };
+  const back = { tab: 7, action: "back" };
+  expect([missing("real_input", real), missing("history", back)]).toEqual([[], []]);
+  expect(checkCall(CALLER_TOOLS, "real_input", real, true).args).toEqual({ tab: 451444, do: "click", ref: "17" });
+  expect(checkCall(TOOLS, "history", back, true).args).toEqual({ tab: 7, do: "back" });
 });

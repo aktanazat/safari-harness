@@ -35,13 +35,23 @@ const SESSION_NOTES: Record<string, string> = {
   close: " Not needed once you have the answer: your tabs close themselves when your turn ends. Reply instead.",
 };
 
+// A tool's schema as the client gets it. do is never listed required: the
+// daemon takes action and go as do (guard.ts) and refuses a call with none,
+// but omp checks required before a call leaves it, and refused real_input
+// {action: "click"} for want of do before the daemon could take it
+// (01a0f145, 09-30).
+function published(t: Tool) {
+  const schema = inputSchema(t);
+  return t.required?.includes("do") ? { ...schema, required: t.required.filter((k) => k !== "do") } : schema;
+}
+
 // Caller tools run in the server's process, not in the daemon: it inherits
 // the terminal's permissions (see caller.ts).
 export function listTools(): unknown[] {
   return [
-    ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: inputSchema(t) })),
-    { name: "repl", description: `[Safari] ${REPL_TOOL.desc}`, inputSchema: inputSchema(REPL_TOOL) },
-    ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: inputSchema(t) }))),
+    ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: published(t) })),
+    { name: "repl", description: `[Safari] ${REPL_TOOL.desc}`, inputSchema: published(REPL_TOOL) },
+    ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: published(t) }))),
   ];
 }
 
