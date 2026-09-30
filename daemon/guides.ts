@@ -38,7 +38,7 @@ export async function siteGuide(which: string): Promise<string | null> {
   if (named) {
     // a named guide's notes: those of every host its entries cover
     const domains = named.hosts.map((entry) => entry.split("/")[0]);
-    return withLearned(named.text, notedHosts().filter((n) => domains.some((d) => n === d || n.endsWith(`.${d}`))));
+    return withLearned(named.text, notedHosts().filter((n) => domains.some((d) => covers(d, n))));
   }
   // A bare name is every site with that name among its host's labels:
   // geico is geico.com, discover card.discover.com and discover.com. 16 of
@@ -56,11 +56,18 @@ export async function siteGuide(which: string): Promise<string | null> {
     for (const entry of g.hosts) {
       const cut = entry.indexOf("/");
       const [h, p] = cut < 0 ? [entry, ""] : [entry.slice(0, cut), entry.slice(cut)];
-      if ((host === h || host.endsWith(`.${h}`)) && path.startsWith(p) && (!best || entry.length > best.score)) best = { text: g.text, score: entry.length };
+      if (covers(h, host) && path.startsWith(p) && (!best || entry.length > best.score)) best = { text: g.text, score: entry.length };
     }
   }
+  // The host's notes and its subdomains': uscis.gov found none on 09-30,
+  // its notes being on my.uscis.gov and egov.uscis.gov.
   const noteHost = host.replace(/:\d+$/, "");
-  return withLearned(best?.text ?? null, notedHosts().filter((h) => h === noteHost));
+  return withLearned(best?.text ?? null, notedHosts().filter((h) => covers(noteHost, h)));
+}
+
+// Whether host is domain or one of its subdomains.
+function covers(domain: string, host: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
 }
 
 // A guide, then the notes learned on each of hosts; null when neither.
@@ -70,11 +77,17 @@ function withLearned(text: string | null, hosts: string[]): string | null {
   return [...(text === null ? [] : [text.trimEnd()]), ...learned].join("\n\n");
 }
 
-// A host's labels that name it, without the top-level domain: geico for
-// geico.com, card and discover for card.discover.com.
+// Labels that name a door into a site, not the site: on 09-30 the nearest
+// noted site to apply.knight-hennessy.stanford.edu, and to smapply, was
+// apply.coveredca.com, on the word apply alone.
+const DOORS: Record<string, true> = Object.fromEntries(["www", "m", "mobile", "app", "apps", "my", "myaccount", "account", "accounts", "login", "signin", "auth", "id", "sso", "secure", "portal", "apply", "jobs", "careers", "online", "web"].map((l) => [l, true]));
+
+// A host's labels that name it, without the top-level domain or a door:
+// geico for geico.com, card and discover for card.discover.com, stanford
+// for applygrad.stanford.edu.
 function labels(host: string): string[] {
   const all = host.split(".");
-  return all.length > 1 ? all.slice(0, -1) : all;
+  return (all.length > 1 ? all.slice(0, -1) : all).filter((l) => !Object.hasOwn(DOORS, l));
 }
 
 // What to say when no guide or notes answer which: the noted hosts nearest
@@ -82,7 +95,7 @@ function labels(host: string): string[] {
 // shell passed as written, as it did for an agent's loop on 09-29.
 export function noGuide(which: string, list = "safari guide sites"): string {
   if (/^\$\{?\w+\}?$/.test(which)) return `no guide for ${which}: the shell passed the variable as written, so it was empty or unset, or in single quotes; give the site itself, like geico.com`;
-  const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/:]/)[0]);
+  const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").split(/[/:]/)[0]);
   // a label two letters or fewer from one asked for, and not all of it
   const near = notedHosts()
     .map((host) => ({ host, d: Math.min(...labels(host).flatMap((l) => asked.flatMap((a) => {
