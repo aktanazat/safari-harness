@@ -14,6 +14,12 @@ import { saveOutput, targetOf, withLimit, type SaveKind, type Target } from "./s
 export const MAP_MAX_URLS = 20;
 const AT_ONCE = 4;
 const MAX_AT_ONCE = 6;
+// omp's MCP client ends a call at 60 s, and on 09-30 a map of six pages
+// whose eval ran 31.5 s each, three at once, lost all six there
+// (01a0f031). One read alone may take 32 s (eval's 30, and the 2 more the
+// daemon waits on the extension), so map answers at 50 s with the pages it
+// read and names the rest: the other 10 s carry the answer back.
+const BUDGET_MS = 50_000;
 export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 
 // A check that stands in for the page leaves nothing to read; one in a box
@@ -59,33 +65,72 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
   if (!Number.isFinite(atOnce)) throw new Error("concurrency must be a number");
   const job: Job = { wait: wait === undefined ? undefined : waitOf(wait), read, args, target: save === undefined || save === false ? undefined : targetOf(save, "folder"), call };
   const pages: Page[] = [];
+  const began: number[] = [];
+  // The pages' files being written, which the answer waits on.
+  const writing: Promise<void>[] = [];
   let next = 0;
+  // Past BUDGET_MS no page begins; one still being read goes on and closes
+  // its tab as it ends, and with save writes no file: the answer names it
+  // unfinished, so its file would be one no answer names.
+  let over = false;
   const worker = async () => {
-    for (let i = next++; i < urls.length; i = next++) pages[i] = await visit(urls[i], job);
+    for (let i = next++; i < urls.length && !over; i = next++) {
+      began[i] = performance.now();
+      const visited = await visit(urls[i], job);
+      if (over) return;
+      if (typeof visited === "function") {
+        const written = visited().then((page) => {
+          pages[i] = page;
+        });
+        writing.push(written);
+        await written;
+      } else pages[i] = visited;
+    }
   };
-  await Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker));
-  return { pages };
+  const { promise: late, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    over = true;
+    resolve();
+  }, BUDGET_MS);
+  await Promise.race([Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker)), late]);
+  clearTimeout(timer);
+  await Promise.all(writing);
+  return { pages: urls.map((url, i) => pages[i] ?? unfinished(url, began[i])) };
+}
+
+// A page map answered without: still being read, or not begun.
+function unfinished(url: string, began: number | undefined): Page {
+  const ms = began === undefined ? 0 : Math.round(performance.now() - began);
+  return { ok: false, error: `unfinished when map's ${BUDGET_MS / 1000} s ran out; map it again, in a call with fewer pages`, url, ms };
 }
 
 // One page, start to end; it answers for every failure, its tab's close
-// included, so one page never takes the others down with it.
-async function visit(url: string, job: Job): Promise<Page> {
+// included, so one page never takes the others down with it. With save it
+// answers with the write that makes the page instead, which mapPages runs
+// only while its answer may still hold the page.
+async function visit(url: string, job: Job): Promise<Page | (() => Promise<Page>)> {
   const started = performance.now();
-  let tab: number | undefined;
-  let title: string | undefined;
+  let opened: Opened | undefined;
   let outcome: Outcome;
   try {
     // open answers {id, url, title, challenge?} or throws; callTool types every answer unknown
-    const opened = (await job.call("open", { url, background: true })) as Opened;
-    tab = opened.id;
-    title = opened.title;
+    opened = (await job.call("open", { url, background: true })) as Opened;
     outcome = await readTab(opened, url, job);
   } catch (e) {
     outcome = { ok: false, error: messageOf(e) };
   }
   const ms = Math.round(performance.now() - started);
+  const tab = opened?.id;
   const closeError = tab === undefined ? undefined : await job.call("close", { tab }).then(() => undefined, messageOf);
-  return { ...outcome, url, ...(title ? { title } : {}), ms, ...(closeError === undefined ? {} : { closeError }) };
+  const about = { url, ...(opened?.title ? { title: opened.title } : {}), ms, ...(closeError === undefined ? {} : { closeError }) };
+  const { read, target } = job;
+  if (!target || !outcome.ok) return { ...outcome, ...about };
+  const done = outcome;
+  const at = opened?.url ?? url;
+  return () => saveOutput(read, done.value, target, async () => at).then(
+    (saved): Page => ({ ...done, value: saved, ...about }),
+    (e: unknown): Page => ({ ok: false, error: messageOf(e), ...about }),
+  );
 }
 
 async function readTab(opened: Opened, url: string, { wait, read, args, target, call }: Job): Promise<Outcome> {
@@ -100,7 +145,7 @@ async function readTab(opened: Opened, url: string, { wait, read, args, target, 
   const value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
   // A page can answer with an error instead of output (extract's selector
   // matches nothing): it read nothing, so it failed like a page that threw.
-  const outcome: Outcome = pageError(value) ?? { ok: true, value: target ? await saveOutput(read, value, target, async () => opened.url ?? url) : value };
+  const outcome: Outcome = pageError(value) ?? { ok: true, value };
   return check ? { ...outcome, challenge: check } : outcome;
 }
 

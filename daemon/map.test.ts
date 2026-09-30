@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -18,10 +18,16 @@ const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const CLEARING = "https://clearing.example/";
 
+// Pages whose read takes 31.5 s, as each of six Yelp pages' eval did on
+// 09-30 (01a0f031).
+const SLOW = "https://slow.example/";
+const SLOW_MS = 31_500;
+
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
-// once, or, while holding, when the test lets them. A wait is answered at
-// once, found on every page but LOST. Waits and reads are noted in order.
+// once, a SLOW page's after SLOW_MS, or, while holding, when the test lets
+// them. A wait is answered at once, found on every page but LOST. Waits and
+// reads are noted in order.
 const tabs = new Map<number, { id: number; windowId: unknown; url: string; title: string }>();
 const opened: number[] = [];
 const closed: number[] = [];
@@ -84,6 +90,7 @@ connect({
       return reply({ value: { found: url !== LOST } });
     }
     if (holding) held.push(() => reply(read(Number(args[0]))));
+    else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]))), SLOW_MS);
     else reply(read(Number(args[0])));
   },
   close() {},
@@ -253,4 +260,59 @@ test("an address Safari cannot show fails in its place before a tab opens for it
   const pages = await map({ urls: ["file:///Users/me/page.html", '{"url":"https://shop.example/a"}', "https://shop.example/a"] });
   expect(pages.map((p) => p.ok)).toEqual([false, false, true]);
   expect(opened.length - before).toBe(1);
+});
+
+// omp's MCP client ends a call at 60 s: on 09-30 a map of six pages whose
+// reads took 31.5 s each, three at once, lost all six there (01a0f031).
+test("a map whose pages run long answers within 60 s with the pages it read, names the rest unfinished, and begins no more", async () => {
+  jest.useFakeTimers();
+  const before = opened.length;
+  const slow = Array.from({ length: 9 }, (_, i) => `${SLOW}${i}`);
+  const began = performance.now();
+  const pages = await waited(map({ urls: slow, concurrency: 3 }));
+  expect(performance.now() - began).toBeLessThan(60_000);
+  expect(pages.map((p) => [p.url, p.ok])).toEqual(slow.map((url, i) => [url, i < 3]));
+  expect(pages.slice(3).map((p) => (p.ok ? "read" : p.error))).toEqual(Array(6).fill(expect.stringMatching(/unfinished.*again/)));
+  // The three still being read go on, each closing its tab as it ends; the
+  // three not begun never open.
+  for (let i = 0; i < 40; i++) {
+    await settled();
+    jest.advanceTimersByTime(500);
+  }
+  const mine = opened.slice(before);
+  expect(mine.length).toBe(6);
+  expect(closed.filter((t) => mine.includes(t)).sort()).toEqual(mine.sort());
+});
+
+// A page the answer names unfinished ends after it: with save, its read
+// must leave no file that no answer names. Files are written on the real
+// clock, so the fake one waits while pages 0-2's are; pages 3-5 then begin,
+// to be read after the answer.
+test("with save, a map past its time writes a file for each page it answers with, and none for the rest", async () => {
+  jest.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), "map-"));
+  const before = opened.length;
+  let pages: Page[] = [];
+  void map({ urls: Array.from({ length: 6 }, (_, i) => `${SLOW}${i}`), concurrency: 3, save: dir }).then((p) => {
+    pages = p;
+  });
+  const tick = async (ms: number) => {
+    for (let t = 0; t < ms; t += 500) {
+      await settled();
+      jest.advanceTimersByTime(500);
+    }
+  };
+  const until = async (done: () => boolean) => {
+    for (let i = 0; i < 10_000 && !done(); i++) await settled();
+  };
+  await tick(33_000);
+  await until(() => opened.length - before === 6);
+  await tick(33_000);
+  await until(() => opened.slice(before).every((t) => closed.includes(t)));
+  // A file begun after that lands on the real clock.
+  jest.useRealTimers();
+  await Bun.sleep(100);
+  const saved = pages.map(savedPath);
+  expect(saved.map((path) => path !== "")).toEqual([true, true, true, false, false, false]);
+  expect(readdirSync(dir).map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
 });
