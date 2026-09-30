@@ -599,7 +599,9 @@ test("a blank tab a click opens answers a request at once once the click has tak
   let answer: Answer | undefined;
   b.ask(blank, "tabInfo").then((a) => { answer = a; });
   await b.clock.advance(0);
-  expect(answer?.error).toMatch(/did not answer/);
+  // said to be blank, not held: a reload of a blank tab brings nothing back
+  expect(answer?.error).toMatch(/\bblank\b/);
+  expect(answer?.error).not.toMatch(/reload it with goto/);
 });
 
 test("a blank tab an owned page opens on its own answers a request at once once taken", async () => {
@@ -612,7 +614,8 @@ test("a blank tab an owned page opens on its own answers a request at once once 
   let answer: Answer | undefined;
   b.ask(blank, "tabInfo").then((a) => { answer = a; });
   await b.clock.advance(0);
-  expect(answer?.error).toMatch(/did not answer/);
+  expect(answer?.error).toMatch(/\bblank\b/);
+  expect(answer?.error).not.toMatch(/reload it with goto/);
 });
 
 // 09-30: a tab the harness made itself was taken for an owned page's popup

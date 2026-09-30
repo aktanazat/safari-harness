@@ -174,6 +174,10 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   const t = await api.tabs.get(tabId);
   if (frameId !== 0 && !(await hasFrame(tabId, frameId))) throw new Error(`that ref's frame is gone; the tab is now at ${t.url}; snapshot again`);
   if (failedPage(t)) throw unopened(t.url);
+  // Safari puts no script in a blank tab, and a reload leaves it blank: a
+  // popup opened with no address was told to reload, and its agent read,
+  // reloaded, and tried to close it for a minute (01a0f14c, 09-30).
+  if (frameId === 0 && (!t.url || t.url === "about:blank") && t.status === "complete") throw new Error("this tab is blank (a popup opened with no address): there is nothing in it to read; goto an address in it, or close it");
   throw new Error(`the page at ${t.url || "about:blank"} did not answer; reload it with goto and retry`);
 }
 
