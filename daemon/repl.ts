@@ -277,8 +277,9 @@ export class Page {
     const r = (await this.session.call("eval", { tab: this.id, expression: "document.documentElement.outerHTML" })) as { result: string };
     return r.result;
   }
-  async extract(opts: { selector?: string; query?: string; maxBytes?: number } = {}): Promise<unknown> {
-    return this.session.call("extract", { tab: this.id, ...opts });
+  // extract(selector), as the guide gives it, or extract({selector, query, maxBytes})
+  async extract(opts: string | { selector?: string; query?: string; maxBytes?: number } = {}): Promise<unknown> {
+    return this.session.call("extract", { tab: this.id, ...(typeof opts === "string" ? { selector: opts } : opts) });
   }
 
   locator(target: string): Locator {

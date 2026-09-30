@@ -46,9 +46,11 @@ outside the page: read `document`, `window` and the rest through
 - `snapshot(page, {interactive, showHidden, ref, selector})` returns
   `{tree, diff}`: the outline with `[ref]`s, and what changed since this
   session's last snapshot of the same view.
-- `page.content()`, `page.extract(selector?)`, `page.title()`, `page.url()`,
-  `page.evaluate(fn, arg)` (runs in the page; falls back to the extension's
-  world when the page forbids scripts).
+- `page.content()`, `page.title()`, `page.url()`, `page.evaluate(fn, arg)`
+  (runs in the page; falls back to the extension's world when the page
+  forbids scripts).
+- `page.extract(selector?)`, or `page.extract({selector, query})`, returns
+  `{url, title, text, truncated}`: the words are in `.text`.
 - `page.screenshot({path, fullPage})`, `annotatedScreenshot(page, {path})`
   (ref numbers drawn on the picture), `page.pdf({path})`.
 

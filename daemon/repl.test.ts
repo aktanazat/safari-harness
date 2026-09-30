@@ -41,3 +41,11 @@ test("page.fill types the text into the target it names", async () => {
   expect(await repl.run("await openTab('https://example.com')\nawait page.fill('#email', 'a@b.c')")).toEqual({ output: "" });
   expect(calls.filter(([tool]) => tool === "type")).toEqual([["type", { tab: 7, ref: "#email", text: "a@b.c" }]]);
 });
+
+// The guide gives page.extract(selector), and a selector passed so was
+// dropped: the whole page came back as if it were the part asked for.
+test("page.extract reads only the part its selector names", async () => {
+  const { repl, calls } = session();
+  await repl.run("await openTab('https://example.com')\nawait page.extract('h1')");
+  expect(calls.filter(([tool]) => tool === "extract")).toEqual([["extract", { tab: 7, selector: "h1" }]]);
+});
