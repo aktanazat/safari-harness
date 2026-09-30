@@ -52,6 +52,6 @@ async function shownCode(from: unknown, model: boolean): Promise<string> {
   const all = [...new Set(shown.match(/(?<![\w.,:/-])\d{4,8}(?![\w.,:/-])/g) ?? [])];
   const six = all.filter((c) => c.length === 6);
   const codes = six.length ? six : all;
-  if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab, then call type again`);
+  if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab (in a thread of several code emails, remove the older messages from the page with eval), then call type again`);
   return codes[0];
 }
