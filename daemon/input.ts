@@ -181,8 +181,8 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     if (typeof text !== "string") throw new Error("type needs text");
     await inFront(tab, VIA_RPC, async () => {
       if (a.ref !== undefined) await clickAt(tab, a, 1, "left");
-      // A character takes about 25 ms; allow twice that.
-      await post(tab, ["type", text], true, 10000 + text.length * 50);
+      // A character takes about 60 ms (input.swift); allow twice that.
+      await post(tab, ["type", text], true, 10000 + text.length * 120);
     });
     return { ok: true };
   },

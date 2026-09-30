@@ -209,8 +209,22 @@ func mark() {
     press(90, [], text: [0xF717])
 }
 
+// The US-layout key that types ch, with Shift when ch needs it; key 0 for a
+// character no key types. The event still carries ch itself, so what lands
+// in the field does not depend on the layout; the key code is for pages that
+// read event.code or keyCode, as key named alone already sends (keyCombo).
+func keyFor(_ ch: Character) -> (CGKeyCode, [Modifier]) {
+    if let c = charKeys[ch] { return (c, []) }
+    if ch.isUppercase, let lower = ch.lowercased().first, let c = charKeys[lower] { return (c, [shiftKey]) }
+    if let base = shiftedChars[ch], let c = charKeys[base] { return (c, [shiftKey]) }
+    return (0, [])
+}
+
 // Types text one character at a time, each as the character itself. Line
-// breaks press Return and tabs press Tab.
+// breaks press Return and tabs press Tab. Characters go 40 ms apart: a page
+// that reformats a field after each key (a card-number mask) moved the caret
+// back while the next key was on its way, and a card number landed with its
+// first digit last (2026-09-29).
 func typeText(_ args: [String]) {
     guard args.count == 1 else { fail("usage: input type TEXT", 2) }
     requireAccess()
@@ -218,9 +232,11 @@ func typeText(_ args: [String]) {
         switch ch {
         case "\n", "\r", "\r\n": press(36, [])
         case "\t": press(48, [])
-        default: press(0, [], text: Array(String(ch).utf16))
+        default:
+            let (code, mods) = keyFor(ch)
+            press(code, mods, text: Array(String(ch).utf16))
         }
-        pause(10)
+        pause(40)
     }
     mark()
     printJSON(["typed": args[0].count])
