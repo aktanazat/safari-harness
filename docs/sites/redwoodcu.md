@@ -1,6 +1,6 @@
 ---
 name: Redwood Credit Union
-hosts: redwoodcu.org, app.consumer.meridianlink.com, app.loanspq.com
+hosts: redwoodcu.org, apply.redwoodcu.org, app.consumer.meridianlink.com, app.loanspq.com
 ---
 # Redwood Credit Union
 
@@ -19,3 +19,9 @@ Auto-loan rates are public on redwoodcu.org. Loan applications and their status 
 - The code comes by email from APAdmin@meridianlink.com ("Please enter the following security code to check the status of your application(s)."). It mixes letters and digits, so a six-digit pattern misses it. It works once. Never repeat it.
 - After `Get Status`, "Processing your request... This may take a few minutes.", then "Applications": one row per application from the last 90 days ("<Type> Application #<n>" and a status such as Instant Approved, Incomplete, Canceled, Approved), each with "Messages", "Upload", and "Documents". The page notes that any approval shown is conditional. `Send Email Authentication to Refresh Status` starts over with a new code.
 - "Messages" is a div; a click on its ref did nothing. The button that opens it is `.function-btn[loan_num="<n>"][onclick*="Message"]`, clicked from `eval`. The popup `#viewMessage` shows the "Conversation Log" and a "Type your message here" box with `Send Message`.
+
+## FileShare
+- Emails asking for loan documents link to `https://apply.redwoodcu.org/FileShare/ShareUpload.aspx?ID=<id>`. It opens without sign-in and redirects to a "File Share" page.
+- The page lists files already received with their document type, so read it once before uploading again.
+- To send a file: `Upload Document`, pick the Document Type (the page reloads), then `upload` with no ref, then Send. Done at "Success! Your file has been received."
+- Up to 15 files, each at most 19.53 MB, as .pdf, .jpg, or .jpeg.

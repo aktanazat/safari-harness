@@ -8,8 +8,13 @@ This is the user's health plan: MyChart messages, results, and the Kaiser pharma
 
 ## Signing in
 - The sign-in page is on `identityauth.kaiserpermanente.org`, with fields `#userid` and `#password` and a `#submitButton`. Two logins are saved in Apple Passwords for that host, so `passwords` `fill` needs `username`; without it the call names both and fills nothing.
-- `fill` waits for the user's Touch ID. When he has not approved within 40 s, the call says the Mac is asking: tell him, and call `fill` again once he has; it fills with no second prompt.
+- `fill` waits for the user's Touch ID. When he has not approved within 25 s, the call says the Mac is asking: tell him, and call `fill` again once he has; it fills with no second prompt.
 - After `#submitButton` the tab lands on a MyChart page (`/mychartcn/...`). The first page after sign-in can read "MyChart link error options"; loading `https://healthy.kaiserpermanente.org/mychartcn/Home` works.
+- Of the two saved logins, the one whose username is an email address is a stale duplicate; fill with the user ID login.
+
+## Password reset
+- On the sign-in page: Forgot user ID or password > Forgot password, then the user ID. Kaiser sends a passcode to Gmail or to his phone; choose Gmail.
+- After the passcode, the Reset page takes `passwords change`, which fills both new-password fields.
 
 ## Finding pages
 - Signed in, typed links to kp.org marketing and "learn" pages (`kp.org/newmember`, `/northern-california/learn/pharmacy/...`) stop on an `FdiRedirection` page that stays empty. Use the MyChart menu instead: `Menu`, then type in "Search the menu" (for example "transfer"), then click the result.
