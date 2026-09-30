@@ -164,8 +164,10 @@ function versionCheck(keys: { deployed?: string; installed?: string }): Check {
 
 function accessibilityCheck(got: Outcome<void>): Check {
   const name = "accessibility";
-  // The helper found no Safari window only after its permission check passed.
-  if ("value" in got || /Safari is not running|Safari has no open window/.test(got.error)) {
+  // The helper finds no Safari window, or no page in its front one (a window
+  // Safari just opened shows its start page), only after its permission
+  // check passed.
+  if ("value" in got || /Safari is not running|Safari has no open window|no web page is showing/.test(got.error)) {
     return { name, status: "ok", detail: "real clicks and keys (real_input) and the passwords pairing may use the mouse and keyboard" };
   }
   if (got.error.includes("Accessibility permission")) {

@@ -67,7 +67,7 @@ test("with Safari not running, no tab is opened, since opening one would start S
   expect([checks.extension.status, checks["round trip"].status]).toEqual(["skip", "skip"]);
 });
 
-test("a missing permission fails with the setting that grants it; Safari lacking a window still proves Accessibility", async () => {
+test("a missing permission fails with the setting that grants it; Safari lacking a window, or a page in its front one, still proves Accessibility", async () => {
   const denied = await examine({
     ...healthy(),
     accessibility: async () => { throw new Error("input webarea failed: this app needs Accessibility permission: System Settings > Privacy & Security > Accessibility"); },
@@ -79,6 +79,9 @@ test("a missing permission fails with the setting that grants it; Safari lacking
   expect(denied.messages.fix).toContain("Full Disk Access");
   const windowless = await examine({ ...healthy(), accessibility: async () => { throw new Error("input webarea failed: Safari has no open window"); } });
   expect(windowless.accessibility.status).toBe("ok");
+  // a front window that just opened shows Safari's start page, no web page
+  const pageless = await examine({ ...healthy(), accessibility: async () => { throw new Error("input webarea failed: no web page is showing in Safari's front window"); } });
+  expect(pageless.accessibility.status).toBe("ok");
 });
 
 test("the extension Safari has must be the deployed release's, and a round trip that fails says why", async () => {
