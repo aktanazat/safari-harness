@@ -255,8 +255,9 @@
     if (namedByContent(el)) {
       const t = textOf(el, /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX);
       if (t) return t;
-      // image-only links and icon buttons: name them by their picture's label
-      const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]");
+      // image-only links and icon buttons: name them by their picture's
+      // label, past an icon whose label is empty (Amazon's, 09-30)
+      const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]:not([aria-label=''])");
       if (inner) return (inner.getAttribute("aria-label") || inner.getAttribute("alt")).trim().slice(0, NAME_MAX);
     }
     return (el.getAttribute("title") || "").trim();

@@ -38,6 +38,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'h2 "Ada Lovelace"\n[1] button "Follow"' } } }],
   },
   {
+    name: "a snapshot names an image-only link by its picture's label, past an icon whose label is empty",
+    page: "icon-links.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] link "Cart"\n[2] link "Help"' } } }],
+  },
+  {
     name: "a snapshot gives each field's state, and a password field's value never",
     page: "form.html",
     steps: [{
