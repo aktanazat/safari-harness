@@ -49,6 +49,10 @@ export type Effect = {
 };
 
 export const NO_EFFECT = "the page did not react; the control may need a real click (real_input), a different target (a child or parent), or the page may be busy";
+// An action answers once the page settles, 800 ms at most (RECEIPT_SPAN in
+// content.js); a request of its own still out then may be what fills in the
+// part the agent came for.
+const STILL_LOADING = "the page is still waiting on a request this started (pending): wait with quiet, or with text you expect, before reading; a sleep only guesses";
 
 // A page that refused what an action started because Safari did not have
 // it in front, or because no real click started it: a passkey, Touch ID,
@@ -161,6 +165,7 @@ export function stateLines(changes: StateChange[]): string[] {
 // as addresses are (redact.ts).
 export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: string; pageErrors?: string[] } {
   const states = stateLines(raw.states).map(redactUrl);
+  const pending = raw.requests === null ? [] : (raw.pending ?? []).filter((e) => keepRequest(e, raw.page));
   const net = raw.requests === null ? [] : netLines(raw.requests, raw.pending ?? [], raw.page);
   const effect: Effect = {
     ...(raw.added > 0 ? { added: raw.added } : {}),
@@ -173,7 +178,8 @@ export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: str
     ...(net.length ? { net } : {}),
   };
   const errors = pageErrorsOf(raw.errors);
-  return Object.keys(effect).length ? { effect, ...errors } : { effect: "none", next: NO_EFFECT, ...errors };
+  if (!Object.keys(effect).length) return { effect: "none", next: NO_EFFECT, ...errors };
+  return pending.length && !errors.next ? { effect, next: STILL_LOADING, ...errors } : { effect, ...errors };
 }
 
 // An action's answer with the page's raw receipt turned into its effect.

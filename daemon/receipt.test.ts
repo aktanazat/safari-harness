@@ -105,7 +105,21 @@ test("failed requests lead the net lines, paths without their queries, then the 
     ],
     pending: [{ method: "GET", url: "https://shop.example.com/api/list?page=2" }],
   });
-  expect(got).toEqual({ effect: { net: ["failed: POST /api/order 500", "failed: GET api.shop.example.com/stock TypeError: Load failed", "GET /api/cart 200", "pending: GET /api/list"] } });
+  expect(got.effect).toEqual({ net: ["failed: POST /api/order 500", "failed: GET api.shop.example.com/stock TypeError: Load failed", "GET /api/cart 200", "pending: GET /api/list"] });
+});
+
+// A click answers once the page settles, 800 ms at most. One whose request
+// was still out then (a Slate form's dialog) left the dialog unread, and
+// agents put a shell sleep after 54 clicks in the ten sessions to 09-30;
+// wait quiet covers the request instead.
+test("an action whose own request is still out says to wait for the page to go quiet, and one on others' requests does not", () => {
+  const waitsQuiet = (next?: string) => /\bwait\b/.test(next ?? "") && /\bquiet\b/.test(next ?? "");
+  const own = { method: "GET", url: "https://shop.example.com/api/list" };
+  expect(waitsQuiet(effectOf({ ...QUIET, pending: [own] }).next)).toBe(true);
+  expect(effectOf({ ...QUIET, pending: [{ method: "POST", url: "https://shop.example.com/collect" }, { method: "GET", url: "https://ads.other.com/x" }] }).next).toBe(NO_EFFECT);
+  expect(effectOf({ ...QUIET, requests: [{ ...own, status: 200 }] }).next).toBeUndefined();
+  // a page that refused the click needs Safari in front first
+  expect(effectOf({ ...QUIET, pending: [own], errors: ["NotAllowedError: denied"] }).next).toMatch(/\breal_input\b/);
 });
 
 test("a receipt lists ten requests and counts the rest", () => {

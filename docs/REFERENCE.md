@@ -59,8 +59,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - `open` and `goto` take a whole `http` or `https` address (or
   `about:blank`). Anything else fails before a tab opens: Safari opens no
   local file for the extension, so serve its folder
-  (`python3 -m http.server -d <folder>`) and open the `http://localhost`
-  address.
+  (`python3 -m http.server -d <folder> <port>`) and open
+  `http://127.0.0.1:<port>/`: Safari fails to open `localhost` on this Mac.
 - `tab: "front"` (CLI `--tab front`) names the user's front tab on purpose:
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
@@ -709,9 +709,12 @@ Wait for the page, not the clock.
   selector: a quiet page may not yet show what you came for. In a CLI
   script, never put a shell `sleep` before a command: `safari wait --text
   "<text>" --tab N` returns once the text is there, and `click`, `goto`, and
-  `open` already wait for a page they load. Past a minute of such waits in
-  10 minutes, each answer carries a `hint` to wait on text or a selector
-  instead.
+  `open` already wait for a page they load. A `click`, `press`, or `select`
+  answers once the change it made settles, 800 ms at most; one whose `net`
+  still lists a `pending` request answers with `next` saying to `wait
+  --quiet` (or on text), which returns when that request's change lands.
+  Past a minute of such waits in 10 minutes, each answer carries a `hint`
+  to wait on text or a selector instead.
 - The same call again and again with the same answer is a loop. The sixth
   in a row within 3 minutes (the same tool and arguments, and the same page
   or the same error) fails with what to do instead: "you called info on tab

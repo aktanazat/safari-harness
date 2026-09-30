@@ -22,9 +22,10 @@ Turns
   `query` (plain text; `a|b` is either) or `root`.
 - Wait on words only the next page shows (`wait {text}`), never the clock:
   no sleeps in `eval`, no made-up words. `already: true` means it waited
-  for nothing. `open` and `goto` already wait for the page. A reply in a
-  chat: `wait {changed: true, ms: 25000}` returns its new lines as
-  `added`; call it again until one comes.
+  for nothing. `open`, `goto`, and `click` already wait for the page or the
+  change they cause; a click whose `net` says `pending` wants `wait {quiet:
+  true}`, not a sleep. A reply in a chat: `wait {changed: true, ms:
+  25000}` returns its new lines as `added`; call it again until one comes.
 - `type` answering `kept: false`, `invalid`, or `next`, or a click saying
   the page did not take scripted typing: use `real_input` with the ref;
   if it works, `learn {site, real: true}`.
