@@ -37,7 +37,7 @@
       const t = (el.type || "text").toLowerCase();
       if (t === "checkbox") return "checkbox";
       if (t === "radio") return "radio";
-      if (t === "submit" || t === "button" || t === "reset") return "button";
+      if (t === "submit" || t === "button" || t === "reset" || t === "image") return "button";
       if (t === "range") return "slider";
       if (t === "search") return "searchbox";
       if (t === "file") return "button";
@@ -224,6 +224,10 @@
     if (label) return label.trim();
     if (el.tagName === "IMG") return (el.getAttribute("alt") || "").trim();
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+      // A button made of an input shows its value (or, with none, the
+      // browser's word for it), and an image button its alt.
+      if (el.type === "submit" || el.type === "reset" || el.type === "button") return el.value.trim() || { submit: "Submit", reset: "Reset" }[el.type] || null;
+      if (el.type === "image") return (el.getAttribute("alt") || "").trim() || null;
       if (el.labels && el.labels.length) return textOf(el.labels[0], 80);
       return (el.getAttribute("placeholder") || el.getAttribute("name") || el.getAttribute("title") || "").trim();
     }
@@ -270,7 +274,7 @@
     if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       if (el.getRootNode().activeElement === el) s.push("focused");
-      const v = el.value;
+      const v = /^(submit|reset|button|image)$/.test(el.type) ? "" : el.value; // a button's value is its name
       if (v) s.push(secretField(el) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
@@ -954,7 +958,7 @@
       }
     };
     render(top, 0);
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}), seen };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
   }
 
   // A page still drawing can show for a moment nothing a person sees: a
@@ -968,6 +972,8 @@
   // (09-29). On a page a person sees already, a query or root that finds
   // nothing answers at once. An embedded frame answers at once: an ad's
   // frame may never draw.
+  // A page still blank then says so: Turnitin's and Duolingo's read as
+  // nothing right after goto, and drew a moment later (09-29).
   //
   // Flutter draws its page on a canvas, and builds the controls a screen
   // reader reads, the only ones a read sees, once its "Enable
@@ -978,6 +984,7 @@
   // it, and the read says so.
   const DRAW_WAIT_MS = 2000;
   const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
+  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
   function snapshot(opts = {}) {
     const top = window === window.top;
     // Flutter's host element sits in the page itself, so only a page with
@@ -997,6 +1004,7 @@
       return found(again, now);
     }, DRAW_WAIT_MS).then((held) => {
       if (!held && placeholder && document.hidden && !tickPort) return { ...latest, hint: FLUTTER_UNDRAWN };
+      if (!held && !placeholder && !outline({}, true).seen) return { ...latest, hint: UNDRAWN_PAGE };
       return latest;
     });
   }
@@ -1063,10 +1071,19 @@
     return el.getClientRects().length > 0 && isVisible(el);
   }
 
+  // The dialog open over the page: the last shown, when several are.
+  function openDialog() {
+    return deepQueryAll(DIALOG_BOXES).filter(shown).at(-1) ?? null;
+  }
+
+  // A selector's first shown match, one in the open dialog first: SUECU's
+  // sign-in typed into the page's own email field, behind the dialog that
+  // asked for it (09-29).
   function bySelector(selector) {
     let all;
     try { all = deepQueryAll(selector); } catch { return null; }
-    return all.find(shown) ?? all[0] ?? null;
+    const box = openDialog();
+    return (box && all.find((el) => box.contains(el) && shown(el))) ?? all.find(shown) ?? all[0] ?? null;
   }
 
   // Controls whose name is the text win, then any element whose own text it
@@ -1175,13 +1192,24 @@
     return opensTab(target) ? "tab" : "load";
   }
 
+  // A form type filled whose submit stays disabled did not take the
+  // typing: Reddit's password reset enables its button only on keys a
+  // person presses, and type there answered kept (09-29). A form with a
+  // field still empty may be waiting on that field instead.
+  const TYPING_UNTAKEN = "that control is still disabled after type filled its form: the page did not take scripted typing; type into its fields with real_input type and ref, then click again";
+  function typedForm(el) {
+    const form = el.form;
+    if (!form || lastTyped?.form !== form) return false;
+    return [...form.elements].every((f) => !/^(INPUT|TEXTAREA)$/.test(f.tagName) || /^(hidden|submit|reset|button|image|checkbox|radio|file)$/.test(f.type) || f.value !== "" || !shown(f));
+  }
+
   function click(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
     // A disabled control ignores the click; saying ok sent an agent hunting
     // for a cause for 23 turns on GitHub's Authorize, which is enabled only
     // while its window is in front.
-    if (el.matches(":disabled")) return { error: "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" };
+    if (el.matches(":disabled")) return { error: typedForm(el) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call window, then activate)" };
     watchTarget(el);
     // Reading the position below forces layout, so no frame wait is needed;
     // background tabs never run requestAnimationFrame, so waiting on one hangs.
@@ -1397,7 +1425,7 @@
   // saving (a download attribute) stays a file.
   function notPage(file, named) {
     if (named || !/^text\/html\b/i.test(file.type ?? "")) return file;
-    return { error: "the ref opens a web page, not a file: click it, and download the file from the page it opens" };
+    return { error: "the ref opens a web page, not a file: click it, then call download with only the tab it opens to save the file that tab shows" };
   }
 
   async function download(ref) {
@@ -1526,50 +1554,94 @@
     el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
   }
 
+  // A price field reformats what goes in ("$1,234.00" for 1234): the same
+  // figures, typed with no letters, are the text kept. DriveCentric's
+  // answered kept false for a price it showed as "$200,000" (09-29).
+  const figures = (t) => t.replace(/[^\d.]/g, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  const keeps = (value, want) => value === want || (/\d/.test(want) && !/\p{L}/u.test(want) && figures(value) === figures(want));
+
+  // What the page says is wrong with a field a moment after text went in:
+  // the message its aria-invalid points to, or an alert it raised. GEICO's
+  // card field took a number, then said "Invalid card number" (09-29).
+  // Words that repeat the text are not passed on: type never echoes it.
+  function complaint(el, alerts, text) {
+    let words = null;
+    if (el.getAttribute("aria-invalid") === "true") {
+      const ids = `${el.getAttribute("aria-errormessage") ?? ""} ${el.getAttribute("aria-describedby") ?? ""}`.split(/\s+/).filter(Boolean);
+      words = ids.map((id) => el.getRootNode().getElementById(id)).filter(Boolean).map((n) => textOf(n, 160)).filter(Boolean).join(" ") || "the page marks the field invalid";
+    } else {
+      const raised = deepQueryAll("[role=alert]").map((a) => [a, textOf(a, 160)]).find(([a, t]) => t && t !== alerts.get(a) && shown(a));
+      words = raised?.[1] ?? null;
+    }
+    return words !== null && words.toLowerCase().includes(text.toLowerCase()) ? "the page says the text is invalid" : words;
+  }
+
+  // A field in a frame of another site (a card processor's) may take only
+  // keys a person presses: GEICO's card field answered kept false (09-29).
+  function foreignFrame() {
+    if (window === window.top) return false;
+    try { return !window.top.document; } catch { return true; }
+  }
+
+  let lastTyped = null; // the field type last put text in (typedForm)
+
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     if (!(await focusField(el))) return untaken("the field");
+    lastTyped = el;
     const before = el.isContentEditable ? "" : String(el.value || "");
-    // A code typed into the first of a row of one-character boxes (PayPal's
-    // six) goes one character to a box, as a person types it.
-    const row = opts.secret && text.length > 1 ? deepQueryAll("input").filter((b) => b.maxLength === 1 && !b.disabled && shown(b)) : [];
+    const alerts = new Map(deepQueryAll("[role=alert]").map((a) => [a, textOf(a, 160)]));
+    // A code typed into a box of a row of code boxes (PayPal's, Delta's)
+    // goes one character to a box, as a person types it, and the whole
+    // row then holds a secret.
+    const row = opts.secret && text.length > 1 ? codeBoxes() : [];
     const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
-    if (boxes.length && boxes.length === text.length) {
+    const spread = boxes.length > 0 && boxes.length === text.length;
+    if (spread) {
       for (const [i, box] of boxes.entries()) {
         if (!(await focusField(box))) return untaken("a code box");
         setValue(box, text[i], text[i]);
-        secretFilled.add(box);
       }
-      return { ok: true, kept: boxes.every((b, i) => b.value === text[i]) };
-    }
-    if (el.isContentEditable) {
+    } else if (el.isContentEditable) {
       replaceEditable(el, text, opts.append);
     } else if ("value" in el) {
       setValue(el, (opts.append ? before : "") + text, text);
     } else {
       return { error: "element is not editable" };
     }
-    if (opts.secret) secretFilled.add(el);
-    // Whether the field holds the text now: a page may reformat it (a phone
-    // field adds dashes) or cut it (a length limit). The text itself never
-    // comes back: type once echoed a one-time code into the transcript.
-    const kept = el.isContentEditable ? (el.textContent ?? "").includes(text) : el.value === (opts.append ? before : "") + text;
-    return { ok: true, kept };
+    if (opts.secret) for (const f of row.includes(el) ? row : [el]) secretFilled.add(f);
+    // Whether the field holds the text once the page has had a moment with
+    // it: a page may reformat it (a phone field adds dashes) or cut it (a
+    // length limit). The text itself never comes back: type once echoed a
+    // one-time code into the transcript.
+    await whenPage(() => false, RECEIPT_SPAN.min);
+    const kept = spread ? boxes.map((b) => b.value).join("") === text
+      : el.isContentEditable ? (el.textContent ?? "").includes(text)
+      : keeps(el.value, (opts.append ? before : "") + text);
+    const invalid = opts.secret ? null : complaint(el, alerts, text);
+    return { ok: true, kept, ...(invalid ? { invalid } : {}), ...(foreignFrame() ? { next: "if the page ignores it, use real_input type with ref" } : {}) };
   }
 
   // ---------- Apple Passwords fill ----------
 
-  // The sign-in fields on this page: the current-password field (never a
-  // new-password one, so a sign-up form is left alone) and the username
-  // field before it. A username-first page (Google, Apple) has only the
-  // latter, which must then say it is a username or email field.
+  // What a field says it is for: its name, id, label, and placeholder.
+  const fieldWords = (el) => [el.name, el.id, el.getAttribute("aria-label"), el.placeholder, el.labels?.[0]?.textContent].filter(Boolean).join(" ");
+
+  // The sign-in fields on this page: the current-password field and the
+  // username field before it. A new-password field is a sign-up's, and so
+  // is one that says it repeats or sets a password, marked or not:
+  // Monkeytype's sign-up form, first on its page, calls its repeat
+  // passwordVerify (09-29). Of the rest, one alone in its form comes
+  // first. A username-first page (Google, Apple) has only the latter,
+  // which must then say it is a username or email field.
   function loginFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const password = deepQueryAll("input[type=password]")
-      .find((el) => usable(el) && el.getAttribute("autocomplete") !== "new-password") ?? null;
+    const passwords = deepQueryAll("input[type=password]")
+      .filter((el) => usable(el) && el.getAttribute("autocomplete") !== "new-password" && !/verif|confirm|repeat|again|retype|new/i.test(fieldWords(el)));
+    const password = passwords.find((el) => el.form?.querySelectorAll("input[type=password]").length === 1) ?? passwords[0] ?? null;
     const scope = password?.form ?? document;
     const texts = deepQueryAll("input:not([type]), input[type=text], input[type=email], input[type=tel]", scope).filter(usable);
     const tagged = texts.find((el) => /\b(username|email)\b/.test(el.getAttribute("autocomplete") ?? ""));
@@ -1603,15 +1675,26 @@
     return { ok: true, filled };
   }
 
-  // A verification-code field: the one marked one-time-code, one named like
-  // a code, or a row of one-character boxes (one digit each).
+  // Inputs a verification code goes in.
+  const CODE_INPUTS = "input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]";
+
+  // A row of 4 to 8 code boxes, a character each: limited to one (PayPal's)
+  // or named "Digit N of 6" (Delta's, with no limit, whose digits a
+  // snapshot then showed, 09-29). None when the page has no such row.
+  function codeBoxes() {
+    const boxes = deepQueryAll(CODE_INPUTS).filter((el) => !el.disabled && !el.readOnly && shown(el) && (el.maxLength === 1 || /\b\d+\s*of\s*[4-8]\b/i.test(accessibleName(el))));
+    return boxes.length >= 4 && boxes.length <= 8 ? boxes : [];
+  }
+
+  // A verification-code field: the one marked one-time-code, a row of code
+  // boxes (one digit each), or one named like a code.
   function codeFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const inputs = deepQueryAll("input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]").filter(usable);
+    const inputs = deepQueryAll(CODE_INPUTS).filter(usable);
     const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
     if (marked) return [marked];
-    const boxes = inputs.filter((el) => el.maxLength === 1);
-    if (boxes.length >= 4 && boxes.length <= 8) return boxes;
+    const boxes = codeBoxes();
+    if (boxes.length) return boxes;
     const named = inputs.find((el) => /otp|one.?time|totp|2fa|mfa|verif|security.?code|auth.?code|\bcode\b/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") ?? ""} ${el.placeholder}`));
     return named ? [named] : [];
   }
@@ -1627,15 +1710,16 @@
   // shows the password it suggests, and names its repeat field only. A
   // repeat field with no new one marked (Quest's and Covered California's
   // password and confirmedPassword) takes its new one from the unmarked
-  // field before it.
+  // field before it. A field says what it is for by its name, id, label,
+  // or placeholder: Paradox's reset field is a new one only by its
+  // placeholder (09-29).
   function changeFields() {
-    const hint = (el) => `${el.name} ${el.id}`;
-    const secret = (el) => el.type === "password" || /-password$/.test(el.getAttribute("autocomplete") ?? "") || /passw|pwd/i.test(hint(el));
+    const secret = (el) => el.type === "password" || (el.getAttribute("autocomplete") ?? "").endsWith("-password") || /passw|pwd/i.test(fieldWords(el));
     const usable = (el) => !el.disabled && !el.readOnly && shown(el) && secret(el);
     const inputs = deepQueryAll("input[type=password], input[type=text]").filter(usable);
-    const newly = (el) => el.getAttribute("autocomplete") === "new-password" || /new/i.test(hint(el));
-    const marked = inputs.filter((el) => newly(el) || /confirm|repeat|again|retype/i.test(hint(el)));
-    const current = inputs.find((el) => !marked.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(hint(el)))) ?? null;
+    const newly = (el) => el.getAttribute("autocomplete") === "new-password" || /new/i.test(fieldWords(el));
+    const marked = inputs.filter((el) => newly(el) || /confirm|repeat|again|retype/i.test(fieldWords(el)));
+    const current = inputs.find((el) => !marked.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(fieldWords(el)))) ?? null;
     const before = marked.length && !marked.some(newly) ? inputs.slice(0, inputs.indexOf(marked[0])).filter((el) => el !== current).at(-1) : undefined;
     return { fresh: before ? [before, ...marked] : marked, current };
   }
@@ -1755,7 +1839,7 @@
     const auto = (el.getAttribute("autocomplete") ?? "").trim().toLowerCase().split(/\s+/).pop() ?? "";
     if (auto.startsWith("cc-")) return "card";
     if (auto && auto !== "on" && auto !== "off") return auto;
-    const label = [el.name, el.id, el.getAttribute("aria-label"), el.placeholder, el.labels?.[0]?.textContent].filter(Boolean).join(" ");
+    const label = fieldWords(el);
     if (CARD_FIELD.test(label)) return "card";
     return ADDRESS_HINTS.find(([, re]) => re.test(label))?.[0] ?? null;
   }
@@ -1939,39 +2023,93 @@
     return read(root);
   }
 
-  // Default root: the page's main region, or its only article; otherwise the
-  // whole body (the first of many articles is a card, not the content).
-  // query keeps the lines containing it, searched across the whole body.
-  function extract(opts = {}) {
+  // A line of only invisible characters (zero-width ones, a soft hyphen) is
+  // a loading skeleton's: HackerOne's and PayPal's pages held lines of
+  // U+200C where their text would come (09-29).
+  const FILLER = /^(?:[ \u00AD\u200B-\u200D\u2060\uFEFF]|\u034F)+$/;
+
+  // An element's text as extract returns it: spaces and blank lines run
+  // together, skeleton lines left out, and whether there were any.
+  function tidyText(root) {
+    const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
+    const text = lines.filter((l) => !FILLER.test(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, filler: lines.some((l) => FILLER.test(l)) };
+  }
+
+  // What extract reads by default: a dialog open over the page (claude.ai's
+  // Settings read as the chat behind it, 09-29); else the page's main
+  // region, or its only article, unless that holds little of the page's
+  // text (Amazon's Prime page put only the account's name in it, 09-29);
+  // else the whole body (the first of many articles is a card, not the
+  // content). A root other than the main region comes with a note.
+  function contentRoot() {
+    const box = openDialog();
+    if (box && norm(box.innerText ?? "")) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const articles = document.querySelectorAll("article");
+    const main = document.querySelector("main, [role=main]") ?? (articles.length === 1 ? articles[0] : null);
+    if (!main) return { root: document.body };
+    const inMain = norm(main.innerText ?? "").length;
+    const inBody = norm(document.body.innerText ?? "").length;
+    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: "the main region holds little of the page's text, so this is the whole page" };
+    return { root: main };
+  }
+
+  // query keeps the lines containing it, searched across the whole body. A
+  // default read that finds no text, or skeleton lines, waits for the page
+  // to draw, as snapshot does.
+  async function extract(opts = {}) {
     if (opts.as === "table") return tables(opts);
-    let root;
-    if (opts.selector) root = deepQuery(opts.selector);
-    else if (opts.query) root = document.body;
-    else {
-      const articles = document.querySelectorAll("article");
-      root = document.querySelector("main, [role=main]") || (articles.length === 1 ? articles[0] : document.body);
+    let at = opts.selector ? { root: deepQuery(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
+    if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
+    let read = tidyText(at.root);
+    if (!opts.selector && !opts.query && window === window.top && (!read.text || read.filler)) {
+      await whenPage(() => {
+        at = contentRoot();
+        read = tidyText(at.root);
+        return read.text !== "" && !read.filler;
+      }, DRAW_WAIT_MS);
     }
-    if (!root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
-    let text = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (opts.query) text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
+    let { text } = read;
+    const notes = [at.note];
+    if (opts.query) {
+      text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
+      if (!text) notes.push(`no line on the page contains "${opts.query}" (the page has ${read.text.length} characters of text)`);
+    } else if (!text && !opts.selector) {
+      notes.push("the page shows no text yet: wait for text you expect (wait with text), then extract again");
+    } else if (read.filler) {
+      notes.push("parts of the page were still loading, and their placeholder lines are left out");
+    }
     const limit = opts.maxBytes || 20000;
     return {
       url: location.href,
       title: document.title,
       text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
       truncated: text.length > limit,
+      ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
+      ...(opts.query && !text ? regexHint(opts.query) : {}),
     };
+  }
+
+  // A query's parts: "a|b" is a or b. A leading (?i) is dropped: agents
+  // wrote it as in a regex, and a query ignores case already (09-29).
+  function alternatives(query) {
+    return String(query).replace(/^\(\?i\)/, "").split("|").map((s) => s.trim()).filter(Boolean);
   }
 
   // A query's test for one line: "a|b" matches a line containing either
   // alternative, as plain text, case-insensitive.
   function queryMatch(query) {
-    const alts = String(query).toLowerCase().split("|").map((s) => s.trim()).filter(Boolean);
+    const alts = alternatives(query).map((a) => a.toLowerCase());
     return (line) => {
       const t = line.toLowerCase();
       return alts.some((a) => t.includes(a));
     };
   }
+
+  // A query that matched nothing and reads as a regex ("^Send",
+  // "(?i)credit|balance|\$\d"): agents took the empty answer for the
+  // page's (09-29).
+  const regexHint = (query) => (/\\|\^|\(\?|\.\*|\[.*\]|\$$/.test(query) ? { hint: 'the query is plain text, not a regex: "a|b" keeps lines containing a or b, case aside' } : {});
 
   // ---------- tables as rows ----------
   // extract with as: "table" reads the page's data as rows instead of text:
@@ -2420,10 +2558,21 @@
   // an older one.
   let pendingWait = null; // { id, done }
 
-  // The text of the page and of the frames in it that share its origin.
+  // The text of the page and of the frames in it that share its origin. A
+  // Flutter page's words are its semantics nodes' labels, which hold no
+  // text: GEICO's choice "Get an Email" was only a radio's label, and a
+  // wait for it never met (09-29).
   function pageText() {
-    return [document.body, ...inlineBodies()].map((b) => (b ? readText(b, (el) => el.innerText ?? "") : "")).join("\n");
+    const text = [document.body, ...inlineBodies()].map((b) => (b ? readText(b, (el) => el.innerText ?? "") : "")).join("\n");
+    if (!document.querySelector("flutter-view, flt-glass-pane")) return text;
+    return [text, ...deepQueryAll("flt-semantics[aria-label], flt-semantics [aria-label]").map((el) => el.getAttribute("aria-label"))].join("\n");
   }
+
+  // A request out longer than this is a long poll (Gmail keeps its /sync/
+  // and /cloudsearch/request ones open), not a page still loading: wait's
+  // quiet counts only younger ones. Gmail's quiet waits answered found
+  // false, with a long poll still out (09-29).
+  const PENDING_MS = 2000;
 
   // spec (wait in tools.ts), all of whose parts must hold:
   //   text   the page shows it         any   it shows one of these (which)
@@ -2442,24 +2591,31 @@
     if (window !== window.top && (want.gone != null || want.url != null || want.quiet)) return { found: false };
     const start = Date.now();
     let last = start;
+    // Text "a|b" is met by either part, split as a query's is, and the
+    // answer says which: a wait on "a|b" as a query reads it never met
+    // (09-29).
+    const texts = want.text == null ? null : alternatives(want.text);
     const met = () => {
       if (selector && deepQuery(selector) === null) return null;
       if (want.url != null && !urlMatch(location.href, want.url)) return null;
       if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
-      if (want.quiet && (hear(0)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
+      if (want.quiet && (hear(Date.now() - PENDING_MS)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
         last = Date.now();
         return null;
       }
-      if (want.text == null && want.gone == null && want.any == null) return { found: true };
+      if (texts === null && want.gone == null && want.any == null) return { found: true };
       const page = pageText();
-      if (want.text != null && !shows(page, want.text)) return null;
+      const said = texts?.find((t) => shows(page, t));
+      if (texts !== null && said === undefined) return null;
       if (want.gone != null && shows(page, want.gone)) return null;
-      if (want.any == null) return { found: true };
+      if (want.any == null) return texts !== null && texts.length > 1 ? { found: true, which: said } : { found: true };
       const which = want.any.find((t) => shows(page, t));
       return which === undefined ? null : { found: true, which };
     };
+    // A wait met as it begins says so: Visible's text to go answered found
+    // in 2 ms, though it had never shown (09-29).
     const now = met();
-    if (now) return now;
+    if (now) return { ...now, already: true, ...(want.gone != null ? { hint: `"${want.gone}" was not on the page as the wait began: it went before, or never showed; to know the next page is up, wait for text it shows` } : {}) };
     return new Promise((resolve) => {
       let timer = null;
       const arm = () => {

@@ -153,7 +153,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       // injecting some pages (after a redirect). Put a fresh copy in.
       let how = await reach(tabId, frameId, Math.min(PING_MS, left()));
       if (!how) {
-        if (frameId === 0 && (await api.tabs.get(tabId)).title === FAILED_PAGE) break;
+        if (frameId === 0 && failedPage(await api.tabs.get(tabId))) break;
         await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
         how = await reach(tabId, frameId, Math.min(PING_MS, left()));
         send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
@@ -170,14 +170,28 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
     }
   }
-  const { url, title } = await api.tabs.get(tabId);
-  if (title === FAILED_PAGE) throw new Error(`Safari could not open ${url}: the site did not answer`);
-  throw new Error(`the page at ${url || "about:blank"} did not answer; reload it with goto and retry`);
+  const t = await api.tabs.get(tabId);
+  if (frameId !== 0 && !(await hasFrame(tabId, frameId))) throw new Error(`that ref's frame is gone; the tab is now at ${t.url}; snapshot again`);
+  if (failedPage(t)) throw unopened(t.url);
+  throw new Error(`the page at ${t.url || "about:blank"} did not answer; reload it with goto and retry`);
 }
 
 // Safari's own page for a site that never answered takes no script: a
-// fresh copy will not help, and the address is what went wrong.
-const FAILED_PAGE = "Failed to open page";
+// fresh copy will not help, and the address is what went wrong. Its title
+// is "Failed to open page", or, for a load that failed in place, its own
+// address: goto answered Paradox's reset link with the title
+// safari-resource:/ErrorPage.html, as if the page had opened (09-29).
+function failedPage(t) {
+  return t.title === "Failed to open page" || (t.title ?? "").startsWith("safari-resource:");
+}
+const unopened = (url) => new Error(`Safari could not open ${url}: the site did not answer`);
+
+// Whether the tab still holds the frame: one the page took away (GEICO's,
+// 09-29) answers nothing, while the page itself may be fine.
+async function hasFrame(tabId, frameId) {
+  const results = await api.scripting.executeScript({ target: { tabId, allFrames: true }, func: () => true }).catch(() => []);
+  return results.some((r) => r.frameId === frameId);
+}
 
 // How a copy of the script that answers is reached in the frame: by
 // message, through executeScript (a page open since before a reload), or
@@ -397,8 +411,9 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
   const out = [];
   let truncated = snap.truncated;
   const limit = opts.maxNodes || 600;
-  // "a|b" keeps lines containing either, as in the frame's own snapshot
-  const alts = String(opts.query ?? "").toLowerCase().split("|").map((s) => s.trim()).filter(Boolean);
+  // "a|b" keeps lines containing either, and a leading (?i) is dropped, as
+  // in the frame's own snapshot (alternatives in content.js)
+  const alts = String(opts.query ?? "").replace(/^\(\?i\)/, "").toLowerCase().split("|").map((s) => s.trim()).filter(Boolean);
   for (const line of lines) {
     const m = MARK.exec(line);
     if (!m) { out.push(line); continue; }
@@ -771,6 +786,10 @@ async function handle(msg) {
       if (owned) await ownTab(tab.id);
       await waitReady(tab.id, 15000);
       const t = await titled(tab.id);
+      if (failedPage(t)) {
+        api.tabs.remove(t.id).catch(() => {});
+        throw unopened(url);
+      }
       return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId };
     }
     case "tabs.close": {
@@ -814,6 +833,7 @@ async function handle(msg) {
       await api.tabs.update(tabId, { url });
       await waitReady(tabId, 20000);
       const t = await titled(tabId);
+      if (failedPage(t)) throw unopened(url);
       return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}) };
     }
     case "tabs.activate": {

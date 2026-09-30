@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Sign up or sign in</title>
+<!-- Monkeytype's account page (09-29): the register form comes first, its
+     password marked new-password and its repeat, passwordVerify, unmarked;
+     the login form follows it. -->
+<form id="register">
+  <input name="username" autocomplete="username" placeholder="username">
+  <input name="email" type="email" placeholder="email">
+  <input name="password" type="password" autocomplete="new-password" placeholder="password">
+  <input name="passwordVerify" type="password" placeholder="verify password">
+  <button type="button">Sign up</button>
+</form>
+<form id="login">
+  <input name="email" type="email" autocomplete="email" placeholder="email">
+  <input name="password" type="password" autocomplete="current-password" placeholder="password">
+  <button type="button" id="signin">Sign in</button>
+</form>
+<p id="said"></p>
+<script>
+  signin.addEventListener("click", () => {
+    const [user, password] = [...document.querySelectorAll("#login input")].map((f) => f.value);
+    said.textContent = user && password ? `Signed in as ${user}` : "Enter your email and password";
+  });
+</script>

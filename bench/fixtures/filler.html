@@ -1,0 +1,14 @@
+<!doctype html>
+<title>Reports</title>
+<!-- HackerOne's program page while it loads (09-29): each skeleton line
+     holds only zero-width non-joiners until the text arrives, 800 ms
+     after the page loads here. -->
+<main>
+  <p>&zwnj;&zwnj;&zwnj;</p>
+  <p>&zwnj;&zwnj;</p>
+</main>
+<script>
+  setTimeout(() => {
+    document.querySelector("main").innerHTML = "<h1>Reports</h1><p>Report 1234 was resolved.</p>";
+  }, 800);
+</script>

@@ -71,6 +71,35 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a new password fills a lone field that only its placeholder calls new",
+    page: "new-password-placeholder.html",
+    steps: [
+      { op: "fillNewPassword", args: ["", null, "correct horse"], answer: { value: { ok: true, filled: ["new password"] } } },
+      { op: "click", args: ["Save"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("New password saved") } } },
+    ],
+  },
+  {
+    name: "a login fills the login form, not a sign-up form before it whose repeat password is unmarked",
+    page: "signup-login.html",
+    steps: [
+      { op: "fillLogin", args: ["", "ada@example.com", "hunter2"], answer: { value: { ok: true, filled: ["username", "password"] } } },
+      { op: "click", args: ["Sign in"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Signed in as ada@example.com") } } },
+    ],
+  },
+  {
+    name: "a code typed as a secret into the first of six digit boxes with no length limit goes one digit to a box, and no box shows its digit",
+    page: "digit-boxes.html",
+    steps: [
+      { op: "snapshot" }, // [1] Digit 1 of 6
+      { op: "type", args: ["1", "402913", { secret: true }], answer: { value: { ok: true, kept: true } } },
+      { op: "snapshot", answer: { value: { snapshot: expect.not.stringContaining("value=") } } },
+      { op: "click", args: ["Submit"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
     name: "a code typed as a secret into the first of six one-character boxes goes one digit to a box",
     page: "code-boxes.html",
     steps: [
@@ -308,6 +337,48 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click on a submit still disabled after type filled its form says the page did not take scripted typing",
+    page: "typed-disabled.html",
+    steps: [
+      { op: "snapshot" }, // [1] Email, [2] Reset password {disabled}
+      { op: "type", args: ["1", "ada@example.com"], answer: { value: { ok: true, kept: true } } },
+      { op: "click", args: ["2"], answer: { error: expect.stringContaining("real_input type") } },
+    ],
+  },
+  {
+    name: "a button made of an input is named by its value, and an image button by its alt",
+    page: "input-buttons.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: '[1] button "Place order"\n[2] button "Add to cart"\n[3] button "Search"' } } },
+      { op: "click", args: ["Add to cart"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Added to cart") } } },
+    ],
+  },
+  {
+    name: "a price field that rewrites the typed figures as dollars and cents keeps them",
+    page: "currency.html",
+    steps: [
+      { op: "snapshot" }, // [1] Price
+      { op: "type", args: ["1", "1234"], answer: { value: { ok: true, kept: true } } },
+    ],
+  },
+  {
+    name: "a field the page marks invalid a moment after typing says what the page said",
+    page: "card-field.html",
+    steps: [
+      { op: "snapshot" }, // [1] Card number
+      { op: "type", args: ["1", "4111"], answer: { value: { ok: true, kept: true, invalid: "Invalid card number" } } },
+    ],
+  },
+  {
+    name: "a selector matching a field behind an open dialog and one in it types into the dialog's",
+    page: "dialog-field.html",
+    steps: [
+      { op: "type", args: ["input[type=email]", "ada@example.com"], answer: { value: { ok: true, kept: true } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Dialog saw ada@example.com") } } },
+    ],
+  },
+  {
     name: "a wait for text answers found once the page's timer has added it",
     page: "wait.html",
     steps: [
@@ -315,6 +386,29 @@ benchRows("content.js in WebKit", [
       { op: "wait", args: [null, { text: "results are ready" }], answer: { value: { found: true } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Results are ready") } } },
     ],
+  },
+  {
+    name: "a wait whose text shows when it begins says it held already",
+    page: "wait.html",
+    steps: [{ op: "wait", args: [null, { text: "Search" }], answer: { value: { found: true, already: true } } }],
+  },
+  {
+    name: "a wait for text to go that was never on the page says so rather than that it went",
+    page: "wait.html",
+    steps: [{ op: "wait", args: [null, { gone: "never on this page" }], answer: { value: { found: true, already: true, hint: expect.stringContaining("never on this page") } } }],
+  },
+  {
+    name: "a wait for text with a bar in it waits for any of its parts, and says which showed",
+    page: "wait.html",
+    steps: [
+      { op: "click", args: ["Search"] }, // adds "Results are ready" 300 ms later
+      { op: "wait", args: [null, { text: "nothing here|results are ready" }], timeout: 2000, answer: { value: { found: true, which: "results are ready" } } },
+    ],
+  },
+  {
+    name: "a wait for text on a Flutter page finds words that only its semantics labels hold",
+    page: "flutter-label.html",
+    steps: [{ op: "wait", args: [null, { text: "Get an Email" }], timeout: 2000, answer: { value: { found: true } } }],
   },
   {
     name: "a snapshot of a page still drawing, with only a control no one sees on it yet, waits for the page to draw",
@@ -329,9 +423,9 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] button "Sign in"' } } }],
   },
   {
-    name: "a snapshot of a page that never draws answers, with nothing, once the wait runs out",
+    name: "a snapshot of a page that never draws answers, with nothing, once the wait runs out, and says the page drew nothing",
     page: "empty.html",
-    steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "" } } }],
+    steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "", hint: expect.stringContaining("drawn nothing yet") } } }],
   },
   {
     name: "a snapshot of a Flutter page clicks its Enable accessibility placeholder and waits for the controls Flutter then builds",
@@ -353,6 +447,31 @@ benchRows("content.js in WebKit", [
     name: "extract reads the main region as drawn: shadow text in, hidden text and one-pixel decoys out",
     page: "extract.html",
     steps: [{ op: "extract", answer: { value: { text: "Pricing\n\nPro costs $12 a month.\n\nCode: BENCH\n\nBilled yearly" } } }],
+  },
+  {
+    name: "extract reads the dialog open over the page, and says how to read the page behind it",
+    page: "modal.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Billing\s+Max plan, renews Oct 1\.\s+Close$/), note: expect.any(String) } } }],
+  },
+  {
+    name: "extract reads the whole page when its main region holds little of its text, and says so",
+    page: "thin-main.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringContaining("renews October 12"), note: expect.any(String) } } }],
+  },
+  {
+    name: "extract of a page whose lines hold only placeholder characters waits for its text",
+    page: "filler.html",
+    // the page puts its text in 800 ms after it loads
+    steps: [{ op: "extract", answer: { value: { text: "Reports\n\nReport 1234 was resolved." } } }],
+  },
+  {
+    name: "an extract query that matches no line says so in a note, a leading (?i) is dropped, and a query written as a regex is told it is plain text",
+    page: "click.html",
+    steps: [
+      { op: "extract", args: [{ query: "nothing like this" }], answer: { value: { text: "", note: expect.stringContaining('"nothing like this"') } } },
+      { op: "snapshot", args: [{ query: "(?i)pressed" }], answer: { value: { snapshot: expect.stringContaining("Pressed 0 times") } } },
+      { op: "snapshot", args: [{ query: "^Pressed" }], answer: { value: { nodes: 0, hint: expect.stringContaining("plain text") } } },
+    ],
   },
   {
     name: "a root or selector that matches nothing on a drawn page is named in the error, with how to read the whole page",
@@ -449,6 +568,6 @@ benchRows("content.js in WebKit", [
   {
     name: "download on a button that opens a web page says so and what to do, rather than saving the page",
     page: "js-download.html",
-    steps: [{ op: "download", args: ["Policy"], answer: { error: "the ref opens a web page, not a file: click it, and download the file from the page it opens" } }],
+    steps: [{ op: "download", args: ["Policy"], answer: { error: expect.stringContaining("opens a web page, not a file") } }],
   },
 ]);

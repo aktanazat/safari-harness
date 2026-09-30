@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Currency field</title>
+<!-- DriveCentric's deal form (09-29): the price field rewrites what goes in
+     as dollars, with a dollar sign, commas, and cents. -->
+<input id="price" aria-label="Price">
+<script>
+  price.addEventListener("input", () => {
+    const figures = price.value.replace(/[^\d.]/g, "");
+    price.value = figures ? "$" + Number(figures).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "";
+  });
+</script>

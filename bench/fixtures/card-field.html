@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Card number</title>
+<!-- GEICO's payment form (09-29): the card field checks the number a
+     moment after it changes, marks itself invalid, and says why below. -->
+<input id="card" aria-label="Card number" aria-describedby="card-error">
+<p id="card-error"></p>
+<script>
+  card.addEventListener("input", () => {
+    setTimeout(() => {
+      const ok = /^\d{16}$/.test(card.value.replace(/\s/g, ""));
+      card.setAttribute("aria-invalid", String(!ok));
+      document.getElementById("card-error").textContent = ok ? "" : "Invalid card number";
+    }, 100);
+  });
+</script>
