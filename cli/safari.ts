@@ -620,6 +620,13 @@ async function main() {
   }
 
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
+  // A command's words are words, not its call's JSON: on 09-30 an agent
+  // wrote `safari dialog --tab front '{"do":"read"}'`, which sent the whole
+  // object as do, and open, snapshot, and goto failed on theirs with errors
+  // that hid why.
+  if (cmd !== "call" && jsonObject(positional[0])) {
+    fail(`${cmd} takes words and flags, not a JSON object: safari call ${toolName(cmd) ?? cmd} '${positional[0]}' (flags such as --tab still apply), or its flags (safari ${cmd} --help)`, 2);
+  }
   let tool = ALIAS[cmd] ?? cmd;
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
@@ -784,6 +791,16 @@ const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
   return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && !BOOLEAN_FLAGS.has(prev.slice(2))) || isSavePath(i, argv));
+}
+
+function jsonObject(word: string | undefined): boolean {
+  if (!word?.trimStart().startsWith("{")) return false;
+  try {
+    const v: unknown = JSON.parse(word);
+    return v !== null && typeof v === "object" && !Array.isArray(v);
+  } catch {
+    return false;
+  }
 }
 
 main().then(

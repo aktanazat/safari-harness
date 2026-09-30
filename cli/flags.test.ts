@@ -45,3 +45,22 @@ test("a flag a model's call may use for a parameter is taken as that parameter, 
   expect(await safari(["learn", "geico.com", "--note", "The quote asks for the address twice"])).toEqual({ err: "note: used --fact for --note", code: 0 });
   expect(calls).toEqual([{ tool: "learn", args: { site: "geico.com", fact: "The quote asks for the address twice" } }]);
 });
+
+// On 09-30 an agent passed each call's JSON as the command's word:
+// `safari dialog --tab front '{"do":"read"}'` sent the whole object as do,
+// and open, snapshot, and goto failed with errors that hid the cause.
+test("a JSON object given as a command's word fails before any call, pointing at safari call", async () => {
+  calls.length = 0;
+  for (const argv of [["dialog", "--tab", "front", '{"do":"read"}'], ["goto", "--tab", "24299", '{"url":"https://example.com"}'], ["snapshot", '{"tab":24299}']]) {
+    const { err, code } = await safari(argv);
+    expect(code).toBe(2);
+    expect(err).toMatch(new RegExp(`safari call ${argv[0]} '`));
+  }
+  expect(calls).toEqual([]);
+});
+
+test("a JSON object is still a call's arguments", async () => {
+  calls.length = 0;
+  expect(await safari(["call", "dialog", '{"do":"read","tab":7}'])).toEqual({ err: "", code: 0 });
+  expect(calls).toEqual([{ tool: "dialog", args: { do: "read", tab: 7 } }]);
+});
