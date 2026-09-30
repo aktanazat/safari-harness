@@ -88,8 +88,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   done. Your terminal makes and deletes the groups, through a keeper process
   `open` starts: each step waits until he is idle, the screen unlocked and
   Safari behind, and stops if his front app changes. A menu that will not
-  close turns groups off until `~/.local/share/safari-harness/groups-off.json`,
-  which says why, is removed; `safari doctor` warns while it is there.
+  close turns groups off for a day; `~/.local/share/safari-harness/groups-off.json`
+  says why, and removing it turns them on sooner. `safari doctor` warns
+  while it is there, and each agent is told why once, not on every open.
 - When your process exits, or the window has held only its page for two
   minutes, the task ends. A plain window's page closes: the window goes with
   your last tab, and a tab you kept stays there for him. A tab group's tabs
@@ -184,16 +185,25 @@ JavaScript: `openTab`, `snapshot`, `page.locator(ref).click()`,
 `page.waitForEvent('download')`, `page.pdf()`, cookie-bearing `fetch`, and
 site globals for Slack, Gmail, Notion, Google Docs and Sheets, Google
 search, YouTube, X, and Messages. `--session <name>` keeps bindings and tabs
-between calls. `safari guide repl` has the whole API and what to do when a
-run goes wrong.
+between calls: the session owns its tabs, so they outlive the command that
+started it and close when the session ends (`--close`, or 30 minutes
+unused) or sit 20 minutes unused. A site global whose tab is gone opens a
+new one once and runs the call again. A call waits at most 120 s; MCP
+clients may cut one at 60 s, so split long waits across calls. `safari
+guide repl` has the whole API and what to do when a run goes wrong.
 
 ## Several steps in one call
 
 Every tool call costs a model turn of a few seconds. `run` does several tools
 in one call, in order. After the first error it skips the remaining steps
-except `close`, so a failed run never leaves its tab open. A step without
-`tab` uses the tab an earlier `open` step made. Every tool but `repl` can be
-a step, `real_input`, `handoff`, and the Messages tools included.
+except `close` and `keep`, so a failed run never leaves its tab open. A step
+without `tab` uses the tab the run's latest `open` made, else the last tab a
+step named, unless the run closed it; a step naming a tab the run closed
+fails with `tab N was closed in step M`, and one naming a tab the run did
+not open gets a note. Every tool but `repl` can be a step, `real_input`,
+`handoff`, and the Messages tools included. From a shell, steps whose text
+holds quotes go in a file (`safari run --steps-file steps.json`) or on
+stdin (`--steps -`); a bare JSON array as the argument works too.
 
 - Read a page in one call: `open` (with `background: true`), then `extract`
   (with a `query` for just the lines you need), `eval`, or `snapshot` with a
@@ -206,21 +216,27 @@ a step, `real_input`, `handoff`, and the Messages tools included.
   the element's visible text or a CSS selector instead.
 - From a shell script, never start a `safari` command in the background and
   poll for it. Each command already waits for its page; a backgrounded one
-  only adds turns (one session spent $8.35 over 36 turns this way for 49
-  seconds of browser work).
+  only adds turns.
 
 ## Tool and parameter names
 
 A call that names a tool or a parameter another way still runs, and its
 answer says what was used in a `note`: another case, or `-` for `_`
-(`browsing-history`, `max_bytes`), and three names models reach for:
-`go` for `do`, `value` for `option`, and `query` for `text`, each only on
-a tool that takes the second and not the first. A parameter the tool does
-not take fails the call before anything runs, with the closest one:
-"unknown parameter optoin for select; did you mean option? (params: tab,
-ref, option, snapshot)". The CLI takes tools the same way (`safari
-browsing-history`), and the first word after a tool that takes `do` is
-its `do` (`safari passwords status`). The REPL's calls are taken as
+(`browsing-history`, `max_bytes`), and names models reach for: `go` or
+`action` for `do`, `value` for `option`, `query` for `text`, `note` for
+`fact`, `code` or `js` for `expression`, `selector` for `root`, `x`/`y` for
+`dx`/`dy`, `files` for `paths`, and click's or hover's `text` for `ref`,
+each only on a tool that takes the second and not the first. `real_input
+{type: "…"}` is `do: "type"` with that text, `do: "press"` is
+`do: "key"`, and `net {start: true}` is `do: "start"`. A parameter the
+tool does not take fails the call before anything runs, with the closest
+one: "unknown parameter optoin for select; did you mean option? (params:
+tab, ref, option, snapshot)"; `snapshot {url}` and `extract {url}` say to
+open the page first. The CLI takes tools the same way (`safari
+browsing-history`, `safari real-input`), and the first word after a tool
+that takes `do` is its `do` (`safari passwords status`). A CLI flag no
+parameter answers to fails before any call and lists the command's flags;
+`--note` is taken as learn's `--fact`. The REPL's calls are taken as
 written.
 
 ## Reading a page
@@ -246,9 +262,17 @@ Read with `snapshot` when you do not yet know what is on the page.
   changed. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
-  Matching ignores case and reaches into frames. `a|b` returns lines
-  containing either alternative, as plain text, not a regular expression.
-  `extract` takes the same `query`.
+  Matching ignores case and reaches into frames; a leading `(?i)` is
+  dropped. `a|b` returns lines containing either alternative, as plain
+  text, not a regular expression; a query with regex characters that
+  matches nothing says so in a `hint`. `extract` takes the same `query`,
+  and one that matches no line answers empty text with a `note` saying how
+  much text the page has.
+- `extract` reads a dialog open over the page first (its `note` says
+  `selector: "body"` reads the page behind it), else the page's `main` or
+  only article, else the whole page when `main` holds little of its text.
+  A page with no text yet, or only loading placeholders, gets up to 2 s to
+  draw; placeholder lines are left out, with a `note`.
 - `root` (a CSS selector) narrows the snapshot to one region, such as a dialog.
   A `root`, or an `extract` `selector`, that matches nothing fails and names
   it: `nothing on the page matches root "main"; leave root out to read the
@@ -337,9 +361,10 @@ again with `save` (next section) instead of fetching it twice.
 ## Saving a read to a file
 
 `extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
-to a file, and the answer is only `{saved, bytes, head}`: the file's path, its
-size in bytes, and its first 500 characters. Read the parts you need from the
-file (grep it, or read a range) instead of carrying the page in context.
+to a file, and the answer is only `{saved, url, bytes, head}`: the file's
+path, the page's address, its size in bytes, and its first 500 characters.
+Read the parts you need from the file (grep it, or read a range) instead of
+carrying the page in context.
 
 - `save: true` writes a new file,
   `~/.local/share/safari-harness/saved/<host>-<time>.<ext>`. `save:
@@ -434,8 +459,13 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   `append: true` adds at the end. An editor that names no role of its own
   (ProseMirror's) shows in `snapshot` as a `textbox` with a ref.
 - `type` answers `{ok, kept, typed: "N chars"}`, never the text. `kept` is
+  judged once the page has had 300 ms with the text; a field that
+  reformats figures (`1234` shown as `$1,234.00`) counts as kept. `kept` is
   false when the page changed or cut what you typed (a phone field adds
-  dashes, a length limit drops the rest): snapshot to see it.
+  dashes, a length limit drops the rest): snapshot to see it. `invalid`
+  gives what the page says is wrong with the field, and a field in another
+  site's frame (a card processor's) adds `next`: if the page ignores the
+  text, type with `real_input` and the ref.
 - `type` into a Flutter field waits until the page has taken the field, a
   frame after focus, so the page's own model keeps the text: text set
   sooner was wiped, and GEICO's Log In read no username. A field the page
@@ -449,13 +479,22 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   code his Apple Passwords keeps for the site instead, as
   `passwords {do: "code"}` does. An emailed code: open the email in
   another tab and pass `secret: "page", from: <that tab>`; the one code it
-  shows (4 to 8 digits standing alone, 6 when lengths differ) is typed, and
-  a page with more or none fails saying how many. A code typed into the
-  first of a row of one-character boxes goes one digit to a box.
+  shows (4 to 8 digits standing alone, 6 when lengths differ, or 6 to 8
+  letters and digits on a line that says code) is typed, and a page with
+  more or none fails saying how many. `real_input {do: "type", text:
+  "{{code}}"}` takes the same. A code typed into the first of a row of 4
+  to 8 boxes (each one character, or named like "Digit 1 of 6") goes one
+  digit to a box, and every box in the row is kept secret.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options. On a dropdown the page draws itself it fails and says
   so: click the dropdown, then the option's ref in a fresh snapshot.
 - `type` and `select` on a label's ref act on the field it labels.
+- A `click` on a control still disabled after `type` filled every field of
+  its form says the page did not take scripted typing: type into its fields
+  with `real_input` and the ref, then click again.
+- A button made of an `input` is named by its value ("Place order"), an
+  image button by its alt. A CSS selector that matches a field in the open
+  dialog and one behind it acts on the dialog's.
 - `click`, `type`, and `select` on a disabled control (the snapshot marks
   it `{disabled}`) fail and say so: the page would ignore the action. A
   page enables its button once its form is complete; a few enable one only
@@ -465,7 +504,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `hover` opens menus that appear on mouse-over.
 - `upload` attaches local files (absolute paths) to a file input. File inputs
   are usually hidden: pass the upload area's ref, or no ref when the page has
-  one file input.
+  one file input; a ref with no file input on a page with exactly one uses
+  that one, with a note.
 - `upload` with `find` instead of `paths` looks for the user's own file
   when he did not give a path (`find: "insurance card"`, CLI
   `safari upload --find "insurance card" --tab N`). It searches with
@@ -487,6 +527,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
 - `click` with x/y only when a ref cannot reach the target. x and y are CSS
   pixels in the tab's viewport, as the page's `clientX` and `clientY` count
   them; `real_input` takes the same.
+- `scroll {tab, ref}` brings that element to the middle of the view.
 - `scroll` is rarely needed: snapshots include off-screen elements, and
   clicks scroll to their target. It scrolls the window; on a page whose
   window does not move (an app that scrolls a pane of its own, a Flutter
@@ -573,16 +614,24 @@ Wait for the page, not the clock.
 - `wait` with `text` or `selector` returns the moment it appears, even in a
   background tab, and catches text that shows only briefly. Text matches in
   any case and spacing ("M240i" finds "M240 i"), in the page and in its
-  embedded frames. `ms` is the timeout (default 10000, max 30000); the call
+  embedded frames. `ms` is the timeout (default 10000, max 30000; a longer
+  one is cut, and the answer says so: call again to wait longer); the call
   ends then even if the page is too busy to answer. The result says
-  `found: true|false`.
+  `found: true|false`. A text wait that misses says the page never showed
+  those words: wait on words a snapshot showed, never on made-up words to
+  sleep.
+- A wait whose condition already holds as it begins answers at once with
+  `already: true`: it waited for no change. Text such as "Reward" can match
+  a menu item ("Rules & Rewards"), so wait for words only the next page
+  shows. `gone` on text that was never on the page says so in a `hint`.
 - `any: ["Order placed", "Payment declined"]` ends on the first shown and
-  says `which`. `gone: "Loading"` waits for text to leave, `url` for a part
-  of the address or a `/regex/` (pushState included), and `quiet: true`
-  for 500 ms without a change to the page (clocks, progress bars, and video
-  aside) and with no request to its own site still out. Given together,
-  all must hold. `gone`, `url`, and `quiet` read the top page, not its
-  frames.
+  says `which`; `text: "a|b"` does the same. `gone: "Loading"` waits for
+  text to leave, `url` for a part of the address or a `/regex/` (pushState
+  included), and `quiet: true` for 500 ms without a change to the page
+  (clocks, progress bars, and video aside) and with no request to its own
+  site still out (one out past 2 s, such as a long poll, does not count).
+  Given together, all must hold. `gone`, `url`, and `quiet` read the top
+  page, not its frames.
 - A whole-page `snapshot` of a page that shows nothing a person sees yet,
   neither a word nor a control (a blank page, or Bank of America's sign-in,
   which shows just a skip link in a one-pixel box while it draws), waits
@@ -644,15 +693,18 @@ with `do: "read"`.
 ## Files, PDFs, and requests
 
 - `download` saves a file into `~/Downloads` and returns its path: pass the
-  `ref` of a download link or of a button that makes a file, or a `url`.
-  It fetches with the page's cookies, so a signed-in file works. A link to
+  `ref` of a download link or of a button that makes a file, a `url` (no
+  tab needed), or only a `tab` to save the file it shows (a PDF in
+  Safari's viewer). Put a file you only read under /tmp with `out`. It
+  fetches with the page's cookies, so a signed-in file works. A link to
   the page itself (`href="#"`) is clicked like a button. A ref that leads
-  to a web page rather than a file (a document viewer) fails and says so,
-  where it once saved the page's HTML under the site's name: click it, and
-  download the file from the page it opens. A name already taken gets
-  ` (1)`. A download only the server starts, after a click the page cannot
-  see, lands in `~/Downloads` through Safari itself. A click that takes
-  the tab to a file Safari shows itself (a PDF, an image) saves that file;
+  to a web page rather than a file (a document viewer) fails and says so:
+  click it, then call `download` with only the tab it opens. A web page
+  saved by url is named `<title>.html`, and a PDF without `.pdf` gets it.
+  A name already taken gets ` (1)`. A download only the server starts,
+  after a click the page cannot see, lands in `~/Downloads` through Safari
+  itself. A click that takes the tab to a file Safari shows itself (a PDF,
+  an image) saves that file;
   one that opens a page fails with the page's address, and a file the site
   sent then is in `~/Downloads`. On your own tab, `download` then returns
   that file instead of an error.
@@ -721,12 +773,13 @@ plain sentence of at most 300 characters.
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").
 - Notes come to you by themselves: your first `open`, `goto`, or
-  `snapshot` on a site with notes carries `notes`, a line per site (a
-  snapshot prints it under its header). A site's notes come in full while
-  they run to 900 characters in all (three notes at their longest); more
-  come as a count, `site notes for cvs.com: 5; read them with guide
-  cvs.com`, which `safari guide cvs.com` prints. Each agent gets a site's
-  line once, whichever of its subdomains it opens first.
+  `snapshot` on a site with notes carries `notes`, a line per site, ahead
+  of `space` (a snapshot prints it under its header). A site's notes come
+  in full while they run to 900 characters in all (three notes at their
+  longest); more come as a count, `site notes for cvs.com: 5; read them
+  with learn {site: "cvs.com"}` (`safari learn cvs.com` in a shell). Each
+  agent gets a site's line once, whichever of its subdomains it opens
+  first, and again on a page not found there.
 - `safari guide <site>` prints the bundled guide, then the notes and
   readers saved for that host; by name (`safari guide slack`) it also
   shows those of each subdomain its hosts cover. `safari guide sites` ends
@@ -827,7 +880,7 @@ Signing in, in this order:
      (GEICO's) gets each field once the page has taken it, as `type` does,
      so the page's own model sees the login.
    - The Mac may ask the user to approve the password with Touch ID. The
-     call waits 40 s for him, then says the Mac is asking while the request
+     call waits 25 s for him, then says the Mac is asking while the request
      goes on: ask him to approve, then call `fill` again. That call gets the
      password he approved (kept 5 minutes) with no second prompt. Until he
      acts, Apple's helper answers nothing else, so every `passwords` call
@@ -878,7 +931,7 @@ Signing in, in this order:
    and the digits go straight to the harness: the answer is
    `{paired: true}`, or `{paired: false, why}` when he cancels or 3 minutes
    pass, never the code. Never ask for the code in the chat. Through MCP
-   the call waits 40 s for him, as a `fill` does; past that, `why` says what
+   the call waits 25 s for him, as a `fill` does; past that, `why` says what
    the Mac is asking him (Touch ID or the code) while the pairing goes on:
    ask him to act on it, then call again, and that call waits on the same
    pairing with no second prompt. The CLI's process ends with its answer,
@@ -940,15 +993,17 @@ check, no solving services.
   or no input for 3 minutes) it also alerts his phone on Telegram, once per
   handoff: a picture of the page and one line naming the site. He cannot
   answer the alert: the handoff ends only when the page clears or the wait
-  runs out. `ms` is how long to wait (default 60000, max 110000). It returns
-  `{done, waitedMs, url, title, challenge}`, plus `alerted` (how the alert
-  went: `sent`, or why not) and `joined` when the tab's handoff was already
-  running. `done` is true when the check is gone, or, when the tab showed no
-  check at the start (a passkey sign-in), when the page's address changes;
-  then the tab and app he had in front come back, if he is still on the
-  tab. When `done` is false, call it again: it joins the same wait, with no
-  second notice or alert. A block fails at once. Then carry on in the same
-  tab.
+  runs out. `ms` is how long to wait (default 60000, max 110000). `until` is
+  text the page shows once he is done, for a step that leaves the address
+  as it was (a card form, Touch ID); text already on the page is refused.
+  It returns `{done, waitedMs, url, title, challenge, alerted}` (`alerted`:
+  `sent`, or why not, such as `not sent: at the Mac`), plus `joined` when
+  the tab's handoff was already running. `done` is true when the check is
+  gone, when `until` shows, or, when the tab showed no check at the start
+  (a passkey sign-in), when the page's address changes; then the tab and
+  app he had in front come back, if he is still on the tab. When `done` is
+  false, call it again: it joins the same wait, with no second notice or
+  alert. A block fails at once. Then carry on in the same tab.
 - Write `why` for the user: what to do and on which site ("Cars.com wants a
   human check before it shows the listing").
 - Use `handoff` for any step only the user can take in the tab: a passkey or
@@ -1139,12 +1194,19 @@ its own `safari` command.
   cannot message the extension: a tab its link or `window.open` makes
   during an action still comes back as `newTab`, but one it opens later
   on its own stays the user's until the page reloads.
-- "that tab is gone": the tab was closed at the end of your turn, after 20
-  minutes unused, or by the user, or Safari quit since. Keep a tab you need
-  past your turn with `keep`. An extension reload loses no tab: old ids
-  still reach every tab whose page ran the harness's script, which leaves
-  out a blank tab, Safari's own pages, and a page that failed to load. Find
-  the page with `tabs`, or open it again.
+- "that tab is gone": when the harness closed the tab itself, the error
+  says why (a close call, the end of your turn, 20 minutes unused, or its
+  agent exited), when, and what it showed: open it again. The plain
+  message means the user closed it or Safari quit. Keep a tab you need
+  past your turn, or past a long step, with `keep`. An extension reload
+  loses no tab: old ids still reach every tab whose page ran the harness's
+  script, which leaves out a blank tab, Safari's own pages, and a page that
+  failed to load. Find the page with `tabs`, or open it again.
+- "Safari could not open <url>: the site did not answer": Safari showed its
+  error page; `open` closes the tab it made.
+- "that ref's frame is gone": the frame the ref was in went away as the
+  page navigated or redrew it. The error gives the tab's address; snapshot
+  again.
 - "the user paused this task" or "the user stopped this task": see
   Mission control above.
 - "the page at … did not answer within 5 s": a dialog open on the page, or
