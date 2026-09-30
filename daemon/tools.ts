@@ -82,7 +82,7 @@ function webAddress(url: unknown): string {
   const s = str(url, "url");
   const protocol = URL.parse(s)?.protocol;
   if (protocol === "http:" || protocol === "https:" || s === "about:blank") return s;
-  if (protocol === "file:") throw new Error("Safari opens no local file for the harness: serve its folder over http (python3 -m http.server -d <folder>) and open the http://localhost address");
+  if (protocol === "file:") throw new Error("Safari opens no local file for the harness: serve its folder over http (python3 -m http.server -d <folder> <port>) and open http://127.0.0.1:<port>/ (Safari fails to open localhost here)");
   throw new Error(`${s.slice(0, 80) || "an empty url"} is not a web address; give a whole one, like https://example.com`);
 }
 
