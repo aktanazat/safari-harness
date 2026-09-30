@@ -64,8 +64,9 @@ function rootedPath(cwd: string): typeof nodePath {
 // A snapshot line that carries a ref ("[12] button ...", "h2 [3] link ...").
 const HAS_REF = /\[(?:f\d+:)?\d+\]/;
 
-// The page's security policy refused to run code in its own world.
-const EVAL_REFUSED = /unsafe-eval|Content Security Policy|Refused to evaluate|EvalError|Trusted ?Type/i;
+// The page's security policy refused to run code in its own world, in
+// WebKit's words or the daemon's (EVAL_BLOCKED in tools.ts, thrown).
+const EVAL_REFUSED = /unsafe-eval|Content Security Policy|Refused to evaluate|EvalError|Trusted ?Type|security policy blocks eval/i;
 
 function waitFor<T>(ms: number, what: string, arm: (w: Waiter<T> | null) => void): Promise<T> {
   const { promise, resolve, reject } = Promise.withResolvers<T>();
@@ -240,6 +241,7 @@ export class Page {
   }
   async goto(url: string): Promise<{ url: string; title: string }> {
     const r = (await this.session.call("goto", { tab: this.id, url: String(url) })) as TabRow;
+    this.session.showNotes(r);
     this.note(r.url, r.title);
     return { url: this.#url, title: this.#title };
   }
@@ -261,7 +263,11 @@ export class Page {
   // none of the page's own script variables.
   async evaluate(fn: unknown, arg?: unknown): Promise<unknown> {
     const expression = typeof fn === "function" ? `(${String(fn)})(${arg === undefined ? "" : JSON.stringify(arg)})` : String(fn);
-    const r = (await this.session.call("eval", { tab: this.id, expression, page: true })) as { result?: unknown; error?: string };
+    // The refusal comes back as the page's error, or thrown by the daemon.
+    const r = (await this.session.call("eval", { tab: this.id, expression, page: true }).catch((e: unknown) => {
+      if (e instanceof Error && EVAL_REFUSED.test(e.message)) return { error: e.message };
+      throw e;
+    })) as { result?: unknown; error?: string };
     if (typeof r?.error !== "string") return r?.result ?? undefined;
     if (!EVAL_REFUSED.test(r.error)) throw new Error(r.error);
     const again = (await this.session.call("eval", { tab: this.id, expression })) as { result?: unknown };
@@ -290,6 +296,17 @@ export class Page {
   }
   getByPlaceholder(text: string): Locator {
     return new Locator(this, `[placeholder=${JSON.stringify(String(text))}]`);
+  }
+
+  // Playwright's page-level shorthands for a locator's actions.
+  click(target: string): Promise<void> {
+    return this.locator(target).click();
+  }
+  fill(target: string, text: string): Promise<void> {
+    return this.locator(target).fill(text);
+  }
+  type(target: string, text: string): Promise<void> {
+    return this.locator(target).type(text);
   }
 
   async act(tool: string, args: Record<string, unknown>): Promise<Outcome> {
@@ -331,8 +348,17 @@ export class Page {
     if (!r.found) throw new Error(`${selector} did not appear within ${Math.round((opts.timeout ?? 10_000) / 1000)} s`);
     return this.locator(selector);
   }
+  // Ends once the page is quiet, ms at most, as a wait with only ms does
+  // (tools.ts): fixed sleeps in scripts held agents over a minute. The wait
+  // tool takes 30 s at a time.
   async waitForTimeout(ms: number): Promise<void> {
-    await Bun.sleep(ms);
+    for (let left = Number(ms); left > 0; ) {
+      const part = Math.min(left, 30_000);
+      const r = (await this.session.call("wait", { tab: this.id, ms: part })) as { waitedMs?: number };
+      const waited = r?.waitedMs ?? part;
+      if (waited < part) return;
+      left -= waited;
+    }
   }
   async waitForLoadState(_state?: string, opts: { timeout?: number } = {}): Promise<void> {
     const limit = opts.timeout ?? 30_000;
@@ -439,6 +465,37 @@ function errorText(e: unknown): string {
   return `${name}: ${String(e.message)}`;
 }
 
+// A word of code: a name, a number, or a word of a string.
+const WORD = /[\w$]+/g;
+
+// Where in the script an error was thrown, from the first frame of its stack
+// in the transpiled code: "line 4" or "lines 3-5". The transpiler reflows the
+// script and keeps no source map, but keeps its names, numbers and strings in
+// order, so the transpiled line is found as the fewest script lines holding
+// its words in order. undefined when the stack has no such frame, or the
+// words fit more than one place.
+function scriptLines(code: string, js: string, stack: unknown): string | undefined {
+  const frame = typeof stack === "string" ? /\brepl:(\d+):\d+/.exec(stack) : null;
+  if (!frame) return undefined;
+  // The transpiler hands the last expression back as `value: ...`.
+  const want = (js.split("\n")[Number(frame[1]) - 1] ?? "").replace(/^\s*value:/, "").match(WORD) ?? [];
+  if (want.length === 0) return undefined;
+  const lines = code.split("\n").map((line) => line.match(WORD) ?? []);
+  const spans: [number, number][] = [];
+  for (let start = 0; start < lines.length; start++) {
+    let k = 0;
+    for (let end = start; end < lines.length && k < want.length; end++) {
+      for (const w of lines[end]) if (w === want[k]) k++;
+      if (k === want.length) spans.push([start, end]);
+    }
+  }
+  const fewest = Math.min(...spans.map(([s, e]) => e - s));
+  const best = spans.filter(([s, e]) => e - s === fewest);
+  if (best.length !== 1) return undefined;
+  const [s, e] = best[0];
+  return s === e ? `line ${s + 1}` : `lines ${s + 1}-${e + 1}`;
+}
+
 export class ReplSession {
   readonly tabs: Page[] = [];
   readonly kit: SiteKit;
@@ -450,6 +507,9 @@ export class ReplSession {
   readonly #g: Record<string, unknown>;
   readonly #trees = new Map<string, string>();
   readonly #transpiler = new Bun.Transpiler({ loader: "ts", replMode: true });
+  // What the script's `page` holds: the last page opened or attached, or
+  // whatever the script assigned to it.
+  #page: unknown;
   #out: string[] = [];
   #chain: Promise<unknown> = Promise.resolve();
 
@@ -461,6 +521,15 @@ export class ReplSession {
     this.#ctx = vm.createContext({});
     this.#g = vm.runInContext("globalThis", this.#ctx) as Record<string, unknown>;
     Object.assign(this.#g, this.#globals());
+    Object.defineProperty(this.#g, "page", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        if (this.#page === undefined) throw new Error("no page yet: openTab(url) or attachBrowserTab(id) first");
+        return this.#page;
+      },
+      set: (value: unknown) => { this.#page = value; },
+    });
     this.#defineSites();
   }
 
@@ -492,7 +561,13 @@ export class ReplSession {
   }
 
   get page(): Page | undefined {
-    return this.#g.page instanceof Page ? this.#g.page : undefined;
+    return this.#page instanceof Page ? this.#page : undefined;
+  }
+
+  // Site notes come once, with the first result on the site (notes.ts), so a
+  // result's notes go to the script's output even if it prints nothing.
+  showNotes(result: unknown): void {
+    if (result && typeof result === "object" && "notes" in result && typeof result.notes === "string") this.#out.push(result.notes);
   }
 
   // Runs one call's code after any earlier call has finished.
@@ -510,8 +585,15 @@ export class ReplSession {
       js = this.#transpiler.transformSync(code);
     } catch (e) {
       const error = errorText(e);
-      // Playwright scripts often end with `return x`; a session's script cannot.
-      return { output: "", error: /Top-level return/.test(error) ? `${error}\nend the script with the value instead: its last expression prints` : error };
+      if (!/Top-level return/.test(error)) return { output: "", error };
+      // Playwright scripts often end with `return x`, which the transpiler
+      // refuses beside a top-level await. Such a script runs as the body of
+      // one async function, on the same lines, and its declarations stay in it.
+      try {
+        js = this.#transpiler.transformSync(`await (async () => {${code}\n})()`);
+      } catch (again) {
+        return { output: "", error: errorText(again) };
+      }
     }
     let timer: Timer | undefined;
     try {
@@ -519,11 +601,18 @@ export class ReplSession {
       const running = Promise.resolve(vm.runInContext(js, this.#ctx, { timeout: timeoutMs, filename: "repl" }) as unknown);
       const limit = Promise.withResolvers<never>();
       timer = setTimeout(() => limit.reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)} s; the code may still be running in this session`)), timeoutMs);
-      const done = (await Promise.race([running, limit.promise])) as { value?: unknown } | undefined;
-      if (done && done.value !== undefined) this.#out.push(show(done.value));
+      const done = await Promise.race([running, limit.promise]);
+      // The last expression comes back as { value } on an object with no
+      // prototype; a `return x` the transpiler let through, as x itself.
+      const value = done !== null && typeof done === "object" && Object.getPrototypeOf(done) === null ? ("value" in done ? done.value : undefined) : done;
+      if (value !== undefined) this.#out.push(show(value));
       return { output: this.#flush() };
     } catch (e) {
-      return { output: this.#flush(), error: errorText(e) };
+      const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
+      const text = errorText(e);
+      // Scripts written for the page reach for its globals, which only the page has.
+      const hint = /^ReferenceError: (document|window|localStorage|location) is not defined/.test(text) ? "\nscripts run outside the page; read it with page.evaluate(() => ...)" : "";
+      return { output: this.#flush(), error: `${text}${where ? `\nat ${where} of the script` : ""}${hint}` };
     } finally {
       clearTimeout(timer);
     }
@@ -565,7 +654,7 @@ export class ReplSession {
     if (i >= 0) this.tabs.splice(i, 1);
     this.#owned.delete(p.id);
     for (const key of this.#trees.keys()) if (key.startsWith(`${p.id}|`)) this.#trees.delete(key);
-    if (this.#g.page === p) this.#g.page = this.tabs.at(-1);
+    if (this.#page === p) this.#page = this.tabs.at(-1);
   }
 
   #attached(row: TabRow): Page {
@@ -595,7 +684,7 @@ export class ReplSession {
     const row = (await this.#rows(true)).find((r) => r.id === id);
     if (!row) throw new Error(`no open tab ${String(targetId)}; see listBrowserTabs()`);
     const p = this.#attached(row);
-    this.#g.page = p;
+    this.#page = p;
     return p;
   }
 
@@ -613,8 +702,9 @@ export class ReplSession {
 
   async openTab(url: string, opts: { background?: boolean } = {}): Promise<Page> {
     const row = (await this.call("open", { url: String(url), background: opts.background ?? true })) as TabRow;
+    this.showNotes(row);
     const p = this.adopt(row);
-    this.#g.page = p;
+    this.#page = p;
     return p;
   }
 
@@ -634,6 +724,7 @@ export class ReplSession {
       root = `[data-sh-ref="${ref}"]`;
     }
     const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 5000, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
+    this.showNotes(snap);
     page.note(snap.url, snap.title);
     const lines = snap.snapshot.split("\n");
     const body = opts.interactive ? lines.filter((l) => HAS_REF.test(l)).map((l) => l.trimStart()) : lines;
@@ -734,13 +825,12 @@ export class ReplSession {
     await Promise.all([...this.#owned].map((id) => this.call("close", { tab: id }).catch(() => {})));
     this.#owned.clear();
     this.tabs.length = 0;
-    this.#g.page = undefined;
+    this.#page = undefined;
   }
 
   #globals(): Record<string, unknown> {
     const log = (...args: unknown[]) => this.#print(args);
     return {
-      page: undefined,
       tabs: this.tabs,
       listBrowserTabs: () => this.listBrowserTabs(),
       attachBrowserTab: (id: unknown) => this.attachBrowserTab(id),

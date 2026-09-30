@@ -4,7 +4,10 @@ A JavaScript session over Safari, shaped like Playwright. Use it when a task
 takes more than a few clicks: a loop over pages, a download, a PDF, reading
 a signed-in site through its own API. Each call runs one script; top-level
 `await` works, and top-level bindings stay for the next call in the same
-session.
+session. The script's last expression prints, or what it `return`s; a script
+with both a top-level `return` and `await` runs as one function, so its
+declarations end with it. An error names the script line it came from when
+the stack shows one.
 
 ```sh
 safari repl "const p = await openTab('https://example.com'); console.log(await p.title())"
@@ -20,12 +23,17 @@ ends. A named session runs in the background, keeps its bindings and tabs
 between calls from any terminal or agent, and ends after 30 minutes unused.
 The MCP server has the same thing as the `repl` tool (`session` names one
 shared with the CLI; without it, the connection gets its own). A call stops
-waiting after 120 seconds.
+waiting after 120 seconds; its code may still run on in the session. MCP
+clients may cut a call at 60 s: split long waits across calls. Scripts run
+outside the page: read `document`, `window` and the rest through
+`page.evaluate(() => ...)`.
 
 ## Tabs
 
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
-  `page`. Tabs a session opens close with it.
+  `page`. Tabs a session opens close with it. Using `page` before any tab
+  is open or attached throws. `openTab`, `page.goto` and `snapshot` print
+  the site's saved notes the first time a session reaches that site.
 - `listBrowserTabs()` lists every Safari tab; `attachBrowserTab(id)` and
   `attachActiveBrowserTab()` hand you one the user already has. Only read
   those; never close or move them.
@@ -54,7 +62,9 @@ waiting after 120 seconds.
   isChecked count boundingBox first screenshot waitFor`.
 - Page: `goto goBack goForward reload waitForSelector waitForTimeout
   waitForLoadState waitForURL keyboard.press keyboard.type mouse.click
-  setViewportSize bringToFront close`.
+  setViewportSize bringToFront close`, and Playwright's shorthands
+  `page.click(target)`, `page.fill(target, text)`, `page.type(target, text)`.
+  `waitForTimeout(ms)` ends as soon as the page is quiet, ms at most.
 - Downloads: `const [d] = await Promise.all([page.waitForEvent('download'),
   page.locator('Export').click()]); await d.saveAs('report.csv')`.
 - New windows: start `page.waitForEvent('popup')` before the click that
@@ -76,7 +86,10 @@ anything return a draft until called with `approved: true`.
 
 `fs` (node:fs/promises) and `path` start relative paths in the session's
 own folder, `pwd`. Also `Buffer`, `sleep(ms)`, `display(...)` (same as
-`console.log`).
+`console.log`), the timers, `URL`, `URLSearchParams`, `TextEncoder`,
+`TextDecoder`, `AbortController`, `Blob`, `Response`, `Headers`,
+`FormData`, `atob`, `btoa`, `crypto`, `performance` and `structuredClone`.
+There is no `process` or `Bun`.
 
 ## When a run goes wrong
 

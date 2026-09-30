@@ -15,7 +15,7 @@ import type { ReplSession } from "./repl.ts";
 let repl: ReplSession | undefined;
 
 const REPL_TOOL: Tool = {
-  desc: "Run Playwright-style JavaScript against Safari: openTab(url), snapshot(page), page.locator(ref).click(), page.pdf(), cookie-bearing fetch, and site globals (slack, gmail, notion, youtube, x, linkedin, imessage...). Bindings persist; console.log returns values; 120 s limit. API: safari guide repl.",
+  desc: "Run Playwright-style JavaScript in Safari: openTab(url), snapshot(page), page.locator(ref).click(), cookie-bearing fetch, site globals (slack, gmail, x...). Bindings persist; console.log returns values; 120 s limit; MCP clients may cut a call at 60 s: split long waits. API: safari guide repl.",
   params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
   required: ["code"],
   run: async (a) => {
@@ -27,7 +27,7 @@ const REPL_TOOL: Tool = {
       ? await (repl ??= new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)
       : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
     if (r.error) throw new Error(`${r.output ? `${r.output}\n` : ""}${r.error}`);
-    return r.output || "(no output; console.log what you want back)";
+    return r.output || "(no output; return or console.log what you want back)";
   },
 };
 
