@@ -74,12 +74,25 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   return now;
 }
 
+// An address Safari shows as a page the harness can read. Safari opens no
+// local file for the extension, and a tab opened on text that is no address
+// stays blank: 01a0efb9's file:// page failed with advice to reload it, and
+// 01a0f14c's JSON args, passed as the address, opened as if they worked.
+function webAddress(url: unknown): string {
+  const s = str(url, "url");
+  const protocol = URL.parse(s)?.protocol;
+  if (protocol === "http:" || protocol === "https:" || s === "about:blank") return s;
+  if (protocol === "file:") throw new Error("Safari opens no local file for the harness: serve its folder over http (python3 -m http.server -d <folder>) and open the http://localhost address");
+  throw new Error(`${s.slice(0, 80) || "an empty url"} is not a web address; give a whole one, like https://example.com`);
+}
+
 // Every tab opens in a window of the calling agent's own (spaces.ts), which
 // the result names. The extension answers an owned tab's dialogs, keeps it
 // running while hidden, and lets the daemon close it (background.js).
 export async function openTab(url: string, background = false, group?: string, owned = background): Promise<TabInfo & { space: SpaceNote }> {
+  const address = webAddress(url);
   const space = await spaceWindow(group);
-  const t = (await bridge.request("tabs.open", [str(url, "url"), background, space.window, owned])) as TabInfo;
+  const t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   return { ...t, space: spaceNote(space) };
 }
 
@@ -290,7 +303,7 @@ function move<V>(map: Map<number, V>, from: number, to: number): boolean {
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
-  return (await bridge.request("tabs.navigate", [num(tab, "tab"), str(url, "url")])) as TabInfo;
+  return (await bridge.request("tabs.navigate", [num(tab, "tab"), webAddress(url)])) as TabInfo;
 }
 
 export async function activateTab(tab: number): Promise<unknown> {

@@ -244,3 +244,13 @@ test("map refuses a wait that asks for nothing before opening any page", async (
   await expect(map({ urls: urls(2), wait: "Price" })).rejects.toThrow("wait must be an object");
   expect(opened.length).toBe(before);
 });
+
+// A tab opened on a local file (01a0efb9) or on text that is no address
+// (01a0f14c passed its JSON args as the address) stayed blank: the read
+// then failed with advice to reload it, or open answered as if it worked.
+test("an address Safari cannot show fails in its place before a tab opens for it", async () => {
+  const before = opened.length;
+  const pages = await map({ urls: ["file:///Users/me/page.html", '{"url":"https://shop.example/a"}', "https://shop.example/a"] });
+  expect(pages.map((p) => p.ok)).toEqual([false, false, true]);
+  expect(opened.length - before).toBe(1);
+});

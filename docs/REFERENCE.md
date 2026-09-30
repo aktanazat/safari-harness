@@ -56,6 +56,11 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - Start with `open <url>`. It returns the new tab's `id`. Pass that `tab` to
   every later call. Page tools need `tab`: a call without one is an error,
   never a read of whatever tab is in front.
+- `open` and `goto` take a whole `http` or `https` address (or
+  `about:blank`). Anything else fails before a tab opens: Safari opens no
+  local file for the extension, so serve its folder
+  (`python3 -m http.server -d <folder>`) and open the `http://localhost`
+  address.
 - `tab: "front"` (CLI `--tab front`) names the user's front tab on purpose:
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
