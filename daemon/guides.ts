@@ -4,6 +4,7 @@
 // agents have learned on that site (notes.ts).
 
 import { readdir, readFile } from "node:fs/promises";
+import { distance } from "./guard.ts";
 import { notedHosts, notesSection } from "./notes.ts";
 
 const DOCS = new URL("../docs/", import.meta.url);
@@ -27,10 +28,10 @@ export async function siteGuide(which: string): Promise<string | null> {
     const hosts = (/^hosts:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((h) => h.trim()).filter(Boolean);
     return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, text };
   }));
+  const listing = (gs: typeof guides) => gs.map((g) => `${g.slug.padEnd(18)} ${g.hosts.join(", ")}`).join("\n");
   if (which === "sites") {
-    const listed = guides.map((g) => `${g.slug.padEnd(18)} ${g.hosts.join(", ")}`).join("\n");
     const noted = notedHosts();
-    return noted.length ? `${listed}\n\nlearned notes: ${noted.join(", ")}` : listed;
+    return noted.length ? `${listing(guides)}\n\nlearned notes: ${noted.join(", ")}` : listing(guides);
   }
   const q = which.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
   const named = guides.find((g) => g.slug === q || g.name.toLowerCase() === q);
@@ -38,6 +39,15 @@ export async function siteGuide(which: string): Promise<string | null> {
     // a named guide's notes: those of every host its entries cover
     const domains = named.hosts.map((entry) => entry.split("/")[0]);
     return withLearned(named.text, notedHosts().filter((n) => domains.some((d) => n === d || n.endsWith(`.${d}`))));
+  }
+  // A bare name is every site with that name among its host's labels:
+  // geico is geico.com, discover card.discover.com and discover.com. 16 of
+  // 95 lookups from 09-28 to 09-30 gave a bare name and missed.
+  if (/^[a-z0-9-]+$/.test(q)) {
+    const docs = guides.filter((g) => g.hosts.some((entry) => labels(entry.split("/")[0]).includes(q)));
+    const noted = notedHosts().filter((h) => labels(h).includes(q));
+    if (docs.length > 1) return withLearned(`${docs.length} guides cover ${q}; ask for one by its name:\n${listing(docs)}`, noted);
+    if (docs.length || noted.length) return withLearned(docs[0]?.text ?? null, noted);
   }
   const slash = q.indexOf("/");
   const [host, path] = slash < 0 ? [q, "/"] : [q.slice(0, slash), q.slice(slash)];
@@ -58,4 +68,30 @@ function withLearned(text: string | null, hosts: string[]): string | null {
   const learned = hosts.map(notesSection).filter((s) => s !== null);
   if (learned.length === 0) return text;
   return [...(text === null ? [] : [text.trimEnd()]), ...learned].join("\n\n");
+}
+
+// A host's labels that name it, without the top-level domain: geico for
+// geico.com, card and discover for card.discover.com.
+function labels(host: string): string[] {
+  const all = host.split(".");
+  return all.length > 1 ? all.slice(0, -1) : all;
+}
+
+// What to say when no guide or notes answer which: the noted hosts nearest
+// it, and the call that lists every site (list). $s is a shell variable the
+// shell passed as written, as it did for an agent's loop on 09-29.
+export function noGuide(which: string, list = "safari guide sites"): string {
+  if (/^\$\{?\w+\}?$/.test(which)) return `no guide for ${which}: the shell passed the variable as written, so it was empty or unset, or in single quotes; give the site itself, like geico.com`;
+  const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/:]/)[0]);
+  // a label two letters or fewer from one asked for, and not all of it
+  const near = notedHosts()
+    .map((host) => ({ host, d: Math.min(...labels(host).flatMap((l) => asked.flatMap((a) => {
+      const d = distance(l, a);
+      return d <= 2 && d < Math.min(l.length, a.length) ? [d] : [];
+    }))) }))
+    .filter(({ d }) => d <= 2)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 5)
+    .map(({ host }) => host);
+  return `no guide or notes for ${which}; ${near.length ? `nearest with notes: ${near.join(", ")}; ` : ""}every site with a guide or notes: ${list}`;
 }

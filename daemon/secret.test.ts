@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
+import { CALLER_TOOLS } from "./caller.ts";
 import { connect } from "./fake-safari.ts";
 import * as imessage from "./imessage.ts";
 import { recent } from "./journal.ts";
@@ -65,4 +66,29 @@ test("a page showing two codes types neither, and names neither", async () => {
   await expect(typed).rejects.toThrow("tab 6002 shows 2 codes, not one");
   await typed.catch((e: Error) => expect(e.message).not.toContain(CODE));
   expect(fields).toEqual([]);
+});
+
+// GEICO's emailed codes are 6 capital letters and digits ("56625F", 09-30);
+// such a run with no word code beside it is a policy or order number.
+test("a code of letters and digits is typed when the page calls it a code, and one elsewhere is not a code", async () => {
+  shown = "Your GEICO Verification Code\nUse this code to verify it's you: 5F9E8E\nRef A1B2C3\n© 2026 GEICO";
+  watchedPort();
+  const result = await invoke("type", { tab: 6001, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true);
+  expect(result).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
+  expect(fields).toEqual([["1", "5F9E8E", { append: false, secret: true }]]);
+});
+
+// A field that ignores scripted typing (GEICO's code box, 09-30) takes the
+// code only from the real keyboard.
+test("{{code}} in real_input's text types the code the page shows with the real keyboard, and the code comes back nowhere", async () => {
+  shown = `Enter this code: ${CODE}`;
+  watchedPort();
+  const typed: unknown[] = [];
+  spyOn(CALLER_TOOLS.real_input, "run").mockImplementation(async (a) => {
+    typed.push(a);
+    return { ok: true };
+  });
+  const result = await invoke("real_input", { tab: 6001, ref: "1", type: "{{code}}", secret: "page", from: 6002 }, true);
+  expect(result).toEqual({ ok: true, typed: "code, 6 chars", note: 'used do "type" and text for type' });
+  expect(typed).toEqual([{ tab: 6001, ref: "1", do: "type", text: CODE }]);
 });

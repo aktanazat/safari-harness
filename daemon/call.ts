@@ -36,15 +36,23 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   // The daemon cannot run a caller tool, so a run with one among its steps
   // goes step by step from here, each step where it runs.
   if (callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model));
-  if (secretType(tool, args)) return typeSecret(checkCall(TOOLS, tool, args, model).args, model);
+  const coded = secretType(tool, args);
   if (nameIn(CALLER_NAMES, tool) === undefined) {
+    if (coded) {
+      const a = checkCall(TOOLS, tool, args, model).args;
+      return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model));
+    }
     const result = await rpc(tool, args, model);
     claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
     return result;
   }
-  const call = checkCall(CALLER_TOOLS, tool, args, model);
+  // real_input takes a code's source as type does, and its own parameters
+  // go to it (secret.ts).
+  const { secret, from, ...rest } = args;
+  const call = checkCall(CALLER_TOOLS, tool, coded ? rest : args, model);
   const remote = process.env.SAFARI_HARNESS_REMOTE;
-  const result = await (remote ? remoteCall(remote, call.tool, call.args) : CALLER_TOOLS[call.tool].run(call.args));
+  const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));
+  const result = await (coded ? typeSecret({ ...call.args, secret, from }, model, (text) => run({ ...call.args, text })) : run(call.args));
   return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
 }
 

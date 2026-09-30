@@ -34,13 +34,51 @@ export function nameIn(names: string[], name: string): string | undefined {
 
 // Names models reach for that the tools spell otherwise. Each is taken only
 // by a tool that has the second name and not the first: history's do,
-// select's option, imessage_search's text. action, code, note, mode, and
-// js each failed a call in the 09-27 to 09-29 logs.
-const ALIASES: [string, string][] = [["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"]];
+// select's option, imessage_search's text; and, where a list follows, only
+// by the tools it names: click's text is the ref it names, press's is not.
+// action, code, note, mode, and js each failed a call in the 09-27 to
+// 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs.
+const ALIASES: [string, string, string[]?][] = [
+  ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"],
+  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"],
+];
+
+// Parameters that ask a tool for what it cannot do, with what to do
+// instead: snapshot {url} and extract {url} each read no page on 09-29.
+const MISSES: [string, string, string][] = [
+  ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
+  ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
+];
 
 // Tools that take the options of the tools they run: map gives each page's
 // read the options map does not take itself (map.ts).
 const PASSES: Record<string, string[]> = { map: READS };
+
+type Param = Tool["params"][string];
+type Taken = { params: string[]; taken: Record<string, Param>; aliases: [string, string, string[]?][] };
+
+// What a tool takes: its listed parameters, every name it reads (its
+// unlisted ones and those of the tools it passes options to), and the
+// aliases it takes for them.
+function takenBy(tools: Record<string, Tool>, tool: string): Taken {
+  const own = tools[tool];
+  const taken: Record<string, Param> = Object.assign({}, ...(PASSES[tool] ?? []).map((t) => ({ ...tools[t].params, ...tools[t].unlisted })), own.params, own.unlisted);
+  const params = Object.keys(own.params);
+  const aliases = ALIASES.filter(([alias, real, only]) => (only === undefined || only.includes(tool)) && params.includes(real) && !Object.hasOwn(taken, alias));
+  return { params, taken, aliases };
+}
+
+function meant({ taken, aliases }: Taken, key: string): [string, Param] | undefined {
+  const real = nameIn(Object.keys(taken), key) ?? aliases.find(([alias]) => alias === key)?.[1];
+  return real === undefined ? undefined : [real, taken[real]];
+}
+
+// The parameter of tool a name given for it means, and how it is typed:
+// itself, itself written another way, or the name an alias stands for.
+// The CLI reads its flags so (cli/safari.ts).
+export function paramFor(tools: Record<string, Tool>, tool: string, key: string): [string, Param] | undefined {
+  return meant(takenBy(tools, tool), key);
+}
 
 export type Checked = { tool: string; args: Record<string, unknown>; notes: string[] };
 
@@ -57,20 +95,19 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
   }
   if (!model) return { tool, args: given, notes: [] };
   const notes = tool === name ? [] : [`used ${tool} for ${name}`];
-  const params = Object.keys(tools[tool].params);
-  const takes = (t: string) => [...Object.keys(tools[t].params), ...Object.keys(tools[t].unlisted ?? {})];
-  const known = [...takes(tool), ...(PASSES[tool] ?? []).flatMap(takes)];
-  const aliases = ALIASES.filter(([alias, real]) => params.includes(real) && !known.includes(alias));
+  const taken = takenBy(tools, tool);
   const args: Record<string, unknown> = {};
   const from: Record<string, string> = {};
-  for (const [key, value] of Object.entries(given)) {
+  for (const [key, value] of Object.entries(reshaped(tool, given, notes))) {
     if (value === undefined) continue;
-    // A run gives every step the tab its open step made, whether or not
-    // the step's tool takes one.
-    const real = nameIn(known, key) ?? aliases.find(([alias]) => alias === key)?.[1] ?? (key === "tab" ? key : undefined);
+    // A run gives every step the tab its latest open made, else the last
+    // tab a step named, whether or not the step's tool takes one.
+    const real = meant(taken, key)?.[0] ?? (key === "tab" ? key : undefined);
     if (real === undefined) {
-      const near = nearest(key, [...params, ...aliases.map(([alias]) => alias)]);
-      throw new Error(`unknown parameter ${key} for ${tool}${near ? `; did you mean ${near}?` : ""} (params: ${params.join(", ") || "none"})`);
+      const miss = MISSES.find(([t, k]) => t === tool && k === key);
+      if (miss) throw new Error(miss[2]);
+      const near = nearest(key, [...taken.params, ...taken.aliases.map(([alias]) => alias)]);
+      throw new Error(`unknown parameter ${key} for ${tool}${near ? `; did you mean ${near}?` : ""} (params: ${taken.params.join(", ") || "none"})`);
     }
     if (Object.hasOwn(args, real)) throw new Error(`${from[real]} and ${key} both name ${real} for ${tool}; pass one`);
     if (real !== key) notes.push(`used ${real} for ${key}`);
@@ -80,9 +117,32 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
   return { tool, args, notes };
 }
 
+// real_input called in the shape of another tool: its verb as a parameter
+// (type: "hello", as the type tool takes text), or press for its key; net
+// and console with their verb as a flag (start: true). Each failed a call
+// on 09-29.
+function reshaped(tool: string, given: Record<string, unknown>, notes: string[]): Record<string, unknown> {
+  if ((tool === "net" || tool === "console") && given.do === undefined) {
+    const verb = ["start", "read", "stop"].find((v) => given[v] === true);
+    if (verb === undefined) return given;
+    const { [verb]: _, ...rest } = given;
+    notes.push(`used do "${verb}" for ${verb}: true`);
+    return { ...rest, do: verb };
+  }
+  if (tool !== "real_input") return given;
+  if (given.type !== undefined && given.text === undefined && (given.do === undefined || given.do === "type")) {
+    const { type, ...rest } = given;
+    notes.push('used do "type" and text for type');
+    return { ...rest, do: "type", text: type };
+  }
+  if (given.do !== "press") return given;
+  notes.push('used do "key" for do "press"');
+  return { ...given, do: "key" };
+}
+
 // The one of names a slip away from name: at most two letters added,
 // dropped, or changed, and fewer than it has.
-function nearest(name: string, names: string[]): string | undefined {
+export function nearest(name: string, names: string[]): string | undefined {
   let best: string | undefined;
   let least = 3;
   for (const n of names) {
@@ -95,7 +155,8 @@ function nearest(name: string, names: string[]): string | undefined {
   return best;
 }
 
-function distance(a: string, b: string): number {
+// The fewest letters added, dropped, or changed that make a into b.
+export function distance(a: string, b: string): number {
   let row = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {
     const next = [i];

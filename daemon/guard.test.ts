@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, mock, spyOn, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { CALLER_TOOLS } from "./caller.ts";
 import { connect } from "./fake-safari.ts";
 import { checkCall } from "./guard.ts";
 import { runAs } from "./owner.ts";
@@ -81,15 +82,35 @@ test("a parameter the tool does not take fails before the page is asked, naming 
   expect(sent).toEqual([]);
 });
 
-// Names agents wrote in the 09-27 to 09-29 logs, each a failed call.
+// Names agents wrote in the 09-27 to 09-30 logs, each a failed call.
 test.each([
   ["eval", "code", "expression"],
   ["history", "action", "do"],
   ["passwords", "action", "do"],
   ["learn", "note", "fact"],
   ["map", "mode", "what"],
+  ["click", "text", "ref"],
+  ["hover", "text", "ref"],
+  ["snapshot", "selector", "root"],
+  ["scroll", "y", "dy"],
+  ["scroll", "x", "dx"],
+  ["upload", "files", "paths"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
+});
+
+// press's text is the key it presses, if anything, never the element.
+test("text names the ref only on the tools that take it so", () => {
+  expect(() => checkCall(TOOLS, "press", { tab: 7, text: "Enter" }, true)).toThrow("unknown parameter text for press");
+});
+
+test("a real_input call written as the type tool's, or with press for key, runs as real_input's own", () => {
+  expect(checkCall(CALLER_TOOLS, "real_input", { tab: 7, ref: "2", type: "a@example.com" }, true)).toEqual({ tool: "real_input", args: { tab: 7, ref: "2", do: "type", text: "a@example.com" }, notes: ['used do "type" and text for type'] });
+  expect(checkCall(CALLER_TOOLS, "real_input", { tab: 7, do: "press", key: "Enter" }, true)).toEqual({ tool: "real_input", args: { tab: 7, do: "key", key: "Enter" }, notes: ['used do "key" for do "press"'] });
+});
+
+test("snapshot given an address says to open it first", () => {
+  expect(() => checkCall(TOOLS, "snapshot", { url: "https://www.geico.com" }, true)).toThrow("snapshot reads the page a tab shows; open the url first (open) and pass its tab");
 });
 
 test("waiting on the clock past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {

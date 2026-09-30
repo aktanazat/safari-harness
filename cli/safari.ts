@@ -18,7 +18,7 @@ import { resolve } from "node:path";
 import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { nameIn } from "../daemon/guard.ts";
+import { nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitPairingOut } from "../daemon/pair.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
@@ -100,8 +100,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari cookies --tab N                     cookies for the page
   safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]
                                              screenshot what the tab shows
-  safari download <ref|url> [--out file] --tab N
-                                             save a file into ~/Downloads
+  safari download <ref|url> [--out file] [--tab N]
+                                             save a file into ~/Downloads; a url needs
+                                             no tab, a tab alone saves the file it shows
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
@@ -122,6 +123,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
                                              (safari passwords logins --tab N: a first word is do)
+  safari run --steps '<json>' | --steps-file <path> | --steps -
+                                             several tools in one call; steps from a
+                                             file, or stdin for -, need no shell quoting
 
   safari repl [--session name] [code]        Playwright-style JavaScript with site globals
                                              (code from stdin when omitted, or --file path); see: safari guide repl
@@ -230,21 +234,51 @@ function isSavePath(i: number, argv: string[]): boolean {
   return argv[i - 1] === "--save" && /^\.{0,2}\//.test(argv[i] ?? "");
 }
 
-// The tool a command runs, where its name differs.
+// The tool a command runs, where its name differs, and a tool's name
+// however it is written (real-input for real_input).
 const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings" };
 
-const toolDef = (cmd: string): Tool | undefined => TOOLS[ALIAS[cmd] ?? cmd] ?? CALLER_TOOLS[ALIAS[cmd] ?? cmd];
+const toolName = (cmd: string): string | undefined => (Object.hasOwn(ALIAS, cmd) ? ALIAS[cmd] : nameIn([...Object.keys(TOOLS), ...Object.keys(CALLER_TOOLS)], cmd));
 
-// A tool's parameters given as --name value; a boolean one needs only --name.
-function flagArgs(tool: Tool, argv: string[]): Record<string, unknown> {
+function toolDef(cmd: string): Tool | undefined {
+  const name = toolName(cmd);
+  return name === undefined ? undefined : TOOLS[name] ?? CALLER_TOOLS[name];
+}
+
+// Flags every command takes, and those a command reads beside its tool's
+// parameters (open --bg, snapshot --max).
+const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot"];
+const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg"], snapshot: ["max"], shot: ["full"], eval: ["file"], run: ["steps-file"] };
+
+// A tool's parameters given as --name value, however the name is written
+// (--max-bytes, or --note for learn's fact, as a model's call may name
+// them: guard.ts); a boolean one needs only --name. A flag neither the
+// tool nor the command takes fails, naming those they do: learn --note
+// once dropped the fact it carried, and the command still went through.
+function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unknown> {
+  const tools = Object.hasOwn(TOOLS, tool) ? TOOLS : CALLER_TOOLS;
+  const own = COMMAND_FLAGS[cmd] ?? [];
   const args: Record<string, unknown> = {};
-  for (const [name, p] of Object.entries({ ...tool.params, ...tool.unlisted })) {
+  for (const [i, a] of argv.entries()) {
+    if (!a.startsWith("--") || isFlagValue(i, argv)) continue;
+    const eq = a.indexOf("=");
+    const given = a.slice(2, eq < 0 ? undefined : eq);
+    if (COMMON_FLAGS.includes(given) || own.includes(given)) continue;
+    const found = paramFor(tools, tool, given);
+    if (found === undefined) {
+      const listed = [...Object.keys(tools[tool].params), ...own];
+      const near = nearest(given, listed);
+      fail(`${cmd} takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${listed.map((f) => `--${f}`).join(" ")}; safari ${cmd} --help says what each does)`, 2);
+    }
+    const [name, p] = found;
+    if (Object.hasOwn(args, name)) continue;
+    if (name !== given) console.error(`note: used --${name} for --${given}`);
     if (p.type === "boolean") {
-      if (hasFlag(name, argv)) args[name] = true;
+      args[name] = true;
       continue;
     }
-    const v = flag(name, argv);
-    if (v === undefined) continue;
+    const v = eq < 0 ? argv[i + 1] : a.slice(eq + 1);
+    if (v === undefined) fail(`--${given} needs a value`, 2);
     args[name] = p.type === "number" ? Number(v) : p.type === "object" ? JSON.parse(v) : p.type === "array" ? (v.startsWith("[") ? JSON.parse(v) : [v]) : v;
   }
   return args;
@@ -386,6 +420,7 @@ async function replCommand(argv: string[]) {
   }
   if (json) return print(result);
   if (result.output) console.log(result.output);
+  else if (!result.error) console.log("(no output; return or console.log what you want back)");
   if (result.error) fail(result.error);
 }
 
@@ -431,9 +466,9 @@ async function main() {
 
   if (cmd === "guide") {
     const which = rest.find((a) => !a.startsWith("--"));
-    const { guide } = await import("../daemon/guides.ts");
+    const { guide, noGuide } = await import("../daemon/guides.ts");
     const text = await guide(which);
-    if (text === null) fail(`no guide for ${which}; see: safari guide sites`);
+    if (text === null) fail(noGuide(which ?? ""));
     console.log(text);
     return;
   }
@@ -666,9 +701,9 @@ async function main() {
       break;
     }
     case "download": {
-      const target = positional[0] ?? "";
-      if (/^https?:/.test(target)) args.url = target;
-      else args.ref = target;
+      const target = positional[0];
+      if (target !== undefined && /^https?:/.test(target)) args.url = target;
+      else if (target !== undefined) args.ref = target;
       const out = flag("out", rest);
       if (out) args.out = resolve(out);
       break;
@@ -691,6 +726,21 @@ async function main() {
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
     case "ask": args.question = positional.join(" "); break;
+    case "run": {
+      // Steps from a file, or stdin for --steps -, need no shell quoting:
+      // an apostrophe in one step's text broke an agent's quoted JSON (09-29).
+      // A bare JSON array is the steps too: `run --json '[…]'` failed then.
+      const file = flag("steps-file", rest);
+      const bare = positional[0]?.trimStart().startsWith("[") ? positional.join(" ") : undefined;
+      const steps = file !== undefined ? await Bun.file(resolve(file)).text() : flag("steps", rest) === "-" ? await readStdin() : bare;
+      if (steps === undefined) break;
+      try {
+        args.steps = JSON.parse(steps);
+      } catch (e) {
+        fail(`the steps are not JSON (${e instanceof Error ? e.message : String(e)}): give an array like [{"tool": "open", "args": {"url": "…"}}]`, 2);
+      }
+      break;
+    }
     case "call": {
       tool = positional[0] ?? "";
       const body = positional.slice(1).join(" ");
@@ -703,18 +753,16 @@ async function main() {
     }
     default: {
       // Any tool by name, however it is written (login-form for login_form).
-      const name = nameIn([...Object.keys(TOOLS), ...Object.keys(CALLER_TOOLS)], cmd);
-      if (!name) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
-      tool = name;
+      tool = toolName(cmd) ?? fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
       // safari passwords status: the word after a tool that takes do is its do.
       if (positional[0] !== undefined && toolDef(tool)?.params.do) args.do = positional[0];
     }
   }
 
   // Parameters given as flags fill what the positional words left out.
-  const def = toolDef(tool);
-  if (def) {
-    for (const [k, v] of Object.entries(flagArgs(def, rest))) {
+  const name = toolName(tool);
+  if (name !== undefined) {
+    for (const [k, v] of Object.entries(flagArgs(cmd, name, rest))) {
       if (args[k] === undefined || args[k] === "" || Number.isNaN(args[k])) args[k] = v;
     }
   }
@@ -723,7 +771,7 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "showHidden", "base64"]);
+const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "showHidden", "base64", "front"]);
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

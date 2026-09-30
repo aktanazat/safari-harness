@@ -13,7 +13,7 @@ import { IMESSAGE_READ_TOOLS } from "./imessage.ts";
 import { HISTORY_TOOLS } from "./safari-history.ts";
 import { FILL_TOOLS } from "./fill.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
-import { siteGuide } from "./guides.ts";
+import { noGuide, siteGuide } from "./guides.ts";
 import { invoke } from "./call.ts";
 
 export type AgentEvent =
@@ -113,7 +113,7 @@ const CONTEXT_TOOLS: Record<string, Tool> = {
     desc: "The usage guide for a site: what signed out looks like, its limits, and the repl global that reads it. Pass a domain or name, e.g. x.com or gmail; sites lists every guide.",
     params: { site: { type: "string", description: "domain, address, or site name" } },
     required: ["site"],
-    run: async (a) => (await siteGuide(String(a.site ?? ""))) ?? `no guide for ${String(a.site)}; site_guide {site: "sites"} lists them`,
+    run: async (a) => (await siteGuide(String(a.site ?? ""))) ?? noGuide(String(a.site), 'site_guide {site: "sites"}'),
   },
 };
 
