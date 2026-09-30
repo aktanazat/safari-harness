@@ -47,9 +47,10 @@ test("a code that never comes by text types nothing", async () => {
   expect(port).not.toHaveBeenCalled();
 });
 
-// An emailed code: the times, counts, and years around it are not codes.
+// An emailed code: the times, counts, years, and digits run into a word
+// (Gmail's "recentdata" after Delta's footer, 09-29) around it are not codes.
 test("secret page types the one code tab from shows, and the code comes back nowhere", async () => {
-  shown = `Inbox 339 · Today, 16:24\nEnter this code: ${CODE}\n© 1999-2026 PayPal`;
+  shown = `Inbox 339 · Today, 16:24\nEnter this code: ${CODE}\n© 1999-2026 PayPal\nAtlanta, GA 30320-6001\n\n481516recentdata`;
   watchedPort();
   const result = await invoke("type", { tab: 6001, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true);
   expect(result).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });

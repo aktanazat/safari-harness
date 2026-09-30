@@ -42,13 +42,14 @@ async function textedCode(): Promise<string> {
 }
 
 // The one code tab from shows: a run of 4 to 8 digits standing alone,
-// 6 long when there are several lengths. Any other count is an error that
-// says only how many, never which.
+// 6 long when there are several lengths. A run touching a letter is part
+// of a word, as the "recentdata" Gmail puts after Delta's footer (09-29).
+// Any other count is an error that says only how many, never which.
 async function shownCode(from: unknown, model: boolean): Promise<string> {
   if (typeof from !== "number") throw new Error('secret "page" needs from: the tab that shows the code, such as the opened email');
   const page = await rpc("extract", { tab: from }, model);
   const shown = page && typeof page === "object" && "text" in page && typeof page.text === "string" ? page.text : "";
-  const all = [...new Set(shown.match(/(?<![\d.,:/-])\d{4,8}(?![\d.,:/-])/g) ?? [])];
+  const all = [...new Set(shown.match(/(?<![\w.,:/-])\d{4,8}(?![\w.,:/-])/g) ?? [])];
   const six = all.filter((c) => c.length === 6);
   const codes = six.length ? six : all;
   if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab, then call type again`);
