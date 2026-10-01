@@ -192,10 +192,10 @@ afterAll(() => {
   for (const dir of profiles) rmSync(dir, { recursive: true, force: true });
 });
 
-function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-")) {
+function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), approvalShown: () => Promise<boolean | undefined> = async () => true) {
   profiles.push(profile);
   const clock = handClock();
-  return { p: new ApplePasswords({ profile, timers: clock.timers }), profile, clock };
+  return { p: new ApplePasswords({ profile, timers: clock.timers, approvalShown }), profile, clock };
 }
 
 async function paired(p: ApplePasswords, helper = appleHelper()) {
@@ -278,6 +278,86 @@ test("a fill waiting on Touch ID answers before the agent's call ends, and the s
   hold.approve();
   expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+test.each(["status", "fill"] as const)("after a dismissed Touch ID prompt, %s releases the abandoned request so a new pairing can fill", async (action) => {
+  const { p, clock } = scratch(undefined, async () => false);
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  try {
+    await runAs(AGENT, async () => {
+      await p.pair();
+      await p.unlock(CODE);
+    });
+    const answering = clock.armed();
+    const first = locked(runAs(AGENT, () => p.fill(7)));
+    await answering;
+    clock.runOut();
+    await first;
+    const next = runAs(AGENT, () => action === "status" ? p.status() : locked(p.fill(7)));
+    await settled();
+    clock.runOut();
+    const result = await next;
+    if (action === "status") expect(result).toMatchObject({ unlocked: false });
+    else expect(result).toContain("Apple Passwords is locked:");
+    expect(page).toEqual({});
+    await runAs(AGENT, () => paired(p));
+    await runAs(AGENT, () => p.fill(7));
+    expect(page).toEqual({ username: USER, password: SECRET });
+  } finally {
+    p.shutdown();
+  }
+});
+
+test.each([true, undefined])("an unanswered fill keeps its pairing when approval visibility is %s", async (shown) => {
+  const { p, clock } = scratch(undefined, async () => shown);
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  try {
+    await runAs(AGENT, async () => {
+      await p.pair();
+      await p.unlock(CODE);
+    });
+    const answering = clock.armed();
+    const first = locked(runAs(AGENT, () => p.fill(7)));
+    await answering;
+    clock.runOut();
+    await first;
+    expect(await p.status()).toMatchObject({ unlocked: true, waiting: expect.stringContaining(SITE) });
+    hold.approve();
+    await runAs(AGENT, () => p.fill(7));
+    expect(page).toEqual({ username: USER, password: SECRET });
+  } finally {
+    p.shutdown();
+  }
+});
+
+test("an approval arriving as its window closes fills without another pairing", async () => {
+  const { p, clock } = scratch(undefined, async () => false);
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  try {
+    await runAs(AGENT, async () => {
+      await p.pair();
+      await p.unlock(CODE);
+    });
+    const answering = clock.armed();
+    const first = locked(runAs(AGENT, () => p.fill(7)));
+    await answering;
+    clock.runOut();
+    await first;
+    const status = p.status();
+    await settled();
+    hold.approve();
+    expect(await status).toMatchObject({ unlocked: true });
+    await runAs(AGENT, () => p.fill(7));
+    expect(page).toEqual({ username: USER, password: SECRET });
+  } finally {
+    p.shutdown();
+  }
 });
 
 test("while the Mac waits on Touch ID, status and every other password call say what it waits on, at once", async () => {
@@ -798,8 +878,14 @@ async function readCode(...shown: string[]): Promise<{ code?: string; error?: st
   }
 }
 
-test.skipIf(!trusted)("the pairing code is read off the helper's window, spaced as the Mac shows it", async () => {
-  expect(await readCode("Enter this code in your browser to use Passwords.", "4 8 2   9 1 3")).toEqual({ code: "482913" });
+// macOS 27 shows "123 456" with a no-break space between the halves
+// (09-30): read as no code, every pairing waited 5 s, then asked him to
+// type it.
+test.skipIf(!trusted).each([
+  ["spaced out, as older systems show it", "4 8 2   9 1 3"],
+  ["in two halves split by a no-break space, as macOS 27 shows it", "482\u00a0913"],
+])("the pairing code is read off the helper's window %s", async (_, shown) => {
+  expect(await readCode("Enter this verification code into the browser extension to enable Password AutoFill.", shown)).toEqual({ code: "482913" });
 }, 10000);
 
 // Digits in a sentence, or too few, are not the code.

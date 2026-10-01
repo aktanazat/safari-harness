@@ -43,10 +43,12 @@ Before a site
 
 Signing in, in this order
 1. A session: most of his sites are signed in.
-2. `passwords` `fill`. Locked, it asks him for Touch ID; never ask for the
-   code in chat. While a Touch ID prompt waits, every agent's `passwords`
-   call waits: with him away, use the site's emailed code or reset link.
-   Call `passwords` `done` when finished.
+2. `passwords` `fill`. Locked, it asks him for Touch ID and reads the
+   pairing code automatically; never ask for the code in chat. While a
+   Touch ID prompt waits, every agent's `passwords` call waits: with him
+   away, use the site's emailed code or reset link. If an approval window
+   closes without answering, the next attempt clears the stuck request
+   and asks for fresh approval. Call `passwords` `done` when finished.
 3. A passkey: click its button, then `handoff`.
 4. A code: `imessage_wait_code`; an emailed one, `gmail.waitForMail` in
    `repl`, then `type {text:"{{code}}", secret:"page", from:<mail tab>}`.

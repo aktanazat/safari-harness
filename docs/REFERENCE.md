@@ -991,6 +991,11 @@ Signing in, in this order:
      password he approved (kept 5 minutes) with no second prompt. Until he
      acts, Apple's helper answers nothing else, so every `passwords` call
      says what it waits on.
+     If the window closes without an answer, the next call checks that
+     it is gone and gives a just-approved reply 1 s to arrive. Otherwise
+     it ends that helper and clears the stuck request; a retry pairs again
+     with fresh Touch ID approval. A visible or unreadable prompt is left
+     alone. A dismissed prompt is never reported as still waiting forever.
    - `passwords {do: "code", tab}` does the same for a verification code
      the user keeps in Apple Passwords (an authenticator setup): it types
      the current code into the page's code field, one digit per box when
@@ -1034,9 +1039,11 @@ Signing in, in this order:
      of the tab, and the login's site is that frame's own address.
 3. When the vault is locked, `logins`, `fill`, `code`, `change`, `setup-code`, and `pair` first ask
    the user to approve with Touch ID (the prompt names the site), then pair,
-   read the 6-digit code off the Mac's window, and go on; reading it needs
-   the calling terminal's Accessibility permission. Where it cannot be
-   read, a prompt on the Mac asks him to type the code, hidden as he types,
+   read the 6-digit code off the Mac's window, and go on. The reader accepts
+   the no-break space between the two halves of the code on macOS 27.
+   Reading it needs the calling terminal's Accessibility permission.
+   Where it cannot be read, a prompt on the Mac asks him to type the code,
+   hidden as he types,
    and the digits go straight to the harness: the answer is
    `{paired: true}`, or `{paired: false, why}` when he cancels or 3 minutes
    pass, never the code. Never ask for the code in the chat. Through MCP

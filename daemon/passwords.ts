@@ -208,6 +208,19 @@ const REAL_TIMERS: Timers = {
   now: () => Date.now(),
 };
 
+// A missing or unreadable window list is unknown, not a dismissal.
+async function approvalShown(): Promise<boolean | undefined> {
+  try {
+    const child = Bun.spawn([PAIRING, "approval"], { stdout: "pipe", stderr: "ignore" });
+    const [status, text] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+    if (status !== 0) return undefined;
+    const result: unknown = JSON.parse(text);
+    return result && typeof result === "object" && "showing" in result && typeof result.showing === "boolean" ? result.showing : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------- the session the bridge keeps ----------
 
 // What the next daemon needs to go on: the session, and the agent sessions
@@ -309,6 +322,7 @@ export class ApplePasswords {
   private readonly profile: string;
   private readonly keyFile: string;
   private readonly timers: Timers;
+  private readonly approvalShown: () => Promise<boolean | undefined>;
   private link: HelperLink | null = null;
   // A link carries calls once its bridge has said hello and any session it
   // handed back has been proved.
@@ -334,11 +348,12 @@ export class ApplePasswords {
   // Seals the session the bridge keeps; the key file holds the same key.
   private stashKey: Buffer | null = null;
 
-  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS }: { port?: number; profile?: string; timers?: Timers } = {}) {
+  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined> } = {}) {
     this.port = port;
     this.profile = profile;
     this.keyFile = join(profile, KEY_FILE);
     this.timers = timers;
+    this.approvalShown = shown;
   }
 
   // A bridge dialed in: a new Helium's, or that of the Helium the last
@@ -436,6 +451,7 @@ export class ApplePasswords {
     this.state = { kind: "idle" };
     this.why = why;
     this.stashKey = null;
+    this.approval?.drop?.();
     this.approval = null;
     rmSync(this.keyFile, { force: true });
     this.link?.send(JSON.stringify({ stash: null }));
@@ -458,18 +474,20 @@ export class ApplePasswords {
     this.link.send(JSON.stringify({ stash: sealKept(this.stashKey, { ...this.state.session, holders: [...this.holders.keys()] }) }));
   }
 
-  async status(): Promise<Status> {
-    await this.settle().catch(() => false);
-    if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
-    const a = this.approval;
-    const helper = runningHelper(this.profile);
-    return {
-      unlocked: true,
-      sessions: this.holders.size,
-      ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
-      ...(a && !a.landed ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
-      ...(helper ? { helper } : {}),
-    };
+  status(): Promise<Status> {
+    return this.serial(async () => {
+      await this.settle().catch(() => false);
+      if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
+      const a = this.approval;
+      const helper = runningHelper(this.profile);
+      return {
+        unlocked: true,
+        sessions: this.holders.size,
+        ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
+        ...(a && !a.landed ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
+        ...(helper ? { helper } : {}),
+      };
+    }, true);
   }
 
   private fail(e: Error) {
@@ -478,13 +496,28 @@ export class ApplePasswords {
     w?.reject(e);
   }
 
+  // On 09-30 a closed Touch ID prompt left its request unanswered forever.
+  // After the original call gives up, a retry checks the actual prompt.
+  // Allow an approval's reply to land after its window closes; otherwise
+  // end that helper so a late reply cannot be mistaken for the next fill.
+  private async recoverDismissedApproval() {
+    const a = this.approval;
+    if (!a || a.landed || !a.gaveUp) return;
+    if (await this.approvalShown() !== false || this.approval !== a || a.landed) return;
+    if (await within(a.reply, 1000, this.timers).catch(() => true)) return;
+    if (await this.approvalShown() !== false || this.approval !== a || a.landed) return;
+    this.end(`the approval window for ${a.what} closed without an answer at ${localTime()}`);
+    await this.quitting;
+  }
+
   // Replies carry no request id, so one request at a time, and none while
   // the helper waits on Touch ID. On 09-29 agents resetting passwords were
   // told to ask him to approve sites other agents had asked for.
-  private serial<T>(fn: () => Promise<T>): Promise<T> {
-    const go = () => {
+  private serial<T>(fn: () => Promise<T>, reportWaiting = false): Promise<T> {
+    const go = async () => {
+      await this.recoverDismissedApproval();
       const a = this.approval;
-      if (a && !a.landed) {
+      if (a && !a.landed && !reportWaiting) {
         const since = localTime(new Date(a.since));
         if (a.owner !== currentOwner()) throw new Error(`another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call did not run; call again once he has, or sign in another way (the site's emailed code or reset link)`);
         throw new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
@@ -531,9 +564,10 @@ export class ApplePasswords {
 
   // No session has held the pairing for the grace period: it ends, and
   // Helium quits.
-  private end() {
+  private end(why = `every session using it was done, so it ended at ${localTime()}`) {
+    this.grace?.cancel();
     this.grace = null;
-    if (this.state.kind !== "idle") this.reset(`every session using it was done, so it ended at ${localTime()}`);
+    if (this.state.kind !== "idle") this.reset(why);
     this.quitting = this.quit().finally(() => {
       this.quitting = null;
     });

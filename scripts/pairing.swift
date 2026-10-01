@@ -6,6 +6,8 @@
 //                                 the user declines. Exits 1 when no prompt
 //                                 could be shown or the system took it down.
 //                                 REASON finishes "<app> is trying to ..."
+//   pairing approval              whether the system authentication prompt
+//                                 is still on screen: {"showing": boolean}
 //   pairing code --pid N [--wait MS]
 //                                 the code process N's window shows, waiting
 //                                 up to MS (default 5000) for it: {"code"}
@@ -77,6 +79,16 @@ func approve(_ args: [String]) {
     fail("the Mac did not finish asking: \(failure?.localizedDescription ?? "no reason given")")
 }
 
+// Apple's helper can leave a request unanswered when its Touch ID prompt
+// closes. Look only for the system authentication window, never its text.
+// Another app's authentication prompt counts too: do not interrupt one.
+func approval() {
+    guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        fail("cannot check whether the authentication prompt is showing")
+    }
+    printJSON(["showing": windows.contains { $0[kCGWindowOwnerName as String] as? String == "coreautha" }])
+}
+
 // ---------- code ----------
 
 // Every string an element and the elements inside it show.
@@ -86,8 +98,10 @@ func texts(_ el: AXUIElement, depth: Int = 0) -> [String] {
     return own + children.flatMap { texts($0, depth: depth + 1) }
 }
 
-// The helper shows the code spaced out, "1 2 3   4 5 6", and nothing else of
-// six digits. The window title is not matched: it is translated.
+// The helper shows the code spaced out, "1 2 3   4 5 6" on older systems and
+// "123 456" with a no-break space between the halves on macOS 27, and
+// nothing else of six digits. The window title is not matched: it is
+// translated.
 func code(_ args: [String]) {
     requireAccess()
     guard let raw = option(args, "--pid"), let pid = pid_t(raw), pid > 1 else { fail("usage: pairing code --pid N [--wait MS]", 2) }
@@ -97,8 +111,8 @@ func code(_ args: [String]) {
     repeat {
         for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
             let digits = texts(window)
-                .filter { !$0.isEmpty && $0.allSatisfy { ($0.isASCII && $0.isNumber) || $0 == " " } }
-                .map { $0.filter { $0 != " " } }
+                .filter { !$0.isEmpty && $0.allSatisfy { ($0.isASCII && $0.isNumber) || $0.isWhitespace } }
+                .map { $0.filter { !$0.isWhitespace } }
             if let found = digits.first(where: { $0.count == 6 }) {
                 printJSON(["code": found])
                 exit(0)
@@ -168,8 +182,9 @@ let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
 case "approve": approve(rest)
+case "approval": approval()
 case "code": code(rest)
 case "confirm": confirm(rest)
 case "qr": qr()
-default: fail("usage: pairing approve REASON | code --pid N [--wait MS] | confirm --pid N --site HOST [--wait MS] | qr < PNG", 2)
+default: fail("usage: pairing approve REASON | approval | code --pid N [--wait MS] | confirm --pid N --site HOST [--wait MS] | qr < PNG", 2)
 }
