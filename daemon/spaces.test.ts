@@ -7,7 +7,7 @@ import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { spaceTool } from "./spaces.ts";
-import { openTab } from "./tools.ts";
+import { callTool, endTurn, openTab } from "./tools.ts";
 
 // The keeper's files, away from the real ones (groups-off.json there would
 // make every window plain).
@@ -61,6 +61,9 @@ function safari() {
       else regrouping.delete(id as number);
       return { ok: true };
     },
+    // the page ops open waits on (afterWall): a plain page, no bot check
+    probe: () => [],
+    relay: () => ({ ok: true }),
   };
   const sock: ExtSocket = {
     send(data) {
@@ -125,6 +128,23 @@ test("when an agent exits its window's page closes, and a tab it opened for the 
   expect(s.tabs.has(his.id)).toBe(true);
   expect(s.closed).not.toContain(his.id);
 });
+
+// 09-30: the windows of agents the user had stopped stayed open, each with
+// only its page, for two minutes after their tabs had closed.
+test("when an agent's turn ends its window closes with its tabs, unless it holds a tab it kept; a working agent's stays", async () => {
+  const s = safari();
+  const [keeper, working, done] = [agent(), agent(), agent()];
+  const open = (who: { pid: number }, keep = false) => runAs(who.pid, () => callTool("open", { url: "https://turn.example/", background: true, keep })) as Promise<{ windowId: number }>;
+  // One sweep looks at the windows in the order they opened: done's last,
+  // so the others have been looked at once its page closes.
+  const windows = [await open(keeper, true), await open(working), await open(done)].map((t) => t.windowId);
+  const pages = windows.map((w) => pageIn(s.tabs, w)!.id);
+  endTurn(keeper.pid);
+  endTurn(done.pid);
+  await until(() => s.closed.includes(pages[2]), 8000);
+  expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false, true]);
+  for (const p of [keeper, working, done]) p.kill();
+}, 15_000);
 
 test("an agent whose window the user closed gets a new one on its next open", async () => {
   const s = safari();

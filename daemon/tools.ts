@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered } from "./unanswered.ts";
-import { spaceNote, spaceTool, spaceWindow, windowOwners, type SpaceNote } from "./spaces.ts";
+import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -180,11 +180,13 @@ export function closeTabsOf(owner: number): void {
 }
 
 // owner handed its turn back to the user (main.ts, told by omp/index.ts):
-// it is done with its tabs, as if it had left them for IDLE_MS. Before,
-// they stayed open until it exited or left them for 20 minutes; his order
-// of 09-28 is to close a tab once it has served its purpose.
+// it is done with its tabs, as if it had left them for IDLE_MS, and its
+// window goes once they have (spaces.ts). Before, they stayed open until
+// it exited or left them for 20 minutes; his order of 09-28 is to close a
+// tab once it has served its purpose.
 export function endTurn(owner: number): void {
   for (const t of harnessTabs.values()) if (t.owner === owner) t.used = 0;
+  turnEnded(owner);
   void sweep();
 }
 

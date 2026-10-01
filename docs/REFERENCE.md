@@ -98,17 +98,19 @@ Safari is the user's everyday browser, so treat his tabs as his.
   close turns groups off for a day; `~/.local/share/safari-harness/groups-off.json`
   says why, and removing it turns them on sooner. `safari doctor` warns
   while it is there, and each agent is told why once, not on every open.
-- When your process exits, or the window has held only its page for two
-  minutes, the task ends. A plain window's page closes: the window goes with
+- When your process exits, your turn ends and the window holds only its
+  page, or the window has held only its page for two minutes, the task
+  ends. A plain window's page closes: the window goes with
   your last tab, and a tab you kept stays there for him. A tab group's tabs
   left for him (kept) move to windows of their own, then the group is
   deleted with its page, again only while he is away from the keys. A
   group that cannot go yet waits in
   `~/.local/share/safari-harness/groups.json` for the next keeper.
 - Your tabs close when your turn ends: as omp hands the turn back to the
-  user, it tells the daemon (`omp/index.ts`), which closes every tab you
-  opened, and tabs they opened, whether you called it through MCP or the
-  CLI. A finished task needs no `close` call. One the user has in front
+  user, or he interrupts it, it tells the daemon (`omp/index.ts`), which
+  closes every tab you opened, and tabs they opened, whether you called it
+  through MCP or the CLI, and then your window. A finished task needs no
+  `close` call. One the user has in front
   stays until he has left it for 20 minutes. Outside omp they close within
   a few seconds after your agent process exits (claude, codex, a bun or
   python script, or the terminal's login session); the daemon keeps that

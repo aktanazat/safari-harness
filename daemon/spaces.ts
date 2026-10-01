@@ -17,7 +17,8 @@
 // keys alone a while the window stays plain (waiting); one that cannot
 // become a group says why (plain).
 //
-// When the agent exits, or its window has held nothing but its page for
+// When the agent exits, when its turn ends and the window holds nothing
+// but its page, or when the window has held nothing but its page for
 // IDLE_MS, the assignment ends. A plain window's page closes: the window
 // goes with the agent's last tab (tools.ts closes them), and a tab it kept
 // stays there for the user. A group waits for the keeper, which moves
@@ -45,7 +46,9 @@ type Group = "waiting" | "making" | "grouped" | "plain";
 // from the keys (waiting), or stays plain, and why.
 export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
-type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; unwatch?: () => void };
+// done: the agent's turn ended (turnEnded); the window ends once it holds
+// nothing but its page, and its agent's next open clears it
+type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; done?: true; unwatch?: () => void };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -117,7 +120,10 @@ export async function spaceWindow(group?: string): Promise<Space> {
   const owner = currentOwner();
   const key = `${owner ?? "daemon"}:${group ?? ""}`;
   const had = spaces.get(key);
-  if (had && (await located(had)).length > 0) return had;
+  if (had && (await located(had)).length > 0) {
+    delete had.done;
+    return had;
+  }
   if (had) await end(had);
   let made = making.get(key);
   if (!made) {
@@ -151,7 +157,7 @@ function watch(space: Space) {
 // still knows them: an agent's next tab joins its window, the window still
 // closes when the agent exits, and the keeper still deletes its group.
 // Before, a restart left every agent window open for good.
-type Kept = Omit<Space, "unwatch" | "emptySince">;
+type Kept = Omit<Space, "unwatch" | "emptySince" | "done">;
 let spacesFile: string | undefined;
 
 export function loadSpaces(path: string): void {
@@ -329,8 +335,17 @@ async function sweep() {
     const inWindow = await located(s, tabs);
     if (inWindow.some((t) => !isPage(t, s))) s.emptySince = undefined;
     else s.emptySince ??= now;
-    if (inWindow.length === 0 || now - s.emptySince! >= IDLE_MS) await end(s);
+    if (inWindow.length === 0 || (s.emptySince !== undefined && (s.done || now - s.emptySince >= IDLE_MS))) await end(s);
   }
+}
+
+// owner handed its turn back to the user (endTurn, tools.ts), which closes
+// its tabs: each of its windows then ends at the first sweep that finds it
+// holding nothing but its page. Before, the window stayed two minutes
+// after its last tab, and the user saw agents that had stopped still open.
+export function turnEnded(owner: number): void {
+  for (const s of spaces.values()) if (s.owner === owner) s.done = true;
+  if (spaces.size > 0) sweepSoon();
 }
 
 // The assignment whose window's page carries id, for that page
