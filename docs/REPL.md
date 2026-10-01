@@ -86,8 +86,28 @@ signed in to <site> in Safari" when it is not. Methods that send or change
 anything return a draft until called with `approved: true`.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
-`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`, `imessage`. `safari guide
-<site>` lists each one's methods under "In safari repl".
+`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`. `safari guide <site>`
+lists each one's methods under "In safari repl".
+
+### Messages
+
+The `imessage` global uses Messages on this Mac, not a browser tab.
+`imessage.getHistory(chat, {limit, since})` and
+`imessage.search(text, {from, days, limit})` return messages with a `files`
+array. Each file has `{id, name, mime, bytes, downloaded, path?}`; `mime` can
+be null, and `path` appears only when the file is present locally.
+
+Use `await imessage.files(ids, {out, clipboard})` with ids from that array.
+The options are optional. Missing local files are fetched from iCloud through
+Messages; a download can open the conversation and mark it read. This is not
+a read-only call. `out` is an absolute folder for copies, which keep their
+original formats and get a suffix rather than overwriting existing files.
+
+The result is `{files: [{id, name, mime, bytes, path, downloaded: true}],
+clipboard?: true}`. Any missing file fails the call. With `clipboard: true`,
+the clipboard stays unchanged until every file is verified, then receives
+their file URLs. Success means those URLs were read back; it does not mean
+every destination app accepts paste.
 
 ## Files and helpers
 

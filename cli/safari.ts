@@ -173,6 +173,10 @@ const USAGE = `safari — drive Safari from the terminal
                                              one conversation (id, phone, email, or name)
   safari imessage search [text] [--from who] [--days 90]
                                              search messages
+  safari imessage files <id>... [--out /absolute/folder] [--clipboard]
+                                             ids from history/search files; fetch originals,
+                                             save copies or copy verified file URLs
+                                             (downloads may mark the conversation read)
   safari imessage code [--seconds 30] [--since rowid]
                                              wait for a sign-in code by text
   safari imessage send <to> [text] [--file path]... [--approved]
@@ -610,11 +614,12 @@ async function main() {
       chats: ["imessage_chats", { limit: numFlag("limit") }],
       history: ["imessage_history", { chat: pos.join(" "), limit: numFlag("limit"), since: numFlag("since") }],
       search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), days: numFlag("days"), limit: numFlag("limit") }],
+      files: ["imessage_files", { ids: pos, out: flag("out", rest), clipboard: hasFlag("clipboard", rest) }],
       code: ["imessage_wait_code", { seconds: numFlag("seconds"), since: numFlag("since") }],
       send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: hasFlag("approved", rest) }],
     };
     const call = sub ? calls[sub] : undefined;
-    if (!call) fail("usage: safari imessage chats|history|search|code|send …, or safari contacts <name>", 2);
+    if (!call) fail("usage: safari imessage chats|history|search|files|code|send …, or safari contacts <name>", 2);
     print(await invoke(...call, true));
     return;
   }
@@ -786,11 +791,11 @@ async function main() {
 }
 
 // Flags that take no value; the word after them is positional.
-const BOOLEAN_FLAGS = new Set(["bg", "keep", "append", "snapshot", "approved", "diff", "page", "annotate", "full", "json", "list", "bitwarden", "save", "all", "quiet", "changed", "showHidden", "base64", "front"]);
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
-  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && !BOOLEAN_FLAGS.has(prev.slice(2))) || isSavePath(i, argv));
+  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && !Object.hasOwn(BOOLEAN_FLAGS, prev.slice(2))) || isSavePath(i, argv));
 }
 
 function jsonObject(word: string | undefined): boolean {

@@ -6,9 +6,9 @@
 // the caller to be allowed to control Messages, and returns a draft first.
 
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, extname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Tool } from "./tools.ts";
@@ -18,6 +18,7 @@ const HOME = homedir();
 const CHAT_DB = join(HOME, "Library", "Messages", "chat.db");
 const ADDRESS_BOOK = join(HOME, "Library", "Application Support", "AddressBook");
 
+const ATTACHMENTS = join(import.meta.dir, "..", "scripts", "attachments");
 // chat.db dates are nanoseconds since 2001-01-01.
 const APPLE_EPOCH_MS = Date.UTC(2001, 0, 1);
 const toDate = (ns: number) => new Date(APPLE_EPOCH_MS + Math.floor(ns / 1e6)).toISOString();
@@ -202,7 +203,8 @@ export function history(opts: { chat: string; limit?: number; since?: number }) 
     const rows = db.query(`
       SELECT ${MSG_COLS} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
       WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit) as MsgRow[];
-    return { ...describe(db, c, names), messages: rows.reverse().map((r) => toMessage(r, names)) };
+    const files = messageFiles(db, rows.map((r) => r.rowid));
+    return { ...describe(db, c, names), messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) })) };
   } finally {
     db.close();
   }
@@ -239,9 +241,151 @@ export function search(opts: { text?: string; from?: string; days?: number; limi
       hits.push({ ...msg, chat: r.chat, chatName: describe(db, { id: r.cid, guid: r.chat, ident: r.ident, dn: r.dn, svc: r.svc, style: r.style }, names).name });
       if (hits.length >= limit) break;
     }
-    return hits;
+    const files = messageFiles(db, hits.map((r) => r.rowid));
+    return hits.map((r) => ({ ...r, ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) }));
   } finally {
     db.close();
+  }
+}
+
+// ---------- receiving files ----------
+
+type AttachmentRow = {
+  rowid: number; id: string; name: string | null; mime: string | null; bytes: number;
+  path: string | null; state: number; message: number; messageGuid: string; date: number; chat: number;
+};
+type AttachmentInfo = { id: string; name: string; mime: string | null; bytes: number; downloaded: boolean; path?: string };
+
+function attachmentRows(db: Database, where: string, values: (string | number)[]): AttachmentRow[] {
+  const rows = db.query<AttachmentRow, (string | number)[]>(`
+    SELECT DISTINCT a.ROWID rowid, a.guid id, a.transfer_name name, a.mime_type mime,
+      a.total_bytes bytes, a.filename path, a.transfer_state state, m.ROWID message,
+      m.guid messageGuid, m.date, cj.chat_id chat
+    FROM attachment a JOIN message_attachment_join j ON j.attachment_id = a.ROWID
+      JOIN message m ON m.ROWID = j.message_id JOIN chat_message_join cj ON cj.message_id = m.ROWID
+    WHERE COALESCE(a.hide_attachment, 0) = 0 AND ${REAL} AND (${where})`).all(...values);
+  // ROWID is download order, not the order of pictures within the message.
+  const part = (r: AttachmentRow) => Number(/^at_(\d+)_/.exec(r.id)?.[1] ?? r.rowid);
+  return rows.sort((a, b) => a.date - b.date || a.message - b.message || part(a) - part(b));
+}
+
+function localAttachment(row: AttachmentRow): string | undefined {
+  if (!row.path || (row.state !== 0 && row.state !== TRANSFER_DONE)) return undefined;
+  const path = row.path.startsWith("~/") ? join(HOME, row.path.slice(2)) : row.path;
+  const st = statSync(path, { throwIfNoEntry: false });
+  // State 5 can survive offloading, and state 0 can still have a local file.
+  return st?.isFile() && st.size > 0 && (!row.bytes || st.size === row.bytes) ? path : undefined;
+}
+
+function attachmentInfo(row: AttachmentRow): AttachmentInfo {
+  const path = localAttachment(row);
+  return { id: row.id, name: basename(row.name || row.path || row.id), mime: row.mime, bytes: row.bytes, downloaded: path !== undefined, ...(path ? { path } : {}) };
+}
+
+function messageFiles(db: Database, messages: number[]) {
+  const files = new Map<number, AttachmentInfo[]>();
+  if (!messages.length) return files;
+  for (const row of attachmentRows(db, `m.ROWID IN (${messages.map(() => "?").join(",")})`, messages)) {
+    const group = files.get(row.message) ?? [];
+    if (!group.some((file) => file.id === row.id)) group.push(attachmentInfo(row));
+    files.set(row.message, group);
+  }
+  return files;
+}
+
+async function attachmentHelper(args: string[], request?: unknown): Promise<{ pressed?: string[]; launched?: number; error?: string; clipboard?: boolean }> {
+  const running = execFileAsync(ATTACHMENTS, args, { timeout: 20000 });
+  const kill = () => running.child.kill();
+  process.once("exit", kill);
+  running.child.stdin?.end(request === undefined ? undefined : JSON.stringify(request));
+  try {
+    return JSON.parse((await running).stdout);
+  } catch (e) {
+    const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
+    throw new Error(`Messages files ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
+  } finally {
+    process.off("exit", kill);
+  }
+}
+
+function requestedAttachments(db: Database, ids: string[]) {
+  const rows = attachmentRows(db, `a.guid IN (${ids.map(() => "?").join(",")})`, ids);
+  return ids.map((id) => {
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new Error(`no visible Messages attachment: ${id}`);
+    return row;
+  });
+}
+
+function saveAttachment(source: string, folder: string, name: string): string {
+  const ext = extname(name);
+  const stem = basename(name, ext);
+  for (let n = 1; ; n++) {
+    const path = join(folder, n === 1 ? name : `${stem} ${n}${ext}`);
+    try {
+      copyFileSync(source, path, constants.COPYFILE_EXCL);
+      return path;
+    } catch (e) {
+      if (!(e && typeof e === "object" && "code" in e && e.code === "EEXIST")) throw e;
+    }
+  }
+}
+
+async function receiveFiles(opts: { ids: string[]; out?: string; clipboard?: boolean }) {
+  if (!Array.isArray(opts.ids) || !opts.ids.length || opts.ids.some((id) => typeof id !== "string" || !id.trim())) throw new Error("ids must be attachment ids from imessage_history or imessage_search");
+  if (opts.out !== undefined && !isAbsolute(opts.out)) throw new Error("out must be an absolute folder path");
+  const ids = [...new Set(opts.ids)];
+  const db = openChatDb();
+  let launched: number | undefined;
+  try {
+    let rows = requestedAttachments(db, ids);
+    const names = nameIndex(loadContacts());
+    for (;;) {
+      const missing = rows.filter((row) => !localAttachment(row));
+      if (!missing.length) break;
+      const target = missing[0];
+      const minute = Math.floor(target.date / 60e9) * 60e9;
+      const minuteFiles = attachmentRows(db, "cj.chat_id = ? AND m.date >= ? AND m.date < ?", [target.chat, minute, minute + 60e9]);
+      const chat = db.query<ChatRow, [number]>(`SELECT ${CHAT_COLS} FROM chat c WHERE c.ROWID = ?`).get(target.chat);
+      if (!chat) throw new Error("the attachment's conversation no longer exists");
+      const wanted = new Set(missing.filter((row) => row.chat === target.chat && row.date >= minute && row.date < minute + 60e9).map((row) => row.id));
+      const request = {
+        guid: target.messageGuid, at: APPLE_EPOCH_MS / 1000 + target.date / 1e9,
+        conversation: [describe(db, chat, names).name, chat.ident, ...(chat.dn ? [chat.dn] : [])],
+        files: minuteFiles.map((row) => ({ id: row.id, name: row.name || basename(row.path || row.id), wanted: wanted.has(row.id) && !localAttachment(row) })),
+      };
+      const result = await attachmentHelper(["fetch"], request);
+      launched ??= result.launched;
+      if (result.error) throw new Error(result.error);
+      const pressed = result.pressed;
+      if (!pressed?.length || pressed.some((id) => !wanted.has(id))) throw new Error("Messages did not request the selected attachment downloads");
+      const deadline = Date.now() + TRANSFER_MS;
+      for (;;) {
+        rows = requestedAttachments(db, ids);
+        const pending = rows.filter((row) => pressed.includes(row.id) && !localAttachment(row));
+        if (!pending.length) break;
+        const failed = pending.find((row) => row.state === TRANSFER_FAILED);
+        if (failed) throw new Error(`Messages failed to download ${failed.name || failed.id}; clipboard unchanged`);
+        if (Date.now() >= deadline) throw new Error(`Messages did not finish downloading ${pending.map((row) => row.name || row.id).join(", ")} within ${TRANSFER_MS / 1000} s; clipboard unchanged`);
+        await Bun.sleep(250);
+      }
+    }
+    if (opts.out) mkdirSync(opts.out, { recursive: true });
+    const files = rows.map((row) => {
+      const source = localAttachment(row);
+      if (!source) throw new Error(`${row.name || row.id} is no longer on this Mac; clipboard unchanged`);
+      const info = attachmentInfo(row);
+      const path = opts.out ? saveAttachment(source, opts.out, info.name) : source;
+      return { ...info, downloaded: true, path };
+    });
+    if (opts.clipboard) {
+      const copied = await attachmentHelper(["copy", ...files.map((file) => file.path)]);
+      if (copied.clipboard !== true) throw new Error("the clipboard copy was not confirmed");
+    }
+    return { files, ...(opts.clipboard ? { clipboard: true } : {}) };
+  } finally {
+    db.close();
+    if (launched !== undefined) await attachmentHelper(["quit", String(launched)]);
   }
 }
 
@@ -491,12 +635,12 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
 
 export const IMESSAGE_TOOLS: Record<string, Tool> = {
   imessage_chats: {
-    desc: "Recent Messages conversations, newest first: chat id, name, unread count, last message.",
+    desc: "Recent conversations: id, name, unread count, last message.",
     params: { limit: { type: "number", description: "default 20, max 100" } },
     run: async (a) => chats({ limit: a.limit as number | undefined }),
   },
   imessage_history: {
-    desc: "Messages in one conversation, oldest to newest. chat is a chat id from imessage_chats, a phone number, an email, or a contact name that matches exactly one chat.",
+    desc: "Conversation messages and files, oldest first. Missing files: imessage_files.",
     params: {
       chat: { type: "string", description: "chat id, phone, email, or contact name" },
       limit: { type: "number", description: "default 30, max 200" },
@@ -505,8 +649,18 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     required: ["chat"],
     run: async (a) => history(a as { chat: string; limit?: number; since?: number }),
   },
+  imessage_files: {
+    desc: "Fetch history/search file ids, including iCloud. Opens Messages (may mark read). out saves originals without overwriting; clipboard copies verified file URLs.",
+    params: {
+      ids: { type: "array", items: { type: "string" } },
+      out: { type: "string", description: "absolute folder" },
+      clipboard: { type: "boolean" },
+    },
+    required: ["ids"],
+    run: (a) => receiveFiles(a as { ids: string[]; out?: string; clipboard?: boolean }),
+  },
   imessage_search: {
-    desc: "Search Messages text across all conversations (last 90 days by default). from narrows to a contact name, phone, or email.",
+    desc: "Search texts across conversations; from limits the sender.",
     params: {
       text: { type: "string", description: "words to find, case-insensitive" },
       from: { type: "string", description: "sender: contact name, phone, or email" },
@@ -516,7 +670,7 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => search(a as { text?: string; from?: string; days?: number; limit?: number }),
   },
   imessage_wait_code: {
-    desc: "Wait for a sign-in or verification code to arrive by text, including one that came in the last minute. Returns {status:'received', code, from} or {status:'timeout', since}; pass since back to keep waiting. Type the code into the page; never repeat it in chat.",
+    desc: "Wait for a sign-in code by text, including the last minute. Returns {status:'received',code,from} or {status:'timeout',since}; pass since back to keep waiting. Type it into the page; never repeat it in chat.",
     params: {
       seconds: { type: "number", description: "how long to wait, default 30, max 90" },
       since: { type: "number", description: "rowid from a previous timeout" },
@@ -524,15 +678,15 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: (a) => waitCode(a as { seconds?: number; since?: number }),
   },
   contacts: {
-    desc: "Look up the user's contacts by name: phones and emails.",
+    desc: "Find contact phones and emails.",
     params: { name: { type: "string", description: "part of a name or company" } },
     required: ["name"],
     run: async (a) => contacts(a as { name: string }),
   },
   imessage_send: {
-    desc: "Send a text, files, or both through Messages; each file goes first as its own message. Without approved it sends nothing and returns a draft: show the user the recipient, the exact text, the files, and the recent lines, and call again with approved: true only after they say yes. Never set approved on your own. Fails unless every file finished uploading.",
+    desc: "Draft text/files; files go first, separately. Show the recipient, exact text/files and recent lines. Send only after the user approves that draft: approved:true. Never approve it yourself. Fails unless every file uploads.",
     params: {
-      to: { type: "string", description: "chat id, contact name matching one chat, or a phone/email for a new conversation" },
+      to: { type: "string", description: "chat id, unique name, or phone/email" },
       text: { type: "string", description: "message text" },
       files: { type: "array", items: { type: "string" }, description: "absolute file paths" },
       approved: { type: "boolean", description: "true only after the user approved this exact draft" },
@@ -543,4 +697,4 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
 };
 
 // Read-only subset for unattended callers such as the local agent loop.
-export const IMESSAGE_READ_TOOLS: Record<string, Tool> = Object.fromEntries(Object.entries(IMESSAGE_TOOLS).filter(([name]) => name !== "imessage_send"));
+export const IMESSAGE_READ_TOOLS: Record<string, Tool> = Object.fromEntries(Object.entries(IMESSAGE_TOOLS).filter(([name]) => name !== "imessage_send" && name !== "imessage_files"));

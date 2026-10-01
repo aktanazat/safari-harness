@@ -86,8 +86,8 @@ daemon/
   mcp-tools.ts      the tools one release offers over MCP; after a deploy the
                     server loads the daemon's release's copy (fresh.ts)
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
-                    and draft-then-approve sending (chat.db read-only,
-                    AddressBook, osascript)
+                    attachment retrieval, and draft-then-approve sending
+                    (chat.db read-only, AddressBook, osascript)
   finder.ts         upload's find: Spotlight over iCloud Drive, Documents,
                     Desktop, and Downloads, returning paths, never contents
   downloads.ts      the files Safari saves to ~/Downloads while an agent's
@@ -250,10 +250,20 @@ safari guide gusto                     # one site's note: sign-in, paths, what t
 safari learn cvs.com "Insurance card: Pharmacy > Insurance > Add card"   # a fact for later agents
 safari guide repl                      # the REPL's API and recovery steps
 safari imessage chats                  # recent conversations
+safari imessage history "<chat>" --json # messages with attachment ids in files
+safari imessage search --from "<contact>" --days 7 --json # find messages and their files
+safari imessage files <id>... --out /absolute/folder --clipboard # save originals and copy file URLs
 safari imessage code                   # wait for a sign-in code by text
 safari imessage send "+1…" "hi"        # prints a draft; add --approved to send
 safari imessage send "+1…" --file ~/Pictures/a.jpg   # a photo; succeeds only once it uploaded
 ```
+
+Get attachment ids from history/search messages' `files` array, then use
+`imessage files`. Missing local files are fetched from iCloud through
+Messages; this can open the conversation and mark it read. Copies keep
+their original formats, and `--out` never overwrites an existing file.
+`--clipboard` waits until every file is verified, then writes and reads back
+their file URLs. Success does not mean every destination app accepts paste.
 
 `safari do` defaults to local Ollama (`http://127.0.0.1:11434/v1`,
 `gemma4:12b-mlx`); point it anywhere with `SAFARI_MODEL_BASE`,
