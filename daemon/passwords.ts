@@ -840,13 +840,14 @@ export class ApplePasswords {
   }
 
   // The login a call means: the one named, else the only one saved.
-  private async chosenLogin(site: string, username?: string): Promise<{ login: string; saved: string[] }> {
-    const saved = (await this.logins(site)).map((l) => l.username);
+  private async chosenLogin(site: string, username?: string): Promise<{ login: string; saved: string[]; sites: string[] }> {
+    const listed = await this.logins(site);
+    const saved = listed.map((l) => l.username);
     const login = username ?? (saved.length === 1 ? saved[0] : undefined);
     if (login === undefined) {
       throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
     }
-    return { login, saved };
+    return { login, saved, sites: listed.find((l) => l.username === login && l.sites.includes(site))?.sites ?? [] };
   }
 
   // The login a change on host means, and the host it is saved for: the
@@ -859,20 +860,27 @@ export class ApplePasswords {
   // paradoxinteractive.com, are not guessed at: the call names those listed
   // and what to pass, and saves nothing.
   private async changedLogin(host: string, username?: string, entry?: string): Promise<{ login: string; site: string; saved: boolean }> {
+    let chosen: { login: string; site: string; saved: boolean; sites: string[] };
     if (entry !== undefined) {
       const site = httpsHost(`https://${entry}`);
-      const { login, saved } = await this.chosenLogin(site, username);
-      return { login, site, saved: saved.includes(login) };
+      const { login, saved, sites } = await this.chosenLogin(site, username);
+      chosen = { login, site, saved: saved.includes(login), sites };
+    } else {
+      const listed = await this.logins(host);
+      const fits = listed.flatMap((l) => {
+        const site = l.sites.includes(host) ? host : l.sites.find((s) => siteOf(s) === siteOf(host));
+        return site === undefined || (username !== undefined && l.username !== username) ? [] : [{ login: l.username, site, sites: l.sites }];
+      });
+      if (fits.length > 1) throw new Error(`several saved logins fit ${host}: ${fits.map((f) => `${f.login} on ${f.site}`).join(", ")}; pass the username and site of the one to change`);
+      if (!fits.length) {
+        const seen = listed.map((l) => `${l.username} on ${l.sites.join(", ")}`).join("; ");
+        throw new Error(`no login${username === undefined ? "" : ` ${username}`} is saved for ${host} or another ${siteOf(host)} host${seen ? `; listed: ${seen}` : ""}; pass site: the host the login is saved for, with its username, or ${host} to save a new login`);
+      }
+      chosen = { ...fits[0], saved: true };
     }
-    const listed = await this.logins(host);
-    const fits = listed.flatMap((l) => {
-      const site = l.sites.includes(host) ? host : l.sites.find((s) => siteOf(s) === siteOf(host));
-      return site === undefined || (username !== undefined && l.username !== username) ? [] : [{ login: l.username, site }];
-    });
-    if (fits.length === 1) return { ...fits[0], saved: true };
-    if (fits.length) throw new Error(`several saved logins fit ${host}: ${fits.map((f) => `${f.login} on ${f.site}`).join(", ")}; pass the username and site of the one to change`);
-    const seen = listed.map((l) => `${l.username} on ${l.sites.join(", ")}`).join("; ");
-    throw new Error(`no login${username === undefined ? "" : ` ${username}`} is saved for ${host} or another ${siteOf(host)} host${seen ? `; listed: ${seen}` : ""}; pass site: the host the login is saved for, with its username, or ${host} to save a new login`);
+    const others = chosen.sites.filter((s) => s !== chosen.site);
+    if (others.length) throw new Error(`the saved login ${chosen.login} for ${chosen.site} is shared with ${others.join(", ")}; changing it would replace the password for every attached website. Separate this login in Apple Passwords first, then call change again; no password was generated, saved, or typed`);
+    return chosen;
   }
 
   // Fills the saved login into the tab's sign-in form. The result names the

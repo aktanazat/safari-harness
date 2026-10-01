@@ -55,10 +55,7 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   // Model runs stay here so each step checks the site's real-input mark,
   // even without real: true (EOIR, 09-30). Internal runs keep the scripted
   // daemon path unless they explicitly contain a caller tool.
-  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => {
-    const { secret: _secret, from: _from, ...rest } = a;
-    return checkStep(STEP_TOOLS, t, secretType(t, a) && nameIn(CALLER_NAMES, t) !== undefined ? rest : a);
-  });
+  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => checkStep(STEP_TOOLS, t, a));
   const coded = secretType(tool, args);
   // A type that fills in a code keeps its own way (secret.ts): nothing
   // reaches the daemon before the code has come.
@@ -78,11 +75,11 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   }
   // real_input takes a code's source as type does, and its own parameters
   // go to it (secret.ts).
-  const { secret, from, ...rest } = args;
-  const call = checkCall(CALLER_TOOLS, tool, coded ? rest : args, model);
+  const call = checkCall(CALLER_TOOLS, tool, args, model);
+  const { secret: _secret, from: _from, from_selector: _fromSelector, ...rest } = call.args;
   const remote = process.env.SAFARI_HARNESS_REMOTE;
   const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));
-  const result = await (coded ? typeSecret({ ...call.args, secret, from }, model, (text) => run({ ...call.args, text })) : run(call.args));
+  const result = await (coded ? typeSecret(call.args, model, (text) => run({ ...rest, text })) : run(call.args));
   return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
 }
 

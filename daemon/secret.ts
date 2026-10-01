@@ -1,13 +1,13 @@
 // Codes typed without the agent seeing them. A type whose text has {{code}}
 // (or with secret: "sms") waits for the code the site texted the user and
 // types it there; secret: "page" types the one code shown in tab from (an
-// opened email); secret: "passwords" types the code his Apple Passwords
-// keeps for the site. real_input's type takes the same, for a field that
-// ignores scripted typing. The answer says only how many characters went
-// in, so the code stays out of the transcript, the journal, and the logs:
-// on 01a0e50b an agent typed an emailed code by hand and type echoed it
-// back. Runs in the caller (call.ts), where Messages can be read
-// (imessage.ts).
+// opened email), within from_selector when given; secret: "passwords"
+// types the code his Apple Passwords keeps for the site. real_input's type
+// takes the same, for a field that ignores scripted typing. The answer says
+// only how many characters went in, so the code stays out of the transcript,
+// the journal, and the logs: on 01a0e50b an agent typed an emailed code by hand
+// and type echoed it back. Runs in the caller (call.ts), where Messages can
+// be read (imessage.ts).
 
 import { FILL_TOOLS } from "./fill.ts";
 import { nameIn } from "./guard.ts";
@@ -36,7 +36,7 @@ export async function typeSecret(a: Record<string, unknown>, model: boolean, put
   if (source !== "sms" && source !== "page") throw new Error('secret must be "sms", "page", or "passwords"');
   const text = typeof a.text === "string" ? a.text : "";
   if (!text.includes(CODE)) throw new Error(`put ${CODE} in text where the code goes`);
-  const code = source === "sms" ? await textedCode() : await shownCode(a.from, model);
+  const code = source === "sms" ? await textedCode() : await shownCode(a.from, a.from_selector, model);
   // however the page shows it again, the tab's answers have it cut from
   // here on (redact.ts)
   await rpc("keep_secret", { tab: a.tab, texts: [code] });
@@ -57,9 +57,10 @@ async function textedCode(): Promise<string> {
 // touching a letter is part of a word, as the "recentdata" Gmail puts after
 // Delta's footer (09-29). Any other count is an error that says only how
 // many, never which.
-async function shownCode(from: unknown, model: boolean): Promise<string> {
+async function shownCode(from: unknown, selector: unknown, model: boolean): Promise<string> {
   if (typeof from !== "number") throw new Error('secret "page" needs from: the tab that shows the code, such as the opened email');
-  const page = await rpc("extract", { tab: from }, model);
+  if (selector !== undefined && (typeof selector !== "string" || !selector.trim())) throw new Error("from_selector must be a nonempty CSS selector for one email or message");
+  const page = await rpc("extract", { tab: from, ...(selector === undefined ? {} : { selector, strict_selector: true }) }, model);
   const shown = page && typeof page === "object" && "text" in page && typeof page.text === "string" ? page.text : "";
   const mixed = [...shown.matchAll(/(?<![\w.,:/-])(?=[A-Z\d]*\d)(?=[A-Z\d]*[A-Z])[A-Z\d]{6,8}(?![\w.,:/-])/g)].filter((m) => {
     const lines = shown.slice(0, m.index).split("\n");
@@ -69,6 +70,6 @@ async function shownCode(from: unknown, model: boolean): Promise<string> {
   const all = [...new Set([...(shown.match(/(?<![\w.,:/-])\d{4,8}(?![\w.,:/-])/g) ?? []), ...mixed.map((m) => m[0])])];
   const six = all.filter((c) => c.length === 6);
   const codes = six.length ? six : all;
-  if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab (in a thread of several code emails, remove the older messages from the page with eval), then call type again`);
+  if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab, or use from_selector to select one email or message in the thread, then call type again`);
   return codes[0];
 }

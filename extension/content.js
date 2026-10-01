@@ -2386,7 +2386,19 @@
   // still loading at the limit.
   async function extract(opts = {}) {
     if (opts.as === "table") return tables(opts);
-    let at = opts.selector ? { root: rootFor(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
+    let at;
+    if (opts.strict_selector === true) {
+      // Secret sources must name one subtree. Count and read it in the same
+      // turn, without choosing a first match or changing the email thread.
+      if (typeof opts.selector !== "string" || !opts.selector.trim()) return { error: "source selector must be a nonempty string" };
+      let matches;
+      try { matches = deepQueryAll(opts.selector); }
+      catch { return { error: "source selector is not valid CSS" }; }
+      if (matches.length !== 1) return { error: `source selector matches ${matches.length} elements, not one` };
+      at = { root: matches[0] };
+    } else {
+      at = opts.selector ? { root: rootFor(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
+    }
     if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
     let read = tidyText(at.root);
     const waits = !opts.selector && !opts.query && window === window.top;

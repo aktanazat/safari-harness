@@ -558,6 +558,26 @@ test("change refuses, saving nothing, when several logins of the page's site fit
   expect(signIn.password).toBe(page.fresh);
 });
 
+// Changing one entry changes the password for every website attached to
+// it, even with an explicit site. The DMV entry was shared with other
+// services, so it must be separated before generating or saving a reset.
+test.each([
+  ["automatically selected", undefined, "calcareers.ca.gov"],
+  ["explicitly selected", SITE, "calcareers.ca.gov"],
+  ["another host of the same site", undefined, "reset.example.com"],
+  ["explicitly selected with another host", SITE, "reset.example.com"],
+] as const)("change refuses a shared login %s, leaving the saved password and reset form unchanged", async (_, entry, other) => {
+  const { p } = scratch();
+  const url = `https://${SITE}/reset`;
+  const page = fakeTab(url, { frame: 0, url, current: "none" });
+  await paired(p, appleHelper([{ USR: USER, sites: [SITE, other] }]));
+  await expect(p.change(7, USER, entry)).rejects.toThrow("shared with");
+  expect(page).toEqual({});
+  const signIn = fakeTab(`https://${SITE}/signin`);
+  await p.fill(7, USER);
+  expect(signIn.password).toBe(SECRET);
+});
+
 // A login saved only on another site may be another account, so change
 // names it and saves nothing, where it made a new entry for the page's
 // host; site then names the login's host, or the page's own for a new one.

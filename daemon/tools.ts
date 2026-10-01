@@ -533,7 +533,7 @@ async function runReader(tab: number | undefined, name: string) {
 // as: "table" reads the page's tables and repeated card lists as rows.
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
-  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as }])) as Extract | { tables: unknown[] };
+  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: "strict_selector" in opts && opts.strict_selector === true }])) as Extract | { tables: unknown[] };
   // as: "table" answers rows, not text
   return "text" in page ? shieldExtract(page) : page;
 }
@@ -1200,8 +1200,8 @@ export const TOOLS: Record<string, Tool> = {
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
   },
   type: {
-    desc: "Set a field's text by ref; replaces it unless append. Never returns the text. {{code}} in text types a code texted to the user, unseen; with secret \"page\", the code tab from shows.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: his texts, tab from (an opened email), or Apple Passwords" }, from: { type: "number", description: "tab showing the code, for secret page" }, snapshot: PAGE },
+    desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: sms, page, or passwords" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     required: ["tab", "ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
   },
@@ -1276,6 +1276,7 @@ export const TOOLS: Record<string, Tool> = {
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
     params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table"], description: "table: tables and card lists as JSON rows" }, save: SAVE },
+    unlisted: { strict_selector: { type: "boolean", description: "internal secret source: selector must match exactly one element" } },
     required: ["tab"],
     run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
   },
@@ -1545,7 +1546,7 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   passwords: {
-    desc: "Sign in and pay with the user's Apple Passwords and cards; you never see a password or card digit: never ask for one. fill puts his login for the tab's site in its form, code its 2FA code, logins its usernames. change saves and types a new strong password into the new-password fields; you submit. Stated password rules go in the field's passwordrules first. setup-code saves the authenticator QR in view; code confirms it. Locked, these pair first: he approves with Touch ID; the Mac's pairing code is read automatically, or typed if unreadable. A dismissed approval clears on retry. cards lists cards; card-fill fills one in; card-save has him type one at the Mac. done when finished; status says why locked.",
+    desc: "Use Apple Passwords and cards without revealing secrets; never ask for them. fill signs in, code fills 2FA, logins lists usernames. change saves then fills a strong password; shared website entries are refused; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls ask Touch ID and read the pairing code automatically, or prompt on the Mac if unreadable. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
     params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "change: login's host if not the page's" }, card: { type: "string", description: "label or last 4" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },

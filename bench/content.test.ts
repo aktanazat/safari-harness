@@ -693,6 +693,47 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "strict source extraction reads one email and leaves the older threaded message intact",
+    page: "threaded-codes.html",
+    steps: [
+      { op: "extract", args: [{ selector: "#current-email", strict_selector: true }], answer: { value: { text: "New code: 402913" } } },
+      { op: "extract", answer: { value: { text: expect.stringMatching(/118822[\s\S]*402913/) } } },
+    ],
+  },
+  {
+    name: "strict source extraction refuses a selector matching several emails rather than reading the first",
+    page: "threaded-codes.html",
+    steps: [
+      { op: "extract", args: [{ selector: ".email", strict_selector: true }], answer: { error: "source selector matches 2 elements, not one" } },
+      { op: "extract", args: [{ selector: ".email" }], answer: { value: { text: "Old code: 118822" } } },
+    ],
+  },
+  {
+    name: "strict source extraction refuses a missing email",
+    page: "threaded-codes.html",
+    steps: [{ op: "extract", args: [{ selector: "#missing-email", strict_selector: true }], answer: { error: "source selector matches 0 elements, not one" } }],
+  },
+  {
+    name: "strict source extraction refuses an empty selector rather than reading the whole thread",
+    page: "threaded-codes.html",
+    steps: [{ op: "extract", args: [{ selector: "", strict_selector: true }], answer: { error: "source selector must be a nonempty string" } }],
+  },
+  {
+    name: "strict source extraction refuses a whitespace selector",
+    page: "threaded-codes.html",
+    steps: [{ op: "extract", args: [{ selector: "  ", strict_selector: true }], answer: { error: "source selector must be a nonempty string" } }],
+  },
+  {
+    name: "strict source extraction refuses invalid css without repeating the selector",
+    page: "threaded-codes.html",
+    steps: [{ op: "extract", args: [{ selector: "[402913", strict_selector: true }], answer: { error: "source selector is not valid CSS" } }],
+  },
+  {
+    name: "strict source extraction keeps an empty email empty instead of reading another",
+    page: "threaded-codes.html",
+    steps: [{ op: "extract", args: [{ selector: "#empty-email", strict_selector: true }], answer: { value: { text: "" } } }],
+  },
+  {
     name: "after a takeover, a window the page opens is announced to the extension once, by the fresh copy",
     page: "popup.html",
     steps: [

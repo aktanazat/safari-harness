@@ -11,7 +11,7 @@
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { REF, TAB, type TabInfo, type Tool, X, Y } from "./tools.ts";
+import { REF, TAB, TOOLS, type TabInfo, type Tool, X, Y } from "./tools.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
@@ -202,12 +202,15 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
 
 export const INPUT_TOOLS: Record<string, Tool> = {
   real_input: {
-    desc: "The real mouse and keyboard, for controls that ignore scripted input: click a ref (or x/y), type text (at ref or the caret), or press a key (Enter, Cmd+A). One left click on a ref stays in the background; the rest bring the tab to the front briefly.",
+    desc: "Real mouse/keyboard when scripts fail. Left ref-click stays behind; other actions briefly bring the tab forward. {{code}} fills unseen codes.",
     params: {
       tab: TAB,
       do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },
       ref: REF,
       text: { type: "string", description: "to type; a line break presses Return" },
+      secret: TOOLS.type.params.secret,
+      from: TOOLS.type.params.from,
+      from_selector: TOOLS.type.params.from_selector,
       key: { type: "string", description: "key name or combo" },
       count: { type: "number", description: "2 or 3: double or triple click" },
       button: { type: "string", enum: ["left", "right"], description: "default left" },

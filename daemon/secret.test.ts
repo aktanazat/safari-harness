@@ -19,6 +19,7 @@ import { callTool } from "./tools.ts";
 const CODE = "402913";
 const fields: unknown[] = [];
 let shown = "";
+const selections = new Map<string, { text: string } | { error: string }>();
 const answers: Record<string, unknown> = {
   netRead: { entries: [{ url: "https://my.example/verify", t: 1, body: `{"code":"${CODE}","case":"1${CODE}"}` }] },
   evalPage: { ok: true, result: `Secure Verification Code required ${CODE}` },
@@ -31,8 +32,10 @@ connect({
     const ask = op === "relay" ? String(args[1]) : op;
     const known = Object.hasOwn(answers, ask);
     if (op === "relay" && ask !== "extract" && !known) fields.push(args[2]);
-    const value = ask === "extract" ? { title: "Your code", url: "https://mail.example/1", text: shown } : known ? answers[ask] : op === "relay" ? { ok: true, kept: true } : [];
-    queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    const options = op === "relay" && ask === "extract" ? (args[2] as { selector?: string }[])[0] : undefined;
+    const selection = options?.selector === undefined ? { text: shown } : selections.get(options.selector) ?? { error: "source selector matches 0 elements, not one" };
+    const value = ask === "extract" ? { title: "Your code", url: "https://mail.example/1", ...selection } : known ? answers[ask] : op === "relay" ? { ok: true, kept: true } : [];
+    queueMicrotask(() => bridge.handleMessage(JSON.stringify(ask === "extract" && "error" in selection ? { id, error: selection.error } : { id, value })));
   },
   close() {},
 });
@@ -40,6 +43,8 @@ afterEach(() => {
   mock.restore();
   fields.length = 0;
   tabSecrets.clear();
+  selections.clear();
+  shown = "";
 });
 const watchedPort = () => spyOn(daemonRpc, "rpc").mockImplementation((tool: string, args: Record<string, unknown> = {}, model = false) => watched(process.pid, tool, args, () => callTool(tool, args, model)));
 
@@ -77,6 +82,69 @@ test("a page showing two codes types neither, and names neither", async () => {
   const typed = invoke("type", { tab: 6001, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true);
   await expect(typed).rejects.toThrow("tab 6002 shows 2 codes, not one");
   await typed.catch((e: Error) => expect(e.message).not.toContain(CODE));
+  expect(fields).toEqual([]);
+});
+
+// Threaded reset emails must not require deleting older messages to select
+// the intended code. The extension boundary supplies the selected subtree.
+const SECRET_TOOLS = ["type", "real_input"];
+function watchSecretTyping() {
+  watchedPort();
+  spyOn(CALLER_TOOLS.real_input, "run").mockImplementation(async (a) => {
+    fields.push(a);
+    return { ok: true, kept: true };
+  });
+}
+const secretArgs = (tool: string, from_selector: string) => ({
+  tab: 6001, ref: "1", text: "{{code}}", secret: "page", from: 6002, from_selector,
+  ...(tool === "real_input" ? { do: "type" } : {}),
+});
+
+test.each(SECRET_TOOLS)("%s types only the selected email's code from a two-code thread and keeps it secret", async (tool) => {
+  shown = `Old code: 118822\nNew code: ${CODE}`;
+  selections.set("#current-email", { text: `Enter this code: ${CODE}` });
+  watchSecretTyping();
+  const result = await invoke(tool, secretArgs(tool, "#current-email"), true);
+  expect(result).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
+  expect(fields).toEqual(tool === "type" ? [["1", CODE, { append: false, secret: true }]] : [{ tab: 6001, ref: "1", do: "type", text: CODE }]);
+  expect(await callTool("net", { tab: 6001 })).toEqual(CUT_NET);
+  expect(await callTool("eval", { tab: 6001, expression: "document.title", page: true })).toEqual({ ok: true, result: "Secure Verification Code required ..." });
+  expect(JSON.stringify(recent(500))).not.toContain(CODE);
+  expect(JSON.stringify(recent(500))).not.toContain("118822");
+});
+
+test.each(SECRET_TOOLS)("%s refuses two codes inside the selected email without naming or typing either", async (tool) => {
+  shown = `Enter this code: ${CODE}`;
+  selections.set("#current-email", { text: `Old code: 118822\nNew code: ${CODE}` });
+  watchSecretTyping();
+  const typed = invoke(tool, secretArgs(tool, "#current-email"));
+  await expect(typed).rejects.toThrow("shows 2 codes, not one");
+  await typed.catch((e: Error) => {
+    expect(e.message).not.toContain(CODE);
+    expect(e.message).not.toContain("118822");
+  });
+  expect(fields).toEqual([]);
+});
+
+test.each(SECRET_TOOLS)("%s refuses a missing selected email instead of typing the whole-page code", async (tool) => {
+  shown = `Enter this code: ${CODE}`;
+  watchSecretTyping();
+  await expect(invoke(tool, secretArgs(tool, "#missing-email"))).rejects.toThrow("source selector matches 0 elements, not one");
+  expect(fields).toEqual([]);
+});
+
+test.each(SECRET_TOOLS)("%s refuses an empty selected email instead of typing the whole-page code", async (tool) => {
+  shown = `Enter this code: ${CODE}`;
+  selections.set("#current-email", { text: "" });
+  watchSecretTyping();
+  await expect(invoke(tool, secretArgs(tool, "#current-email"))).rejects.toThrow("shows 0 codes, not one");
+  expect(fields).toEqual([]);
+});
+
+test.each(SECRET_TOOLS)("%s refuses an empty source selector instead of typing the whole-page code", async (tool) => {
+  shown = `Enter this code: ${CODE}`;
+  watchSecretTyping();
+  await expect(invoke(tool, secretArgs(tool, ""))).rejects.toThrow("from_selector");
   expect(fields).toEqual([]);
 });
 

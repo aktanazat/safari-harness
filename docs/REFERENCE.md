@@ -520,6 +520,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   "{{code}}"}` takes the same. A code typed into the first of a row of 4
   to 8 boxes (each one character, or named like "Digit 1 of 6") goes one
   digit to a box, and every box in the row is kept secret.
+  an emailed code can be read from one selected message without removing
+  older messages. pass `from_selector: "<CSS selector>"` with `secret: "page"`.
+  the selection must match exactly one message and contain exactly one code.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options. On a combobox the page draws itself (role combobox) it
   clicks the box open, finds the list the box names (aria-controls,
@@ -1013,6 +1016,10 @@ Signing in, in this order:
      `site`, the host the login is saved for (Paradox resets on another
      site), or the page's own host for a new login. Given another host as
      `site`, a form asking the current password is refused.
+     a saved login attached to several websites must be separated before
+     a password reset. naming one website does not bypass this check.
+     `change` refuses before generating, saving, or typing a new password
+     and names the other websites attached to that login.
      A site that states rules the made password misses (Costco wants one
      of `!@#$&`) takes them as the new-password field's `passwordrules`
      attribute in Apple's syntax, set with `eval` before `change`
