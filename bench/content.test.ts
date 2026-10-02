@@ -18,6 +18,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: "This sentence is shown on the page.\nThis sentence is fading in." } } }],
   },
   {
+    name: "a text target that begins an element's longer text names the innermost element holding it, as Playwright's getByText does",
+    page: "hidden.html",
+    steps: [{ op: "element", args: ["This sentence is shown", "text"], answer: { value: { value: "This sentence is shown on the page." } } }],
+  },
+  {
     name: "a snapshot that keeps hidden text still leaves out script, style, and noscript source",
     page: "source.html",
     steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],

@@ -491,7 +491,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   (`#login`, `input[name=q]`), or the element's visible text (`Sign in`, or a
   field's label such as `Email`). Text matches the visible control whose name
   is exactly that text first, then the innermost element with that text, then
-  a partial name. Use a snapshot ref when several elements share a label.
+  a partial name, then the innermost element whose text holds it (a sentence
+  inside a paragraph). Use a snapshot ref when several elements share a label.
 - `click` a target, `type` text into one (`append: true` keeps existing
   text), `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your
   tab.
@@ -883,15 +884,15 @@ plain sentence of at most 300 characters.
   with learn {site: "cvs.com"}` (`safari learn cvs.com` in a shell). Each
   agent gets a site's line once, whichever of its subdomains it opens
   first, and again on a page not found there.
+- So does a site's guide: the first of those results on a host a bundled
+  guide covers carries `guide: "safari guide cvs"`, the command that
+  prints it. A host without one carries no `guide`, so there is nothing
+  to look up first.
 - `safari guide <site>` prints the bundled guide, then the notes and
   readers saved for that host and its subdomains (`uscis.gov` shows
   `my.uscis.gov`'s); by name (`safari guide slack`), those of every host
   its guide covers. `safari guide sites` ends with the hosts that have
   notes or readers.
-- So does a site's guide: the first of those results on a host a bundled
-  guide covers carries `guide: "safari guide cvs"`, the command that
-  prints it. A host without one carries no `guide`, so there is nothing
-  to look up first.
 - They are plain files, one per host, in
   `~/.local/share/safari-harness/notes/<host>.md`, a line per fact with its
   date and the name of the agent's program (`omp`, `claude`), and readers

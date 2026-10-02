@@ -1175,8 +1175,10 @@
   }
 
   // Controls whose name is the text win, then any element whose own text it
-  // is (the innermost), then controls whose name contains it. A label stands
-  // for its field.
+  // is (the innermost), then controls whose name contains it, then the
+  // innermost element whose text holds it, as Playwright's getByText finds
+  // one: on 10-02 a wait for a sentence that began a longer paragraph ran
+  // out its 30 s. A label stands for its field.
   function byText(text) {
     const want = text.replace(/\s+/g, " ").trim().toLowerCase();
     if (!want) return null;
@@ -1189,11 +1191,14 @@
       if (name === want && shown(el)) { found = el; break; }
       if (!partial && name.includes(want) && shown(el)) partial = el;
     }
+    let holding = null;
     for (const el of found ? [] : all) {
       if (found && !found.contains(el)) break;
-      if (textOf(el, want.length + 1).toLowerCase() === want && shown(el)) found = el;
+      const own = textOf(el, Infinity).toLowerCase();
+      if (own === want && shown(el)) found = el;
+      else if (!found && own.includes(want) && (!holding || holding.contains(el)) && shown(el)) holding = el;
     }
-    found ??= partial;
+    found ??= partial ?? holding;
     return fieldOf(found);
   }
 
