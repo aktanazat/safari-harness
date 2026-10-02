@@ -1,9 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { callTool } from "./tools.ts";
+import { callTool, download } from "./tools.ts";
 
 // An action whose page navigates while it runs is answered by the extension
 // for the page it went to (act in background.js): { ok: true, navigated }.
@@ -61,6 +61,23 @@ test("download of a url on a page that navigates while it fetches saves the file
   const out = join(dir, "by-url.pdf");
   await callTool("download", { tab: 7, url: REPORT, out });
   expect(readFileSync(out)).toEqual(PDF);
+});
+
+// On 10-01 a click's file came back from the server and Safari saved it, and
+// download answered with a list of new files instead of the file: the
+// REPL's saveAs found no path in it ("src must be a string").
+test("download of a ref whose file Safari saved itself answers with that file, as a file it saves", async () => {
+  extension = { "windows.open": () => ({ value: { windowId: 3, tabId: 300 } }), "tabs.open": ([url]) => ({ value: { id: 31, url, windowId: 3 } }) };
+  const { id } = (await callTool("open", { url: ACCOUNT.url, background: true })) as { id: number };
+  const folder = join(dir, "Downloads");
+  mkdirSync(folder);
+  page = {
+    download: () => {
+      writeFileSync(join(folder, "statement.pdf"), PDF);
+      return { error: "the click started no download the page could see" };
+    },
+  };
+  expect(await download({ tab: id, ref: "12" }, folder)).toEqual({ path: join(folder, "statement.pdf"), name: "statement.pdf", size: PDF.length, type: "" });
 });
 
 test("pdf save of a page that keeps navigating while it is read asks to save it once it settles", async () => {

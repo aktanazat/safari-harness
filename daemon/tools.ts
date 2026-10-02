@@ -28,7 +28,7 @@ import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { replay } from "./replay.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { writeFile, mkdtemp, mkdir, readdir } from "node:fs/promises";
+import { copyFile, writeFile, mkdtemp, mkdir, readdir, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 
@@ -896,8 +896,8 @@ async function freePath(dir: string, name: string): Promise<string> {
   return join(dir, candidate);
 }
 
-async function saveFile(f: FilePayload, url: string, out?: string) {
-  const path = out ?? await freePath(DOWNLOADS, nameOf(f, url));
+async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string) {
+  const path = out ?? await freePath(folder, nameOf(f, url));
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, Buffer.from(f.data, "base64"));
   return { path, name: basename(path), size: f.size, type: f.type };
@@ -920,12 +920,12 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // A file by url, fetched with the page's cookies (the extension's own
 // fetch when the page may not read that site, or when no tab is given), the
 // file a ref's link or button downloads, or with only a tab, the file the
-// tab shows (a PDF in Safari's viewer). Saved in ~/Downloads unless out
-// says where.
-export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }) {
+// tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
+// Safari saves too) unless out says where.
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS) {
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
-    return saveFile((await bridge.request("fetchFile", [url], 120000)) as FilePayload, url, opts.out);
+    return saveFile((await bridge.request("fetchFile", [url], 120000)) as FilePayload, url, opts.out, folder);
   }
   const tab = await resolveTab(opts.tab);
   if (opts.url !== undefined || opts.ref === undefined) {
@@ -933,21 +933,34 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
     const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    return saveFile(f, url, opts.out);
+    return saveFile(f, url, opts.out, folder);
   }
   const ref = String(opts.ref);
   // A file the server sends after the click is saved by Safari itself, never
   // handed to the page; on a tab the harness opened it is found in
-  // ~/Downloads instead (downloads.ts).
-  const saved = harnessTabs.has(tab) ? await watchDownloads(DOWNLOADS) : null;
+  // folder instead (downloads.ts).
+  const saved = harnessTabs.has(tab) ? await watchDownloads(folder) : null;
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
     const f = await relay(tab, "download", [ref], 120000);
-    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", opts.out);
+    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", opts.out, folder);
   } catch (e) {
     const got = saved ? await saved() : {};
-    if (!got.downloaded && !got.downloading) throw e;
-    return got;
+    // A file Safari saved itself is answered as saveFile answers one, and
+    // put at out: on 10-01 the REPL's saveAs found no path in the bare
+    // list and failed ("src must be a string").
+    const file = got.downloaded?.[0];
+    if (file) {
+      const path = opts.out ?? file.path;
+      if (path !== file.path) {
+        await mkdir(dirname(path), { recursive: true });
+        await copyFile(file.path, path);
+        await unlink(file.path);
+      }
+      return { path, name: basename(path), size: file.bytes, type: "" };
+    }
+    if (got.downloading) throw new Error(`Safari was still saving ${got.downloading.join(", ")} after 30 s; the file lands there when it is done`);
+    throw e;
   } finally {
     clearTimeout(stop);
   }

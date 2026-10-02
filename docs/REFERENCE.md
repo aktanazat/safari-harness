@@ -794,17 +794,17 @@ gone: the call says so. CLI: `safari net read --body -1 --tab N`.
   itself. A click that takes the tab to a file Safari shows itself (a PDF,
   an image) saves that file;
   one that opens a page fails with the page's address, and a file the site
-  sent then is in `~/Downloads`. On your own tab, `download` then returns
-  that file instead of an error.
-- `click`, `press`, and `download` on a tab you opened report the files
-  Safari saved to `~/Downloads` while they ran, as
-  `downloaded: [{path, bytes}]`. A download still under way when the
-  action ends is waited for up to 30 s; one still going after that comes
-  back as `downloading` with the path it will have. Only names new since
-  the action began count, so nothing the user downloads earlier or in his
-  own tabs is claimed; two agents acting at the same moment may each see
-  the other's file. A download that starts after the action's own short
-  wait for the page shows up in `~/Downloads` alone.
+  sent then is in `~/Downloads`. On your own tab, `download` then answers
+  with that file, as it answers any file it saves, instead of an error.
+- `click` and `press` on a tab you opened report the files Safari saved to
+  `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
+  download still under way when the action ends is waited for up to 30 s;
+  one still going after that comes back as `downloading` with the path it
+  will have (`download` fails saying so). Only names new since the action
+  began count, so nothing the user downloads earlier or in his own tabs is
+  claimed; two agents acting at the same moment may each see the other's
+  file. A download that starts after the action's own short wait for the
+  page shows up in `~/Downloads` alone.
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
   opening a page. `method` and `body` send a POST. From the CLI, pipe
