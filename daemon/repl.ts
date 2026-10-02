@@ -892,7 +892,7 @@ export class ReplSession {
     if (this.closed) return;
     this.closed = true;
     await this.kit.close();
-    await Promise.all([...this.#owned].map((id) => this.call("close", { tab: id }).catch(() => {})));
+    await Promise.all([...this.#owned].map((id) => this.call("close", { tab: id, held: true }).catch(() => {})));
     this.#owned.clear();
     this.tabs.length = 0;
     this.#page = undefined;

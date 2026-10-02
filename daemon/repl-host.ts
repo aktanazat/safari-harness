@@ -5,9 +5,9 @@
 // agent's above that process: they open in that agent's window and close
 // as its turn ends, or after 20 minutes unused. It answers on a unix
 // socket only its user can open, and ends after half an hour unused,
-// closing the tabs it still has. It is started from the caller, so it has
-// the caller's permissions (Full Disk Access for imessage), which the
-// daemon under launchd lacks.
+// closing the tabs it still has but one kept for the user. It is started
+// from the caller, so it has the caller's permissions (Full Disk Access
+// for imessage), which the daemon under launchd lacks.
 //
 //   bun daemon/repl-host.ts <id>     serve session <id> (callers start this)
 

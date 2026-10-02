@@ -1184,7 +1184,17 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
     run: spaceTool,
   },
-  close: { desc: "Close a tab you opened.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => closeTab(num(a.tab, "tab")) },
+  // held: close it only while the harness still holds it. A repl session
+  // closes the tabs it opened so as it ends (repl.ts): one kept for the user
+  // since is his. On 10-02 a session that ended after 30 minutes unused
+  // closed the sign-up its agent had kept.
+  close: {
+    desc: "Close a tab you opened.",
+    params: { tab: OWN_TAB },
+    unlisted: { held: { type: "boolean", description: "only while the harness holds it: a kept tab stays" } },
+    required: ["tab"],
+    run: async (a) => (a.held === true && !harnessTabs.has(followTab(num(a.tab, "tab"))) ? { ok: true, kept: true } : closeTab(num(a.tab, "tab"))),
+  },
   keep: {
     desc: "Leave a tab you opened open for the user when your turn ends: a page he asked to see, or a form waiting on his answer. Your other tabs close then.",
     params: { tab: OWN_TAB },

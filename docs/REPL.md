@@ -33,9 +33,10 @@ outside the page: read `document`, `window` and the rest through
 ## Tabs
 
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
-  `page`. Tabs a session opens close with it. Using `page` before any tab
-  is open or attached throws. `openTab`, `page.goto` and `snapshot` print
-  the site's saved notes the first time a session reaches that site.
+  `page`. Tabs a session opens close with it, but one kept for the user
+  (`keep`) stays. Using `page` before any tab is open or attached throws.
+  `openTab`, `page.goto` and `snapshot` print the site's saved notes the
+  first time a session reaches that site.
 - `listBrowserTabs()` lists every Safari tab; `attachBrowserTab(id)` and
   `attachActiveBrowserTab()` hand you one the user already has. Only read
   those; never close or move them.

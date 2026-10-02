@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs, watchOwner } from "./owner.ts";
+import { ReplSession } from "./repl.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 1, 2, 3...; a click in tab 1
@@ -113,6 +114,21 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
   agent.kill();
   other.kill();
   await closedAs("owned", [hisFront, others]);
+});
+
+// 10-02: a repl session that ended after 30 minutes unused closed the
+// TikTok sign-up its agent had kept for the user from the CLI.
+test("a repl session's end closes the tabs it opened, but not one kept for the user", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const invoke = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  const repl = new ReplSession("kept", { cwd: mkdtempSync(join(tmpdir(), "repl-kept-")), invoke });
+  await repl.run("await openTab('https://example.com/')\nawait openTab('https://example.com/')");
+  const [done, kept] = repl.tabs.map((p) => p.id);
+  await invoke("keep", { tab: kept });
+  const before = closes.length;
+  await repl.close();
+  expect(closes.slice(before).filter(([tab]) => tab === done || tab === kept)).toEqual([[done]]);
+  agent.kill();
 });
 
 // Late in September a chat tab closed while its agent waited 50 minutes on
