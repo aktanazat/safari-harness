@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { guide } from "./guides.ts";
 import { runAs } from "./owner.ts";
+import { realInputSite, realInputSites } from "./notes.ts";
 import { callTool } from "./tools.ts";
 
 // Site notes keep what agents learn about a site past the session that
@@ -202,4 +203,17 @@ test("a site's guide by name shows the notes learned on each of its hosts and th
   const text = await guide("slack");
   expect(text).toContain("## Learned notes for acme.slack.com\n\n1. The aktan@work identity owns the Acme workspace");
   expect(text).not.toContain("not a Slack fact");
+});
+
+// TikTok's sign-up answered every scripted Next with an error on 10-01 and
+// 10-02 and took a real click at once; the mark ships with its guide, so an
+// agent there for the first time needs no note learned.
+test("a site its bundled guide marks for real input is marked on its subdomains with no note learned, and a guide without the mark marks nothing", () => {
+  const marked = realInputSites();
+  expect([realInputSite("https://www.tiktok.com/signup", marked), realInputSite("https://www.cvs.com/pharmacy", marked)]).toEqual(["tiktok.com", undefined]);
+});
+
+test("unmarking a site its guide marks for real input says the mark stays", async () => {
+  expect(await learn({ site: "tiktok.com", real: false })).toBe("tiktok.com stays marked for real input: its guide marks it (safari guide tiktok)");
+  expect(realInputSites().has("tiktok.com")).toBe(true);
 });

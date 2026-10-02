@@ -1,20 +1,22 @@
 // The bundled site guides, docs/sites/<slug>.md, each opening with `name:`
 // and `hosts:` front matter. A hosts entry is a domain, optionally with a
 // path prefix (docs.google.com/spreadsheets); subdomains match, and the
-// longest matching entry wins. `safari guide` prints them (guides.ts); the
-// first result on a site names its own (tools.ts).
+// longest matching entry wins. `real-input: true` marks the guide's hosts
+// for real input, as learn {site, real: true} does (notes.ts). `safari
+// guide` prints them (guides.ts); the first result on a site names its own
+// (tools.ts).
 
 import { readdirSync, readFileSync } from "node:fs";
 
 const SITES = new URL("../docs/sites/", import.meta.url);
 
-export type Guide = { slug: string; name: string; hosts: string[]; text: string };
+export type Guide = { slug: string; name: string; hosts: string[]; real: boolean; text: string };
 
 export function bundled(): Guide[] {
   return readdirSync(SITES).filter((f) => f.endsWith(".md")).sort().map((f) => {
     const text = readFileSync(new URL(f, SITES), "utf8");
     const hosts = (/^hosts:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((h) => h.trim()).filter(Boolean);
-    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, text };
+    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, real: /^real-input:\s*true\s*$/m.test(text), text };
   });
 }
 

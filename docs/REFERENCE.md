@@ -682,9 +682,10 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   with a ref on the site and its subdomains go as real input and only so,
   with a `note` saying so; `select`, clicks at a point, a `{{code}}` type,
   the REPL, and a site's own helpers stay scripted. `learn {site, real:
-  false}` undoes it. Nothing
-  retries a scripted click with real input by itself: after `effect:
-  "none"` a real click could submit a form twice.
+  false}` undoes it. A site guide can ship the mark (`real-input: true` in
+  its front matter; tiktok.com has it), and `real: false` leaves that one
+  in place. Nothing retries a scripted click with real input by itself:
+  after `effect: "none"` a real click could submit a form twice.
 
 ## Waiting
 
@@ -884,8 +885,8 @@ plain sentence of at most 300 characters.
   numbered, and its readers; `learn {site, forget: n}` (CLI `--forget n`)
   removes note n.
 - `learn {site, real: true}` (CLI `--real true`) marks the site for real
-  input (see "Acting"), and `real: false` unmarks it; `learn {site}` shows
-  the mark.
+  input (see "Acting"), and `real: false` unmarks it unless the site's
+  guide marks it; `learn {site}` shows the mark.
 - Never a secret: a fact that looks like a password, a verification code,
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").

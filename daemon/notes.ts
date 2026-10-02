@@ -14,6 +14,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { currentOwner, processName, watchOwner } from "./owner.ts";
+import { bundled, covers } from "./site-guides.ts";
 
 const MAX_CHARS = 300;
 const MAX_NOTES = 50;
@@ -172,7 +173,10 @@ export function readerFor(url: string, name: string): Reader {
 // type with a ref on it then go as real input and only so (call.ts). It is
 // never a retry after a scripted try the page seemed to ignore: effect
 // "none" cannot see a request to another site or a handler slower than the
-// receipt (receipt.ts), so a retry could send a form twice.
+// receipt (receipt.ts), so a retry could send a form twice. A guide with
+// `real-input: true` marks its hosts the same way (site-guides.ts), so the
+// mark ships with the harness: TikTok's sign-up refused every scripted Next
+// on 10-01 and 10-02.
 const REAL_INPUT = ".real-input";
 const realOf = (host: string) => join(notesDir(), `${host}${REAL_INPUT}`);
 
@@ -193,14 +197,20 @@ function markReal(host: string, agent: string): string {
   return `marked ${host} for real input: a model's click and type with a ref there and on its subdomains go as real input (real_input), never scripted first`;
 }
 
+// A host its guide marks stays marked whatever is learned: the mark is part
+// of the harness, not a note.
 function unmarkReal(host: string): string {
   rmSync(realOf(host), { force: true });
+  const guide = bundled().find((g) => g.real && g.hosts.some((entry) => covers(entry.split("/")[0], host)));
+  if (guide) return `${host} stays marked for real input: its guide marks it (safari guide ${guide.slug})`;
   return `unmarked ${host}: click and type there go as scripted input again`;
 }
 
-// The sites marked for real input.
+// The sites marked for real input, by an agent or by their guide.
 export function realInputSites(): Set<string> {
-  return new Set(notesFiles().flatMap((f) => (f.endsWith(REAL_INPUT) ? [f.slice(0, -REAL_INPUT.length)] : [])));
+  const learned = notesFiles().flatMap((f) => (f.endsWith(REAL_INPUT) ? [f.slice(0, -REAL_INPUT.length)] : []));
+  const guided = bundled().flatMap((g) => (g.real ? g.hosts.map((entry) => entry.split("/")[0]) : []));
+  return new Set([...learned, ...guided]);
 }
 
 // The site among marked that the page at url is on, itself or a site
