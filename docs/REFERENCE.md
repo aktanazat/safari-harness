@@ -492,7 +492,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   field's label such as `Email`). Text matches the visible control whose name
   is exactly that text first, then the innermost element with that text, then
   a partial name, then the innermost element whose text holds it (a sentence
-  inside a paragraph). Use a snapshot ref when several elements share a label.
+  inside a paragraph). Digits alone are a ref: write `text=15` for the text
+  15 (a day in a date picker). Use a snapshot ref when several elements
+  share a label.
 - `click` a target, `type` text into one (`append: true` keeps existing
   text), `press` a key (`Enter`, `Tab`, `Escape`, ...), `goto` a URL in your
   tab.

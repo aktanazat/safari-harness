@@ -1098,9 +1098,12 @@
   // ("#email"), or an element's visible text or label ("Sign in"), so an
   // action can run without a snapshot first. A bare word is tried as text
   // before CSS: "Menu" should reach the button, not the <menu> element.
+  // text= is visible text alone, as Playwright writes it: "15" is a ref,
+  // text=15 the day 15 in a date picker.
   const CSS_HINT = /[#.[\]:>*=~^$|+()]/;
   function resolve(target) {
     const key = String(target).trim();
+    if (key.startsWith("text=")) return byText(key.slice(5));
     if (/^\d+$/.test(key)) {
       const el = refMap.get(key);
       if (el && el.isConnected) return el;

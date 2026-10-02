@@ -46,6 +46,21 @@ test("page.fill types the text into the target it names", async () => {
   expect(calls.filter(([tool]) => tool === "type")).toEqual([["type", { tab: 7, ref: "#email", text: "a@b.c" }]]);
 });
 
+// 10-02: an emailed code typed from a script waited 30 s for a text
+// message, its source dropped; and a day picker's option 15 was clicked as
+// ref 15, the page's language menu.
+test("locator.type passes where its {{code}} comes from to the type tool", async () => {
+  const { repl, calls } = session();
+  await repl.run("await openTab('https://example.com')\nawait page.locator('10').type('{{code}}', { secret: 'page', from: 9 })");
+  expect(calls.filter(([tool]) => tool === "type")).toEqual([["type", { tab: 7, ref: "10", text: "{{code}}", append: true, secret: "page", from: 9 }]]);
+});
+
+test("a getByRole name of digits names that text, not the ref of that number", async () => {
+  const { repl, calls } = session();
+  await repl.run("await openTab('https://example.com')\nawait page.getByRole('option', { name: '15' }).click()");
+  expect(calls.filter(([tool]) => tool === "click")).toEqual([["click", { tab: 7, ref: "text=15" }]]);
+});
+
 // The guide gives page.extract(selector), and a selector passed so was
 // dropped: the whole page came back as if it were the part asked for.
 test("page.extract reads only the part its selector names", async () => {

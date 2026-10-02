@@ -23,6 +23,15 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "element", args: ["This sentence is shown", "text"], answer: { value: { value: "This sentence is shown on the page." } } }],
   },
   {
+    name: "a text= target names the element with that text even when it is digits, which alone name a ref",
+    page: "numbers.html",
+    steps: [
+      { op: "snapshot" }, // [1] the listbox, [2] 10 ... [7] 15 ... [15] 23
+      { op: "element", args: ["text=15", "text"], answer: { value: { value: "15" } } },
+      { op: "element", args: ["15", "text"], answer: { value: { value: "23" } } },
+    ],
+  },
+  {
     name: "a snapshot that keeps hidden text still leaves out script, style, and noscript source",
     page: "source.html",
     steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],

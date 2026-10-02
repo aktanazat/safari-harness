@@ -40,6 +40,21 @@ function targetOf(target: unknown): string {
   return m ? m[1] : t;
 }
 
+// Text that a getBy* names. Digits alone read as a ref in the page, so they
+// go as text=: on 10-02 getByRole('option', { name: '15' }) for a birthday's
+// day clicked ref 15, the page's language menu.
+function textTarget(text: unknown): string {
+  const t = String(text);
+  return /^\s*\d+\s*$/.test(t) ? `text=${t.trim()}` : t;
+}
+
+// type's code sources ({{code}} in the text), as the type tool takes them.
+type CodeSource = { secret?: string; from?: number; from_selector?: string };
+function codeSource(opts: CodeSource = {}): CodeSource {
+  const { secret, from, from_selector } = opts;
+  return { ...(secret === undefined ? {} : { secret }), ...(from === undefined ? {} : { from }), ...(from_selector === undefined ? {} : { from_selector }) };
+}
+
 // A url glob as Playwright reads one: ** is any text, * any text but "/",
 // {a,b} either choice, \ keeps the next character as it is, and ? is itself.
 // The glob covers the whole url. waitForURL('**/apply/frm?<id>') ran out its
@@ -140,12 +155,15 @@ export class Locator {
   async click(): Promise<void> {
     await this.#page.clickTarget(this.target);
   }
-  async fill(text: string): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text) });
+  // opts names where a {{code}} in text comes from: { secret: "page", from:
+  // <mail tab> } for an emailed one. Without it, a script's emailed code
+  // waited 30 s for a text message (10-02).
+  async fill(text: string, opts?: CodeSource): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts) });
   }
   // Playwright's type() adds keystrokes to what is there.
-  async type(text: string): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text), append: true });
+  async type(text: string, opts?: CodeSource): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts) });
   }
   async press(key: string): Promise<void> {
     await this.#page.act("press", { ref: this.target, key: String(key) });
@@ -309,14 +327,14 @@ export class Page {
     return new Locator(this, targetOf(target));
   }
   getByText(text: string): Locator {
-    return new Locator(this, String(text));
+    return new Locator(this, textTarget(text));
   }
   getByLabel(text: string): Locator {
-    return new Locator(this, String(text));
+    return new Locator(this, textTarget(text));
   }
   getByRole(role: string, opts: { name?: string } = {}): Locator {
     if (opts.name === undefined) throw new Error(`getByRole needs { name }; for any ${role}, take a snapshot and use its ref`);
-    return new Locator(this, String(opts.name));
+    return new Locator(this, textTarget(opts.name));
   }
   getByPlaceholder(text: string): Locator {
     return new Locator(this, `[placeholder=${JSON.stringify(String(text))}]`);

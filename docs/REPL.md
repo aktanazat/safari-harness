@@ -60,8 +60,13 @@ outside the page: read `document`, `window` and the rest through
 ## Acting
 
 - `page.locator(target)`: target is a ref (`12`, `[12]`, `e12`, frame refs
-  like `f1e3`), a CSS selector, or visible text. Also `getByText`,
-  `getByLabel`, `getByRole(role, {name})`, `getByPlaceholder`.
+  like `f1e3`), a CSS selector, or visible text (`text=15` for text of
+  digits, which alone name a ref). Also `getByText`, `getByLabel`,
+  `getByRole(role, {name})`, `getByPlaceholder`; their text never reads as
+  a ref.
+- `fill(text, opts)` and `type(text, opts)` take where a `{{code}}` in text
+  comes from, as the type tool does: `{secret: "page", from: <mail tab id>}`
+  for an emailed code, `{secret: "passwords"}` for an authenticator code.
 - Locator: `click fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
   isChecked count boundingBox first screenshot waitFor`.
