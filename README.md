@@ -97,6 +97,9 @@ daemon/
   notes.ts          site notes: facts agents save with `learn`, handed to an
                     agent on its first page on that site, and printed by
                     `safari guide <site>`; refuses secret-looking facts
+  site-guides.ts    the bundled guides in docs/sites/ and the hosts each
+                    covers; an agent's first page on a covered host names
+                    its guide
 cli/safari.ts       the `safari` command
 passwords-bridge/   extension for the hidden Helium: relays between Apple's
                     helper and the daemon's /passwords socket

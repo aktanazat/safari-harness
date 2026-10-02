@@ -604,10 +604,12 @@ export class ReplSession {
     return this.#page instanceof Page ? this.#page : undefined;
   }
 
-  // Site notes come once, with the first result on the site (notes.ts), so a
-  // result's notes go to the script's output even if it prints nothing.
+  // A site's notes and guide come once, with the first result on the site
+  // (notes.ts), so they go to the script's output even if it prints nothing.
   showNotes(result: unknown): void {
-    if (result && typeof result === "object" && "notes" in result && typeof result.notes === "string") this.#out.push(result.notes);
+    if (!result || typeof result !== "object") return;
+    if ("guide" in result && typeof result.guide === "string") this.#out.push(`guide: ${result.guide}`);
+    if ("notes" in result && typeof result.notes === "string") this.#out.push(result.notes);
   }
 
   // A hint beside a result goes to the script's output on a line of its

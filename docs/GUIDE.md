@@ -33,7 +33,10 @@ Turns
 - A call failing with no reason: run `safari doctor` once.
 
 Before a site
-- `safari guide <site>` (`geico` or `geico.com`) says what failed before.
+- Your first `open`, `goto`, or `snapshot` on a site carries what is known
+  about it: `guide: safari guide <name>` when it has a guide (read that
+  before working there), and `notes` with what failed before. Without
+  either line there is nothing to look up.
 - Found something the hard way? Save one sentence of at most 300
   characters, never a secret: `learn {site, fact}`; a script that reads
   its data: `learn {site, reader, expression}`.

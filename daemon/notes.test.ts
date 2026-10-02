@@ -121,6 +121,15 @@ test("an agent's first open of a site carries its notes, its later calls there d
   expect((await second("snapshot", { tab: tab.id })).notes).toBe("site notes for cvs.com: (1) Insurance card: Pharmacy > Insurance > Add card");
 });
 
+// On 10-01 and 10-02 agents ran safari guide before every site, and 39 of
+// 77 lookups found none; the first result on a site now names its guide.
+test("an agent's first result on a host with a guide names that guide, and its later ones there do not", async () => {
+  const call = agent();
+  const tab = await call("open", { url: "https://www.cvs.com/pharmacy" });
+  expect(tab).toHaveProperty("guide", "safari guide cvs");
+  expect(await call("snapshot", { tab: tab.id })).not.toHaveProperty("guide");
+});
+
 // Every site noted by 09-29 had one note of 124 to 289 characters, so a
 // limit of 120 each sent every agent to guide for one sentence.
 test("a site's notes come inline while they run to 900 characters in all", async () => {

@@ -884,6 +884,10 @@ plain sentence of at most 300 characters.
   `my.uscis.gov`'s); by name (`safari guide slack`), those of every host
   its guide covers. `safari guide sites` ends with the hosts that have
   notes or readers.
+- So does a site's guide: the first of those results on a host a bundled
+  guide covers carries `guide: "safari guide cvs"`, the command that
+  prints it. A host without one carries no `guide`, so there is nothing
+  to look up first.
 - They are plain files, one per host, in
   `~/.local/share/safari-harness/notes/<host>.md`, a line per fact with its
   date and the name of the agent's program (`omp`, `claude`), and readers

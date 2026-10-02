@@ -18,6 +18,7 @@ import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, readerFor, realInputSite, realInputSites } from "./notes.ts";
+import { guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
@@ -364,17 +365,20 @@ async function afterWall(t: TabInfo, tab: number): Promise<object> {
 
 // open, goto, and snapshot also carry what agents have learned about the
 // site: on the first result on it for each agent (notes.ts), and again on a
-// page not found, which a note may explain. The notes go before the
-// window's details (space), which run long: on 09-29 an agent cut an open
-// of Robinhood at 400 bytes (head -c) and lost its note that the Gold Card
-// is app-only, then opened three pages not found that did not repeat it.
+// page not found, which a note may explain. The first result on a host
+// with a bundled guide names it (site-guides.ts). Both go before the window's
+// details (space), which run long: on 09-29 an agent cut an open of
+// Robinhood at 400 bytes (head -c) and lost its note that the Gold Card is
+// app-only, then opened three pages not found that did not repeat it.
 const NOT_FOUND = /\bnot found\b|\b404\b/i;
 function withNotes(result: object): object {
   const title = "title" in result && typeof result.title === "string" ? result.title : "";
-  const notes = firstNotes("url" in result ? result.url : undefined, NOT_FOUND.test(title));
-  if (!notes) return result;
+  const url = "url" in result && typeof result.url === "string" ? result.url : undefined;
+  const { notes, first } = firstNotes(url, NOT_FOUND.test(title));
+  const slug = first && url !== undefined ? guideFor(url) : undefined;
+  if (notes === undefined && slug === undefined) return result;
   const { space, ...rest }: { space?: unknown } = result;
-  return { ...rest, notes, ...(space === undefined ? {} : { space }) };
+  return { ...rest, ...(slug === undefined ? {} : { guide: `safari guide ${slug}` }), ...(notes === undefined ? {} : { notes }), ...(space === undefined ? {} : { space }) };
 }
 
 // The latest whole-page snapshot of each tab, for diff.
@@ -1625,7 +1629,7 @@ export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; notes?: string };
+type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; guide?: string; notes?: string };
 type Extract = Shielded & { url: string; title: string; text: string };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
@@ -1646,7 +1650,7 @@ export function formatResult(value: unknown): string {
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
-      const notes = v.notes ? `${v.notes}\n` : "";
+      const notes = `${v.guide ? `guide: ${v.guide}\n` : ""}${v.notes ? `${v.notes}\n` : ""}`;
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${notes}${v.snapshot}`;
     }
     if (typeof v.text === "string") {

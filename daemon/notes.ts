@@ -373,11 +373,12 @@ const told = new Map<number | undefined, Set<string>>();
 // The lines for a result on the page at url, for its host and each site
 // above it with notes or readers the agent has not had, or, with again,
 // has: the notes themselves up to INLINE_CHARS, else their count, and the
-// readers' names. undefined when there are none. A file that cannot be read
-// costs its lines, not the result.
-export function firstNotes(url: unknown, again = false): string | undefined {
+// readers' names; and whether the host itself is new to the agent (first),
+// so its guide (site-guides.ts) comes once too. A file that cannot be read costs
+// its lines, not the result.
+export function firstNotes(url: unknown, again = false): { notes?: string; first: boolean } {
   const host = pageHost(url);
-  if (host === undefined) return undefined;
+  if (host === undefined) return { first: false };
   const owner = currentOwner();
   let sites = told.get(owner);
   if (!sites) {
@@ -385,6 +386,7 @@ export function firstNotes(url: unknown, again = false): string | undefined {
     told.set(owner, sites);
     if (owner !== undefined) watchOwner(owner, () => told.delete(owner));
   }
+  const first = again || !sites.has(host);
   const lines: string[] = [];
   for (const site of sitesOf(host)) {
     if (sites.has(site) && !again) continue;
@@ -395,7 +397,7 @@ export function firstNotes(url: unknown, again = false): string | undefined {
       console.error(`[safari-harness] site notes for ${site} not read:`, e instanceof Error ? e.message : e);
     }
   }
-  return lines.length ? lines.join("\n") : undefined;
+  return { ...(lines.length ? { notes: lines.join("\n") } : {}), first };
 }
 
 // Notes past INLINE_CHARS come as a count and the call that reads them,
