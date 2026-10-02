@@ -55,8 +55,9 @@ async function textedCode(): Promise<string> {
 // line that says code, or just under one, since such a run elsewhere is an
 // order or policy number; 6 long when there are several lengths. A run
 // touching a letter is part of a word, as the "recentdata" Gmail puts after
-// Delta's footer (09-29). Any other count is an error that says only how
-// many, never which.
+// Delta's footer (09-29), and one after © is a year: Gmail's page for a
+// thread it could not find typed its footer's 2026 into TikTok's code field
+// (10-02). Any other count is an error that says only how many, never which.
 async function shownCode(from: unknown, selector: unknown, model: boolean): Promise<string> {
   if (typeof from !== "number") throw new Error('secret "page" needs from: the tab that shows the code, such as the opened email');
   if (selector !== undefined && (typeof selector !== "string" || !selector.trim())) throw new Error("from_selector must be a nonempty CSS selector for one email or message");
@@ -67,7 +68,7 @@ async function shownCode(from: unknown, selector: unknown, model: boolean): Prom
     const own = lines.pop() ?? "";
     return /\b(?:code|passcode|otp|pin)\b/i.test(own.trim() ? own : lines.findLast((l) => l.trim()) ?? "");
   });
-  const all = [...new Set([...(shown.match(/(?<![\w.,:/-])\d{4,8}(?![\w.,:/-])/g) ?? []), ...mixed.map((m) => m[0])])];
+  const all = [...new Set([...(shown.match(/(?<![\w.,:/-]|©\s?)\d{4,8}(?![\w.,:/-])/g) ?? []), ...mixed.map((m) => m[0])])];
   const six = all.filter((c) => c.length === 6);
   const codes = six.length ? six : all;
   if (codes.length !== 1) throw new Error(`tab ${from} shows ${codes.length} codes, not one; open the email with the code in that tab, or use from_selector to select one email or message in the thread, then call type again`);

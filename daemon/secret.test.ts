@@ -85,6 +85,15 @@ test("a page showing two codes types neither, and names neither", async () => {
   expect(fields).toEqual([]);
 });
 
+// 10-02: a print view opened by the wrong id showed Gmail's deleted-thread
+// page, and type put its footer's year into TikTok's code field.
+test("a page whose only number is its copyright year types nothing", async () => {
+  shown = "Konversation gelöscht\n© 2026 Google – Gmail-Startseite – Datenschutzerklärung";
+  watchedPort();
+  await expect(invoke("type", { tab: 6001, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true)).rejects.toThrow("tab 6002 shows 0 codes, not one");
+  expect(fields).toEqual([]);
+});
+
 // Threaded reset emails must not require deleting older messages to select
 // the intended code. The extension boundary supplies the selected subtree.
 const SECRET_TOOLS = ["type", "real_input"];
