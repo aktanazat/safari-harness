@@ -1,11 +1,13 @@
 // Named REPL sessions. Each runs in a process of its own, started by the
-// first call that names it, so its bindings and tabs last from one call to
-// the next, whichever terminal or agent makes it. The process owns its
-// calls (ownCalls in rpc.ts), so its tabs are its own and not those of the
-// command that started it. It answers on a unix socket only its user can
-// open, and ends after half an hour unused, closing the tabs it opened. It
-// is started from the caller, so it has the caller's permissions (Full
-// Disk Access for imessage), which the daemon under launchd lacks.
+// first call that names it, so its bindings last from one call to the
+// next, whichever terminal or agent makes it. Each call names the process
+// that made it (callFor in rpc.ts), so the tabs its code opens are the
+// agent's above that process: they open in that agent's window and close
+// as its turn ends, or after 20 minutes unused. It answers on a unix
+// socket only its user can open, and ends after half an hour unused,
+// closing the tabs it still has. It is started from the caller, so it has
+// the caller's permissions (Full Disk Access for imessage), which the
+// daemon under launchd lacks.
 //
 //   bun daemon/repl-host.ts <id>     serve session <id> (callers start this)
 
@@ -16,7 +18,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
-import { ownCalls } from "./rpc.ts";
+import { callFor, ownCalls } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
 const IDLE_MS = 30 * 60_000;
@@ -92,7 +94,7 @@ export async function runInSession(id: string, code: string, opts: { host?: stri
   } else if (opts.host && opts.host !== running.host) {
     throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
   }
-  const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS });
+  const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid });
   return { ...((await res.json()) as ReplResult), started };
 }
 
@@ -151,11 +153,12 @@ async function serve(id: string): Promise<void> {
         return Response.json({ ok: true });
       }
       if (route === "/run") {
-        const { code, timeoutMs } = (await req.json()) as { code: string; timeoutMs?: number };
+        const { code, timeoutMs, caller } = (await req.json()) as { code: string; timeoutMs?: number; caller?: number };
         busy += 1;
         clearTimeout(idle);
         try {
-          return Response.json(await session.run(String(code), timeoutMs));
+          const run = () => session.run(String(code), timeoutMs);
+          return Response.json(await (Number.isInteger(caller) && Number(caller) > 1 ? callFor(Number(caller), run) : run()));
         } finally {
           busy -= 1;
           lastUsed = new Date().toISOString();

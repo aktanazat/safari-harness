@@ -109,7 +109,7 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - Your tabs close when your turn ends: as omp hands the turn back to the
   user, or he interrupts it, it tells the daemon (`omp/index.ts`), which
   closes every tab you opened, and tabs they opened, whether you called it
-  through MCP or the CLI, and then your window. A finished task needs no
+  through MCP, the CLI, or a `repl --session`, and then your window. A finished task needs no
   `close` call. One the user has in front
   stays until he has left it for 20 minutes. Outside omp they close within
   a few seconds after your agent process exits (claude, codex, a bun or
@@ -197,10 +197,11 @@ calls. `safari repl "<code>"` (the `repl` tool over MCP) runs Playwright-style
 JavaScript: `openTab`, `snapshot`, `page.locator(ref).click()`,
 `page.waitForEvent('download')`, `page.pdf()`, cookie-bearing `fetch`, and
 site globals for Slack, Gmail, Notion, Google Docs and Sheets, Google
-search, YouTube, X, and Messages. `--session <name>` keeps bindings and tabs
-between calls: the session owns its tabs, so they outlive the command that
-started it and close when the session ends (`--close`, or 30 minutes
-unused) or sit 20 minutes unused. A site global whose tab is gone opens a
+search, YouTube, X, and Messages. `--session <name>` keeps bindings between
+calls; it ends with `--close` or after 30 minutes unused. The tabs its code
+opens are yours, as if you had opened them: they open in your window and
+close when your turn ends or sit 20 minutes unused. A session's page whose
+tab has closed drops out of `tabs`; open it again. A site global whose tab is gone opens a
 new one once and runs the call again. A call waits at most 120 s; MCP
 clients may cut one at 60 s, so split long waits across calls. `safari
 guide repl` has the whole API and what to do when a run goes wrong.

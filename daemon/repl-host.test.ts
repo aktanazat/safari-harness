@@ -144,3 +144,32 @@ test("a named session's tab still answers in its next call after the command tha
   const second = await command(`runInSession(${SESSION}, "(await page.info()).url")`);
   expect(second).toEqual({ output: "https://a.example/", started: false });
 }, 30_000);
+
+// The tab a session's code opens, by a command run from this test's
+// process, which stands for omp above the shell its safari commands run in.
+async function sessionTab(url: string): Promise<number> {
+  const { output } = (await command(`runInSession(${SESSION}, "(await openTab('${url}')).id")`)) as { output: string };
+  return Number(output);
+}
+
+test("a named session's tab opens in the window of the agent that ran the code, beside the agent's own tabs", async () => {
+  // a child of this process calls, as a shell's safari command does
+  const shell = Bun.spawn(["sleep", "60"]);
+  const res = await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://own.example/", background: true }, caller: shell.pid }) });
+  shell.kill();
+  const { value: own } = (await res.json()) as { value: { id: number } };
+  const tab = await sessionTab("https://b.example/");
+  const placed = rows.filter((r) => r.id === own.id || r.id === tab).map((r) => r.windowId);
+  expect(placed).toEqual([placed[0], placed[0]]);
+}, 30_000);
+
+test("a named session's tab closes when the turn of the agent that ran the code ends", async () => {
+  const tab = await sessionTab("https://c.example/");
+  const gone = Promise.withResolvers<void>();
+  heardClose = () => {
+    if (closed.includes(tab)) gone.resolve();
+  };
+  await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: process.pid }) });
+  await gone.promise;
+  expect(closed).toContain(tab);
+}, 30_000);

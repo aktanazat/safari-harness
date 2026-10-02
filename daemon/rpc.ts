@@ -10,6 +10,8 @@
 // restarts or answered 503 while it finishes its calls in flight first, is
 // made again, once, as soon as a daemon answers again.
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 }
@@ -17,11 +19,22 @@ export function daemonHttp(): string {
 // A named REPL session's process (repl-host.ts) outlives the command that
 // started it, which is the agent the daemon would find above it: its tabs
 // would close once that command exited, after the session's first call.
-// It owns its calls instead, so what they leave lasts until it ends.
+// Each run names the process that asked for it instead (callFor), and the
+// run's calls work for the agent above that process, as the asker's own
+// calls would: their tabs join that agent's window and close as its turn
+// ends. Before (10-02), the session owned them: every session opened a
+// window of its own, and its tabs outlived the turn by 20 minutes. A call
+// outside any run, as the session closes its tabs on ending, works for the
+// session itself (ownCalls).
 let ownsCalls = false;
+const asker = new AsyncLocalStorage<number>();
 
 export function ownCalls(): void {
   ownsCalls = true;
+}
+
+export function callFor<T>(pid: number, fn: () => T): T {
+  return asker.run(pid, fn);
 }
 
 type Missed = "refused" | "restarting";
@@ -64,7 +77,8 @@ async function back(base: string, ms: number): Promise<boolean> {
 // watches (guard.ts).
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : process.pid, ...(ownsCalls ? { own: true } : {}), ...(model ? { model } : {}) });
+  const asked = asker.getStore();
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? process.pid), ...(ownsCalls && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}) });
   let res = await attempt(base, body);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body);
   if (res === "refused") throw new Error(`safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`);

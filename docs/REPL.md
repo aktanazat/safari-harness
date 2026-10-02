@@ -19,8 +19,10 @@ safari repl --close work            # end one; its tabs close
 ```
 
 Without `--session`, a call is a session of its own: its tabs close when it
-ends. A named session runs in the background, keeps its bindings and tabs
-between calls from any terminal or agent, and ends after 30 minutes unused.
+ends. A named session runs in the background, keeps its bindings between
+calls from any terminal or agent, and ends after 30 minutes unused. The tabs
+its code opens are the calling agent's: they open in its window and close
+when its turn ends or after 20 minutes unused.
 The MCP server has the same thing as the `repl` tool (`session` names one
 shared with the CLI; without it, the connection gets its own). A call stops
 waiting after 120 seconds; its code may still run on in the session. MCP
