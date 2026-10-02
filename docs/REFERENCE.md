@@ -413,6 +413,10 @@ carrying the page in context.
   back as it is, and nothing is written.
 - CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
   path.
+- An MCP reply keeps an answer's first 30,000 characters. A longer answer
+  is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
+  and the reply ends by saying so and where: read the part you need from
+  that file, or narrow the read.
 
 ## Tables and card lists as rows
 

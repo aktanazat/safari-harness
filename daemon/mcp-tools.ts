@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { CALLER_GROUPS } from "./caller.ts";
 import { invoke } from "./call.ts";
+import { saveAnswer } from "./save.ts";
 import type { ReplSession } from "./repl.ts";
 
 // This connection's own REPL session: its bindings last as long as the
@@ -55,10 +56,19 @@ export function listTools(): unknown[] {
   ];
 }
 
+// A reply keeps an answer's first 30 000 characters, as the agent loop's
+// does (agent.ts); a longer answer is saved whole, and the reply says where.
+// The cut was 100 000 characters and said nothing; on 10-01 and 10-02, 82
+// answers past 10 000 made up half of the 3 M characters ten sessions read.
+const REPLY_CHARS = 30_000;
+
 // A call's answer as the client reads it; a failed call throws.
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
   const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args, true);
-  return formatResult(value).slice(0, 100_000);
+  const text = formatResult(value);
+  if (text.length <= REPLY_CHARS) return text;
+  const path = await saveAnswer(text);
+  return `${text.slice(0, REPLY_CHARS)}\n…cut at ${REPLY_CHARS} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
 }
 
 // The connection ends: the REPL session's tabs close.

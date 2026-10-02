@@ -91,6 +91,12 @@ async function write(target: Target, url: string, file: File): Promise<string> {
   }
 }
 
+// An answer longer than a reply keeps (mcp-tools.ts), whole, in the saved
+// folder; returns its path.
+export function saveAnswer(text: string): Promise<string> {
+  return write({ dir: SAVED_DIR }, "", { body: text, ext: "txt" });
+}
+
 // The read's result, written to target. An error the page answered with is
 // no output: it comes back as it is, and nothing is written. A result cut
 // short even at the raised limit says so, and a bot-check note stays. The
