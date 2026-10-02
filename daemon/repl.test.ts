@@ -114,3 +114,12 @@ test("attachBrowserTab starts page.url() at the tab's full address, query includ
   const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
   expect(await repl.run("const p = await attachBrowserTab(7)\np.url()")).toEqual({ output: "https://apply.example.edu/apply/frm?ebbbc633-1226" });
 });
+
+// On 10-01 and 10-02 three scripts failed with a bare "BuildMessage:
+// Unterminated string literal": in each, a \n in a quoted string had become
+// a line break.
+test("a script with a string left open fails naming the line it is on", async () => {
+  const { repl } = session();
+  const r = await repl.run("const a = 1\nconst s = 'one\ntwo'");
+  expect(r.error).toStartWith("SyntaxError: Unterminated string literal (line 2, column 11): const s = 'one\n");
+});

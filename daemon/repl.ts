@@ -488,13 +488,21 @@ function errorText(e: unknown): string {
   if (!e || typeof e !== "object" || !("message" in e)) return String(e);
   const name = "name" in e && typeof e.name === "string" ? e.name : "Error";
   const errors = "errors" in e && Array.isArray(e.errors) ? (e.errors as unknown[]) : [];
-  if (name === "AggregateError" && errors.length) {
-    return errors.map((x) => {
-      const m = x as { message?: string; position?: { line?: number; column?: number } };
-      return `SyntaxError: ${m.message ?? String(x)}${m.position ? ` (line ${m.position.line}, column ${m.position.column})` : ""}`;
-    }).join("\n");
-  }
+  if (name === "AggregateError" && errors.length) return errors.map(syntaxError).join("\n");
+  if (name === "BuildMessage") return syntaxError(e);
   return `${name}: ${String(e.message)}`;
+}
+
+// A parse error with its line, column, and the line itself. On 10-01 and
+// 10-02 three scripts failed with a bare "Unterminated string literal":
+// each had a \n in a quoted string, which the call's JSON turned into a
+// line break.
+function syntaxError(x: unknown): string {
+  const m = x as { message?: string; position?: { line?: number; column?: number; lineText?: string } | null };
+  const p = m.position;
+  const at = p ? ` (line ${p.line}, column ${p.column})${p.lineText ? `: ${p.lineText.trim()}` : ""}` : "";
+  const hint = m.message === "Unterminated string literal" ? "\nhint: a string in quotes ends at its line; write \\n for a line break, or quote it with backticks" : "";
+  return `SyntaxError: ${m.message ?? String(x)}${at}${hint}`;
 }
 
 // A word of code: a name, a number, or a word of a string.
