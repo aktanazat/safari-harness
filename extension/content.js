@@ -2651,6 +2651,8 @@
   // still for RECEIPT_SPAN.quiet, and RECEIPT_SPAN.max at most; a page still
   // waiting on a request to its own site is watched to max.
   const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800 };
+  // the most lines new since an action a receipt carries
+  const SAID_MAX = 20;
   // wait's quiet: no change for 500 ms, for as long as the wait lasts
   const QUIET_SPAN = { min: 0, quiet: 500, max: Infinity };
   // Parts of a page that change by themselves (a clock, a progress bar, a
@@ -2799,6 +2801,9 @@
     const focus = focusedNow();
     const boxes = deepQueryAll(DIALOG_BOXES).filter(isVisible);
     const raised = dialogLog.length;
+    // the page's lines now, so the receipt can say which the action brought
+    // up: on 10-02 TikTok answered a scripted Next only in a toast
+    const shown = linesOf(pageText());
     let added = 0;
     let removed = 0;
     const changed = new Set();
@@ -2894,6 +2899,7 @@
               .map((t) => ({ who: named(t.el), before: t.before, after: stateOf(t.el) }))
               .filter((s) => s.before.join("\n") !== s.after.join("\n")),
             dialog: dialogLog.length > raised ? dialogLog[dialogLog.length - 1].type : box ? named(box) : null,
+            said: newLines(shown, linesOf(pageText())).slice(0, SAID_MAX).map((l) => clip(l, 200)),
             page: location.href,
             requests: heard?.requests ?? null,
             pending: heard?.pending ?? null,

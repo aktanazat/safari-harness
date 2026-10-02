@@ -605,10 +605,21 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   800 ms while the page waits on its own site) and reports its `effect`:
   nodes `added`, `removed`, and `changed`; a new `url`; where `focus` went;
   the `states` of the control and what it controls (`button "Menu": now
-  expanded`); a `dialog` that opened; and `net`, the page's requests to its
-  own site, failed ones first (`failed: POST /api/cart 500`), analytics
-  beacons left out. A tab no agent works in keeps no request log, so its
-  effect has no `net`. Errors the page threw come as `pageErrors`.
+  expanded`); a `dialog` that opened; `said`, the lines the action brought
+  up when there are three or fewer (a toast, an error under a field); and
+  `net`, the page's requests to its own site, failed ones first (`failed:
+  POST /api/cart 500`), analytics beacons left out. A tab no agent works
+  in keeps no request log, so its effect has no `net`. Errors the page
+  threw come as `pageErrors`.
+- A site that refuses scripted clicks often answers one with an error
+  rather than ignoring it: TikTok's sign-up said "Maximum number of
+  attempts reached. Try again later." to every scripted Next on 10-01 and
+  10-02, and a real click went through at once. When what the action
+  brought up reads so ("too many attempts", "try again later", "something
+  went wrong") or its own site answered 429, `next` says to do the step
+  once with `real_input` before changing the account, the network, or the
+  cookies, since each try may count against the site's limit. A script in
+  `repl` prints an action's `next` as a `hint:` line.
 - `effect: "none"` means the page did not react, and `next` says what to
   try: a real click (`real_input`), a child or parent of the control, or a
   moment for a busy page. An effect shows the page moved, not that it did

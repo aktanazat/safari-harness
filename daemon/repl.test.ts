@@ -69,6 +69,19 @@ test("page.extract reads only the part its selector names", async () => {
   expect(calls.filter(([tool]) => tool === "extract")).toEqual([["extract", { tab: 7, selector: "h1" }]]);
 });
 
+// A script's actions dropped the next step their answers carried (what to
+// try when the page ignored or refused a click), so on 10-02 an agent
+// scripting TikTok's sign-up saw none of it.
+test("a script's action that came back with a next step prints it as a hint, once", async () => {
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Sign up" };
+    if (tool === "click") return { ok: true, effect: { added: 1 }, next: "do this step once with real_input" };
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  expect(await repl.run("await openTab('https://example.com')\nawait page.click('#next')\nawait page.click('#next')")).toEqual({ output: "hint: do this step once with real_input" });
+});
+
 afterEach(() => jest.useRealTimers());
 
 // On 09-30 scripts slept 161 s in 46 page.waitForTimeout calls, where the

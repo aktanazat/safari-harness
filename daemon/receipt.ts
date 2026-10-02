@@ -29,6 +29,9 @@ export type RawReceipt = {
   states: StateChange[];
   // a dialog that opened: one the page drew, or alert, confirm, or prompt
   dialog: string | null;
+  // the page's lines new since the action began, the first 20; a page whose
+  // content.js predates them sends none
+  said?: string[];
   // the address the requests are judged against
   page: string;
   // null when the page keeps no request log (a tab no agent works in)
@@ -45,6 +48,8 @@ export type Effect = {
   focus?: string;
   states?: string[];
   dialog?: string;
+  // what the page said: the lines the action brought up, when they are few
+  said?: string[];
   net?: string[];
 };
 
@@ -61,6 +66,20 @@ const STILL_LOADING = "the page is still waiting on a request this started (pend
 // an unhandled rejection's message, which leaves the name out.
 const REFUSED = /document is not focused|NotAllowedError|not allowed by the user agent or the platform in the current context/i;
 const NEEDS_FRONT = "the page refused because Safari was not in front or the click was not real: activate, then real_input; a passkey or Touch ID prompt that then opens needs the user (handoff)";
+
+// A site that tells scripted clicks from real ones turns them away with
+// words like these, or a 429 from its own server, and each try may count
+// against its limit. On 10-01 and 10-02 TikTok's sign-up answered every
+// scripted Next with "Maximum number of attempts reached. Try again
+// later.", and two days went to the address, the network, and the cookies
+// before a real click went through at once; a job site's Submit answered
+// so on 09-30 (greenhouse.md). "Please try again" alone is left out: a
+// wrong code or password says it too.
+const SITE_REFUSED = /too many (attempts|requests|tries)|maximum (number of )?attempts|try again later|unusual (activity|traffic)|suspicious activity|automated (queries|requests|traffic)|are you a robot|temporarily (blocked|locked|restricted)|rate limit|something went wrong|error processing/i;
+const TRY_REAL = "the site answered this scripted action with an error, as sites that refuse scripted clicks do: if what you sent was right, do this step once with real_input on the same ref before you change the account, network, or cookies (each try may count against a limit); if it works, learn {site, real: true}";
+// An effect quotes the lines an action brought up when they are this few
+// (a message); more are a new section, which added counts.
+const SAID_SHOWN = 3;
 
 // The page's errors as an action's answer carries them, their secret
 // parameters cut as addresses' are (redact.ts), and the next step when one
@@ -165,6 +184,7 @@ export function stateLines(changes: StateChange[]): string[] {
 // as addresses are (redact.ts).
 export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: string; pageErrors?: string[] } {
   const states = stateLines(raw.states).map(redactUrl);
+  const said = (raw.said ?? []).map(redactUrl);
   const pending = raw.requests === null ? [] : (raw.pending ?? []).filter((e) => keepRequest(e, raw.page));
   const net = raw.requests === null ? [] : netLines(raw.requests, raw.pending ?? [], raw.page);
   const effect: Effect = {
@@ -175,11 +195,14 @@ export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: str
     ...(raw.focus !== null ? { focus: redactUrl(raw.focus) } : {}),
     ...(states.length ? { states } : {}),
     ...(raw.dialog !== null ? { dialog: redactUrl(raw.dialog) } : {}),
+    ...(said.length && said.length <= SAID_SHOWN ? { said } : {}),
     ...(net.length ? { net } : {}),
   };
   const errors = pageErrorsOf(raw.errors);
   if (!Object.keys(effect).length) return { effect: "none", next: NO_EFFECT, ...errors };
-  return pending.length && !errors.next ? { effect, next: STILL_LOADING, ...errors } : { effect, ...errors };
+  const refused = said.some((l) => SITE_REFUSED.test(l)) || (raw.requests ?? []).some((e) => e.status === 429 && keepRequest(e, raw.page));
+  const next = errors.next ?? (refused ? TRY_REAL : pending.length ? STILL_LOADING : undefined);
+  return { effect, ...errors, ...(next === undefined ? {} : { next }) };
 }
 
 // An action's answer with the page's raw receipt turned into its effect.

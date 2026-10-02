@@ -22,7 +22,7 @@ export const REPL_TIMEOUT_MS = 120_000;
 export type ReplResult = { output: string; error?: string };
 
 type TabRow = { id: number; url?: string; title?: string; active?: boolean; front?: boolean };
-type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; newTab?: TabRow; dialogs?: unknown[] };
+type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; newTab?: TabRow; dialogs?: unknown[]; next?: string };
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
 type SnapshotOptions = { interactive?: boolean; showHidden?: boolean; ref?: string; selector?: string; maxNodes?: number };
@@ -353,6 +353,7 @@ export class Page {
 
   async act(tool: string, args: Record<string, unknown>): Promise<Outcome> {
     const res = (await this.session.call(tool, { tab: this.id, ...args })) as Outcome;
+    this.session.showHint(res?.next);
     if (res?.navigated?.url) this.note(res.navigated.url, res.navigated.title);
     if (res?.newTab) {
       const popup = this.session.adopt(res.newTab);
@@ -631,9 +632,10 @@ export class ReplSession {
   }
 
   // A hint beside a result goes to the script's output on a line of its
-  // own, as formatResult prints one (tools.ts).
+  // own, as formatResult prints one (tools.ts), once in a run however
+  // many of its actions came back with it.
   showHint(hint: unknown): void {
-    if (typeof hint === "string") this.#out.push(`hint: ${hint}`);
+    if (typeof hint === "string" && !this.#out.includes(`hint: ${hint}`)) this.#out.push(`hint: ${hint}`);
   }
 
   // Runs one call's code after any earlier call has finished.

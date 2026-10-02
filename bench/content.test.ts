@@ -568,6 +568,11 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click's receipt carries the lines it brought up, and none the page showed before",
+    page: "refusal.html",
+    steps: [{ op: "click", args: ["Next"], answer: { value: { receipt: { said: ["Maximum number of attempts reached. Try again later."] } } } }],
+  },
+  {
     name: "a changed wait counts a reply that came between two waits",
     page: "chat.html",
     steps: [

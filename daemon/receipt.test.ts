@@ -94,6 +94,30 @@ test("a page that refused for want of focus or a real click says what the step n
   expect(effectOf({ ...QUIET, focus: "page", errors: ["TypeError: x is undefined"] }).next).toBeUndefined();
 });
 
+// On 10-01 and 10-02 TikTok's sign-up answered each scripted Next with
+// "Maximum number of attempts reached. Try again later."; the agent changed
+// the address, the network, and the cookies over two days, and a real click
+// went through at once. A job site's Submit answered so on 09-30
+// (greenhouse.md).
+test("a scripted action the site answered with an error says to do it once with real input", () => {
+  const rows: [string[], boolean][] = [
+    [["Maximum number of attempts reached. Try again later."], true],
+    [["There was an error processing your application. Please try again."], true],
+    [["Too many attempts"], true],
+    [["Something went wrong"], true],
+    [["Incorrect code. Please try again."], false],
+    [["Saved"], false],
+  ];
+  for (const [said, real] of rows) expect([said, /\breal_input\b/.test(effectOf({ ...QUIET, added: 1, said }).next ?? "")]).toEqual([said, real]);
+  // its own site turning the request away says the same
+  expect(effectOf({ ...QUIET, requests: [{ method: "POST", url: "https://shop.example.com/api/verify", status: 429 }] }).next).toMatch(/\breal_input\b/);
+});
+
+test("an effect quotes the few lines an action brought up, and only counts a whole new section", () => {
+  expect(effectOf({ ...QUIET, added: 2, said: ["Code sent", "Check your email"] }).effect).toEqual({ added: 2, said: ["Code sent", "Check your email"] });
+  expect(effectOf({ ...QUIET, added: 9, said: ["Item 1", "Item 2", "Item 3", "Item 4"] }).effect).toEqual({ added: 9 });
+});
+
 test("failed requests lead the net lines, paths without their queries, then the rest, then those still out", () => {
   const got = effectOf({
     ...QUIET,
