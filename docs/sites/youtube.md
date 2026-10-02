@@ -12,7 +12,7 @@ The `youtube` global reads YouTube through the page's own data calls from a back
 - `youtube.search(query, {limit})`: videos for a query in YouTube's order (id, url, title, channel, duration, views, published); `limit` defaults to 10.
 - `youtube.getMetadata(video)`: title, channel and its URL, description, duration, views, likes, publish date, live flag, and chapters when the video has them.
 - `youtube.listTranscriptLanguages(video)`: the caption tracks: language code, YouTube's name for the track, and whether it is auto-generated.
-- `youtube.getTranscript(video, {lang})`: timed segments (`start`, `end` in seconds, `text`) plus the joined `text`; `lang` picks a track by code (`en`, `ko`) or name, default the video's own track.
+- `youtube.getTranscript(video, {lang})`: timed segments (`start`, `end` in seconds, `text`) plus the joined `text`; `lang` picks a track by code (`en`, `ko`) or name, default the video's own track. A video with no captions at all throws "has no transcript" within a couple of seconds.
 - `youtube.getComments(video, {limit, continuation})`: top-level comments (author, text, likes, published, reply count) in "top comments" order; `limit` defaults to 20, and the answer's `continuation` pages on.
 
 ```js
