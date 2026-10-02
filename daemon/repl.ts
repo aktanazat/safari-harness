@@ -775,7 +775,7 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 5000, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
+    const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 600, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
     this.showNotes(snap);
     page.note(snap.url, snap.title);
     const lines = snap.snapshot.split("\n");

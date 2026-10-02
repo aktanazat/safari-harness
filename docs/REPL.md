@@ -45,9 +45,10 @@ outside the page: read `document`, `window` and the rest through
 
 ## Reading a page
 
-- `snapshot(page, {interactive, showHidden, ref, selector})` returns
-  `{tree, diff}`: the outline with `[ref]`s, and what changed since this
-  session's last snapshot of the same view.
+- `snapshot(page, {interactive, showHidden, ref, selector, maxNodes})`
+  returns `{tree, diff}`: the outline with `[ref]`s (600 lines unless
+  `maxNodes`; past that it says where it was cut), and what changed since
+  this session's last snapshot of the same view.
 - `page.content()`, `page.title()`, `page.url()`, `page.evaluate(fn, arg)`
   (runs in the page; falls back to the extension's world when the page
   forbids scripts).
