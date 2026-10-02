@@ -14,7 +14,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { currentOwner, processName, watchOwner } from "./owner.ts";
-import { bundled, covers } from "./site-guides.ts";
+import { bundled, covers, type Guide } from "./site-guides.ts";
 
 const MAX_CHARS = 300;
 const MAX_NOTES = 50;
@@ -105,7 +105,7 @@ export function notesSection(host: string): string | null {
   const sections = [
     ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent})`).join("\n")}`] : []),
     ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${r.date}, ${r.agent})`).join("\n")}`] : []),
-    ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); learn {site: "${host}", real: false} undoes it.`]),
+    ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); ${markingGuide(host) ? "its guide marks it too, so it stays marked" : `learn {site: "${host}", real: false} undoes it`}.`]),
   ];
   return sections.length ? sections.join("\n\n") : null;
 }
@@ -197,11 +197,15 @@ function markReal(host: string, agent: string): string {
   return `marked ${host} for real input: a model's click and type with a ref there and on its subdomains go as real input (real_input), never scripted first`;
 }
 
-// A host its guide marks stays marked whatever is learned: the mark is part
-// of the harness, not a note.
+// The guide that marks host for real input, if one does: its mark is part
+// of the harness, not a note, so it stays whatever is learned.
+function markingGuide(host: string): Guide | undefined {
+  return bundled().find((g) => g.real && g.hosts.some((entry) => covers(entry.split("/")[0], host)));
+}
+
 function unmarkReal(host: string): string {
   rmSync(realOf(host), { force: true });
-  const guide = bundled().find((g) => g.real && g.hosts.some((entry) => covers(entry.split("/")[0], host)));
+  const guide = markingGuide(host);
   if (guide) return `${host} stays marked for real input: its guide marks it (safari guide ${guide.slug})`;
   return `unmarked ${host}: click and type there go as scripted input again`;
 }
