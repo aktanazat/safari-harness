@@ -967,16 +967,21 @@ async function handle(msg) {
       if (!c) throw new Error("Safari refused the cookie; check its url, domain, and secure flag");
       return { ok: true, name: c.name, domain: c.domain, path: c.path };
     }
-    // Every cookie of a site and its subdomains (clearSite in
-    // daemon/tools.ts). Safari removes one a call, the first of that name
-    // the url would carry, so each goes by its own host and path. The
-    // answer counts them and holds no value.
+    // How many cookies a site and its subdomains hold, counted before a
+    // clear's pages delete those their scripts read (clearSite in
+    // daemon/tools.ts).
+    case "cookies.count": {
+      const [site] = args;
+      return (await api.cookies.getAll({ domain: site })).length;
+    }
+    // Every cookie of a site and its subdomains (clearSite). Safari removes
+    // one a call, the first of that name the url would carry, so each goes
+    // by its own host and path. The answer counts those left, no value.
     case "cookies.clear": {
       const [site] = args;
       const all = await api.cookies.getAll({ domain: site });
       for (const c of all) await api.cookies.remove({ url: `https://${c.domain.replace(/^\./, "")}${c.path}`, name: c.name });
-      const left = await api.cookies.getAll({ domain: site });
-      return { removed: all.length - left.length, left: left.length };
+      return { left: (await api.cookies.getAll({ domain: site })).length };
     }
     case "storage.clear": {
       const [tabId] = args;

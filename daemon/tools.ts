@@ -887,14 +887,16 @@ export async function clearSite(opts: { tab?: unknown; url?: string }) {
     .filter((t): t is TabInfo => typeof t !== "string" && !mine.some((m) => m.id === t.id));
   if (his.length > 0) throw new Error(`${domain} is open in the user's tabs: ${his.map((t) => `tab ${t.id} ${URL.parse(t.url ?? "")?.origin}`).join(", ")}. A clear would sign him out there, and his pages would set its cookies again: ask him to close them, then clear again`);
   const why = `by a cookies clear of ${domain}`;
+  // before the pages below delete the cookies their scripts read
+  const before = (await bridge.request("cookies.count", [domain])) as number;
   const reached: Reached = { cleared: new Set(), notReached: [] };
   for (const t of mine) await emptyIn(t.id, t.url, reached);
   for (const origin of new Set([address.origin, `https://${domain}`, `https://www.${domain}`])) {
     if (!reached.cleared.has(origin)) await emptyThrough(origin, onSite, reached, why);
   }
   for (const t of mine) await closeTab(t.id, why);
-  const jar = (await bridge.request("cookies.clear", [domain], 30000)) as { removed: number; left: number };
-  return { site: domain, cookiesRemoved: jar.removed, cookiesLeft: jar.left, originsCleared: [...reached.cleared], ...(reached.notReached.length > 0 ? { notReached: reached.notReached } : {}), tabsClosed: mine.map((t) => t.id) };
+  const jar = (await bridge.request("cookies.clear", [domain], 30000)) as { left: number };
+  return { site: domain, cookiesBefore: before, cookiesLeft: jar.left, originsCleared: [...reached.cleared], ...(reached.notReached.length > 0 ? { notReached: reached.notReached } : {}), tabsClosed: mine.map((t) => t.id) };
 }
 
 // The origins a clear emptied, and each it could not, with why.

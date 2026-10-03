@@ -18,6 +18,9 @@ const sent: { op: string; args: unknown[] }[] = [];
 let showing: Shown[] = [];
 let nextTab = 0;
 let nextWindow = 0;
+// The site's cookies; a page's storage clear deletes those its script
+// reads, which here is all of them.
+let jar = 5;
 function answer(op: string, args: unknown[]): unknown {
   if (op === "windows.open") return { windowId: ++nextWindow, tabId: 900 + nextWindow };
   if (op === "tabs.open") {
@@ -31,8 +34,12 @@ function answer(op: string, args: unknown[]): unknown {
     return { ok: true };
   }
   if (op === "relay" && args[1] === "tabInfo") return { url: showing.find((t) => t.id === args[0])?.url };
-  if (op === "storage.clear") return { origin: new URL(showing.find((t) => t.id === args[0])?.url ?? "").origin };
-  if (op === "cookies.clear") return { removed: 5, left: 0 };
+  if (op === "storage.clear") {
+    jar = 0;
+    return { origin: new URL(showing.find((t) => t.id === args[0])?.url ?? "").origin };
+  }
+  if (op === "cookies.count") return jar;
+  if (op === "cookies.clear") return { left: jar };
   if (op === "probe") return [];
   return { ok: true };
 }
@@ -82,13 +89,14 @@ test("a clear closes the agent's tabs on the site, and only those, and says whic
   agent.kill();
 });
 
-test("a clear says what it did: cookies removed and left, origins emptied, and those it could not reach", async () => {
+test("a clear says what it did: the cookies the site had and has left, origins emptied, and those it could not reach", async () => {
   const agent = Bun.spawn(["sleep", "60"]);
   showing = [];
+  jar = 5;
   const tab = await opened(agent.pid, "https://m.tiktok.com/signup");
   expect(await runAs(agent.pid, () => callTool("cookies", { do: "clear", tab }))).toMatchObject({
     site: "tiktok.com",
-    cookiesRemoved: 5,
+    cookiesBefore: 5,
     cookiesLeft: 0,
     originsCleared: ["https://m.tiktok.com", "https://www.tiktok.com"],
     notReached: ["https://tiktok.com: its page went to https://www.tiktok.com"],

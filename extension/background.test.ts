@@ -843,7 +843,7 @@ test("clearing a site's cookies removes every one of the site and its subdomains
     cookie("nottiktok.com", "ttwid"),
     cookie(".example.org", "sid"),
   );
-  expect(await b.request("cookies.clear", ["tiktok.com"])).toEqual({ value: { removed: 4, left: 0 } });
+  expect(await b.request("cookies.clear", ["tiktok.com"])).toEqual({ value: { left: 0 } });
   expect(b.jar.map((c) => c.domain)).toEqual(["nottiktok.com", ".example.org"]);
 });
 

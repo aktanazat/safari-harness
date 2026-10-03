@@ -866,12 +866,12 @@ gone: the call says so. CLI: `safari net read --body -1 --tab N`.
   read, since Safari keeps a copy for the site's scripts that removing
   the stored cookie leaves behind. The answer names the origins emptied,
   under `notReached` those it could not (a bare site that sends its pages
-  to `www.`), the tabs it closed, and the cookies removed and left, never
-  a value. It refuses while one of the user's tabs is on the site, naming
-  each by id and origin: a clear would sign him out there, and his page
-  would set the cookies again. It cannot reach partitioned cookies, a
-  private window's or another profile's, or the storage of any other
-  origin.
+  to `www.`), the tabs it closed, and how many cookies the site had and
+  has left, never a value. It refuses while one of the user's tabs is on
+  the site, naming each by id and origin: a clear would sign him out
+  there, and his page would set the cookies again. It cannot reach
+  partitioned cookies, a private window's or another profile's, or the
+  storage of any other origin.
 - `window` gives your tab its own window of a given size, so the page lays
   out as it would on a phone or small laptop. Use it only on your own tab.
 - `browsing_history` searches Safari's history by title or address, newest
