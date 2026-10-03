@@ -810,13 +810,27 @@ async function screenshot(tabId, opts) {
 // Runs in the page: empties what its origin keeps, and says the origin
 // (storage.clear). A database the page holds open goes once the page
 // closes, as clearSite in daemon/tools.ts closes it next. A page that is
-// not secure has no caches and no service workers.
+// not secure has no caches and no service workers. Safari's cookie API
+// (cookies.clear, after this) deletes the stored cookies, but a page
+// process keeps its own copy, which the site's script goes on reading
+// (10-02: httpbin.org's server got no cookie, a new tab's script still
+// read it). Only a delete written by script clears that copy, and it must
+// name the domain and path the cookie was set for, which a script cannot
+// read, so each that could hold one is tried.
 async function emptyStorage() {
   window.localStorage.clear();
   window.sessionStorage.clear();
   for (const db of await window.indexedDB.databases()) window.indexedDB.deleteDatabase(db.name);
   for (const key of (await window.caches?.keys()) ?? []) await window.caches.delete(key);
   for (const r of (await window.navigator.serviceWorker?.getRegistrations()) ?? []) await r.unregister();
+  const { hostname, pathname } = window.location;
+  const labels = hostname.split(".");
+  const domains = ["", ...labels.slice(0, -1).map((_, i) => `; domain=${labels.slice(i).join(".")}`)];
+  const paths = new Set(pathname.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/") || "/"));
+  for (const pair of window.document.cookie.split("; ").filter(Boolean)) {
+    const name = pair.split("=")[0];
+    for (const path of paths) for (const domain of domains) window.document.cookie = `${name}=; max-age=0; path=${path}${domain}`;
+  }
   return { origin: window.location.origin };
 }
 

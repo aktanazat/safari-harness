@@ -812,14 +812,15 @@ test("stopping a wait keeps the top page's change summary", async () => {
 });
 
 // What a page's origin keeps, as the page's own script sees it.
-function stored(world: Record<string, unknown>, origin: string) {
+function stored(world: Record<string, unknown>, url: string) {
   const local = new Map([["user", "1"]]);
   const session = new Map([["step", "phone"]]);
   const databases = new Set(["accounts"]);
   const caches = new Set(["static-v1"]);
   const workers = new Set(["/sw.js"]);
   Object.assign(world, {
-    location: { origin },
+    location: new URL(url),
+    document: { cookie: "" },
     localStorage: { clear: () => local.clear() },
     sessionStorage: { clear: () => session.clear() },
     indexedDB: { databases: async () => [...databases].map((name) => ({ name, version: 1 })), deleteDatabase: (name: string) => databases.delete(name) },
@@ -852,4 +853,44 @@ test("clearing a page's storage empties its origin's local and session storage, 
   const sizes = stored(tab.doc.world, "https://www.tiktok.com");
   expect(await b.request("storage.clear", [tab.id])).toEqual({ value: { origin: "https://www.tiktok.com" } });
   expect(sizes()).toEqual([0, 0, 0, 0, 0]);
+});
+
+type ScriptCookie = { name: string; domain?: string; path: string };
+
+// The cookies a page's script reads and writes through document.cookie. A
+// write deletes one only if its name, domain (none for a host-only one),
+// and path all match, as in a browser.
+function scriptCookies(world: Record<string, unknown>, url: string, set: ScriptCookie[]) {
+  const jar = [...set];
+  const document = {
+    get cookie() {
+      return jar.map((c) => `${c.name}=1`).join("; ");
+    },
+    set cookie(line: string) {
+      const [pair = "", ...attrs] = line.split(";").map((s) => s.trim());
+      const attr = (key: string) => attrs.find((a) => a.startsWith(`${key}=`))?.slice(key.length + 1);
+      if (attr("max-age") !== "0") return;
+      const i = jar.findIndex((c) => c.name === pair.split("=")[0] && c.domain === attr("domain") && c.path === attr("path"));
+      if (i >= 0) jar.splice(i, 1);
+    },
+  };
+  Object.assign(world, { location: new URL(url), document });
+  return () => jar.map((c) => c.name);
+}
+
+// 10-02 live: once Safari's cookie API removed httpbin.org's cookie, its
+// server got none, but a new tab's script still read it from the page
+// process's own copy, which only a delete written by script clears.
+test("clearing a page's storage deletes every cookie its script reads, whatever domain and path it was set for", async () => {
+  const b = await start();
+  const tab = b.open("https://www.tiktok.com/signup");
+  stored(tab.doc.world, "https://www.tiktok.com/signup");
+  const left = scriptCookies(tab.doc.world, "https://www.tiktok.com/signup", [
+    { name: "ttwid", domain: "tiktok.com", path: "/" },
+    { name: "region", domain: "www.tiktok.com", path: "/" },
+    { name: "msToken", path: "/" },
+    { name: "csrf", path: "/signup" },
+  ]);
+  await b.request("storage.clear", [tab.id]);
+  expect(left()).toEqual([]);
 });
