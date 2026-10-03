@@ -26,10 +26,9 @@ Turns
   change they cause; a click whose `net` says `pending` wants `wait {quiet:
   true}`, not a sleep. A reply in a chat: `wait {changed: true, ms:
   25000}` returns its new lines as `added`; call it again until one comes.
-- A `type` answering `kept: false`, `invalid`, or `next`, a click the page
-  ignored, or a site error after a scripted step: redo it once with
-  `real_input` before changing account, network, or cookies; if it works,
-  `learn {site, real: true}`.
+- `type` answering `kept: false`, `invalid`, or `next`, or a site error
+  after a click: redo it once with `real_input` before changing account,
+  network, or cookies; if it works, `learn {site, real: true}`.
 - Never start a `safari` command in the background and poll it.
 - A call failing with no reason: run `safari doctor` once.
 
