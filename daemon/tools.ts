@@ -882,9 +882,12 @@ export async function clearSite(opts: { tab?: unknown; url?: string }) {
   const tabs = (await listTabs()).filter((t) => onSite(t.url));
   const me = currentOwner();
   const mine = tabs.filter((t) => harnessTabs.has(t.id) && harnessTabs.get(t.id)?.owner === me);
-  // tabsView shows a caller with no agent behind it every tab on the site
-  const his = (await tabsView(tabs, new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), { host: domain }))
-    .filter((t): t is TabInfo => typeof t !== "string" && !mine.some((m) => m.id === t.id));
+  // A tab kept for the user is his, though it stays in the agent's window
+  // until its turn ends; tabsView shows a caller with no agent behind it
+  // every tab on the site.
+  const kept = tabs.filter((t) => keepers.has(t.id));
+  const his = [...kept, ...(await tabsView(tabs, new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), { host: domain }))
+    .filter((t): t is TabInfo => typeof t !== "string" && !mine.some((m) => m.id === t.id) && !kept.some((k) => k.id === t.id))];
   if (his.length > 0) throw new Error(`${domain} is open in the user's tabs: ${his.map((t) => `tab ${t.id} ${URL.parse(t.url ?? "")?.origin}`).join(", ")}. A clear would sign him out there, and his pages would set its cookies again: ask him to close them, then clear again`);
   const why = `by a cookies clear of ${domain}`;
   // before the pages below delete the cookies their scripts read

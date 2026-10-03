@@ -76,6 +76,19 @@ test("a clear is refused while the user has the site open, naming each of his ta
   agent.kill();
 });
 
+// 10-02 live: a clear left a tab the agent had kept for the user open on
+// the site, signed out, its page free to set the cookies again.
+test("a clear is refused while a tab kept for the user is on the site, and changes nothing", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  showing = [];
+  const kept = await opened(agent.pid, "https://www.tiktok.com/signup");
+  await runAs(agent.pid, () => callTool("keep", { tab: kept }));
+  sent.length = 0;
+  await expect(runAs(agent.pid, () => callTool("cookies", { do: "clear", url: "https://www.tiktok.com/" }))).rejects.toThrow(`tab ${kept} https://www.tiktok.com`);
+  expect(changes()).toEqual([]);
+  agent.kill();
+});
+
 test("a clear closes the agent's tabs on the site, and only those, and says which", async () => {
   const agent = Bun.spawn(["sleep", "60"]);
   showing = [{ id: 7003, url: "https://example.com/", windowId: 7000 }];
