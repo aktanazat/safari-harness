@@ -852,7 +852,23 @@ gone: the call says so. CLI: `safari net read --body -1 --tab N`.
   is read is saved as the page it moved to. `do: "read"` returns a PDF's
   text page by page: a local `path`, or the PDF the tab shows.
 - `cookies` with `do: "set"` adds a cookie for the tab's site (`name`,
-  `value`); an extension cannot set an HttpOnly one.
+  `value`); an extension cannot set an HttpOnly one. `do: "clear"` makes
+  Safari forget the tab's site (or `url`'s), so a sign-up can start over:
+  every cookie of the site and its subdomains goes, the local and session
+  storage, databases, caches, and service workers of each origin it
+  reaches are emptied, and your tabs on the site close. It signs the user
+  out of the site in all of Safari, so use it only on a site the task is
+  about. Safari gives an extension no way to clear a site's data at once,
+  so storage is emptied from a page of each origin: your tabs there, then
+  a background tab it opens and closes on `/robots.txt`, where the site's
+  own scripts do not run, for the address's origin, the bare site, and
+  `www.`. The answer names the origins emptied, under `notReached` those
+  it could not (a bare site that sends its pages to `www.`), the tabs it
+  closed, and the cookies removed and left, never a value. It refuses
+  while one of the user's tabs is on the site, naming each by id and
+  origin: a clear would sign him out there, and his page would set the
+  cookies again. It cannot reach partitioned cookies, a private window's
+  or another profile's, or the storage of any other origin.
 - `window` gives your tab its own window of a given size, so the page lays
   out as it would on a phone or small laptop. Use it only on your own tab.
 - `browsing_history` searches Safari's history by title or address, newest

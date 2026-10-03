@@ -13,6 +13,7 @@ type Reply = { id: string; value?: unknown; error?: string };
 type Answer = { value?: unknown; error?: string };
 type Sender = { tab: { id: number; windowId: number }; frameId: number };
 type Inject = { target: { tabId: number }; func?: (...args: unknown[]) => unknown; args?: unknown[]; files?: string[] };
+type Cookie = { name: string; value: string; domain: string; path: string; secure: boolean };
 
 // Every promise chain the fakes start runs out before an immediate callback.
 function settle(): Promise<void> {
@@ -96,6 +97,11 @@ async function start() {
     set: async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v)); },
     remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
   };
+  // Safari's cookie store as its extension API reaches it (WebKit's
+  // WebExtensionContextAPICookiesCocoa.mm): getAll's domain takes that
+  // domain's cookies and its subdomains', and remove deletes the first
+  // cookie of that name the url would carry.
+  const jar: Cookie[] = [];
   const tabOf = (id: number) => {
     const tab = tabs.get(id);
     if (!tab) throw new Error(`Tab '${id}' was not found`);
@@ -181,6 +187,14 @@ async function start() {
       },
     },
     storage: { local: storage, session },
+    cookies: {
+      getAll: async ({ domain }: { domain: string }) => jar.filter((c) => c.domain === domain || c.domain.endsWith(`.${domain}`)).map((c) => ({ ...c })),
+      remove: async ({ url, name }: { url: string; name: string }) => {
+        const u = new URL(url);
+        const i = jar.findIndex((c) => c.name === name && (c.domain.startsWith(".") ? `.${u.hostname}`.endsWith(c.domain) : c.domain === u.hostname) && u.pathname.startsWith(c.path) && (!c.secure || u.protocol === "https:"));
+        return i < 0 ? null : jar.splice(i, 1)[0];
+      },
+    },
     windows: {
       onFocusChanged: hook(),
       onRemoved: hook(),
@@ -246,6 +260,7 @@ async function start() {
     clock,
     trips,
     told,
+    jar,
     sockets,
     // Safari takes ms to make each tab or window the harness asks for.
     slowMakes(ms: number) {
@@ -794,4 +809,47 @@ test("stopping a wait keeps the top page's change summary", async () => {
   await b.ask(tab, "waitStop");
   await b.clock.advance(0);
   expect(await answer).toEqual({ value: { found: false, meanwhile: ["new: No case found"] } });
+});
+
+// What a page's origin keeps, as the page's own script sees it.
+function stored(world: Record<string, unknown>, origin: string) {
+  const local = new Map([["user", "1"]]);
+  const session = new Map([["step", "phone"]]);
+  const databases = new Set(["accounts"]);
+  const caches = new Set(["static-v1"]);
+  const workers = new Set(["/sw.js"]);
+  Object.assign(world, {
+    location: { origin },
+    localStorage: { clear: () => local.clear() },
+    sessionStorage: { clear: () => session.clear() },
+    indexedDB: { databases: async () => [...databases].map((name) => ({ name, version: 1 })), deleteDatabase: (name: string) => databases.delete(name) },
+    caches: { keys: async () => [...caches], delete: async (key: string) => caches.delete(key) },
+    navigator: { serviceWorker: { getRegistrations: async () => [...workers].map((w) => ({ unregister: async () => workers.delete(w) })) } },
+  });
+  return () => [local, session, databases, caches, workers].map((s) => s.size);
+}
+
+// On 10-02 an agent made TikTok forget a failed sign-up by removing its
+// rows from Safari's website data one at a time.
+test("clearing a site's cookies removes every one of the site and its subdomains, none of another site's, and answers only counts", async () => {
+  const b = await start();
+  const cookie = (domain: string, name: string, path = "/", secure = true) => ({ name, value: `secret-${name}`, domain, path, secure });
+  b.jar.push(
+    cookie(".tiktok.com", "ttwid"),
+    cookie("www.tiktok.com", "msToken"),
+    cookie("tiktok.com", "tt_csrf_token", "/", false),
+    cookie(".m.tiktok.com", "sessionid", "/passport"),
+    cookie("nottiktok.com", "ttwid"),
+    cookie(".example.org", "sid"),
+  );
+  expect(await b.request("cookies.clear", ["tiktok.com"])).toEqual({ value: { removed: 4, left: 0 } });
+  expect(b.jar.map((c) => c.domain)).toEqual(["nottiktok.com", ".example.org"]);
+});
+
+test("clearing a page's storage empties its origin's local and session storage, databases, caches, and service workers", async () => {
+  const b = await start();
+  const tab = b.open("https://www.tiktok.com/signup");
+  const sizes = stored(tab.doc.world, "https://www.tiktok.com");
+  expect(await b.request("storage.clear", [tab.id])).toEqual({ value: { origin: "https://www.tiktok.com" } });
+  expect(sizes()).toEqual([0, 0, 0, 0, 0]);
 });

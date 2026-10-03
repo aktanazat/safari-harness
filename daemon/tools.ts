@@ -23,7 +23,7 @@ import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, inLane } from "./lanes.ts";
-import { urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
+import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactUrl, tabSecrets } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
@@ -101,11 +101,11 @@ export async function openTab(url: string, background = false, group?: string, o
 // off-screen window can keep Safari from closing it; the extension tries
 // for 15 s and says so. This limit is only for an extension that never
 // answers.
-export async function closeTab(tab: number): Promise<unknown> {
+export async function closeTab(tab: number, why = "by a close call"): Promise<unknown> {
   const id = followTab(num(tab, "tab"));
   const res = await bridge.request("tabs.close", [id], 20000);
   forget(id);
-  recordClosed(id, "by a close call");
+  recordClosed(id, why);
   return res;
 }
 
@@ -858,6 +858,78 @@ export async function setCookie(opts: { tab?: number; url?: string; name: string
   return bridge.request("cookies.set", [cookie]);
 }
 
+// Makes Safari forget one site, so a sign-up can start over: every cookie
+// of the site and its subdomains, the storage of each origin it reaches,
+// and the caller's tabs there. On 10-02 an agent made TikTok forget a
+// failed sign-up in Settings > Privacy > Manage Website Data, a row at a
+// time, while the site's open tabs set its cookies again. Safari gives an
+// extension no browsingData, so a page of each origin empties its own
+// storage: the caller's tabs on the site, then one opened on the address's
+// origin, the bare site, and www. The cookies go last, once no page of the
+// caller's is left there to set them again. A tab of the user's on the
+// site stops it: it would sign him out there, and his page would set the
+// cookies again.
+export async function clearSite(opts: { tab?: unknown; url?: string }) {
+  // the extension's tabInfo answer; a url names the site without a tab
+  const info = opts.url === undefined ? ((await relay(await resolveTab(opts.tab), "tabInfo")) as { url?: string }) : undefined;
+  const address = URL.parse(opts.url ?? info?.url ?? "");
+  if (!address || !/^https?:$/.test(address.protocol)) throw new Error("clear needs a web page or a url, like https://tiktok.com");
+  const domain = site(address.hostname);
+  const onSite = (url?: string) => {
+    const host = URL.parse(url ?? "")?.hostname;
+    return host === domain || !!host?.endsWith(`.${domain}`);
+  };
+  const tabs = (await listTabs()).filter((t) => onSite(t.url));
+  const me = currentOwner();
+  const mine = tabs.filter((t) => harnessTabs.has(t.id) && harnessTabs.get(t.id)?.owner === me);
+  // tabsView shows a caller with no agent behind it every tab on the site
+  const his = (await tabsView(tabs, new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), { host: domain }))
+    .filter((t): t is TabInfo => typeof t !== "string" && !mine.some((m) => m.id === t.id));
+  if (his.length > 0) throw new Error(`${domain} is open in the user's tabs: ${his.map((t) => `tab ${t.id} ${URL.parse(t.url ?? "")?.origin}`).join(", ")}. A clear would sign him out there, and his pages would set its cookies again: ask him to close them, then clear again`);
+  const why = `by a cookies clear of ${domain}`;
+  const reached: Reached = { cleared: new Set(), notReached: [] };
+  for (const t of mine) await emptyIn(t.id, t.url, reached);
+  for (const origin of new Set([address.origin, `https://${domain}`, `https://www.${domain}`])) {
+    if (!reached.cleared.has(origin)) await emptyThrough(origin, onSite, reached, why);
+  }
+  for (const t of mine) await closeTab(t.id, why);
+  const jar = (await bridge.request("cookies.clear", [domain], 30000)) as { removed: number; left: number };
+  return { site: domain, cookiesRemoved: jar.removed, cookiesLeft: jar.left, originsCleared: [...reached.cleared], ...(reached.notReached.length > 0 ? { notReached: reached.notReached } : {}), tabsClosed: mine.map((t) => t.id) };
+}
+
+// The origins a clear emptied, and each it could not, with why.
+type Reached = { cleared: Set<string>; notReached: string[] };
+
+async function emptyIn(tab: number, url: string | undefined, reached: Reached): Promise<void> {
+  try {
+    // the extension's storage.clear answer
+    const page = (await bridge.request("storage.clear", [tab], 30000)) as { origin: string };
+    reached.cleared.add(page.origin);
+  } catch (e) {
+    reached.notReached.push(`${URL.parse(url ?? "")?.origin}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// Opens origin's /robots.txt in a background tab, where none of the site's
+// scripts run to fill its storage again, empties the page it lands on when
+// that is on the site, and closes it. A bare site that sends its pages to
+// www is not reached.
+async function emptyThrough(origin: string, onSite: (url?: string) => boolean, reached: Reached, why: string): Promise<void> {
+  const page = await openTab(`${origin}/robots.txt`, true).catch((e: unknown) => {
+    reached.notReached.push(`${origin}: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  if (!page) return;
+  // the sweep closes it should the daemon stop before this does
+  own(page.id, currentOwner());
+  try {
+    const landed = URL.parse(page.url ?? "")?.origin;
+    if (landed !== origin) reached.notReached.push(`${origin}: its page went to ${landed}`);
+    if (landed !== undefined && onSite(page.url) && !reached.cleared.has(landed)) await emptyIn(page.id, page.url, reached);
+  } finally {
+    await closeTab(page.id, why);
+  }
+}
+
 export async function pageFetch(opts: { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const url = str(opts.url, "url");
@@ -1414,13 +1486,15 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => capture({ start: consoleStart, read: consoleRead }, a),
   },
   cookies: {
-    desc: "Cookies for the tab's site. Values are secrets: never repeat them. do: set adds one (not HttpOnly).",
-    params: { tab: TAB, url: { type: "string", description: "another site's URL" }, do: { type: "string", enum: ["read", "set"], description: "default read" }, name: { type: "string", description: "to set" }, value: { type: "string", description: "to set" } },
+    desc: "Cookies for the tab's site. Values are secrets: never repeat them. do: set adds one (not HttpOnly); clear wipes the site, signing the user out.",
+    params: { tab: TAB, url: { type: "string", description: "another site's URL" }, do: { type: "string", enum: ["read", "set", "clear"] }, name: { type: "string", description: "to set" }, value: { type: "string", description: "to set" } },
     unlisted: { domain: { type: "string", description: "to set" }, path: { type: "string", description: "to set" }, expires: { type: "number", description: "to set, seconds since 1970" } },
     required: ["tab"],
-    run: (a) => a.do === "set"
-      ? setCookie(a as { tab?: number; url?: string; name: string; value: string })
-      : cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined }),
+    run: (a) => {
+      if (a.do === "set") return setCookie(a as { tab?: number; url?: string; name: string; value: string });
+      if (a.do === "clear") return clearSite({ tab: a.tab, url: a.url as string | undefined });
+      return cookies({ tab: a.tab as number | undefined, url: a.url as string | undefined });
+    },
   },
   shot: {
     desc: "Screenshot the tab's page; returns a PNG path. ref crops to it; annotate labels refs; fullPage stitches the whole page.",

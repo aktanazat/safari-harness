@@ -102,6 +102,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              part of its url (the latest with it)
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
+  safari cookies clear --tab N|--url U       forget the site (cookies, storage);
+                                             closes your tabs on it
   safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]
                                              screenshot what the tab shows
   safari download <ref|url> [--out file] [--tab N]
@@ -707,6 +709,7 @@ async function main() {
       break;
     }
     case "cookies": {
+      if (positional[0]) args.do = positional[0];
       const u = flag("url", rest);
       if (u) args.url = u;
       break;

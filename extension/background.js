@@ -807,6 +807,19 @@ async function screenshot(tabId, opts) {
   return { data: await pngOf(c), screens: shots.length, cut: shots.length === FULL_PAGE_MAX && page.h > FULL_PAGE_MAX * page.ih };
 }
 
+// Runs in the page: empties what its origin keeps, and says the origin
+// (storage.clear). A database the page holds open goes once the page
+// closes, as clearSite in daemon/tools.ts closes it next. A page that is
+// not secure has no caches and no service workers.
+async function emptyStorage() {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  for (const db of await window.indexedDB.databases()) window.indexedDB.deleteDatabase(db.name);
+  for (const key of (await window.caches?.keys()) ?? []) await window.caches.delete(key);
+  for (const r of (await window.navigator.serviceWorker?.getRegistrations()) ?? []) await r.unregister();
+  return { origin: window.location.origin };
+}
+
 // ---------- handlers ----------
 
 async function handle(msg) {
@@ -939,6 +952,23 @@ async function handle(msg) {
       const c = await api.cookies.set(cookie);
       if (!c) throw new Error("Safari refused the cookie; check its url, domain, and secure flag");
       return { ok: true, name: c.name, domain: c.domain, path: c.path };
+    }
+    // Every cookie of a site and its subdomains (clearSite in
+    // daemon/tools.ts). Safari removes one a call, the first of that name
+    // the url would carry, so each goes by its own host and path. The
+    // answer counts them and holds no value.
+    case "cookies.clear": {
+      const [site] = args;
+      const all = await api.cookies.getAll({ domain: site });
+      for (const c of all) await api.cookies.remove({ url: `https://${c.domain.replace(/^\./, "")}${c.path}`, name: c.name });
+      const left = await api.cookies.getAll({ domain: site });
+      return { removed: all.length - left.length, left: left.length };
+    }
+    case "storage.clear": {
+      const [tabId] = args;
+      const [r] = await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func: emptyStorage });
+      if (!r) throw new Error("the page did not run it");
+      return r.result;
     }
     case "dialogs": {
       const [tabId, policy] = args;
