@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
+import { queuePopup } from "./continuity.ts";
 import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { INPUT_TOOLS } from "./input.ts";
@@ -21,10 +22,11 @@ import { callTool } from "./tools.ts";
 const GHOSTTY = "com.mitchellh.ghostty";
 
 // Safari's answer to press_mark, the errors the page threw by press_done,
-// the helper's answer to press, the page area of Safari's front window, and
+// the helper's answer to press, the page area of Safari's front window,
 // what the page did on each scripted click, in order (withReceipt in
-// extension/content.js; nothing by default).
-type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[] };
+// extension/content.js; nothing by default), and the tab it opens on a real
+// click, which the daemon queues for the agent (continuity.ts).
+type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[]; popup?: { tab: number; url: string } };
 type Mac = {
   app: string;
   // helper commands, and what Safari was asked of its tabs and pages, in order
@@ -86,12 +88,15 @@ function mac(page: Page = {}): Mac {
       return page.press ?? { pressed: true };
     }
     if (args[0] === "webarea") return page.area ?? { x: 0, y: 100, width: 1200, height: 800 };
-    // the helper's closing F20, which the page counts
-    if (args[0] === "click") marks++;
+    if (args[0] === "click") {
+      // the helper's closing F20, which the page counts
+      marks++;
+      if (page.popup) queuePopup(process.pid, page.popup);
+    }
     return {};
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map([[2, 7]]));
-  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => callTool(tool, args));
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => callTool(tool, args, undefined, daemonRpc.takesNews()));
   return m;
 }
 
@@ -293,4 +298,12 @@ test("a caller run checks later arguments before sending any real input", async 
   ] }, true);
   expect(result).toMatchObject({ steps: [{ step: 2, tool: "press", error: expect.any(String) }], notRun: 1 });
   expect({ helper: m.helper, page: m.asked }).toEqual({ helper: [], page: [] });
+});
+
+// A sign-in button opens its window as the real mouse clicks it. Before,
+// the daemon calls real_input made after the click took that news and
+// dropped it, so the agent never heard of the window.
+test("a real click's answer carries the tab its action opened", async () => {
+  mac({ popup: { tab: 22, url: "https://accounts.example/" } });
+  expect(await runAs(process.pid, () => invoke("real_input", { tab: 21, do: "click", ref: "#go", count: 2 }, true))).toEqual({ ok: true, at: { x: 140, y: 160 }, popup: { tab: 22, url: "https://accounts.example/" } });
 });

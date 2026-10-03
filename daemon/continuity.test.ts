@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
-import { callTool, formatResult, loadTabs } from "./tools.ts";
+import { callTool, endTurn, formatResult, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 201, 202, ...; a page op
 // answers from the tab it reached, which is noted, as is each close.
@@ -106,9 +106,34 @@ test("a popup an agent's tab opens on its own is that agent's, and its next resu
   expect(await as("info", { tab: opener })).not.toHaveProperty("popup");
 });
 
-test("a popup from a tab the agent kept for the user, which is his, is left alone", async () => {
-  const kept = await open(false, true);
-  fromExtension({ kind: "popup", tab: 270, opener: kept, url: "https://login.example/" });
-  expect(owners()).not.toContainKey("270");
-  expect(await as("info", { tab: kept })).not.toHaveProperty("popup");
+// On 10-02 an agent kept a TikTok sign-up for the user. Before, a popup a
+// kept tab opened was reported to no one, that agent included.
+test("popups from a tab an agent kept, and theirs, reach that agent's next results as the user's, and stay open as its turn ends", async () => {
+  const kept = await open();
+  await as("keep", { tab: kept });
+  const keptAtOpen = await open(true, true);
+  fromExtension({ kind: "popup", tab: 270, opener: kept, url: "https://accounts.example/" });
+  fromExtension({ kind: "popup", tab: 271, opener: 270, url: "https://accounts.example/passkey" });
+  fromExtension({ kind: "popup", tab: 272, opener: keptAtOpen, url: "https://pay.example/" });
+  const news = async () => formatResult(await as("info", { tab: kept })).split("\n")[0];
+  const lines = [await news(), await news(), await news()];
+  const mine = Object.entries(owners()).filter(([, owner]) => owner === agent.pid).map(([tab]) => Number(tab));
+  const { promise, resolve } = Promise.withResolvers<void>();
+  onClose = () => { if (mine.every((tab) => closed.includes(tab))) resolve(); };
+  onClose();
+  endTurn(agent.pid);
+  await promise;
+  expect({ lines, closed: closed.filter((tab) => tab >= 270 && tab <= 272) }).toEqual({
+    lines: [270, 271, 272].map((tab) => expect.stringMatching(new RegExp(`\\b${tab}\\b.*\\bstays open for the user\\b`))),
+    closed: [],
+  });
+});
+
+// real_input's calls to the daemon between the steps of its action opt out,
+// so the news waits for the call that answers the agent (input.ts).
+test("a call that opts out of news leaves the agent's popup for its next call", async () => {
+  const opener = await open();
+  fromExtension({ kind: "popup", tab: 280, opener, url: "https://login.example/" });
+  expect(await runAs(agent.pid, () => callTool("info", { tab: opener }, false, false))).not.toHaveProperty("popup");
+  expect(await as("info", { tab: opener })).toMatchObject({ popup: { tab: 280, url: "https://login.example/" } });
 });

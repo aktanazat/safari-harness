@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { CALLER_TOOLS } from "./caller.ts";
 import { keeperRunning } from "./groups.ts";
 import { beside, checkCall, checkStep, nameIn } from "./guard.ts";
-import { rpc } from "./rpc.ts";
+import { quietly, rpc, takesNews } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
 import { secretType, typeSecret } from "./secret.ts";
 import { TOOLS, runSteps } from "./tools.ts";
@@ -38,7 +38,9 @@ function callerSteps(tool: string, args: Record<string, unknown>): boolean {
 // Check Status ignored scripted clicks, and my.uscis.gov kept no scripted
 // text. Answers the real_input call it becomes and why, or undefined. The
 // harness's own calls (a site's helpers) go as written.
-async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<{ args: Record<string, unknown>; snapshot: boolean; why: string } | undefined> {
+type Routed = { args: Record<string, unknown>; snapshot: boolean; why: string };
+
+async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<Routed | undefined> {
   const name = nameIn(DAEMON_NAMES, tool);
   if (name !== "click" && name !== "type") return undefined;
   const { snapshot, ...a } = checkCall(TOOLS, tool, args, true).args;
@@ -60,18 +62,34 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   // A type that fills in a code keeps its own way (secret.ts): nothing
   // reaches the daemon before the code has come.
   const routed = model && !coded ? await asReal(tool, args, real) : undefined;
+  if (!routed && !coded && nameIn(CALLER_NAMES, tool) === undefined) {
+    const result = await rpc(tool, args, model);
+    claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
+    return result;
+  }
+  return withNews(args.tab, () => runHere(tool, args, model, coded, routed));
+}
+
+// A call that runs here makes daemon calls along the way (real input's
+// locate and press, a handoff's watch, a card's fields). Their answers
+// leave the agent's news (continuity.ts) to this call's, which takes it
+// once at the end. Before, each took it and dropped it, so a tab a real
+// click opened was never reported. A failed call leaves it for the next.
+async function withNews(tab: unknown, run: () => Promise<unknown>): Promise<unknown> {
+  const result = await quietly(run);
+  if (!takesNews() || process.env.SAFARI_HARNESS_REMOTE || result === null || typeof result !== "object" || Array.isArray(result)) return result;
+  const news = await rpc("news", tab === undefined ? {} : { tab }).catch(() => ({}));
+  return { ...result, ...(news as object) };
+}
+
+async function runHere(tool: string, args: Record<string, unknown>, model: boolean, coded: boolean, routed: Routed | undefined): Promise<unknown> {
   if (routed) {
     const result = beside(await invoke("real_input", routed.args, model), "note", routed.why);
     return routed.snapshot ? { ...(result as object), page: await rpc("snapshot", { tab: routed.args.tab }) } : result;
   }
   if (nameIn(CALLER_NAMES, tool) === undefined) {
-    if (coded) {
-      const a = checkCall(TOOLS, tool, args, model).args;
-      return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model));
-    }
-    const result = await rpc(tool, args, model);
-    claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
-    return result;
+    const a = checkCall(TOOLS, tool, args, model).args;
+    return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model));
   }
   // real_input takes a code's source as type does, and its own parameters
   // go to it (secret.ts).

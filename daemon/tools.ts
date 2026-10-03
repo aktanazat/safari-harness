@@ -193,10 +193,29 @@ export function endTurn(owner: number): void {
 
 // A tab the user is to see or answer outlives its agent's turn and its
 // exit, as one opened with keep does. The extension still answers its
-// dialogs, so the agent can go on in it once he has answered.
+// dialogs, so the agent can go on in it once he has answered, and the
+// agent hears of the popups it opens (keepers).
 export function keepTab(tab: number): { ok: true } {
-  forget(followTab(tab));
+  const id = followTab(tab);
+  forget(id);
+  const keeper = currentOwner();
+  if (keeper !== undefined) keptBy(id, keeper);
   return { ok: true };
+}
+
+// The agent that kept each tab, and each popup those open, until it exits.
+// Before, a popup a kept tab opened was reported to no one, the agent that
+// kept it included; on 10-02 one kept a TikTok sign-up for the user.
+const keepers = new Map<number, number>();
+const keeperWatches = new Map<number, () => void>();
+
+function keptBy(tab: number, keeper: number) {
+  keepers.set(tab, keeper);
+  if (keeperWatches.has(keeper)) return;
+  keeperWatches.set(keeper, watchOwner(keeper, () => {
+    keeperWatches.delete(keeper);
+    for (const [kept, k] of keepers) if (k === keeper) keepers.delete(kept);
+  }));
 }
 
 async function sweep() {
@@ -254,7 +273,8 @@ function save() {
 // What the daemon keeps per tab follows a tab Safari swapped for another,
 // and every tab once a reloaded extension says their new ids. A popup an
 // agent's tab opened on its own is that agent's, as a tab its click opens
-// is (action); one the user's own tabs open stays his.
+// is (action); one the user's own tabs open stays his. So does one a tab
+// kept for him opens, and the agent that kept it hears of it (keepers).
 bridge.onTab = (e) => {
   if (e.kind === "replaced") {
     recordReplaced(e.from, e.to);
@@ -283,9 +303,14 @@ bridge.onTab = (e) => {
     return;
   }
   const from = harnessTabs.get(e.opener);
-  if (!from) return;
-  own(e.tab, from.owner);
-  if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
+  const keeper = keepers.get(e.opener);
+  if (from) {
+    own(e.tab, from.owner);
+    if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
+  } else if (keeper !== undefined) {
+    keptBy(e.tab, keeper);
+    queuePopup(keeper, { tab: e.tab, url: e.url, kept: true });
+  } else return;
   note("popup", { tab: e.tab, opener: e.opener });
 };
 
@@ -294,6 +319,7 @@ function moveKept(from: number, to: number): boolean {
   move(lastSnapshot, from, to);
   move(handoffs, from, to);
   move(tabSecrets, from, to);
+  move(keepers, from, to);
   return move(harnessTabs, from, to);
 }
 
@@ -1172,7 +1198,8 @@ export const TOOLS: Record<string, Tool> = {
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
       const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
-      if (!a.keep) own(t.id, currentOwner());
+      if (a.keep) keepTab(t.id);
+      else own(t.id, currentOwner());
       return withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
     },
   },
@@ -1474,6 +1501,14 @@ export const TOOLS: Record<string, Tool> = {
       return true;
     },
   },
+  // Nothing but the caller's news of its tabs (withTabNews adds it to this
+  // empty answer), for a call that ran in the caller (call.ts).
+  news: {
+    desc: "The caller's news of its tabs: a new id for the tab it named, and a tab its page opened.",
+    params: { tab: TAB },
+    hidden: true,
+    run: async () => ({}),
+  },
   // The element marked for the helper's press, and its window's size
   // (pressMark in content.js).
   press_mark: {
@@ -1484,8 +1519,8 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => relay(await resolveTab(a.tab), "pressMark", [str(String(a.ref), "ref")]),
   },
   // Unmarked once the press has reached it, or after ms. The answer is the
-  // errors the page threw from the mark on, a list and no object, so news
-  // of a tab the press opened waits for the agent's next call (withTabNews).
+  // errors the page threw from the mark on; news of a tab the press opened
+  // comes in real_input's answer (input.ts).
   press_done: {
     desc: "Unmark an element once the press has reached it, or after ms; list the errors the page threw since the mark.",
     params: { tab: TAB, ref: REF, mark: { type: "string", description: "from press_mark" }, ms: { type: "number", description: "longest wait for the press" } },
@@ -1698,11 +1733,13 @@ export function formatResult(value: unknown): string {
 
 // A model's call (its own, or a step of its run) is checked and watched
 // (guard.ts); an acting call waits its turn on the tab (lanes.ts). Every
-// answer has the secrets in its addresses cut (redact.ts).
-export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel()): Promise<unknown> {
+// answer has the secrets in its addresses cut (redact.ts). A call with news
+// false leaves its caller's news (continuity.ts) to a later call, as
+// real_input's steps do (input.ts).
+export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
   try {
-    return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => withTabNews(call.args.tab, () => revived(call.tool, call.args)))));
+    return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)))));
   } catch (e) {
     throw goneWhy(e, call.args.tab);
   }

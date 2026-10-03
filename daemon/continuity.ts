@@ -5,14 +5,15 @@
 // replaced: {from, to}, so the agent can move to the new id. A popup an
 // agent's page opens later, outside any action (a sign-in window a script
 // opens), is that agent's tab too, and the agent's next result says popup:
-// {tab, url}. The extension reports all three (background.js); tools.ts
-// moves what it keeps per tab.
+// {tab, url}. One that a tab the agent kept for the user opens stays his,
+// as that tab does, and the news says kept: true. The extension reports
+// all three (background.js); tools.ts moves what it keeps per tab.
 
 import { bridge } from "./bridge.ts";
 import { currentOwner } from "./owner.ts";
 
 type Replaced = { from: number; to: number };
-type Popup = { tab: number; url: string };
+type Popup = { tab: number; url: string; kept?: true };
 type News = { replaced?: Replaced; popup?: Popup };
 
 // Old id to newest, for the extension connection it was reported on. Once
@@ -74,9 +75,11 @@ export async function withTabNews(tab: unknown, run: () => Promise<unknown>): Pr
 export function splitNews(value: News): { line: string; rest: object } | null {
   const { replaced, popup, ...rest } = value;
   if (!replaced && !popup) return null;
+  const opened = popup ? `opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}` : "";
   const lines = [
     ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}: Safari gave it a new id; use ${replaced.to}`] : []),
-    ...(popup ? [`your page opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}; it is yours to use and close`] : []),
+    // a popup of a tab the agent kept is the user's, as that tab is
+    ...(popup ? [popup.kept ? `a tab you kept ${opened}; it stays open for the user` : `your page ${opened}; it is yours to use and close`] : []),
   ];
   return { line: lines.join("\n"), rest };
 }

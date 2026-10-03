@@ -73,12 +73,26 @@ async function back(base: string, ms: number): Promise<boolean> {
   return false;
 }
 
+// A call that runs in this process (call.ts) makes daemon calls of its own
+// along the way. Their answers leave the agent's news of its tabs
+// (continuity.ts) to the one the agent gets, which takes it once at the end.
+const quiet = new AsyncLocalStorage<true>();
+
+export function quietly<T>(fn: () => Promise<T>): Promise<T> {
+  return quiet.run(true, fn);
+}
+
+// Whether a call made now takes the agent's news.
+export function takesNews(): boolean {
+  return quiet.getStore() === undefined;
+}
+
 // model: the call is one a model wrote, which the daemon checks and
 // watches (guard.ts).
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
   const asked = asker.getStore();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? process.pid), ...(ownsCalls && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}) });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? process.pid), ...(ownsCalls && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   let res = await attempt(base, body);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body);
   if (res === "refused") throw new Error(`safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`);

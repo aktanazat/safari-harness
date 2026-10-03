@@ -199,15 +199,16 @@ const rpcServer = Bun.serve({
       if (stopping) return Response.json({ ok: false, restarting: true, error: `the safari daemon is restarting (${stopping}); try again in a moment` }, { status: 503 });
       let body: unknown;
       try { body = await req.json(); } catch { return Response.json({ ok: false, error: "bad json" }, { status: 400 }); }
-      const { tool, args, caller, own, model } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown };
+      const { tool, args, caller, own, model, news } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown };
       if (!tool) return Response.json({ ok: false, error: "missing tool" }, { status: 400 });
       inFlight++;
       try {
         // A call works for the agent above its caller, or for the caller
         // itself when it owns its calls: a named REPL session (rpc.ts).
+        // news: false leaves the agent's news to a later call (rpc.ts).
         const pid = Number.isInteger(caller) && Number(caller) > 1 ? Number(caller) : undefined;
         const owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
-        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true)));
+        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false)));
         return Response.json({ ok: true, value });
       } catch (e) {
         return Response.json({ ok: false, error: String(e instanceof Error ? e.message : e) });

@@ -120,8 +120,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   form waiting on his answer. `keep: true` on `open` (CLI `safari open
   <url> --keep`), or `keep {tab}` once you know (CLI `safari keep <tab>`),
   leaves it open past your turn and your exit; close it yourself once he
-  is done with it. Tabs on another Mac (`--host`) close only once nobody
-  has used them for 20 minutes.
+  is done with it. Its popups are his as well, and still come in your
+  next result (below). Tabs on another Mac (`--host`) close only once
+  nobody has used them for 20 minutes.
 - A native sheet (a sign-in or permission prompt) can keep Safari from
   closing a tab. A tab the harness opened still closes, within about 15 s;
   `close` on any other tab so held, or in a window off screen, fails within
@@ -132,7 +133,13 @@ Safari is the user's everyday browser, so treat his tabs as his.
 - A page's own script can open a tab later, outside any action (a sign-in
   popup). One that a background tab of yours opens is yours too: your next
   result carries `popup` with its `tab` and `url`. Close it like any other.
-  A tab the user's own tabs open stays his.
+  One that a tab you kept opens, or a popup of that one, is the user's, as
+  the kept tab is: your next result carries it with `kept: true`, and it
+  stays open past your turn and your exit. A tab opened in front with
+  `keep: true` reports none. A tab the user's own tabs open stays his. A
+  tab opened while `real_input`, `handoff`, or `passwords` works comes in
+  that call's answer once Safari has reported it, else in your next
+  result.
 - Safari sometimes swaps a tab for a new one under a new id (a page it
   prepared ahead), and gives every tab a new id when the extension reloads
   (each deploy of it). Calls with the old id still reach the tab, and the
@@ -673,8 +680,10 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   before giving the tab back, so nothing lands in the user's tab; the page
   sees one extra press of F20, a key no Mac keyboard has. Keys go only to
   a page with keyboard focus: if Safari's address or find bar has it, the
-  call fails and nothing is typed. The app running the MCP server or CLI
-  needs Accessibility permission.
+  call fails and nothing is typed. The answer carries `popup` for a tab
+  the action opened (a sign-in window), once Safari has reported it; one
+  it reports later comes in your next result. The app running the MCP
+  server or CLI needs Accessibility permission.
 - A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
   egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
   once real input worked there: `learn {site, real: true}` (CLI `safari
