@@ -260,6 +260,9 @@ function toolDef(cmd: string): Tool | undefined {
 // parameters (open --bg, snapshot --max).
 const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot"];
 const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg"], snapshot: ["max"], shot: ["full"], eval: ["file"], run: ["steps-file"] };
+// A parameter a command takes under another flag: tabs's host is --site,
+// since --host names another Mac. Its help said --host (10-04, 01a10737).
+const FLAG_FOR: Record<string, Record<string, string>> = { tabs: { host: "site" } };
 
 // A tool's parameters given as --name value, however the name is written
 // (--max-bytes, or --note for learn's fact, as a model's call may name
@@ -307,7 +310,7 @@ function commandHelp(cmd: string): string | null {
   const def = toolDef(cmd);
   if (!def) return usage.length ? usage.join("\n") : null;
   const params = Object.entries(def.params).map(([name, p]) =>
-    `  --${name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${def.required?.includes(name) ? " (required)" : ""}\n      ${p.description}`);
+    `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${def.required?.includes(name) ? " (required)" : ""}\n      ${p.description}`);
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
 
@@ -638,8 +641,7 @@ async function main() {
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
 
   switch (cmd) {
-    // --site, since --host names another Mac
-    case "tabs": args.host = flag("site", rest) ?? null; break;
+    case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? null; break;
     case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
