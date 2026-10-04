@@ -17,7 +17,12 @@ hosts: mercor.com
 - "Provision access" opens a c-mercor.okta.com reset-password tab. With an old Okta session in Safari it lands on /login/signout and shows "400 Bad Request" every time; run cookies clear on https://c-mercor.okta.com, then click Provision access again.
 - The login is new to Apple Passwords: run passwords change with site c-mercor.okta.com and the account's email as username, then click Reset Password.
 - "Set up security methods" is required next. "Security Key or Biometric Authenticator" makes a Touch ID passkey: click it, then hand off for Set up (only the user can approve). Done lands on /app/UserHome.
-- Next on the Mercor Okta step then moves on, while the "7 of 14 steps" count stays as it was.
+- The Okta step turns done only when Provision access is clicked again after the account is active: Mercor then reads the Okta user as active and moves to Payment setup.
+
+## Tax form and payments
+- The W-9 does not keep what was typed once the tab closes. Fill it in a tab the user will finish (keep), leave the SSN to him, and let him press "Agree and sign".
+- Background check: "Start verification" with United States emails a Certn invite (no-reply@certn.co, "Background Screening Request From Mercor"); its apply link opens the Certn form.
+- Payments: pick United States, then Stripe, then "Continue to Stripe". Stripe's email step needs real_input on Continue, and then shows an hCaptcha picture puzzle, which is the user's.
 
 ## Earnings
 - The payment report is emailed, not downloaded: the page says "Payment Report request sent". Read it from the account's mail.
