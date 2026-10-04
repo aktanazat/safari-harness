@@ -565,7 +565,14 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
     if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage();
     throw e;
   });
-  return answer.catch(async (e: unknown) => { throw await unanswered(e); });
+  // eval's own world gets no animation frame while its tab is hidden: the
+  // ticks that keep a harness tab's page running drive only the page's
+  // callbacks (dialogs.js). On 10-04 an eval that awaited one ran its full
+  // 30 s (01a104d2), and one did on 09-27 (01a0e20a).
+  return answer.catch(async (e: unknown) => {
+    if (!opts.page && e instanceof Error && e.message.startsWith("your code ran past") && code.includes("requestAnimationFrame")) throw new Error(`${e.message}. eval's requestAnimationFrame never fires while the tab is hidden; use setTimeout`);
+    throw await unanswered(e);
+  });
 }
 
 // eval {reader} runs the script an agent saved for the tab's site, or a

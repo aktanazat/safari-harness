@@ -78,27 +78,43 @@ test("the prefix of a frame's refs runs a script in that frame, in either world"
   }
 });
 
+// The error that code still running at eval's limit fails with, the clock
+// run past the limit while the answers settle.
+async function pastLimit(expression: string, page = false): Promise<unknown> {
+  jest.useFakeTimers();
+  try {
+    let error: unknown;
+    const ran = run(expression, page).catch((e: unknown) => {
+      error = e;
+    });
+    for (let ms = 0; error === undefined && ms < 40_000; ms += 500) {
+      // the answers settle in microtasks, which all run before the next turn
+      const turn = Promise.withResolvers<void>();
+      setImmediate(turn.resolve);
+      await turn.promise;
+      jest.advanceTimersByTime(500);
+    }
+    await ran;
+    return error;
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
 // On 09-30 page-world code past 30 s was told only that the daemon's
 // request timed out: the page's answer at eval's limit must come first.
 test("code past eval's limit gets the page's answer in either world, not the daemon's time-out", async () => {
-  jest.useFakeTimers();
+  for (const page of [false, true]) expect(String(await pastLimit("new Promise(() => {})", page))).toMatch(/ran past/);
+});
+
+// On 10-04 an eval that awaited an animation frame in a background tab ran
+// its full 30 s, and the error said only to keep sleeps out of eval. A
+// hidden tab gives eval's world no frame: here the frame never comes.
+test("code that waits on an animation frame past eval's limit is told hidden tabs draw none", async () => {
+  const frame = Object.assign(globalThis, { requestAnimationFrame: () => 0 });
   try {
-    for (const page of [false, true]) {
-      let error: unknown;
-      const ran = run("new Promise(() => {})", page).catch((e: unknown) => {
-        error = e;
-      });
-      for (let ms = 0; error === undefined && ms < 40_000; ms += 500) {
-        // the answers settle in microtasks, which all run before the next turn
-        const turn = Promise.withResolvers<void>();
-        setImmediate(turn.resolve);
-        await turn.promise;
-        jest.advanceTimersByTime(500);
-      }
-      await ran;
-      expect(String(error)).toMatch(/ran past/);
-    }
+    expect(String(await pastLimit("new Promise((r) => requestAnimationFrame(r))"))).toMatch(/requestAnimationFrame never fires while the tab is hidden; use setTimeout/);
   } finally {
-    jest.useRealTimers();
+    Reflect.deleteProperty(frame, "requestAnimationFrame");
   }
 });
