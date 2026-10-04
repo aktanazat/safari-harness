@@ -484,7 +484,9 @@ test("change saves a new password and types nothing; typeChange then types the s
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
-  expect(await p.change(7)).toMatchObject({ username: USER, site: SITE });
+  const asked = await p.change(7);
+  expect(asked).toMatchObject({ username: USER, site: SITE });
+  expect(asked).not.toHaveProperty("newLogin");
   expect(page.fresh).toBeUndefined();
   expect(await p.typeChange(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
   expect(page.current).toBe(SECRET);
@@ -580,7 +582,8 @@ test.each([
 
 // A login saved only on another site may be another account, so change
 // names it and saves nothing, where it made a new entry for the page's
-// host; site then names the login's host, or the page's own for a new one.
+// host; site then names the login's host, or the page's own for a new one,
+// whose save Apple's helper asks about in a window naming no site.
 test("change refuses, saving nothing, when no login of the page's site is saved, naming the one listed, and site then saves", async () => {
   const { p } = scratch();
   const url = "https://reset.example.org/password";
@@ -588,7 +591,7 @@ test("change refuses, saving nothing, when no login of the page's site is saved,
   const { helper } = await paired(p);
   expect(await locked(p.change(7))).toContain(SITE);
   expect(helper.queries.filter((q) => q.startsWith("6 "))).toEqual([]);
-  expect(await p.change(7, USER, "reset.example.org")).toMatchObject({ username: USER, site: "reset.example.org" });
+  expect(await p.change(7, USER, "reset.example.org")).toMatchObject({ username: USER, site: "reset.example.org", newLogin: true });
   expect(helper.queries.filter((q) => q.startsWith("6 "))).toHaveLength(1);
 });
 

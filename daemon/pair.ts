@@ -62,12 +62,12 @@ export async function readCode(helper: number): Promise<string | undefined> {
   return typeof read?.code === "string" ? read.code : undefined;
 }
 
-// Presses Update Password in the helper's window that asks to save one for
-// site, the only sign a changed password saved (passwords.ts change),
-// waiting up to SAVE_WINDOW_MS for it.
-export async function confirmSave(helper: number, site: string): Promise<{ pressed: string } | { why: string }> {
+// Presses Update Password, or Save Password for a new login, in the
+// helper's window that asks to save one for site, the only sign a changed
+// password saved (passwords.ts change), waiting up to SAVE_WINDOW_MS for it.
+export async function confirmSave(helper: number, site: string, newLogin: boolean): Promise<{ pressed: string } | { why: string }> {
   try {
-    const done = await pairing(["confirm", "--pid", String(helper), "--site", site, "--wait", String(SAVE_WINDOW_MS)], SAVE_WINDOW_MS + 5000);
+    const done = await pairing(["confirm", "--pid", String(helper), "--site", site, ...(newLogin ? ["--new"] : []), "--wait", String(SAVE_WINDOW_MS)], SAVE_WINDOW_MS + 5000);
     return { pressed: String(done.pressed) };
   } catch (e) {
     return { why: e instanceof Error ? e.message : String(e) };

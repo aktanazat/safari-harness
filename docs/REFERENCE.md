@@ -1083,7 +1083,9 @@ Signing in, in this order:
      uppercase letter and a digit where allowed, and 20 characters where
      the lengths allow. Apple's helper asks in its own window whether to
      update the saved password; the call presses Update Password there,
-     only in the window naming the login's site, which needs the calling
+     only in the window naming the login's site. For a new login the window
+     asks only "Save Password?", naming no site; the call presses Save
+     Password when exactly one such window is up. Both need the calling
      terminal's Accessibility permission. It saves before it types, as Safari does, so submit
      the form next; if the site refuses the new password, the saved one is
      already new, so reset the password through the site's email link and

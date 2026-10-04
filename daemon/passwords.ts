@@ -859,7 +859,7 @@ export class ApplePasswords {
   // none, as when Paradox resets its login.paradoxplaza.com login on
   // paradoxinteractive.com, are not guessed at: the call names those listed
   // and what to pass, and saves nothing.
-  private async changedLogin(host: string, username?: string, entry?: string): Promise<{ login: string; site: string; saved: boolean }> {
+  private async changedLogin(host: string, username?: string, entry?: string): Promise<{ login: string; site: string; saved: boolean; sites: string[] }> {
     let chosen: { login: string; site: string; saved: boolean; sites: string[] };
     if (entry !== undefined) {
       const site = httpsHost(`https://${entry}`);
@@ -938,18 +938,19 @@ export class ApplePasswords {
   // Changing a password, first half: makes a strong password, asks Apple
   // Passwords to save it as the password of the login changedLogin names,
   // for the host that login is saved for, and keeps it for typeChange. The
-  // caller (fill.ts) presses Update Password in the helper's window, the
-  // only sign the save took, then calls typeChange. It is saved before it
+  // caller (fill.ts) presses Update Password, or Save Password for a login
+  // not saved yet (newLogin), in the helper's window, the only sign the
+  // save took, then calls typeChange. It is saved before it
   // is typed, as Safari saves the one it suggests, so no password the site
   // takes lives only in the page; the current password is read first,
   // while the saved one is still it, and only as the helper gives it to the
   // form's own host, as fill does: never for a site the caller names.
-  async change(tab: number, username?: string, entry?: string): Promise<{ username: string; site: string; helper?: number }> {
+  async change(tab: number, username?: string, entry?: string): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
     const own = httpsHost(form.origin);
-    const { login, site, saved } = await this.changedLogin(own, username, entry);
+    const { login, site, saved, sites } = await this.changedLogin(own, username, entry);
     let current: string | null = null;
     if (form.current === "empty") {
       if (entry !== undefined && site !== own) throw new Error("the form asks for the current password, which is filled only on the site it is saved for; call change without site");
@@ -962,7 +963,7 @@ export class ApplePasswords {
     const drop = this.timers.after(CHANGE_MS, () => this.dropChange(tab));
     this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, host: own, site, login, current, secret, drop });
     const helper = runningHelper(this.profile);
-    return { username: login, site, ...(helper ? { helper } : {}) };
+    return { username: login, site, ...(sites.includes(site) ? {} : { newLogin: true as const }), ...(helper ? { helper } : {}) };
   }
 
   // Changing a password, second half, once its save was confirmed: types

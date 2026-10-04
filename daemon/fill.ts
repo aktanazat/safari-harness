@@ -159,19 +159,20 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
 
 // A changed password is saved the way Safari saves one it suggested, and
 // Apple's helper then asks in its own window whether to update the saved
-// one, and never answers the request: that window's button is the only
-// sign it saved. Nobody watches the window for an agent, so its Update
-// Password is pressed here, where the terminal's Accessibility access is,
-// only in the window naming the form's site, and only then is the new
-// password typed into the page.
+// one, or to save a new login, and never answers the request: that
+// window's button is the only sign it saved. Nobody watches the window for
+// an agent, so its default button is pressed here, where the terminal's
+// Accessibility access is, only in the window naming the form's site, or
+// for a new login the one window asking to save it, and only then is the
+// new password typed into the page.
 async function change(a: Record<string, unknown>): Promise<unknown> {
-  const asked = (await rpc("passwords", a)) as { site: string; helper?: number };
+  const asked = (await rpc("passwords", a)) as { site: string; helper?: number; newLogin?: true };
   const pressed = asked.helper === undefined
     ? { why: "Apple's password helper is not running" }
-    : await confirmSave(asked.helper, asked.site);
+    : await confirmSave(asked.helper, asked.site, asked.newLogin === true);
   if ("why" in pressed) {
     await rpc("passwords", { do: "change-drop", tab: a.tab });
-    throw new Error(`Apple Passwords did not confirm saving the new password for ${asked.site} (${pressed.why}); nothing was typed into the page. If its window asking to update the password is still up, press Not Now, then call change again`);
+    throw new Error(`Apple Passwords did not confirm saving the new password for ${asked.site} (${pressed.why}); nothing was typed into the page. If its window asking to save or update the password is still up, press Not Now, then call change again`);
   }
   return rpc("passwords", { do: "change-type", tab: a.tab });
 }
