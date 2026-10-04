@@ -22,7 +22,9 @@ hosts: mercor.com
 ## Tax form and payments
 - The W-9 does not keep what was typed once the tab closes. Fill it in a tab the user will finish (keep), leave the SSN to him, and let him press "Agree and sign".
 - Background check: "Start verification" with United States emails a Certn invite (no-reply@certn.co, "Background Screening Request From Mercor"); its apply link opens the Certn form.
-- Payments: pick United States, then Stripe, then "Continue to Stripe". Stripe's email step needs real_input on Continue, and then shows an hCaptcha picture puzzle, which is the user's.
+- Payments: pick United States, then Stripe, then "Continue to Stripe". Stripe's email step needs real_input on Continue and may show an hCaptcha that clears itself, then texts a code (type with {{code}}). Stripe's form sits in a frame: click its buttons with real_input. A user with a Stripe Link account gets "Continue with Link", which pre-fills identity and payout bank; check the address there, it can be old. Stripe then asks for the full SSN, and "Agree and submit" warns that verification is still running; Submit anyway, and Mercor reads "Payments connected".
+- ID verification is Persona: "Start verification" shows a QR code for the phone camera (App Clip, ID photo and selfie). Only the user can do it.
+- The interview step ("Brief Introduction", about 4 minutes, camera and mic) can render blank on first load; reload it.
 
 ## Earnings
 - The payment report is emailed, not downloaded: the page says "Payment Report request sent". Read it from the account's mail.
