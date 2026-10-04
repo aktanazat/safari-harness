@@ -417,12 +417,27 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   // drawing is read once: its own snapshot waits for it (snapshot in
   // content.js), and a second wait here doubled the time a blank page took
   // to answer.
-  const snap = shieldSnapshot(await withChallenge(relay(tab, "snapshot", [{ root: opts.root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab));
+  const read = (root: string | undefined) => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
+  const { page, missed } = await narrowed("root", opts.root, read);
+  const snap = shieldSnapshot(page);
+  if (missed) return { ...snap, note: missed };
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
   lastSnapshot.set(tab, snap.snapshot);
   if (!opts.diff || before === undefined) return snap;
   return { ...snap, snapshot: lineDiff(before.split("\n"), snap.snapshot.split("\n")) || "(no change)" };
+}
+
+// A root or selector that matches nothing in any frame reads the whole
+// page instead, and says so: on 10-04 three reads named a root or selector
+// "main" a page did not have, and two next calls read it without one.
+async function narrowed<T>(option: "root" | "selector", value: string | undefined, read: (value: string | undefined) => Promise<T>): Promise<{ page: T; missed?: string }> {
+  try {
+    return { page: await read(value) };
+  } catch (e) {
+    if (value === undefined || !(e instanceof Error) || !e.message.startsWith(`nothing on the page matches ${option} `)) throw e;
+    return { page: await read(undefined), missed: `nothing on the page matches ${option} "${value}", so this is the whole page` };
+  }
 }
 
 // The lines only in `a` ("- ") and only in `b` ("+ "), in page order, from
@@ -565,9 +580,13 @@ async function runReader(tab: number | undefined, name: string) {
 // as: "table" reads the page's tables and repeated card lists as rows.
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
-  const page = (await relay(tab, "extract", [{ selector: opts.selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: "strict_selector" in opts && opts.strict_selector === true }])) as Extract | { tables: unknown[] };
+  const strict = "strict_selector" in opts && opts.strict_selector === true;
+  const read = (selector: string | undefined) => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | { tables: unknown[] }>;
+  // a secret's source must match exactly, never the whole page
+  const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // as: "table" answers rows, not text
-  return "text" in page ? shieldExtract(page) : page;
+  const out = "text" in page ? shieldExtract(page) : page;
+  return missed ? { ...out, note: missed } : out;
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {

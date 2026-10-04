@@ -310,9 +310,9 @@ Read with `snapshot` when you do not yet know what is on the page.
   when the site draws it with divs, and the name that answer gives
   (`dialog "Parent/Guardian Details 2027"`) reads that dialog. An `extract`
   `selector` takes the same two.
-  A `root`, or an `extract` `selector`, that matches nothing fails and names
-  it: `nothing on the page matches root "main"; leave root out to read the
-  whole page`.
+  A `root`, or an `extract` `selector`, that matches nothing reads the whole
+  page instead, with a `note` that says so. An `extract` with
+  `strict_selector` (a secret's source) fails instead.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
 - A dropdown shows its value and option count, not each option. Use `select`.
