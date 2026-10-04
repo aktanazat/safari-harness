@@ -290,6 +290,16 @@ test("a model run without real honors a marked site for click and type, leaves o
   expect(m.typed).toEqual(["Ada"]);
 });
 
+// On 10-04 three runs named their tab once, beside steps, and each failed
+// on its first step for want of one (01a1088c, 01a104d2, 01a0ffea).
+test("a run's own tab goes to each step that names none, whether a model or the harness runs it", async () => {
+  const m = mac();
+  const steps = [{ tool: "click", args: { ref: "#go" } }, { tool: "type", args: { ref: "#name", text: "Ada" } }];
+  expect(await invoke("run", { tab: 20, steps }, true)).toMatchObject({ notRun: 0 });
+  expect(await invoke("run", { tab: 20, steps })).toMatchObject({ notRun: 0 });
+  expect(scripted(m)).toEqual(["click 20", "type 20", "click 20", "type 20"]);
+});
+
 test("a caller run checks later arguments before sending any real input", async () => {
   const m = mac();
   const result = await invoke("run", { steps: [

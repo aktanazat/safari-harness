@@ -220,9 +220,10 @@ before doing anything. A bad later step leaves all earlier steps untouched;
 `tab` can still come from an earlier step. Once running, the first error
 skips the remaining steps except `close` and `keep`, so cleanup still runs. A step
 without `tab` uses the tab the run's latest `open` made, else the last tab a
-step named, unless the run closed it; a step naming a tab the run closed
-fails with `tab N was closed in step M`, and one naming a tab the run did
-not open gets a note. Every tool but `repl` can be a step, `real_input`,
+step named, else the run's own `tab` (`safari run --tab N`), unless the run
+closed it; a step naming a tab the run closed fails with `tab N was closed
+in step M`, and one naming a tab the run did not open gets a note. Every
+tool but `repl` can be a step, `real_input`,
 `handoff`, and the Messages tools included. From a shell, steps whose text
 holds quotes go in a file (`safari run --steps-file steps.json`) or on
 stdin (`--steps -`); a bare JSON array as the argument works too.

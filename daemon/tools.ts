@@ -1260,7 +1260,7 @@ export const TOOLS: Record<string, Tool> = {
     // real: true sends the steps' click and type on a ref as real input;
     // such a run goes step by step from the caller (call.ts).
     unlisted: { real: { type: "boolean", description: "clicks and typing on refs go as real input" } },
-    run: (a) => runSteps(a.steps),
+    run: (a) => runSteps(a.steps, callTool, undefined, a.tab),
   },
   tabs: {
     desc: "List your tabs, the user's front tab, and a count of his others.",
@@ -1876,8 +1876,10 @@ const TIDY: Record<string, true> = { close: true, keep: true };
 
 // run: several tools in one call, so an agent can open, act, read, and close
 // without a model turn between steps. A step without tab uses the tab the
-// run's latest open made, else the last tab a step named, if the run has not
-// closed it: on 09-29 an eval after a goto failed for want of one. A step
+// run's latest open made, else the last tab a step named, else the run's
+// own tab, if the run has not closed it: on 09-29 an eval after a goto
+// failed for want of one, and on 10-04 three runs that named their tab
+// once, beside steps, failed on their first step for want of it. A step
 // that names a tab the run did not open says so: a run opened CarMax as tab
 // 723049, read tab 718331 (his Gmail), and the agent reported Gmail's text
 // as CarMax's, three times. A step that names a tab the run closed fails
@@ -1887,7 +1889,7 @@ const TIDY: Record<string, true> = { close: true, keep: true };
 // wherever it runs, but for repl, which runs in its own session
 // (mcp-tools.ts, safari repl): on 09-29 an agent put repl in a run twice and
 // was offered replay.
-export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool, check: (tool: string, args: Record<string, unknown>) => Checked = (t, a) => checkStep(TOOLS, t, a)): Promise<Steps> {
+export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool, check: (tool: string, args: Record<string, unknown>) => Checked = (t, a) => checkStep(TOOLS, t, a), tab?: unknown): Promise<Steps> {
   if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
   // Catch a bad later step before an earlier one submits a form (09-30).
   const planned: { tool: string; args: Record<string, unknown>; checked: Checked }[] = [];
@@ -1906,7 +1908,7 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
   const opened: number[] = [];
   // each tab a close step shut, with that step's number
   const closed = new Map<string, number>();
-  let named: unknown;
+  let named = tab;
   let failed = false;
   for (const [i, step] of planned.entries()) {
     let tool = "?";

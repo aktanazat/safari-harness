@@ -57,7 +57,7 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
   // Model runs stay here so each step checks the site's real-input mark,
   // even without real: true (EOIR, 09-30). Internal runs keep the scripted
   // daemon path unless they explicitly contain a caller tool.
-  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => checkStep(STEP_TOOLS, t, a));
+  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => checkStep(STEP_TOOLS, t, a), args.tab);
   const coded = secretType(tool, args);
   // A type that fills in a code keeps its own way (secret.ts): nothing
   // reaches the daemon before the code has come.
