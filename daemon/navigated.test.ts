@@ -1,4 +1,5 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, mock, spyOn, test } from "bun:test";
+import { promises as dns } from "node:dns";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -83,4 +84,20 @@ test("download of a ref whose file Safari saved itself answers with that file, a
 test("pdf save of a page that keeps navigating while it is read asks to save it once it settles", async () => {
   page = { eval: went(ACCOUNT) };
   await expect(callTool("pdf", { tab: 7, out: join(dir, "moving.pdf") })).rejects.toThrow("the page kept navigating while it was read; save it once it settles");
+});
+
+// On 10-04 an agent spent three minutes finding that the network's DNS
+// block list stopped chat.z.ai, which Safari reported as a site that did
+// not answer (01a10612). The resolver is a fake: the network is not the
+// test's to change.
+afterEach(() => mock.restore());
+const BLOCKED = [{ address: "::", family: 6 }, { address: "0.0.0.0", family: 4 }];
+test.each([
+  ["a host the DNS block list stops is named as blocked", () => Promise.resolve(BLOCKED), "Safari could not open https://chat.z.ai/: a DNS block list on this network answers 0.0.0.0 for chat.z.ai, so Safari never reached the site; opening it again will not help"],
+  ["a host no DNS server knows is named as not resolving", () => Promise.reject(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" })), "Safari could not open https://chat.z.ai/: chat.z.ai does not resolve to any address: the address is wrong, the site is gone, or this Mac is offline; opening it again will not help"],
+  ["a host that resolves keeps Safari's own words", () => Promise.resolve([{ address: "155.102.177.17", family: 4 }]), "Safari could not open https://chat.z.ai/: the site did not answer"],
+])("an open Safari could not load: %s", async (_, lookup, error) => {
+  spyOn(dns, "lookup").mockImplementation(lookup as typeof dns.lookup);
+  extension = { "tabs.list": () => ({ value: [] }), "windows.open": () => ({ value: { windowId: 3, tabId: 300 } }), "tabs.open": ([url]) => ({ error: `Safari could not open ${url}: the site did not answer` }) };
+  await expect(callTool("open", { url: "https://chat.z.ai/", background: true })).rejects.toThrow(error);
 });

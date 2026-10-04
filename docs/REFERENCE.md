@@ -845,9 +845,9 @@ gone: the call says so. CLI: `safari net read --body -1 --tab N`.
   page: `eval` with `page: true` through the site's own functions, or
   `fetch`. The keys the page uses stay in the page, and no shell command
   carries them. `Load failed` is Safari's word for a request that got no
-  answer; `fetch` adds whether its host exists at all, and otherwise the
-  page's rules (CORS, its security policy) refused it or the server
-  dropped it.
+  answer; `fetch` adds whether its host exists at all, or a DNS block list
+  on this network stops it, and otherwise the page's rules (CORS, its
+  security policy) refused it or the server dropped it.
 - `pdf` saves the page as a PDF (letter pages, like Export as PDF, from the
   page's current HTML) and returns its path; a page that moves on while it
   is read is saved as the page it moved to. `do: "read"` returns a PDF's
@@ -1458,7 +1458,9 @@ its own `safari` command.
   script, which leaves out a blank tab, Safari's own pages, and a page that
   failed to load. Find the page with `tabs`, or open it again.
 - "Safari could not open <url>: the site did not answer": Safari showed its
-  error page; `open` closes the tab it made.
+  error page; `open` closes the tab it made. When a DNS block list on this
+  network answers 0.0.0.0 for the host, or no DNS server knows it, the error
+  says so: opening it again will not help.
 - "that ref's frame is gone": the frame the ref was in went away as the
   page navigated or redrew it. The error gives the tab's address; snapshot
   again.

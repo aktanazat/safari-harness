@@ -12,7 +12,7 @@ import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
-import { unanswered } from "./unanswered.ts";
+import { unanswered, unopened } from "./unanswered.ts";
 import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
@@ -1820,7 +1820,7 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   try {
     return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)))));
   } catch (e) {
-    throw goneWhy(e, call.args.tab);
+    throw await unopened(goneWhy(e, call.args.tab));
   }
 }
 
