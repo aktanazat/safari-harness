@@ -571,6 +571,10 @@ export class ReplSession {
   #page: unknown;
   #out: string[] = [];
   #chain: Promise<unknown> = Promise.resolve();
+  // Which call of the session this is, and the address each tab its
+  // openTab opened asked for, in which call (openTab).
+  #calls = 0;
+  readonly #asked = new Map<number, { address: string; call: number }>();
 
   constructor(readonly id: string, opts: { cwd?: string; invoke?: Invoke } = {}) {
     this.cwd = opts.cwd ?? process.cwd();
@@ -647,6 +651,7 @@ export class ReplSession {
 
   async #exec(code: string, timeoutMs: number): Promise<ReplResult> {
     if (this.closed) return { output: "", error: "this session has ended" };
+    this.#calls++;
     this.#out = [];
     let js: string;
     try {
@@ -721,6 +726,7 @@ export class ReplSession {
     const i = this.tabs.indexOf(p);
     if (i >= 0) this.tabs.splice(i, 1);
     this.#owned.delete(p.id);
+    this.#asked.delete(p.id);
     for (const key of this.#trees.keys()) if (key.startsWith(`${p.id}|`)) this.#trees.delete(key);
     if (this.#page === p) this.#page = this.tabs.at(-1);
   }
@@ -772,11 +778,24 @@ export class ReplSession {
     return rows.map((r) => this.#attached(r));
   }
 
-  async openTab(url: string, opts: { background?: boolean } = {}): Promise<Page> {
-    const row = (await this.call("open", { url: String(url), background: opts.background ?? true })) as TabRow & { hint?: unknown };
+  // A tab this session opened on the same address in an earlier call loads
+  // it again, unless new: true (open in tools.ts takes it only while it is
+  // free). On 10-05 a sign-up retry loop ran its script in one session
+  // every 10 minutes, and each run opened partiful.com in another tab.
+  // Within one call each openTab gets a tab of its own, as a script may
+  // read several copies of a page at once.
+  async openTab(url: string, opts: { background?: boolean; new?: boolean } = {}): Promise<Page> {
+    const address = String(url);
+    const earlier = (p: Page) => {
+      const asked = this.#asked.get(p.id);
+      return asked !== undefined && asked.address === address && asked.call < this.#calls;
+    };
+    const again = opts.new === true ? [] : this.tabs.filter(earlier).map((p) => p.id);
+    const row = (await this.call("open", { url: address, background: opts.background ?? true, ...(again.length > 0 ? { again } : {}) })) as TabRow & { hint?: unknown };
     this.showNotes(row);
     this.showHint(row.hint);
     const p = this.adopt(row);
+    this.#asked.set(p.id, { address, call: this.#calls });
     this.#page = p;
     return p;
   }
@@ -910,7 +929,7 @@ export class ReplSession {
       attachActiveBrowserTab: () => this.attachActiveBrowserTab(),
       getTabByTargetId: (id: unknown) => this.tabs.find((p) => p.targetId === String(id)) ?? null,
       getTabs: () => this.getTabs(),
-      openTab: (url: string, opts?: { background?: boolean }) => this.openTab(url, opts),
+      openTab: (url: string, opts?: { background?: boolean; new?: boolean }) => this.openTab(url, opts),
       closeTab: (p?: unknown) => this.closeTab(p),
       snapshot: (p: unknown, o?: SnapshotOptions) => this.snapshot(p, o),
       annotatedScreenshot: (p: unknown, o?: { path?: string }) => this.annotatedScreenshot(p, o),

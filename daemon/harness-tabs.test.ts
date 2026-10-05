@@ -213,6 +213,30 @@ test("a model's open loads in its agent's tab on that site, never in a form in p
   showing = [];
 });
 
+// 10-05: a sign-up retry loop ran its script in one session every 10
+// minutes, and each run opened partiful.com in another tab.
+test("a session's openTab of an address it opened in an earlier call loads that tab again, but opens another within one call or with new: true", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  // Safari lists each tab it opened, in the window it opened it in
+  const invoke = async (tool: string, args: Record<string, unknown>, model?: boolean) => {
+    const r = await runAs(agent.pid, () => callTool(tool, args, model));
+    const t = r as { id: number; windowId?: number };
+    if (tool === "open" && !showing.some((s) => s.id === t.id)) showing.push({ id: t.id, url: String(args.url), windowId: t.windowId });
+    return r;
+  };
+  const repl = new ReplSession("retry", { cwd: mkdtempSync(join(tmpdir(), "repl-retry-")), invoke });
+  // the value prints last, after any hint
+  const ids = async (code: string) => JSON.parse((await repl.run(`JSON.stringify(${code})`)).output.split("\n").at(-1) ?? "") as number[];
+  const open = "(await openTab('https://events.example/rsvp')).id";
+  const [first] = await ids(`[${open}]`);
+  const [again, second] = await ids(`[${open}, ${open}]`);
+  const [fresh] = await ids("[(await openTab('https://events.example/rsvp', { new: true })).id]");
+  expect([again, second === first, fresh === first || fresh === second]).toEqual([first, false, false]);
+  agent.kill();
+  await closedAs("owned", [first, second, fresh]);
+  showing = [];
+});
+
 // He quit Safari: a sweep that asked it anything would start it again. An
 // exited agent's tab then waits, unasked, for the extension to come back.
 test("a sweep asks nothing of Safari while its extension is gone", async () => {

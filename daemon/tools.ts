@@ -129,15 +129,16 @@ async function alsoOn(tab: number, url: string): Promise<string | undefined> {
 // progress). Of several, the one used longest ago goes, and a tab being
 // loaded is claimed, so two opens at once take two tabs. Scripts, map, and
 // replay call as no model (repl.ts, map.ts, replay.ts): each of their
-// opens gets a tab of its own.
+// opens gets a tab of its own, but for a script's open of an address its
+// session opened in an earlier call, which may take a tab named in again.
 const reusing = new Set<number>();
 
-async function reuseTab(address: string, space: Space): Promise<{ tab: TabInfo & { space: SpaceNote }; was: string } | undefined> {
+async function reuseTab(address: string, space: Space, among?: Set<number>): Promise<{ tab: TabInfo & { space: SpaceNote }; was: string } | undefined> {
   const owner = currentOwner();
   const host = pageHost(address);
   const free = (id: number) => {
     const t = harnessTabs.get(id);
-    return t !== undefined && t.owner === owner && !t.site && !t.acted && !t.closing && !reusing.has(id);
+    return t !== undefined && t.owner === owner && !t.site && !t.acted && !t.closing && !reusing.has(id) && (among === undefined || among.has(id));
   };
   if (owner === undefined || host === undefined || ![...harnessTabs.keys()].some(free)) return undefined;
   const fits = (await listTabs().catch((): TabInfo[] => [])).filter((t): t is TabInfo & { url: string } => free(t.id) && t.windowId === space.window && !t.front && pageHost(t.url) === host);
@@ -1433,12 +1434,13 @@ export const TOOLS: Record<string, Tool> = {
   open: {
     desc: 'Open a URL and wait until it is readable; pass its id as tab to later calls. tab "front": the user\'s front tab, when he asks about it.',
     params: { url: { type: "string", description: "address" }, background: { type: "boolean", description: "keep the current tab in front" }, group: { type: "string", description: "task name: a window of its own" }, keep: { type: "boolean", description: "leave it open for the user" }, new: { type: "boolean", description: "else your tab on its site is reused" }, snapshot: PAGE },
-    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" } },
+    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" } },
     required: ["url"],
     run: async (a) => {
       const address = webAddress(a.url);
       const space = await spaceWindow(a.group === undefined ? undefined : str(a.group, "group"));
-      const reused = fromModel() && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space) : undefined;
+      const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
+      const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
         const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);

@@ -37,6 +37,9 @@ outside the page: read `document`, `window` and the rest through
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
   `page`. Tabs a session opens close with it, but one kept for the user
   (`keep`) stays. Using `page` before any tab is open or attached throws.
+  In a later call of the session, `openTab` of an address it opened before
+  loads that tab again, unless it is kept, in front, or an action changed
+  its page; `openTab(url, {new: true})` opens another.
   When your agent already has a tab on that site, it prints a `hint:`
   naming it: next time `goto` there instead (`getTabByTargetId(id)`, or
   `attachBrowserTab(id)` for a tab opened outside this session).
