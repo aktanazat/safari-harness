@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type SpaceNote } from "./spaces.ts";
+import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -92,7 +92,10 @@ function webAddress(url: unknown): string {
 // running while hidden, and lets the daemon close it (background.js).
 export async function openTab(url: string, background = false, group?: string, owned = background): Promise<TabInfo & { space: SpaceNote }> {
   const address = webAddress(url);
-  const space = await spaceWindow(group);
+  return openIn(await spaceWindow(group), address, background, owned);
+}
+
+async function openIn(space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }> {
   const t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   return { ...t, space: spaceNote(space) };
 }
@@ -102,7 +105,8 @@ export async function openTab(url: string, background = false, group?: string, o
 // 729 opens went to a site the same agent had opened earlier in its turn;
 // on 10-05 one agent had tirerack.com open in two of the 14 tabs of its
 // tire research. Safari is asked for the list only while the agent holds
-// another tab.
+// another tab. A model's open goes to such a tab itself (reuseTab), so only
+// a script's open hears this.
 async function alsoOn(tab: number, url: string): Promise<string | undefined> {
   const owner = currentOwner();
   const host = pageHost(webAddress(url));
@@ -112,6 +116,39 @@ async function alsoOn(tab: number, url: string): Promise<string | undefined> {
   const had = (await listTabs().catch((): TabInfo[] => [])).filter((t) => ids.has(t.id) && pageHost(t.url) === host).map((t) => t.id);
   if (had.length === 0) return undefined;
   return `you already had ${had.length === 1 ? "tab" : "tabs"} ${had.join(", ")} on ${host}: next time goto a tab you have rather than open another, and close one you are done with`;
+}
+
+// A model's open on a site where its agent has a tab loads in that tab, in
+// place of its page, unless it asks for new: true: the hint above did not
+// stop one agent's tire research of 10-05 from holding tirerack.com in two
+// of its 17 tabs. Only a tab the agent alone works in, in the window the
+// open goes to, is taken: never one kept for the user, a site global's,
+// one he has in front, or one an action changed since it loaded (a form in
+// progress). Of several, the one used longest ago goes, and a tab being
+// loaded is claimed, so two opens at once take two tabs. Scripts, map, and
+// replay call as no model (repl.ts, map.ts, replay.ts): each of their
+// opens gets a tab of its own.
+const reusing = new Set<number>();
+
+async function reuseTab(address: string, space: Space): Promise<{ tab: TabInfo & { space: SpaceNote }; was: string } | undefined> {
+  const owner = currentOwner();
+  const host = pageHost(address);
+  const free = (id: number) => {
+    const t = harnessTabs.get(id);
+    return t !== undefined && t.owner === owner && !t.site && !t.acted && !t.closing && !reusing.has(id);
+  };
+  if (owner === undefined || host === undefined || ![...harnessTabs.keys()].some(free)) return undefined;
+  const fits = (await listTabs().catch((): TabInfo[] => [])).filter((t): t is TabInfo & { url: string } => free(t.id) && t.windowId === space.window && !t.front && pageHost(t.url) === host);
+  const used = (t: TabInfo) => harnessTabs.get(t.id)?.used ?? 0;
+  const pick = fits.sort((x, y) => used(x) - used(y))[0];
+  if (pick === undefined) return undefined;
+  reusing.add(pick.id);
+  try {
+    const t = await inLane("goto", { tab: pick.id }, resolveTab, () => navigate(pick.id, address));
+    return { tab: { ...t, space: spaceNote(space) }, was: pick.url };
+  } finally {
+    reusing.delete(pick.id);
+  }
 }
 
 // A native sheet on the tab (a sign-in or permission prompt) or an
@@ -1318,21 +1355,28 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => tabsView(await listTabs(), new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), a),
   },
   open: {
-    desc: 'Open a URL in a new tab and wait until it is readable; pass its id as tab to later calls. Have one on that site? goto it. tab "front": the user\'s front tab, when he asks about it.',
-    params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open for the user" }, snapshot: PAGE },
+    desc: 'Open a URL and wait until it is readable; pass its id as tab to later calls. tab "front": the user\'s front tab, when he asks about it.',
+    params: { url: { type: "string", description: "address" }, background: { type: "boolean", description: "keep the current tab in front" }, group: { type: "string", description: "task name: a window of its own" }, keep: { type: "boolean", description: "leave it open for the user" }, new: { type: "boolean", description: "else your tab on its site is reused" }, snapshot: PAGE },
     unlisted: { site: { type: "boolean", description: "a repl site global's own tab" } },
     required: ["url"],
     run: async (a) => {
-      const url = str(a.url, "url");
+      const address = webAddress(a.url);
+      const space = await spaceWindow(a.group === undefined ? undefined : str(a.group, "group"));
+      const reused = fromModel() && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space) : undefined;
+      if (reused) {
+        const { tab: t, was } = reused;
+        const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
+        return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
+      }
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
-      const t = await openTab(url, !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
+      const t = await openIn(space, address, !!a.background, !!a.background || !a.keep);
       if (a.keep) keepTab(t.id);
       else own(t.id, currentOwner());
       const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
       const held = harnessTabs.get(t.id);
       if (a.site === true && held) held.site = true;
-      const had = a.site === true ? undefined : await alsoOn(t.id, url);
+      const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
       return had === undefined ? result : beside(result, "hint", had);
     },
   },

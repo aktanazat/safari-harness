@@ -50,7 +50,7 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
-type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; done?: true; unwatch?: () => void };
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; done?: true; unwatch?: () => void };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();

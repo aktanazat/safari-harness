@@ -54,15 +54,19 @@ the setting is on.
 
 Safari is the user's everyday browser, so treat his tabs as his.
 
-- Start with `open <url>`. It returns the new tab's `id`. Pass that `tab` to
+- Start with `open <url>`. It returns the tab's `id`. Pass that `tab` to
   every later call. Page tools need `tab`: a call without one is an error,
   never a read of whatever tab is in front. In a shell:
   `T=$(safari open <url> --json | jq -r .id)`.
-- Reuse a tab before you open another: `goto` the one you already have on
-  the site. An `open` on a site where you hold another tab still opens a
-  new one, and its answer carries a `hint` naming the tabs you had there
-  (the CLI and `repl` print it on a `hint:` line): go on in one of those,
-  and close the one you are done with.
+- `open` on a site where you already have a tab loads in that tab, and its
+  answer's `note` names the page it replaced, which is gone. Only a tab you
+  alone work in, in the window the open goes to, is taken: never one kept
+  for the user, one he has in front, a site global's, or one whose page an
+  action changed since it loaded (a form in progress). For a second tab
+  beside it, to compare two pages, pass `new: true` (CLI `--new`). A
+  script's `openTab` (`repl`), `map`, and `replay` always open a tab of
+  their own; `openTab` prints a `hint:` naming the tabs you had there:
+  `goto` one of those next time, and close the one you are done with.
 - `open` and `goto` take a whole `http` or `https` address (or
   `about:blank`). Anything else fails before a tab opens: Safari opens no
   local file for the extension, so serve its folder

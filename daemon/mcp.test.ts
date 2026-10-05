@@ -104,6 +104,9 @@ import { TOOLS } from "./tools.ts";
 // sh.scripts (80, net's description tightened) brought it to 24,243: on
 // 10-04 an agent filtered net's list through python twelve times, and
 // fetched and searched the page's scripts by hand in twelve calls.
+// open's new, the way to a second tab on a site now that open loads in
+// the agent's tab there (10-05: one tire search held tirerack.com in two
+// of its 17 tabs), is paid for by open's own description and parameters.
 const TOOL_LIST_MAX_BYTES = 24_243;
 
 async function toolList(): Promise<unknown> {

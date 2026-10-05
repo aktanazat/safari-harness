@@ -14,7 +14,7 @@ import { callTool, endTurn, loadTabs } from "./tools.ts";
 // list is showing, and a call to a closed tab fails as the extension's does.
 const closes: unknown[][] = [];
 const gone = new Set<number>();
-let showing: { id: number; url: string }[] = [];
+let showing: { id: number; url: string; windowId?: number }[] = [];
 let nextTab = 0;
 let nextWindow = 0;
 let hisFront: number | undefined;
@@ -22,6 +22,11 @@ let onClose = () => {};
 function answer(op: string, args: unknown[]): unknown {
   if (op === "windows.open") return { windowId: ++nextWindow, tabId: 900 + nextWindow };
   if (op === "tabs.open") return { id: ++nextTab, windowId: args[2] };
+  if (op === "tabs.navigate") {
+    const shown = showing.find((t) => t.id === args[0]);
+    if (shown) shown.url = String(args[1]);
+    return { id: args[0], url: args[1] };
+  }
   if (op === "tabs.list") return showing;
   if (op === "probe") return [];
   if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
@@ -166,6 +171,45 @@ test("an open on a site where the agent already has a tab names that tab, and ne
   agent.kill();
   other.kill();
   await closedAs("owned", opened);
+  showing = [];
+});
+
+// 10-05: the hint did not stop one agent's tire research from holding
+// tirerack.com in two of its 17 tabs.
+test("a model's open loads in its agent's tab on that site, never in a form in progress, a kept tab, or another agent's, nor with new: true", async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  type Opened = { id: number; windowId?: number; note?: string };
+  const model = async (who: number, tool: string, args: Record<string, unknown>) => (await runAs(who, () => callTool(tool, args, true))) as Opened;
+  const open = async (who: number, url: string, more: Record<string, unknown> = {}) => {
+    const t = await model(who, "open", { url, background: true, ...more });
+    if (!showing.some((s) => s.id === t.id)) showing.push({ id: t.id, url, windowId: t.windowId });
+    return t.id;
+  };
+  const urlOf = (tab: number) => showing.find((s) => s.id === tab)?.url;
+  const a = await open(agent.pid, "https://shop.example/a");
+  const b = await model(agent.pid, "open", { url: "https://shop.example/b" });
+  expect(b.id).toBe(a);
+  expect(b.note).toContain("in place of https://shop.example/a");
+  expect(urlOf(a)).toBe("https://shop.example/b");
+  await model(agent.pid, "click", { tab: a, ref: "Next" });
+  const c = await open(agent.pid, "https://shop.example/c");
+  const his = await open(other.pid, "https://shop.example/d");
+  await model(agent.pid, "keep", { tab: c });
+  const e = await open(agent.pid, "https://shop.example/e");
+  const f = await open(agent.pid, "https://shop.example/f", { new: true });
+  expect(new Set([a, c, his, e, f]).size).toBe(5);
+  expect([a, c, his].map(urlOf)).toEqual(["https://shop.example/b", "https://shop.example/c", "https://shop.example/d"]);
+  // two opens at once take a tab each
+  const both = await Promise.all(["g", "h"].map((p) => model(agent.pid, "open", { url: `https://shop.example/${p}` })));
+  expect(both.map((t) => t.id).toSorted((x, y) => x - y)).toEqual([e, f].toSorted((x, y) => x - y));
+  // map reads in tabs of its own, and closes only those
+  const made = nextTab;
+  await model(agent.pid, "map", { urls: ["https://shop.example/m"] });
+  expect(nextTab).toBe(made + 1);
+  expect([e, f].map(urlOf).toSorted()).toEqual(["https://shop.example/g", "https://shop.example/h"]);
+  agent.kill();
+  other.kill();
+  await closedAs("owned", [a, his, e, f]);
   showing = [];
 });
 

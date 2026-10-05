@@ -8,10 +8,10 @@ Tabs
 - `open` returns a tab id; pass it as `tab` to every call. `tab: "front"`
   is his front tab, only when he asks about his page. Never navigate,
   type in, or close his tabs.
-- Reuse before you open: `goto` the tab you already have on a site
-  (`tabs` lists yours), and keep one `repl --session` name for a task,
-  even after "that tab is gone" (`openTab` again in it). `open` and a new
-  session say what you already hold.
+- `open` on a site where you have a tab loads in it (`new: true` for a
+  second). Keep one `repl --session` name for a task, even after "that
+  tab is gone" (`openTab` again in it); `openTab` and a new session name
+  what you already hold.
 - Your tabs close when your turn ends or after 20 minutes unused. `keep`
   one that waits on him, or that you need after a long step.
 - When a call says he paused or stopped you, do what it says.

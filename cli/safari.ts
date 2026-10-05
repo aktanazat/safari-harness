@@ -44,7 +44,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              Mac, with the fix for each that fails
   safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
                                              --site lists his on one site, --all every tab
-  safari open <url> [--bg] [--keep]          open a tab; prints its id
+  safari open <url> [--bg] [--keep] [--new]  open a tab, or load in yours on that site
+                                             (--new: a second one); prints its id
   safari goto <url> --tab N                  navigate
   safari back|forward|reload --tab N         history
   safari close <tab>                         close a tab
