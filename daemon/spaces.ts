@@ -29,13 +29,15 @@
 // caller's own call may start a Safari the user quit (socket in bridge.ts):
 // while the extension is gone, an ended window waits for it to come back.
 // The windows are saved as they change, so a restarted daemon picks up
-// where the last left off (loadSpaces).
+// where the last left off (loadSpaces), and the page of a window no record
+// holds any more closes at the next sweep (reclaim).
 
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { bridge } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
+import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import type { TabInfo } from "./tools.ts";
 
@@ -56,6 +58,8 @@ const making = new Map<string, Promise<Space>>();
 const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
+// The ids of windows being opened, whose pages show before their records.
+const opening = new Set<string>();
 
 const IDLE_MS = 2 * 60_000;
 const SWEEP_MS = 5000;
@@ -129,18 +133,23 @@ export async function spaceWindow(group?: string): Promise<Space> {
   if (!made) {
     made = (async () => {
       const id = randomUUID();
-      const name = spaceName(group, owner);
-      const size = nextSize();
-      // The name and size also find the window of a group a restarted
-      // daemon no longer knows (orphaned).
-      const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-      const w = (await bridge.request("windows.open", [page, size])) as { windowId: number };
-      const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
-      spaces.set(key, space);
-      watch(space);
-      save();
-      return space;
+      opening.add(id);
+      try {
+        const name = spaceName(group, owner);
+        const size = nextSize();
+        // The name and size also find the window of a group a restarted
+        // daemon no longer knows (orphaned).
+        const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
+        const w = (await bridge.request("windows.open", [page, size])) as { windowId: number };
+        const off = groupsOff();
+        const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+        spaces.set(key, space);
+        watch(space);
+        save();
+        return space;
+      } finally {
+        opening.delete(id);
+      }
     })();
     making.set(key, made);
     made.finally(() => making.delete(key)).catch(() => {});
@@ -174,7 +183,8 @@ export function loadSpaces(path: string): void {
   }
   for (const s of saved.closing ?? []) closing.set(s.name, s);
   for (const s of saved.ended ?? []) ended.add(s);
-  if (ended.size > 0) sweepSoon();
+  // The first sweep also closes what the last daemon lost track of.
+  sweepSoon();
 }
 
 function save() {
@@ -208,20 +218,27 @@ export function spaceNote(s: Space): SpaceNote {
   return { name: s.name, group: s.group, ...(why ? { why } : {}) };
 }
 
+// What an agent window's page says in its address (spaceWindow): the
+// window's id, name, and size. A copy the user opened from /agents, which
+// links pages by id and name alone, is his.
+function pageAt(t: TabInfo): { tab: number; window: number; id: string; name: string; size: Size } | undefined {
+  if (!t.url?.startsWith(`${PAGE}?`) || t.windowId === undefined) return undefined;
+  const q = new URL(t.url).searchParams;
+  const [width, height] = (q.get("size") ?? "").split("x").map(Number);
+  const id = q.get("id");
+  const name = q.get("name");
+  return id && name && width && height ? { tab: t.id, window: t.windowId, id, name, size: { width, height } } : undefined;
+}
+
 // The window of a group a restarted daemon no longer knows, found by the
 // name and size its page's address carries.
 async function orphaned(name: string): Promise<Space | undefined> {
-  for (const t of await listTabs()) {
-    if (!t.url?.startsWith(`${PAGE}?`) || t.windowId === undefined) continue;
-    const q = new URL(t.url).searchParams;
-    const [width, height] = (q.get("size") ?? "").split("x").map(Number);
-    if (q.get("name") !== name || !width || !height) continue;
-    const s: Space = { key: `orphan:${name}`, id: q.get("id") ?? "", window: t.windowId, name, size: { width, height }, group: "grouped" };
-    closing.set(name, s);
-    save();
-    return s;
-  }
-  return undefined;
+  const p = (await listTabs()).map(pageAt).find((x) => x?.name === name);
+  if (!p) return undefined;
+  const s: Space = { key: `orphan:${name}`, id: p.id, window: p.window, name, size: p.size, group: "grouped" };
+  closing.set(name, s);
+  save();
+  return s;
 }
 
 // The keeper's side (keeper.ts). state lists the windows that are or will
@@ -321,15 +338,40 @@ function sweepSoon() {
   sweeping.unref();
 }
 
-async function sweep() {
-  if (spaces.size === 0 && ended.size === 0) {
-    clearInterval(sweeping);
-    sweeping = undefined;
-    return;
+// The page of an agent window no record here holds closes, and the window
+// with it unless it holds a tab: the daemon lost the record (a deploy, an
+// extension reload it could not follow, a close that failed), and nothing
+// else would close it. On 10-04 agent 50573's window had stood on "Not
+// tracked" for two days, its agent long gone. A window being opened shows
+// its page before its record, and a group still queued is the keeper's to
+// delete (orphaned), once its tabs have moved out.
+async function reclaim(tabs: TabInfo[]) {
+  const records = [...spaces.values(), ...closing.values(), ...ended];
+  const lost = tabs.flatMap((t) => {
+    const p = pageAt(t);
+    return p && !opening.has(p.id) && !records.some((s) => s.id === p.id) ? [p] : [];
+  });
+  if (lost.length === 0) return;
+  const queued = readQueue();
+  for (const p of lost) {
+    if (Object.hasOwn(queued, p.name)) continue;
+    try {
+      await bridge.request("tabs.close", [p.tab], 10000);
+      note("lost window closed", { name: p.name });
+    } catch (e) {
+      console.error(`[safari-harness] closing the lost window of ${p.name} failed:`, e instanceof Error ? e.message : e);
+    }
   }
+}
+
+async function sweep() {
   if (!bridge.connected) return;
+  // A pass that begins with nothing to watch is the last, once it has
+  // closed what windows that ended since left behind.
+  const idle = spaces.size === 0 && ended.size === 0;
   for (const s of [...ended]) await end(s);
   const tabs = await listTabs();
+  await reclaim(tabs);
   const now = Date.now();
   for (const s of [...spaces.values()]) {
     const inWindow = await located(s, tabs);
@@ -337,6 +379,10 @@ async function sweep() {
     else s.emptySince ??= now;
     if (inWindow.length === 0 || (s.emptySince !== undefined && (s.done || now - s.emptySince >= IDLE_MS))) await end(s);
   }
+  // A window opened meanwhile keeps the sweep going.
+  if (!idle || spaces.size > 0 || ended.size > 0) return;
+  clearInterval(sweeping);
+  sweeping = undefined;
 }
 
 // owner handed its turn back to the user (endTurn, tools.ts), which closes

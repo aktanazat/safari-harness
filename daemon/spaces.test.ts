@@ -7,6 +7,7 @@ import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { spaceTool } from "./spaces.ts";
+import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
 // The keeper's files, away from the real ones (groups-off.json there would
@@ -102,6 +103,22 @@ async function until(ok: () => boolean, ms = 4000) {
 
 // The page a window opens on, which names its assignment.
 const pageIn = (tabs: Map<number, Tab>, window: number | undefined) => [...tabs.values()].find((t) => t.windowId === window && t.url.includes("/space?"));
+
+// A daemon started afresh, as after a deploy: a spaces.ts of its own,
+// serving its pages on its own port, as one daemon at a time does. The
+// windows of this file's other daemons are then none of its business.
+// Imported by a specifier with a query, since a static import would share
+// this file's one module and its records.
+async function daemonOn(port: number, as: string) {
+  const was = process.env.SAFARI_HARNESS_HTTP_PORT;
+  process.env.SAFARI_HARNESS_HTTP_PORT = String(port);
+  try {
+    return (await import(`./spaces.ts?${as}`)) as typeof Spaces;
+  } finally {
+    if (was === undefined) delete process.env.SAFARI_HARNESS_HTTP_PORT;
+    else process.env.SAFARI_HARNESS_HTTP_PORT = was;
+  }
+}
 
 test("each agent's tabs open in a window of its own, never the user's, and a task's later tabs join its window", async () => {
   safari();
@@ -276,10 +293,9 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   const s = safari();
   const q = agent();
   const saved = join(dir, "spaces.json");
-  // Each daemon's spaces.ts, loaded afresh: the one before the restart and
-  // the one after.
-  const first = (await import(`./spaces.ts?first`)) as typeof import("./spaces.ts");
-  const restarted = (await import(`./spaces.ts?restarted`)) as typeof import("./spaces.ts");
+  // The daemon before the restart and the one after.
+  const first = await daemonOn(47340, "first");
+  const restarted = await daemonOn(47340, "restarted");
   first.loadSpaces(saved);
   const before = await runAs(q.pid, () => first.spaceWindow());
   restarted.loadSpaces(saved);
@@ -289,6 +305,35 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   // Both have saved by the time the page closes, before the folder goes.
   await until(() => !pageIn(s.tabs, before.window));
 });
+
+// 10-04: agent 50573's window had stood on "Not tracked" since 10-02, its
+// agent long gone. The daemon had lost its record of the window, and
+// nothing else closes one.
+test("a restarted daemon closes the page of an agent window it holds no record of", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47341, "lost");
+  s.tabs.set(900, { id: 900, url: "http://127.0.0.1:47341/space?id=gone&name=agent%2050573&size=1100x800", windowId: 901, active: true });
+  daemon.loadSpaces(join(dir, "lost.json"));
+  await until(() => s.closed.includes(900), 8000);
+}, 15_000);
+
+test("a restarted daemon leaves a page the user opened from the agents list, and a group's window still queued for the keeper", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47342, "kept");
+  const page = (id: number, query: string, windowId: number) => s.tabs.set(id, { id, url: `http://127.0.0.1:47342/space?${query}`, windowId, active: true });
+  changeQueue((q) => (q["trip (agent 4242)"] = { since: 0 }));
+  try {
+    page(910, "id=his&name=agent%204241", 1);
+    page(911, "id=queued&name=trip%20(agent%204242)&size=1100x800", 912);
+    // A lost window's, last: once it closes, the pass has looked at the others.
+    page(913, "id=lost&name=agent%204243&size=1101x800", 914);
+    daemon.loadSpaces(join(dir, "kept.json"));
+    await until(() => s.closed.includes(913), 8000);
+    expect(s.closed).toEqual([913]);
+  } finally {
+    changeQueue((q) => delete q["trip (agent 4242)"]);
+  }
+}, 15_000);
 
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
   const s = safari();
