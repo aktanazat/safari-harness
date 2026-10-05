@@ -93,7 +93,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   which labels it for him and keeps it yours when the extension reloads or
   Safari starts again; it also shows him what you do there and lets him
   pause or stop you (Mission control, below). The daemon keeps its windows
-  across its own restarts, so your next tab still joins yours.
+  across its own restarts, so your next tab still joins yours. When Safari
+  starts again, the tabs it restores in your window stay yours: an id you
+  held leads to its tab's new one (`replaced` in the next result says so),
+  and they close as your other tabs do.
 - That window becomes a Safari tab group of the same name the first time he
   has left the keyboard and mouse alone for 30 seconds, and stays a plain
   window until then. `open` says which under `space`: `group` is `waiting`,

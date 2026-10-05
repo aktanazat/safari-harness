@@ -127,6 +127,7 @@ export class Bridge {
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
+  public onConnect: () => void = () => {};
 
   constructor(private readonly aliveMs = ALIVE_MS) {}
 
@@ -166,6 +167,7 @@ export class Bridge {
     this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
     this.ticks(said?.ticks ?? false);
     if (said?.renumbered) this.onTab(said.renumbered);
+    this.onConnect();
     if (old) {
       const lost = this.drop(old, "the Safari extension restarted before it answered; try again");
       try { old.close(); } catch {}

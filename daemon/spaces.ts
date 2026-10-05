@@ -413,6 +413,18 @@ export function spaceById(id: string): { owner?: number; window: number } | unde
   return who === "daemon" ? { window: space.window } : { owner: Number(who), window: space.window };
 }
 
+// The agent each window is for, read off the window pages in tabs: a
+// Safari that started again gave the windows new ids (restored, tools.ts).
+export function ownersByPage(tabs: TabInfo[]): Map<number, number> {
+  const owners = new Map<number, number>();
+  for (const t of tabs) {
+    const p = pageAt(t);
+    const owner = p === undefined ? undefined : spaceById(p.id)?.owner;
+    if (p !== undefined && owner !== undefined) owners.set(p.window, owner);
+  }
+  return owners;
+}
+
 // The agent windows open now, and whose each is (tabs-view.ts): a tab in
 // one is that agent's.
 export function windowOwners(): Map<number, number | undefined> {

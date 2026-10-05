@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { ownersByPage, spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -52,7 +52,9 @@ function str(v: unknown, name: string): string {
 }
 
 export async function listTabs(): Promise<TabInfo[]> {
-  return (await bridge.request("tabs.list")) as TabInfo[];
+  const tabs = (await bridge.request("tabs.list")) as TabInfo[];
+  sighted(tabs);
+  return tabs;
 }
 
 // A page tool's tab: the id open returned, or "front", the tab the user has
@@ -174,8 +176,11 @@ export async function closeTab(tab: number, why = "by a close call"): Promise<un
 const IDLE_MS = 20 * 60_000;
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
-// agent is never sent to go on in it.
-type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true };
+// agent is never sent to go on in it. url: the page it showed when the
+// daemon last listed, opened, or loaded it; seen: the extension connection
+// it was last listed or made on (bridge.extensionInfo), for a Safari that
+// started again (restored).
+type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
@@ -217,7 +222,7 @@ function own(tab: number, owner: number | undefined) {
 }
 
 function remember(tab: number, owner: number | undefined) {
-  harnessTabs.set(tab, { owner, used: Date.now() });
+  harnessTabs.set(tab, { owner, used: Date.now(), seen: bridge.extensionInfo?.connectedAt });
   if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => orphan(owner)));
   sweeper ??= setInterval(sweep, 60_000);
   sweeper.unref();
@@ -276,14 +281,17 @@ function keptBy(tab: number, keeper: number) {
 
 async function sweep() {
   // Timer work never starts Safari: once the user quits it, only a caller's
-  // own call may (socket in bridge.ts). The next sweep tries again.
+  // own call may (socket in bridge.ts). The next sweep tries again. Each
+  // sweep lists the tabs, which notes what they show and finds those a
+  // Safari that started again restored (sighted).
   if (!bridge.connected) return;
+  const listed = await listTabs().catch((): TabInfo[] => []);
   const idle = Date.now() - IDLE_MS;
   const due = [...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.used < idle));
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
-  const shown = new Map((await listTabs().catch((): TabInfo[] => [])).map((t) => [t.id, t.url]));
+  const shown = new Map(listed.map((t) => [t.id, t.url]));
   await Promise.all(due.map(async ([tab, t]) => {
     try {
       const res = (await bridge.request("tabs.close", [tab, t.orphan ? "owned" : "idle"], 20000)) as { front?: true } | null;
@@ -339,23 +347,7 @@ bridge.onTab = (e) => {
     return;
   }
   if (e.kind === "renumbered") {
-    recordRenumbered(e.tabs);
-    // The reloaded extension no longer knows which tabs the harness owns
-    // (it lists them in session storage, which Safari empties), so it would
-    // refuse their closes at a turn's end, an exit, or 20 idle minutes,
-    // answer none of their dialogs, log none of their requests, and leave
-    // their popups the user's. Telling it how to answer a tab's dialogs
-    // owns the tab again (background.js), with the answer a tab opens
-    // with. A tab reported again, as the extension connects again, has
-    // moved here already and keeps what its agent has set since.
-    let owned = false;
-    for (const [from, to] of e.tabs) {
-      if (!moveKept(from, to)) continue;
-      owned = true;
-      void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
-    }
-    if (owned) save();
-    note("renumbered", { tabs: Object.fromEntries(e.tabs) });
+    renumber(e.tabs, "renumbered");
     return;
   }
   const from = harnessTabs.get(e.opener);
@@ -369,6 +361,87 @@ bridge.onTab = (e) => {
   } else return;
   note("popup", { tab: e.tab, opener: e.opener });
 };
+
+// A Safari that started again restored its tabs under new ids (sighted):
+// they are found as the extension connects, while their agents still run
+// and their windows still say whose they are. An agent that exits first
+// takes its window's record with it (spaces.ts).
+bridge.onConnect = () => {
+  if (harnessTabs.size > 0) void listTabs().catch(() => {});
+};
+
+// Old tab ids and their tabs' ids now: what the daemon keeps per tab, and
+// the ids agents hold, follow the tabs (continuity.ts). A reloaded
+// extension, or a Safari that started again, no longer knows which tabs
+// the harness owns (it lists them in session storage, which Safari
+// empties), so it would refuse their closes at a turn's end, an exit, or
+// 20 idle minutes, answer none of their dialogs, log none of their
+// requests, and leave their popups the user's. Telling it how to answer a
+// tab's dialogs owns the tab again (background.js), with the answer a tab
+// opens with. A tab reported again, as the extension connects again, has
+// moved here already and keeps what its agent has set since.
+function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): void {
+  recordRenumbered(tabs);
+  let owned = false;
+  for (const [from, to] of tabs) {
+    if (!moveKept(from, to)) continue;
+    owned = true;
+    void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
+  }
+  if (owned) save();
+  note(kind, { tabs: Object.fromEntries(tabs) });
+}
+
+// What each harness tab shows, from a list of Safari's tabs. A tab the
+// list lacks, last seen on an earlier connection of the extension, was
+// lost to a Safari that started again; so was one whose id the list gives
+// a tab showing another page, as Safari may hand an old id to another tab.
+function sighted(tabs: TabInfo[]): void {
+  const now = bridge.extensionInfo?.connectedAt;
+  const listed = new Map(tabs.map((t) => [t.id, t]));
+  const lost: [number, HarnessTab][] = [];
+  for (const [id, t] of harnessTabs) {
+    const shown = listed.get(id);
+    if (shown && (t.seen === now || t.url === undefined || shown.url === t.url)) {
+      t.url = shown.url;
+      t.seen = now;
+    } else if (t.seen !== now && t.owner !== undefined && t.url !== undefined && !t.closing) lost.push([id, t]);
+  }
+  if (lost.length > 0) restored(lost, tabs);
+}
+
+// A Safari that starts again (a crash, an update) restores its windows
+// with every tab under a new id, and nothing told the daemon which is
+// which: on 10-05 three restarts left one agent's tabs behind each time,
+// never closed, in windows that read as the user's, 22 of them by the
+// afternoon. An agent's window is known by its page (spaces.ts), and in it
+// a lost tab by the page it showed: a restored tab no one holds that shows
+// it is that tab, unless more show it than were lost (one kept for the
+// user among them), when they all stay his.
+function restored(lost: [number, HarnessTab][], tabs: TabInfo[]): void {
+  const owners = ownersByPage(tabs);
+  const free = new Map<string, number[]>();
+  for (const t of tabs) {
+    const owner = t.windowId === undefined ? undefined : owners.get(t.windowId);
+    if (owner === undefined || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
+    const key = `${owner} ${t.url}`;
+    free.set(key, [...(free.get(key) ?? []), t.id]);
+  }
+  const was = new Map<string, number[]>();
+  for (const [id, t] of lost) {
+    const key = `${t.owner} ${t.url}`;
+    was.set(key, [...(was.get(key) ?? []), id]);
+  }
+  const moved = new Map<number, number>();
+  const order = (x: number, y: number) => x - y;
+  for (const [key, olds] of was) {
+    const now = free.get(key) ?? [];
+    if (now.length === 0 || now.length > olds.length) continue;
+    olds.sort(order);
+    for (const [i, to] of now.toSorted(order).entries()) moved.set(olds[i], to);
+  }
+  if (moved.size > 0) renumber(moved, "restored");
+}
 
 // Says whether the tab is one the harness opened.
 function moveKept(from: number, to: number): boolean {
@@ -388,7 +461,10 @@ function move<V>(map: Map<number, V>, from: number, to: number): boolean {
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
-  return (await bridge.request("tabs.navigate", [num(tab, "tab"), webAddress(url)])) as TabInfo;
+  const t = (await bridge.request("tabs.navigate", [num(tab, "tab"), webAddress(url)])) as TabInfo;
+  const mine = harnessTabs.get(t.id);
+  if (mine && t.url !== undefined) mine.url = t.url;
+  return t;
 }
 
 export async function activateTab(tab: number): Promise<unknown> {
@@ -1375,6 +1451,7 @@ export const TOOLS: Record<string, Tool> = {
       else own(t.id, currentOwner());
       const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
       const held = harnessTabs.get(t.id);
+      if (held) held.url = t.url;
       if (a.site === true && held) held.site = true;
       const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
       return had === undefined ? result : beside(result, "hint", had);
@@ -1953,7 +2030,9 @@ async function revived(tool: string, args: Record<string, unknown>): Promise<unk
     const result = await TOOLS[tool].run(args);
     // A goto, or an action that led to another page, leaves a fresh page.
     const mine = harnessTabs.get(tab);
-    if (mine && tool !== "eval" && acts(tool, args)) mine.acted = tool === "goto" || navigatedOf(result) ? undefined : true;
+    const went = navigatedOf(result)?.url;
+    if (mine && went !== undefined) mine.url = went;
+    if (mine && tool !== "eval" && acts(tool, args)) mine.acted = tool === "goto" || went !== undefined ? undefined : true;
     return result;
   } catch (e) {
     const mine = harnessTabs.get(tab);

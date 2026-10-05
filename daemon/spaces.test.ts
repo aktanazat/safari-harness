@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +36,11 @@ function safari() {
       tabs.set(t.id, t);
       return t;
     },
+    "tabs.navigate": ([id, url]) => {
+      const t = tabs.get(id as number)!;
+      t.url = String(url);
+      return t;
+    },
     "windows.open": ([url]) => {
       const t = { id: next++, url: String(url), windowId: next++, active: true };
       tabs.set(t.id, t);
@@ -65,6 +70,8 @@ function safari() {
     // the page ops open waits on (afterWall): a plain page, no bot check
     probe: () => [],
     relay: () => ({ ok: true }),
+    // how an owned tab answers dialogs, which also owns it (renumber)
+    dialogs: () => ({ ok: true }),
   };
   const sock: ExtSocket = {
     send(data) {
@@ -234,6 +241,34 @@ test("after Safari starts again an agent's next tab joins the window it had, who
   expect(next.windowId).toBe(page.windowId);
   r.kill();
   await until(() => s.closed.includes(page.id));
+});
+
+// 10-05: three restarts of Safari each left one agent's tabs behind, under
+// new ids no one owned, in windows that read as the user's: 22 by the
+// afternoon, closed only by hand.
+test("after Safari starts again the tabs it restored stay their agents': they close as their agent exits, and its next open on the site loads in one", async () => {
+  const s = safari();
+  const [r, q] = [agent(), agent()];
+  const open = async (who: Bun.Subprocess, url: string) => {
+    const t = await runAs(who.pid, () => callTool("open", { url, background: true }, true));
+    if (!t || typeof t !== "object" || !("id" in t) || typeof t.id !== "number") throw new Error(`open answered ${JSON.stringify(t)}`);
+    return t.id;
+  };
+  await open(r, "https://r.example/1");
+  await open(q, "https://q.example/1");
+  s.relaunch();
+  // the extension connects again, a moment later
+  setSystemTime(new Date(Date.now() + 1000));
+  connect(s.sock);
+  setSystemTime();
+  const now = (url: string) => [...s.tabs.values()].find((t) => t.url === url)!.id;
+  const [mine, theirs] = [now("https://r.example/1"), now("https://q.example/1")];
+  q.kill();
+  await until(() => s.closed.includes(theirs));
+  expect(await open(r, "https://r.example/2")).toBe(mine);
+  expect(s.closed).not.toContain(mine);
+  r.kill();
+  await until(() => s.closed.includes(mine));
 });
 
 // Deleting a tab group closes its tabs: a tab the agent opened for the user
