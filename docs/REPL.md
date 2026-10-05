@@ -22,7 +22,9 @@ Without `--session`, a call is a session of its own: its tabs close when it
 ends. A named session runs in the background, keeps its bindings between
 calls from any terminal or agent, and ends after 30 minutes unused. The tabs
 its code opens are the calling agent's: they open in its window and close
-when its turn ends or after 20 minutes unused.
+when its turn ends or after 20 minutes unused. Starting a session prints a
+`hint:` naming the other sessions your agent runs, with their sites: go on
+in one of those rather than start another.
 The MCP server has the same thing as the `repl` tool (`session` names one
 shared with the CLI; without it, the connection gets its own). A call stops
 waiting after 120 seconds; its code may still run on in the session. MCP
@@ -35,6 +37,9 @@ outside the page: read `document`, `window` and the rest through
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
   `page`. Tabs a session opens close with it, but one kept for the user
   (`keep`) stays. Using `page` before any tab is open or attached throws.
+  When your agent already has a tab on that site, it prints a `hint:`
+  naming it: next time `goto` there instead (`getTabByTargetId(id)`, or
+  `attachBrowserTab(id)` for a tab opened outside this session).
   `openTab`, `page.goto` and `snapshot` print the site's saved notes the
   first time a session reaches that site.
 - `listBrowserTabs()` lists every Safari tab; `attachBrowserTab(id)` and
@@ -129,8 +134,11 @@ There is no `process` or `Bun`.
 
 ## When a run goes wrong
 
-- One script per call, one session per goal. Keep what you learn in
-  bindings, not in re-reads.
+- One script per call, one session per goal: the same `--session` name in
+  every call of a task. Keep what you learn in bindings, not in re-reads.
+- "that tab is gone" (closed at a turn's end or after 20 minutes unused):
+  `openTab` again in the same session. A new session name starts over
+  without your bindings, and leaves the old one running.
 - A click that should open a window: begin `waitForEvent('popup')` first,
   then click. A form that ignores `click` on its button: call
   `requestSubmit()` on the form through `page.evaluate`.
@@ -144,5 +152,5 @@ There is no `process` or `Bun`.
   count and the path, not the whole thing.
 - When another model judges a page, give it field names and labels, never
   the values the user typed or the site showed.
-- `safari repl --close <name>` and start again when bindings are in a bad
-  state; the session's files stay in its folder.
+- `safari repl --close <name>` and start again under the same name when
+  bindings are in a bad state; the session's files stay in its folder.

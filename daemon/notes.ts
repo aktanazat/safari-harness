@@ -46,7 +46,7 @@ export function siteHost(site: string): string {
 
 // The host of a page's address; undefined for a page with none
 // (about:blank) or none plain (an IPv6 address), which has no notes.
-function pageHost(url: unknown): string | undefined {
+export function pageHost(url: unknown): string | undefined {
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return undefined;
   try {
     return siteHost(url);

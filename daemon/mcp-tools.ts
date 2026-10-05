@@ -9,7 +9,7 @@ import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { CALLER_GROUPS } from "./caller.ts";
 import { invoke } from "./call.ts";
 import { saveAnswer } from "./save.ts";
-import type { ReplSession } from "./repl.ts";
+import type { ReplResult, ReplSession } from "./repl.ts";
 
 // This connection's own REPL session: its bindings last as long as the
 // connection runs this release, and its tabs close with it.
@@ -24,11 +24,12 @@ const REPL_TOOL: Tool = {
     // most sessions never make one, and this server lives as long as its session.
     const [{ ReplSession }, { REPL_DIR, runInSession }] = await Promise.all([import("./repl.ts"), import("./repl-host.ts")]);
     const code = String(a.code ?? "");
-    const r = a.session === undefined
+    const r: ReplResult & { hint?: string } = a.session === undefined
       ? await (repl ??= new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)
       : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
     if (r.error) throw new Error(`${r.output ? `${r.output}\n` : ""}${r.error}`);
-    return r.output || "(no output; return or console.log what you want back)";
+    const out = r.output || "(no output; return or console.log what you want back)";
+    return r.hint === undefined ? out : `${out}\nhint: ${r.hint}`;
   },
 };
 

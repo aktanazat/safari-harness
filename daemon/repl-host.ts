@@ -18,12 +18,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
+import { pageHost } from "./notes.ts";
+import { ownerOf } from "./owner.ts";
 import { callFor, ownCalls } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
 const IDLE_MS = 30 * 60_000;
 
-export type SessionInfo = { id: string; pid: number; host: string; started: string; lastUsed: string; pwd: string; tabs: { id: number; url: string }[] };
+// owner: the agent that last ran code in the session (owner.ts).
+export type SessionInfo = { id: string; pid: number; host: string; started: string; lastUsed: string; pwd: string; tabs: { id: number; url: string }[]; owner?: number };
 
 // A unix socket path must fit in 104 bytes; ids stay short and plain.
 export function checkSessionId(id: string): string {
@@ -83,8 +86,9 @@ async function start(id: string, host: string | undefined): Promise<void> {
   throw new Error(`session ${id} did not start; see ${join(REPL_DIR, `${id}.log`)}`);
 }
 
-// Runs code in session id, starting the session if it is not running.
-export async function runInSession(id: string, code: string, opts: { host?: string; timeoutMs?: number } = {}): Promise<ReplResult & { started: boolean }> {
+// Runs code in session id, starting the session if it is not running. A
+// session it starts says which others the calling agent runs.
+export async function runInSession(id: string, code: string, opts: { host?: string; timeoutMs?: number } = {}): Promise<ReplResult & { started: boolean; hint?: string }> {
   checkSessionId(id);
   let started = false;
   const running = await info(id);
@@ -95,7 +99,25 @@ export async function runInSession(id: string, code: string, opts: { host?: stri
     throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
   }
   const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid });
-  return { ...((await res.json()) as ReplResult), started };
+  const result = { ...((await res.json()) as ReplResult), started };
+  const hint = started ? await alsoRunning(id) : undefined;
+  return hint === undefined ? result : { ...result, hint };
+}
+
+// The calling agent's other sessions, as a hint to go on in one. From 09-26
+// to 10-05, 40 of 191 session names were one agent's numbered retries (rh,
+// rh2 … rh16; tt-agent … tt-agent4), each starting over with new tabs, and
+// on 10-05 one agent ran its tire research in five sessions at once.
+async function alsoRunning(id: string): Promise<string | undefined> {
+  const me = await ownerOf(process.pid);
+  if (me === undefined) return undefined;
+  const mine = (await listSessions()).filter((s) => s.id !== id && s.owner === me);
+  if (mine.length === 0) return undefined;
+  const named = mine.map((s) => {
+    const sites = [...new Set(s.tabs.map((t) => pageHost(t.url)).filter((h) => h !== undefined))];
+    return sites.length === 0 ? s.id : `${s.id} (${sites.join(", ")})`;
+  });
+  return `you already run ${mine.length === 1 ? "session" : "sessions"} ${named.join(", ")}: go on in one, where its tabs and bindings are, rather than start another`;
 }
 
 export async function listSessions(): Promise<SessionInfo[]> {
@@ -124,6 +146,7 @@ async function serve(id: string): Promise<void> {
   const session = new ReplSession(id, { cwd: process.cwd() });
   const started = new Date().toISOString();
   let lastUsed = started;
+  let owner: number | undefined;
   let busy = 0;
   let idle: Timer | undefined;
   const sock = socketOf(id);
@@ -145,7 +168,7 @@ async function serve(id: string): Promise<void> {
     async fetch(req) {
       const route = new URL(req.url).pathname;
       if (route === "/info") {
-        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs: session.tabs.map((p) => ({ id: p.id, url: p.url() })) };
+        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs: session.tabs.map((p) => ({ id: p.id, url: p.url() })), ...(owner === undefined ? {} : { owner }) };
         return Response.json(sessionInfo);
       }
       if (route === "/close") {
@@ -158,7 +181,9 @@ async function serve(id: string): Promise<void> {
         clearTimeout(idle);
         try {
           const run = () => session.run(String(code), timeoutMs);
-          return Response.json(await (Number.isInteger(caller) && Number(caller) > 1 ? callFor(Number(caller), run) : run()));
+          if (!(Number.isInteger(caller) && Number(caller) > 1)) return Response.json(await run());
+          owner = (await ownerOf(Number(caller))) ?? owner;
+          return Response.json(await callFor(Number(caller), run));
         } finally {
           busy -= 1;
           lastUsed = new Date().toISOString();

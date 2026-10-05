@@ -17,7 +17,7 @@ import { spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type SpaceN
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
-import { firstNotes, learn, readerFor, realInputSite, realInputSites } from "./notes.ts";
+import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
@@ -97,6 +97,23 @@ export async function openTab(url: string, background = false, group?: string, o
   return { ...t, space: spaceNote(space) };
 }
 
+// The calling agent's other tabs on the site of the address it just opened
+// in tab, as a hint to go on in one of them. From 09-26 to 10-05, 194 of
+// 729 opens went to a site the same agent had opened earlier in its turn;
+// on 10-05 one agent had tirerack.com open in two of the 14 tabs of its
+// tire research. Safari is asked for the list only while the agent holds
+// another tab.
+async function alsoOn(tab: number, url: string): Promise<string | undefined> {
+  const owner = currentOwner();
+  const host = pageHost(webAddress(url));
+  const others = [...harnessTabs].filter(([id, t]) => id !== tab && t.owner === owner && !t.site);
+  if (owner === undefined || host === undefined || others.length === 0) return undefined;
+  const ids = new Set(others.map(([id]) => id));
+  const had = (await listTabs().catch((): TabInfo[] => [])).filter((t) => ids.has(t.id) && pageHost(t.url) === host).map((t) => t.id);
+  if (had.length === 0) return undefined;
+  return `you already had ${had.length === 1 ? "tab" : "tabs"} ${had.join(", ")} on ${host}: next time goto a tab you have rather than open another, and close one you are done with`;
+}
+
 // A native sheet on the tab (a sign-in or permission prompt) or an
 // off-screen window can keep Safari from closing it; the extension tries
 // for 15 s and says so. This limit is only for an extension that never
@@ -118,8 +135,10 @@ export async function closeTab(tab: number, why = "by a close call"): Promise<un
 // Safari has given another tab since is left alone. A tab it cannot close
 // now (not connected, a sheet) is tried again each minute.
 const IDLE_MS = 20 * 60_000;
-// acted: an action has changed the page since it loaded (revived).
-type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true };
+// acted: an action has changed the page since it loaded (revived). site: a
+// repl site global's own tab (sites/kit.ts), whose page its calls need: an
+// agent is never sent to go on in it.
+type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
@@ -1299,16 +1318,22 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => tabsView(await listTabs(), new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), a),
   },
   open: {
-    desc: 'Open a URL in a new tab and wait until it is readable. Returns the tab id: pass it as tab to every later call. tab "front" is the user\'s own front tab, for when he asks about his page.',
+    desc: 'Open a URL in a new tab and wait until it is readable; pass its id as tab to later calls. Have one on that site? goto it. tab "front": the user\'s front tab, when he asks about it.',
     params: { url: { type: "string", description: "address to open" }, background: { type: "boolean", description: "keep the user's current tab in front" }, group: { type: "string", description: "task name: its tabs get a window of their own" }, keep: { type: "boolean", description: "leave it open for the user" }, snapshot: PAGE },
+    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" } },
     required: ["url"],
     run: async (a) => {
+      const url = str(a.url, "url");
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
-      const t = await openTab(str(a.url, "url"), !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
+      const t = await openTab(url, !!a.background, a.group === undefined ? undefined : str(a.group, "group"), !!a.background || !a.keep);
       if (a.keep) keepTab(t.id);
       else own(t.id, currentOwner());
-      return withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
+      const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
+      const held = harnessTabs.get(t.id);
+      if (a.site === true && held) held.site = true;
+      const had = a.site === true ? undefined : await alsoOn(t.id, url);
+      return had === undefined ? result : beside(result, "hint", had);
     },
   },
   // Agent windows and their tab groups, for the keeper (keeper.ts).

@@ -773,8 +773,9 @@ export class ReplSession {
   }
 
   async openTab(url: string, opts: { background?: boolean } = {}): Promise<Page> {
-    const row = (await this.call("open", { url: String(url), background: opts.background ?? true })) as TabRow;
+    const row = (await this.call("open", { url: String(url), background: opts.background ?? true })) as TabRow & { hint?: unknown };
     this.showNotes(row);
+    this.showHint(row.hint);
     const p = this.adopt(row);
     this.#page = p;
     return p;

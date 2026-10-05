@@ -55,7 +55,7 @@ export class SiteKit {
     if (url !== undefined) this.homes.set(origin, url);
     let tab = this.tabs.get(origin);
     if (!tab) {
-      tab = this.send("open", { url: this.homes.get(origin) ?? `${origin}/`, background: true }).then((t) => {
+      tab = this.send("open", { url: this.homes.get(origin) ?? `${origin}/`, background: true, site: true }).then((t) => {
         // open answers with the tab it made: {id, url, title} (tools.ts).
         const opened = t as { id: number };
         this.origins.set(opened.id, origin);

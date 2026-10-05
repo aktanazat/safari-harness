@@ -424,6 +424,7 @@ async function replCommand(argv: string[]) {
   if (session) {
     const r = await runInSession(session, code, { host: flag("host", argv) });
     if (r.started) console.error(`\x1b[2m(session ${session} started; it ends after 30 min unused, or: safari repl --close ${session})\x1b[0m`);
+    if (r.hint !== undefined) console.error(`hint: ${r.hint}`);
     result = r;
   } else {
     // One call, one session: its bindings and tabs end with it.

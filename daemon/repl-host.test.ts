@@ -98,12 +98,14 @@ extension.onmessage = (e) => {
 await logs("connect");
 
 // A `safari repl` command: a process of its own that calls repl-host.ts and
-// exits once it has the answer, as the CLI does.
-async function command(call: string): Promise<unknown> {
+// exits once it has the answer, as the CLI does. elsewhere runs it for
+// another agent: a process of its own between this test and the command.
+async function command(call: string, elsewhere = false): Promise<unknown> {
   const script = `const repl = await import(${JSON.stringify(HOST)});
 await Bun.write(Bun.stdout, JSON.stringify(await repl.${call}));
 process.exit(0);`;
-  const p = Bun.spawn([process.execPath, "-e", script], { env, stdout: "pipe", stderr: "inherit" });
+  const argv = [process.execPath, "-e", script];
+  const p = Bun.spawn(elsewhere ? [process.execPath, "-e", `process.exit(await Bun.spawn(${JSON.stringify(argv)}, { stdout: "inherit", stderr: "inherit" }).exited)`] : argv, { env, stdout: "pipe", stderr: "inherit" });
   const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
   return JSON.parse(out);
 }
@@ -129,8 +131,7 @@ async function ownerSweep(): Promise<void> {
 }
 
 afterAll(async () => {
-  const [session] = (await command("listSessions()")) as { pid: number }[];
-  if (session) process.kill(session.pid, 9);
+  for (const session of (await command("listSessions()")) as { pid: number }[]) process.kill(session.pid, 9);
   extension.close();
   daemon.kill();
   await daemon.exited;
@@ -172,4 +173,14 @@ test("a named session's tab closes when the turn of the agent that ran the code 
   await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: process.pid }) });
   await gone.promise;
   expect(closed).toContain(tab);
+}, 30_000);
+
+// From 09-26 to 10-05, 40 of 191 session names were one agent's numbered
+// retries (tt-agent … tt-agent4), each starting over with new tabs.
+test("a session an agent starts names the sessions that agent already runs, and not another agent's", async () => {
+  await command(`runInSession("first", "await openTab('https://d.example/')")`);
+  const mine = (await command(`runInSession("second", "1")`)) as { hint?: string };
+  expect(mine.hint).toContain("first (d.example)");
+  const theirs = (await command(`runInSession("third", "1")`, true)) as { hint?: string };
+  expect(theirs.hint).toBeUndefined();
 }, 30_000);

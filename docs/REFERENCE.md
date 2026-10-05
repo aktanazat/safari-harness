@@ -56,7 +56,13 @@ Safari is the user's everyday browser, so treat his tabs as his.
 
 - Start with `open <url>`. It returns the new tab's `id`. Pass that `tab` to
   every later call. Page tools need `tab`: a call without one is an error,
-  never a read of whatever tab is in front.
+  never a read of whatever tab is in front. In a shell:
+  `T=$(safari open <url> --json | jq -r .id)`.
+- Reuse a tab before you open another: `goto` the one you already have on
+  the site. An `open` on a site where you hold another tab still opens a
+  new one, and its answer carries a `hint` naming the tabs you had there
+  (the CLI and `repl` print it on a `hint:` line): go on in one of those,
+  and close the one you are done with.
 - `open` and `goto` take a whole `http` or `https` address (or
   `about:blank`). Anything else fails before a tab opens: Safari opens no
   local file for the extension, so serve its folder
@@ -205,10 +211,12 @@ JavaScript: `openTab`, `snapshot`, `page.locator(ref).click()`,
 `page.waitForEvent('download')`, `page.pdf()`, cookie-bearing `fetch`, and
 site globals for Slack, Gmail, Notion, Google Docs and Sheets, Google
 search, YouTube, X, and Messages. `--session <name>` keeps bindings between
-calls; it ends with `--close` or after 30 minutes unused. The tabs its code
+calls; it ends with `--close` or after 30 minutes unused. Keep one name for
+a task: a session you start names, on a `hint:` line, the others your agent
+runs, so you go on in one of those instead. The tabs its code
 opens are yours, as if you had opened them: they open in your window and
 close when your turn ends or sit 20 minutes unused. A session's page whose
-tab has closed drops out of `tabs`; open it again. A site global whose tab is gone opens a
+tab has closed drops out of `tabs`; open it again in the same session. A site global whose tab is gone opens a
 new one once and runs the call again. A call waits at most 120 s; MCP
 clients may cut one at 60 s, so split long waits across calls. `safari
 guide repl` has the whole API and what to do when a run goes wrong.

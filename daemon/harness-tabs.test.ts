@@ -147,6 +147,28 @@ test("a call to a tab the harness closed says why and when, and what the tab sho
   agent.kill();
 });
 
+// From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
+// opened earlier in its turn; on 10-05 one held tirerack.com in two tabs.
+test("an open on a site where the agent already has a tab names that tab, and never another agent's", async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const opened: number[] = [];
+  const open = async (who: number, url: string) => {
+    const { hint } = (await runAs(who, () => callTool("open", { url, background: true }))) as { hint?: string };
+    opened.push(nextTab);
+    showing.push({ id: nextTab, url });
+    return hint;
+  };
+  await open(agent.pid, "https://shop.example/a");
+  const mine = nextTab;
+  await open(other.pid, "https://news.example/");
+  expect(await open(agent.pid, "https://shop.example/b")).toContain(`tab ${mine} on shop.example`);
+  expect(await open(agent.pid, "https://news.example/today")).toBeUndefined();
+  agent.kill();
+  other.kill();
+  await closedAs("owned", opened);
+  showing = [];
+});
+
 // He quit Safari: a sweep that asked it anything would start it again. An
 // exited agent's tab then waits, unasked, for the extension to come back.
 test("a sweep asks nothing of Safari while its extension is gone", async () => {
