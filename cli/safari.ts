@@ -212,8 +212,11 @@ function flag(name: string, argv: string[]): string | undefined {
   return eq ? eq.slice(name.length + 3) : undefined;
 }
 
+// A flag that takes no value is on when given, unless the word after it is
+// false (BOOLEAN_FLAGS).
 function hasFlag(name: string, argv: string[]): boolean {
-  return argv.includes(`--${name}`);
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] !== "false";
 }
 
 // Every --file value, resolved against this terminal; undefined when none.
@@ -288,7 +291,7 @@ function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unk
     if (Object.hasOwn(args, name)) continue;
     if (name !== given) console.error(`note: used --${name} for --${given}`);
     if (p.type === "boolean") {
-      args[name] = true;
+      args[name] = (eq < 0 ? argv[i + 1] : a.slice(eq + 1)) !== "false";
       continue;
     }
     const v = eq < 0 ? argv[i + 1] : a.slice(eq + 1);
@@ -795,12 +798,14 @@ async function main() {
   print(await invoke(tool, args, true));
 }
 
-// Flags that take no value; the word after them is positional.
+// Flags that take no value; the word after them is positional, unless it is
+// true or false: on 10-04 `eval --page true "const ..."` ran "true const
+// ..." and failed at its second word.
 const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
-  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && !Object.hasOwn(BOOLEAN_FLAGS, prev.slice(2))) || isSavePath(i, argv));
+  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && (!Object.hasOwn(BOOLEAN_FLAGS, prev.slice(2)) || argv[i] === "true" || argv[i] === "false")) || isSavePath(i, argv));
 }
 
 function jsonObject(word: string | undefined): boolean {

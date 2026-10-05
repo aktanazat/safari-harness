@@ -3278,7 +3278,8 @@
   // eval's code finds these as sh, in the extension's world only (page: true
   // runs it in the page's, which has no sh): q and qa query into shadow
   // roots, text reads what the user sees of an element or selector, jsonld
-  // reads the page's JSON-LD, and wait sleeps.
+  // reads the page's JSON-LD, scripts searches the page's own code, and wait
+  // sleeps.
   const SH = Object.freeze({
     q: deepQuery,
     qa: deepQueryAll,
@@ -3287,8 +3288,40 @@
       return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
     },
     jsonld: jsonLd,
+    scripts: searchScripts,
     wait: sleep,
   });
+
+  // sh.scripts(pattern, {around, max}): the page's script files and inline
+  // scripts searched for a string or regex, for the API path, the error
+  // text, or the flag a site's code holds. Each match comes with around
+  // characters each side; max matches in all. A file the page's origin may
+  // not fetch is listed in unread, so a miss there proves nothing.
+  async function searchScripts(pattern, { around = 200, max = 20 } = {}) {
+    const re = pattern instanceof RegExp ? new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`) : new RegExp(String(pattern).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+    const files = [...new Set([...document.scripts].map((s) => s.src).concat(performance.getEntriesByType("resource").filter((e) => e.initiatorType === "script" || /\.m?js(?:[?#]|$)/.test(e.name)).map((e) => e.name)).filter(Boolean))];
+    const sources = [...document.scripts].filter((s) => !s.src && s.textContent).map((s, n) => ({ file: `inline ${n}`, text: s.textContent }));
+    const unread = [];
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const r = await fetch(file);
+          if (r.ok) sources.push({ file, text: await r.text() });
+          else unread.push(file);
+        } catch {
+          unread.push(file);
+        }
+      }),
+    );
+    const found = [];
+    for (const { file, text } of sources) {
+      for (const m of text.matchAll(re)) {
+        if (found.length >= max) return { found, searched: sources.length, unread, more: true };
+        found.push({ file: file.split("?")[0], text: text.slice(Math.max(0, m.index - around), m.index + m[0].length + around) });
+      }
+    }
+    return { found, searched: sources.length, unread };
+  }
 
   // Safari stops a content script's timers in a hidden tab, so a sleep there
   // also ends on the ticks an owned tab gets (takeTicks). It lasts at most

@@ -813,9 +813,14 @@ export async function netStop(opts: { tab?: number } = {}) {
   return relay(tab, "net", [false]);
 }
 
-export async function netRead(opts: { tab?: number } = {}) {
+// The requests the page made, or with url only those whose address has
+// that part, each with its index in the whole list, which body takes.
+export async function netRead(opts: { tab?: number; url?: string } = {}) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "netRead");
+  const read = (await relay(tab, "netRead")) as { entries: { url: string }[] };
+  const { url } = opts;
+  if (url === undefined) return read;
+  return { entries: read.entries.flatMap((e, index) => (e.url.includes(url) ? [{ index, ...e }] : [])) };
 }
 
 // One request's whole body, as the page's world keeps it (dialogs.js):
@@ -1402,7 +1407,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => scroll(a as { tab?: number; ref?: string; dx?: number; dy?: number }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.wait. Your code must end within 30 s: split long loops across calls.",
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.scripts, sh.wait. Your code must end within 30 s: split long loops across calls.",
     params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, save: SAVE },
     required: ["tab"],
     run: saving("eval", (a) => {
@@ -1505,10 +1510,15 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }) }),
   },
   net: {
-    desc: "Fetch/XHR requests since page load, in all frames, with each text/JSON body's start. start clears; stop ends.",
-    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, body: { description: "index or url part: its whole body" } },
+    desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "only those with this in their url" }, body: { description: "index or url part: its whole body" } },
     required: ["tab"],
-    run: (a) => (a.body === undefined ? capture({ start: netStart, read: netRead, stop: netStop }, a) : netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do })),
+    run: (a) => {
+      if (a.body !== undefined) return netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do });
+      if (a.url === undefined) return capture({ start: netStart, read: netRead, stop: netStop }, a);
+      if (a.do !== undefined && a.do !== "read") throw new Error("url goes with do: read");
+      return netRead({ tab: a.tab as number | undefined, url: str(a.url, "url") });
+    },
   },
   console: {
     desc: "Record the page's console messages: start, then read.",

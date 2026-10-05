@@ -100,8 +100,11 @@ import { TOOLS } from "./tools.ts";
 // it to 24,186: Costco refused the made password for want of a symbol.
 // Cards share passwords' actions and add no top-level tool. Tightening
 // that tool's own description and parameters pays for its card actions
-// and selector; the byte limit stays unchanged.
-const TOOL_LIST_MAX_BYTES = 24_186;
+// and selector; the byte limit stays unchanged. net's url and eval's
+// sh.scripts (80, net's description tightened) brought it to 24,243: on
+// 10-04 an agent filtered net's list through python twelve times, and
+// fetched and searched the page's scripts by hand in twelve calls.
+const TOOL_LIST_MAX_BYTES = 24_243;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

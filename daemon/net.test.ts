@@ -62,3 +62,11 @@ test("a body the list has no request for is an error naming what was asked", asy
   await expect(callTool("net", { tab: 1, body: 5 })).rejects.toThrow(/\b5\b/);
   await expect(callTool("net", { tab: 1, body: "nowhere.example" })).rejects.toThrow(/nowhere\.example/);
 });
+
+// On 10-04 an agent piped the list through python twelve times to find one
+// API's requests.
+test("a list read for part of a url holds only those requests, each with the index body takes", async () => {
+  const { entries } = (await callTool("net", { tab: 1, url: "portal.example/case" })) as { entries: { index: number; t: number }[] };
+  expect(entries.map((e) => e.t)).toEqual([10, 30]);
+  for (const e of entries) expect(await callTool("net", { tab: 1, body: e.index })).toMatchObject({ t: e.t });
+});

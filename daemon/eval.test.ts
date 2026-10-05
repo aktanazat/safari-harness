@@ -61,6 +61,14 @@ test("a value after a loop's or an if's block is the script's last value; after 
   expect(await run("const k = 2;\nglobalThis.twice = function (a) { return a * k }\n(4)")).toBe(8);
 });
 
+// On 10-04 an agent's API call that ended in try { ... } catch (e) { ... }
+// came back null with no error, so it ran again with a variable to return.
+test("a script that ends in a try statement returns the last value of the block that ran", async () => {
+  expect(await run('try { const r = await Promise.resolve({ status: 200 }); "ok " + r.status } catch (e) { "fail " + e.message }')).toBe("ok 200");
+  expect(await run('const n = 1;\ntry { await Promise.reject(new Error("400")) } catch (e) { "fail " + e.message + n }')).toBe("fail 4001");
+  expect(await run('try { "a}b" } catch { "c" } finally { globalThis.ran = 0 }')).toBe("a}b");
+});
+
 // On 09-28 a script with a stray word at its end failed with "Unexpected
 // keyword 'const'", its first word, so the agent rewrote code that was fine.
 test("a script that does not parse fails naming the error in its statements", async () => {

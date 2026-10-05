@@ -366,22 +366,29 @@ Escalate in this order:
    the user's tab comes back.
 4. `eval` only when you know the exact code you need. Statements work, and
    the value of the last one comes back; `await` works at the top, and a
-   promise is awaited. It sees the DOM; `page: true` runs it in the page's
-   own world, where the site's script variables and functions are (YouTube
-   and Google included). A page whose security policy forbids eval runs it
-   in its own world instead; where that is refused too, the error says to
-   read with `snapshot`, `extract`, or `data`. Outside `page: true`, `sh`
-   has helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
+   promise is awaited. A last statement that is a `try` gives the last
+   value of the block that ran, `try` or `catch`. It sees the DOM;
+   `page: true` runs it in the page's own world, where the site's script
+   variables and functions are (YouTube and Google included). Code that
+   starts with a frame's ref prefix, such as `f3:`, runs in that embedded
+   frame. A page whose security policy forbids eval runs it in its own
+   world instead; where that is refused too, the error says to read with
+   `snapshot`, `extract`, or `data`. Outside `page: true`, `sh` has
+   helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
    open shadow roots too, `sh.text(el)` reads an element's text as
    `extract` does (the whole page without `el`), `sh.jsonld()` lists the
-   page's JSON-LD, and `sh.wait(ms)` pauses (25 s at most). From a shell or
-   another program, hand over a script with `safari eval --file path` (or
-   pipe it in) instead of escaping it onto one line; `--save <path>` names
-   the file the answer goes to. A script that does not parse fails with the
-   error in its statements. Code gets 30 s: past that the error says your
-   code ran long, and that the page answered. Keep sleeps and long loops
-   out of `eval`: a loop across steps goes in `repl`, and `wait {text}`
-   waits for words the page will show.
+   page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
+   script files and inline scripts for a string or regex (an API path, an
+   error message) and returns `{found: [{file, text}], searched, unread}`
+   with `around` characters each side (200; `max` 20 matches), and
+   `sh.wait(ms)` pauses (25 s at most). From a shell or another program,
+   hand over a script with `safari eval --file path` (or pipe it in)
+   instead of escaping it onto one line; `--save <path>` names the file
+   the answer goes to. A script that does not parse fails with the error
+   in its statements. Code gets 30 s: past that the error says your code
+   ran long, and that the page answered. Keep sleeps and long loops out of
+   `eval`: a loop across steps goes in `repl`, and `wait {text}` waits for
+   words the page will show.
 
 `data` returns what the page itself declares, as JSON: JSON-LD, microdata,
 meta and OpenGraph tags, JSON in script tags and `data-` attributes, and the
@@ -798,14 +805,16 @@ page. It sees fetch and XHR only: not page loads, images, scripts, or web
 workers. `console` records console messages from `do: "start"`; read them
 with `do: "read"`.
 
-`net {tab, body}` returns one request's whole text or JSON response:
-`body` is its place in the list (from the end below 0: `-1` is the
-latest) or part of its url (the latest request with it). The answer is the
-request's entry with the body as `text`. The page keeps the whole bodies
-of its latest 10 such responses, each up to 90,000 characters; a longer
-one comes back cut there with a `note` saying so, and one still arriving
-comes back as far as it came, with a note. An older request's body is
-gone: the call says so. CLI: `safari net read --body -1 --tab N`.
+`net {tab, url}` lists only the requests whose address has that part, each
+with its `index` in the whole list. `net {tab, body}` returns one request's
+whole text or JSON response: `body` is its place in the list (from the end
+below 0: `-1` is the latest) or part of its url (the latest request with
+it). The answer is the request's entry with the body as `text`. The page
+keeps the whole bodies of its latest 10 such responses, each up to 90,000
+characters; a longer one comes back cut there with a `note` saying so, and
+one still arriving comes back as far as it came, with a note. An older
+request's body is gone: the call says so. CLI: `safari net --url
+offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
 
 ## Files, PDFs, and requests
 

@@ -18,12 +18,22 @@ const asyncBody = (body: string) => `return async () => {${body}\n}`;
 
 // A last statement that declares a function or class stays a declaration.
 const DECLARATION = /^(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*(?:async\s+function|function|class)(?![\w$])/;
+// A last statement that is a try statement, up to its block's brace; and
+// the catch clause that may follow that block, up to its own.
+const TRY = /^(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*try\s*\{/;
+const CATCH = /^\s*catch\s*(?:\(\s*[\w$]+\s*\)\s*)?\{/;
 
 export function asExpression(source: string): string {
   if (!/\bawait\b/.test(source) && parses(`return (${source})`)) return source;
   // One that parses as neither goes as statements, so the page names the
   // error in them: as an expression, any script fails at its first keyword.
   if (!parses(asyncBody(source))) return `(async () => {${source}\n})()`;
+  return `(async () => {${returningLast(source) ?? source}\n})()`;
+}
+
+// The statements with the last one returning its value, or null when it has
+// none to give. A try statement gives the value its block that ran ends in.
+function returningLast(source: string): string | null {
   const { starts, joins, last } = statementStarts(source);
   // The last start after which the script before it parses is the last
   // statement's; a misread start fails that parse.
@@ -36,12 +46,43 @@ export function asExpression(source: string): string {
     // if's block, "(" starts a statement; after a function's, it calls it.
     if (joins.has(start) && parses(asyncBody(`${head}.x`))) continue;
     const tail = source.slice(start, last);
-    if (DECLARATION.test(tail)) break;
-    const body = `${head}\nreturn (${tail}\n)`;
-    if (parses(asyncBody(body))) return `(async () => {${body}\n})()`;
-    break;
+    if (DECLARATION.test(tail)) return null;
+    const opened = TRY.exec(tail);
+    const value = opened ? returningTry(tail, opened[0].length - 1) : `return (${tail}\n)`;
+    const body = `${head}\n${value}`;
+    return parses(asyncBody(body)) ? body : null;
   }
-  return `(async () => {${source}\n})()`;
+  return null;
+}
+
+// A block's inner statements returning the value they end in, and its brace.
+function returningBlock(inner: string): string {
+  return `${returningLast(inner) ?? inner}\n}`;
+}
+
+// A try statement with its try block, and its catch block if it has one,
+// each returning the value it ends in. open is the try block's brace.
+function returningTry(statement: string, open: number): string {
+  const close = blockEnd(statement, open, (upTo) => `${upTo} finally {}`);
+  if (close < 0) return statement;
+  const rest = statement.slice(close + 1);
+  const caught = CATCH.exec(rest);
+  const tried = `${statement.slice(0, open + 1)}${returningBlock(statement.slice(open + 1, close))}`;
+  if (!caught) return tried + rest;
+  const catchOpen = caught[0].length - 1;
+  const catchClose = blockEnd(rest, catchOpen, (upTo) => `try {} ${upTo}`);
+  if (catchClose < 0) return statement;
+  return `${tried}${rest.slice(0, catchOpen + 1)}${returningBlock(rest.slice(catchOpen + 1, catchClose))}${rest.slice(catchClose + 1)}`;
+}
+
+// Where the block that opens at open closes: the first brace after which
+// the code, completed by complete, parses. A brace inside a string, a
+// template, or an inner block leaves it unbalanced, so it does not.
+function blockEnd(code: string, open: number, complete: (upTo: string) => string): number {
+  for (let at = code.indexOf("}", open); at >= 0; at = code.indexOf("}", at + 1)) {
+    if (parses(asyncBody(complete(code.slice(0, at + 1))))) return at;
+  }
+  return -1;
 }
 
 const LINE_END = /[\n\r\u2028\u2029]/;
@@ -58,6 +99,9 @@ function continues(source: string, i: number, division: boolean): boolean {
   if (c === "!") return source[i + 1] === "=";
   return "([.,?:=*%&|^<>`".includes(c) || /^(?:in|instanceof)(?![\w$])/.test(source.slice(i, i + 11));
 }
+
+// No statement begins with these: each carries on the block before it.
+const BLOCK_GOES_ON = /^(?:catch|finally|else)(?![\w$])/;
 
 // Where each top-level statement of source may begin: after a semicolon,
 // or after a line break or a block's closing brace that ends one; and where
@@ -115,10 +159,12 @@ function statementStarts(source: string): { starts: number[]; joins: Set<number>
       continue;
     }
     const regex = c === "/" && (prev === "" || prev === "}" || BEFORE_REGEX[prev] || (prev.length === 1 && !WORD.test(prev) && prev !== ")" && prev !== "]"));
-    if (soft >= 0 && !continues(source, i, c === "/" && !regex)) starts.push(soft);
-    else if (soft >= 0 && soft === brace) {
-      starts.push(soft);
-      joins.add(soft);
+    if (soft >= 0 && !BLOCK_GOES_ON.test(source.slice(i, i + 8))) {
+      if (!continues(source, i, c === "/" && !regex)) starts.push(soft);
+      else if (soft === brace) {
+        starts.push(soft);
+        joins.add(soft);
+      }
     }
     soft = -1;
     if (c === ";") {

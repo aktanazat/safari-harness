@@ -29,6 +29,18 @@ async function safari(argv: string[], stdin?: string) {
   return { err: err.trim(), code };
 }
 
+// On 10-04 `safari eval --page true "const ..."` sent "true const ..." as
+// the code, which failed at its second word.
+test("a true or false after a flag that takes no value sets that flag and is not part of the command's words", async () => {
+  calls.length = 0;
+  expect(await safari(["eval", "--page", "true", "const a = 1; a", "--tab", "7"])).toEqual({ err: "", code: 0 });
+  expect(await safari(["eval", "--page", "false", "document.title", "--tab", "7"])).toEqual({ err: "", code: 0 });
+  expect(calls.map((c) => c.args)).toEqual([
+    { tab: 7, expression: "const a = 1; a", page: true },
+    { tab: 7, expression: "document.title", page: false },
+  ]);
+});
+
 // On 09-29 `safari learn geico.com --note "..."` saved nothing and said
 // nothing: the CLI dropped every flag its tool did not name.
 test("a flag the command does not take fails before any call, naming the flags it does take", async () => {

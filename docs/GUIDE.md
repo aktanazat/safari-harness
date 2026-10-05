@@ -7,7 +7,8 @@ script API.
 Tabs
 - `open` returns a tab id; pass it as `tab` to every call. `tab: "front"`
   is his front tab, only when he asks about his page. Never navigate,
-  type in, or close his tabs.
+  type in, or close his tabs. In a shell: `T=$(safari open <url> --json |
+  jq -r .id)`.
 - Your tabs close when your turn ends or after 20 minutes unused. `keep`
   one that waits on him, or that you need after a long step.
 - When a call says he paused or stopped you, do what it says.
