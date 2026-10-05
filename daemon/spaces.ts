@@ -105,10 +105,19 @@ async function regrouping(space: Space, on: boolean) {
   if (bridge.connected) await bridge.request("windows.regrouping", [space.window, on]).catch(() => undefined);
 }
 
-// The tabs in space's window, which the window's new id names after an
-// extension reload.
+// The tabs in space's window. Its page names the window: Safari gives every
+// window a new id when the extension reloads and when Safari itself starts
+// again, which no reload maps. On 10-05 every agent's window was lost three
+// times so: its page closed, its tabs stayed in a window no one owned, and
+// the agent's next tab opened another window. Without the page, the
+// extension maps an id a reload changed.
 async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   const all = tabs ?? (await listTabs());
+  const page = all.find((t) => isPage(t, space))?.windowId;
+  if (page !== undefined && page !== space.window) {
+    space.window = page;
+    save();
+  }
   const inWindow = all.filter((t) => t.windowId === space.window);
   if (inWindow.length > 0) return inWindow;
   const now = (await bridge.request("windows.resolve", [space.window]).catch(() => null)) as number | null;

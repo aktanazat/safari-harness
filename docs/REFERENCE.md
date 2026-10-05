@@ -86,10 +86,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   all your tabs share one. The window opens on a page titled with the task's
   name (the group, or "agent", and your process id, then ", window 2" and up
   while a group of that name from before a restart is still to be deleted),
-  which labels it for him and keeps it yours when the extension reloads; it
-  also shows him what you do there and lets him pause or stop you (Mission
-  control, below). The daemon keeps its windows across its own restarts, so
-  your next tab still joins yours.
+  which labels it for him and keeps it yours when the extension reloads or
+  Safari starts again; it also shows him what you do there and lets him
+  pause or stop you (Mission control, below). The daemon keeps its windows
+  across its own restarts, so your next tab still joins yours.
 - That window becomes a Safari tab group of the same name the first time he
   has left the keyboard and mouse alone for 30 seconds, and stays a plain
   window until then. `open` says which under `space`: `group` is `waiting`,

@@ -84,7 +84,19 @@ function safari() {
       tabs.set(oldTabs.get(t.id)!, { ...t, id: oldTabs.get(t.id)!, windowId: oldWindows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, reload, oldTabs, regrouping };
+  // Safari quits and starts again: it restores every tab and window under
+  // new ids, which the extension, started afresh, maps to nothing.
+  const relaunch = () => {
+    const was = [...tabs.values()];
+    const windows = new Map<number, number>();
+    tabs.clear();
+    for (const t of was) {
+      if (!windows.has(t.windowId)) windows.set(t.windowId, next++);
+      const id = next++;
+      tabs.set(id, { ...t, id, windowId: windows.get(t.windowId)! });
+    }
+  };
+  return { tabs, closed, sock, reload, relaunch, oldTabs, regrouping };
 }
 
 // An agent process, to open tabs for and then end.
@@ -204,6 +216,23 @@ test("after an extension reload an agent's next tab joins the window it had, who
   expect(next.windowId).toBe(window);
   const page = pageIn(s.tabs, window)!;
   e.kill();
+  await until(() => s.closed.includes(page.id));
+});
+
+// On 10-05 every agent's window was lost three times as Safari or its
+// extension started again: their tabs stayed behind in windows no one
+// owned, and each agent's next tab opened another window. The tech-week
+// sign-up agent went through five windows in two hours.
+test("after Safari starts again an agent's next tab joins the window it had, whose page still closes when it exits", async () => {
+  const s = safari();
+  const r = agent();
+  const first = await runAs(r.pid, () => openTab("https://r.example/1", true));
+  const address = pageIn(s.tabs, first.windowId)!.url;
+  s.relaunch();
+  const page = [...s.tabs.values()].find((t) => t.url === address)!;
+  const next = await runAs(r.pid, () => openTab("https://r.example/2", true));
+  expect(next.windowId).toBe(page.windowId);
+  r.kill();
   await until(() => s.closed.includes(page.id));
 });
 
