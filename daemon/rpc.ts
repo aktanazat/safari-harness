@@ -6,11 +6,13 @@
 // Every call carries this process's pid, from which the daemon finds the
 // agent it works for (owner.ts), except one bound for another Mac, whose
 // daemon cannot see this Mac's processes. A process that works for itself
-// says so (ownCalls). A call the daemon never took, refused while it
-// restarts or answered 503 while it finishes its calls in flight first, is
-// made again, once, as soon as a daemon answers again.
+// says so (ownCalls), as does one that works for an agent another process
+// found (the pairing's, pair.ts). A call the daemon never took, refused
+// while it restarts or answered 503 while it finishes its calls in flight
+// first, is made again, once, as soon as a daemon answers again.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ownerOf } from "./owner.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -26,11 +28,17 @@ export function daemonHttp(): string {
 // window of its own, and its tabs outlived the turn by 20 minutes. A call
 // outside any run, as the session closes its tabs on ending, works for the
 // session itself (ownCalls).
-let ownsCalls = false;
+let ownsCalls: number | undefined;
 const asker = new AsyncLocalStorage<number>();
 
-export function ownCalls(): void {
-  ownsCalls = true;
+export function ownCalls(pid = process.pid): void {
+  ownsCalls = pid;
+}
+
+// The agent a call made now works for, as the daemon finds it (main.ts).
+export async function agentOf(): Promise<number | undefined> {
+  const asked = asker.getStore();
+  return asked === undefined && ownsCalls !== undefined ? ownsCalls : ownerOf(asked ?? process.pid);
 }
 
 export function callFor<T>(pid: number, fn: () => T): T {
@@ -92,7 +100,7 @@ export function takesNews(): boolean {
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
   const asked = asker.getStore();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? process.pid), ...(ownsCalls && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   let res = await attempt(base, body);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body);
   if (res === "refused") throw new Error(`safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`);

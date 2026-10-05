@@ -74,7 +74,7 @@ const SWEEP_MS = 1000;
 const watchers = new Map<number, Set<() => void>>();
 let sweep: Timer | undefined;
 
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

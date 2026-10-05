@@ -13,7 +13,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { INPUT_TOOLS } from "./input.ts";
 import { navigatedOf } from "./navigated.ts";
-import { waitsOut } from "./pair.ts";
 import { ANSWER_MS, localTime, within } from "./passwords.ts";
 import { isAway } from "./phone.ts";
 import { rpc } from "./rpc.ts";
@@ -31,6 +30,16 @@ const HELPER = "/Applications/Safari Harness.app/Contents/Helpers/Safari Harness
 // without another prompt. A CLI process ends after its call, so it cannot
 // reuse an earlier CLI call's approval.
 const APPROVAL_MS = 5 * 60_000;
+
+// The CLI's process ends with its answer, and the helper holding his
+// Touch ID prompt ends with it, so a CLI call waits the prompt out
+// (waitCardsOut). The MCP server outlives each answer and keeps the
+// ANSWER_MS bound.
+let waitOut = false;
+
+export function waitCardsOut(on = true): void {
+  waitOut = on;
+}
 
 // Embedded card fields served by Stripe, Braintree, or Adyen. Do not trust
 // arbitrary pages on the processors' parent domains.
@@ -154,7 +163,7 @@ async function read(card: Listed, host: string): Promise<Card | { waiting: strin
   const owed = Promise.withResolvers<Reply>();
   s.owed.push(owed);
   s.child.stdin.write(`${JSON.stringify({ read: card.id, site: host })}\n`);
-  if (!waitsOut() && !(await within(owed.promise, ANSWER_MS))) {
+  if (!waitOut && !(await within(owed.promise, ANSWER_MS))) {
     owed.promise.catch(() => {});
     return { waiting: `the Mac is asking the user to approve card fills with Touch ID (since ${s.askedAt}); ask him to approve, then call card-fill again` };
   }
@@ -190,7 +199,7 @@ function pick(saved: Listed[], which: unknown): Listed {
 // A helper command that waits on the user at the Mac (Touch ID, the add
 // window): up to ANSWER_MS, then what he is asked, as read does.
 async function onHim(asking: Promise<Reply>, waiting: string): Promise<unknown> {
-  if (waitsOut() || (await within(asking, ANSWER_MS))) return asking;
+  if (waitOut || (await within(asking, ANSWER_MS))) return asking;
   asking.catch(() => {});
   return { waiting: `${waiting} (since ${localTime()})` };
 }

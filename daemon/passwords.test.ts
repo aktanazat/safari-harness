@@ -10,6 +10,7 @@ import { FILL_TOOLS } from "./fill.ts";
 import { runAs } from "./owner.ts";
 import * as pair from "./pair.ts";
 import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from "./passwords.ts";
+import * as phone from "./phone.ts";
 import { tabSecrets } from "./redact.ts";
 import * as daemonRpc from "./rpc.ts";
 
@@ -402,10 +403,18 @@ const settled = () => new Promise<void>((r) => setImmediate(r));
 // A first call on the locked vault, as the caller runs it (pair.ts): the
 // daemon stays locked until unlock gets the code the Mac showed, the code
 // is read off the Mac's window, and the Touch ID prompt waits until the
-// test approves. The clock is the test's.
+// test approves. The pairing's process runs in this one, its state in a
+// scratch folder. The clock is the test's.
 function lockedVault() {
   process.env.SAFARI_HARNESS_AWAY = "0";
   jest.useFakeTimers();
+  const state = mkdtempSync("/private/var/tmp/pairing-test-");
+  profiles.push(state);
+  spyOn(phone, "dataFile").mockImplementation((name) => join(state, name));
+  spyOn(pair, "startPairing").mockImplementation(async (site) => {
+    void pair.runPairing(site);
+    return process.pid;
+  });
   let unlocked = false;
   spyOn(daemonRpc, "rpc").mockImplementation(async (_tool: string, args: Record<string, unknown> = {}) => {
     if (args.do === "status") return { unlocked };
@@ -422,13 +431,12 @@ function lockedVault() {
   return { prompts: spyOn(pair, "approve").mockReturnValue(touch.promise), approve: () => touch.resolve({ approved: true }) };
 }
 
-// After every test: the spies, the clock, the CLI switch, and the away flag
-// go back, and the secrets typed into tab 7 are dropped.
+// After every test: the spies, the clock, and the away flag go back, and
+// the secrets typed into tab 7 are dropped.
 const away = process.env.SAFARI_HARNESS_AWAY;
 afterEach(() => {
   mock.restore();
   jest.useRealTimers();
-  pair.waitPairingOut(false);
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
   tabSecrets.clear();
@@ -436,8 +444,10 @@ afterEach(() => {
 
 // On 09-29 a first call that found the vault locked waited 44 s for Touch
 // ID and 13 s more for the code, and answered at 58 s: through MCP, 2 s
-// more and the agent's call would have ended with no answer.
-test("through MCP, a first call on the locked vault answers at 40 s with what the Mac waits on, and the next call gets the pairing he then approves, with no second prompt", async () => {
+// more and the agent's call would have ended with no answer. On 10-04 a
+// CLI call, which then waited the pairing out, ran into the agent's 150 s
+// limit with nobody at the Mac. Now every caller answers as MCP did.
+test("a first call on the locked vault answers within 40 s with what the Mac waits on, and the next call gets the pairing he then approves, with no second prompt", async () => {
   const vault = lockedVault();
   let first: unknown;
   void FILL_TOOLS.passwords.run({ do: "logins" }).then((answer) => {
@@ -450,21 +460,10 @@ test("through MCP, a first call on the locked vault answers at 40 s with what th
   const second = FILL_TOOLS.passwords.run({ do: "logins" });
   await settled();
   vault.approve();
+  await settled();
+  jest.advanceTimersByTime(1000);
   expect(await second).toEqual({ site: SITE, usernames: [USER] });
   expect(vault.prompts).toHaveBeenCalledTimes(1);
-});
-
-// The CLI's process ends with its answer, and the prompt with it: an answer
-// at 40 s there took down the prompt he was about to approve.
-test("from the CLI, a first call on the locked vault waits the pairing out: he approves at 45 s and it returns the logins", async () => {
-  pair.waitPairingOut();
-  const vault = lockedVault();
-  const call = FILL_TOOLS.passwords.run({ do: "logins" });
-  await settled();
-  jest.advanceTimersByTime(45_000);
-  await settled();
-  vault.approve();
-  expect(await call).toEqual({ site: SITE, usernames: [USER] });
 });
 
 test("code types the site's verification code into the page but never returns it", async () => {

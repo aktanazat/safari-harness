@@ -6,15 +6,18 @@
 // digits go straight to the daemon: the agent learns only whether it
 // paired. He once took 7 minutes to send the code through the chat. The
 // code shows only on the Mac, so while he is away the call says he must
-// come to it. Runs in the caller, as fill.ts does.
+// come to it. It runs in a process of its own (startPairing), started
+// from the caller's, as fill.ts runs in the caller.
 
-import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { frontApp, input } from "./front.ts";
+import { alive } from "./owner.ts";
 import { ANSWER_MS, localTime, within } from "./passwords.ts";
-import { isAway } from "./phone.ts";
-import { rpc } from "./rpc.ts";
+import { dataFile, isAway } from "./phone.ts";
+import { agentOf, ownCalls, rpc } from "./rpc.ts";
 
 const execFileAsync = promisify(execFile);
 const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
@@ -25,10 +28,8 @@ const SAVE_WINDOW_MS = 20000;
 
 export type Paired = { paired: true } | { paired: false; why: string };
 
-// Runs file and resolves to its stdout. A pairing can outlive the call that
-// started it (the MCP server answers at ANSWER_MS and goes on), and a
-// prompt still up when this process exits could pair nothing, so it goes
-// down then.
+// Runs file and resolves to its stdout. A prompt still up when the
+// pairing's process exits could pair nothing, so it goes down then.
 async function run(file: string, args: string[], timeout: number): Promise<string> {
   const running = execFileAsync(file, args, { timeout });
   const kill = () => running.child.kill();
@@ -102,28 +103,84 @@ export async function askCode(): Promise<{ code: string } | { why: string }> {
   }
 }
 
-// The pairing under way in this process, and what a call that stops
-// waiting on it says the Mac waits on.
-let current: Promise<Paired> | undefined;
+// ---------- the pairing's own process ----------
+
+// The pairing runs in a process of its own, started detached from the
+// caller's as the tab group keeper is (keeper.ts), so it keeps the
+// terminal's Accessibility permission that reading the code needs, and
+// outlives the call that started it. A CLI call used to run it itself and
+// wait it out, since its prompt went down with the call's answer: on
+// 10-04 nobody was at the Mac, the agent's 150 s limit ended the call
+// silently, and the code prompt stayed up with no one waiting on it.
+// Now every call, from the CLI or MCP, waits ANSWER_MS, then says what
+// the Mac waits on, and the next call from any process on the Mac waits
+// on the same pairing: no second prompt. The state file says which
+// process pairs, what the Mac waits on, and, once it is over, how it ended.
+type Ended = Paired | { error: string };
+type State = { pid: number; waiting: string; ended?: Ended };
+// How often a waiting call reads the state file.
+const POLL_MS = 250;
+
+const stateFile = () => dataFile("pairing.json");
+
+function readState(): State | undefined {
+  try {
+    return JSON.parse(readFileSync(stateFile(), "utf8")) as State;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeState(s: State): void {
+  const file = stateFile();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.${process.pid}`, JSON.stringify(s));
+  renameSync(`${file}.${process.pid}`, file);
+}
+
+const waitText = (what: string, then: string) => `${what} (since ${localTime()}); ${then}`;
+
+// What the Mac waits on, as the pairing's process last noted it.
 let waiting = "";
-// Whether a call waits the pairing out rather than ANSWER_MS.
-let waitOut = false;
 
 function waitOn(what: string, then: string): void {
-  waiting = `${what} (since ${localTime()}); ${then}`;
+  waiting = waitText(what, then);
+  writeState({ pid: process.pid, waiting });
 }
 
-// The CLI's process ends with its answer, and a prompt still up with it,
-// so a CLI call waits the pairing out, each step to its own limit. The MCP
-// server outlives each answer and keeps the ANSWER_MS bound.
-export function waitPairingOut(on = true): void {
-  waitOut = on;
+// Starts the pairing's process for the agent this call works for, and
+// notes it at once, so a call that comes before the process writes waits
+// on it rather than starting another.
+export async function startPairing(site: string): Promise<number> {
+  const agent = await agentOf();
+  const child = spawn(process.execPath, [import.meta.path, site, ...(agent === undefined ? [] : [String(agent)])], { detached: true, stdio: "ignore" });
+  child.unref();
+  if (child.pid === undefined) throw new Error("the pairing's process did not start");
+  writeState({ pid: child.pid, waiting: waitText("Apple Passwords is pairing", "call again") });
+  return child.pid;
 }
 
-// Whether this process waits a prompt out: a card fill that asks Touch ID
-// waits as a pairing does (cards.ts).
-export function waitsOut(): boolean {
-  return waitOut;
+// Waits up to ANSWER_MS on the pairing pid runs: how it ended, or what
+// the Mac waits on while it goes on. The process notes how it ended
+// before it exits, so one found gone has said so, or never will.
+async function answer(pid: number): Promise<Paired> {
+  const over = Promise.withResolvers<Ended>();
+  const look = () => {
+    const running = alive(pid);
+    const s = readState();
+    if (s?.pid === pid && s.ended) over.resolve(s.ended);
+    else if (!running) over.resolve({ paired: false, why: "the pairing stopped before it ended; call again" });
+  };
+  look();
+  const poll = setInterval(look, POLL_MS);
+  try {
+    if (!(await within(over.promise, ANSWER_MS))) return { paired: false, why: readState()?.waiting ?? waitText("Apple Passwords is pairing", "call again") };
+  } finally {
+    clearInterval(poll);
+  }
+  const ended = await over.promise;
+  if ("error" in ended) throw new Error(ended.error);
+  return ended;
 }
 
 // Pairs for a call that found Apple Passwords locked; site ends the reason
@@ -131,15 +188,17 @@ export function waitsOut(): boolean {
 // first call waited 44 s for his Touch ID and 13 s more for the code, and
 // answered at 58 s, where an agent's call through MCP ends at 60. So a
 // call waits ANSWER_MS, as the daemon's calls do on Touch ID, then says
-// what the Mac waits on while the pairing goes on, and the next call
-// waits on the same pairing: no second prompt. From the CLI it waits the
-// pairing out (waitPairingOut).
+// what the Mac waits on while the pairing goes on.
 export async function pairPasswords(site: string): Promise<Paired> {
   if (await isAway().catch(() => false)) return { paired: false, why: "the user is away from the Mac, and the pairing code shows only there: he must come to the Mac" };
-  const pending = (current ??= steps(site).finally(() => {
-    current = undefined;
-  }));
-  return (waitOut || (await within(pending, ANSWER_MS))) ? pending : { paired: false, why: waiting };
+  const s = readState();
+  return answer(s && !s.ended && alive(s.pid) ? s.pid : await startPairing(site));
+}
+
+// The body of the pairing's process: the pairing, then how it ended.
+export async function runPairing(site: string): Promise<void> {
+  const ended: Ended = await steps(site).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+  writeState({ pid: process.pid, waiting, ended });
 }
 
 // The pairing itself, noting at each wait what the Mac waits on.
@@ -165,4 +224,12 @@ async function steps(site: string): Promise<Paired> {
     return { paired: false, why: e instanceof Error ? e.message : String(e) };
   }
   return { paired: true };
+}
+
+// The pairing's process: argv is the site the reason names, then the
+// agent it pairs for, whose calls hold the pairing (rpc.ts ownCalls).
+if (import.meta.main) {
+  const [site = "", agent] = process.argv.slice(2);
+  if (agent !== undefined) ownCalls(Number(agent));
+  await runPairing(site);
 }

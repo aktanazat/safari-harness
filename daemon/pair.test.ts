@@ -1,12 +1,24 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { FILL_TOOLS } from "./fill.ts";
 import * as pair from "./pair.ts";
+import * as phone from "./phone.ts";
 import * as daemonRpc from "./rpc.ts";
 
 // The daemon's side of Apple Passwords: locked until unlock gets the code
-// the Mac showed. Each call it gets is kept.
+// the Mac showed. Each call it gets is kept. The pairing's process runs in
+// this one, its state in a scratch folder, so no test shows a real prompt.
 const CODE = "402913";
+const scratch: string[] = [];
 function fakeDaemon(): Record<string, unknown>[] {
+  const state = mkdtempSync("/private/var/tmp/pairing-test-");
+  scratch.push(state);
+  spyOn(phone, "dataFile").mockImplementation((name) => join(state, name));
+  spyOn(pair, "startPairing").mockImplementation(async (site) => {
+    void pair.runPairing(site);
+    return process.pid;
+  });
   const calls: Record<string, unknown>[] = [];
   let unlocked = false;
   spyOn(daemonRpc, "rpc").mockImplementation(async (tool: string, args: Record<string, unknown> = {}) => {
@@ -27,6 +39,7 @@ function fakeDaemon(): Record<string, unknown>[] {
 const away = process.env.SAFARI_HARNESS_AWAY;
 afterEach(() => {
   mock.restore();
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
 });
