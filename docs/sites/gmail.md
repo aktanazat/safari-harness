@@ -17,8 +17,11 @@ Do Gmail work in one named session, `safari repl --session <name>`: its variable
 - `waitForMail(account, query, {since, ms})`: waits for new mail matching a Gmail search, such as a code or a reply (`from:apple.com`, `from:bob@example.com`), and returns `{status: "received", results, since}`: `results` are the threads with a matching message after `since`, in the shape `search` returns, each dated at its newest match. After `ms` (default 25000, at most 30000) with nothing new it returns `{status: "timeout", since, note}`. Pass either answer's `since` to the next wait, so nothing that lands in between is missed or returned twice. `since` is ms since 1970 or an ISO date; without it the minute before the call counts, as a code often lands first. Your own mail counts when it matches, so name the sender; a reply you send in the same minute as the mail it answers can bring that thread back. For an emailed code, `open` the thread's print view (below) and `type {text: "{{code}}", secret: "page", from: <that tab>}`; never print the code.
 - `getThread(account, threadId, {html})`: `{id, threadId, subject, messages, attachments}`. A message is `{from, to, cc, replyTo?, date, body, attachments}`: `from` is `{name, email}`, `to` and `cc` are lists of them, `body` is plain text, and `bodyHtml` comes only with `html: true`. An attachment is `{name, id, size, url}`; the thread's own `attachments` lists every message's, each with `message`, its index in `messages`. A message whose body is only `[Quoted text hidden]` (the newest can be) has `quotedOnly: true`: its words are in the messages before it. Read from Gmail's print view, so the thread stays unread if it was.
 - `downloadAttachment(account, url | {threadId, attachmentId}, {out})`: saves an attachment, or an inline image by its `src` in `bodyHtml`, into `~/Downloads` (or at `out`) and returns the path. Give a file you only read an `out` in a temporary folder. A `fetch` of a `view=att` address is refused by Gmail's page rules; this method gets the file.
-- `openComposer({account, to, cc, bcc, subject, body})`: drafts only until approved; approved, it opens Gmail's compose window prefilled in a new tab for you. It never presses Send.
-- `openReplyComposer(account, threadId, {body})`: drafts only until approved; approved, it opens the thread in a new tab, presses Reply, and types the body. It never presses Send, and opening the thread marks it read.
+- `send({account, to, cc, bcc, subject, body, files})`: the fastest way to send a new message. Without `approved: true` it returns the exact draft (headers, body, and attached file names) for the owner; approved, it opens Gmail's compose window prefilled, attaches `files` (absolute paths) and waits until each one has finished uploading, presses Send, and returns `{sent: true, tab}` once Gmail shows "Message sent". If that never shows it throws without pressing Send again: look in Sent first.
+- `reply(account, threadId, {body, files})`: the same for a reply (Gmail's Reply, to the sender of the thread's last message), from the thread's own reply box. Opening the thread marks it read.
+- `openComposer({account, to, cc, bcc, subject, body, files})` and `openReplyComposer(account, threadId, {body, files})`: the same drafts, but approved they only open the compose window or the reply box filled in, files attached, in a new tab for the owner to press Send himself.
+
+Approval is per draft: show the owner the draft the call returned, word for word, and call again with `approved: true` only after he says yes to that text.
 
 ```js
 const [{ index }] = await googleAccounts.list();
@@ -27,12 +30,21 @@ const thread = await gmail.getThread(index, results[0].id);
 console.log(thread.subject, thread.attachments.map((a) => `${a.message}: ${a.name}`), thread.messages.at(-1).body.slice(0, 200));
 ```
 
+```js
+const draft = await gmail.send({ account: 0, to: "support@example.com", subject: "Offer error", body: "Hi,\n\n...", files: ["/Users/me/Downloads/error.png"] });
+// show draft.text to the owner; once he approves it:
+await gmail.send({ account: 0, to: "support@example.com", subject: "Offer error", body: "Hi,\n\n...", files: ["/Users/me/Downloads/error.png"], approved: true });
+```
+
 To save a thread as a PDF, open its print view and print that: `const p = await openTab("https://mail.google.com/mail/u/<n>/?view=pt&search=all&th=<id>"); await p.pdf({ path: "/tmp/thread.pdf" })`.
 
 Each list page is one Gmail page load (about 1.5 s), so keep `limit` small. Gmail rewrites hex ids to a newer form once a thread is open in its UI; the ids `search` returns are the ones every method here takes.
 
 ## In the Gmail page
 
-- Wait for text (`wait` with `text`), not `quiet`: Gmail's long-polls keep the page busy, so it never goes quiet.
+- Wait for text (`wait` with `text`) or a selector, not `quiet`: Gmail's long-polls keep the page busy. A compose window (`?view=cm&fs=1&to=..&su=..&body=..`) is ready once its Send button shows, `div[role="button"][data-tooltip^="Send"]`: about 5 s, where a quiet wait took 13 to 16 s (10-04).
+- Two elements carry `aria-label="Message Body"` in a compose window: a hidden, empty TEXTAREA first, then the contenteditable DIV holding the text. Read `div[role="textbox"][aria-label="Message Body"]`; the first match always reads empty.
+- Files go in through `upload` on `input[type="file"][name="Filedata"]`. Each shows as "Uploading attachment: <name>" until it is attached, then "Attachment: <name>" (the chip's `aria-label`); press Send after that.
+- "Discard draft" asks "Abandon changes?" in a confirm, which `click` dismisses unless accepted.
 - In the thread list each row has a ref named by its summary (unread, sender, subject, time); click it to open the thread. The row's checkbox is a small unnamed control of its own.
 - The filter list in Settings lags behind a filter just made, so a filter missing from it right after you made it is not proof it failed.

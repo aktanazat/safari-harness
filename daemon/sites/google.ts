@@ -141,6 +141,8 @@ export type GmailWait = { status: "received"; results: GmailThreadSummary[]; sin
 export type GmailAttachment = { name: string; id: string; size: string; url: string };
 export type GmailMessage = { from: GmailSender; to: GmailSender[]; cc: GmailSender[]; replyTo?: GmailSender[]; date: string; body: string; quotedOnly?: true; bodyHtml?: string; attachments: GmailAttachment[] };
 export type GmailThread = { id: string; threadId: string; subject: string; messages: GmailMessage[]; attachments: (GmailAttachment & { message: number })[] };
+// A new message: its headers, plain-text body, and absolute file paths.
+type Compose = { to?: string; cc?: string; bcc?: string; subject?: string; body?: string; files?: string[] };
 
 // A list row as the page reads it: its date as the row shows it, and last,
 // the id of its thread's newest message (matchedAt).
@@ -434,8 +436,71 @@ export function gmail(kit: SiteKit) {
     };
   }
 
-  function composeText(o: { to?: string; cc?: string; bcc?: string; subject?: string; body?: string }): string {
-    return [`To: ${o.to ?? ""}`, o.cc ? `Cc: ${o.cc}` : "", o.bcc ? `Bcc: ${o.bcc}` : "", `Subject: ${o.subject ?? ""}`, "", o.body ?? ""].filter((l, i) => l !== "" || i === 4).join("\n");
+  // The files a draft attaches, by name, as a line after its body.
+  const attached = (files: string[] = []) => (files.length ? `\n\nAttached: ${files.map((f) => f.split("/").pop()).join(", ")}` : "");
+
+  function composeText(o: Compose): string {
+    return [`To: ${o.to ?? ""}`, o.cc ? `Cc: ${o.cc}` : "", o.bcc ? `Bcc: ${o.bcc}` : "", `Subject: ${o.subject ?? ""}`, "", o.body ?? ""].filter((l, i) => l !== "" || i === 4).join("\n") + attached(o.files);
+  }
+
+  // Gmail's Send button, in a compose window or a reply box; its tooltip
+  // names the shortcut after the word.
+  const SEND = 'div[role="button"][data-tooltip^="Send"]';
+
+  // A compose window prefilled in a new tab, ready once its Send button
+  // shows: 5 s on 10-04, where waiting for quiet took 13 to 16 s.
+  async function composeTab(n: number, o: Compose): Promise<{ tab: number; url: string }> {
+    const params = new URLSearchParams({ view: "cm", fs: "1" });
+    for (const [key, value] of [["to", o.to], ["cc", o.cc], ["bcc", o.bcc], ["su", o.subject], ["body", o.body]] as const) {
+      if (value) params.set(key, value);
+    }
+    const url = `${MAIL}/mail/u/${n}/?${params}`;
+    const t = (await kit.invoke("open", { url })) as { id: number };
+    const { found } = (await kit.invoke("wait", { tab: t.id, selector: SEND, ms: 25000 })) as { found: boolean };
+    if (!found) throw new Error("Gmail did not open the compose window; its tab is open for the owner");
+    await attach(t.id, o.files ?? []);
+    return { tab: t.id, url };
+  }
+
+  // The thread in a new tab with its reply box open and the body typed. A
+  // thread address loaded straight never settles (Gmail rewrites the id
+  // and reloads), so the inbox opens first and the thread comes in by
+  // hash. The bottom "Reply" link is the first .ams.
+  async function replyTab(n: number, id: string, o: { body?: string; files?: string[] }): Promise<{ tab: number; url: string }> {
+    const box = 'div[role="textbox"][aria-label="Message Body"]';
+    const t = (await kit.invoke("open", { url: `${MAIL}/mail/u/${n}/#inbox` })) as { id: number };
+    await kit.invoke("wait", { tab: t.id, selector: "tr.zA, .TC", ms: 25000 });
+    await kit.invoke("eval", { tab: t.id, expression: `location.hash = ${JSON.stringify(`#all/${id}`)}` });
+    const reply = (await kit.invoke("wait", { tab: t.id, selector: ".ams", ms: 25000 })) as { found: boolean };
+    if (!reply.found) throw new Error("Gmail did not open the thread; its tab is open for the owner");
+    await kit.invoke("click", { tab: t.id, ref: ".ams" });
+    const { found } = (await kit.invoke("wait", { tab: t.id, selector: box, ms: 15000 })) as { found: boolean };
+    if (!found) throw new Error("Gmail did not open the reply box; the thread is open in the new tab");
+    if (o.body) await kit.invoke("type", { tab: t.id, ref: box, text: o.body });
+    await attach(t.id, o.files ?? []);
+    const url = (await kit.invoke("eval", { tab: t.id, expression: "location.href" })) as { result?: string };
+    return { tab: t.id, url: url.result ?? "" };
+  }
+
+  // Files attached in the compose window open in tab, each waited on until
+  // Gmail labels it "Attachment: <name>" in place of "Uploading attachment".
+  async function attach(tab: number, files: string[]): Promise<void> {
+    if (files.length === 0) return;
+    const { files: names } = (await kit.invoke("upload", { tab, ref: 'input[type="file"][name="Filedata"]', paths: files })) as { files: string[] };
+    for (const name of names) {
+      const { found } = (await kit.invoke("wait", { tab, selector: `div[aria-label^=${JSON.stringify(`Attachment: ${name}`)}]`, ms: 30000 })) as { found: boolean };
+      if (!found) throw new Error(`Gmail is still attaching ${name}; nothing was sent, and the tab is open for the owner`);
+    }
+  }
+
+  // Send pressed in tab, then Gmail's "Message sent" awaited. The tab stays
+  // open, as Gmail may still hold the message for its Undo window. A send
+  // it does not see confirmed is never pressed again: it may be in Sent.
+  async function pressSend(tab: number): Promise<{ sent: true; tab: number }> {
+    await kit.invoke("click", { tab, ref: SEND });
+    const { found } = (await kit.invoke("wait", { tab, text: "Message sent", ms: 20000 })) as { found: boolean };
+    if (!found) throw new Error('Gmail did not show "Message sent"; look in Sent before sending again (the tab is open)');
+    return { sent: true, tab };
   }
 
   return {
@@ -506,55 +571,63 @@ export function gmail(kit: SiteKit) {
     },
 
     // A draft of a new message; approved, it opens Gmail's compose window
-    // prefilled with it in a new tab for the owner, who alone presses Send.
-    async openComposer(opts: { account?: number | string; to?: string; cc?: string; bcc?: string; subject?: string; body?: string; approved?: boolean }) {
+    // prefilled with it, files attached, in a new tab for the owner, who
+    // alone presses Send.
+    async openComposer(opts: Compose & { account?: number | string; approved?: boolean }) {
       const n = await accountIndex(accounts, opts.account);
-      const params = new URLSearchParams({ view: "cm", fs: "1" });
-      for (const [key, value] of [["to", opts.to], ["cc", opts.cc], ["bcc", opts.bcc], ["su", opts.subject], ["body", opts.body]] as const) {
-        if (value) params.set(key, value);
-      }
-      const url = `${MAIL}/mail/u/${n}/?${params}`;
       return draftOrSend({
         site: "Gmail",
         action: "open a prefilled compose window (nothing is sent until the owner presses Send)",
         to: opts.to,
         text: composeText(opts),
         approved: opts.approved,
-        send: async () => {
-          const t = (await kit.invoke("open", { url })) as { id: number };
-          return { tab: t.id, url };
-        },
+        send: () => composeTab(n, opts),
+      });
+    },
+
+    // A draft of a new message; approved, it sends it from Gmail's compose
+    // window, files attached, and returns once Gmail shows "Message sent".
+    async send(opts: Compose & { account?: number | string; to: string; approved?: boolean }) {
+      const n = await accountIndex(accounts, opts.account);
+      return draftOrSend({
+        site: "Gmail",
+        action: "send this message",
+        to: opts.to,
+        text: composeText(opts),
+        approved: opts.approved,
+        send: async () => pressSend((await composeTab(n, opts)).tab),
       });
     },
 
     // A draft reply on a thread; approved, it opens the thread in a new tab
-    // for the owner, presses Reply there, and types the body into the reply
-    // box. Nothing is sent. Opening the thread in Gmail marks it read.
-    async openReplyComposer(account: number | string, threadId: string, opts: { body?: string; approved?: boolean } = {}) {
+    // for the owner, presses Reply there, types the body into the reply
+    // box, and attaches the files. Nothing is sent. Opening the thread in
+    // Gmail marks it read.
+    async openReplyComposer(account: number | string, threadId: string, opts: { body?: string; files?: string[]; approved?: boolean } = {}) {
       const n = await accountIndex(accounts, account);
       const id = legacyThreadId(threadId);
-      const box = 'div[role="textbox"][aria-label="Message Body"]';
       return draftOrSend({
         site: "Gmail",
         action: `open a reply on thread ${id} (nothing is sent until the owner presses Send)`,
-        text: opts.body ?? "",
+        text: `${opts.body ?? ""}${attached(opts.files)}`,
         approved: opts.approved,
-        send: async () => {
-          // Gmail loaded straight on a thread address never settles (it
-          // rewrites the id and reloads), so the inbox opens first and the
-          // thread comes in by hash. The bottom "Reply" link is the first .ams.
-          const t = (await kit.invoke("open", { url: `${MAIL}/mail/u/${n}/#inbox` })) as { id: number };
-          await kit.invoke("wait", { tab: t.id, selector: "tr.zA, .TC", ms: 25000 });
-          await kit.invoke("eval", { tab: t.id, expression: `location.hash = ${JSON.stringify(`#all/${id}`)}` });
-          const reply = (await kit.invoke("wait", { tab: t.id, selector: ".ams", ms: 25000 })) as { found: boolean };
-          if (!reply.found) throw new Error("Gmail did not open the thread; its tab is open for the owner");
-          await kit.invoke("click", { tab: t.id, ref: ".ams" });
-          const { found } = (await kit.invoke("wait", { tab: t.id, selector: box, ms: 15000 })) as { found: boolean };
-          if (!found) throw new Error("Gmail did not open the reply box; the thread is open in the new tab");
-          if (opts.body) await kit.invoke("type", { tab: t.id, ref: box, text: opts.body });
-          const url = (await kit.invoke("eval", { tab: t.id, expression: "location.href" })) as { result?: string };
-          return { tab: t.id, url: url.result ?? "" };
-        },
+        send: () => replyTab(n, id, opts),
+      });
+    },
+
+    // A draft reply on a thread, Gmail's Reply: to the sender of its last
+    // message. Approved, it sends it from the thread's reply box and
+    // returns once Gmail shows "Message sent". Opening the thread marks it
+    // read.
+    async reply(account: number | string, threadId: string, opts: { body: string; files?: string[]; approved?: boolean }) {
+      const n = await accountIndex(accounts, account);
+      const id = legacyThreadId(threadId);
+      return draftOrSend({
+        site: "Gmail",
+        action: `send a reply on thread ${id}`,
+        text: `${opts.body}${attached(opts.files)}`,
+        approved: opts.approved,
+        send: async () => pressSend((await replyTab(n, id, opts)).tab),
       });
     },
   };
