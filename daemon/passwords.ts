@@ -1013,6 +1013,11 @@ export class ApplePasswords {
 // dropping the cached worker makes Helium register this release's bridge.
 export function launchHelium(profile: string, port: number): ChildProcess {
   if (!existsSync(HELIUM)) throw new Error("Apple Passwords needs Helium in /Applications (macOS lets only approved browsers reach the password helper)");
+  // Helium keeps its own secrets in the login keychain under HOME. Started
+  // with a scratch HOME (10-04), it made macOS ask the user to reset his
+  // keychain to defaults, so it never starts where there is none.
+  const keychain = join(homedir(), "Library", "Keychains", "login.keychain-db");
+  if (!existsSync(keychain)) throw new Error(`Apple Passwords cannot start Helium: HOME (${homedir()}) holds no login keychain, and macOS would ask the user to reset his`);
   const ext = join(profile, "bridge");
   rmSync(join(profile, "Default", "Service Worker"), { recursive: true, force: true });
   mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
