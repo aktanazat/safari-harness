@@ -42,12 +42,35 @@ export async function unanswered(e: unknown, url?: string): Promise<unknown> {
   return new Error(`Load failed: ${host} ${answer === "found" ? "exists, so" : "may exist;"} the page's rules (CORS, its security policy) refused the request, or the server dropped it; ${NET}`);
 }
 
+// On 10-05 Safari could not open omp's sign-in server at localhost:54545,
+// which answered curl there, yet loaded the same port by its loopback
+// address: a URL filter on the Mac refused the name (01a10ea8). The
+// address the server listens on is named instead, found by a connection
+// alone, so a sign-in callback's one-time code is not spent asking.
+async function loopback(url: URL): Promise<string | undefined> {
+  const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+  for (const ip of ["127.0.0.1", "::1"]) {
+    const socket = await Bun.connect({ hostname: ip, port, socket: { data() {} } }).catch(() => undefined);
+    if (!socket) continue;
+    socket.end();
+    const at = new URL(url);
+    at.hostname = ip.includes(":") ? `[${ip}]` : ip;
+    return at.href;
+  }
+  return undefined;
+}
+
 // e, explained when Safari could not open a page whose host DNS stops or
-// does not know.
+// does not know, or a localhost page whose server listens.
 export async function unopened(e: unknown): Promise<unknown> {
   const url = e instanceof Error ? UNOPENED.exec(e.message)?.[1] : undefined;
-  const host = url === undefined ? undefined : URL.parse(url)?.hostname;
-  if (!host || isIP(host)) return e;
+  const parsed = url === undefined ? null : URL.parse(url);
+  const host = parsed?.hostname;
+  if (!parsed || !host || isIP(host)) return e;
+  if (host === "localhost") {
+    const at = await loopback(parsed);
+    return at ? new Error(`Safari could not open ${url}, though a server listens there: something on this Mac refused the name localhost. Open ${at} instead; a page that sends the tab back to localhost fails the same way, so goto its address with ${new URL(at).host} in place of ${parsed.host}`) : e;
+  }
   const answer = await hostAnswer(host);
   const why = answer === "blocked" ? `a DNS block list on this network answers 0.0.0.0 for ${host}, so Safari never reached the site` : answer === "missing" ? `${host} does not resolve to any address: the address is wrong, the site is gone, or this Mac is offline` : undefined;
   return why ? new Error(`Safari could not open ${url}: ${why}; opening it again will not help`) : e;

@@ -1495,7 +1495,8 @@ its own `safari` command.
 - "Safari could not open <url>: the site did not answer": Safari showed its
   error page; `open` closes the tab it made. When a DNS block list on this
   network answers 0.0.0.0 for the host, or no DNS server knows it, the error
-  says so: opening it again will not help.
+  says so: opening it again will not help. A `localhost` page whose server
+  listens names the loopback address (`127.0.0.1`) to open instead.
 - "that ref's frame is gone": the frame the ref was in went away as the
   page navigated or redrew it. The error gives the tab's address; snapshot
   again.

@@ -101,3 +101,27 @@ test.each([
   extension = { "tabs.list": () => ({ value: [] }), "windows.open": () => ({ value: { windowId: 3, tabId: 300 } }), "tabs.open": ([url]) => ({ error: `Safari could not open ${url}: the site did not answer` }) };
   await expect(callTool("open", { url: "https://chat.z.ai/", background: true })).rejects.toThrow(error);
 });
+
+// On 10-05 a URL filter on the Mac kept Safari from opening omp's sign-in
+// server by the name localhost, though it listened there and loaded by
+// 127.0.0.1; the agent spent minutes on curl before trying the address
+// (01a10ea8). The server here is real: the check is whether one listens.
+const refused = () => ({ "tabs.list": () => ({ value: [] }), "windows.open": () => ({ value: { windowId: 3, tabId: 300 } }), "tabs.open": ([url]: unknown[]) => ({ error: `Safari could not open ${url}: the site did not answer` }) });
+test("an open of a localhost page Safari refused, whose server listens, names the loopback address to open instead", async () => {
+  const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    extension = refused();
+    const url = `http://localhost:${server.port}/callback?code=x`;
+    await expect(callTool("open", { url, background: true })).rejects.toThrow(`Open http://127.0.0.1:${server.port}/callback?code=x instead`);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("an open of a localhost page nothing listens for keeps Safari's own words", async () => {
+  const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const url = `http://localhost:${server.port}/`;
+  server.stop(true);
+  extension = refused();
+  await expect(callTool("open", { url, background: true })).rejects.toThrow(`Safari could not open ${url}: the site did not answer`);
+});
