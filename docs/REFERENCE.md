@@ -1213,6 +1213,12 @@ keychain, not Apple Passwords:
   its signed keychain entitlement; there is no file-storage fallback.
 - Filling never presses Pay. Check the order and amount, ask the user
   in chat, and wait for his yes before the final payment click.
+- Apple Pay pays with his own card when none is saved here. Choose it on
+  the checkout, press its pay button with `real_input` (Safari raises the
+  sheet only for a real press), look that the sheet is up, then
+  `handoff {tab, why}` with the amount: he picks a card and confirms with
+  Touch ID. `done: true` on the shop's thank-you page means it went
+  through. His yes still comes before the press.
 
 ## Bot checks and steps only the user can do
 

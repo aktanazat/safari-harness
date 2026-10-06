@@ -181,10 +181,15 @@ async function listed(): Promise<Listed[]> {
   });
 }
 
+// What to do when no card is saved. On 10-05 an agent told only to have
+// him save one stopped at a checkout that offered Apple Pay, which paid
+// with his card once he asked for it (01a10eb8).
+const NONE_SAVED = "card-save has the user type one at the Mac; or, where the checkout offers Apple Pay, choose it, press its pay button with real_input, and handoff so he confirms with Touch ID";
+
 // The saved card an agent named, by its label or its last 4; the only
 // card, when it named none.
 function pick(saved: Listed[], which: unknown): Listed {
-  if (saved.length === 0) throw new Error("no card is saved: card-save has the user type one at the Mac");
+  if (saved.length === 0) throw new Error(`no card is saved: ${NONE_SAVED}`);
   const all = saved.map((c) => `${c.label} (ends ${c.last4})`).join(", ");
   if (which === undefined) {
     if (saved.length === 1) return saved[0];
@@ -356,7 +361,7 @@ export async function cards(a: Reply): Promise<unknown> {
   switch (a.do) {
     case "cards": {
       const saved = await listed();
-      return saved.length ? { cards: saved, next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: "none is saved: card-save has the user type one at the Mac" };
+      return saved.length ? { cards: saved, next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: `none is saved: ${NONE_SAVED}` };
     }
     case "card-save":
       return save(a);
