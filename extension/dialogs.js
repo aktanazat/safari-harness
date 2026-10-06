@@ -62,11 +62,20 @@
   // ---------- downloads ----------
   const saves = (a) => a instanceof HTMLAnchorElement && (a.hasAttribute("download") || /^(blob|data):/.test(a.href));
   const caught = (url, name) => tell("__sh_download_seen", { url, name: name || "" });
+  // A link the page clicks from script, to open a tab, says so as
+  // window.open does: Proton's link confirmation clicks an anchor it never
+  // put in the page, whose click no listener hears, so click reported no
+  // newTab and the tab it opened was nobody's (01a10ea8, 10-05).
+  const opensTab = (a) => {
+    const target = a.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
+    return target !== "" && !["_self", "_top", "_parent"].includes(target.toLowerCase()) && /^https?:$/.test(a.protocol);
+  };
   HTMLAnchorElement.prototype.click = function () {
     if (state.catching && saves(this)) {
       caught(this.href, this.getAttribute("download"));
       return;
     }
+    if (!this.hasAttribute("download") && opensTab(this)) tell("__sh_popup", {});
     return native.click.apply(this, arguments);
   };
   addEventListener("click", (e) => {

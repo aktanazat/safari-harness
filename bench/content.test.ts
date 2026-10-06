@@ -771,6 +771,22 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a link the page clicks from script without putting it in the page announces the tab it opens",
+    page: "popup.html",
+    steps: [
+      { op: "click", args: ["Follow"], answer: { value: { expect: "tab" } } },
+      {
+        sent: true,
+        answer: {
+          value: [
+            { load: 1, message: { __safariHarnessReady: 1 } },
+            { load: 1, message: { __safariHarnessPopup: 1 } },
+          ],
+        },
+      },
+    ],
+  },
+  {
     name: "a wait the old copy still held ends at a takeover, and stops watching the page",
     page: "popup.html",
     steps: [
