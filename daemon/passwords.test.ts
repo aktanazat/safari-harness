@@ -371,8 +371,8 @@ test("an approval arriving as its window closes fills without another pairing", 
   }
 });
 
-test("while the Mac waits on Touch ID, status and every other password call say what it waits on, at once", async () => {
-  const { p } = scratch();
+test("while the Mac waits on Touch ID, status says what it waits on at once, and every other password call says so when its own call runs out", async () => {
+  const { p, clock } = scratch();
   fakeTab(`https://${SITE}/signin`);
   const hold = touchId();
   bridgeTo(p, appleHelper(), { hold });
@@ -384,17 +384,18 @@ test("while the Mac waits on Touch ID, status and every other password call say 
   await hold.asked;
   const { waiting = "nothing" } = (await runAs(AGENT, () => p.status())) as { waiting?: string };
   expect(waiting).toStartWith(`a sign-in for ${SITE}, since `);
+  const held = [locked(runAs(AGENT, () => p.loginsFor(7))), locked(runAs(AGENT, () => p.fillCode(7))), locked(runAs(AGENT, () => p.pair()))];
+  await settled();
+  clock.runOut();
   const waits = `Apple's password helper is waiting for the user to approve a sign-in for ${SITE} with Touch ID`;
-  expect(await locked(runAs(AGENT, () => p.loginsFor(7)))).toStartWith(waits);
-  expect(await locked(runAs(AGENT, () => p.fillCode(7)))).toStartWith(waits);
-  expect(await locked(runAs(AGENT, () => p.pair()))).toStartWith(waits);
+  for (const answer of await Promise.all(held)) expect(answer).toStartWith(waits);
 });
 
 // On 09-29 five password-reset agents shared one Mac, and each call held
 // up by another's Touch ID told its agent to ask him to approve a site it
 // was not working on.
 test("another agent's call held up by a Touch ID wait hears that the wait is not its own", async () => {
-  const { p } = scratch();
+  const { p, clock } = scratch();
   fakeTab(`https://${SITE}/signin`);
   const hold = touchId();
   bridgeTo(p, appleHelper(), { hold });
@@ -404,7 +405,91 @@ test("another agent's call held up by a Touch ID wait hears that the wait is not
   });
   void locked(runAs(AGENT, () => p.fill(7)));
   await hold.asked;
-  expect(await locked(runAs(OTHER, () => p.fill(7)))).toStartWith(`another agent's request (a sign-in for ${SITE}) is waiting for the user to approve it with Touch ID`);
+  const other = locked(runAs(OTHER, () => p.fill(7)));
+  await settled();
+  clock.runOut();
+  expect(await other).toStartWith(`another agent's request (a sign-in for ${SITE}) is waiting for the user to approve it with Touch ID`);
+});
+
+// On 10-05 an agent's password call came while another agent's code
+// request waited on Touch ID, was turned away at once, and the agent made
+// its password some other way.
+test("another agent's call held up by a Touch ID wait runs once he approves, and fills its own form", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  const mine = runAs(AGENT, () => p.fill(7));
+  await hold.asked;
+  const other = runAs(OTHER, () => p.fill(7));
+  await settled();
+  hold.approve();
+  await mine;
+  await settled();
+  hold.approve();
+  expect(await other).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+// A clock run by hand that keeps time: tick moves it on and fires each
+// timer that comes due.
+function steppedClock() {
+  let now = 0;
+  const set: { at: number; fn: () => void; live: boolean }[] = [];
+  const timers: Timers = {
+    after(ms, fn) {
+      const t = { at: now + ms, fn, live: true };
+      set.push(t);
+      return () => {
+        t.live = false;
+      };
+    },
+    now: () => now,
+  };
+  return {
+    timers,
+    tick(ms: number) {
+      now += ms;
+      for (const t of set.filter((t) => t.live && t.at <= now)) {
+        t.live = false;
+        t.fn();
+      }
+    },
+  };
+}
+
+// A call that waits its turn behind another's Touch ID, then asks Touch ID
+// itself, still answers within the 25 s its caller waits.
+test("a call that waited its turn behind another agent's Touch ID answers 25 s after it began, though its own request then waits on him too", async () => {
+  const clock = steppedClock();
+  const profile = mkdtempSync("/private/var/tmp/passwords-test-");
+  profiles.push(profile);
+  const p = new ApplePasswords({ profile, timers: clock.timers, approvalShown: async () => true });
+  fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  bridgeTo(p, appleHelper(), { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  const mine = runAs(AGENT, () => p.answering(() => p.fill(7)));
+  await hold.asked;
+  let answer = "none yet";
+  void locked(runAs(OTHER, () => p.answering(() => p.fill(7)))).then((a) => {
+    answer = a;
+  });
+  await settled();
+  clock.tick(20_000);
+  hold.approve();
+  await mine;
+  await settled();
+  clock.tick(5_000);
+  await settled();
+  expect(answer).toStartWith(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`);
 });
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.

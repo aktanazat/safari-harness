@@ -1086,8 +1086,10 @@ Signing in, in this order:
      call waits 25 s for him, then says the Mac is asking while the request
      goes on: ask him to approve, then call `fill` again. That call gets the
      password he approved (kept 5 minutes) with no second prompt. Until he
-     acts, Apple's helper answers nothing else, so every `passwords` call
-     says what it waits on.
+     acts, Apple's helper answers nothing else, so every other `passwords`
+     call, from any agent, waits for him and runs once he has; one still
+     waiting 25 s after it began says what it waits on, and whether the
+     request is another agent's. `status` answers at once.
      If the window closes without an answer, the next call checks that
      it is gone and gives a just-approved reply 1 s to arrive. Otherwise
      it ends that helper and clears the stuck request; a retry pairs again

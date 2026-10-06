@@ -1883,7 +1883,7 @@ export const TOOLS: Record<string, Tool> = {
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],
-    run: applePasswords,
+    run: (a) => passwords.answering(() => applePasswords(a)),
   },
   learn: {
     desc: "Save a site fact for later agents: a flow's steps, a control that loads late, which account owns what. Never a secret. Only site: list its notes and readers; forget: n removes one. reader + expression saves a script for eval {reader}.",

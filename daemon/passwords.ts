@@ -25,6 +25,7 @@
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -58,6 +59,11 @@ const LINK_MS = 20000;
 // where omp moves a shell command to the background: at 40 s each fill
 // that waited on him cost the agent an extra turn (09-29).
 export const ANSWER_MS = 25000;
+// When the passwords call under way must answer: ANSWER_MS after the
+// daemon took it, however many helper steps it takes. A fill lists the
+// logins, then asks for the password, and either may wait its turn behind
+// another call's Touch ID.
+const answerBy = new AsyncLocalStorage<number>();
 // A password kept for that call lasts while the agent asks him and he
 // answers; a code changes every 30 s.
 const KEEP_PASSWORD_MS = 5 * 60_000;
@@ -173,7 +179,7 @@ type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: st
 type Ask = { key: string; what: string; again: string; keepMs: number };
 // owner: the agent whose call asked (owner.ts), so another agent's call it
 // holds up hears that the wait is not its own.
-type Approval = Ask & { since: number; owner: number | undefined; reply: Promise<Record<string, unknown>>; landed: boolean; gaveUp: boolean; drop?: () => void };
+type Approval = Ask & { since: number; owner: number | undefined; reply: Promise<Record<string, unknown>>; gaveUp: boolean; drop?: () => void };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -334,8 +340,13 @@ export class ApplePasswords {
   private why = `it has not been paired since the harness started at ${localTime()}`;
   private helperSeen = false;
   private waiter: Waiter | null = null;
-  // The request waiting on Touch ID, or its answer kept for the next call.
-  private approval: Approval | null = null;
+  // The request the helper holds until the user answers it with Touch ID;
+  // it answers nothing else meanwhile.
+  private pending: Approval | null = null;
+  // Answers that landed after their call gave up, by what they answer, each
+  // kept for the call that asks again, so the call that runs as soon as one
+  // lands cannot drop it.
+  private kept = new Map<string, Approval>();
   // Changed passwords saved but not yet typed, by tab, until typeChange or
   // CHANGE_MS: agents changing several sites at once each keep their own.
   private pendingChanges = new Map<number, { frame: number; fresh: number; host: string; site: string; login: string; current: string | null; secret: string; drop: () => void }>();
@@ -451,8 +462,9 @@ export class ApplePasswords {
     this.state = { kind: "idle" };
     this.why = why;
     this.stashKey = null;
-    this.approval?.drop?.();
-    this.approval = null;
+    for (const a of this.kept.values()) a.drop?.();
+    this.kept.clear();
+    this.pending = null;
     rmSync(this.keyFile, { force: true });
     this.link?.send(JSON.stringify({ stash: null }));
   }
@@ -478,16 +490,16 @@ export class ApplePasswords {
     return this.serial(async () => {
       await this.settle().catch(() => false);
       if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
-      const a = this.approval;
+      const a = this.pending;
       const helper = runningHelper(this.profile);
       return {
         unlocked: true,
         sessions: this.holders.size,
         ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
-        ...(a && !a.landed ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
+        ...(a ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
         ...(helper ? { helper } : {}),
       };
-    }, true);
+    }, { reportWaiting: true });
   }
 
   private fail(e: Error) {
@@ -501,32 +513,56 @@ export class ApplePasswords {
   // Allow an approval's reply to land after its window closes; otherwise
   // end that helper so a late reply cannot be mistaken for the next fill.
   private async recoverDismissedApproval() {
-    const a = this.approval;
-    if (!a || a.landed || !a.gaveUp) return;
-    if (await this.approvalShown() !== false || this.approval !== a || a.landed) return;
+    const a = this.pending;
+    if (!a || !a.gaveUp) return;
+    if (await this.approvalShown() !== false || this.pending !== a) return;
     if (await within(a.reply, 1000, this.timers).catch(() => true)) return;
-    if (await this.approvalShown() !== false || this.approval !== a || a.landed) return;
+    if (await this.approvalShown() !== false || this.pending !== a) return;
     this.end(`the approval window for ${a.what} closed without an answer at ${localTime()}`);
     await this.quitting;
   }
 
   // Replies carry no request id, so one request at a time, and none while
-  // the helper waits on Touch ID. On 09-29 agents resetting passwords were
-  // told to ask him to approve sites other agents had asked for.
-  private serial<T>(fn: () => Promise<T>, reportWaiting = false): Promise<T> {
-    const go = async () => {
-      await this.recoverDismissedApproval();
-      const a = this.approval;
-      if (a && !a.landed && !reportWaiting) {
-        const since = localTime(new Date(a.since));
-        if (a.owner !== currentOwner()) throw new Error(`another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call did not run; call again once he has, or sign in another way (the site's emailed code or reset link)`);
-        throw new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
-      }
-      return fn();
-    };
-    const run = this.queue.then(go, go);
-    this.queue = run.catch(() => {});
-    return run;
+  // the helper waits on Touch ID. A call the held request keeps out waits
+  // for his answer outside the line, so status still answers at once, then
+  // takes its turn; it gives up only when it must answer. On 10-05 an
+  // agent's call held up by another's Touch ID was turned away at once,
+  // and the agent made its password some other way. joins: what the call's
+  // own request asks, so a call asking what the held request asks waits on
+  // that one.
+  private async serial<T>(fn: () => Promise<T>, { reportWaiting = false, joins }: { reportWaiting?: boolean; joins?: string } = {}): Promise<T> {
+    for (;;) {
+      const go = async (): Promise<{ ran: T } | { held: Approval }> => {
+        await this.recoverDismissedApproval();
+        const a = this.pending;
+        return a && !reportWaiting && a.key !== joins ? { held: a } : { ran: await fn() };
+      };
+      const run = this.queue.then(go, go);
+      this.queue = run.catch(() => {});
+      const turn = await run;
+      if ("ran" in turn) return turn.ran;
+      if (!(await within(turn.held.reply.catch(() => {}), this.left(), this.timers))) throw this.heldUp(turn.held);
+    }
+  }
+
+  // Why a call the held request kept out did not run. On 09-29 agents
+  // resetting passwords were told to ask him to approve sites other agents
+  // had asked for.
+  private heldUp(a: Approval): Error {
+    const since = localTime(new Date(a.since));
+    if (a.owner !== currentOwner()) return new Error(`another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call waited for him and did not run; call again to wait more, or sign in another way (the site's emailed code or reset link)`);
+    return new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
+  }
+
+  // How long the call under way has left before it must answer.
+  private left(): number {
+    const now = this.timers.now();
+    return Math.max(0, (answerBy.getStore() ?? now + ANSWER_MS) - now);
+  }
+
+  // Runs one passwords call (the tool's), which answers within ANSWER_MS.
+  answering<T>(fn: () => Promise<T>): Promise<T> {
+    return answerBy.run(this.timers.now() + ANSWER_MS, fn);
   }
 
   // ---------- who holds the pairing ----------
@@ -766,29 +802,37 @@ export class ApplePasswords {
   // call that asks the same gets the answer once it lands.
   private async approved(ask: Ask, request: (link: HelperLink, s: Session) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
     const a = await this.serial(async () => {
-      const kept = this.approval;
-      if (kept?.key === ask.key) return kept;
+      const known = this.kept.get(ask.key) ?? (this.pending?.key === ask.key ? this.pending : undefined);
+      if (known) return known;
       const s = await this.session();
-      const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), landed: false, gaveUp: false };
-      this.approval = next;
+      const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), gaveUp: false };
+      this.pending = next;
       next.reply.then(() => {
-        next.landed = true;
-        if (!next.gaveUp || this.approval !== next) return;
-        next.drop = this.timers.after(next.keepMs, () => {
-          if (this.approval === next) this.approval = null;
-        });
+        if (this.pending === next) this.pending = null;
+        if (next.gaveUp) this.keep(next);
       }, () => {
-        if (this.approval === next) this.approval = null;
+        if (this.pending === next) this.pending = null;
       });
       return next;
-    });
-    if (!(await within(a.reply, ANSWER_MS, this.timers))) {
+    }, { joins: ask.key });
+    if (!(await within(a.reply, this.left(), this.timers))) {
       a.gaveUp = true;
       throw new Error(`the Mac is asking the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}); ask him to approve, then call ${a.again} again`);
     }
-    a.drop?.();
-    if (this.approval === a) this.approval = null;
+    if (this.kept.get(a.key) === a) {
+      a.drop?.();
+      this.kept.delete(a.key);
+    }
     return a.reply;
+  }
+
+  // An answer that landed after its call gave up, kept for keepMs.
+  private keep(a: Approval) {
+    this.kept.get(a.key)?.drop?.();
+    this.kept.set(a.key, a);
+    a.drop = this.timers.after(a.keepMs, () => {
+      if (this.kept.get(a.key) === a) this.kept.delete(a.key);
+    });
   }
 
   private async password(host: string, username: string, again = "fill"): Promise<string> {
