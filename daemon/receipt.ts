@@ -54,9 +54,10 @@ export type Effect = {
 };
 
 export const NO_EFFECT = "the page did not react; the control may need a real click (real_input), a different target (a child or parent), or the page may be busy";
-// An action answers once the page settles, 800 ms at most (RECEIPT_SPAN in
-// content.js); a request of its own still out then may be what fills in the
-// part the agent came for.
+// An action that reacts at once settles within 800 ms (RECEIPT_SPAN in
+// content.js). Since 10-05 a page showing nothing gets 2 s for a first
+// reaction, and a late one gets at most 500 ms more to settle. Its own
+// request still out then may be what fills in the part the agent came for.
 const STILL_LOADING = "the page is still waiting on a request this started (pending): wait with quiet, or with text you expect, before reading; a sleep only guesses";
 
 // A page that refused what an action started because Safari did not have

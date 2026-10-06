@@ -8,8 +8,8 @@
   const log = document.getElementById("log");
   const add = (text) => log.append(Object.assign(document.createElement("p"), { textContent: text }));
   // As a support chat answers: the sender's own line and a read receipt
-  // once the server has it (after the click's 800 ms watch), a typing
-  // note, then the reply in its place.
+  // once the server has it (a second later), a typing note, then the
+  // reply in its place.
   function send() {
     const box = document.querySelector("textarea");
     const line = "You: " + box.value;

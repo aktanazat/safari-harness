@@ -489,6 +489,8 @@ benchRows("content.js in WebKit", [
     name: "a missed wait reports the changed title and new and removed lines",
     page: "wait-late.html",
     steps: [
+      // The fixture reacts after the click's 2 s patience (10-05), during
+      // this wait. The receipt must not consume the change it summarizes.
       { op: "click", args: ["Search"] },
       { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
       { takeover: true },
@@ -503,6 +505,7 @@ benchRows("content.js in WebKit", [
     name: "a missed wait caps its summary at three lines and keeps the latest addition",
     page: "wait-late.html",
     steps: [
+      // The later address and lines belong to this wait, not the click.
       { op: "click", args: ["Move"] },
       { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
       { takeover: true },

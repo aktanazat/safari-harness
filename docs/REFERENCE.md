@@ -633,7 +633,9 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   moves.
 - Any other `click`, `press`, or `select` watches the page until it
   settles (300 ms at least, then 150 ms without a change, 800 ms at most;
-  800 ms while the page waits on its own site) and reports its `effect`:
+  800 ms while the page waits on its own site). A page that has not
+  reacted by 300 ms gets 2 s for its first change, which then has 0.5 s
+  to settle. It reports its `effect`:
   nodes `added`, `removed`, and `changed`; a new `url`; where `focus` went;
   the `states` of the control and what it controls (`button "Menu": now
   expanded`); a `dialog` that opened; `said`, the lines the action brought
@@ -656,7 +658,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   moment for a busy page. An effect shows the page moved, not that it did
   what you meant: confirm what matters with a `wait` or a snapshot.
   `none` does not prove nothing was sent: a request to another site (a form
-  behind hCaptcha) or a handler slower than the 0.8 s the receipt watches
+  behind hCaptcha) or a handler slower than the 2 s the receipt watches
   goes unseen, so look before you repeat a submit.
 - A page error saying the page refused for want of focus or a real click
   ("The document is not focused", a `NotAllowedError`), as a passkey,
@@ -783,9 +785,10 @@ Wait for the page, not the clock.
   script, never put a shell `sleep` before a command: `safari wait --text
   "<text>" --tab N` returns once the text is there, and `click`, `goto`, and
   `open` already wait for a page they load. A `click`, `press`, or `select`
-  answers once the change it made settles, 800 ms at most; one whose `net`
-  still lists a `pending` request answers with `next` saying to `wait
-  --quiet` (or on text), which returns when that request's change lands.
+  answers once the change it made settles, 800 ms at most once the page
+  reacts and 2 s when it has not; one whose `net` still lists a `pending`
+  request answers with `next` saying to `wait --quiet` (or on text), which
+  returns when that request's change lands.
   Past a minute of such waits in 10 minutes, each answer carries a `hint`
   to wait on text or a selector instead. A script's `page.waitForTimeout`
   counts toward the same minute, and its output carries the same hint.

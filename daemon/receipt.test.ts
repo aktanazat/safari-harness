@@ -12,19 +12,21 @@ import { callTool } from "./tools.ts";
 // daemon/receipt.test.ts" markers, which carries site, keepRequest, and
 // urlMatch with the daemon's bodies, and the settle and text rules.
 
-type Span = { min: number; quiet: number; max: number };
+type Span = { min: number; quiet: number; max: number; patience?: number };
 type PageRules = {
+  RECEIPT_SPAN: Span;
+  QUIET_SPAN: Span;
   site: typeof site;
   keepRequest: typeof keepRequest;
   urlMatch: typeof urlMatch;
-  settleAt: (start: number, last: number, busy: boolean, span: Span) => number;
+  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null) => number;
   shows: (page: string, want: string) => boolean;
 };
 
 const CONTENT = readFileSync(join(import.meta.dir, "../extension/content.js"), "utf8");
 const begin = CONTENT.indexOf("// ---- tested with daemon/receipt.test.ts: begin ----");
 const end = CONTENT.indexOf("// ---- tested with daemon/receipt.test.ts: end ----");
-const inPage: PageRules = new Function(`${CONTENT.slice(begin, end)}\nreturn { site, keepRequest, urlMatch, settleAt, shows };`)();
+const inPage: PageRules = new Function(`${CONTENT.slice(begin, end)}\nreturn { RECEIPT_SPAN, QUIET_SPAN, site, keepRequest, urlMatch, settleAt, shows };`)();
 
 const copies = [["daemon", { site, keepRequest, urlMatch }], ["page", inPage]] as const;
 
@@ -132,10 +134,10 @@ test("failed requests lead the net lines, paths without their queries, then the 
   expect(got.effect).toEqual({ net: ["failed: POST /api/order 500", "failed: GET api.shop.example.com/stock TypeError: Load failed", "GET /api/cart 200", "pending: GET /api/list"] });
 });
 
-// A click answers once the page settles, 800 ms at most. One whose request
-// was still out then (a Slate form's dialog) left the dialog unread, and
-// agents put a shell sleep after 54 clicks in the ten sessions to 09-30;
-// wait quiet covers the request instead.
+// A click whose request was still out when its watch ended (a Slate
+// form's dialog) left the dialog unread, and agents put a shell sleep
+// after 54 clicks in the ten sessions to 09-30; wait quiet covers the
+// request instead.
 test("an action whose own request is still out says to wait for the page to go quiet, and one on others' requests does not", () => {
   const waitsQuiet = (next?: string) => /\bwait\b/.test(next ?? "") && /\bquiet\b/.test(next ?? "");
   const own = { method: "GET", url: "https://shop.example.com/api/list" };
@@ -194,33 +196,64 @@ test("the page matches invisible padding and soft hyphens as text, not glyphs", 
 
 // A fake clock walks a millisecond at a time; the page changed at the
 // times given, and the watch ends at the first moment settleAt allows.
+// No change is distinct from a change in the action's own millisecond.
 function endsAt(changes: number[], span: Span, busy = false): number {
-  for (let now = 0; ; now++) {
-    const last = Math.max(0, ...changes.filter((c) => c <= now));
-    if (now >= inPage.settleAt(0, last, busy, span)) return now;
+  let first: number | null = null;
+  let last = 0;
+  for (let now = 0; now <= 10000; now++) {
+    if (changes.includes(now)) {
+      first ??= now;
+      last = now;
+    }
+    if (now >= inPage.settleAt(0, last, busy, span, first)) return now;
   }
+  throw new Error("the page watch did not end within the fake clock's 10000 ms");
 }
 
-const RECEIPT = { min: 300, quiet: 150, max: 800 };
-const QUIET_WAIT = { min: 0, quiet: 500, max: Infinity };
+// On 10-05 AWS's Forgot password answered none at 300 ms after a redirect,
+// but the next snapshot showed its security check. A missing request log
+// must not turn a late first change into an ignored click.
+const ACTION_ENDS: [string, number[], boolean, number][] = [
+  ["no change and no pending request waits for a first change", [], false, 2000],
+  ["a first change at 1200 ms gets its quiet span", [1200], false, 1350],
+  ["a late first change and its next batch settle together", [1200, 1300], false, 1450],
+  ["a batch after a late change has settled is too late", [1200, 1500], false, 1350],
+  ["a change in the action's own millisecond keeps the fast answer", [0], false, 300],
+  ["an immediate change keeps the fast answer", [50], false, 300],
+  ["a change near the minimum gets its quiet span", [250], false, 400],
+  ["two early batches settle together", [250, 350], false, 500],
+  ["a batch after an early change has settled is too late", [250, 500], false, 400],
+  ["an early storm stays bounded", Array.from({ length: 50 }, (_, i) => i * 100), false, 800],
+  ["a pending request still gets the original busy span", [], true, 800],
+  ["a first change at the old maximum gets its quiet span", [800], false, 950],
+  ["a late storm cannot keep the watch open", Array.from({ length: 50 }, (_, i) => 1200 + i * 100), false, 1700],
+  ["a first change just before patience ends still settles", [1999], false, 2149],
+  ["a first change at the patience boundary still settles", [2000], false, 2150],
+  ["a first change after patience runs out is too late", [2001], false, 2000],
+  ["a storm at the patience boundary reaches the overall bound", Array.from({ length: 50 }, (_, i) => 2000 + i * 100), false, 2500],
+];
 
-test("an action's watch lasts 300 ms at least, 150 ms past the last change, 800 ms at most", () => {
-  expect(endsAt([], RECEIPT)).toBe(300);
-  expect(endsAt([50], RECEIPT)).toBe(300);
-  expect(endsAt([250], RECEIPT)).toBe(400);
-  expect(endsAt([250, 350], RECEIPT)).toBe(500);
-  // a change after the page held still for 150 ms is too late to count
-  expect(endsAt([250, 500], RECEIPT)).toBe(400);
-  const storm = Array.from({ length: 50 }, (_, i) => i * 100);
-  expect(endsAt(storm, RECEIPT)).toBe(800);
-  // a page still waiting on its own site is watched to the end
-  expect(endsAt([], RECEIPT, true)).toBe(800);
+test.each(ACTION_ENDS)("an action's watch: %s", (_name, changes, busy, end) => {
+  expect(endsAt(changes, inPage.RECEIPT_SPAN, busy)).toBe(end);
 });
 
-test("a quiet wait ends 500 ms after the page's last change", () => {
-  expect(endsAt([], QUIET_WAIT)).toBe(500);
-  expect(endsAt([100, 400], QUIET_WAIT)).toBe(900);
-  expect(endsAt([100, 400, 1200], QUIET_WAIT)).toBe(900);
+test("a late change whose request is still pending reaches its extended bound", () => {
+  expect(inPage.settleAt(10000, 11200, true, inPage.RECEIPT_SPAN, 11200)).toBe(11700);
+});
+
+test("a late change settles relative to the action's start, not the clock's origin", () => {
+  expect(inPage.settleAt(10000, 11200, false, inPage.RECEIPT_SPAN, 11200)).toBe(11350);
+});
+
+const QUIET_ENDS: [string, number[], number][] = [
+  ["without any changes", [], 500],
+  ["after a change in the wait's own millisecond", [0], 500],
+  ["after the last of two changes", [100, 400], 900],
+  ["before a change that comes after it has settled", [100, 400, 1200], 900],
+];
+
+test.each(QUIET_ENDS)("a quiet wait ends 500 ms %s", (_name, changes, end) => {
+  expect(endsAt(changes, inPage.QUIET_SPAN)).toBe(end);
 });
 
 // ---------- through the tools ----------
