@@ -1314,6 +1314,8 @@ export type Tool = {
 };
 
 export const TAB: Param = { description: 'tab id from open, or "front"' };
+// The variable secret "env" types (secret.ts): type's and real_input's.
+export const SECRET_ENV: Param = { type: "string", description: "the CLI caller's environment variable for secret env" };
 // close, activate, and window act only on a tab the agent opened
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 export const REF: Param = { description: "snapshot ref, CSS selector, or visible text" };
@@ -1514,6 +1516,9 @@ export const TOOLS: Record<string, Tool> = {
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",
     params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: sms, page, or passwords" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
+    // secret "env" reads only a CLI call's environment (secret.ts), so an
+    // MCP client is never offered it: safari type --secret env --env VAR
+    unlisted: { env: SECRET_ENV },
     required: ["tab", "ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
   },

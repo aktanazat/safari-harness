@@ -57,7 +57,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari click <ref> --tab N                 click by snapshot ref
   safari clickat <x> <y> --tab N             click by coordinates
   safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
-                                             code texted to him (--secret passwords: his saved one)
+                                             code texted to him (--secret passwords: his saved one;
+                                             --secret env --env VAR: this call's variable VAR)
   safari press <key> [--ref R] --tab N       press a key
   safari select <ref> <option> --tab N       choose a dropdown option
   safari hover <ref> --tab N                 hover an element
@@ -798,7 +799,8 @@ async function main() {
     }
   }
 
-  print(await invoke(tool, args, true));
+  // The caller's environment goes with the call, for a type's secret "env".
+  print(await invoke(tool, args, true, false, process.env));
 }
 
 // Flags that take no value; the word after them is positional, unless it is

@@ -81,6 +81,9 @@ outside the page: read `document`, `window` and the rest through
 - `fill(text, opts)` and `type(text, opts)` take where a `{{code}}` in text
   comes from, as the type tool does: `{secret: "page", from: <mail tab id>}`
   for an emailed code, `{secret: "passwords"}` for an authenticator code.
+  A value from the owner's vault is typed from the shell instead:
+  `mem-secret run VAR -- safari type <ref> '{{code}}' --tab N --secret env
+  --env VAR` (only a CLI call's own environment is read).
 - Locator: `click fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
   isChecked count boundingBox first screenshot waitFor`.

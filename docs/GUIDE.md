@@ -48,15 +48,15 @@ Signing in, in this order
 1. A session: most of his sites are signed in.
 2. `passwords` `fill`. Locked, it asks him for Touch ID and reads the
    pairing code automatically; never ask for the code in chat. With him
-   away from a Touch ID prompt, use the site's emailed code or reset
-   link. Call `passwords` `done` when finished.
+   away, use the site's emailed code or reset link. Call `passwords`
+   `done` when finished. One in his vault: `mem-secret run VAR -- safari
+   type <ref> '{{code}}' --tab N --secret env --env VAR`.
 3. A passkey: click its button, then `handoff`.
 4. A code: `imessage_wait_code`; an emailed one, `gmail.waitForMail` in
    `repl`, then `type {text:"{{code}}", secret:"page", from:<mail tab>}`.
-   Never print a code.
 Pick a verification method by its label (a phone option may call him),
 and read the result before Next. Never type a password from memory or
-chat, never print a password, cookie, or token, never sign him out.
+chat, never print a password, code, cookie, or token, never sign him out.
 
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and

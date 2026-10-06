@@ -1,7 +1,8 @@
 // Codes typed without the agent seeing them. A type whose text has {{code}}
 // (or with secret: "sms") waits for the code the site texted the user and
 // types it there; secret: "page" types the one code shown in tab from (an
-// opened email), within from_selector when given; secret: "passwords"
+// opened email), within from_selector when given; secret: "env" types the
+// value of variable env in the caller's environment; secret: "passwords"
 // types the code his Apple Passwords keeps for the site. real_input's type
 // takes the same, for a field that ignores scripted typing. The answer says
 // only how many characters went in, so the code stays out of the transcript,
@@ -25,18 +26,18 @@ export function secretType(tool: string, args: Record<string, unknown>): boolean
 
 // Types the code a's source gives with put, which types text as its tool
 // does. model: the call is one a model wrote, which the daemon watches
-// (guard.ts).
-export async function typeSecret(a: Record<string, unknown>, model: boolean, put: (text: string) => Promise<unknown>): Promise<unknown> {
+// (guard.ts). caller: the environment secret "env" reads (heldValue).
+export async function typeSecret(a: Record<string, unknown>, model: boolean, put: (text: string) => Promise<unknown>, caller?: CallerEnv): Promise<unknown> {
   const source = a.secret ?? "sms";
   if (source === "passwords") {
     // Apple Passwords finds the page's code field and types into it itself.
     const r = await FILL_TOOLS.passwords.run({ do: "code", tab: a.tab });
     return r && typeof r === "object" && !("paired" in r) ? { ...r, typed: "code" } : r;
   }
-  if (source !== "sms" && source !== "page") throw new Error('secret must be "sms", "page", or "passwords"');
+  if (source !== "sms" && source !== "page" && source !== "env") throw new Error('secret must be "sms", "page", "env", or "passwords"');
   const text = typeof a.text === "string" ? a.text : "";
   if (!text.includes(CODE)) throw new Error(`put ${CODE} in text where the code goes`);
-  const code = source === "sms" ? await textedCode() : await shownCode(a.from, a.from_selector, model);
+  const code = source === "sms" ? await textedCode() : source === "page" ? await shownCode(a.from, a.from_selector, model) : heldValue(a.env, caller);
   // however the page shows it again, the tab's answers have it cut from
   // here on (redact.ts)
   await rpc("keep_secret", { tab: a.tab, texts: [code] });
@@ -48,6 +49,25 @@ async function textedCode(): Promise<string> {
   const got = await waitCode();
   if (got.status !== "received") throw new Error("no code came by text in 30 s; have the site send it again, then call type again");
   return got.code;
+}
+
+// The environment of whoever ran the safari CLI, which hands it to its
+// tool call (cli/safari.ts), as a vault's runner sets it: mem-secret run
+// VAR -- safari ... An MCP server's or a safari do session's own
+// environment is no caller's, and holds keys of its own (SAFARI_MODEL_KEY)
+// that a page's text could ask a model to type into the page.
+export type CallerEnv = Record<string, string | undefined>;
+
+// The value of variable name in the caller's environment. On 10-05 a new
+// password, a sign-in code, and a reset link each went through a file on
+// disk to reach their fields, since type took none of them from there.
+function heldValue(name: unknown, caller: CallerEnv | undefined): string {
+  if (typeof name !== "string" || !name) throw new Error('secret "env" needs env: the name of the variable that holds the value');
+  const run = `mem-secret run ${name} -- safari type <ref> '{{code}}' --tab N --secret env --env ${name}`;
+  if (!caller) throw new Error(`secret "env" reads only the environment of a safari CLI call, as in: ${run}`);
+  const value = caller[name];
+  if (!value) throw new Error(`environment variable ${name} is empty or not set; set it in the environment of the safari CLI call, as in: ${run}`);
+  return value;
 }
 
 // The one code tab from shows: a run of 4 to 8 digits standing alone, or

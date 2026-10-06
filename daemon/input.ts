@@ -11,7 +11,7 @@
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { REF, TAB, TOOLS, type TabInfo, type Tool, X, Y } from "./tools.ts";
+import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, X, Y } from "./tools.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
@@ -215,8 +215,9 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       count: { type: "number", description: "2 or 3: double or triple click" },
       button: { type: "string", enum: ["left", "right"], description: "default left" },
     },
-    // click's x and y, which its listing describes, and type's append
-    unlisted: { x: X, y: Y, append: { type: "boolean", description: "keep the field's text" } },
+    // click's x and y, which its listing describes, type's append, and
+    // type's CLI-only env (secret.ts)
+    unlisted: { x: X, y: Y, append: { type: "boolean", description: "keep the field's text" }, env: SECRET_ENV },
     required: ["tab", "do"],
     run: async (a) => {
       const act = typeof a.do === "string" ? REAL[a.do] : undefined;

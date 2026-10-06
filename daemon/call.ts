@@ -10,7 +10,7 @@ import { keeperRunning } from "./groups.ts";
 import { beside, checkCall, checkStep, nameIn } from "./guard.ts";
 import { quietly, rpc, takesNews } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
-import { secretType, typeSecret } from "./secret.ts";
+import { secretType, typeSecret, type CallerEnv } from "./secret.ts";
 import { TOOLS, runSteps } from "./tools.ts";
 
 // model: the call counts as the model's own, as invoke's does.
@@ -52,12 +52,13 @@ async function asReal(tool: string, args: Record<string, unknown>, real: boolean
 
 // model: the call is one a model wrote. The daemon checks the calls it
 // runs (guard.ts), and this process the ones that run here. real: the call
-// is a step of a run with real: true (asReal).
-export async function invoke(tool: string, args: Record<string, unknown>, model = false, real = false): Promise<unknown> {
+// is a step of a run with real: true (asReal). caller: the environment of
+// whoever ran this process, which only the safari CLI gives (secret.ts).
+export async function invoke(tool: string, args: Record<string, unknown>, model = false, real = false, caller?: CallerEnv): Promise<unknown> {
   // Model runs stay here so each step checks the site's real-input mark,
   // even without real: true (EOIR, 09-30). Internal runs keep the scripted
   // daemon path unless they explicitly contain a caller tool.
-  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true), (t, a) => checkStep(STEP_TOOLS, t, a), args.tab);
+  if ((model && nameIn(DAEMON_NAMES, tool) === "run") || callerSteps(tool, args)) return runSteps(args.steps, (t, a) => invoke(t, a, model, args.real === true, caller), (t, a) => checkStep(STEP_TOOLS, t, a), args.tab);
   const coded = secretType(tool, args);
   // A type that fills in a code keeps its own way (secret.ts): nothing
   // reaches the daemon before the code has come.
@@ -67,7 +68,7 @@ export async function invoke(tool: string, args: Record<string, unknown>, model 
     claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
     return result;
   }
-  return withNews(args.tab, () => runHere(tool, args, model, coded, routed));
+  return withNews(args.tab, () => runHere(tool, args, model, coded, routed, caller));
 }
 
 // A call that runs here makes daemon calls along the way (real input's
@@ -82,22 +83,22 @@ async function withNews(tab: unknown, run: () => Promise<unknown>): Promise<unkn
   return { ...result, ...(news as object) };
 }
 
-async function runHere(tool: string, args: Record<string, unknown>, model: boolean, coded: boolean, routed: Routed | undefined): Promise<unknown> {
+async function runHere(tool: string, args: Record<string, unknown>, model: boolean, coded: boolean, routed: Routed | undefined, caller: CallerEnv | undefined): Promise<unknown> {
   if (routed) {
     const result = beside(await invoke("real_input", routed.args, model), "note", routed.why);
     return routed.snapshot ? { ...(result as object), page: await rpc("snapshot", { tab: routed.args.tab }) } : result;
   }
   if (nameIn(CALLER_NAMES, tool) === undefined) {
     const a = checkCall(TOOLS, tool, args, model).args;
-    return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model));
+    return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model), caller);
   }
   // real_input takes a code's source as type does, and its own parameters
   // go to it (secret.ts).
   const call = checkCall(CALLER_TOOLS, tool, args, model);
-  const { secret: _secret, from: _from, from_selector: _fromSelector, ...rest } = call.args;
+  const { secret: _secret, from: _from, from_selector: _fromSelector, env: _env, ...rest } = call.args;
   const remote = process.env.SAFARI_HARNESS_REMOTE;
   const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));
-  const result = await (coded ? typeSecret(call.args, model, (text) => run({ ...rest, text })) : run(call.args));
+  const result = await (coded ? typeSecret(call.args, model, (text) => run({ ...rest, text }), caller) : run(call.args));
   return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
 }
 

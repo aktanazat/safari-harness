@@ -5,6 +5,7 @@ import { CALLER_TOOLS } from "./caller.ts";
 import { connect } from "./fake-safari.ts";
 import * as imessage from "./imessage.ts";
 import { recent } from "./journal.ts";
+import { callTool as mcpCall } from "./mcp-tools.ts";
 import { watched } from "./mission.ts";
 import * as daemonRpc from "./rpc.ts";
 import { tabSecrets } from "./redact.ts";
@@ -26,6 +27,8 @@ const answers: Record<string, unknown> = {
   fillLogin: { ok: true, filled: ["password"] },
 };
 const CUT_NET = { entries: [{ url: "https://my.example/verify", t: 1, body: `{"code":"...","case":"1${CODE}"}` }] };
+// The caller's variable secret env names; no test sets it but its own.
+const VAR = "SAFARI_HARNESS_TEST_SECRET";
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
@@ -45,6 +48,7 @@ afterEach(() => {
   tabSecrets.clear();
   selections.clear();
   shown = "";
+  delete process.env[VAR];
 });
 const watchedPort = () => spyOn(daemonRpc, "rpc").mockImplementation((tool: string, args: Record<string, unknown> = {}, model = false) => watched(process.pid, tool, args, () => callTool(tool, args, model)));
 
@@ -193,6 +197,33 @@ test("a code typed as a secret is cut from what its tab answers after, the reque
   expect(await callTool("net", { tab: 6003 })).toEqual(CUT_NET);
   expect(await callTool("eval", { tab: 6003, expression: "document.title", page: true })).toEqual({ ok: true, result: "Secure Verification Code required ..." });
   expect(await invoke("type", { tab: 6003, ref: "1", text: "{{code}}", secret: "page", from: 6002 }, true)).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
+});
+
+// 10-05: a new password held in the owner's vault, a sign-in code, and a
+// reset link each went through a file on disk to reach a field, since type
+// could take none of them from the environment mem-secret run gives a call.
+const envArgs = (tool: string) => ({ tab: 6001, ref: "1", text: "{{code}}", secret: "env", env: VAR, ...(tool === "real_input" ? { do: "type" } : {}) });
+test.each(SECRET_TOOLS)("%s with secret env types the caller's variable in place of {{code}}, keeps it secret, and says only its length", async (tool) => {
+  watchSecretTyping();
+  expect(await invoke(tool, envArgs(tool), true, false, { [VAR]: CODE })).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
+  expect(fields).toEqual(tool === "type" ? [["1", CODE, { append: false, secret: true }]] : [{ tab: 6001, ref: "1", do: "type", text: CODE }]);
+  expect(await callTool("net", { tab: 6001 })).toEqual(CUT_NET);
+  expect(JSON.stringify(recent(500))).not.toContain(CODE);
+});
+
+test.each([["unset", {}], ["empty", { [VAR]: "" }]])("secret env with the variable %s types nothing and names the variable", async (_, caller) => {
+  const port = spyOn(daemonRpc, "rpc");
+  await expect(invoke("type", envArgs("type"), true, false, caller)).rejects.toThrow(`${VAR} is empty or not set`);
+  expect(port).not.toHaveBeenCalled();
+});
+
+// An MCP server's environment is not its caller's, and holds keys a page
+// could ask a model to type into it.
+test.each(SECRET_TOOLS)("%s with secret env through MCP types nothing, though the server's environment has the variable", async (tool) => {
+  process.env[VAR] = CODE;
+  watchSecretTyping();
+  await expect(mcpCall(tool, envArgs(tool))).rejects.toThrow('secret "env" reads only the environment of a safari CLI call');
+  expect(fields).toEqual([]);
 });
 
 test("a text an agent types as a secret itself, or a password filled from Bitwarden, is cut from what its tab answers after", async () => {

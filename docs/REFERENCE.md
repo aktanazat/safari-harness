@@ -564,6 +564,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   an emailed code can be read from one selected message without removing
   older messages. pass `from_selector: "<CSS selector>"` with `secret: "page"`.
   the selection must match exactly one message and contain exactly one code.
+  `secret: "env", env: "VAR"` types the value of VAR from the caller's
+  own environment, for a password kept in a vault: `mem-secret run VAR --
+  safari type <ref> '{{code}}' --tab N --secret env --env VAR`. Only a CLI
+  call's environment is read; through MCP, `repl`, or `safari do` the
+  call fails, since their environments are not the caller's.
 - `select` picks a dropdown option by its label. A wrong label returns the
   list of options. On a combobox the page draws itself (role combobox) it
   clicks the box open, finds the list the box names (aria-controls,
