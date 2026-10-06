@@ -950,6 +950,42 @@ test("stopping a wait keeps the top page's change summary", async () => {
   expect(await answer).toEqual({ value: { found: false, meanwhile: ["new: No case found"] } });
 });
 
+// On 10-06 a page whose own script sent the tab on (location.href) reached
+// the tab as one update, already "complete", with no "loading" before it;
+// a wait sent to the page it left never answered.
+test("a wait whose page's own script sends the tab on is answered by the page it lands on", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/slow");
+  tab.doc.does = (op) => (op === "wait" ? never() : { ok: true });
+  const landed = new Doc("https://example.com/landed");
+  landed.does = (op) => (op === "wait" ? { found: true, already: true } : { ok: true });
+  let answer: Answer | undefined;
+  b.ask(tab, "wait", [null, { url: "landed" }]).then((a) => { answer = a; });
+  await b.clock.advance(700);
+  b.swap(tab, landed);
+  b.update(tab, { status: "complete", url: landed.url });
+  await b.clock.advance(0);
+  expect(answer).toEqual({ value: { found: true, already: true } });
+});
+
+// Safari reports a change of the address's hash in the update a page's
+// own redirect gets (10-06): the page is still there, and still answers.
+test("an action whose page changes only its address's hash answers with that page's own receipt", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/app");
+  const receipt = Promise.withResolvers<unknown>();
+  tab.doc.does = () => receipt.promise;
+  let answer: Answer | undefined;
+  b.ask(tab, "click", ["5"]).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  b.update(tab, { status: "complete", url: "https://example.com/app#step-2" });
+  await b.clock.advance(0);
+  receipt.resolve({ ok: true, effect: { added: 3 } });
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ ok: true, effect: { added: 3 } });
+  expect(tab.doc.ran).toEqual(["click"]);
+});
+
 // What a page's origin keeps, as the page's own script sees it.
 function stored(world: Record<string, unknown>, url: string) {
   const local = new Map([["user", "1"]]);

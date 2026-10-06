@@ -292,23 +292,39 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   }
 }
 
+// Calls fn when the frame's document gives way to another: Safari's tab
+// update "loading", or the new document's script reporting in (content.js).
+// A page's own script that sends the tab on (location.href, location.replace)
+// reaches the tab as one update already "complete", with no "loading", the
+// same update a change of the address's hash makes; only the new copy of
+// the script tells the two apart. On 10-06 a wait sent to a page that did
+// so never answered: the new page had what it waited for.
+function onNewDocument(tabId, frameId, fn) {
+  const onNav = (id, info) => { if (id === tabId && info.status === "loading") fn(); };
+  const onReady = (m, sender) => { if (m && m.__safariHarnessReady === 1 && sender.tab?.id === tabId && (sender.frameId || 0) === frameId) fn(); };
+  api.tabs.onUpdated.addListener(onNav);
+  api.runtime.onMessage.addListener(onReady);
+  return () => {
+    api.tabs.onUpdated.removeListener(onNav);
+    api.runtime.onMessage.removeListener(onReady);
+  };
+}
+
 // Safari never settles a message whose page unloads mid-request, so race it
-// against the tab starting a new load. A message no copy of the script took
+// against a new document in the frame. A message no copy of the script took
 // settles undefined, whether Safari says so or finds no listener; through
 // executeScript, only a copy this load put in takes it.
 function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
   return new Promise((resolve, reject) => {
-    const stop = () => { clearTimeout(t); api.tabs.onUpdated.removeListener(onNav); };
-    const onNav = (id, info) => {
-      if (id !== tabId || info.status !== "loading") return;
+    const stop = () => { clearTimeout(t); off(); };
+    const off = onNewDocument(tabId, frameId, () => {
       stop();
       reject(Object.assign(new Error("page navigated"), { navigated: true }));
-    };
+    });
     const t = setTimeout(() => {
       stop();
       reject(Object.assign(new Error(`the page did not answer ${msg.op} within ${Math.round(ms / 1000)} s`), { timedOut: true }));
     }, ms);
-    api.tabs.onUpdated.addListener(onNav);
     const reply = script
       ? api.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
@@ -334,8 +350,7 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
 const LOADING_MS = 5000;
 async function openedPage(tabId, until) {
   let navigated = false;
-  const onNav = (id, info) => { if (id === tabId && info.status === "loading") navigated = true; };
-  api.tabs.onUpdated.addListener(onNav);
+  const off = onNewDocument(tabId, 0, () => { navigated = true; });
   try {
     for (;;) {
       await waitReady(tabId, Math.max(0, until - Date.now()));
@@ -356,7 +371,7 @@ async function openedPage(tabId, until) {
       if (!navigated || Date.now() >= until) return { tab, loading };
     }
   } finally {
-    api.tabs.onUpdated.removeListener(onNav);
+    off();
   }
 }
 
