@@ -723,15 +723,19 @@ export class ReplSession {
   }
 
   // Keeps each page's url current (the page may have moved on its own) and
-  // lets go of tabs someone closed.
+  // lets go of tabs someone closed. The tab list cuts a tab this session
+  // did not open to origin and path, so such a page reads its own info: on
+  // 10-05 a page attached from the user's tab began each later script
+  // without its query.
   async #refresh(): Promise<void> {
     if (this.tabs.length === 0) return;
     const rows = await this.#rows(true);
     // A copy: forgetting a page takes it out of this.tabs.
     for (const p of this.tabs.slice()) {
       const row = rows.find((r) => r.id === p.id);
-      if (row) p.note(row.url, row.title);
-      else this.#forget(p);
+      if (!row) this.#forget(p);
+      else if (this.#owned.has(p.id)) p.note(row.url, row.title);
+      else await p.info();
     }
   }
 

@@ -143,6 +143,19 @@ test("attachBrowserTab starts page.url() at the tab's full address, query includ
   expect(await repl.run("const p = await attachBrowserTab(7)\np.url()")).toEqual({ output: "https://apply.example.edu/apply/frm?ebbbc633-1226" });
 });
 
+// On 10-05 a page attached from the user's tab began each later script at
+// the tab list's cut address, its query gone.
+test("a page attached from a tab this session did not open keeps its full address in the next script", async () => {
+  const invoke = async (tool: string): Promise<unknown> => {
+    if (tool === "tabs") return [{ id: 7, url: "https://apply.example.edu/apply/frm", title: "Awards" }];
+    if (tool === "info") return { url: "https://apply.example.edu/apply/frm?ebbbc633-1226", title: "Awards and Honors", ready: "complete" };
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  await repl.run("await attachBrowserTab(7)");
+  expect(await repl.run("page.url()")).toEqual({ output: "https://apply.example.edu/apply/frm?ebbbc633-1226" });
+});
+
 // Addresses of an AWS event sign-up on 10-05: the event's link went to
 // Cvent's sign-on, which sent the tab on to AWS's sign-in; after it came
 // Cvent's form, whose Submit moved the page within its document to the
