@@ -1265,17 +1265,21 @@ check, no solving services.
   or no input for 3 minutes) it also alerts his phone on Telegram, once per
   handoff: a picture of the page and one line naming the site. He cannot
   answer the alert: the handoff ends only when the page clears or the wait
-  runs out. `ms` is how long to wait (default 60000, max 110000). `until` is
+  runs out. `ms` is how long the whole call may take, finding the tab and
+  alerting his phone included (default 60000, max 110000): it answers
+  within that, 20 s inside the 130 s an MCP client waits on a call. `until` is
   text the page shows once he is done, for a step that leaves the address
   as it was (a card form, Touch ID); text already on the page is refused.
   It returns `{done, waitedMs, url, title, challenge, alerted}` (`alerted`:
-  `sent`, or why not, such as `not sent: at the Mac`), plus `joined` when
-  the tab's handoff was already running. `done` is true when the check is
-  gone, when `until` shows, or, when the tab showed no check at the start
-  (a passkey sign-in), when the page's address changes; then the tab and
-  app he had in front come back, if he is still on the tab. When `done` is
-  false, call it again: it joins the same wait, with no second notice or
-  alert. A block fails at once. Then carry on in the same tab.
+  `sent`, or why not, such as `not sent: at the Mac`; `not sent yet` or
+  `sending; outcome not confirmed` when the call ran out first), plus
+  `joined` when the tab's handoff was already running. `done` is true when
+  the check is gone, when `until` shows, or, when the tab showed no check
+  at the start (a passkey sign-in), when the page's address changes; then
+  the tab and app he had in front come back, if he is still on the tab.
+  When `done` is false, the answer's `hint` says to call it again on the
+  same tab: that joins the same wait, with no second notice or alert. A
+  block fails at once. Then carry on in the same tab.
 - Write `why` for the user: what to do and on which site ("Cars.com wants a
   human check before it shows the listing").
 - Use `handoff` for any step only the user can take in the tab: a passkey or

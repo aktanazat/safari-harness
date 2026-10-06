@@ -71,6 +71,11 @@ const tick = async (ms = 1000) => {
   await settled();
 };
 
+// A second at a time, so what one second sets going is under way by the next.
+const ticks = async (seconds: number) => {
+  for (let s = 0; s < seconds; s++) await tick();
+};
+
 type Args = Record<string, unknown>;
 // Settles once the daemon has taken up the caller's next handoff call that
 // matches, and all it set going that needs no clock has run.
@@ -250,4 +255,117 @@ test("a user who clears the check while the alert to their phone is on its way e
   await tick(10000);
   expect(await handed).toMatchObject({ done: true, alerted: "sent" });
   expect(m.notices).toEqual(["Clear the check"]);
+});
+
+// On 10-05 a handoff on AWS's captcha page had not answered after 130 s,
+// when omp gave up on the call: the agent never called again, and the
+// captcha ran out. A call answers within its ms of its start, whatever is
+// still under way then.
+test("a call answers within its ms of its start, though finding the user's front tab and looking whether they are away take most of it", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  mac(79, page);
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
+    if (tool === "tabs") await Bun.sleep(6000);
+    return callTool(tool, args);
+  });
+  // as long as the probe may take
+  spyOn(phone, "isAway").mockImplementation(async () => {
+    await Bun.sleep(5000);
+    return false;
+  });
+  const start = Date.now();
+  let result: { value: unknown; elapsed: number } | undefined;
+  void HANDOFF_TOOLS.handoff.run({ tab: "front", why: "Clear the check", ms: 10000 }).then((value) => (result = { value, elapsed: Date.now() - start }));
+  await settled();
+  await ticks(10);
+  expect(result).toMatchObject({ elapsed: 10000, value: { done: false, hint: "call handoff again on the same tab" } });
+  // the user clears it, so no later test joins the handoff of their tab
+  page.check = undefined;
+  await tick();
+});
+
+test("a call whose phone alert is still sending answers at its deadline without claiming delivery", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  mac(80, page);
+  const sending = Promise.withResolvers<void>();
+  const sent = Promise.withResolvers<void>();
+  spyOn(telegram, "sendTelegram").mockImplementation(() => {
+    sending.resolve();
+    return sent.promise;
+  });
+  let result: unknown;
+  void handoff(80, "Clear the check").then((r) => (result = r));
+  await sending.promise;
+  await ticks(10);
+  expect(result).toMatchObject({ done: false, waitedMs: 10000, alerted: "sending; outcome not confirmed", hint: "call handoff again on the same tab" });
+  sent.resolve();
+  page.check = undefined;
+  await tick();
+});
+
+test.each([60000, 110000])("a front-tab lookup still pending at %i ms returns without starting a handoff when it eventually answers", async (bound) => {
+  const m = mac(81, { url: "https://shop.example/login", check: "box" });
+  const lookup = Promise.withResolvers<unknown>();
+  spyOn(daemonRpc, "rpc").mockImplementation((tool, args = {}) => tool === "tabs" ? lookup.promise : callTool(tool, args));
+  let result: unknown;
+  void HANDOFF_TOOLS.handoff.run({ tab: "front", why: "Clear the check", ...(bound === 60000 ? {} : { ms: 200000 }) }).then((r) => (result = r));
+  await ticks(bound / 1000);
+  expect(result).toMatchObject({ done: false, waitedMs: bound, alerted: "not sent yet", hint: "call handoff again on the same tab" });
+  lookup.resolve(await callTool("tabs"));
+  await settled();
+  expect(m.notices).toEqual([]);
+});
+
+test("a slow daemon slice cannot hold the call past its deadline", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  mac(82, page);
+  const waiting = Promise.withResolvers<void>();
+  const reply = Promise.withResolvers<void>();
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
+    const result = callTool(tool, args);
+    if (tool === "handoff_wait" && Number(args.ms) > 0) {
+      waiting.resolve();
+      await reply.promise;
+    }
+    return result;
+  });
+  let result: unknown;
+  void handoff(82, "Clear the check").then((r) => (result = r));
+  await waiting.promise;
+  await ticks(10);
+  expect(result).toMatchObject({ done: false, waitedMs: 10000, hint: "call handoff again on the same tab" });
+  reply.resolve();
+  page.check = undefined;
+  await tick();
+});
+
+test("a picture that arrives after the call ends does not start a phone alert", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(83, page);
+  const capturing = Promise.withResolvers<void>();
+  const picture = Promise.withResolvers<void>();
+  const captured = Promise.withResolvers<void>();
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
+    if (tool === "shot") {
+      capturing.resolve();
+      await picture.promise;
+      const result = await callTool(tool, args);
+      captured.resolve();
+      return result;
+    }
+    return callTool(tool, args);
+  });
+  let result: unknown;
+  void handoff(83, "Clear the check").then((r) => (result = r));
+  await capturing.promise;
+  await ticks(10);
+  expect(result).toMatchObject({ done: false });
+  picture.resolve();
+  await captured.promise;
+  await settled();
+  page.check = undefined;
+  await tick();
+  expect(m.texts).toEqual([]);
 });

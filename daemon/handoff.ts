@@ -15,22 +15,31 @@ import { alert, isAway } from "./phone.ts";
 import { rpc } from "./rpc.ts";
 import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 
-// A tool call may take about 2 minutes. Within one, the daemon is asked in
-// slices, so a user who walks away midway is alerted within a slice.
+// An MCP client set up as README.md says gives up on a tool call at 130 s,
+// and its agent hears nothing: on 10-05 a handoff on AWS's captcha page had
+// not answered by then, so the agent never called again and the captcha ran
+// out. So a call answers within its ms, at most LIMIT_MS, of its start,
+// whatever finding the tab, the away probe, the alert, or the daemon still
+// have under way; the 20 s left are for the MCP server's own steps around
+// the call. Within a call, the daemon is asked in slices, so a user who
+// walks away midway is alerted within a slice.
 const LIMIT_MS = 110000;
 const SLICE_MS = 15000;
 
 // alert: true tells this call to send the alert; alerted is how it went.
-type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; joined?: true; alerted?: string; alert?: true; id?: number };
+type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; joined?: true; alerted?: string; alert?: true; id?: number; hint?: string };
 
 // A picture of the page (in front by now), with one plain line under it.
-async function alertUser(tab: number, h: Handed): Promise<string> {
+async function alertUser(tab: number, h: Handed, end: number): Promise<string> {
   const site = h.url && URL.canParse(h.url) ? new URL(h.url).hostname.replace(/^www\./, "") : "a site";
   const [what, until] = h.challenge ? ["a check", "clear it"] : ["you", "are done"];
   const line = `${process.env.SAFARI_HARNESS_AWAY === "1" ? "test of the bot-check alert: " : ""}${site} is waiting on ${what} in safari on your mac. the agent carries on by itself once you ${until}.`;
   const picture = join(tmpdir(), `safari-harness-${tab}-${Date.now()}.png`);
   try {
     const shot = await rpc("shot", { tab, out: picture }).then(() => undefined, (e: Error) => e.message);
+    // The call may have ended while the picture was being taken. Remove
+    // that late picture, but do not start a phone send after the deadline.
+    if (Date.now() >= end) return "not sent: the call ended before the picture arrived";
     await alert(line, shot ? undefined : picture);
     return shot ? `sent, without the picture: ${shot}` : "sent";
   } finally {
@@ -38,31 +47,61 @@ async function alertUser(tab: number, h: Handed): Promise<string> {
   }
 }
 
-async function handoff(tab: number, why: string, ms = 60000, until?: string): Promise<Handed> {
-  const end = Date.now() + Math.min(ms, LIMIT_MS);
-  const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number; until?: string }) => (await rpc("handoff_wait", { tab, why, ...o })) as Handed;
-  // until goes with the call that starts the handoff; the later ones join it
-  const first = await wait({ ms: 0, ...(until === undefined ? {} : { until }) });
-  let h = first;
-  while (!h.done) {
-    const alerted = h.alert ? await alertUser(tab, h).catch((e: Error) => `not sent: ${e.message}`) : undefined;
-    const left = end - Date.now();
-    if (left <= 0 && alerted === undefined) break;
-    // A probe that fails reads as at the Mac: the notification is up either way.
-    const away = alerted === undefined && h.alerted === undefined && (await isAway().catch(() => false));
-    h = await wait({ ms: Math.max(0, Math.min(SLICE_MS, left)), away, id: first.id, ...(alerted === undefined ? {} : { alerted }) });
+// Each await shares one deadline, including finding the tab. When it wins,
+// this call stops; only the daemon keeps watching the handoff. An alert
+// already sending cannot be recalled, and its late outcome is not reported
+// by a continuation: a CLI caller exits as soon as it prints the answer.
+async function handoff(given: unknown, why: string, ms = 60000, until?: string): Promise<Handed> {
+  const start = Date.now();
+  const end = start + Math.min(ms, LIMIT_MS);
+  const expired = Symbol("handoff deadline");
+  let timer: Timer | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(expired), Math.max(0, end - Date.now())); });
+  const beforeEnd = <T>(work: Promise<T>): Promise<T> => Promise.race([work, deadline]);
+  let first: Handed | undefined;
+  let h: Handed = { done: false, waitedMs: 0 };
+  let heardAt = start;
+  let lastAway: boolean | undefined;
+  try {
+    const tab = await beforeEnd(resolveTab(given, async () => (await rpc("tabs")) as TabInfo[]));
+    if (Date.now() < end) {
+      const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number; until?: string }) => {
+        h = (await beforeEnd(rpc("handoff_wait", { tab, why, ...o }))) as Handed;
+        heardAt = Date.now();
+        return h;
+      };
+      // until goes with the call that starts the handoff; the later ones join it
+      first = await wait({ ms: 0, ...(until === undefined ? {} : { until }) });
+      while (!h.done && Date.now() < end) {
+        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
+        if (alerted !== undefined) h = { ...h, alerted };
+        // A probe that fails reads as at the Mac: the notification is up either way.
+        const away = alerted === undefined && h.alerted === undefined && (await beforeEnd(isAway().catch(() => false)));
+        if (alerted === undefined && h.alerted === undefined) lastAway = away;
+        const left = end - Date.now();
+        if (left <= 0) break;
+        await wait({ ms: Math.min(SLICE_MS, left), away, id: first.id, ...(alerted === undefined ? {} : { alerted }) });
+      }
+    }
+  } catch (e) {
+    if (e !== expired) throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return answer(h, first);
+  return answer({ ...h, waitedMs: h.waitedMs + (h.done ? 0 : Date.now() - heardAt), alerted: h.alerted ?? (lastAway === false ? "not sent: at the Mac" : "not sent yet") }, first);
 }
 
-// joined is this call's own (its later slices join its handoff too); id is
-// only how they name it. alerted is always there: on 09-29 two handoffs
-// that ran out said nothing of the user's phone, so the agent could not
-// tell a user at the Mac from an alert that never went.
-function answer(h: Handed, first: Handed): Handed {
+// joined is this call's own (its later slices join its handoff too); id and
+// alert pass only between it and the daemon. alerted is always there: on
+// 09-29 two handoffs that ran out said nothing of the user's phone, so the
+// agent could not tell a user at the Mac from an alert that never went.
+function answer(h: Handed, first: Handed | undefined): Handed {
   const out: Handed = { ...h, alerted: h.alerted ?? "not sent: at the Mac" };
   delete out.id;
-  if (!first.joined) delete out.joined;
+  delete out.alert;
+  if (out.alerted === "sending") out.alerted = "sending; outcome not confirmed";
+  if (!out.done) out.hint = "call handoff again on the same tab";
+  if (!first?.joined) delete out.joined;
   return out;
 }
 
@@ -76,7 +115,7 @@ export const HANDOFF_TOOLS: Record<string, Tool> = {
       if (a.until !== undefined && typeof a.until !== "string") throw new Error("until must be text the page shows once the user is done");
       const ms = a.ms === undefined ? undefined : Number(a.ms);
       if (ms !== undefined && !Number.isFinite(ms)) throw new Error("ms must be a number");
-      return handoff(await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]), a.why, ms, a.until);
+      return handoff(a.tab, a.why, ms, a.until);
     },
   },
 };
