@@ -83,20 +83,25 @@ async function start() {
   const clock = new Clock();
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
+  // The tab in front of each window, and the window focused last.
+  const actives = new Map<number, number>();
+  let focused = 1;
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number]>();
   const hook = () => new Hook<unknown[]>();
-  const storage = { get: async () => ({}), set: async () => {}, remove: async () => {} };
-  // Session storage keeps what is put in it, as Safari's does while it
-  // runs: a recording lives there between steps.
-  const kept = new Map<string, unknown>();
-  const session = {
+  // Safari's storage areas keep what is put in them: session storage while
+  // it runs (a recording lives there between steps), local storage past a
+  // reload (the agent windows, and the order he focused windows in).
+  const area = (kept: Map<string, unknown>) => ({
     get: async (keys: string | string[] | null) => Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)])),
     set: async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v)); },
     remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
-  };
+  });
+  const kept = new Map<string, unknown>();
+  const session = area(kept);
+  const storage = area(new Map());
   // Safari's cookie store as its extension API reaches it (WebKit's
   // WebExtensionContextAPICookiesCocoa.mm): getAll's domain takes that
   // domain's cookies and its subdomains', and remove deletes the first
@@ -107,8 +112,9 @@ async function start() {
     if (!tab) throw new Error(`Tab '${id}' was not found`);
     return tab;
   };
-  // A tab as Safari describes it; none here is the one in front of its window.
-  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: "", status: "complete", active: false });
+  // A tab as Safari describes it; one is in front of its window only once a
+  // test puts it there (focus).
+  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: "", status: "complete", active: actives.get(tab.window ?? 1) === tab.id });
 
   // What content.js does as it starts: take the page's claim unless another
   // copy holds it, answer through __safariHarnessRun, and, where its world's
@@ -153,6 +159,10 @@ async function start() {
         browser.tabs.onCreated.fire({ id: tab.id, windowId });
         copyIn(tab, tab.doc);
         return row(tab);
+      },
+      remove: async (id: number) => {
+        tabs.delete(tabOf(id).id);
+        onRemoved.fire(id);
       },
       // A message no copy took settles undefined; one to a held page, never.
       sendMessage: (id: number, m: Msg) => {
@@ -210,6 +220,8 @@ async function start() {
       },
       update: async (id: number) => ({ id }),
       get: async (id: number) => ({ id }),
+      getAll: async () => [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id })),
+      getLastFocused: async () => ({ id: focused }),
     },
   };
 
@@ -338,6 +350,13 @@ async function start() {
     close(tab: Tab) {
       tabs.delete(tab.id);
       onRemoved.fire(tab.id);
+    },
+    // He brings tab's window to the front, tab showing in it.
+    focus(tab: Tab) {
+      const window = tab.window ?? 1;
+      actives.set(window, tab.id);
+      focused = window;
+      browser.windows.onFocusChanged.fire(window);
     },
     // The daemon goes away, and comes back.
     drop() { open.readyState = 3; },
@@ -893,4 +912,23 @@ test("clearing a page's storage deletes every cookie its script reads, whatever 
   ]);
   await b.request("storage.clear", [tab.id]);
   expect(left()).toEqual([]);
+});
+
+// 10-05: an OAuth consent tab an agent raised in its own window closed as
+// its turn ended, while he was authorizing in it (01a10ea8).
+test("an idle close leaves an agent's tab he has in front, and takes it once he is in another window", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const consent = b.open("https://claude.ai/oauth/authorize", true, windowId);
+  await b.own(consent);
+  b.focus(consent);
+  await b.clock.advance(0);
+  expect(await b.request("tabs.close", [consent.id, "idle"])).toEqual({ value: { ok: false, front: true } });
+  b.focus(his);
+  await b.clock.advance(0);
+  expect(await b.request("tabs.close", [consent.id, "idle"])).toEqual({ value: { ok: true } });
 });

@@ -1198,10 +1198,15 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 
 // The daemon's own closes (an agent gone, a tab left idle) take only a tab
 // the harness owns, so an id Safari has since given another tab is left
-// alone; an idle one stays while the user has it in front.
+// alone; an idle one stays while the user has it in front: in his own
+// front window, or in an agent window Safari shows in front. On 10-05 an
+// OAuth consent tab an agent had raised (activate) closed as its turn
+// ended while he was authorizing in it, its callback with it (01a10ea8).
 async function inFront(tabId) {
   const t = await api.tabs.get(tabId);
-  return t.active && t.windowId === await frontWindow(false);
+  if (!t.active) return false;
+  const [his, shown] = await Promise.all([frontWindow(false), frontWindow(true)]);
+  return t.windowId === his || t.windowId === shown;
 }
 
 // ---------- ids across a reload ----------
