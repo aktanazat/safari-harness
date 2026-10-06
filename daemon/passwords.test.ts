@@ -259,6 +259,16 @@ test("the code on the Mac unlocks, and fill types the password into the page but
   expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
 });
 
+// On 10-05 an agent asked which logins were saved for accounts.google.com
+// before a sign-in page was open, and logins wanted a tab (01a10ea8).
+test("logins lists the usernames saved for a host named with no page open, asking Apple Passwords for that host", async () => {
+  const { p } = scratch();
+  const helper = appleHelper();
+  await paired(p, helper);
+  expect(await p.loginsAt(SITE)).toEqual({ site: SITE, usernames: [USER] });
+  expect(helper.queries).toEqual([`4 ${SITE}`]);
+});
+
 // On 09-28 a fill waited on Touch ID past the agent's 60 s call, so the
 // agent never read why, and every call after it read "did not answer".
 test("a fill waiting on Touch ID answers before the agent's call ends, and the same call once he approves returns the filled form", async () => {

@@ -1062,10 +1062,12 @@ Signing in, in this order:
      `waiting` while the Mac waits on Touch ID, or `{unlocked: false,
      reason}`.
    - `passwords {do: "logins", tab}` lists the usernames saved for the
-     sign-in form's site; `passwords {do: "fill", tab}` fills the form
-     (pass `username` when several are saved). The result names the fields
-     filled, never the password. A form that submits itself once filled
-     also returns `navigated`, the page it went to. A Flutter sign-in
+     sign-in form's site, and `{do: "logins", site: "accounts.google.com"}`
+     those saved for a host before its page is open. `passwords {do:
+     "fill", tab}` fills the form (pass `username` when several are
+     saved). The result names the fields filled, never the password. A
+     form that submits itself once filled also returns `navigated`, the
+     page it went to. A Flutter sign-in
      (GEICO's) gets each field once the page has taken it, as `type` does,
      so the page's own model sees the login.
    - The Mac may ask the user to approve the password with Touch ID. The

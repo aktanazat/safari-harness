@@ -835,7 +835,14 @@ export class ApplePasswords {
 
   async loginsFor(tab: number): Promise<{ site: string; usernames: string[] }> {
     await this.session();
-    const { site } = await loginForm(tab);
+    return this.loginsAt((await loginForm(tab)).site);
+  }
+
+  // The usernames saved for a host the agent names, with no sign-in page
+  // open yet: on 10-05 logins for accounts.google.com wanted a tab
+  // (01a10ea8).
+  async loginsAt(host: string): Promise<{ site: string; usernames: string[] }> {
+    const site = httpsHost(`https://${host}`);
     return { site, usernames: (await this.logins(site)).map((l) => l.username) };
   }
 
