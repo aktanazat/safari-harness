@@ -61,6 +61,11 @@ outside the page: read `document`, `window` and the rest through
 - `page.content()`, `page.title()`, `page.url()`, `page.evaluate(fn, arg)`
   (runs in the page; falls back to the extension's world when the page
   forbids scripts).
+- `page.url()` makes no call: it is the address the page's latest answer
+  gave (an action that moved it, `snapshot`, `extract`, `goto`, and the
+  end of `waitForTimeout`, `waitForSelector`, or `locator.waitFor`, which
+  each read the address once more). A move after that shows with the next
+  call; a bare `sleep(ms)` makes none.
 - `page.extract(selector?)`, or `page.extract({selector, query})`, returns
   `{url, title, text, truncated}`: the words are in `.text`.
 - `page.screenshot({path, fullPage})`, `annotatedScreenshot(page, {path})`

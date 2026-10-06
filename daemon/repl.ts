@@ -22,7 +22,7 @@ export const REPL_TIMEOUT_MS = 120_000;
 export type ReplResult = { output: string; error?: string };
 
 type TabRow = { id: number; url?: string; title?: string; active?: boolean; front?: boolean };
-type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; newTab?: TabRow; dialogs?: unknown[]; next?: string };
+type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; effect?: { url?: string } | "none"; newTab?: TabRow; dialogs?: unknown[]; next?: string };
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
 type SnapshotOptions = { interactive?: boolean; showHidden?: boolean; ref?: string; selector?: string; maxNodes?: number };
@@ -227,9 +227,11 @@ export class Locator {
       if (Date.now() - start > limit) throw new Error(`${this.target} did not show within ${Math.round(limit / 1000)} s`);
       await Bun.sleep(250);
     }
+    // Then reads where the page is, as page.waitForTimeout does.
+    await this.#page.info();
   }
   #fact(what: string, name?: string): Promise<unknown> {
-    return this.#page.session.call("element", { tab: this.#page.id, ref: this.target, what, name });
+    return this.#page.call("element", { ref: this.target, what, name });
   }
   [inspect.custom]() {
     return `Locator(${JSON.stringify(this.target)})`;
@@ -272,18 +274,31 @@ export class Page {
     if (title !== undefined) this.#title = title;
   }
 
+  // The page's calls go through here, and what each answer says of where
+  // the page is becomes page.url(), which reads no page itself: an action's
+  // navigated (it loaded a page) or its effect's url (it moved the page
+  // within its document, as a single-page app does), else the url of an
+  // answer that names the page (snapshot, extract, info, goto, a wait that
+  // missed). A move after the latest answer shows with the next one.
+  async call(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
+    const r = await this.session.call(tool, { tab: this.id, ...args }, model);
+    if (r !== null && typeof r === "object") {
+      const { navigated, effect, url, title } = r as Outcome & { url?: unknown; title?: unknown };
+      if (navigated?.url) this.note(navigated.url, navigated.title);
+      else if (typeof effect === "object" && effect.url) this.note(effect.url);
+      else if (typeof url === "string") this.note(url, typeof title === "string" ? title : undefined);
+    }
+    return r;
+  }
+
   async info(): Promise<{ url: string; title: string; ready: string }> {
-    const i = (await this.session.call("info", { tab: this.id })) as { url: string; title: string; ready: string };
-    this.note(i.url, i.title);
-    return i;
+    return (await this.call("info")) as { url: string; title: string; ready: string };
   }
   async title(): Promise<string> {
     return (await this.info()).title;
   }
   async goto(url: string): Promise<{ url: string; title: string }> {
-    const r = (await this.session.call("goto", { tab: this.id, url: String(url) })) as TabRow;
-    this.session.showNotes(r);
-    this.note(r.url, r.title);
+    this.session.showNotes(await this.call("goto", { url: String(url) }));
     return { url: this.#url, title: this.#title };
   }
   async goBack(): Promise<void> {
@@ -305,22 +320,22 @@ export class Page {
   async evaluate(fn: unknown, arg?: unknown): Promise<unknown> {
     const expression = typeof fn === "function" ? `(${String(fn)})(${arg === undefined ? "" : JSON.stringify(arg)})` : String(fn);
     // The refusal comes back as the page's error, or thrown by the daemon.
-    const r = (await this.session.call("eval", { tab: this.id, expression, page: true }).catch((e: unknown) => {
+    const r = (await this.call("eval", { expression, page: true }).catch((e: unknown) => {
       if (e instanceof Error && EVAL_REFUSED.test(e.message)) return { error: e.message };
       throw e;
     })) as { result?: unknown; error?: string };
     if (typeof r?.error !== "string") return r?.result ?? undefined;
     if (!EVAL_REFUSED.test(r.error)) throw new Error(r.error);
-    const again = (await this.session.call("eval", { tab: this.id, expression })) as { result?: unknown };
+    const again = (await this.call("eval", { expression })) as { result?: unknown };
     return again.result ?? undefined;
   }
   async content(): Promise<string> {
-    const r = (await this.session.call("eval", { tab: this.id, expression: "document.documentElement.outerHTML" })) as { result: string };
+    const r = (await this.call("eval", { expression: "document.documentElement.outerHTML" })) as { result: string };
     return r.result;
   }
   // extract(selector), as the guide gives it, or extract({selector, query, maxBytes})
   async extract(opts: string | { selector?: string; query?: string; maxBytes?: number } = {}): Promise<unknown> {
-    return this.session.call("extract", { tab: this.id, ...(typeof opts === "string" ? { selector: opts } : opts) });
+    return this.call("extract", typeof opts === "string" ? { selector: opts } : opts);
   }
 
   locator(target: string): Locator {
@@ -352,9 +367,8 @@ export class Page {
   }
 
   async act(tool: string, args: Record<string, unknown>): Promise<Outcome> {
-    const res = (await this.session.call(tool, { tab: this.id, ...args })) as Outcome;
+    const res = (await this.call(tool, args)) as Outcome;
     this.session.showHint(res?.next);
-    if (res?.navigated?.url) this.note(res.navigated.url, res.navigated.title);
     if (res?.newTab) {
       const popup = this.session.adopt(res.newTab);
       const w = this.popupWaiter;
@@ -387,8 +401,10 @@ export class Page {
     throw new Error(`waitForEvent supports "download" and "popup", not ${JSON.stringify(event)}`);
   }
   async waitForSelector(selector: string, opts: { timeout?: number } = {}): Promise<Locator> {
-    const r = (await this.session.call("wait", { tab: this.id, selector: String(selector), ms: opts.timeout ?? 10_000 })) as { found?: boolean };
+    const r = (await this.call("wait", { selector: String(selector), ms: opts.timeout ?? 10_000 })) as { found?: boolean };
     if (!r.found) throw new Error(`${selector} did not appear within ${Math.round((opts.timeout ?? 10_000) / 1000)} s`);
+    // Then reads where the page is, as waitForTimeout does.
+    await this.info();
     return this.locator(selector);
   }
   // Ends once the page is quiet, ms at most, as a wait with only ms does
@@ -396,17 +412,22 @@ export class Page {
   // tool takes 30 s at a time. Each part goes as the model's own wait: a
   // script's pause is the agent's sleep, and on 09-30 scripts slept 161 s
   // in 46 of them past the budget whose hint (guard.ts) never reached them.
+  // A wait's answer says nothing of where the tab is, so the wait ends by
+  // reading it: on 10-05 three scripts printed page.url() after one and got
+  // where the page had been (Cvent's sign-on, AWS's sign-in, the form)
+  // while a snapshot right after showed where it had gone.
   async waitForTimeout(ms: number): Promise<void> {
     let hint: unknown;
     for (let left = Number(ms); left > 0; ) {
       const part = Math.min(left, 30_000);
-      const r = (await this.session.call("wait", { tab: this.id, ms: part }, true)) as { waitedMs?: number; hint?: unknown };
+      const r = (await this.call("wait", { ms: part }, true)) as { waitedMs?: number; hint?: unknown };
       if (r?.hint !== undefined) hint = r.hint;
       const waited = r?.waitedMs ?? part;
       if (waited < part) break;
       left -= waited;
     }
     this.session.showHint(hint);
+    await this.info();
   }
   async waitForLoadState(_state?: string, opts: { timeout?: number } = {}): Promise<void> {
     const limit = opts.timeout ?? 30_000;
@@ -432,7 +453,7 @@ export class Page {
   async shot(opts: { ref?: string; path?: string; fullPage?: boolean; annotate?: boolean }): Promise<Buffer> {
     const out = opts.path === undefined ? undefined : nodePath.resolve(this.cwd, opts.path);
     if (out) await fsp.mkdir(nodePath.dirname(out), { recursive: true });
-    const r = (await this.session.call("shot", { tab: this.id, ref: opts.ref, fullPage: !!opts.fullPage, annotate: !!opts.annotate, out })) as { path: string };
+    const r = (await this.call("shot", { ref: opts.ref, fullPage: !!opts.fullPage, annotate: !!opts.annotate, out })) as { path: string };
     return Buffer.from(await fsp.readFile(r.path));
   }
   screenshot(opts: { path?: string; fullPage?: boolean } = {}): Promise<Buffer> {
@@ -443,14 +464,14 @@ export class Page {
   async pdf(opts: { path?: string } = {}): Promise<Buffer> {
     const out = opts.path === undefined ? undefined : nodePath.resolve(this.cwd, opts.path);
     if (out) await fsp.mkdir(nodePath.dirname(out), { recursive: true });
-    const r = (await this.session.call("pdf", { tab: this.id, do: "save", out })) as { path: string };
+    const r = (await this.call("pdf", { do: "save", out })) as { path: string };
     return Buffer.from(await fsp.readFile(r.path));
   }
   async setViewportSize(size: { width: number; height: number }): Promise<void> {
-    await this.session.call("window", { tab: this.id, width: size.width, height: size.height });
+    await this.call("window", { width: size.width, height: size.height });
   }
   async bringToFront(): Promise<void> {
-    await this.session.call("activate", { tab: this.id });
+    await this.call("activate");
   }
   fetch(url: string, init?: FetchInit): Promise<Response> {
     return this.session.fetchFrom(this, url, init);
@@ -815,9 +836,8 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await this.call("snapshot", { tab: page.id, root, maxNodes: opts.maxNodes ?? 600, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
+    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes ?? 600, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
     this.showNotes(snap);
-    page.note(snap.url, snap.title);
     const lines = snap.snapshot.split("\n");
     const body = opts.interactive ? lines.filter((l) => HAS_REF.test(l)).map((l) => l.trimStart()) : lines;
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
@@ -891,7 +911,9 @@ export class ReplSession {
   }
 
   // A request from a page of this session, with that page's cookies: one on
-  // the url's own site if the session has one, else the current page.
+  // the url's own site if the session has one, else the current page. Its
+  // answer's url is the address fetched, not the page's, so the call goes
+  // past page.call.
   async fetchFrom(page: Page | undefined, input: unknown, init: FetchInit = {}): Promise<Response> {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : String((input as { url?: unknown })?.url ?? input);
     const from = page ?? this.page;

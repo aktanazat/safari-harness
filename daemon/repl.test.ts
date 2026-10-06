@@ -143,6 +143,64 @@ test("attachBrowserTab starts page.url() at the tab's full address, query includ
   expect(await repl.run("const p = await attachBrowserTab(7)\np.url()")).toEqual({ output: "https://apply.example.edu/apply/frm?ebbbc633-1226" });
 });
 
+// Addresses of an AWS event sign-up on 10-05: the event's link went to
+// Cvent's sign-on, which sent the tab on to AWS's sign-in; after it came
+// Cvent's form, whose Submit moved the page within its document to the
+// confirmation.
+const EVENT = "https://events.builder.aws.com/YxNrnq";
+const SIGN_ON = "https://login.app.cvent.com/en-US/sign-on?transferId=1cb7926e";
+const SIGN_IN = "https://us-east-1.signin.aws/platform/d-9067642ac7/login?workflowStateHandle=4203ba48";
+const REGISTER = "https://events.builder.aws.com/event/74dc7afc/register?eventId=74dc7afc";
+const CONFIRMED = "https://events.builder.aws.com/event/74dc7afc/confirmation?eventId=74dc7afc";
+
+// A session whose tools answer as answers gives; open answers with the
+// address asked for, and any other tool with { ok: true }.
+function answering(answers: Record<string, unknown>) {
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool in answers) return answers[tool];
+    if (tool === "open") return { id: 7, url: String(args.url), title: "AWS Builder Loft" };
+    return { ok: true };
+  };
+  return new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+}
+
+test.each([
+  ["it loaded another page", SIGN_ON, "await page.click('Continue')", { click: { ok: true, navigated: { url: SIGN_IN, title: "Amazon Web Services" } } }, SIGN_IN],
+  ["it moved the page within its document", REGISTER, "await page.click('Submit')", { click: { ok: true, effect: { url: CONFIRMED, changed: 3 } } }, CONFIRMED],
+  ["a script it ran in the page loaded another page", SIGN_ON, "await page.evaluate(() => document.forms[0].submit())", { eval: { result: null, navigated: { url: SIGN_IN, title: "Amazon Web Services" } } }, SIGN_IN],
+])("page.url() is the address an action's answer says the page went to: %s", async (_, start, step, answers, address) => {
+  expect(await answering(answers).run(`await openTab(${JSON.stringify(start)})\n${step}\npage.url()`)).toEqual({ output: address });
+});
+
+// On 10-05 goto answered with Cvent's sign-on, the first page it loaded,
+// and the page went on to AWS's sign-in.
+test.each([
+  ["a snapshot of the page", "await snapshot(page)", { snapshot: { url: SIGN_IN, title: "Amazon Web Services", snapshot: "", truncated: false } }],
+  ["an extract of the page", "await page.extract()", { extract: { url: SIGN_IN, title: "Amazon Web Services", text: "" } }],
+  ["a waitForSelector that missed", "await page.waitForSelector('#email', { timeout: 100 }).catch(() => {})", { wait: { ok: true, found: false, waitedMs: 100, url: SIGN_IN, title: "Amazon Web Services" } }],
+])("after a goto, page.url() is the address %s gave", async (_, step, answers) => {
+  const repl = answering({ goto: { url: SIGN_ON, title: "Login" }, ...answers });
+  expect(await repl.run(`await openTab(${JSON.stringify(EVENT)})\nawait page.goto(${JSON.stringify(EVENT)})\n${step}\npage.url()`)).toEqual({ output: SIGN_IN });
+});
+
+// On 10-05 three scripts printed page.url() after page.waitForTimeout and
+// got where the page had been: Cvent's sign-on after a goto, AWS's sign-in
+// after its Continue, and the form after its Submit, while a snapshot
+// right after showed AWS's sign-in, the form, and the confirmation. A
+// wait's answer says nothing of where the tab is.
+test.each([
+  ["page.waitForTimeout", "await page.waitForTimeout(10_000)"],
+  ["page.waitForSelector", "await page.waitForSelector('h1')"],
+  ["locator.waitFor", "await page.locator('h1').waitFor()"],
+])("after %s, page.url() is where the page is, though the wait's answer gave no address", async (_, wait) => {
+  const repl = answering({
+    wait: { ok: true, found: true, waitedMs: 120 },
+    element: true,
+    info: { url: CONFIRMED, title: "Confirmation - Multimodal Agent Workflows", ready: "complete" },
+  });
+  expect(await repl.run(`await openTab(${JSON.stringify(REGISTER)})\n${wait}\npage.url()`)).toEqual({ output: CONFIRMED });
+});
+
 // On 10-01 and 10-02 three scripts failed with a bare "BuildMessage:
 // Unterminated string literal": in each, a \n in a quoted string had become
 // a line break.
