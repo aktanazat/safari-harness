@@ -1169,10 +1169,14 @@
   // the name an action's answer gives one (dialog "Parent/Guardian Details
   // 2027") is that dialog, found as the answer found it: Slate's popups are
   // divs, so the CSS "dialog" matched nothing and the name was not CSS
-  // (09-30). Any other selector is CSS.
+  // (09-30). A ref from the latest snapshot, bracketed as it prints or not,
+  // is its element: root "[23]" failed as CSS (01a10ea8, 10-05). Any other
+  // selector is CSS.
   function rootFor(selector) {
     const want = selector.trim();
     if (want === "dialog") return openDialog() ?? deepQuery(selector);
+    const ref = /^\[?(\d+)\]?$/.exec(want);
+    if (ref) return resolve(ref[1]);
     if (!/^[\w-]+ ".*"$/s.test(want)) return deepQuery(selector);
     return deepQueryAll(DIALOG_BOXES).filter(shown).findLast((box) => named(box) === want) ?? null;
   }

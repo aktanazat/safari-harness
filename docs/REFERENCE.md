@@ -320,11 +320,12 @@ Read with `snapshot` when you do not yet know what is on the page.
   is loading. Please wait", or `aria-busy` on its main region or body, gets
   up to 2 s to draw; those lines are left out, with a `note`, and
   `loading: true` says the page was still loading then.
-- `root` (a CSS selector) narrows the snapshot to one region. `root: "dialog"`
+- `root` (a CSS selector, or a ref from the latest snapshot: `"[23]"` or
+  `"23"`) narrows the snapshot to one region. `root: "dialog"`
   reads the dialog open over the page, the one an action's answer names, even
   when the site draws it with divs, and the name that answer gives
   (`dialog "Parent/Guardian Details 2027"`) reads that dialog. An `extract`
-  `selector` takes the same two.
+  `selector` takes the same.
   A `root`, or an `extract` `selector`, that matches nothing reads the whole
   page instead, with a `note` that says so. An `extract` with
   `strict_selector` (a secret's source) fails instead.

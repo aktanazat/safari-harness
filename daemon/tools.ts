@@ -1496,7 +1496,7 @@ export const TOOLS: Record<string, Tool> = {
     params: {
       tab: TAB,
       query: { type: "string", description: "only lines containing this text" },
-      root: { type: "string", description: "CSS selector of the region to read" },
+      root: { type: "string", description: "CSS selector or ref of the region" },
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
       save: SAVE,

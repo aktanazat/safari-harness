@@ -650,6 +650,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a root given as a ref from the latest snapshot, bracketed or not, reads that element alone",
+    page: "slate-dialog.html",
+    steps: [
+      { op: "snapshot" }, // [4] label "Occupation/Title"
+      { op: "snapshot", args: [{ root: "[4]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Relationship)[\s\S]*Occupation/) } } },
+      { op: "extract", args: [{ selector: "4" }], answer: { value: { text: expect.stringMatching(/^(?![\s\S]*Relationship)[\s\S]*Occupation/) } } },
+    ],
+  },
+  {
     name: "extract reads the whole page when its main region holds little of its text, and says so",
     page: "thin-main.html",
     steps: [{ op: "extract", answer: { value: { text: expect.stringContaining("renews October 12"), note: expect.any(String) } } }],
