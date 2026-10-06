@@ -321,17 +321,43 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
 }
 
 // A page that says it is still loading (a skeleton or "The page is loading.
-// Please wait" line where its text will come, or aria-busy) is waited on
-// for up to LOADING_MS within the open's limit, and the answer says when it
-// still was (USCIS, 09-30). A page with a "Loading…" line that never goes
-// (a widget below the fold) would otherwise hold every open its whole 15 s.
-// A page no copy of the script took the message in (a PDF) settles at once.
+// Please wait" line where its text will come, a spinner and nothing else,
+// or aria-busy) is waited on for up to LOADING_MS within the open's limit,
+// and the answer says when it still was (USCIS, 09-30). A page with a
+// "Loading…" line that never goes (a widget below the fold) would
+// otherwise hold every open its whole 15 s. A page no copy of the script
+// took the message in (a PDF) settles at once. A page that sends the tab
+// on to another address meanwhile is followed, including while its title
+// is awaited: the page the tab lands on is waited for and asked in turn,
+// within the same limit. On 10-05 open and goto answered Cvent's sign-on
+// page, a spinner on its way to AWS's sign-in, as the page they had opened.
 const LOADING_MS = 5000;
-async function pageLoading(tabId, until) {
-  const ms = Math.min(until - Date.now(), LOADING_MS);
-  if (ms <= 0) return false;
-  const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "loaded", args: [ms] }, ms + 500).catch(() => undefined);
-  return res?.value?.loading === true;
+async function openedPage(tabId, until) {
+  let navigated = false;
+  const onNav = (id, info) => { if (id === tabId && info.status === "loading") navigated = true; };
+  api.tabs.onUpdated.addListener(onNav);
+  try {
+    for (;;) {
+      await waitReady(tabId, Math.max(0, until - Date.now()));
+      if (ready.get(tabId) === false && Date.now() < until) continue;
+      navigated = false;
+      const left = until - Date.now();
+      const ms = Math.min(left, LOADING_MS);
+      let loading = false;
+      if (ms > 0) {
+        try {
+          const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "loaded", args: [ms] }, Math.min(ms + 500, left));
+          loading = res?.value?.loading === true;
+        } catch (e) {
+          if (e.navigated && Date.now() < until) continue;
+        }
+      }
+      const tab = await titled(tabId, Math.max(0, Math.min(1500, until - Date.now())));
+      if (!navigated || Date.now() >= until) return { tab, loading };
+    }
+  } finally {
+    api.tabs.onUpdated.removeListener(onNav);
+  }
 }
 
 // Puts a copy of content.js in the frame, where Safari left none; with
@@ -859,10 +885,7 @@ async function handle(msg) {
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
-      const until = Date.now() + 15000;
-      await waitReady(tab.id, 15000);
-      const loading = await pageLoading(tab.id, until);
-      const t = await titled(tab.id);
+      const { tab: t, loading } = await openedPage(tab.id, Date.now() + 15000);
       if (failedPage(t)) {
         api.tabs.remove(t.id).catch(() => {});
         throw unopened(url);
@@ -908,10 +931,7 @@ async function handle(msg) {
       ready.set(tabId, false);
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
-      const until = Date.now() + 20000;
-      await waitReady(tabId, 20000);
-      const loading = await pageLoading(tabId, until);
-      const t = await titled(tabId);
+      const { tab: t, loading } = await openedPage(tabId, Date.now() + 20000);
       if (failedPage(t)) throw unopened(url);
       return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}) };
     }

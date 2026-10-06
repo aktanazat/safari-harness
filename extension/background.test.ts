@@ -72,6 +72,8 @@ class Doc {
   held = false;
   // Safari lets the extension put no script in a blank tab, and says so.
   shut = false;
+  // What Safari gives as the tab's title while it shows this document.
+  title = "";
   does: (op: string) => unknown = () => ({ url: this.url });
   constructor(readonly url: string, readonly live = true) {}
 }
@@ -86,6 +88,9 @@ async function start() {
   // The tab in front of each window, and the window focused last.
   const actives = new Map<number, number>();
   let focused = 1;
+  // What Safari shows at each address the harness opens a tab on or loads
+  // in one; any other address shows a page of its own.
+  const pages = new Map<string, Doc>();
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
@@ -114,7 +119,7 @@ async function start() {
   };
   // A tab as Safari describes it; one is in front of its window only once a
   // test puts it there (focus).
-  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: "", status: "complete", active: actives.get(tab.window ?? 1) === tab.id });
+  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: tab.doc.title, status: "complete", active: actives.get(tab.window ?? 1) === tab.id });
 
   // What content.js does as it starts: take the page's claim unless another
   // copy holds it, answer through __safariHarnessRun, and, where its world's
@@ -137,6 +142,14 @@ async function start() {
     if (report) onMessage.fire({ __safariHarnessReady: 1 }, { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId: 0 });
   }
 
+  // The tab loads doc; Safari skips putting the script in some pages.
+  function load(tab: Tab, doc: Doc, script = true) {
+    onUpdated.fire(tab.id, { status: "loading", url: doc.url }, { url: doc.url });
+    tab.doc = doc;
+    if (script) copyIn(tab, doc);
+    onUpdated.fire(tab.id, { status: "complete" }, row(tab));
+  }
+
   const browser = {
     runtime: { onMessage, onInstalled: hook(), onStartup: hook(), onConnect: hook() },
     action: { onClicked, setBadgeText: async () => {}, setTitle: async () => {} },
@@ -154,10 +167,16 @@ async function start() {
       // that made it answers; here it always does, makeMs on.
       create: async ({ url, windowId = 1 }: { url: string; windowId?: number }) => {
         await made();
-        const tab = { id: nextTab++, doc: new Doc(url), window: windowId };
+        const tab = { id: nextTab++, doc: pages.get(url) ?? new Doc(url), window: windowId };
         tabs.set(tab.id, tab);
         browser.tabs.onCreated.fire({ id: tab.id, windowId });
         copyIn(tab, tab.doc);
+        return row(tab);
+      },
+      // goto: Safari loads the address in the tab.
+      update: async (id: number, { url }: { url?: string }) => {
+        const tab = tabOf(id);
+        if (url !== undefined) load(tab, pages.get(url) ?? new Doc(url));
         return row(tab);
       },
       remove: async (id: number) => {
@@ -298,11 +317,16 @@ async function start() {
       return tab;
     },
     // The tab loads doc; Safari skips putting the script in some pages.
-    navigate(tab: Tab, doc: Doc, script = true) {
-      onUpdated.fire(tab.id, { status: "loading", url: doc.url }, { url: doc.url });
-      tab.doc = doc;
-      if (script) copyIn(tab, doc);
-      onUpdated.fire(tab.id, { status: "complete" }, row(tab));
+    navigate: load,
+    // Safari shows doc at its address when the harness opens or loads it.
+    serve(doc: Doc) {
+      pages.set(doc.url, doc);
+    },
+    // The tab that shows doc.
+    showing(doc: Doc): Tab {
+      const tab = [...tabs.values()].find((t) => t.doc === doc);
+      if (!tab) throw new Error(`no tab shows ${doc.url}`);
+      return tab;
     },
     // Safari also reports URL changes within one document, and may repeat
     // a URL or load-complete update without a new visit.
@@ -427,6 +451,102 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect((await b.ask(tab, "click", ["5"])).value).toEqual({ ok: true, navigated: { url: "https://example.org/", title: "" } });
   expect(first.ran).toEqual(["click"]);
   expect(next.ran).toEqual([]);
+});
+
+// open loads an address in a tab it makes, and goto in the tab it is given.
+type Loader = { request(op: string, args: unknown[]): Promise<Answer>; open(url: string): Tab };
+const loads: [string, (b: Loader, url: string) => Promise<Answer>, number][] = [
+  ["open", (b, url) => b.request("tabs.open", [url]), 15000],
+  ["goto", (b, url) => b.request("tabs.navigate", [b.open("https://example.com/").id, url]), 20000],
+];
+
+// On 10-05 open and goto of an AWS event's address answered Cvent's
+// sign-on page ("Login"), a spinner whose script then sent the tab on to
+// AWS's sign-in.
+test.each(loads)("%s of a page that sends the tab on while it is checked answers with the page the tab lands on, and its title", async (_tool, load) => {
+  const b = await start();
+  const signOn = new Doc("https://login.example.com/sign-on");
+  signOn.title = "Login";
+  // still turning its spinner when it goes, so asked whether it is still
+  // loading, it never answers
+  signOn.does = never;
+  b.serve(signOn);
+  const signIn = new Doc("https://signin.example.com/login");
+  signIn.title = "Sign in";
+  let answer: Answer | undefined;
+  load(b, signOn.url).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  const tab = b.showing(signOn);
+  // the load begins while the tab still shows the sign-on page
+  b.update(tab, { status: "loading" });
+  await b.clock.advance(300);
+  b.swap(tab, signIn);
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ url: signIn.url, title: "Sign in" });
+});
+
+test.each(loads)("%s follows a load that begins after the loaded reply while it still waits for a title", async (_tool, load) => {
+  const b = await start();
+  const first = new Doc("https://example.com/redirect");
+  b.serve(first);
+  let answer: Answer | undefined;
+  load(b, first.url).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  const tab = b.showing(first);
+  b.update(tab, { status: "loading" });
+  await b.clock.advance(1600);
+  const last = new Doc("https://example.com/sign-in");
+  last.title = "Sign in";
+  b.swap(tab, last);
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ url: last.url, title: "Sign in" });
+});
+
+test.each(loads)("%s of a ready page that stays put answers without moving the clock", async (_tool, load) => {
+  const b = await start();
+  const page = new Doc("https://example.com/account");
+  page.title = "Account";
+  b.serve(page);
+  let answer: Answer | undefined;
+  load(b, page.url).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ url: page.url, title: "Account" });
+});
+
+test.each(loads)("%s ends by its original deadline when the next page never becomes ready or gets a title", async (_tool, load, limit) => {
+  const b = await start();
+  const first = new Doc("https://example.com/sign-on");
+  first.title = "Login";
+  first.does = never;
+  b.serve(first);
+  let answer: Answer | undefined;
+  load(b, first.url).then((a) => { answer = a; });
+  await b.clock.advance(1000);
+  const tab = b.showing(first);
+  b.update(tab, { status: "loading" });
+  // The address committed, but its document has not reported in.
+  tab.doc = new Doc("https://example.com/pending");
+  await b.clock.advance(limit - 1000);
+  expect(answer?.value).toMatchObject({ url: tab.doc.url });
+});
+
+test.each(loads)("%s ends by its original deadline when the last page's loading check never answers", async (_tool, load, limit) => {
+  const b = await start();
+  const first = new Doc("https://example.com/sign-on");
+  first.title = "Login";
+  first.does = never;
+  b.serve(first);
+  let answer: Answer | undefined;
+  load(b, first.url).then((a) => { answer = a; });
+  await b.clock.advance(1000);
+  const tab = b.showing(first);
+  b.update(tab, { status: "loading" });
+  await b.clock.advance(limit - 2000);
+  const last = new Doc("https://example.com/last");
+  last.does = never;
+  b.swap(tab, last);
+  await b.clock.advance(1000);
+  expect(answer?.value).toMatchObject({ url: last.url });
 });
 
 test("a page open since before the reload takes reads through executeScript in one trip once reached", async () => {

@@ -776,7 +776,11 @@ Wait for the page, not the clock.
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers. `open` and
   `goto` also wait up to 5 s while the page says it is loading (as
-  `extract` reads it); `loading: true` means it still was.
+  `extract` reads it); `loading: true` means it still was. A page showing
+  only a spinner, "Signing In", or "Redirecting" counts as loading, and a
+  load that begins while they check is followed, so a sign-in chain answers
+  with the page it lands on (within 15 s for `open`, 20 s for `goto`). A
+  page that looked ready and redirects later still needs a `wait`.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
 - `wait` with only `ms` ends once the page goes quiet, `ms` at most. On a

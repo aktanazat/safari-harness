@@ -2368,10 +2368,29 @@
   const ariaBusy = () => !!document.querySelector("body[aria-busy='true'], main[aria-busy='true'], [role='main'][aria-busy='true']");
 
   // Whether the page says it is still loading: skeleton or loading lines in
-  // what extract reads, or aria-busy.
+  // what extract reads, or aria-busy. On 10-05 Cvent's sign-on page showed
+  // only a spinner, then a page saying "Signing In", before sending the
+  // tab to AWS. Those count too, but only with no other visible text in
+  // the whole page: a progress widget or a heading beside real content
+  // must not hold an open.
   function stillLoading() {
+    if (ariaBusy()) return true;
     const { root } = contentRoot();
-    return ariaBusy() || (!!root && tidyText(root).filler);
+    if (!root) return false;
+    const read = tidyText(root);
+    if (read.filler) return true;
+    const interstitial = /^(?:signing in|redirecting)[.…]*$/i.test(read.text);
+    if (read.text && !interstitial) return false;
+    if (root !== document.body && tidyText(document.body).text !== read.text) return false;
+    return interstitial || deepQueryAll("[role=progressbar], progress").some((el) => {
+      if (!shown(el)) return false;
+      // A progress indicator can have a box even when a parent hides it.
+      for (let box = el; box; box = box.parentElement ?? box.getRootNode().host) {
+        const style = getComputedStyle(box);
+        if (transparent(box, style) || unseenBox(box, style)) return false;
+      }
+      return true;
+    });
   }
 
   // What extract reads by default: a dialog open over the page (claude.ai's
