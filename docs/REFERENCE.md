@@ -1438,7 +1438,8 @@ safari routine remove price-watch
 ```
 
 - `--at HH:MM` runs daily. `--every MIN` repeats, at least every 5 minutes.
-  `--model` picks an omp model.
+  `--on YYYY-MM-DD` with `--at` runs it once, on that day (any routine:
+  model, watch, or script). `--model` picks an omp model.
 - The saved prompt lives in `~/.local/share/safari-harness/routines/<name>.md`.
   It is plain text you can edit. It starts with a fixed preamble: own tab,
   close it after, no irreversible actions, end with a summary.
@@ -1454,7 +1455,10 @@ safari routine remove price-watch
   (below): no model, and an alert only when the value changes.
 - A bot check or a locked vault in a routine is reported in its summary,
   never solved or waited out.
-- A daily routine missed while the Mac slept runs when it wakes.
+- A daily routine missed while the Mac slept runs when it wakes. A routine
+  set for one day keeps the Mac awake until an hour past its time (on
+  power, lid open); woken on a later day, it runs nothing and texts him that
+  it missed its day.
 - Routines need the daemon always on: `safari daemon install`.
 
 ### Watches: routines with no model
@@ -1485,6 +1489,36 @@ safari routine add orders --at 09:00 --watch https://example.com/orders --replay
   <name>` runs it now.
 - The alerts count toward the 6 an hour.
 - A watch cannot take the name of a routine that runs a model.
+
+### Scripts: a fixed task at a set time
+
+A task that must go exactly one way at a set time (a sale, a booking, a
+form that opens at 9:00) is a script, not a prompt: no model decides
+anything at run time. The fast path, about 10 minutes:
+
+1. Read what you need from the signed-in site once (its own JSON API
+   through `repl` `page.evaluate`, or `extract`).
+2. Write one `repl` script that drives the site's real form: checks first
+   (signed in, right day and time, not already done), then fill, then read
+   the review screen and compare it with what you expect, then the final
+   click, skipped when `DRY` is true. `console.log` what happened, in words
+   the user reads.
+3. Add it, practice it, read the practice log:
+
+```bash
+safari routine add sell-stock --on 2026-10-07 --at 06:36 --script sale.js
+safari routine run sell-stock --dry
+```
+
+- `--script` saves a copy of the file; edit the file and add it again to
+  change it.
+- A run is one `repl` call with up to 30 minutes. The script gets `DRY`
+  (false on schedule, true with `--dry`) and the usual `repl` globals.
+- What it printed, or its error, goes to the run's log and, except with
+  `--dry`, to his phone as `<name>: <what it printed>` (cut at 1,500
+  characters; counts toward the 6 an hour).
+- Get his yes for the irreversible step when you set it up, and say in the
+  script what it will do; the run does not ask again.
 
 ## safari do: sessions you can talk to
 

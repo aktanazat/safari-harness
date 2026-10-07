@@ -151,13 +151,18 @@ const USAGE = `safari — drive Safari from the terminal
   safari host [list] | use <ssh-host|local> | status [host]
                                              drive another Mac's Safari through ssh
   safari mcp                                 run the MCP stdio server (thin client)
-  safari routine add <name> --at HH:MM|--every MIN [--model m] "<task>"
-  safari routine list | run <name> | remove <name>
-                                             scheduled tasks run through omp
+  safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m] "<task>"
+  safari routine list | run <name> [--dry] | remove <name>
+                                             scheduled tasks run through omp; --on runs
+                                             a routine once, on that day
   safari routine add <name> --at HH:MM|--every MIN --watch <url>
                       --selector CSS | --text REGEX | --eval JS | --replay <recording>
                                              a watch: no model; texts your phone when the
                                              value it reads off the page changes
+  safari routine add <name> --at HH:MM [--on YYYY-MM-DD] --script <file.js>
+                                             a script: no model; runs a repl script and
+                                             texts your phone what it printed; run --dry
+                                             gives it DRY = true and texts no one
   safari record list | show <name> | rm <name>
                                              tasks recorded with the toolbar button
                                              (teach mode), newest first
@@ -506,20 +511,24 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
-    const { parseSchedule, routineAdd, routineAddWatch, routineList, routineRemove, routineRun } = await import("./launchd.ts");
+    const { parseSchedule, routineAdd, routineAddScript, routineAddWatch, routineList, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
-      const schedule = parseSchedule(flag("at", r), flag("every", r));
+      const schedule = parseSchedule(flag("at", r), flag("every", r), flag("on", r));
       const url = flag("watch", r);
-      if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      const script = flag("script", r);
+      if (script !== undefined) {
+        if (url !== undefined || pos.length > 1) fail("a script routine takes a name, a schedule, and --script: no task, no --watch");
+        console.log(await routineAddScript(pos[0], resolve(script), schedule));
+      } else if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
       else if (pos.length > 1) fail("a watch runs no model, so it takes no task");
       else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, schedule));
     } else if (sub === "list") {
       print(await routineList());
     } else if (sub === "run") {
-      const { code, log, note } = await routineRun(pos[0]);
+      const { code, log, note } = await routineRun(pos[0], { dry: hasFlag("dry", r), scheduled: hasFlag("scheduled", r) });
       if (note !== undefined) console.log(note);
-      console.log(`exit ${code}; log: ${log}`);
+      console.log(log ? `exit ${code}; log: ${log}` : `exit ${code}`);
       process.exit(code);
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
@@ -808,7 +817,7 @@ async function main() {
 // Flags that take no value; the word after them is positional, unless it is
 // true or false: on 10-04 `eval --page true "const ..."` ran "true const
 // ..." and failed at its second word.
-const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true };
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
