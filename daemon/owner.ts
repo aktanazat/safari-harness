@@ -10,9 +10,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 // ---------- whose process ----------
 
-// A shell that ran one command ends with it; omp, claude, codex, a script,
-// or a terminal's login session lasts as long as the work does.
+// A shell that ran one command ends with it; a script or a terminal's login
+// session lasts as long as the work does.
 const SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: true, fish: true, ksh: true, tcsh: true, csh: true };
+// An agent harness. Everything under it works for it: its eval kernel, its
+// MCP server, and what its shells run, scripts included. On 10-07 omp's
+// Python kernel counted as an agent apart from its omp, and the user saw
+// one agent's tabs in two windows.
+const HARNESSES: Record<string, true> = { omp: true, claude: true, codex: true };
 
 // proc_pidinfo(PROC_PIDT_SHORTBSDINFO) fills struct proc_bsdshortinfo
 // (sys/proc_info.h): the parent pid at byte 4, the executable's name
@@ -23,6 +28,7 @@ const SHELLS: Record<string, true> = { sh: true, bash: true, zsh: true, dash: tr
 const SHORT_BSD_INFO = 13;
 const INFO_BYTES = 64;
 let kernel: Promise<(pid: number, into: Uint8Array) => boolean> | undefined;
+const commOf = (info: Uint8Array) => new TextDecoder().decode(info.subarray(16, 32)).split("\0", 1)[0];
 
 function loadKernel() {
   kernel ??= import("bun:ffi").then(({ dlopen, FFIType, ptr }) => {
@@ -34,18 +40,20 @@ function loadKernel() {
   return kernel;
 }
 
-// The first ancestor of pid that is not a shell, while pid runs.
+// The nearest agent harness above pid, or else its first ancestor that is
+// not a shell, while pid runs.
 export async function ownerOf(pid: number): Promise<number | undefined> {
   const read = await loadKernel();
   const info = new Uint8Array(INFO_BYTES);
   const parent = new DataView(info.buffer);
-  const names = new TextDecoder();
   if (!read(pid, info)) return undefined;
+  let first: number | undefined;
   for (let p = parent.getUint32(4, true); p > 1; p = parent.getUint32(4, true)) {
-    if (!read(p, info)) return undefined;
-    if (!SHELLS[names.decode(info.subarray(16, 32)).split("\0", 1)[0]]) return p;
+    if (!read(p, info)) return first;
+    if (HARNESSES[commOf(info)]) return p;
+    if (!SHELLS[commOf(info)]) first ??= p;
   }
-  return undefined;
+  return first;
 }
 
 // The name of pid's executable (its first 16 characters), while it runs:
@@ -53,7 +61,7 @@ export async function ownerOf(pid: number): Promise<number | undefined> {
 export async function processName(pid: number): Promise<string | undefined> {
   const read = await loadKernel();
   const info = new Uint8Array(INFO_BYTES);
-  return read(pid, info) ? new TextDecoder().decode(info.subarray(16, 32)).split("\0", 1)[0] : undefined;
+  return read(pid, info) ? commOf(info) : undefined;
 }
 
 // ---------- daemon side ----------

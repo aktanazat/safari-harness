@@ -1,14 +1,14 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // A named REPL session is a process of its own that the first `safari repl
 // --session` command starts and leaves running (repl-host.ts); each command
 // exits once it has its answer. Here the daemon runs in a process of its
 // own with a stand-in extension on its socket, as in renumber-caller.test.ts,
-// and each command is a child process. repl-host.ts reads HOME for its
-// sockets as it loads, so only the children, whose HOME is a scratch folder,
-// import it.
+// and each command is a child of this test's agent. repl-host.ts reads HOME
+// for its sockets as it loads, so only the children, whose HOME is a scratch
+// folder, import it.
 
 const HOST = join(import.meta.dir, "repl-host.ts");
 const SESSION = JSON.stringify("lasting");
@@ -62,6 +62,36 @@ const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
 });
 const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${httpPort}` };
 
+// bun under the name omp: the daemon takes the nearest agent harness above
+// a call's process for its agent (owner.ts), whatever runs this test.
+const omp = join(home, "omp");
+linkSync(process.execPath, omp);
+
+// This test's agent. It runs each argv it reads, a JSON line on its stdin,
+// as a child of its own, and writes back what that printed, as a JSON
+// string on a line.
+const RELAY = `for await (const line of console) {
+  const p = Bun.spawn(JSON.parse(line), { stdout: "pipe", stderr: "inherit" });
+  console.log(JSON.stringify(await new Response(p.stdout).text()));
+}`;
+const me = Bun.spawn([omp, "-e", RELAY], { env, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+const replies = (async function* () {
+  let rest = "";
+  for await (const text of me.stdout.pipeThrough(new TextDecoderStream())) {
+    const lines = (rest + text).split("\n");
+    rest = lines.pop() ?? "";
+    for (const line of lines) yield JSON.parse(line) as string;
+  }
+})();
+
+async function run(argv: string[]): Promise<string> {
+  me.stdin.write(JSON.stringify(argv) + "\n");
+  await me.stdin.flush();
+  const { value, done } = await replies.next();
+  if (done) throw new Error("this test's agent exited");
+  return value;
+}
+
 // What the daemon has logged, a line at a time, and a wake-up for what
 // waits on a line.
 const logged: string[] = [];
@@ -99,24 +129,26 @@ await logs("connect");
 
 // A `safari repl` command: a process of its own that calls repl-host.ts and
 // exits once it has the answer, as the CLI does. elsewhere runs it for
-// another agent: a process of its own between this test and the command.
+// another agent: an agent harness of its own between this test and the
+// command.
 async function command(call: string, elsewhere = false): Promise<unknown> {
   const script = `const repl = await import(${JSON.stringify(HOST)});
 await Bun.write(Bun.stdout, JSON.stringify(await repl.${call}));
 process.exit(0);`;
   const argv = [process.execPath, "-e", script];
-  const p = Bun.spawn(elsewhere ? [process.execPath, "-e", `process.exit(await Bun.spawn(${JSON.stringify(argv)}, { stdout: "inherit", stderr: "inherit" }).exited)`] : argv, { env, stdout: "pipe", stderr: "inherit" });
+  if (!elsewhere) return JSON.parse(await run(argv));
+  const p = Bun.spawn([omp, "-e", `process.exit(await Bun.spawn(${JSON.stringify(argv)}, { stdout: "inherit", stderr: "inherit" }).exited)`], { env, stdout: "pipe", stderr: "inherit" });
   const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
   return JSON.parse(out);
 }
 
-// Settles once the daemon's owner sweep has run since now: an agent (a
-// process whose child calls) opens a tab and is killed, and its tab closes
-// in the first sweep that finds it gone, after the tabs of every agent that
-// ended before it. The daemon names the agent as the call arrives, so the
-// child is done with then.
+// Settles once the daemon's owner sweep has run since now: an agent (an
+// agent harness whose child calls) opens a tab and is killed, and its tab
+// closes in the first sweep that finds it gone, after the tabs of every
+// agent that ended before it. The daemon names the agent as the call
+// arrives, so the child is done with then.
 async function ownerSweep(): Promise<void> {
-  const agent = Bun.spawn([process.execPath, "-e", "await Bun.write(Bun.stdout, `${Bun.spawn(['sleep', '60']).pid}\\n`); await Bun.sleep(60_000)"], { stdout: "pipe" });
+  const agent = Bun.spawn([omp, "-e", "await Bun.write(Bun.stdout, `${Bun.spawn(['sleep', '60']).pid}\\n`); await Bun.sleep(60_000)"], { stdout: "pipe" });
   const { value } = await agent.stdout.getReader().read();
   const caller = Number(new TextDecoder().decode(value).trim());
   const res = await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://marker.example/", background: true }, caller }) });
@@ -132,6 +164,8 @@ async function ownerSweep(): Promise<void> {
 
 afterAll(async () => {
   for (const session of (await command("listSessions()")) as { pid: number }[]) process.kill(session.pid, 9);
+  me.kill();
+  await me.exited;
   extension.close();
   daemon.kill();
   await daemon.exited;
@@ -146,19 +180,17 @@ test("a named session's tab still answers in its next call after the command tha
   expect(second).toEqual({ output: "https://a.example/", started: false });
 }, 30_000);
 
-// The tab a session's code opens, by a command run from this test's
-// process, which stands for omp above the shell its safari commands run in.
+// The tab a session's code opens, by a command this test's agent runs.
 async function sessionTab(url: string): Promise<number> {
   const { output } = (await command(`runInSession(${SESSION}, "(await openTab('${url}')).id")`)) as { output: string };
   return Number(output);
 }
 
 test("a named session's tab opens in the window of the agent that ran the code, beside the agent's own tabs", async () => {
-  // a child of this process calls, as a shell's safari command does
-  const shell = Bun.spawn(["sleep", "60"]);
-  const res = await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://own.example/", background: true }, caller: shell.pid }) });
-  shell.kill();
-  const { value: own } = (await res.json()) as { value: { id: number } };
+  // a command of the agent's calls, as a shell's safari command does
+  const opened = await run([process.execPath, "-e", `const res = await fetch("http://127.0.0.1:${httpPort}/rpc", { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://own.example/", background: true }, caller: process.pid }) });
+console.log(JSON.stringify(await res.json()));`]);
+  const { value: own } = JSON.parse(opened) as { value: { id: number } };
   const tab = await sessionTab("https://b.example/");
   const placed = rows.filter((r) => r.id === own.id || r.id === tab).map((r) => r.windowId);
   expect(placed).toEqual([placed[0], placed[0]]);
@@ -170,7 +202,7 @@ test("a named session's tab closes when the turn of the agent that ran the code 
   heardClose = () => {
     if (closed.includes(tab)) gone.resolve();
   };
-  await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: process.pid }) });
+  await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: me.pid }) });
   await gone.promise;
   expect(closed).toContain(tab);
 }, 30_000);

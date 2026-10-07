@@ -3,7 +3,7 @@
 // sessions start. A turn ends when omp hands it back to the user, and the
 // daemon then closes every tab this omp process opened but those it kept
 // for him, and then the agent's window (endTurn, daemon/tools.ts). Its MCP
-// server and the safari commands its shells run are its children, so their
+// server, its eval kernel, and what its shells run are under it, so their
 // tabs are its (owner.ts). The user's order of 09-28: close a tab once it
 // has served its purpose; keep only one waiting on his answer.
 //
