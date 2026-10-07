@@ -167,9 +167,11 @@ async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> 
 }
 
 // type_mark's answer (typeMark in extension/content.js): the field typed
-// into, focused and with autocorrect off, and whether it is a box of a row
-// of code boxes, which takes a character a box.
-type Field = Mark & { boxes: boolean };
+// into, focused and with autocorrect off; how many boxes it begins of a
+// row of code boxes, which takes a character a box; whether it takes line
+// breaks (a textarea or editable text); and whether its text is plain (not
+// editable text), which more can be set after.
+type Field = Mark & { boxes: number; multiline: boolean; plain: boolean };
 
 // Marks the field: ref's, or with no ref the focused element. null where
 // there is no text field to check (a canvas editor, a frame of another
@@ -177,8 +179,8 @@ type Field = Mark & { boxes: boolean };
 async function markField(tab: number, ref: unknown, text: string, append: boolean): Promise<Field | null> {
   const r = await rpc("type_mark", { tab, ...(ref === undefined ? {} : { ref }), text, append });
   if (r && typeof r === "object" && "field" in r) return null;
-  if (!isMark(r) || !("boxes" in r) || typeof r.boxes !== "boolean") throw new Error(`type_mark returned no mark: ${JSON.stringify(r)}`);
-  return { mark: r.mark, width: r.width, height: r.height, boxes: r.boxes };
+  if (!isMark(r) || !("boxes" in r) || typeof r.boxes !== "number" || !("multiline" in r) || !("plain" in r)) throw new Error(`type_mark returned no mark: ${JSON.stringify(r)}`);
+  return { mark: r.mark, width: r.width, height: r.height, boxes: r.boxes, multiline: r.multiline === true, plain: r.plain === true };
 }
 
 // Whether the field holds the text (after its own, with append) and has
@@ -191,16 +193,37 @@ async function held(tab: number, ref: unknown, field: Field, text: string): Prom
 }
 
 // Sets the field's text through Safari's accessibility tree (setvalue in
-// scripts/input.swift), from behind the user's app: on 10-07 a 200-letter
-// reply held his screen 15 s as real keys, and autocorrect sent "resham"
-// as "gresham". Returns null, having set nothing, where the tree cannot
-// reach the field.
-async function setBehind(tab: number, ref: unknown, field: Field, text: string): Promise<Held | null> {
+// scripts/input.swift), from behind the user's app, or with append after
+// its own: on 10-07 a 200-letter reply held his screen 15 s as real keys,
+// and autocorrect sent "resham" as "gresham". Returns null, having set
+// nothing, where the tree cannot reach the field.
+async function setBehind(tab: number, ref: unknown, field: Field, text: string, append = false): Promise<Held | null> {
   const set = await inTree(tab, await VIA_RPC.tabs(), async () => {
-    const r = await input(["setvalue", field.mark, String(field.width), String(field.height)], 10000, text);
+    const r = await input(["setvalue", ...(append ? ["--append"] : []), field.mark, String(field.width), String(field.height)], 10000, text);
     return !!r && typeof r === "object" && "set" in r && r.set === true;
   });
   return set ? held(tab, ref, field, text) : null;
+}
+
+// A row of code boxes takes a character a box, so each box is set from
+// behind as a field of its own, by the class typeMark gave it, and the
+// row is checked after. null where a box could not be set.
+async function setBoxes(tab: number, ref: unknown, row: Field, text: string): Promise<Held | null> {
+  for (const [i, char] of [...text].entries()) {
+    const at = `.${row.mark}_${i}`;
+    const box = await markField(tab, at, char, false);
+    if (!box || !(await setBehind(tab, at, box, char))?.kept) return null;
+  }
+  return held(tab, ref, row, text);
+}
+
+// The page's Send button for the field (sendButton in content.js): a ref
+// for pressBehind, and its name for the answer; undefined where it shows
+// none.
+async function sendButtonOf(tab: number, ref: unknown, field: Field): Promise<{ ref: string; name: string } | undefined> {
+  const r = await rpc("type_send", { tab, ...(ref === undefined ? {} : { ref }), mark: field.mark });
+  if (!r || typeof r !== "object" || !("send" in r) || typeof r.send !== "string") return undefined;
+  return { ref: r.send, name: "name" in r && typeof r.name === "string" ? r.name : "" };
 }
 
 // Real keys go FAST_GAP_MS apart where the field is checked after: text
@@ -267,30 +290,36 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const at = await inFront(tab, VIA_RPC, () => clickAt(tab, a, count, button));
     return { ok: true, at };
   },
-  // Text at a field's ref, in place of its text, is set through Safari's
-  // accessibility tree (setBehind) and checked; elsewhere, or where the
-  // field did not take it, real keys type it in front. send, a ref of the
-  // page's Send button, then clicks it as a click on a ref does, or a line
-  // break at the end presses Return; either only where the text came out
-  // as typed. The answer says whether the page took the text (sent) and,
-  // with reply, what came back.
+  // Text at a field's ref is set through Safari's accessibility tree
+  // (setBehind, setBoxes) and checked; elsewhere, or where the field did
+  // not take it, real keys type it in front. send, a ref of the page's
+  // Send button, then clicks it as a click on a ref does; a line break at
+  // the end clicks the button the page shows by the field (sendButton), or
+  // where it shows none presses Return; any of these only where the text
+  // came out as typed. The answer says whether the page took the text
+  // (sent) and, with reply, what came back.
   type: async (tab, a) => {
     const text = a.text;
     if (typeof text !== "string") throw new Error("type needs text");
     const start = Date.now();
-    const body = text.replace(SENDS, "");
-    const sendRef = a.send;
-    if (sendRef !== undefined && body !== text) throw new Error("send clicks the page's Send button in place of Return: end text without a line break, or leave out send");
-    const sends = body !== text || sendRef !== undefined;
+    // one kind of line break, as a textarea holds them
+    const body = text.replace(SENDS, "").replace(/\r\n?/g, "\n");
+    if (a.send !== undefined && SENDS.test(text)) throw new Error("send clicks the page's Send button in place of Return: end text without a line break, or leave out send");
+    const sends = SENDS.test(text) || a.send !== undefined;
     if (a.reply !== undefined && !(sends && typeof a.reply === "number" && Number.isFinite(a.reply))) {
       throw new Error("reply is how many ms to wait for an answer to text sent with send or a line break at its end");
     }
     const append = a.append === true;
     const field = await markField(tab, a.ref, body, append);
-    // what the check can judge: one line, all the field holds
-    const checkable = field !== null && body !== "" && !/[\r\n\t]/.test(body) ? field : null;
-    const whole = checkable !== null && !checkable.boxes && a.ref !== undefined && !append;
-    const behind = whole ? await setBehind(tab, a.ref, checkable, body) : null;
+    // what the check can judge: no Tab, which real keys take as a move to
+    // the next field, and line breaks only in a field that holds them
+    const checkable = field !== null && body !== "" && !body.includes("\t") && (field.multiline || !body.includes("\n")) ? field : null;
+    const behind = checkable === null || a.ref === undefined ? null
+      : checkable.boxes > 0 ? (append ? null : await setBoxes(tab, a.ref, checkable, body))
+      : !append || checkable.plain ? await setBehind(tab, a.ref, checkable, body, append)
+      : null;
+    const found = !a.send && sends && behind?.kept && checkable ? await sendButtonOf(tab, a.ref, checkable) : undefined;
+    const sendRef = a.send ?? found?.ref;
     const returns = sends && sendRef === undefined;
     // Return goes to the focused element, so the field must have focus
     const background = !!behind?.kept && (!returns || behind.focused);
@@ -305,6 +334,9 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
             // field on my.uscis.gov took the text only after Cmd+A (USCIS, 09-30).
             if (!append) await post(tab, ["key", "cmd+a"], true);
           }
+          // Typed again after Cmd+A only where it is all the field holds,
+          // and where a line break inside it could not have sent half of it.
+          const whole = checkable !== null && checkable.boxes === 0 && a.ref !== undefined && !append && !body.includes("\n");
           kept = await typeKeys(tab, a.ref, checkable, body, whole);
         }
         if (returns && kept !== false) await post(tab, ["key", "Enter"], true);
@@ -315,7 +347,13 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const pressed = sendRef === undefined ? undefined : await pressBehind(tab, sendRef);
     if (pressed === null) await inFront(tab, VIA_RPC, () => clickAt(tab, { ref: sendRef }, 1, "left"));
     const sent = checkable ? await wasSent(tab, a.ref, checkable, body) : undefined;
-    const answer = { ok: true, ...(background && !returns && pressed !== null ? { background: true } : {}), ...(pressed ? pageErrorsOf(pressed) : {}), ...(sent === undefined ? {} : { sent }) };
+    const answer = {
+      ok: true,
+      ...(background && !returns && pressed !== null ? { background: true } : {}),
+      ...(found ? { sendButton: found.name } : {}),
+      ...(pressed ? pageErrorsOf(pressed) : {}),
+      ...(sent === undefined ? {} : { sent }),
+    };
     if (sent === false) return { ...answer, hint: sendRef === undefined ? "Return left the text in the field, so the page did not send it: pass its Send button's ref as send" : "the text stayed in the field after its Send button was clicked, so the page did not send it: look at the page" };
     return typeof a.reply === "number" ? { ...answer, ...(await replyTo(tab, a.reply, start)) } : answer;
   },
@@ -334,8 +372,8 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       tab: TAB,
       do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },
       ref: REF,
-      text: { type: "string", description: "to type; a final line break presses Return" },
-      send: { description: "Send button's ref, clicked after text" },
+      text: { type: "string", description: "to type; a final line break sends it" },
+      send: { description: "Send button's ref, if the auto one misses" },
       reply: { type: "number", description: "ms to wait for the answer to sent text" },
       secret: TOOLS.type.params.secret,
       from: TOOLS.type.params.from,

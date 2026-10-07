@@ -1800,12 +1800,17 @@
   // real keys type instead, autocorrect="off" keeps macOS from changing the
   // words: in a Philips support chat "resham" went out as "gresham" (10-07).
   // The look before typing keeps the agent's own lines out of a changed
-  // wait. Answers the mark, its window's size, and whether the field is a
-  // box of a row of code boxes, which takes a character a box; field: false
-  // where ref, or with no ref the focused element, holds no text to check.
+  // wait. Answers the mark, its window's size, how many boxes the field
+  // begins of a row of code boxes, which takes a character a box (each box
+  // marked as the mark and its place, _0 on), whether it takes line breaks
+  // (multiline), and whether it holds plain text that more can be set
+  // after (plain); field: false where ref, or with no ref the focused
+  // element, holds no text to check.
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
   const textIn = (el) => (el.isContentEditable ? el.innerText ?? "" : String(el.value ?? ""));
-  let realField = null; // { mark, el, before, boxes }
+  // mark -> { el, before, boxes }: a code row's boxes are typed each under
+  // its own mark while the row's is still to be checked
+  const realFields = new Map();
   function typeMark(ref, text, append) {
     const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
     if (!el && ref !== null) return missing(ref);
@@ -1815,11 +1820,14 @@
     el.setAttribute("autocorrect", "off");
     el.focus();
     const row = text.length > 1 ? codeBoxes() : [];
-    const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    const run = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    const boxes = run.length === text.length ? run : [];
     const mark = `__sh_type_${Math.random().toString(36).slice(2, 10)}`;
     el.classList.add(mark);
-    realField = { mark, el, before: append ? textIn(el) : "", boxes: boxes.length === text.length ? boxes : [] };
-    return { mark, width: outerWidth, height: outerHeight, boxes: realField.boxes.length > 0 };
+    boxes.forEach((b, i) => b.classList.add(`${mark}_${i}`));
+    realFields.set(mark, { el, before: append ? textIn(el) : "", boxes });
+    for (const old of realFields.keys()) if (realFields.size > 16) realFields.delete(old);
+    return { mark, width: outerWidth, height: outerHeight, boxes: boxes.length, multiline: el.localName !== "input", plain: !el.isContentEditable };
   }
 
   // Takes the mark off and answers whether the field holds text (after
@@ -1829,9 +1837,11 @@
   // chat does once it has sent it, given a second to. A mark this frame
   // does not hold is another frame's, which relayOp then asks.
   async function typeField(ref, mark, text, sent) {
-    if (realField?.mark !== mark) return missing(ref);
-    const { el, before, boxes } = realField;
+    const field = realFields.get(mark);
+    if (!field) return missing(ref);
+    const { el, before, boxes } = field;
     el.classList.remove(mark);
+    boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
     const flat = (t) => t.replace(/\s+/g, " ").trim();
     if (sent) {
       const holding = () => el.isConnected && flat(textIn(el)).includes(flat(text));
@@ -1844,6 +1854,30 @@
       : el.isContentEditable ? flat(textIn(el)) === flat(want)
       : keeps(el.value, want);
     return { kept, focused: focusedNow() === el };
+  }
+
+  // The Send button of the field marked for real typing, marked as the
+  // mark and _send for a press from behind: the nearest button around the
+  // field named send or submit, or its form's submit button. A chat's
+  // Send button took a new ref with every message on 10-07, and Return,
+  // the way without it, needs the tab in front. Answers its ref and name,
+  // or send: null where there is none.
+  const SEND = /(^|[^a-z])(send|submit)/i;
+  function sendButton(ref, mark) {
+    const field = realFields.get(mark);
+    if (!field) return missing(ref);
+    const up = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
+    const named = (b) => [accessibleName(b), b.title, b.id, b.getAttribute("data-testid"), b.getAttribute("class")].filter(Boolean).join(" ");
+    let box = up(field.el);
+    for (let depth = 0; box && depth < 6; depth++, box = up(box)) {
+      const buttons = [...box.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')].filter((b) => b !== field.el && shown(b));
+      const send = buttons.find((b) => SEND.test(named(b))) ?? (box.localName === "form" ? buttons.find((b) => b.type === "submit") : undefined);
+      if (send) {
+        send.classList.add(`${mark}_send`);
+        return { send: `.${mark}_send`, name: accessibleName(send).slice(0, 60) };
+      }
+    }
+    return { send: null };
   }
 
   // ---------- Apple Passwords fill ----------
@@ -3688,6 +3722,7 @@
     pressDone,
     typeMark,
     typeField,
+    sendButton,
     rect: rectOf,
     annotate,
     dialogs: setDialogs,

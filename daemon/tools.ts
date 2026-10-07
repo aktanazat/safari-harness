@@ -1821,6 +1821,15 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
     run: async (a) => relay(await resolveTab(a.tab), "typeField", [a.ref === undefined ? null : String(a.ref), str(a.mark, "mark"), str(a.text, "text"), a.sent === true], 3000),
   },
+  // The Send button of the field marked for real typing, as a ref for a
+  // press from behind (sendButton in content.js).
+  type_send: {
+    desc: "The Send button of the field marked for real typing, or send: null.",
+    params: { tab: TAB, ref: REF, mark: { type: "string", description: "from type_mark" } },
+    required: ["tab", "mark"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "sendButton", [a.ref === undefined ? null : String(a.ref), str(a.mark, "mark")]),
+  },
   // One fact about an element (text, inner HTML, value, attribute, box,
   // count), for the REPL's locators.
   element: {

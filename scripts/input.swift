@@ -8,8 +8,10 @@
 //                                 {"x","y","width","height"}
 //   input press MARK W H          presses the element marked MARK in the
 //                                 Safari window of that size, from behind
-//   input setvalue MARK W H       sets the text of the field marked MARK to
-//                                 UTF-8 text on stdin, from behind
+//   input setvalue [--append] MARK W H
+//                                 sets the text of the field marked MARK to
+//                                 UTF-8 text on stdin, or after its own with
+//                                 --append, from behind
 //   input click X Y [--count N] [--button left|right]
 //   input move X Y
 //   input drag X1 Y1 X2 Y2
@@ -559,18 +561,24 @@ func press(_ args: [String]) {
 // macOS never autocorrects it. Safari, its windows, and the keyboard stay
 // as they are. WebKit takes the value only into the element the page has
 // focused, which typeMark does; the field's AXFocused is never set, since
-// that brings Safari to the front (10-07). Prints {"set": true}, or
-// {"set": false, "why"} when nothing was set.
+// that brings Safari to the front (10-07). --append sets the field's own
+// text with the text after it. Prints {"set": true}, or {"set": false,
+// "why"} when nothing was set.
 func setValue(_ args: [String]) {
+    let append = args.first == "--append"
     guard let text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else {
         fail("setvalue needs UTF-8 text on stdin", 2)
     }
-    let node = markedElement(args, usage: "setvalue MARK W H (UTF-8 text on stdin)", key: "set")
+    let node = markedElement(Array(args.dropFirst(append ? 1 : 0)), usage: "setvalue [--append] MARK W H (UTF-8 text on stdin)", key: "set")
     var settable: DarwinBoolean = false
     guard AXUIElementIsAttributeSettable(node, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue else {
         return printJSON(["set": false, "why": "Safari does not let the field's text be set"])
     }
-    let err = AXUIElementSetAttributeValue(node, kAXValueAttribute as CFString, text as CFString)
+    var held: CFTypeRef?
+    if append && (AXUIElementCopyAttributeValue(node, kAXValueAttribute as CFString, &held) != .success || !(held is String)) {
+        return printJSON(["set": false, "why": "Safari did not say what the field holds"])
+    }
+    let err = AXUIElementSetAttributeValue(node, kAXValueAttribute as CFString, ((held as? String ?? "") + text) as CFString)
     if err != .success { return printJSON(["set": false, "why": "AXError \(err.rawValue)"]) }
     printJSON(["set": true])
 }
@@ -590,5 +598,5 @@ case "idle": idle(rest)
 case "front": front()
 case "activate": activate(rest)
 case "window": window(rest)
-default: fail("usage: input webarea | press MARK W H | setvalue MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
+default: fail("usage: input webarea | press MARK W H | setvalue [--append] MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
 }

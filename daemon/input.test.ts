@@ -29,7 +29,9 @@ const GHOSTTY = "com.mitchellh.ghostty";
 // opens on a real click, which the daemon queues for the agent
 // (continuity.ts), the app the user brings forward while the helper types,
 // a field that garbles keys typed fast or at any pace (a card mask), the
-// lines a chat shows after text is sent, and a user who never pauses.
+// lines a chat shows after text is sent, a user who never pauses, the
+// kind of field typed into (a one-line input unless said), the row of code
+// boxes it begins, and the name of the Send button the page shows by it.
 type Page = {
   picker?: boolean;
   press?: { pressed: boolean; why?: string };
@@ -42,6 +44,9 @@ type Page = {
   garble?: "fast" | "always";
   reply?: string[];
   busy?: boolean;
+  kind?: "input" | "textarea" | "editable";
+  boxes?: number;
+  sendButton?: string;
 };
 type Mac = {
   app: string;
@@ -52,6 +57,8 @@ type Mac = {
   asked: string[];
   // the text of the field typed into; a Return sends it, as a chat does
   field: string;
+  // the code boxes' characters, a box each
+  boxes: string[];
   // the tab agent window 2 showed when the helper pressed
   pressedIn?: number;
   shows(windowId: number): number | undefined;
@@ -79,7 +86,7 @@ function mac(page: Page = {}): Mac {
     for (const t of tabs) if (t.windowId === windowId) t.active = t.id === id;
     return windowId;
   };
-  const m: Mac = { app: GHOSTTY, helper: [], typed: [], asked: [], field: "", shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
+  const m: Mac = { app: GHOSTTY, helper: [], typed: [], asked: [], field: "", boxes: [], shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
@@ -92,10 +99,20 @@ function mac(page: Page = {}): Mac {
       if (dom === "pressMark") return answer(page.picker ? { picker: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
       if (dom === "pressDone") return answer(page.errors ?? []);
       if (dom === "typeMark") {
-        before = args[2][2] ? m.field : "";
-        return answer({ mark: "__sh_type_t", width: 1247, height: 870, boxes: false });
+        const [ref, , append] = args[2];
+        // a box of the row, by the class the row's mark gave it
+        const box = /_(\d+)$/.exec(ref ?? "");
+        if (box) return answer({ mark: `box${box[1]}`, width: 1247, height: 870, boxes: 0, multiline: false, plain: true });
+        before = append ? m.field : "";
+        return answer({ mark: "__sh_type_t", width: 1247, height: 870, boxes: page.boxes ?? 0, multiline: (page.kind ?? "input") !== "input", plain: page.kind !== "editable" });
       }
-      if (dom === "typeField") return answer(args[2][3] ? { sent: m.field === "" } : { kept: m.field === before + args[2][2], focused: true });
+      if (dom === "typeField") {
+        const [, mark, text, sent] = args[2];
+        if (sent) return answer({ sent: m.field === "" });
+        const holds = mark.startsWith("box") ? m.boxes[Number(mark.slice(3))] : page.boxes ? m.boxes.join("") : m.field;
+        return answer({ kept: holds === before + text, focused: true });
+      }
+      if (dom === "sendButton") return answer(page.sendButton ? { send: ".__sh_type_t_send", name: page.sendButton } : { send: null });
       if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
       if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
@@ -110,9 +127,12 @@ function mac(page: Page = {}): Mac {
     m.helper.push(args);
     if (args[0] === "idle") return { idle: !page.busy, waitedMs: 0 };
     if (args[0] === "setvalue") {
-      m.typed.push(stdin);
       if (page.set) return page.set;
-      m.field = stdin ?? "";
+      const append = args[1] === "--append";
+      const mark = args[append ? 2 : 1];
+      m.typed.push(stdin);
+      if (mark.startsWith("box")) m.boxes[Number(mark.slice(3))] = stdin ?? "";
+      else m.field = (append ? m.field : "") + (stdin ?? "");
       return { set: true };
     }
     if (args[0] === "key") {
@@ -255,7 +275,7 @@ test("a press the page refused for want of focus answers with its error and a ne
 });
 
 test("real typing types exact Unicode and inner line breaks through stdin, not arguments, after Cmd+A unless append; a line break at the end presses Return", async () => {
-  const m = mac();
+  const m = mac({ set: { set: false, why: "the element is not in Safari's accessibility tree" } });
   const text = " Zoë 李𐐷\ne\u0301\tline two\r\n";
   const appended = " suite\n";
   await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text });
@@ -287,7 +307,7 @@ test("where the field cannot take text from behind, real keys type it fast and i
 
 // A Philips support chat took 4 or 5 calls a reply, and 160 waits of
 // 30 s each, 33 minutes of them (10-07).
-test("text ending in a line break is sent in one call: the answer says the page took it and carries the reply, and not that it stayed behind, as Return took the screen", async () => {
+test("text ending in a line break, where the page shows no Send button, is sent with Return in one call: the answer says the page took it and carries the reply, and not that it stayed behind", async () => {
   const m = mac({ reply: ["Agent: thanks, checking your order now"] });
   expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "order 1234 arrived broken\n", reply: 60000 })).toEqual({
     ok: true,
@@ -306,6 +326,30 @@ test("with send, the page's Send button is clicked from behind as well: the whol
     reply: ["Agent: a new blade ships today"],
   });
   expect({ field: m.field, app: m.app, real: m.helper.filter((c) => ["activate", "click", "key", "type"].includes(c[0])) }).toEqual({ field: "", app: GHOSTTY, real: [] });
+});
+
+// The Send button of that chat took a new ref with every message (10-07).
+test("text ending in a line break goes out by the Send button the page shows by the field: nothing comes forward, no key is pressed, and the answer names the button", async () => {
+  const m = mac({ sendButton: "Send message", reply: ["Agent: a new blade ships today"] });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "the blade broke after a week\n", reply: 60000 })).toEqual({
+    ok: true,
+    background: true,
+    sendButton: "Send message",
+    sent: true,
+    reply: ["Agent: a new blade ships today"],
+  });
+  expect({ field: m.field, app: m.app, real: m.helper.filter((c) => ["activate", "click", "key", "type"].includes(c[0])) }).toEqual({ field: "", app: GHOSTTY, real: [] });
+});
+
+test.each([
+  { what: "line breaks inside text, in a box that holds lines,", page: { kind: "textarea" } satisfies Page, had: "", args: { ref: "#msg", text: "order 1234\r\nthe blade broke" }, holds: (m: Mac): unknown => m.field, want: "order 1234\nthe blade broke" },
+  { what: "text appended to a field's own", page: {}, had: "Dear Ada,", args: { ref: "#msg", text: " thanks", append: true }, holds: (m: Mac): unknown => m.field, want: "Dear Ada, thanks" },
+  { what: "a code typed into a row of one-letter boxes", page: { boxes: 6 }, had: "", args: { ref: "#code", text: "802416" }, holds: (m: Mac): unknown => m.boxes, want: ["8", "0", "2", "4", "1", "6"] },
+])("$what goes in from behind, exactly, with no key pressed and nothing coming forward", async ({ page, had, args, holds, want }) => {
+  const m = mac(page);
+  m.field = had;
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ...args })).toEqual({ ok: true, background: true, kept: true });
+  expect({ holds: holds(m), app: m.app, real: m.helper.filter((c) => ["activate", "click", "key", "type"].includes(c[0])) }).toEqual({ holds: want, app: GHOSTTY, real: [] });
 });
 
 test("text that comes out wrong at every pace is never sent: no Return is pressed, and the answer says so", async () => {

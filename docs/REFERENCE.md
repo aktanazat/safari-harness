@@ -723,29 +723,33 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   the action opened (a sign-in window), once Safari has reported it; one
   it reports later comes in your next result. The app running the MCP
   server or CLI needs Accessibility permission.
-- Text typed at a ref, in place of the field's text, is set through
-  Safari's accessibility tree and answers `background: true`: nothing
-  comes to the front, it takes about 50 ms at any length, and the words go
-  in as written. The page hears trusted `beforeinput` and `input` events,
-  as from typing, and the field gets the page's focus. Real keys type it
-  instead, with the tab in front, where the tree cannot: text with a line
-  break or tab inside it, `append`, no ref, a row of one-character code
-  boxes, or a field Safari will not set. Real keys type about 25 ms a
-  character with macOS autocorrect off (it once sent "resham" as
-  "gresham") where the field can be checked after, and text that came out
-  wrong is typed again at 60 ms a character, the pace elsewhere. `kept`
-  says whether the field holds the text as typed.
-- A chat reply is one call. `send` takes the ref of the page's Send
-  button, which is clicked after the text as a click on a ref is (from
-  behind, where it can be); a final line break presses Return instead,
-  which brings the tab to the front for a moment. Text that came out wrong
-  is never sent. `sent` says whether the page took the text out of the
-  field, as a chat does once it sends; `sent: false` comes with a `hint`.
-  `reply: 100000` then waits up to that many ms (110000 at most, counted
-  from the call's start) for new lines, as `wait` with `changed` does, and
-  returns them as `reply`, or `reply: null` if none came. Your own message
-  is not counted as a reply. In a support chat: `real_input {do: "type",
-  ref, text, send, reply: 100000}`, read `reply`, answer, repeat.
+- Text typed at a ref is set through Safari's accessibility tree and
+  answers `background: true`: nothing comes to the front, it takes about
+  50 ms at any length, and the words go in as written. That covers line
+  breaks inside the text in a box that holds lines (a textarea or a rich
+  editor), `append` to an input's or textarea's own text, and a row of
+  one-character code boxes, set a box at a time. The page hears trusted
+  `beforeinput` and `input` events, as from typing, and the field gets
+  the page's focus. Real keys type it instead, with the tab in front,
+  where the tree cannot: a tab inside the text, a line break in a
+  one-line field, `append` in a rich editor, no ref, or a field Safari
+  will not set. Real keys type about 25 ms a character with macOS
+  autocorrect off (it once sent "resham" as "gresham") where the field
+  can be checked after, and text that came out wrong is typed again at
+  60 ms a character, the pace elsewhere. `kept` says whether the field
+  holds the text as typed.
+- A chat reply is one call. A final line break sends the text: the
+  Send button the page shows by the field is clicked from behind, and
+  the answer names it (`sendButton`); a page with none gets Return, which
+  brings the tab to the front for a moment. `send` takes the ref of a
+  Send button the search misses. Text that came out wrong is never sent.
+  `sent` says whether the page took the text out of the field, as a chat
+  does once it sends; `sent: false` comes with a `hint`. `reply: 100000`
+  then waits up to that many ms (110000 at most, counted from the call's
+  start) for new lines, as `wait` with `changed` does, and returns them
+  as `reply`, or `reply: null` if none came. Your own message is not
+  counted as a reply. In a support chat: `real_input {do: "type", ref,
+  text: "…\n", reply: 100000}`, read `reply`, answer, repeat.
 - A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
   egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
   once real input worked there: `learn {site, real: true}` (CLI `safari
