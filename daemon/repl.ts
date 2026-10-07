@@ -597,10 +597,15 @@ export class ReplSession {
   #calls = 0;
   readonly #asked = new Map<number, { address: string; call: number }>();
 
-  constructor(readonly id: string, opts: { cwd?: string; invoke?: Invoke } = {}) {
+  // quiet: a person reads the output (a script routine's text to his
+  // phone), so the site notes, guides, and hints meant for a model stay out.
+  readonly #quiet: boolean;
+
+  constructor(readonly id: string, opts: { cwd?: string; invoke?: Invoke; quiet?: boolean } = {}) {
     this.cwd = opts.cwd ?? process.cwd();
     mkdirSync(this.cwd, { recursive: true });
     this.#invoke = opts.invoke ?? defaultInvoke;
+    this.#quiet = opts.quiet === true;
     this.kit = new SiteKit(this.#invoke);
     this.#ctx = vm.createContext({});
     this.#g = vm.runInContext("globalThis", this.#ctx) as Record<string, unknown>;
@@ -651,7 +656,7 @@ export class ReplSession {
   // A site's notes and guide come once, with the first result on the site
   // (notes.ts), so they go to the script's output even if it prints nothing.
   showNotes(result: unknown): void {
-    if (!result || typeof result !== "object") return;
+    if (this.#quiet || !result || typeof result !== "object") return;
     if ("guide" in result && typeof result.guide === "string") this.#out.push(`guide: ${result.guide}`);
     if ("notes" in result && typeof result.notes === "string") this.#out.push(result.notes);
   }
@@ -660,7 +665,7 @@ export class ReplSession {
   // own, as formatResult prints one (tools.ts), once in a run however
   // many of its actions came back with it.
   showHint(hint: unknown): void {
-    if (typeof hint === "string" && !this.#out.includes(`hint: ${hint}`)) this.#out.push(`hint: ${hint}`);
+    if (!this.#quiet && typeof hint === "string" && !this.#out.includes(`hint: ${hint}`)) this.#out.push(`hint: ${hint}`);
   }
 
   // Runs one call's code after any earlier call has finished.

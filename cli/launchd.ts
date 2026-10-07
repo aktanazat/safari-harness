@@ -348,7 +348,7 @@ export async function routineRun(name: string | undefined, opts: { dry?: boolean
 // one. What it printed, or why it failed, goes to the log and to the phone.
 async function runScript(n: string, code: string, log: string, dry: boolean): Promise<{ code: number; note: string }> {
   await connectHost();
-  const session = new ReplSession(`routine-${n}`, { cwd: join(LOGS, "routines", n) });
+  const session = new ReplSession(`routine-${n}`, { cwd: join(LOGS, "routines", n), quiet: true });
   let r: { output: string; error?: string };
   try {
     r = await session.run(`const DRY = ${dry};\n${code}`, SCRIPT_MS);
