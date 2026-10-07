@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { ownersByPage, spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -1291,8 +1291,16 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
   return firstLine === undefined ? saved : { ...saved, firstLine: firstLine.slice(0, 200) };
 }
 
+// A tab in its agent's window sizes that window, the agent's other tabs and
+// all (background.js "window"), and the window's keeper finds it at the
+// size Safari gave it.
 export async function viewport(opts: { tab: number; width: number; height: number }) {
-  return bridge.request("window", [num(opts.tab, "tab"), { width: num(opts.width, "width"), height: num(opts.height, "height") }]);
+  const tab = num(opts.tab, "tab");
+  const window = (await listTabs()).find((t) => t.id === tab)?.windowId;
+  const whole = window !== undefined && windowOwners().has(window);
+  const sized = (await bridge.request("window", [tab, { width: num(opts.width, "width"), height: num(opts.height, "height") }, whole])) as { windowId: number; size: { width: number; height: number } };
+  if (whole) resized(sized.windowId, sized.size);
+  return sized;
 }
 
 export async function dialogs(opts: { tab?: number; do?: string; text?: string }) {
@@ -1711,7 +1719,7 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => pdf(a as { tab?: number; do?: string; path?: string; out?: string }),
   },
   window: {
-    desc: "Put a tab in its own window of this size, e.g. a phone-width page.",
+    desc: "Resize the tab's window, e.g. to phone width; your tabs stay in it.",
     params: { tab: OWN_TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" } },
     required: ["tab", "width", "height"],
     run: (a) => viewport(a as { tab: number; width: number; height: number }),

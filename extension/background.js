@@ -1060,19 +1060,29 @@ async function handle(msg) {
     }
     case "shot":
       return screenshot(args[0], args[1] || {});
+    // whole: the tab is in its agent's window (daemon/spaces.ts), which
+    // takes the size with the agent's other tabs and its name: on 10-07
+    // each size an agent asked for split its tab into a window of its own,
+    // which named no agent. That window keeps a size no other window has,
+    // by which its keeper finds it. A tab in a window of the user's goes to
+    // one of its own, and his keeps its size.
     case "window": {
-      const [tabId, size] = args;
+      const [tabId, size, whole] = args;
       const t = await api.tabs.get(tabId);
       const alone = (await api.tabs.query({ windowId: t.windowId })).length === 1;
       const dims = { width: Math.round(size.width), height: Math.round(size.height) };
-      if (alone) await api.windows.update(t.windowId, { ...dims, state: "normal" });
-      else {
+      let sized;
+      if (whole || alone) {
+        const others = (await api.windows.getAll()).filter((w) => w.id !== t.windowId);
+        while (others.some((w) => w.width === dims.width && w.height === dims.height)) dims.height++;
+        sized = await api.windows.update(t.windowId, { ...dims, state: "normal" });
+      } else {
         const w = await api.windows.create({ tabId, focused: false, ...dims });
         await markAgentWindow(w.id);
-        await api.windows.update(w.id, dims);
+        sized = await api.windows.update(w.id, dims);
       }
       const r = await toTab(tabId, "tabInfo", []);
-      return { ok: true, windowId: (await api.tabs.get(tabId)).windowId, viewport: r && r.value && r.value.viewport };
+      return { ok: true, windowId: sized.id, size: { width: sized.width, height: sized.height }, viewport: r && r.value && r.value.viewport };
     }
     // A window of an agent's own (daemon/spaces.ts), made behind the user's
     // without focus, of a size no other window has: its keeper, which sees

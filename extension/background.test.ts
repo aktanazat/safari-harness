@@ -88,6 +88,8 @@ async function start() {
   // The tab in front of each window, and the window focused last.
   const actives = new Map<number, number>();
   let focused = 1;
+  // Each window's size, once one is set.
+  const sizes = new Map<number, { width: number; height: number }>();
   // What Safari shows at each address the harness opens a tab on or loads
   // in one; any other address shows a page of its own.
   const pages = new Map<string, Doc>();
@@ -228,18 +230,27 @@ async function start() {
       onFocusChanged: hook(),
       onRemoved: hook(),
       WINDOW_ID_NONE: -1,
-      // A window the harness opens on a page, told of as tabs.create's is.
-      create: async ({ url }: { url: string }) => {
+      // A window the harness opens on a page, told of as tabs.create's is,
+      // or one a tab moves out to.
+      create: async ({ url, tabId }: { url?: string; tabId?: number }) => {
         await made();
-        const tab = { id: nextTab++, doc: new Doc(url), window: nextWindow++ };
+        if (tabId !== undefined) {
+          const moved = tabOf(tabId);
+          moved.window = nextWindow++;
+          return { id: moved.window, tabs: [row(moved)] };
+        }
+        const tab = { id: nextTab++, doc: new Doc(url ?? ""), window: nextWindow++ };
         tabs.set(tab.id, tab);
         browser.tabs.onCreated.fire({ id: tab.id, windowId: tab.window });
         copyIn(tab, tab.doc);
         return { id: tab.window, tabs: [row(tab)] };
       },
-      update: async (id: number) => ({ id }),
+      update: async (id: number, { width, height }: { width?: number; height?: number } = {}) => {
+        if (width !== undefined && height !== undefined) sizes.set(id, { width, height });
+        return { id, ...sizes.get(id) };
+      },
       get: async (id: number) => ({ id }),
-      getAll: async () => [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id })),
+      getAll: async () => [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) })),
       getLastFocused: async () => ({ id: focused }),
     },
   };
@@ -375,6 +386,11 @@ async function start() {
       tabs.delete(tab.id);
       onRemoved.fire(tab.id);
     },
+    // He sizes window.
+    size(window: number, width: number, height: number) {
+      sizes.set(window, { width, height });
+    },
+    sizeOf: (window: number) => sizes.get(window),
     // He brings tab's window to the front, tab showing in it.
     focus(tab: Tab) {
       const window = tab.window ?? 1;
@@ -1087,4 +1103,21 @@ test("an idle close leaves an agent's tab he has in front, and takes it once he 
   b.focus(his);
   await b.clock.advance(0);
   expect(await b.request("tabs.close", [consent.id, "idle"])).toEqual({ value: { ok: true } });
+});
+
+// 10-07: each size an agent asked for split its tab out of its window into
+// one that named no agent, and the user saw one agent's work in two
+// windows. Its keeper finds the window by a size no other window has.
+test("sizing a tab in its agent's window sizes that window, at a size no other window has, and the tab stays in it", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.size(1, 390, 844);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const tab = b.open("https://example.com/", true, windowId);
+  const sized = await b.request("window", [tab.id, { width: 390, height: 844 }, true]);
+  expect(tab.window).toBe(windowId);
+  expect(sized.value).toMatchObject({ windowId, size: { width: 390, height: 845 } });
+  expect([b.sizeOf(windowId), b.sizeOf(his.window ?? 1)]).toEqual([{ width: 390, height: 845 }, { width: 390, height: 844 }]);
 });

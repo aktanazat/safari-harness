@@ -122,7 +122,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
-  safari window <width> <height> --tab N     give a tab its own window at that size
+  safari window <width> <height> --tab N     resize the tab's window to that size
   safari history-search [text]               search Safari browsing history
   safari fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card

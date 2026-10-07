@@ -958,8 +958,12 @@ offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
   origin: a clear would sign him out there, and his page would set the
   cookies again. It cannot reach partitioned cookies, a private window's
   or another profile's, or the storage of any other origin.
-- `window` gives your tab its own window of a given size, so the page lays
-  out as it would on a phone or small laptop. Use it only on your own tab.
+- `window` sizes your tab's window, so the page lays out as it would on a
+  phone or small laptop. Your window takes the size whole, your other tabs
+  in it too, and keeps its name: no tab of yours moves to a window apart.
+  The size can come back a point taller than asked, the first size no
+  other window has; `size` in the answer is the one Safari gave. Use it
+  only on your own tab.
 - `browsing_history` searches Safari's history by title or address, newest
   first, one row per address with the user's last visit and visit count (30
   days by default), under `history`. The visits agents made are left out and

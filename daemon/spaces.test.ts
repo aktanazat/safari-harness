@@ -18,6 +18,10 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 type Tab = { id: number; url: string; windowId: number; active: boolean };
 
+// The ids every fake Safari here hands out, none twice in this file: the
+// daemon's records of one test's windows outlast that test.
+let next = 1000;
+
 // Safari as the extension reports it, with the user's window 1 open.
 function safari() {
   const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", windowId: 1, active: true }]]);
@@ -28,7 +32,8 @@ function safari() {
   // background.js).
   const oldTabs = new Map<number, number>();
   const oldWindows = new Map<number, number>();
-  let next = 100;
+  // What the daemon told the extension of each tab it sized.
+  const sized: { tab: number; whole: boolean }[] = [];
   const ops: Record<string, (args: unknown[]) => unknown> = {
     "tabs.list": () => [...tabs.values()],
     "tabs.open": ([url, background, windowId]) => {
@@ -72,6 +77,13 @@ function safari() {
     relay: () => ({ ok: true }),
     // how an owned tab answers dialogs, which also owns it (renumber)
     dialogs: () => ({ ok: true }),
+    // background.js "window": the size a window gets is one no other window
+    // has, here a point taller than asked.
+    window: ([id, size, whole]) => {
+      const { width, height } = size as { width: number; height: number };
+      sized.push({ tab: id as number, whole: whole as boolean });
+      return { ok: true, windowId: tabs.get(id as number)!.windowId, size: { width, height: height + 1 } };
+    },
   };
   const sock: ExtSocket = {
     send(data) {
@@ -103,7 +115,7 @@ function safari() {
       tabs.set(id, { ...t, id, windowId: windows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, reload, relaunch, oldTabs, regrouping };
+  return { tabs, closed, sock, reload, relaunch, oldTabs, regrouping, sized };
 }
 
 // An agent process, to open tabs for and then end.
@@ -191,6 +203,21 @@ test("an agent whose window the user closed gets a new one on its next open", as
   expect(next.windowId).not.toBe(first.windowId);
   expect(next.windowId).not.toBe(1);
   d.kill();
+});
+
+// 10-07: an agent sizing its tab for a screenshot split it from its window
+// into one that named no agent. Its own window takes the size, and the
+// keeper, which finds the window by size, is told the size Safari gave it.
+test("an agent sizing its tab sizes its own window, which the keeper then looks for at Safari's size; a user's tab leaves his window alone", async () => {
+  const s = safari();
+  const h = agent();
+  const t = await runAs(h.pid, () => openTab("https://h.example/", true));
+  await runAs(h.pid, () => callTool("window", { tab: t.id, width: 390, height: 844 }));
+  await callTool("window", { tab: 1, width: 390, height: 844 });
+  const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; width: number; height: number }[] };
+  expect(spaces.find((x) => x.name === t.space.name)).toMatchObject({ width: 390, height: 845 });
+  expect(s.sized).toEqual([{ tab: t.id, whole: true }, { tab: 1, whole: false }]);
+  h.kill();
 });
 
 // On 09-29 each new window of one agent repeated the same 330-character

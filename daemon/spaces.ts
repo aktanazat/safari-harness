@@ -431,5 +431,14 @@ export function windowOwners(): Map<number, number | undefined> {
   return new Map([...spaces.values()].map((s) => [s.window, s.owner]));
 }
 
+// A window its agent sized (tools.ts viewport), which its keeper finds by
+// the size it has now.
+export function resized(window: number, size: Size): void {
+  const space = [...spaces.values()].find((s) => s.window === window);
+  if (!space) return;
+  space.size = size;
+  save();
+}
+
 // An agent window's own page, which is no one's tab to work in.
 export const isSpacePage = (t: TabInfo) => t.url?.startsWith(`${PAGE}?`) ?? false;
