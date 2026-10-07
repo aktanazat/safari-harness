@@ -109,8 +109,10 @@ import { TOOLS } from "./tools.ts";
 // of its 17 tabs), is paid for by open's own description and parameters.
 // real_input's send and reply, and Return on a final line break (147),
 // brought it to 24,390: on 10-07 each reply in a Philips support chat took
-// four or five calls (type, find Send, click it, check, wait).
-const TOOL_LIST_MAX_BYTES = 24_390;
+// four or five calls (type, find Send, click it, check, wait). extract's
+// as chat (28) brought it to 24,417: a support chat read as page text does
+// not say which lines are the agent's and which the associate's.
+const TOOL_LIST_MAX_BYTES = 24_417;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

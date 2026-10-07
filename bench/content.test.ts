@@ -588,6 +588,26 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a chat read as who said what names the agent's own line even where the page draws it on the left, a message on the right as the agent's, and a notice across the middle as the page's",
+    page: "chat-thread.html",
+    steps: [
+      { op: "type", args: ["Message", "it stopped charging after a week"] },
+      { op: "click", args: ["Send"] }, // draws the line on the left, as the page's own are
+      {
+        op: "extract",
+        args: [{ as: "chat" }],
+        answer: { value: { title: "Help chat", messages: [
+          { from: "page", text: "Resham has joined the chat" },
+          { from: "them", text: "Messaging Assistant: Which item is this about?" },
+          { from: "you", text: "The shaver, order 1234" },
+          { from: "them", text: "Resham: Let me check that with my lead.\nOne moment." },
+          { from: "you", text: "it stopped charging after a week" },
+        ] } },
+      },
+      { op: "extract", args: [{ as: "chat", maxBytes: 60 }], answer: { value: { messages: [{ from: "you", text: "it stopped charging after a week" }], earlier: 4 } } },
+    ],
+  },
+  {
     name: "a wait for text on a Flutter page finds words that only its semantics labels hold",
     page: "flutter-label.html",
     steps: [{ op: "wait", args: [null, { text: "Get an Email" }], timeout: 2000, answer: { value: { found: true } } }],

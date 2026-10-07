@@ -1,0 +1,26 @@
+<!doctype html>
+<title>Help chat</title>
+<style>
+  #log { width: 600px; }
+  .thread { display: flex; flex-direction: column; gap: 8px; }
+  .thread > div { max-width: 70%; padding: 4px 8px; }
+  .them { align-self: flex-start; }
+  .you { align-self: flex-end; }
+  .note { align-self: center; }
+</style>
+<div id="log" role="log"><div class="thread">
+  <div class="note">Resham has joined the chat</div>
+  <div class="them">Messaging Assistant: Which item is this about?</div>
+  <div class="you">The shaver, order 1234</div>
+  <div class="them">Resham: Let me check that with my lead.<br>One moment.</div>
+</div></div>
+<textarea aria-label="Message"></textarea>
+<button onclick="send()">Send</button>
+<script>
+  // As a plain log draws every line: the sender's own on the left too.
+  function send() {
+    const box = document.querySelector("textarea");
+    document.querySelector(".thread").append(Object.assign(document.createElement("div"), { className: "them", textContent: box.value }));
+    box.value = "";
+  }
+</script>

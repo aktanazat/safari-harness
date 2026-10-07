@@ -2509,6 +2509,7 @@
   // still loading at the limit.
   async function extract(opts = {}) {
     if (opts.as === "table") return tables(opts);
+    if (opts.as === "chat") return chatView(opts);
     let at;
     if (opts.strict_selector === true) {
       // Secret sources must name one subtree. Count and read it in the same
@@ -3107,10 +3108,12 @@
   }
   const TIMES = /\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|\b\d+\s*(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)\s+ago\b/gi;
   const STATUS = /^(?:\s|[·•,:|-]|read|seen|delivered|sent|edited|just now|now|today|yesterday)*$/i;
+  const bareOf = (line) => line.replace(TIMES, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const typedHere = (bare) => typedLines.some((t) => bare === t || ((bare.endsWith(t) || bare.startsWith(t)) && bare.length - t.length <= 16));
   function reply(line) {
-    const bare = line.replace(TIMES, " ").replace(/\s+/g, " ").trim().toLowerCase();
+    const bare = bareOf(line);
     if (STATUS.test(bare) || /\btyping\b/.test(bare)) return false;
-    return !typedLines.some((t) => bare === t || ((bare.endsWith(t) || bare.startsWith(t)) && bare.length - t.length <= 16));
+    return !typedHere(bare);
   }
   function newLines(before, now) {
     const left = new Map();
@@ -3131,6 +3134,46 @@
       size += l.length;
     }
     return out;
+  }
+
+  // extract with as: "chat" reads a chat's thread as messages in order,
+  // each with who wrote it, for an agent that lost track of a long support
+  // chat and for the user reading it after: "you" for a message holding a
+  // line the agent typed here, or drawn on the right, where a chat draws
+  // your own; "page" for one drawn across the middle (a join notice, a
+  // date); "them" for the rest. The thread is the selector's element, else
+  // the page's chat log: role=log, else the live region holding the most
+  // text. A log of one wrapper is read through to its rows. The latest
+  // messages are kept, up to maxBytes of text; earlier counts the rest.
+  function chatView(opts) {
+    const logs = opts.selector ? [rootFor(opts.selector)].filter(Boolean) : deepQueryAll('[role="log"], [aria-live="polite"], [aria-live="assertive"]').filter((el) => shown(el) && norm(el.innerText ?? ""));
+    const log = logs.sort((a, b) => (b.innerText ?? "").length - (a.innerText ?? "").length)[0];
+    if (!log) return opts.selector ? noMatch("selector", opts.selector) : { error: "nothing on the page matches a chat log (role=log or a live region); pass the thread's CSS selector as selector" };
+    let rows = [...log.children].filter(shown);
+    while (rows.length === 1 && rows[0].children.length > 0) rows = [...rows[0].children].filter(shown);
+    const edge = log.getBoundingClientRect();
+    const range = document.createRange();
+    const all = [];
+    for (const row of rows) {
+      const { text } = tidyText(row);
+      if (!text) continue;
+      range.selectNodeContents(row);
+      const box = range.getBoundingClientRect();
+      const left = box.left - edge.left;
+      const right = edge.right - box.right;
+      const mine = linesOf(text).some((l) => typedHere(bareOf(l)));
+      const from = mine || right + 24 < left ? "you" : Math.min(left, right) > 48 && Math.abs(left - right) <= 24 ? "page" : "them";
+      all.push({ from, text });
+    }
+    const max = Number(opts.maxBytes) || 20000;
+    const messages = [];
+    let size = 0;
+    for (const m of all.reverse()) {
+      if (size + m.text.length > max) break;
+      messages.unshift(m);
+      size += m.text.length;
+    }
+    return { url: location.href, title: document.title, messages, ...(messages.length < all.length ? { earlier: all.length - messages.length } : {}) };
   }
 
   // A miss used to say nothing about the page's unexpected next state

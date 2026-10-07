@@ -16,7 +16,7 @@ import { unanswered, unopened } from "./unanswered.ts";
 import { ownersByPage, spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
-import { addressedNote, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
+import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
@@ -717,15 +717,16 @@ async function runReader(tab: number | undefined, name: string) {
   return evaluate({ tab: id, expression: reader.expression, page: reader.page });
 }
 
-// as: "table" reads the page's tables and repeated card lists as rows.
+// as: "table" reads the page's tables and repeated card lists as rows,
+// and as: "chat" a chat's messages, each with who wrote it.
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
   const strict = "strict_selector" in opts && opts.strict_selector === true;
-  const read = (selector: string | undefined) => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | { tables: unknown[] }>;
+  const read = (selector: string | undefined) => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>;
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // as: "table" answers rows, not text
-  const out = "text" in page ? shieldExtract(page) : page;
+  const out = "text" in page ? shieldExtract(page) : "messages" in page ? shieldChat(page) : page;
   return missed ? { ...out, note: missed } : out;
 }
 
@@ -1599,7 +1600,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table"], description: "table: tables and card lists as JSON rows" }, save: SAVE },
+    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table", "chat"], description: "table: tables and card lists as JSON rows; chat: who said what" }, save: SAVE },
     unlisted: { strict_selector: { type: "boolean", description: "internal secret source: selector must match exactly one element" } },
     required: ["tab"],
     run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
@@ -1978,6 +1979,8 @@ export function inputSchema(tool: Tool) {
 
 type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; challenge?: Challenge; guide?: string; notes?: string };
 type Extract = Shielded & { url: string; title: string; text: string };
+// a chat's messages, oldest first, and how many earlier ones were left out
+type Chat = Shielded & { url: string; title: string; messages: { from: string; text: string }[]; earlier?: number };
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
@@ -1992,7 +1995,7 @@ export function formatResult(value: unknown): string {
   const news = value && typeof value === "object" ? splitNews(value) : null;
   if (news) return `${news.line}\n${formatResult(news.rest)}`;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
+    const v = value as Partial<Snapshot & Extract & Chat & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
     const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
@@ -2028,6 +2031,11 @@ export function formatResult(value: unknown): string {
     if (Array.isArray(v.tables)) {
       const note = v.truncated ? "\n…truncated: narrow with selector or query" : "";
       return `# ${v.title} — ${v.url}\n\n${v.tables.map((t) => JSON.stringify(t)).join("\n")}${note}`;
+    }
+    // extract as chat: a message a line, after who wrote it
+    if (Array.isArray(v.messages)) {
+      const earlier = v.earlier ? `(${v.earlier} earlier message${v.earlier === 1 ? "" : "s"} left out)\n` : "";
+      return `# ${v.title} — ${v.url}\n${warn}${earlier}\n${v.messages.map((m) => `${m.from}: ${m.text.replaceAll("\n", "\n  ")}`).join("\n")}`;
     }
   }
   return JSON.stringify(value, null, 1);

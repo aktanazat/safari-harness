@@ -481,6 +481,19 @@ order. The rules are fixed, so the same page always reads the same way.
 - CLI: `safari extract --as table --tab N` prints one table per line of
   JSON.
 
+## A chat as who said what
+
+`extract` with `as: "chat"` reads a chat's thread as messages, oldest
+first: `{url, title, messages: [{from, text}], earlier}`. `from` is `you`
+for a message holding a line you typed on this page or drawn on the right,
+where a chat draws your own; `page` for one drawn across the middle (a
+join notice, a date); `them` for the rest. The thread is the page's chat
+log (`role="log"`, else the live region holding the most text), or the
+region `selector` names. The latest messages are kept, up to `maxBytes`
+of text (default 20000); `earlier` counts the ones left out. A chat in an
+embedded frame is found there. CLI: `safari extract --as chat --tab N`
+prints a message a line, after who wrote it.
+
 ## Many pages at once: map
 
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
