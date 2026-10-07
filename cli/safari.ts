@@ -87,6 +87,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              --reader name runs a script saved with learn)
   safari extract --tab N [--selector s]      readable text
   safari extract --as table --tab N          tables and card lists as JSON rows
+  safari extract --as chat --tab N           a chat's messages, each with who wrote it
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
