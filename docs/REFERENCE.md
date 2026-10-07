@@ -682,8 +682,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   events: `do: "click"` a ref, or a point `x`, `y` as `click` takes them
   (for a page drawn on a canvas, with no refs); `count: 2` double-clicks,
   `button: "right"`. `do: "type"` types text at a ref in place of the
-  field's text (a click, then Cmd+A; `append: true` keeps it) or where the
-  caret is, `do: "key"` a key or combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it
+  field's text (`append: true` keeps it) or where the caret is, `do: "key"`
+  a key or combo (`Enter`, `Cmd+A`, `Shift+Tab`). Use it
   only when `click`, `type`, or `press` did nothing on a site that ignores
   scripted events. Never use it inside a bot check (see "Bot checks and
   steps only the user can do").
@@ -706,8 +706,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   none (a Touch ID, passkey, or permission prompt covers it), nothing is
   clicked and the call fails saying so; only the user can answer such a
   prompt (`handoff`). The real mouse and keys bring Safari and the tab to
-  the front for about half a second, plus about 60 ms a typed character,
-  then give back the user's tab, app, and pointer. Such a call waits until
+  the front for about half a second, plus about 10 ms a typed character,
+  then give back the user's tab, app, and pointer. They wait until the user
+  has let go of every key and button for a second, up to 10 s; still busy
+  then, he keeps his screen, nothing is done, and the call fails saying
+  so. Such a call waits until
   the page has received every key before giving the tab back, so nothing
   lands in the user's tab; the page sees one extra press of F20, a key no
   Mac keyboard has. Keys go only to a page with keyboard focus: if
@@ -720,6 +723,28 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   the action opened (a sign-in window), once Safari has reported it; one
   it reports later comes in your next result. The app running the MCP
   server or CLI needs Accessibility permission.
+- Text typed at a ref, in place of the field's text, is set through
+  Safari's accessibility tree and answers `background: true`: nothing
+  comes to the front, it takes about 50 ms at any length, and the words go
+  in as written. The page hears trusted `beforeinput` and `input` events,
+  as from typing, and the field gets the page's focus. Real keys type it
+  instead, with the tab in front, where the tree cannot: text with a line
+  break or tab inside it, `append`, no ref, a row of one-character code
+  boxes, or a field Safari will not set. Real keys go about 10 ms apart
+  with macOS autocorrect off (it once sent "resham" as "gresham"), and text
+  that came out wrong is typed again at 60 ms a character. `kept` says
+  whether the field holds the text as typed.
+- A chat reply is one call. `send` takes the ref of the page's Send
+  button, which is clicked after the text as a click on a ref is (from
+  behind, where it can be); a final line break presses Return instead,
+  which brings the tab to the front for a moment. Text that came out wrong
+  is never sent. `sent` says whether the page took the text out of the
+  field, as a chat does once it sends; `sent: false` comes with a `hint`.
+  `reply: 100000` then waits up to that many ms (110000 at most, counted
+  from the call's start) for new lines, as `wait` with `changed` does, and
+  returns them as `reply`, or `reply: null` if none came. Your own message
+  is not counted as a reply. In a support chat: `real_input {do: "type",
+  ref, text, send, reply: 100000}`, read `reply`, answer, repeat.
 - A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
   egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
   once real input worked there: `learn {site, real: true}` (CLI `safari
@@ -741,7 +766,7 @@ Wait for the page, not the clock.
   any case and spacing ("M240i" finds "M240 i"), ignoring invisible padding
   and soft hyphens, in the page, its title, and embedded frames. Snapshot
   and extract queries ignore the same invisible characters. `ms` is the
-  timeout (default 10000, max 30000; a longer one is cut, and the answer
+  timeout (default 10000, max 110000; a longer one is cut, and the answer
   says so). At the limit, the page gets at most one more second to report
   what changed. The result says `found: true|false`. A text wait that misses
   says those words did not appear; never use made-up words to sleep.
@@ -755,8 +780,8 @@ Wait for the page, not the clock.
   element, when given) and returns them as `added`: a person's reply in a
   support chat. The page keeps its last look between calls, as the last
   changed wait found it or as your last `type` there began, so a reply
-  that lands between two waits still counts; call it again (25 s keeps a
-  shell call in the foreground) until `found`. The lines you typed, typing
+  that lands between two waits still counts; call it again until `found`.
+  `real_input`'s `reply` waits the same way as it sends. The lines you typed, typing
   notes, and read receipts or times alone are not new lines.
 - `any: ["Order placed", "Payment declined"]` ends on the first shown and
   says `which`; `text: "a|b"` does the same. `gone: "Loading"` waits for
@@ -819,11 +844,11 @@ Wait for the page, not the clock.
   Never use `activate`, `shot`, or `real_input` to wake a tab. A tab the user
   opened runs as Safari runs any hidden tab: slowly.
 - Only drawing waits for the screen: CSS animations and transitions run only
-  in a tab in front. `wait` with `front: true` holds the tab on screen until
-  the text appears or `ms` runs out (with only `ms`, for that long), then
-  gives back the user's tab and app. Use it only for a page that waits on an
-  animation. It takes the screen from the user for that time, so keep `ms`
-  short.
+  in front. `wait` with `front: true` holds the tab on screen until
+  the text appears or `ms` runs out (with only `ms`, for that long; 30000
+  at most), then gives back the user's tab and app. Use it only for a page
+  that waits on an animation. It takes the screen from the user for that
+  time, so keep `ms` short; like real input, it waits for him to pause.
 
 ## Network and console
 

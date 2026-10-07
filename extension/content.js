@@ -1788,6 +1788,64 @@
     return { ok: true, kept, ...(invalid ? { invalid } : {}), ...(foreignFrame() ? { next: "if the page ignores it, use real_input type with ref" } : {}) };
   }
 
+  // ---------- real typing ----------
+
+  // real_input's type (daemon/input.ts) sets a field's text through
+  // Safari's accessibility tree where it can, as pressMark's press clicks:
+  // the helper finds the field by a class of its own and sets its value
+  // (setvalue in scripts/input.swift). The page hears trusted beforeinput
+  // and input events, as from typing; nothing comes to the front, and
+  // macOS does not autocorrect the words. WebKit takes the value only into
+  // the element the page has focused, so the field gets focus here. Where
+  // real keys type instead, autocorrect="off" keeps macOS from changing the
+  // words: in a Philips support chat "resham" went out as "gresham" (10-07).
+  // The look before typing keeps the agent's own lines out of a changed
+  // wait. Answers the mark, its window's size, and whether the field is a
+  // box of a row of code boxes, which takes a character a box; field: false
+  // where ref, or with no ref the focused element, holds no text to check.
+  const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
+  const textIn = (el) => (el.isContentEditable ? el.innerText ?? "" : String(el.value ?? ""));
+  let realField = null; // { mark, el, before, boxes }
+  function typeMark(ref, text, append) {
+    const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
+    if (!el && ref !== null) return missing(ref);
+    if (!el || !(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return { field: false };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    lookBeforeTyping(text);
+    el.setAttribute("autocorrect", "off");
+    el.focus();
+    const row = text.length > 1 ? codeBoxes() : [];
+    const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    const mark = `__sh_type_${Math.random().toString(36).slice(2, 10)}`;
+    el.classList.add(mark);
+    realField = { mark, el, before: append ? textIn(el) : "", boxes: boxes.length === text.length ? boxes : [] };
+    return { mark, width: outerWidth, height: outerHeight, boxes: realField.boxes.length > 0 };
+  }
+
+  // Takes the mark off and answers whether the field holds text (after
+  // what it held, with append), as type's kept reckons it, once the page
+  // has had a moment with it, and whether it has the page's focus. sent,
+  // after a Return: whether the page took the text out of the field, as a
+  // chat does once it has sent it, given a second to. A mark this frame
+  // does not hold is another frame's, which relayOp then asks.
+  async function typeField(ref, mark, text, sent) {
+    if (realField?.mark !== mark) return missing(ref);
+    const { el, before, boxes } = realField;
+    el.classList.remove(mark);
+    const flat = (t) => t.replace(/\s+/g, " ").trim();
+    if (sent) {
+      const holding = () => el.isConnected && flat(textIn(el)).includes(flat(text));
+      await whenPage(() => !holding(), 1000);
+      return { sent: !holding() };
+    }
+    await whenPage(() => false, RECEIPT_SPAN.min);
+    const want = before + text;
+    const kept = boxes.length > 0 ? boxes.map((b) => b.value).join("") === text
+      : el.isContentEditable ? flat(textIn(el)) === flat(want)
+      : keeps(el.value, want);
+    return { kept, focused: focusedNow() === el };
+  }
+
   // ---------- Apple Passwords fill ----------
 
   // What a field says it is for: its name, id, label, and placeholder.
@@ -2995,10 +3053,10 @@
   // comes: in Robinhood's chats an agent spent about 53 turns and 15
   // minutes of sleeps waiting on guessed clock times and made-up words
   // (09-29). The last look stays in the page between calls, so a reply that
-  // lands between two 30 s waits still counts. It is the text as the last
-  // changed wait found it, or as the last type began, or else as this wait
-  // begins. Lines the agent typed, typing notes, and read receipts and
-  // times alone are not a reply.
+  // lands between two waits still counts. It is the text as the last
+  // changed wait found it, or as the last type, scripted or real, began,
+  // or else as this wait begins. Lines the agent typed, typing notes, and
+  // read receipts and times alone are not a reply.
   const lastLook = new Map(); // region: "" for the page, else a selector -> its lines
   const typedLines = [];
   const linesOf = (text) => String(text ?? "").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
@@ -3628,6 +3686,8 @@
     locate,
     pressMark,
     pressDone,
+    typeMark,
+    typeField,
     rect: rectOf,
     annotate,
     dialogs: setDialogs,

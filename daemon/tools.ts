@@ -751,9 +751,14 @@ const NOTHING_NEW = "no new lines yet; call wait with changed again, and a reply
 // by navigation or a dialog hold the caller indefinitely (USCIS, 09-30).
 const STOPPED_MS = 1000;
 
+// The longest wait. An MCP client set up as README.md says gives up on a
+// call at 130 s (handoff.ts keeps the same margin). At 30 s, a Philips
+// support chat took 160 waits, 33 minutes of them, each a turn (10-07).
+export const WAIT_MAX_MS = 110000;
+
 // Waits until the page shows what the wait asks for (ms is then the
-// timeout, max 30000): a selector or text, the first of several texts (any;
-// which says which), text gone, an address (url: a part of it, or
+// timeout, at most WAIT_MAX_MS): a selector or text, the first of several
+// texts (any; which says which), text gone, an address (url: a part of it, or
 // /regex/), or a page that made no change for 500 ms with no request to its
 // own site still out (quiet). Text matches case and spacing aside. The page
 // reports the moment it sees it (waitFor in content.js); the time limit is
@@ -772,10 +777,12 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   const named = waitsOnPage(opts);
   if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const asked = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
-  const limit = Math.min(asked, 30000);
-  // A wait cut to the limit says so: its answer at 30 s is not all of the
-  // 60000 ms an agent asked for.
-  const cut = asked > limit ? { note: "ms is at most 30000: call wait again to wait longer" } : {};
+  // On screen, the tab holds the user's screen all the while: 30 s at most.
+  const most = opts.front ? 30000 : WAIT_MAX_MS;
+  const limit = Math.min(asked, most);
+  // A wait cut to the limit says so: its answer at the limit is not all of
+  // the ms an agent asked for.
+  const cut = asked > limit ? { note: `ms is at most ${most}: call wait again to wait longer` } : {};
   if (!named && opts.front) {
     await Bun.sleep(limit);
     return { ok: true, ...cut };
@@ -1617,7 +1624,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 30000; only ms: ends once quiet. A miss says what changed.",
+    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 110000; only ms: ends once quiet. A miss says what changed.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -1795,6 +1802,24 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "ref", "mark", "ms"],
     hidden: true,
     run: async (a) => relay(await resolveTab(a.tab), "pressDone", [str(String(a.ref), "ref"), str(a.mark, "mark"), num(a.ms, "ms")], 2000),
+  },
+  // The field marked for the helper's setvalue, focused, with its window's
+  // size (typeMark in content.js).
+  type_mark: {
+    desc: "Mark a field for real typing: focus it, turn autocorrect off, and take the look before typing.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "to type" }, append: { type: "boolean", description: "keep the field's text" } },
+    required: ["tab", "text"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "typeMark", [a.ref === undefined ? null : String(a.ref), str(a.text, "text"), a.append === true]),
+  },
+  // Whether that field holds the text and has focus, or with sent, whether
+  // a Return took the text out of it (typeField in content.js).
+  type_field: {
+    desc: "Whether the field marked for real typing holds the text and has focus; with sent, whether a Return took it out.",
+    params: { tab: TAB, ref: REF, mark: { type: "string", description: "from type_mark" }, text: { type: "string", description: "typed" }, sent: { type: "boolean", description: "after a Return" } },
+    required: ["tab", "mark", "text"],
+    hidden: true,
+    run: async (a) => relay(await resolveTab(a.tab), "typeField", [a.ref === undefined ? null : String(a.ref), str(a.mark, "mark"), str(a.text, "text"), a.sent === true], 3000),
   },
   // One fact about an element (text, inner HTML, value, attribute, box,
   // count), for the REPL's locators.

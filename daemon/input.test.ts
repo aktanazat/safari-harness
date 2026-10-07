@@ -14,26 +14,44 @@ import * as spaces from "./spaces.ts";
 import { callTool } from "./tools.ts";
 
 // real_input clicks a tab that is not in front by pressing the element
-// through Safari's accessibility tree, and nothing comes forward. Where a
-// press cannot serve, the tab comes to the front and the real mouse clicks.
-// The caller's RPC calls go straight to the daemon's tools; Safari, the
-// page, and the helper are fakes.
+// through Safari's accessibility tree, and sets a field's text there, and
+// nothing comes forward. Where that cannot serve, the tab comes to the
+// front, once the user pauses, and the real mouse and keys act. The
+// caller's RPC calls go straight to the daemon's tools; Safari, the page,
+// and the helper are fakes.
 
 const GHOSTTY = "com.mitchellh.ghostty";
 
 // Safari's answer to press_mark, the errors the page threw by press_done,
-// the helper's answer to press, the page area of Safari's front window,
-// what the page did on each scripted click, in order (withReceipt in
-// extension/content.js; nothing by default), the tab it opens on a real
-// click, which the daemon queues for the agent (continuity.ts), and the
-// app the user brings forward while the helper types.
-type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[]; popup?: { tab: number; url: string }; takeover?: string };
+// the helper's answer to press and to setvalue, the page area of Safari's
+// front window, what the page did on each scripted click, in order
+// (withReceipt in extension/content.js; nothing by default), the tab it
+// opens on a real click, which the daemon queues for the agent
+// (continuity.ts), the app the user brings forward while the helper types,
+// a field that garbles keys typed fast or at any pace (a card mask), the
+// lines a chat shows after text is sent, and a user who never pauses.
+type Page = {
+  picker?: boolean;
+  press?: { pressed: boolean; why?: string };
+  set?: { set: boolean; why?: string };
+  errors?: string[];
+  area?: { x: number; y: number; width: number; height: number };
+  clicked?: Record<string, unknown>[];
+  popup?: { tab: number; url: string };
+  takeover?: string;
+  garble?: "fast" | "always";
+  reply?: string[];
+  busy?: boolean;
+};
 type Mac = {
   app: string;
   // helper commands, and what Safari was asked of its tabs and pages, in order
   helper: string[][];
+  // text the helper typed or set, in order
   typed: (string | undefined)[];
   asked: string[];
+  // the text of the field typed into; a Return sends it, as a chat does
+  field: string;
   // the tab agent window 2 showed when the helper pressed
   pressedIn?: number;
   shows(windowId: number): number | undefined;
@@ -53,12 +71,15 @@ function mac(page: Page = {}): Mac {
   ];
   let frontWindow = 1;
   let marks = 0;
+  // the field's text as typing began (append), and whether Cmd+A selected it
+  let before = "";
+  let selected = false;
   const show = (id: number) => {
     const windowId = tabs.find((t) => t.id === id)!.windowId;
     for (const t of tabs) if (t.windowId === windowId) t.active = t.id === id;
     return windowId;
   };
-  const m: Mac = { app: GHOSTTY, helper: [], typed: [], asked: [], shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
+  const m: Mac = { app: GHOSTTY, helper: [], typed: [], asked: [], field: "", shows: (windowId) => tabs.find((t) => t.windowId === windowId && t.active)?.id };
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
@@ -70,6 +91,12 @@ function mac(page: Page = {}): Mac {
       const dom = op === "relay" ? args[1] : undefined;
       if (dom === "pressMark") return answer(page.picker ? { picker: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
       if (dom === "pressDone") return answer(page.errors ?? []);
+      if (dom === "typeMark") {
+        before = args[2][2] ? m.field : "";
+        return answer({ mark: "__sh_type_t", width: 1247, height: 870, boxes: false });
+      }
+      if (dom === "typeField") return answer(args[2][3] ? { sent: m.field === "" } : { kept: m.field === before + args[2][2], focused: true });
+      if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
       if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
       if (dom === "eval") return answer({ result: { marks, focus: true } });
@@ -81,20 +108,39 @@ function mac(page: Page = {}): Mac {
   });
   spyOn(front, "input").mockImplementation(async (args, _timeout, stdin) => {
     m.helper.push(args);
+    if (args[0] === "idle") return { idle: !page.busy, waitedMs: 0 };
+    if (args[0] === "setvalue") {
+      m.typed.push(stdin);
+      if (page.set) return page.set;
+      m.field = stdin ?? "";
+      return { set: true };
+    }
+    if (args[0] === "key") {
+      selected = args[1] === "cmd+a";
+      if (args[1] === "Enter") m.field = "";
+    }
     if (args[0] === "type") {
       m.typed.push(stdin);
       if (page.takeover) m.app = page.takeover;
+      const garbled = page.garble === "always" || (page.garble === "fast" && args[1] === "--gap");
+      const text = garbled ? [...(stdin ?? "")].reverse().join("") : stdin ?? "";
+      m.field = selected ? text : m.field + text;
+      selected = false;
     }
     if (args[0] === "front") return { bundleId: m.app };
     if (args[0] === "activate") m.app = args[1];
     if (args[0] === "press") {
       m.pressedIn = m.shows(2);
-      return page.press ?? { pressed: true };
+      const pressed = page.press ?? { pressed: true };
+      // a chat's Send button takes the text out of its field
+      if (pressed.pressed) m.field = "";
+      return pressed;
     }
     if (args[0] === "webarea") return page.area ?? { x: 0, y: 100, width: 1200, height: 800 };
     if (args[0] === "click") {
       // the helper's closing F20, which the page counts
       marks++;
+      selected = false;
       if (page.popup) queuePopup(process.pid, page.popup);
     }
     return {};
@@ -208,21 +254,73 @@ test("a press the page refused for want of focus answers with its error and a ne
   });
 });
 
-test("real typing replaces the field before typing exact Unicode and newlines through stdin, not arguments; append skips Cmd+A", async () => {
+test("real typing types exact Unicode and inner line breaks through stdin, not arguments, after Cmd+A unless append; a line break at the end presses Return", async () => {
   const m = mac();
   const text = " Zoë 李𐐷\ne\u0301\tline two\r\n";
   const appended = " suite\n";
   await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text });
   await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: appended, append: true });
-  expect(m.helper.filter((c) => ["click", "key", "type"].includes(c[0])).map((c) => (c[0] === "key" ? `key ${c[1]}` : c[0]))).toEqual(["click", "key cmd+a", "type", "click", "type"]);
-  expect({ args: run(m, "type"), stdin: m.typed }).toEqual({ args: [["type"], ["type"]], stdin: [text, appended] });
+  expect(m.helper.filter((c) => ["click", "key", "type"].includes(c[0])).map((c) => (c[0] === "key" ? `key ${c[1]}` : c[0]))).toEqual(["click", "key cmd+a", "type", "key Enter", "click", "type", "key Enter"]);
+  expect({ args: run(m, "type"), stdin: m.typed }).toEqual({ args: [["type"], ["type"]], stdin: [" Zoë 李𐐷\ne\u0301\tline two", " suite"] });
 });
 
 test("a user who brings another app forward while real input types keeps it: nothing is raised over it after", async () => {
   const slack = "com.tinyspeck.slackmacgap";
-  const m = mac({ takeover: slack });
+  const m = mac({ takeover: slack, set: { set: false, why: "the element is not in Safari's accessibility tree" } });
   await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: "hi stone" });
   expect(m.app).toBe(slack);
+});
+
+// On 10-07 a 200-letter reply held the user's screen 15 s as real keys,
+// and macOS autocorrect sent "resham" as "gresham" while the call said ok.
+test("text typed at a field's ref goes in from behind: no app or window comes forward, no key is pressed, and the field holds the text exactly", async () => {
+  const m = mac();
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: "resham" })).toEqual({ ok: true, background: true, kept: true });
+  expect({ field: m.field, app: m.app, keys: m.helper.filter((c) => ["activate", "click", "key", "type"].includes(c[0])) }).toEqual({ field: "resham", app: GHOSTTY, keys: [] });
+});
+
+test("where the field cannot take text from behind, real keys type it fast and it is checked: text that came out wrong is typed again at the slow pace", async () => {
+  const m = mac({ set: { set: false, why: "Safari does not let the field's text be set" }, garble: "fast" });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#card", text: "4242 4242" })).toEqual({ ok: true, kept: true });
+  expect({ field: m.field, last: run(m, "type").at(-1) }).toEqual({ field: "4242 4242", last: ["type"] });
+});
+
+// A Philips support chat took 4 or 5 calls a reply, and 160 waits of
+// 30 s each, 33 minutes of them (10-07).
+test("text ending in a line break is sent in one call: the answer says the page took it and carries the reply", async () => {
+  const m = mac({ reply: ["Agent: thanks, checking your order now"] });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "order 1234 arrived broken\n", reply: 60000 })).toEqual({
+    ok: true,
+    background: true,
+    sent: true,
+    reply: ["Agent: thanks, checking your order now"],
+  });
+  expect({ field: m.field, enters: m.helper.filter((c) => c[0] === "key" && c[1] === "Enter").length, app: m.app }).toEqual({ field: "", enters: 1, app: GHOSTTY });
+});
+
+test("with send, the page's Send button is clicked from behind as well: the whole reply goes out with nothing coming forward and no key pressed", async () => {
+  const m = mac({ reply: ["Agent: a new blade ships today"] });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "the blade broke after a week", send: "#send", reply: 60000 })).toEqual({
+    ok: true,
+    background: true,
+    sent: true,
+    reply: ["Agent: a new blade ships today"],
+  });
+  expect({ field: m.field, app: m.app, real: m.helper.filter((c) => ["activate", "click", "key", "type"].includes(c[0])) }).toEqual({ field: "", app: GHOSTTY, real: [] });
+});
+
+test("text that comes out wrong at every pace is never sent: no Return is pressed, and the answer says so", async () => {
+  const m = mac({ set: { set: false, why: "Safari does not let the field's text be set" }, garble: "always" });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "hi resham\n" })).toMatchObject({ ok: true, kept: false, sent: false });
+  expect(m.helper.filter((c) => c[0] === "key" && c[1] === "Enter")).toEqual([]);
+});
+
+// On 10-07 Safari came in front about 30 times in 30 minutes over the
+// terminal the user was typing in.
+test("while the user keeps typing, the tab stays behind his app and no key is sent", async () => {
+  const m = mac({ busy: true });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).rejects.toThrow(/kept typing/);
+  expect({ app: m.app, acted: m.helper.filter((c) => ["activate", "key"].includes(c[0])), shown: m.asked.filter((a) => a.startsWith("tabs.activate")) }).toEqual({ app: GHOSTTY, acted: [], shown: [] });
 });
 
 // Exercise front.input's actual pipe into a child process, without posting
@@ -276,7 +374,7 @@ test("on a site not marked, a model's click is scripted alone: one the page igno
 test("a run with real: true sends its clicks and typing on refs as real input, with nothing scripted", async () => {
   const m = mac();
   await invoke("run", { real: true, steps: [{ tool: "click", args: { tab: 20, ref: "#name" } }, { tool: "type", args: { tab: 20, ref: "#name", text: "Ada" } }] }, true);
-  expect({ scripted: scripted(m), real: m.helper.filter((c) => ["press", "click", "key", "type"].includes(c[0])).map((c) => c[0]) }).toEqual({ scripted: [], real: ["press", "click", "key", "type"] });
+  expect({ scripted: scripted(m), real: m.helper.filter((c) => ["press", "setvalue", "click", "key", "type"].includes(c[0])).map((c) => c[0]) }).toEqual({ scripted: [], real: ["press", "setvalue"] });
 });
 
 test("a model run without real honors a marked site for click and type, leaves other sites scripted, and an internal run stays scripted", async () => {
@@ -297,7 +395,7 @@ test("a model run without real honors a marked site for click and type, leaves o
     notRun: 0,
   });
   expect(scripted(m)).toEqual(["click 20", "click 21", "type 21", "click 20"]);
-  expect(m.helper.filter((c) => ["press", "click", "key", "type"].includes(c[0])).map((c) => c[0])).toEqual(["press", "click", "key", "type"]);
+  expect(m.helper.filter((c) => ["press", "setvalue", "click", "key", "type"].includes(c[0])).map((c) => c[0])).toEqual(["press", "setvalue"]);
   expect(m.typed).toEqual(["Ada"]);
 });
 

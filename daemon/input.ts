@@ -5,13 +5,14 @@
 // permission, which the launchd daemon lacks, so these tools run in the
 // caller (terminal, MCP server) and reach the tab through the daemon's RPC
 // port. Real input lands on whatever is on screen, so the tab comes to the
-// front for the moment it takes. A single click on a tab not in front goes
+// front for the moment it takes, once the user has paused (inFront). A
+// single click on a tab not in front, and text typed at a field's ref, go
 // through Safari's accessibility tree instead, and nothing comes forward.
 
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, X, Y } from "./tools.ts";
+import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
@@ -117,28 +118,38 @@ type Mark = { mark: string; width: number; height: number };
 const isMark = (v: unknown): v is Mark =>
   !!v && typeof v === "object" && "mark" in v && typeof v.mark === "string" && "width" in v && typeof v.width === "number" && "height" in v && typeof v.height === "number";
 
+// Runs act where Safari's accessibility tree holds tab's page. The tree
+// holds only the tab each window shows, so a tab behind another in its
+// agent window is shown there for act and put back after. Returns null,
+// having run nothing, for a tab behind another in one of the user's
+// windows, which is his to show.
+async function inTree<T>(tab: number, tabs: TabInfo[], act: () => Promise<T | null>): Promise<T | null> {
+  const target = tabs.find((t) => t.id === tab);
+  if (!target) throw new Error(`no tab ${tab}`);
+  const back = target.active ? undefined : tabs.find((t) => t.windowId === target.windowId && t.active);
+  if (back && !(await rpc("select_tab", { tab }))) return null;
+  try {
+    return await act();
+  } finally {
+    if (back) await rpc("select_tab", { tab: back.id }).catch(() => {});
+  }
+}
+
 // Presses ref through Safari's accessibility tree (press in
 // scripts/input.swift), which reaches a page in a window behind another
 // app's: the page gets a trusted click (mousedown, mouseup, and click; no
 // pointer events, and a detail of 0), and Safari, its windows, and the
-// pointer stay as they were. The tree holds only the tab each window
-// shows, so a tab behind another in its agent window is shown there for
-// the press and put back after. Returns the errors the page threw from the
+// pointer stay as they were. Returns the errors the page threw from the
 // press on (pressDone in extension/content.js). Returns null, having
 // pressed nothing, where the real mouse takes over: the tab Safari shows
 // in front while Safari is the app in front, where it takes nothing from
 // the user (so activate, then real_input, gives a page the real mouse); a
-// tab behind another in one of his windows; a control Safari answers with
-// its own UI; and an element the tree lacks (a canvas) or offers no press
-// on.
+// tab the tree cannot reach (inTree); a control Safari answers with its
+// own UI; and an element the tree lacks (a canvas) or offers no press on.
 async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> {
   const [app, tabs] = await Promise.all([frontApp(), VIA_RPC.tabs()]);
-  const target = tabs.find((t) => t.id === tab);
-  if (!target) throw new Error(`no tab ${tab}`);
-  if (app === SAFARI && target.shown) return null;
-  const back = target.active ? undefined : tabs.find((t) => t.windowId === target.windowId && t.active);
-  if (back && !(await rpc("select_tab", { tab }))) return null;
-  try {
+  if (app === SAFARI && tabs.find((t) => t.id === tab)?.shown) return null;
+  return inTree(tab, tabs, async () => {
     const marked = await rpc("press_mark", { tab, ref });
     if (marked && typeof marked === "object" && "picker" in marked) return null;
     if (!isMark(marked)) throw new Error(`press_mark returned no mark for ${String(ref)}: ${JSON.stringify(marked)}`);
@@ -152,10 +163,90 @@ async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> 
     }
     if (!pressed) return null;
     return Array.isArray(errors) ? errors.filter((e): e is string => typeof e === "string") : [];
-  } finally {
-    if (back) await rpc("select_tab", { tab: back.id }).catch(() => {});
-  }
+  });
 }
+
+// type_mark's answer (typeMark in extension/content.js): the field typed
+// into, focused and with autocorrect off, and whether it is a box of a row
+// of code boxes, which takes a character a box.
+type Field = Mark & { boxes: boolean };
+
+// Marks the field: ref's, or with no ref the focused element. null where
+// there is no text field to check (a canvas editor, a frame of another
+// site's, a page that keeps focus on its body).
+async function markField(tab: number, ref: unknown, text: string, append: boolean): Promise<Field | null> {
+  const r = await rpc("type_mark", { tab, ...(ref === undefined ? {} : { ref }), text, append });
+  if (r && typeof r === "object" && "field" in r) return null;
+  if (!isMark(r) || !("boxes" in r) || typeof r.boxes !== "boolean") throw new Error(`type_mark returned no mark: ${JSON.stringify(r)}`);
+  return { mark: r.mark, width: r.width, height: r.height, boxes: r.boxes };
+}
+
+// Whether the field holds the text (after its own, with append) and has
+// the page's focus (typeField in extension/content.js).
+type Held = { kept: boolean; focused: boolean };
+async function held(tab: number, ref: unknown, field: Field, text: string): Promise<Held> {
+  const r = await rpc("type_field", { tab, ...(ref === undefined ? {} : { ref }), mark: field.mark, text });
+  if (!r || typeof r !== "object" || !("kept" in r) || typeof r.kept !== "boolean") throw new Error(`type_field returned no answer: ${JSON.stringify(r)}`);
+  return { kept: r.kept, focused: "focused" in r && r.focused === true };
+}
+
+// Sets the field's text through Safari's accessibility tree (setvalue in
+// scripts/input.swift), from behind the user's app: on 10-07 a 200-letter
+// reply held his screen 15 s as real keys, and autocorrect sent "resham"
+// as "gresham". Returns null, having set nothing, where the tree cannot
+// reach the field.
+async function setBehind(tab: number, ref: unknown, field: Field, text: string): Promise<Held | null> {
+  const set = await inTree(tab, await VIA_RPC.tabs(), async () => {
+    const r = await input(["setvalue", field.mark, String(field.width), String(field.height)], 10000, text);
+    return !!r && typeof r === "object" && "set" in r && r.set === true;
+  });
+  return set ? held(tab, ref, field, text) : null;
+}
+
+// Real keys go FAST_GAP_MS apart where the field is checked after: text
+// that came out wrong is typed again at the helper's own 40 ms, which a
+// page that reformats the field after each key (a card mask) needs.
+const FAST_GAP_MS = 8;
+
+// Types text with real keys into the tab in front. A character takes about
+// 60 ms at the slow pace (input.swift); allow twice that. Answers whether
+// the field holds the text, where field can tell; whole: the text is all
+// the field should hold, so typing it again after Cmd+A mends it.
+async function typeKeys(tab: number, ref: unknown, field: Field | null, text: string, whole: boolean): Promise<boolean | undefined> {
+  const timeout = 10000 + text.length * 120;
+  if (field === null || !whole) {
+    await post(tab, ["type"], true, timeout, text);
+    return field === null ? undefined : (await held(tab, ref, field, text)).kept;
+  }
+  await post(tab, ["type", "--gap", String(FAST_GAP_MS)], true, timeout, text);
+  if ((await held(tab, ref, field, text)).kept) return true;
+  await post(tab, ["key", "cmd+a"], true);
+  await post(tab, ["type"], true, timeout, text);
+  return (await held(tab, ref, field, text)).kept;
+}
+
+// After a Return, whether the page took the text out of the field, as a
+// chat does once it has sent it; undefined where the page cannot say (it
+// moved on).
+async function wasSent(tab: number, ref: unknown, field: Field, text: string): Promise<boolean | undefined> {
+  const r = await rpc("type_field", { tab, ...(ref === undefined ? {} : { ref }), mark: field.mark, text, sent: true }).catch(() => undefined);
+  return r && typeof r === "object" && "sent" in r && typeof r.sent === "boolean" ? r.sent : undefined;
+}
+
+// The answer to text sent, within ms of the call's start (WAIT_MAX_MS at
+// most): wait with changed (tools.ts), whose look was taken as typing
+// began, so the agent's own line is not counted, and a reply that comes
+// before the wait still is. A Philips support chat took 4 or 5 calls a
+// reply, and 160 waits of 30 s (10-07).
+async function replyTo(tab: number, ms: number, start: number): Promise<object> {
+  const left = Math.max(0, Math.min(ms, WAIT_MAX_MS) - (Date.now() - start));
+  const r = (await rpc("wait", { tab, changed: true, ms: left })) as { found?: boolean; added?: string[]; hint?: string };
+  return r.found ? { reply: r.added ?? [] } : { reply: null, ...(r.hint === undefined ? {} : { hint: r.hint }) };
+}
+
+// A line break at the end of type's text sends what comes before it, as
+// Return does in a chat.
+const SENDS = /\r?\n$/;
 
 // One tool for the three kinds of input: agents reach for it rarely, and
 // every tool listed costs its description on every turn.
@@ -176,21 +267,57 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const at = await inFront(tab, VIA_RPC, () => clickAt(tab, a, count, button));
     return { ok: true, at };
   },
+  // Text at a field's ref, in place of its text, is set through Safari's
+  // accessibility tree (setBehind) and checked; elsewhere, or where the
+  // field did not take it, real keys type it in front. send, a ref of the
+  // page's Send button, then clicks it as a click on a ref does, or a line
+  // break at the end presses Return; either only where the text came out
+  // as typed. The answer says whether the page took the text (sent) and,
+  // with reply, what came back.
   type: async (tab, a) => {
     const text = a.text;
     if (typeof text !== "string") throw new Error("type needs text");
-    await inFront(tab, VIA_RPC, async () => {
-      if (a.ref !== undefined) {
-        await clickAt(tab, a, 1, "left");
-        // Text typed at a ref replaces the field's, as type's does unless
-        // append: a click leaves the caret where it lands, and on 09-30 a
-        // field on my.uscis.gov took the text only after Cmd+A (USCIS, 09-30).
-        if (a.append !== true) await post(tab, ["key", "cmd+a"], true);
-      }
-      // A character takes about 60 ms (input.swift); allow twice that.
-      await post(tab, ["type"], true, 10000 + text.length * 120, text);
-    });
-    return { ok: true };
+    const start = Date.now();
+    const body = text.replace(SENDS, "");
+    const sendRef = a.send;
+    if (sendRef !== undefined && body !== text) throw new Error("send clicks the page's Send button in place of Return: end text without a line break, or leave out send");
+    const sends = body !== text || sendRef !== undefined;
+    if (a.reply !== undefined && !(sends && typeof a.reply === "number" && Number.isFinite(a.reply))) {
+      throw new Error("reply is how many ms to wait for an answer to text sent with send or a line break at its end");
+    }
+    const append = a.append === true;
+    const field = await markField(tab, a.ref, body, append);
+    // what the check can judge: one line, all the field holds
+    const checkable = field !== null && body !== "" && !/[\r\n\t]/.test(body) ? field : null;
+    const whole = checkable !== null && !checkable.boxes && a.ref !== undefined && !append;
+    const behind = whole ? await setBehind(tab, a.ref, checkable, body) : null;
+    const returns = sends && sendRef === undefined;
+    // Return goes to the focused element, so the field must have focus
+    const background = !!behind?.kept && (!returns || behind.focused);
+    let kept = background ? true : undefined;
+    if (!background || returns) {
+      await inFront(tab, VIA_RPC, async () => {
+        if (!background) {
+          if (a.ref !== undefined) {
+            await clickAt(tab, a, 1, "left");
+            // Text typed at a ref replaces the field's, as type's does unless
+            // append: a click leaves the caret where it lands, and on 09-30 a
+            // field on my.uscis.gov took the text only after Cmd+A (USCIS, 09-30).
+            if (!append) await post(tab, ["key", "cmd+a"], true);
+          }
+          kept = await typeKeys(tab, a.ref, checkable, body, whole);
+        }
+        if (returns && kept !== false) await post(tab, ["key", "Enter"], true);
+      });
+    }
+    if (!sends) return { ok: true, ...(background ? { background: true } : {}), ...(kept === undefined ? {} : { kept }) };
+    if (kept === false) return { ok: true, kept, sent: false, hint: "the field does not hold the text as typed, so it was not sent: read the field, then type it again" };
+    const pressed = sendRef === undefined ? undefined : await pressBehind(tab, sendRef);
+    if (pressed === null) await inFront(tab, VIA_RPC, () => clickAt(tab, { ref: sendRef }, 1, "left"));
+    const sent = checkable ? await wasSent(tab, a.ref, checkable, body) : undefined;
+    const answer = { ok: true, ...(background && pressed !== null ? { background: true } : {}), ...(pressed ? pageErrorsOf(pressed) : {}), ...(sent === undefined ? {} : { sent }) };
+    if (sent === false) return { ...answer, hint: sendRef === undefined ? "Return left the text in the field, so the page did not send it: pass its Send button's ref as send" : "the text stayed in the field after its Send button was clicked, so the page did not send it: look at the page" };
+    return typeof a.reply === "number" ? { ...answer, ...(await replyTo(tab, a.reply, start)) } : answer;
   },
   key: async (tab, a) => {
     const key = a.key;
@@ -202,12 +329,14 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
 
 export const INPUT_TOOLS: Record<string, Tool> = {
   real_input: {
-    desc: "Real mouse/keyboard when scripts fail. Left ref-click stays behind; other actions briefly bring the tab forward. {{code}} fills unseen codes.",
+    desc: "Real mouse/keyboard when scripts fail. Ref-click and ref-type stay behind; others briefly bring the tab forward. {{code}} fills unseen codes.",
     params: {
       tab: TAB,
       do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },
       ref: REF,
-      text: { type: "string", description: "to type; a line break presses Return" },
+      text: { type: "string", description: "to type; a final line break presses Return" },
+      send: { description: "Send button's ref, clicked after text" },
+      reply: { type: "number", description: "ms to wait for the answer to sent text" },
       secret: TOOLS.type.params.secret,
       from: TOOLS.type.params.from,
       from_selector: TOOLS.type.params.from_selector,

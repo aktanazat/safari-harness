@@ -82,7 +82,20 @@ export async function show(tab: number, ops: TabOps): Promise<() => Promise<void
   return giveBack;
 }
 
+// Real input and wait with front put the tab on screen only once the user
+// has let go of every key and button for a second (idle in
+// scripts/input.swift), waiting 10 s at most: on 10-07 Safari came in front
+// about 30 times in 30 minutes over the terminal he was typing in. Still
+// busy after that, he keeps his screen and nothing is done. A handoff,
+// which asks him to act, shows the tab at once.
+const PAUSE_MS = 1000;
+const PAUSE_MAX_MS = 10000;
+
 export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>): Promise<T> {
+  const paused = await input(["idle", String(PAUSE_MS), String(PAUSE_MAX_MS)], PAUSE_MAX_MS + 5000);
+  if (!(paused && typeof paused === "object" && "idle" in paused && paused.idle === true)) {
+    throw new Error(`the user kept typing or clicking for ${PAUSE_MAX_MS / 1000} s, so the tab stayed behind his app and nothing was done; try again in a moment`);
+  }
   const giveBack = await show(tab, ops);
   try {
     return await act();

@@ -1,18 +1,22 @@
 // Real mouse and keyboard input for daemon/input.ts. Events go in at the HID
 // level, like a physical mouse and keyboard, so pages see event.isTrusted
 // true; the extension's scripted events are ignored by captcha checkboxes,
-// some drag handles, and sites that check isTrusted. press has Safari's
-// accessibility tree click an element instead, which reaches a window
-// behind other apps.
+// some drag handles, and sites that check isTrusted. press and setvalue
+// have Safari's accessibility tree click an element or set a field's text
+// instead, which reaches a window behind other apps.
 //   input webarea                 Safari's page viewport in its front window:
 //                                 {"x","y","width","height"}
 //   input press MARK W H          presses the element marked MARK in the
 //                                 Safari window of that size, from behind
+//   input setvalue MARK W H       sets the text of the field marked MARK to
+//                                 UTF-8 text on stdin, from behind
 //   input click X Y [--count N] [--button left|right]
 //   input move X Y
 //   input drag X1 Y1 X2 Y2
-//   input type                    UTF-8 text on stdin, through EOF
+//   input type [--gap MS]         UTF-8 text on stdin, through EOF
 //   input key SPEC                Enter, Tab, Escape, Backspace, ArrowUp, cmd+a, shift+Tab
+//   input idle MS MAX             waits until the user has let go of keys and
+//                                 buttons for MS, MAX at most: {"idle"}
 //   input front                   {"bundleId"} of the frontmost app
 //   input activate BUNDLEID       brings that app to the front
 //   input window W H              Safari's window of that size, the screen
@@ -21,8 +25,8 @@
 // Points are global screen points with the origin at the top-left of the main
 // display, the space of both the Accessibility API and CGEvent. Each command
 // prints one JSON line. click, type, and key end with a press of F20 (see
-// mark). All but front, activate, and window need Accessibility permission
-// for the app that runs this.
+// mark). All but idle, front, activate, and window need Accessibility
+// permission for the app that runs this.
 import AppKit
 import ApplicationServices
 
@@ -262,13 +266,16 @@ func inFrontInstead(of t: KeyTarget) -> String? {
 }
 
 // Types text one character at a time, each as the character itself. Line
-// breaks press Return and tabs press Tab. Characters go 40 ms apart: a page
-// that reformats a field after each key (a card-number mask) moved the caret
-// back while the next key was on its way, and a card number landed with its
-// first digit last (2026-09-29). Each goes only while the key target is in
-// front; typing stops at the first that is not.
+// breaks press Return and tabs press Tab. Characters go 40 ms apart unless
+// --gap says otherwise: a page that reformats a field after each key (a
+// card-number mask) moved the caret back while the next key was on its
+// way, and a card number landed with its first digit last (2026-09-29).
+// daemon/input.ts types faster where it checks the field after and types
+// again at 40 ms when the text came out wrong. Each goes only while the
+// key target is in front; typing stops at the first that is not.
 func typeText(_ args: [String]) {
-    guard args.isEmpty else { fail("usage: input type (UTF-8 text on stdin)", 2) }
+    let gap = option(args, "--gap").flatMap(Double.init)
+    guard args.isEmpty || (args.count == 2 && gap.map { $0 >= 0 && $0 <= 1000 } == true) else { fail("usage: input type [--gap MS] (UTF-8 text on stdin)", 2) }
     // Card fills use this path too: arguments expose the text to other
     // processes, so accept it only on stdin (09-30).
     guard let text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else {
@@ -289,7 +296,7 @@ func typeText(_ args: [String]) {
             press(code, mods, text: Array(String(ch).utf16))
         }
         typed += 1
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.04))
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: (gap ?? 40) / 1000))
     }
     mark()
     printJSON(["typed": text.count])
@@ -339,6 +346,25 @@ func keyCombo(_ args: [String]) {
     press(code, mods, text: alone ? Array(String(ch).utf16) : [])
     mark()
     printJSON(["key": spec])
+}
+
+// Waits until the user has let go of every key and mouse button for MS
+// milliseconds, MAX at most. Real input lands on whatever is in front, so
+// Safari comes forward only once he pauses: on 10-07 it came in front about
+// 30 times in 30 minutes while he typed in his terminal. Key-ups count, not
+// key-downs: here something posts a held key's repeats (key 145, about 60
+// a second) and never its key-up, so the last key-down was always now
+// (10-07). Needs no permission. Prints {"idle": true|false, "waitedMs"}.
+func idle(_ args: [String]) {
+    guard args.count == 2, let quiet = Double(args[0]), let most = Double(args[1]), quiet > 0, most >= 0 else { fail("usage: input idle MS MAX", 2) }
+    let start = Date()
+    let events: [CGEventType] = [.keyUp, .leftMouseUp, .rightMouseUp]
+    while true {
+        let since = events.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min()! * 1000
+        let waited = Date().timeIntervalSince(start) * 1000
+        if since >= quiet || waited >= most { return printJSON(["idle": since >= quiet, "waitedMs": Int(waited)]) }
+        usleep(useconds_t(min(quiet - since, most - waited, 100) * 1000))
+    }
 }
 
 // ---------- apps ----------
@@ -487,24 +513,36 @@ func markedNode(_ el: AXUIElement, _ mark: String, depth: Int = 0) -> AXUIElemen
     return nil
 }
 
-// Presses the element a page marked with the class MARK (pressMark in
-// extension/content.js) through Safari's accessibility tree, in a window of
-// W by H points. WebKit clicks the element's middle for it: mousedown,
-// mouseup, and click, each isTrusted, with no pointer events. Safari, its
-// windows, and the pointer stay where they are, in a window hidden behind
-// another app's too. Prints {"pressed": true}, or {"pressed": false, "why"}
-// when no press was made: no such window, the element is not in the tree
-// (a canvas, a label), or WebKit offers it no press, which would report
-// success and click nothing.
-func press(_ args: [String]) {
-    guard args.count == 3, let w = Double(args[1]), let h = Double(args[2]) else { fail("usage: input press MARK W H", 2) }
+// The node of the element a page marked with the class args[0] (pressMark
+// and typeMark in extension/content.js), in Safari's windows of args[1] by
+// args[2] points. Where there is none, prints {key: false, "why"} and ends:
+// no such window, or the element is not in the tree (a canvas, a label).
+func markedElement(_ args: [String], usage: String, key: String) -> AXUIElement {
+    guard args.count == 3, let w = Double(args[1]), let h = Double(args[2]) else { fail("usage: input \(usage)", 2) }
     requireAccess()
     guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
     let windows = windowsOfSize(AXUIElementCreateApplication(safari.processIdentifier), w, h)
-    if windows.isEmpty { return printJSON(["pressed": false, "why": "no Safari window is \(args[1]) by \(args[2])"]) }
-    guard let node = windows.flatMap({ webAreas($0) }).lazy.compactMap({ markedNode($0, args[0]) }).first else {
-        return printJSON(["pressed": false, "why": "the element is not in Safari's accessibility tree"])
+    if windows.isEmpty {
+        printJSON([key: false, "why": "no Safari window is \(args[1]) by \(args[2])"])
+        exit(0)
     }
+    guard let node = windows.flatMap({ webAreas($0) }).lazy.compactMap({ markedNode($0, args[0]) }).first else {
+        printJSON([key: false, "why": "the element is not in Safari's accessibility tree"])
+        exit(0)
+    }
+    return node
+}
+
+// Presses the marked element (pressMark in extension/content.js) through
+// Safari's accessibility tree. WebKit clicks the element's middle for it:
+// mousedown, mouseup, and click, each isTrusted, with no pointer events.
+// Safari, its windows, and the pointer stay where they are, in a window
+// hidden behind another app's too. Prints {"pressed": true}, or
+// {"pressed": false, "why"} when no press was made: no element (see
+// markedElement), or WebKit offers it no press, which would report
+// success and click nothing.
+func press(_ args: [String]) {
+    let node = markedElement(args, usage: "press MARK W H", key: "pressed")
     var names: CFArray?
     guard AXUIElementCopyActionNames(node, &names) == .success, (names as? [String])?.contains(kAXPressAction) == true else {
         return printJSON(["pressed": false, "why": "Safari offers no press on the element"])
@@ -514,18 +552,43 @@ func press(_ args: [String]) {
     printJSON(["pressed": true])
 }
 
+// Sets the text of the marked field (typeMark in extension/content.js)
+// through Safari's accessibility tree, in place of what it held; the text
+// comes on stdin, as type's does. The page hears trusted beforeinput and
+// input events, as from typing (deleteContent, then insertText), and
+// macOS never autocorrects it. Safari, its windows, and the keyboard stay
+// as they are. WebKit takes the value only into the element the page has
+// focused, which typeMark does; the field's AXFocused is never set, since
+// that brings Safari to the front (10-07). Prints {"set": true}, or
+// {"set": false, "why"} when nothing was set.
+func setValue(_ args: [String]) {
+    guard let text = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else {
+        fail("setvalue needs UTF-8 text on stdin", 2)
+    }
+    let node = markedElement(args, usage: "setvalue MARK W H (UTF-8 text on stdin)", key: "set")
+    var settable: DarwinBoolean = false
+    guard AXUIElementIsAttributeSettable(node, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue else {
+        return printJSON(["set": false, "why": "Safari does not let the field's text be set"])
+    }
+    let err = AXUIElementSetAttributeValue(node, kAXValueAttribute as CFString, text as CFString)
+    if err != .success { return printJSON(["set": false, "why": "AXError \(err.rawValue)"]) }
+    printJSON(["set": true])
+}
+
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
 case "webarea": webarea()
 case "press": press(rest)
+case "setvalue": setValue(rest)
 case "click": click(rest)
 case "move": move(rest)
 case "drag": drag(rest)
 case "type": typeText(rest)
 case "key": keyCombo(rest)
+case "idle": idle(rest)
 case "front": front()
 case "activate": activate(rest)
 case "window": window(rest)
-default: fail("usage: input webarea | press MARK W H | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type (UTF-8 text on stdin) | key SPEC | front | activate BUNDLEID | window W H", 2)
+default: fail("usage: input webarea | press MARK W H | setvalue MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
 }

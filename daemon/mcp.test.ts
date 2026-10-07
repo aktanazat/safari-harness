@@ -107,7 +107,10 @@ import { TOOLS } from "./tools.ts";
 // open's new, the way to a second tab on a site now that open loads in
 // the agent's tab there (10-05: one tire search held tirerack.com in two
 // of its 17 tabs), is paid for by open's own description and parameters.
-const TOOL_LIST_MAX_BYTES = 24_243;
+// real_input's send and reply, and Return on a final line break (147),
+// brought it to 24,390: on 10-07 each reply in a Philips support chat took
+// four or five calls (type, find Send, click it, check, wait).
+const TOOL_LIST_MAX_BYTES = 24_390;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

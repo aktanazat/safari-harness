@@ -70,8 +70,10 @@ daemon/
                     shows, for challenge in results and for handoff
   input.ts          real_input: the real mouse and keyboard through
                     scripts/input, for pages that ignore scripted events; a
-                    single click on a tab behind is pressed through Safari's
-                    accessibility tree, and nothing comes forward
+                    single click on a tab behind, and text typed at a field,
+                    go through Safari's accessibility tree, and nothing
+                    comes forward; one call types, sends, and waits for a
+                    chat's reply
   passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
                     Mac shows (SRP), then asks it for logins and verification
                     codes over AES-GCM. The helper runs only under a real
