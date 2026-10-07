@@ -323,6 +323,27 @@ test("when a task whose window is a tab group ends, a tab it opened for the user
   await spaceTool({ op: "gone", name });
 });
 
+// 10-07: agent 1431's two groups stood in windows it had sized to 390
+// points, where Safari hides the tab bar the keeper counts a window's tabs
+// in: the keeper waited on them for good.
+test("an ended group's window its agent sized as narrow as a phone goes back to a size of the daemon's for the keeper", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => openTab("https://m.example/", true, "phone"));
+  const { name } = t.space;
+  await spaceTool({ op: "grouped", name });
+  await runAs(g.pid, () => callTool("window", { tab: t.id, width: 390, height: 844 }));
+  const page = pageIn(s.tabs, t.windowId)!;
+  const marker = Bun.spawnSync(["true"]).pid;
+  g.kill();
+  await g.exited;
+  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  const released = (await spaceTool({ op: "release", name })) as { width: number };
+  expect(released.width).toBeGreaterThanOrEqual(1000);
+  expect(s.sized.at(-1)).toEqual({ tab: page.id, whole: true });
+  await spaceTool({ op: "gone", name });
+});
+
 // An agent that finishes in a second exits while the keeper makes its
 // window's group: before, the daemon closed the window under the steps, and
 // a group named for the task, or Untitled, stayed in the sidebar.

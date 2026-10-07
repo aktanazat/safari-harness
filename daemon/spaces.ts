@@ -69,9 +69,10 @@ const PAGE = `http://127.0.0.1:${Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 
 // Window sizes no other window is likely to have, one per assignment, from
 // a random start so a restarted daemon does not reuse its last run's.
 let sized = Math.floor(Math.random() * 5000);
+const MIN_WIDTH = 1000;
 function nextSize(): Size {
   const n = sized++;
-  return { width: 1000 + (n % 250), height: 780 + (Math.floor(n / 250) % 20) * 5 };
+  return { width: MIN_WIDTH + (n % 250), height: 780 + (Math.floor(n / 250) % 20) * 5 };
 }
 
 // An assignment's name, which its tab group takes: the task's group, or
@@ -300,6 +301,18 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       // A tab can close meanwhile (close-on-exit): it needs no moving then.
       for (const t of await located(s)) if (!isPage(t, s)) await bridge.request("tabs.detach", [t.id, s.window]).catch(() => undefined);
       const now = await located(s);
+      // Safari hides the tab bar of a window as narrow as a phone's, and the
+      // keeper counts a window's tabs in it: on 10-07 it waited for good on
+      // agent 1431's groups, whose windows the agent had sized to 390
+      // points. An ended window narrower than any the daemon gives goes back
+      // to one of its sizes.
+      const page = now.find((t) => isPage(t, s));
+      if (page && s.size.width < MIN_WIDTH) {
+        // background.js "window": the size Safari gave the window
+        const widened = (await bridge.request("window", [page.id, nextSize(), true])) as { size: Size };
+        s.size = widened.size;
+        save();
+      }
       return { ok: true, tabs: now.length, left: now.filter((t) => !isPage(t, s)).length, ...s.size };
     }
     case "gone": {
