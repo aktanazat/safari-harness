@@ -706,7 +706,7 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   none (a Touch ID, passkey, or permission prompt covers it), nothing is
   clicked and the call fails saying so; only the user can answer such a
   prompt (`handoff`). The real mouse and keys bring Safari and the tab to
-  the front for about half a second, plus about 10 ms a typed character,
+  the front for about half a second, plus 25 to 60 ms a typed character,
   then give back the user's tab, app, and pointer. They wait until the user
   has let go of every key and button for a second, up to 10 s; still busy
   then, he keeps his screen, nothing is done, and the call fails saying
@@ -730,10 +730,11 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   as from typing, and the field gets the page's focus. Real keys type it
   instead, with the tab in front, where the tree cannot: text with a line
   break or tab inside it, `append`, no ref, a row of one-character code
-  boxes, or a field Safari will not set. Real keys go about 10 ms apart
-  with macOS autocorrect off (it once sent "resham" as "gresham"), and text
-  that came out wrong is typed again at 60 ms a character. `kept` says
-  whether the field holds the text as typed.
+  boxes, or a field Safari will not set. Real keys type about 25 ms a
+  character with macOS autocorrect off (it once sent "resham" as
+  "gresham") where the field can be checked after, and text that came out
+  wrong is typed again at 60 ms a character, the pace elsewhere. `kept`
+  says whether the field holds the text as typed.
 - A chat reply is one call. `send` takes the ref of the page's Send
   button, which is clicked after the text as a click on a ref is (from
   behind, where it can be); a final line break presses Return instead,
