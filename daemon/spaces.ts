@@ -415,6 +415,12 @@ export function spaceById(id: string): { owner?: number; window: number } | unde
   return who === "daemon" ? { window: space.window } : { owner: Number(who), window: space.window };
 }
 
+// Whether the window whose page carries id has ended, its page left open
+// until the keeper deletes its group or the extension is back (mission.ts).
+export function spaceEnded(id: string): boolean {
+  return [...closing.values(), ...ended].some((s) => s.id === id);
+}
+
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
 export function ownersByPage(tabs: TabInfo[]): Map<number, number> {

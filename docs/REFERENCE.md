@@ -118,7 +118,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   left for him (kept) move to windows of their own, then the group is
   deleted with its page, again only while he is away from the keys. A
   group that cannot go yet waits in
-  `~/.local/share/safari-harness/groups.json` for the next keeper.
+  `~/.local/share/safari-harness/groups.json`; the keeper tries it again
+  ten minutes later, or the next keeper does. Until then its page says
+  the task has ended.
 - Your tabs close when your turn ends: as omp hands the turn back to the
   user, or he interrupts it, it tells the daemon (`omp/index.ts`), which
   closes every tab you opened, and tabs they opened, whether you called it

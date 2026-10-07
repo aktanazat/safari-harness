@@ -23,7 +23,7 @@ import { bridge } from "./bridge.ts";
 import { onRaised } from "./front.ts";
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
-import { spaceById } from "./spaces.ts";
+import { spaceById, spaceEnded } from "./spaces.ts";
 import { closeTabsOf, tabsOpenedBy, type TabInfo } from "./tools.ts";
 
 // What a held call answers: each tells the agent what to do next.
@@ -368,8 +368,9 @@ const inWindows = (tabs: TabInfo[], windows: Set<number>) => tabs.filter((t) => 
 
 async function spaceState(url: URL): Promise<Response> {
   const now = Date.now();
-  const space = spaceById(url.searchParams.get("id") ?? "");
-  if (!space) return json({ now, agent: null, tabs: null });
+  const id = url.searchParams.get("id") ?? "";
+  const space = spaceById(id);
+  if (!space) return json({ now, agent: null, tabs: null, ended: spaceEnded(id) });
   const agent = space.owner === undefined ? nobody : (agents.get(space.owner) ?? track(space.owner));
   const tabs = await tabList();
   return json({
@@ -751,11 +752,12 @@ const SCRIPT = String.raw`
     const a = s.agent;
     if (!a) {
       status.className = "status end";
-      setText(status, "Not tracked");
-      setText(byId("who"), "The harness restarted after this window opened, so it no longer knows its agent.");
+      setText(status, s.ended ? "Ended" : "Not tracked");
+      setText(byId("who"), s.ended ? "This task has ended. Its window closes on its own." : "The harness restarted after this window opened, so it no longer knows its agent.");
       draw(byId("controls"), "", () => []);
-      draw(byId("tabs"), "unknown", () => [make("li", "empty", "Unknown.")]);
-      draw(byId("calls"), "unknown", () => [make("li", "empty", "Unknown.")]);
+      const gone = s.ended ? "Not shown once the task has ended." : "Unknown.";
+      draw(byId("tabs"), gone, () => [make("li", "empty", gone)]);
+      draw(byId("calls"), gone, () => [make("li", "empty", gone)]);
       return;
     }
     status.className = "status " + (TONE[a.status] || "go");

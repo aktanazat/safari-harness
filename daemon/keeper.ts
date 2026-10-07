@@ -25,6 +25,12 @@ export type Daemon = (op: string, args?: Record<string, unknown>) => Promise<unk
 type Log = (line: string) => void;
 
 const LOOP_MS = 3000;
+// A group a delete left queued is tried again this long after, and not
+// before, so a failing step does not open Safari's menus every pass. On
+// 10-07 each group so left went at a later keeper's first try, but the
+// keeper of a running agent's groups never tried again: agent 8780's stood
+// in his sidebar for hours.
+const RETRY_MS = 10 * 60_000;
 // A raise begun this long before a step can land after its first look.
 const RAISE_MS = 2000;
 const SAFARI = "com.apple.Safari";
@@ -89,8 +95,8 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
 
 // Deletes the group from window's sidebar, then closes the window: its own,
 // or a scratch one, closed after every try. Whether to try again: a wait
-// does; anything else leaves the group queued for the next keeper.
-async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Set<string>, log: Log): Promise<boolean> {
+// does; anything else leaves the group queued, for RETRY_MS.
+async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Map<string, number>, log: Log): Promise<boolean> {
   const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
   if (outcome.done) {
@@ -100,12 +106,12 @@ async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: numbe
   }
   if (outcome.wait) return true;
   log(`left ${name} queued: ${outcome.why}`);
-  given.add(name);
+  given.set(name, Date.now());
   return false;
 }
 
 // A group whose own window is gone goes from a window opened for it.
-async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Set<string>, log: Log): Promise<boolean> {
+async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Map<string, number>, log: Log): Promise<boolean> {
   const scratch = (await daemon("scratch")) as SpaceState & { ok: boolean };
   if (!scratch.ok) return true;
   return deleteFrom(h, daemon, name, await windowOf(h, scratch), true, given, log);
@@ -115,12 +121,12 @@ async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Set<s
 // tabs for the user leave its window, then the group goes with the page,
 // from a window opened for it when its own is gone. A tab that would not
 // leave keeps the group, and it stays queued.
-async function clear(h: Helper, daemon: Daemon, name: string, given: Set<string>, log: Log): Promise<boolean> {
+async function clear(h: Helper, daemon: Daemon, name: string, given: Map<string, number>, log: Log): Promise<boolean> {
   const released = (await daemon("release", { name })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number };
   if (!released.ok) return true;
   if (released.left) {
     log(`left ${name} queued: ${released.left} of its tabs would not move out`);
-    given.add(name);
+    given.set(name, Date.now());
     return false;
   }
   if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, name, given, log);
@@ -128,8 +134,11 @@ async function clear(h: Helper, daemon: Daemon, name: string, given: Set<string>
 }
 
 // One look at the windows and the queue; whether there is more to watch.
-// given: groups left queued by this keeper, which it tries no more.
-export async function pass(h: Helper, daemon: Daemon, given: Set<string>, log: Log): Promise<boolean> {
+// given: when this keeper last left each group queued, which it tries
+// again once RETRY_MS has passed.
+export async function pass(h: Helper, daemon: Daemon, given: Map<string, number>, log: Log): Promise<boolean> {
+  const now = Date.now();
+  for (const [name, at] of given) if (now - at >= RETRY_MS) given.delete(name);
   const { connected, spaces } = (await daemon("state")) as { connected: boolean; spaces: SpaceState[] };
   const queue = Object.entries(readQueue());
   const known = new Set(spaces.map((s) => s.name));
@@ -165,7 +174,7 @@ if (import.meta.main) {
     appendFileSync(files.log, `${new Date().toISOString()} ${line}\n`);
   };
   const daemon: Daemon = (op, args = {}) => rpc("space", { ...args, op });
-  const given = new Set<string>();
+  const given = new Map<string, number>();
   const locked = await helper("lock", { ms: 0 });
   try {
     if (locked.ok) {

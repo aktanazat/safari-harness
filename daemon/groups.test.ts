@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -183,7 +183,7 @@ test("group work turned off comes back on a day later", () => {
 test("without the helper built, a waiting window stays plain and says how to build it", async () => {
   const { helper, stop } = startHelper(join(dir, "no-such-helper"));
   const { d, told } = daemon([waiting]);
-  expect(await pass(helper, d, new Set(), quiet)).toBe(false);
+  expect(await pass(helper, d, new Map(), quiet)).toBe(false);
   stop();
   expect(told).toEqual([{ op: "plain", name: TRIP, why: "the tab group helper is not built (bun run helpers)" }]);
 });
@@ -192,10 +192,10 @@ test("a window made while the user types stays plain, and becomes its task's gro
   const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
   const { d, told } = daemon([waiting]);
   s.idleMs = 3000;
-  expect(await pass(h, d, new Set(), quiet)).toBe(true);
+  expect(await pass(h, d, new Map(), quiet)).toBe(true);
   expect([s.menus, groups()]).toEqual([0, []]);
   s.idleMs = 45_000;
-  await pass(h, d, new Set(), quiet);
+  await pass(h, d, new Map(), quiet);
   expect(groups()).toEqual([TRIP]);
   expect(s.shown).toBe(TRIP);
   expect(told).toEqual([{ op: "making", name: TRIP }, { op: "grouped", name: TRIP }]);
@@ -208,7 +208,7 @@ test("a window that ended after the keeper looked gets no group", async () => {
   const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
   const { d: daemonAnswers, told } = daemon([waiting]);
   const d: Daemon = async (op, a = {}) => (op === "making" ? (told.push({ op, ...a }), { ok: false }) : daemonAnswers(op, a));
-  expect(await pass(h, d, new Set(), quiet)).toBe(false);
+  expect(await pass(h, d, new Map(), quiet)).toBe(false);
   expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [], []]);
   expect(told).toEqual([{ op: "making", name: TRIP }]);
 });
@@ -227,7 +227,7 @@ test("Safari brought forward during a step by an agent's call, or by the user, l
       if (who === "agent") raisedAt = Date.now();
       else s.idleMs = 0;
     };
-    expect(await pass(h, d, new Set(), quiet)).toBe(true);
+    expect(await pass(h, d, new Map(), quiet)).toBe(true);
     expect(groupsOff()).toBeUndefined();
     expect(told.at(-1)).toMatchObject({ op: "waiting", name: TRIP });
   }
@@ -238,7 +238,7 @@ test("an ended task's group goes once its tabs for the user are out, with its wi
   s.tabs = 1;
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
   const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true }]);
-  expect(await pass(h, d, new Set(), quiet)).toBe(false);
+  expect(await pass(h, d, new Map(), quiet)).toBe(false);
   expect(groups()).toEqual(["Work"]);
   expect(s.closed).toEqual([7]);
   expect(told).toEqual([{ op: "release", name: TRIP }, { op: "gone", name: TRIP }]);
@@ -251,10 +251,37 @@ test("an ended task's group stays, queued, while a tab would not move out of it"
   const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }]);
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
   const { d } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 2, left: 1 });
-  const given = new Set<string>();
+  const given = new Map<string, number>();
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [TRIP], [TRIP]]);
+});
+
+// 10-07: a delete left agent 8780's group queued (the selection moved off
+// it as the menu opened), and the keeper, kept on by another agent's
+// groups, never tried it again: the group stood in his sidebar for hours,
+// its page saying the harness had restarted.
+test("a group a failed delete left queued is tried again by the same keeper a while later, not at once", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
+  s.tabs = 1;
+  s.on.menu = () => {
+    delete s.on.menu;
+    s.rows.forEach((r) => (r.selected = r.name === "Work"));
+  };
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
+  const given = new Map<string, number>();
+  await pass(h, d, given, quiet);
+  await pass(h, d, given, quiet);
+  expect([s.menus, groups()]).toEqual([1, [TRIP, "Work"]]);
+  setSystemTime(new Date(Date.now() + 15 * 60_000));
+  try {
+    await pass(h, d, given, quiet);
+  } finally {
+    setSystemTime();
+  }
+  expect(groups()).toEqual(["Work"]);
+  expect(readQueue()).toEqual({});
 });
 
 test("a queued group no window claims goes once its agent has exited, from a window of its own; a running agent's stays", async () => {
@@ -263,7 +290,7 @@ test("a queued group no window claims goes once its agent has exited, from a win
   const exited = Bun.spawnSync(["true"]).pid;
   changeQueue((q) => Object.assign(q, { "old (agent 5)": { owner: exited, since: 0 }, "live (agent 6)": { owner: process.pid, since: 0 } }));
   const { d, told } = daemon([]);
-  expect(await pass(h, d, new Set(), quiet)).toBe(true);
+  expect(await pass(h, d, new Map(), quiet)).toBe(true);
   expect(groups()).toEqual(["live (agent 6)"]);
   expect(s.closed).toEqual([7]);
   expect(told).toEqual([{ op: "release", name: "old (agent 5)" }, { op: "scratch" }, { op: "gone", name: "old (agent 5)" }]);
