@@ -244,19 +244,19 @@ func keyTarget() -> KeyTarget {
     // Safari answers on its main thread, which a busy page can hold.
     AXUIElementSetMessagingTimeout(safari, 1)
     let target = KeyTarget(safari: safari, pid: app.processIdentifier, window: element(attribute(safari, kAXFocusedWindowAttribute)))
-    if let other = inFrontInstead(of: target) { fail("\(other) is in front, not Safari, so no keys were sent") }
+    if let other = inFrontInstead(of: target) { fail("Safari is not the app in front (\(other) is), so no keys were sent") }
     return target
 }
 
 // What is in front in place of the target, by name; nil while it still
-// is. A panel or popover of Safari's (an AutoFill list) stays with the
-// window that opened it, and a Safari that does not answer in time is
-// still the app in front.
+// is. The app in front is NSWorkspace's, which follows changes only while
+// the run loop runs; the system-wide focused application failed every read
+// here (AXError -25204, 10-07). A panel or popover of Safari's (an AutoFill
+// list) stays with the window that opened it, and a Safari that does not
+// answer in time is still the app in front.
 func inFrontInstead(of t: KeyTarget) -> String? {
-    var pid: pid_t = 0
-    guard let app = element(attribute(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute)),
-          AXUIElementGetPid(app, &pid) == .success else { return "an app the system does not name" }
-    if pid != t.pid { return NSRunningApplication(processIdentifier: pid)?.localizedName ?? "another app" }
+    guard let app = NSWorkspace.shared.frontmostApplication else { return "no app" }
+    if app.processIdentifier != t.pid { return app.localizedName ?? app.bundleIdentifier ?? "another app" }
     guard let was = t.window, let now = element(attribute(t.safari, kAXFocusedWindowAttribute)), !CFEqual(was, now) else { return nil }
     return attribute(now, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole ? "another Safari window" : nil
 }
@@ -289,7 +289,7 @@ func typeText(_ args: [String]) {
             press(code, mods, text: Array(String(ch).utf16))
         }
         typed += 1
-        pause(40)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.04))
     }
     mark()
     printJSON(["typed": text.count])
