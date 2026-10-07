@@ -706,12 +706,17 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   none (a Touch ID, passkey, or permission prompt covers it), nothing is
   clicked and the call fails saying so; only the user can answer such a
   prompt (`handoff`). The real mouse and keys bring Safari and the tab to
-  the front for about half a second, then give back the user's tab, app,
-  and pointer. Such a call waits until the page has received every key
-  before giving the tab back, so nothing lands in the user's tab; the page
-  sees one extra press of F20, a key no Mac keyboard has. Keys go only to
-  a page with keyboard focus: if Safari's address or find bar has it, the
-  call fails and nothing is typed. The answer carries `popup` for a tab
+  the front for about half a second, plus about 60 ms a typed character,
+  then give back the user's tab, app, and pointer. Such a call waits until
+  the page has received every key before giving the tab back, so nothing
+  lands in the user's tab; the page sees one extra press of F20, a key no
+  Mac keyboard has. Keys go only to a page with keyboard focus: if
+  Safari's address or find bar has it, the call fails and nothing is
+  typed. Each key goes only while Safari and the tab's window stay in
+  front: when the user brings another app or one of his windows forward,
+  typing stops there, the call fails saying how many characters went in,
+  and he keeps what he brought forward. Let him finish before typing
+  again; typing at a ref replaces the field. The answer carries `popup` for a tab
   the action opened (a sign-in window), once Safari has reported it; one
   it reports later comes in your next result. The app running the MCP
   server or CLI needs Accessibility permission.

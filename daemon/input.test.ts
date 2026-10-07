@@ -24,9 +24,10 @@ const GHOSTTY = "com.mitchellh.ghostty";
 // Safari's answer to press_mark, the errors the page threw by press_done,
 // the helper's answer to press, the page area of Safari's front window,
 // what the page did on each scripted click, in order (withReceipt in
-// extension/content.js; nothing by default), and the tab it opens on a real
-// click, which the daemon queues for the agent (continuity.ts).
-type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[]; popup?: { tab: number; url: string } };
+// extension/content.js; nothing by default), the tab it opens on a real
+// click, which the daemon queues for the agent (continuity.ts), and the
+// app the user brings forward while the helper types.
+type Page = { picker?: boolean; press?: { pressed: boolean; why?: string }; errors?: string[]; area?: { x: number; y: number; width: number; height: number }; clicked?: Record<string, unknown>[]; popup?: { tab: number; url: string }; takeover?: string };
 type Mac = {
   app: string;
   // helper commands, and what Safari was asked of its tabs and pages, in order
@@ -80,7 +81,10 @@ function mac(page: Page = {}): Mac {
   });
   spyOn(front, "input").mockImplementation(async (args, _timeout, stdin) => {
     m.helper.push(args);
-    if (args[0] === "type") m.typed.push(stdin);
+    if (args[0] === "type") {
+      m.typed.push(stdin);
+      if (page.takeover) m.app = page.takeover;
+    }
     if (args[0] === "front") return { bundleId: m.app };
     if (args[0] === "activate") m.app = args[1];
     if (args[0] === "press") {
@@ -212,6 +216,13 @@ test("real typing replaces the field before typing exact Unicode and newlines th
   await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: appended, append: true });
   expect(m.helper.filter((c) => ["click", "key", "type"].includes(c[0])).map((c) => (c[0] === "key" ? `key ${c[1]}` : c[0]))).toEqual(["click", "key cmd+a", "type", "click", "type"]);
   expect({ args: run(m, "type"), stdin: m.typed }).toEqual({ args: [["type"], ["type"]], stdin: [text, appended] });
+});
+
+test("a user who brings another app forward while real input types keeps it: nothing is raised over it after", async () => {
+  const slack = "com.tinyspeck.slackmacgap";
+  const m = mac({ takeover: slack });
+  await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#name", text: "hi stone" });
+  expect(m.app).toBe(slack);
 });
 
 // Exercise front.input's actual pipe into a child process, without posting

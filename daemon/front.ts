@@ -59,13 +59,16 @@ export function notify(text: string): void {
 // Shows the tab and returns what gives the user back what they had in
 // front: the tab its window showed, their front window, and their app.
 // Giving back is best effort: what the tab was shown for has happened, and
-// an error would invite a retry that repeats it.
+// an error would invite a retry that repeats it. A user who brought another
+// app forward meanwhile keeps it: on 10-07 he went back to his terminal
+// mid-reply, and giving back raised Safari again before his app.
 export async function show(tab: number, ops: TabOps): Promise<() => Promise<void>> {
   const [bundleId, tabs] = await Promise.all([frontApp(), ops.tabs()]);
   const target = tabs.find((t) => t.id === tab);
   if (!target) throw new Error(`no tab ${tab}`);
   const back = [tabs.find((t) => t.windowId === target.windowId && t.active && t.id !== tab), tabs.find((t) => t.front && t.windowId !== target.windowId)];
   const giveBack = async () => {
+    if ((await frontApp().catch(() => undefined)) !== SAFARI) return;
     for (const t of back) if (t) await ops.activate(t.id).catch(() => {});
     if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
   };

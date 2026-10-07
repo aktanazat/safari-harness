@@ -223,11 +223,50 @@ func keyFor(_ ch: Character) -> (CGKeyCode, [Modifier]) {
     return (0, [])
 }
 
+// Where keys go: Safari, and the window it had in front when the command
+// began. A key goes to the app and window in front when it arrives, not
+// when it was posted, so a user who brings another app or window forward
+// while text is typed would get the rest of it. On 10-07 a reply typed into
+// a Philips support chat went on after the user went back to his terminal;
+// a test of 120 letters with TextEdit brought forward after 2 s then put 25
+// in the field, 57 in TextEdit, and 38 elsewhere in Safari, and the call
+// answered ok.
+struct KeyTarget {
+    let safari: AXUIElement
+    let pid: pid_t
+    let window: AXUIElement?
+}
+
+// Safari and its window in front; fails, sending nothing, when they are not.
+func keyTarget() -> KeyTarget {
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    let safari = AXUIElementCreateApplication(app.processIdentifier)
+    // Safari answers on its main thread, which a busy page can hold.
+    AXUIElementSetMessagingTimeout(safari, 1)
+    let target = KeyTarget(safari: safari, pid: app.processIdentifier, window: element(attribute(safari, kAXFocusedWindowAttribute)))
+    if let other = inFrontInstead(of: target) { fail("\(other) is in front, not Safari, so no keys were sent") }
+    return target
+}
+
+// What is in front in place of the target, by name; nil while it still
+// is. A panel or popover of Safari's (an AutoFill list) stays with the
+// window that opened it, and a Safari that does not answer in time is
+// still the app in front.
+func inFrontInstead(of t: KeyTarget) -> String? {
+    var pid: pid_t = 0
+    guard let app = element(attribute(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute)),
+          AXUIElementGetPid(app, &pid) == .success else { return "an app the system does not name" }
+    if pid != t.pid { return NSRunningApplication(processIdentifier: pid)?.localizedName ?? "another app" }
+    guard let was = t.window, let now = element(attribute(t.safari, kAXFocusedWindowAttribute)), !CFEqual(was, now) else { return nil }
+    return attribute(now, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole ? "another Safari window" : nil
+}
+
 // Types text one character at a time, each as the character itself. Line
 // breaks press Return and tabs press Tab. Characters go 40 ms apart: a page
 // that reformats a field after each key (a card-number mask) moved the caret
 // back while the next key was on its way, and a card number landed with its
-// first digit last (2026-09-29).
+// first digit last (2026-09-29). Each goes only while the key target is in
+// front; typing stops at the first that is not.
 func typeText(_ args: [String]) {
     guard args.isEmpty else { fail("usage: input type (UTF-8 text on stdin)", 2) }
     // Card fills use this path too: arguments expose the text to other
@@ -236,7 +275,12 @@ func typeText(_ args: [String]) {
         fail("type needs UTF-8 text on stdin", 2)
     }
     requireAccess()
+    let target = keyTarget()
+    var typed = 0
     for ch in text {
+        if let other = inFrontInstead(of: target) {
+            fail("typing stopped after \(typed) of \(text.count) characters: \(other) came in front, so the rest was not sent. Let the user finish before typing again; typing at a ref replaces the field")
+        }
         switch ch {
         case "\n", "\r", "\r\n": press(36, [])
         case "\t": press(48, [])
@@ -244,6 +288,7 @@ func typeText(_ args: [String]) {
             let (code, mods) = keyFor(ch)
             press(code, mods, text: Array(String(ch).utf16))
         }
+        typed += 1
         pause(40)
     }
     mark()
@@ -267,6 +312,7 @@ func keyCombo(_ args: [String]) {
     // On 09-28 an agent pressed "Shift" alone and read "unknown key Shift".
     if modifierKeys[name.lowercased()] != nil { fail("\(name) is a modifier, which presses nothing alone: name it with its key, like \(name.lowercased())+A", 2) }
     requireAccess()
+    _ = keyTarget()
     if let code = namedKeys[name.lowercased()] {
         press(code, mods)
         mark()
