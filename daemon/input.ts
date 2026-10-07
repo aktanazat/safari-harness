@@ -315,7 +315,7 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const pressed = sendRef === undefined ? undefined : await pressBehind(tab, sendRef);
     if (pressed === null) await inFront(tab, VIA_RPC, () => clickAt(tab, { ref: sendRef }, 1, "left"));
     const sent = checkable ? await wasSent(tab, a.ref, checkable, body) : undefined;
-    const answer = { ok: true, ...(background && pressed !== null ? { background: true } : {}), ...(pressed ? pageErrorsOf(pressed) : {}), ...(sent === undefined ? {} : { sent }) };
+    const answer = { ok: true, ...(background && !returns && pressed !== null ? { background: true } : {}), ...(pressed ? pageErrorsOf(pressed) : {}), ...(sent === undefined ? {} : { sent }) };
     if (sent === false) return { ...answer, hint: sendRef === undefined ? "Return left the text in the field, so the page did not send it: pass its Send button's ref as send" : "the text stayed in the field after its Send button was clicked, so the page did not send it: look at the page" };
     return typeof a.reply === "number" ? { ...answer, ...(await replyTo(tab, a.reply, start)) } : answer;
   },

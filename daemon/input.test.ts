@@ -287,11 +287,10 @@ test("where the field cannot take text from behind, real keys type it fast and i
 
 // A Philips support chat took 4 or 5 calls a reply, and 160 waits of
 // 30 s each, 33 minutes of them (10-07).
-test("text ending in a line break is sent in one call: the answer says the page took it and carries the reply", async () => {
+test("text ending in a line break is sent in one call: the answer says the page took it and carries the reply, and not that it stayed behind, as Return took the screen", async () => {
   const m = mac({ reply: ["Agent: thanks, checking your order now"] });
   expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", text: "order 1234 arrived broken\n", reply: 60000 })).toEqual({
     ok: true,
-    background: true,
     sent: true,
     reply: ["Agent: thanks, checking your order now"],
   });
