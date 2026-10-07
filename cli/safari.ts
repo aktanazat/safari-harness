@@ -592,7 +592,8 @@ async function main() {
     if (json) return print(o);
     for (const a of o.agents) {
       const tabs = a.tabs === null ? "" : `, ${a.tabs} tab${a.tabs === 1 ? "" : "s"}`;
-      console.log(`${a.owner === null ? "no agent" : `agent ${a.owner}${a.process ? ` (${a.process})` : ""}`}: ${a.status}${tabs}`);
+      const raised = a.raised === 0 ? "" : `, brought Safari to the front ${a.raised} time${a.raised === 1 ? "" : "s"}`;
+      console.log(`${a.owner === null ? "no agent" : `agent ${a.owner}${a.process ? ` (${a.process})` : ""}`}: ${a.status}${tabs}${raised}`);
       for (const t of a.tasks) console.log(`  ${t.name}  ${daemonHttp()}/space?id=${t.id}&name=${encodeURIComponent(t.name)}`);
       const c = a.last;
       if (c) console.log(`  last: ${new Date(c.t).toLocaleTimeString("sv")} ${c.tool} ${c.args}  ${c.error ?? c.outcome ?? (c.held ? "held" : "running")}`);

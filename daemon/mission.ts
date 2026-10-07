@@ -20,10 +20,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { basename } from "node:path";
 import { bridge } from "./bridge.ts";
+import { onRaised } from "./front.ts";
 import { note } from "./journal.ts";
-import { watchOwner } from "./owner.ts";
+import { currentOwner, watchOwner } from "./owner.ts";
 import { spaceById } from "./spaces.ts";
-import { closeTabsOf, type TabInfo } from "./tools.ts";
+import { closeTabsOf, tabsOpenedBy, type TabInfo } from "./tools.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -54,6 +55,7 @@ type Call = {
 type Hold = "paused" | "driving";
 type Status = "working" | "waiting on the user" | "paused" | "user is driving" | "stopped" | "ended";
 
+// raised: the times it brought Safari to the front (front.ts)
 type Agent = {
   owner?: number;
   process?: string;
@@ -61,6 +63,7 @@ type Agent = {
   last: number;
   calls: Call[];
   running: Set<Call>;
+  raised: number;
   hold?: Hold;
   stopped?: number;
   ended?: number;
@@ -70,7 +73,7 @@ type Agent = {
 
 function fresh(owner?: number): Agent {
   const now = Date.now();
-  return { owner, first: now, last: now, calls: [], running: new Set(), waiting: new Set() };
+  return { owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set() };
 }
 
 const agents = new Map<number, Agent>();
@@ -83,6 +86,12 @@ function recordOf(owner: number | undefined): Agent {
   const had = agents.get(owner);
   return had && had.ended === undefined ? had : track(owner);
 }
+
+onRaised(() => {
+  const owner = currentOwner();
+  recordOf(owner).raised += 1;
+  note("safari to front", { owner: owner ?? null });
+});
 
 function track(owner: number): Agent {
   prune(Date.now());
@@ -311,8 +320,9 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 
 // ---------- what the pages read ----------
 
-type Summary = { owner: number | null; process: string | null; status: Status; since: number; active: number; controls: boolean };
-// /agents.json, and what safari agents prints
+type Summary = { owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean };
+// /agents.json, and what safari agents prints. tabs: those the agent opened
+// that are open, in its windows or not.
 export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[] };
 
 function summaryOf(a: Agent): Summary {
@@ -323,6 +333,7 @@ function summaryOf(a: Agent): Summary {
     status,
     since: a.first,
     active: a.last,
+    raised: a.raised,
     controls: a.owner !== undefined && status !== "stopped" && status !== "ended",
   };
 }
@@ -379,7 +390,9 @@ async function overview(): Promise<Overview> {
       ...summaryOf(a),
       last: a.calls.at(-1) ?? null,
       tasks: mine.map((w) => ({ id: w.id, name: w.name })),
-      tabs: tabs ? inWindows(tabs, new Set(mine.map((w) => w.window))).length : null,
+      // On 10-07 an agent showed 0 tabs while one it opened sat in a window
+      // apart from its own.
+      tabs: tabs ? tabsOpenedBy(a.owner) : null,
     };
   });
   // Agents at work first, then those stopped or ended, each newest first:
@@ -629,6 +642,10 @@ const SCRIPT = String.raw`
     return "Agent " + a.owner + (a.process ? " (" + a.process + ")" : "");
   }
 
+  function raised(a) {
+    return a.raised === 0 ? "" : "brought Safari to the front " + a.raised + (a.raised === 1 ? " time" : " times");
+  }
+
   function actionsOf(a) {
     if (!a.controls) return [];
     if (a.status === "paused") return ["resume", "drive", "stop"];
@@ -744,7 +761,7 @@ const SCRIPT = String.raw`
     status.className = "status " + (TONE[a.status] || "go");
     setText(status, SAY[a.status] || a.status);
     const over = a.status === "stopped" || a.status === "ended";
-    setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)));
+    setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : ""));
     draw(byId("controls"), actionsOf(a).join(), () => buttons(a, { id: data.id }, ""));
     draw(byId("tabs"), JSON.stringify(s.tabs), () => (!s.tabs ? [make("li", "empty", "Safari is not connected.")] : s.tabs.length ? s.tabs.map(tabRow) : [make("li", "empty", "None besides this page.")]));
     draw(byId("calls"), JSON.stringify(a.calls), () => (a.calls.length ? a.calls.map(callRow) : [make("li", "empty", "No calls yet.")]));
@@ -764,7 +781,7 @@ const SCRIPT = String.raw`
       rows.set(key, row);
     }
     draw(row.head, who(a) + "|" + a.status, () => [make("h2", "", who(a)), make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status)]);
-    setText(row.facts, (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + "last seen " + span(now - a.active) + " ago");
+    setText(row.facts, (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + (raised(a) ? raised(a) + " · " : "") + "last seen " + span(now - a.active) + " ago");
     row.tasks.hidden = !a.tasks.length;
     draw(row.tasks, JSON.stringify(a.tasks), () => a.tasks.flatMap((t, i) => {
       const link = make("a", "", t.name);

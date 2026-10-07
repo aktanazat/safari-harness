@@ -1,7 +1,8 @@
-import { afterAll, expect, jest, test } from "bun:test";
+import { afterAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { missionRoute, watched } from "./mission.ts";
+import * as front from "./front.ts";
+import { missionRoute, watched, type Overview } from "./mission.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
 
@@ -242,4 +243,33 @@ test("what an agent types appears neither in its record nor in the pages' JSON, 
   expect(record[0].args).not.toContain("q");
   const everything = JSON.stringify(record) + (await (await ask(`${page.origin}/agents.json`)).text());
   expect(everything).not.toContain(typed);
+});
+
+const listed = async (owner: number) => ((await (await ask("http://127.0.0.1:37334/agents.json")).json()) as Overview).agents.find((a) => a.owner === owner);
+
+// 10-07: Safari came in front about 30 times in 30 minutes over the
+// terminal he typed in, and no record said for which agent.
+test("each agent's record counts the times it brought Safari to the front, and another agent's does not", async () => {
+  const raised = spyOn(front, "input").mockResolvedValue({});
+  try {
+    const [a, b] = [agent(), agent()];
+    const tab = await open(a.pid, "https://a.example/");
+    await open(b.pid, "https://b.example/");
+    await call(a.pid, "activate", { tab });
+    await call(a.pid, "activate", { tab });
+    expect([(await listed(a.pid))?.raised, (await listed(b.pid))?.raised]).toEqual([2, 0]);
+    expect(raised.mock.calls.filter(([args]) => args[0] === "activate")).toHaveLength(2);
+  } finally {
+    mock.restore();
+  }
+});
+
+// 10-07: an agent showed 0 tabs while a tab it opened sat in a window apart
+// from its own.
+test("an agent's tab count takes in the tabs it opened outside its window", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://a.example/1");
+  await open(a.pid, "https://a.example/2");
+  s.tabs.get(tab)!.windowId = 7;
+  expect((await listed(a.pid))?.tabs).toBe(2);
 });

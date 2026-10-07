@@ -155,6 +155,7 @@ export async function spaceWindow(group?: string): Promise<Space> {
         spaces.set(key, space);
         watch(space);
         save();
+        note("window opened", { name, owner: owner ?? null });
         return space;
       } finally {
         opening.delete(id);
@@ -324,6 +325,7 @@ async function end(space: Space) {
   if (spaces.get(space.key) === space) spaces.delete(space.key);
   space.unwatch?.();
   space.unwatch = undefined;
+  note("window ended", { name: space.name, owner: space.owner ?? null });
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();

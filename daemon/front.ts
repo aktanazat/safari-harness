@@ -39,8 +39,19 @@ export type TabOps = { tabs(): Promise<TabInfo[]>; activate(tab: number): Promis
 let raisedAt = 0;
 export const lastRaised = () => raisedAt;
 
+// Who hears of each time: the daemon's flight records (mission.ts) count it
+// for the agent of the call. On 10-07 Safari came in front about 30 times
+// in 30 minutes over his terminal, and no record said for whom. Real input
+// raises Safari in its caller's process and through the daemon's activate,
+// so the daemon hears each time once.
+let heard: () => void = () => {};
+export function onRaised(listener: () => void): void {
+  heard = listener;
+}
+
 export async function raiseSafari(): Promise<void> {
   raisedAt = Date.now();
+  heard();
   await input(["activate", SAFARI]);
 }
 

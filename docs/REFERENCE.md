@@ -174,13 +174,15 @@ Safari is the user's everyday browser, so treat his tabs as his.
 ## Mission control: the user watches and holds you
 
 The page your window opens on is live. While it is on screen it shows the
-task, your process and how long it has run, the other tabs in the window,
-and your last 50 calls, newest first, with what each did and how long it
-took. Its status reads working, waiting on the user (a `handoff` waits for
-him), paused, the user is driving, stopped, or ended.
+task, your process and how long it has run, how many times you brought
+Safari to the front of his screen, the other tabs in the window, and your
+last 50 calls, newest first, with what each did and how long it took. Its
+status reads working, waiting on the user (a `handoff` waits for him),
+paused, the user is driving, stopped, or ended.
 `http://127.0.0.1:37334/agents` lists every agent that used Safari in the
-last hour, those at work first, each with a link to its window's page and
-the same buttons.
+last hour, those at work first, each with the tabs it opened that are
+still open, how many times it brought Safari to the front, a link to its
+window's page, and the same buttons.
 `safari agents` prints that list (`--json` for the whole answer).
 
 - Pause: calls already running finish. Your next call waits up to 90 s for
@@ -1542,9 +1544,10 @@ its own `safari` command.
 - `safari status` shows the daemon's recent events, one a line: its starts
   and stops and why, the extension connecting and disconnecting, requests
   the extension never answered, pages that got a fresh copy of the
-  harness's script, pages it could not be put in, and the user pausing,
-  resuming, stopping, or taking over an agent from its page. `--json`
-  prints the whole health answer.
+  harness's script, pages it could not be put in, agent windows opening
+  and ending, the tabs it closed and why, each time an agent brought
+  Safari to the front, and the user pausing, resuming, stopping, or taking
+  over an agent from its page. `--json` prints the whole health answer.
 - When the extension reloads (every deploy of it), a page already open
   gets a fresh copy of the harness's script at the next call to it, and
   that copy stops the one left behind: its page listeners come off and a

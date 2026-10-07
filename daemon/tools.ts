@@ -242,6 +242,14 @@ export function closeTabsOf(owner: number): void {
   orphan(owner);
 }
 
+// How many tabs owner opened that are still open, wherever they are
+// (mission.ts).
+export function tabsOpenedBy(owner: number | undefined): number {
+  let n = 0;
+  for (const t of harnessTabs.values()) if (t.owner === owner) n++;
+  return n;
+}
+
 // owner handed its turn back to the user (main.ts, told by omp/index.ts):
 // it is done with its tabs, as if it had left them for IDLE_MS, and its
 // window goes once they have (spaces.ts). Before, they stayed open until
@@ -300,7 +308,9 @@ async function sweep() {
       else {
         forget(tab);
         // endTurn marks the tabs it is done with as used at 0
-        recordClosed(tab, t.orphan ? "once its agent exited or was stopped" : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused", shown.get(tab));
+        const why = t.orphan ? "once its agent exited or was stopped" : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused";
+        recordClosed(tab, why, shown.get(tab));
+        note("tab closed", { tab, owner: t.owner ?? null, why });
       }
     } catch (e) {
       console.error(`[safari-harness] closing tab ${tab} failed:`, e instanceof Error ? e.message : e);
@@ -540,8 +550,11 @@ function withNotes(result: object): object {
   return { ...rest, ...(slug === undefined ? {} : { guide: `safari guide ${slug}` }), ...(notes === undefined ? {} : { notes }), ...(space === undefined ? {} : { space }) };
 }
 
-// The latest whole-page snapshot of each tab, for diff.
+// The latest whole-page snapshot of each tab, for diff: those of the last
+// SNAPSHOTS_KEPT tabs snapshotted, since nothing tells the daemon when a
+// tab the user or a page closes goes, and it kept every one for good.
 const lastSnapshot = new Map<number, string>();
+const SNAPSHOTS_KEPT = 50;
 
 export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
@@ -556,7 +569,10 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   if (missed) return { ...snap, note: missed };
   if (opts.root !== undefined || opts.query !== undefined) return snap;
   const before = lastSnapshot.get(tab);
+  // a Map keeps its keys in the order they went in, the oldest first
+  lastSnapshot.delete(tab);
   lastSnapshot.set(tab, snap.snapshot);
+  if (lastSnapshot.size > SNAPSHOTS_KEPT) lastSnapshot.delete(lastSnapshot.keys().next().value!);
   if (!opts.diff || before === undefined) return snap;
   return { ...snap, snapshot: lineDiff(before.split("\n"), snap.snapshot.split("\n")) || "(no change)" };
 }
