@@ -13,8 +13,10 @@ Tabs
   what one call binds, your next reads. Keep one `--session` name for a
   task apart, even after "that tab is gone" (`openTab` again in it);
   `openTab` and a new session name what you already hold.
-- Your tabs close when your turn ends or after 20 minutes unused. `keep`
-  one that waits on him, or that you need after a long step.
+- Your tabs close when your turn ends or after 20 minutes unused; your next
+  call on one opens its page again, fresh, and an action there asks you to
+  snapshot first. `keep` one that waits on him, or that you need after a
+  long step.
 - When a call says he paused or stopped you, do what it says.
 
 Turns

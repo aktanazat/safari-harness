@@ -77,7 +77,7 @@ export function splitNews(value: News): { line: string; rest: object } | null {
   if (!replaced && !popup) return null;
   const opened = popup ? `opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}` : "";
   const lines = [
-    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}: Safari gave it a new id; use ${replaced.to}`] : []),
+    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}; use ${replaced.to}`] : []),
     // a popup of a tab the agent kept is the user's, as that tab is
     ...(popup ? [popup.kept ? `a tab you kept ${opened}; it stays open for the user` : `your page ${opened}; it is yours to use and close`] : []),
   ];

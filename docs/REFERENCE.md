@@ -130,7 +130,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   a few seconds after your agent process exits (claude, codex, a bun or
   python script, or the terminal's login session); the daemon keeps that
   list across its own restarts. A tab nobody has used for 20 minutes
-  closes too, unless the user has it in front.
+  closes too, unless the user has it in front. Your next call on a tab of
+  yours closed at your turn's end or unused opens its page again in your
+  window, loaded fresh under a new id; the answer carries a `note` and
+  `replaced: {from, to}`, and the old id still reaches it. An action there
+  (a click, typing) does not run, since its refs and anything typed are
+  gone: snapshot it, then act. `goto`, `eval`, and `scroll` run.
 - Keep a tab only while it waits on the user: a page he asked to see, or a
   form waiting on his answer. `keep: true` on `open` (CLI `safari open
   <url> --keep`), or `keep {tab}` once you know (CLI `safari keep <tab>`),
@@ -1609,7 +1614,9 @@ its own `safari` command.
   on its own stays the user's until the page reloads.
 - "that tab is gone": when the harness closed the tab itself, the error
   says why (a close call, the end of your turn, 20 minutes unused, or its
-  agent exited), when, and what it showed: open it again. The plain
+  agent exited), when, and what it showed: open it again. A tab of yours
+  closed at your turn's end or unused is not gone: your next call on it
+  opens it again (Tabs, above). The plain
   message means the user closed it or Safari quit. Keep a tab you need
   past your turn, or past a long step, with `keep`. An extension reload
   loses no tab: old ids still reach every tab whose page ran the harness's

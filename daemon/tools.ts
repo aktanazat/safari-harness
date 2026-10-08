@@ -191,15 +191,18 @@ let sweeper: Timer | undefined;
 // for a later call that names it (goneWhy). Late in September a chat tab
 // closed while its agent waited 50 minutes on a subagent, and "that tab is
 // gone" alone sent it after an extension restart: 10 turns to recover.
-type Closed = { why: string; at: number; url?: string };
+// agent: the agent it was closed under, as that agent's turn ended or
+// after 20 minutes unused; that agent's next call to it opens it again
+// (reopen).
+type Closed = { why: string; at: number; url?: string; agent?: number };
 const closedTabs = new Map<number, Closed>();
 const CLOSED_KEPT = 500;
 
-function recordClosed(tab: number, why: string, url?: string) {
+function recordClosed(tab: number, why: string, url?: string, agent?: number) {
   // what was typed there as a secret goes with it (redact.ts)
   tabSecrets.delete(tab);
   closedTabs.delete(tab);
-  closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }) });
+  closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }), ...(agent === undefined ? {} : { agent }) });
   // a Map keeps its keys in the order they went in, the oldest first
   if (closedTabs.size > CLOSED_KEPT) closedTabs.delete(closedTabs.keys().next().value!);
 }
@@ -309,7 +312,7 @@ async function sweep() {
         forget(tab);
         // endTurn marks the tabs it is done with as used at 0
         const why = t.orphan ? "once its agent exited or was stopped" : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused";
-        recordClosed(tab, why, shown.get(tab));
+        recordClosed(tab, why, shown.get(tab), t.orphan ? undefined : t.owner);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }
     } catch (e) {
@@ -2105,10 +2108,43 @@ export function formatResult(value: unknown): string {
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
   try {
-    return redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)))));
+    const back = await reopen(call.tool, call.args);
+    const result = redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)))));
+    return back === undefined ? result : beside(result, "note", back);
   } catch (e) {
     throw await unopened(goneWhy(e, call.args.tab));
   }
+}
+
+// A tab the harness closed under its agent, as the agent's turn ended or
+// after 20 minutes unused, opens again on the page it showed once that
+// agent names it, in the agent's window, and its old id goes on naming it
+// (continuity.ts). On 10-07 Akyl's tabs closed as its turn ended three
+// times while the user typed his next ask, and each cost a failed read, an
+// open, and a wait to find the page again; from 10-02 to 10-05 six tabs a
+// 99point agent kept by id in files closed after 20 minutes unused, and
+// each failed its next call. A read runs on the fresh page. An action does
+// not, since what earlier ones entered there is gone (a form in progress, a
+// checkout): it says so, and the agent looks first. A tab the agent or the
+// user closed stays closed, another agent's never opens, and neither does
+// one a caller's own steps name (hidden tools: real_input's in input.ts).
+const FRESH_ACTIONS: Record<string, true> = { goto: true, eval: true, scroll: true };
+
+async function reopen(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
+  if (tool === "close" || TOOLS[tool].hidden || args.tab === undefined || args.tab === "front") return undefined;
+  const tab = followTab(Number(args.tab));
+  const closed = closedTabs.get(tab);
+  const agent = currentOwner();
+  if (closed?.agent === undefined || closed.agent !== agent || !closed.url?.startsWith("http")) return undefined;
+  closedTabs.delete(tab);
+  const t = await openIn(await spaceWindow(), closed.url, true, true);
+  own(t.id, agent);
+  const held = harnessTabs.get(t.id);
+  if (held) held.url = t.url ?? closed.url;
+  recordReplaced(tab, t.id);
+  const was = `tab ${args.tab} had closed ${closed.why} at ${localTime(new Date(closed.at))}; it is open again on ${redactUrl(closed.url)}, loaded fresh`;
+  if (acts(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new Error(`${was} as tab ${t.id}, so its refs and anything typed there are gone: snapshot it, then act`);
+  return was;
 }
 
 // The extension knows only that a tab is gone; one the harness closed

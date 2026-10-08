@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { ReplSession } from "./repl.ts";
+import { windowOwners } from "./spaces.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 1, 2, 3...; a click in tab 1
@@ -13,6 +14,8 @@ import { callTool, endTurn, loadTabs } from "./tools.ts";
 // user has in front stays when the close is for a tab left idle. The tab
 // list is showing, and a call to a closed tab fails as the extension's does.
 const closes: unknown[][] = [];
+const opens: unknown[][] = [];
+const relays: unknown[][] = [];
 const gone = new Set<number>();
 let showing: { id: number; url: string; windowId?: number }[] = [];
 let nextTab = 0;
@@ -37,6 +40,8 @@ const ext = {
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     const value = answer(op, args);
+    if (op === "tabs.open") opens.push(args);
+    if (op === "relay") relays.push(args);
     if (op === "tabs.close" && !(typeof value === "object" && value !== null && "front" in value)) gone.add(Number(args[0]));
     bridge.handleMessage(JSON.stringify(op === "relay" && gone.has(Number(args[0])) ? { id, error: "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user" } : { id, value }));
     if (op === "tabs.close") {
@@ -138,8 +143,9 @@ test("a repl session's end closes the tabs it opened, but not one kept for the u
 
 // Late in September a chat tab closed while its agent waited 50 minutes on
 // a subagent, and "that tab is gone" alone cost it 10 turns to recover.
-test("a call to a tab the harness closed says why and when, and what the tab showed", async () => {
-  const agent = Bun.spawn(["sleep", "60"]);
+// Another agent's call to such a tab is not that agent's to open again.
+test("another agent's call to a tab the harness closed says why and when, and what the tab showed", async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
   await runAs(agent.pid, () => callTool("open", { url: "https://chat.example/c/1", background: true }));
   const tab = nextTab;
   showing = [{ id: tab, url: "https://chat.example/c/1" }];
@@ -147,9 +153,58 @@ test("a call to a tab the harness closed says why and when, and what the tab sho
   await closedAs("idle", [tab]);
   await settled();
   showing = [];
-  const later = runAs(agent.pid, () => callTool("extract", { tab }));
+  const later = runAs(other.pid, () => callTool("extract", { tab }));
   await expect(later).rejects.toThrow(new RegExp(`^that tab is gone: tab ${tab} was closed as its agent's turn ended at .+ \\(it showed https://chat\\.example/c/1\\); open it again$`));
+  expect(nextTab).toBe(tab);
   agent.kill();
+  other.kill();
+});
+
+// 10-07: Akyl's tabs closed as its turn ended three times while the user
+// typed his next ask; each cost a failed read, an open, and a wait.
+test("an agent's read of its tab closed as its turn ended opens the page again in its window, and the old id names the new tab", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://app.example/board", background: true });
+  const tab = nextTab;
+  showing = [{ id: tab, url: "https://app.example/board/42" }];
+  endTurn(agent.pid);
+  await closedAs("idle", [tab]);
+  await settled();
+  showing = [];
+  const read = (await as("extract", { tab })) as { note?: string; replaced?: { to: number } };
+  const again = nextTab;
+  const [url, background, windowId] = opens.at(-1) ?? [];
+  expect([url, background, windowOwners().get(Number(windowId))]).toEqual(["https://app.example/board/42", true, agent.pid]);
+  expect(read.replaced?.to).toBe(again);
+  expect(read.note).toMatch(new RegExp(`^tab ${tab} had closed as its agent's turn ended at .+; it is open again on https://app\\.example/board/42, loaded fresh$`));
+  await as("extract", { tab });
+  expect(nextTab).toBe(again);
+  agent.kill();
+  await closedAs("owned", [again]);
+});
+
+// A fresh page has lost what earlier actions entered (a form in progress):
+// an action on it would act on what the agent never saw.
+test("an agent's action on its tab closed after its turn opens the page again but does not act", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://shop.example/checkout", background: true });
+  const tab = nextTab;
+  showing = [{ id: tab, url: "https://shop.example/checkout" }];
+  endTurn(agent.pid);
+  await closedAs("idle", [tab]);
+  await settled();
+  showing = [];
+  await expect(as("click", { tab, ref: "Place order" })).rejects.toThrow(/; it is open again on https:\/\/shop\.example\/checkout, loaded fresh as tab \d+, so its refs and anything typed there are gone: snapshot it, then act$/);
+  const again = nextTab;
+  expect(opens.at(-1)?.[0]).toBe("https://shop.example/checkout");
+  expect(relays.filter(([to, op]) => to === again && op === "click")).toEqual([]);
+  // the next call, a look, goes to the page opened again
+  expect(await as("extract", { tab })).not.toHaveProperty("note");
+  expect(relays.at(-1)?.slice(0, 2)).toEqual([again, "extract"]);
+  agent.kill();
+  await closedAs("owned", [nextTab]);
 });
 
 // From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
