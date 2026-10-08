@@ -1191,7 +1191,39 @@ async function freePath(dir: string, name: string): Promise<string> {
   return join(dir, candidate);
 }
 
+// Extensions that name a file, never a web page. A page's address can end
+// like a file name (whois/example.com; .in, .au and .md are countries), so
+// only these count.
+const FILE_EXTENSIONS: Record<string, true> = {
+  png: true, jpg: true, jpeg: true, gif: true, webp: true, heic: true, heif: true, avif: true, tif: true, tiff: true, bmp: true, svg: true, ico: true,
+  pdf: true, doc: true, docx: true, xls: true, xlsx: true, ppt: true, pptx: true, key: true, pages: true, numbers: true, odt: true, ods: true, odp: true, rtf: true, epub: true,
+  csv: true, tsv: true, txt: true, json: true, xml: true, ics: true, vcf: true,
+  zip: true, gz: true, tgz: true, tar: true, bz2: true, xz: true, "7z": true, rar: true, dmg: true, pkg: true, iso: true,
+  mp3: true, m4a: true, wav: true, aac: true, flac: true, ogg: true, opus: true, mp4: true, m4v: true, mov: true, webm: true, mkv: true, avi: true,
+  woff: true, woff2: true, ttf: true, otf: true, exe: true, msi: true, apk: true, ipa: true,
+};
+
+// The file asked for, by the extension out ends with, else the one the
+// url's path ends with, when it is a file's (FILE_EXTENSIONS).
+function askedExtension(out: string | undefined, url: string): string | undefined {
+  let name = out !== undefined && extname(out) ? out : "";
+  if (!name && url) {
+    try { name = new URL(url).pathname; } catch { name = ""; }
+  }
+  const ext = extname(name).slice(1).toLowerCase();
+  return Object.hasOwn(FILE_EXTENSIONS, ext) ? ext : undefined;
+}
+
+// A web page in place of a file asked for by its extension is refused:
+// on 10-07 a Slack image fetched without a signed-in tab came back as
+// Slack's sign-in page, saved as a .png, with exit 0. An out ending in
+// .html keeps the page.
 async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string) {
+  const asked = askedExtension(out, url);
+  if (asked !== undefined && /^text\/html\b/i.test(f.type)) {
+    const went = f.url && f.url !== url ? ` (it went to ${f.url})` : "";
+    throw new Error(`${url || "the link"} answered a web page${went}, not a .${asked} file; nothing was saved. A sign-in page is the usual cause: download it with the tab of a page signed in to that site, or give out a name ending in .html to keep the page`);
+  }
   const path = out ?? await freePath(folder, nameOf(f, url));
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, Buffer.from(f.data, "base64"));
