@@ -606,7 +606,7 @@ export class ReplSession {
     mkdirSync(this.cwd, { recursive: true });
     this.#invoke = opts.invoke ?? defaultInvoke;
     this.#quiet = opts.quiet === true;
-    this.kit = new SiteKit(this.#invoke);
+    this.kit = new SiteKit(this.#invoke, undefined, this.cwd);
     this.#ctx = vm.createContext({});
     this.#g = vm.runInContext("globalThis", this.#ctx) as Record<string, unknown>;
     Object.assign(this.#g, this.#globals());

@@ -35,8 +35,9 @@ export class SiteKit {
   readonly invoke: Invoke;
 
   // owned is told about each tab opened, so the REPL can close it with the
-  // session even if close() is never reached.
-  constructor(private send: Invoke, private owned: (tab: number) => void = () => {}) {
+  // session even if close() is never reached. cwd is the session's folder,
+  // where a relative path a site saves a file at begins, as with its fs.
+  constructor(private send: Invoke, private owned: (tab: number) => void = () => {}, readonly cwd = process.cwd()) {
     this.invoke = async (tool, args) => {
       try {
         return await send(tool, args);
