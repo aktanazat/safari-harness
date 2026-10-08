@@ -884,6 +884,49 @@ await withPage("<p>page</p>", `${PAGE_VAR_JS}; ${TRUSTED_TYPES_JS}`, async (tab)
   check("eval page: true runs on a page that demands Trusted Types", r === 42, r);
 });
 
+// A page whose policy forbids eval may still take a script tag: Robinhood's
+// takes one with the nonce its own scripts carry, and blob:, Slack's takes
+// blob:. On 10-07 four page: true evals were refused on the two. Each page
+// here sets its global from a script its policy takes; page: true reads it.
+// A page that takes neither still refuses page: true and says so, while
+// eval without page, in the extension's world, still runs.
+{
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const SETS_GLOBAL = "window.pageSecret = 41";
+  const POLICY: Record<string, string> = { "/nonce": `script-src 'nonce-${nonce}'`, "/blob": "script-src 'self' blob:", "/self": "script-src 'self'" };
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/global.js") return new Response(SETS_GLOBAL, { headers: { "content-type": "text/javascript" } });
+      const script = path === "/nonce" ? `<script nonce="${nonce}">${SETS_GLOBAL}</script>` : '<script src="/global.js"></script>';
+      return new Response(`<title>policy ${path}</title>${script}`, { headers: { "content-type": "text/html", "content-security-policy": POLICY[path] ?? "default-src 'none'" } });
+    },
+  });
+  // page: true's answer on the page at path, or its error, and eval's without page
+  async function onPolicyPage(path: string) {
+    const tab = (await call("open", { url: `http://127.0.0.1:${server.port}${path}`, background: true })).id as number;
+    try {
+      const page: unknown = await call("eval", { tab, page: true, expression: "window.pageSecret + 1" }).then((r) => r.result, (e: Error) => e.message);
+      const title: unknown = await call("eval", { tab, expression: "document.title" }).then((r) => r.result, (e: Error) => e.message);
+      return { page, title };
+    } finally {
+      await call("close", { tab });
+    }
+  }
+  try {
+    const withNonce = await onPolicyPage("/nonce");
+    check("eval page: true runs on a page whose policy takes only scripts with its nonce", withNonce.page === 42, withNonce);
+    const withBlob = await onPolicyPage("/blob");
+    check("eval page: true runs on a page whose policy takes blob: scripts but no eval", withBlob.page === 42, withBlob);
+    const neither = await onPolicyPage("/self");
+    check("eval page: true on a page whose policy takes neither says so, and eval without page still runs",
+      String(neither.page).startsWith("eval: this page's security policy blocks eval in its own world (page: true)") && neither.title === "policy /self", neither);
+  } finally {
+    await server.stop(true);
+  }
+}
+
 // Safari passes results on as JSON and aborts the whole browser on a NaN or
 // Infinity; a result holding them must come back, with Safari still up. Its
 // native side does not keep an object's key order.

@@ -694,18 +694,67 @@ function pageCapture(kind, cmd) {
 
 // Runs in the page's own world, so it must be self-contained. A page that
 // demands Trusted Types (YouTube, Google) refuses a plain string, so the
-// code goes through a policy of our own; a page whose policy forbids eval
-// outright, or names the only policies it allows, still refuses it.
+// code goes through a policy of our own. A page whose policy forbids eval
+// may still run a script tag of its own kind: one with the nonce its own
+// scripts carry, or one loaded from a blob: address. On 10-07 four page:
+// true evals were refused on Robinhood, whose policy takes both, and on
+// Slack, which takes blob:. Such a tag hands its value back through a
+// page global. A page that allows neither still refuses it.
 async function pageEval(src) {
   const code = `return (${src})`;
+  const refused = (e) => /unsafe-eval|Content Security Policy/i.test(String(e && e.message));
+  async function asTag(e) {
+    const key = `__safariHarness${Math.random().toString(36).slice(2)}`;
+    const body = `window[${JSON.stringify(key)}] = (async () => { ${code} })();`;
+    let policy;
+    const typed = (kind, s) => {
+      if (!globalThis.trustedTypes) return s;
+      try {
+        policy ??= trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (x) => x, createScriptURL: (x) => x });
+        return kind === "url" ? policy.createScriptURL(s) : policy.createScript(s);
+      } catch {
+        return s;
+      }
+    };
+    const nonce = [...document.querySelectorAll("script[nonce]")].map((s) => s.nonce).find(Boolean);
+    try {
+      if (nonce) {
+        const tag = document.createElement("script");
+        tag.nonce = nonce;
+        tag.textContent = typed("script", body);
+        document.documentElement.append(tag);
+        tag.remove();
+        if (key in window) return await window[key];
+      }
+      const url = URL.createObjectURL(new Blob([body], { type: "text/javascript" }));
+      try {
+        const { promise: loaded, resolve } = Promise.withResolvers();
+        const tag = document.createElement("script");
+        tag.onload = () => { tag.remove(); resolve(true); };
+        tag.onerror = () => { tag.remove(); resolve(false); };
+        tag.src = typed("url", url);
+        document.documentElement.append(tag);
+        const ran = await loaded;
+        if (ran && key in window) return await window[key];
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      throw e;
+    } finally {
+      delete window[key];
+    }
+  }
   try {
     let v;
     try {
       v = await new Function(code)();
     } catch (e) {
-      if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
-      const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
-      v = await new Function(policy.createScript(code))();
+      if (refused(e)) v = await asTag(e);
+      else {
+        if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
+        const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
+        v = await new Function(policy.createScript(code))();
+      }
     }
     // Safari passes this result on as JSON and aborts the whole browser on a
     // NaN or Infinity anywhere in it, so it leaves as plain JSON.

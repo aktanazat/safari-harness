@@ -408,10 +408,13 @@ Escalate in this order:
    variables and functions are (YouTube and Google included). Code that
    starts with a frame's ref prefix, such as `f3:`, runs in that embedded
    frame. A page whose security policy forbids eval runs it in its own
-   world instead; where that is refused too, the error says to read with
-   `snapshot`, `extract`, or `data`. A page that refuses `page: true` may
-   allow eval without it, which sees the DOM, localStorage, and `fetch`
-   with the page's cookies: the error says so. Outside `page: true`, `sh` has
+   world instead. There, a policy that forbids eval but lets the page add
+   a script tag carrying its scripts' nonce, or one from a `blob:` address
+   (Robinhood, Slack), runs it as such a tag; where that is refused too,
+   the error says to read with `snapshot`, `extract`, or `data`. A page
+   that refuses `page: true` may allow eval without it, which sees the
+   DOM, localStorage, and `fetch` with the page's cookies: the error says
+   so. Outside `page: true`, `sh` has
    helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
    open shadow roots too, `sh.text(el)` reads an element's text as
    `extract` does (the whole page without `el`), `sh.jsonld()` lists the
