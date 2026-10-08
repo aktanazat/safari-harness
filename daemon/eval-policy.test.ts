@@ -46,8 +46,10 @@ test("code refused in both worlds fails with words that say what to use instead"
   await expect(run("'strict csp'")).rejects.toThrow(new Error(BLOCKED));
 });
 
-test("page: true runs only in the page's world, and its refusal says what to use instead", async () => {
-  await expect(run("'csp'", true)).rejects.toThrow(new Error(BLOCKED));
+// 10-07: page: true on Robinhood was refused twice with only "use
+// snapshot, extract, or data", where eval without page would have run.
+test("page: true runs only in the page's world, and its refusal points to eval without page", async () => {
+  await expect(run("'csp'", true)).rejects.toThrow("Without page, eval runs in the extension's world, which this page allows");
   expect(ran).toEqual([]);
 });
 

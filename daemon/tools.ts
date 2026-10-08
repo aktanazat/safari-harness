@@ -700,8 +700,13 @@ export async function history(opts: { tab?: number; do: string }) {
 // Trusted Types still runs it. A page whose security policy forbids eval
 // refuses it in the extension's world before any of it runs (content.js),
 // so it runs in the page's world instead, once; where that refuses too, the
-// error says to read the page another way.
+// error says to read the page another way. A page that refuses only its own
+// world still runs eval without page: on 10-07 two agents' page: true on
+// Robinhood were refused and told only to use snapshot, extract, or data,
+// where the extension's world, which read its localStorage and fetched its
+// API for another agent that night, would have done.
 const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+const PAGE_EVAL_BLOCKED = "this page's security policy blocks eval in its own world (page: true). Without page, eval runs in the extension's world, which this page allows: it sees the DOM, localStorage, and fetch with the page's cookies, not the page's script variables. net lists the page's own requests with their bodies";
 const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
 
 export async function evaluate(opts: { tab?: number; expression: string; page?: boolean }) {
@@ -710,11 +715,11 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   const code = asExpression(source);
   // The extension gets eval's limit too, and answers first, as through
   // bridge.tab: code past it is told so, not that the request timed out.
-  const inPage = () => bridge.request("evalPage", [tab, code, Number(frame), 30000], 32000).catch((e: unknown) => {
-    throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(EVAL_BLOCKED) : e;
+  const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), 30000], 32000).catch((e: unknown) => {
+    throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(refused) : e;
   });
-  const answer = opts.page ? inPage() : bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
-    if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage();
+  const answer = opts.page ? inPage(PAGE_EVAL_BLOCKED) : bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
+    if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage(EVAL_BLOCKED);
     throw e;
   });
   // eval's own world gets no animation frame while its tab is hidden: the
