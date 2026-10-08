@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -22,6 +22,7 @@ let nextTab = 0;
 let nextWindow = 0;
 let hisFront: number | undefined;
 let onClose = () => {};
+const SIGN_IN_PAGE = { name: "", type: "text/html", size: 13, disposition: null, url: "https://slack.com/signin", data: Buffer.from("<html>sign in").toString("base64") };
 function answer(op: string, args: unknown[]): unknown {
   if (op === "windows.open") return { windowId: ++nextWindow, tabId: 900 + nextWindow };
   if (op === "tabs.open") return { id: ++nextTab, windowId: args[2] };
@@ -34,9 +35,13 @@ function answer(op: string, args: unknown[]): unknown {
   if (op === "probe") return [];
   if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
   // a page's fetch carries its site's cookies; the extension's own fetch,
-  // without them, gets the site's sign-in page
-  if (op === "relay" && args[1] === "fetchFile") return { name: "", type: "image/png", size: 4, disposition: null, url: (args[2] as string[])[0], data: Buffer.from("png!").toString("base64") };
-  if (op === "fetchFile") return { name: "", type: "text/html", size: 13, disposition: null, url: "https://slack.com/signin", data: Buffer.from("<html>sign in").toString("base64") };
+  // without them, gets the site's sign-in page, and so does a page's on a
+  // site the user is signed out of
+  if (op === "relay" && args[1] === "fetchFile") {
+    const url = (args[2] as string[])[0];
+    return url.includes("/signed-out/") ? SIGN_IN_PAGE : { name: "", type: "image/png", size: 4, disposition: null, url, data: Buffer.from("png!").toString("base64") };
+  }
+  if (op === "fetchFile") return SIGN_IN_PAGE;
   if (op === "tabs.close" && args[1] === "idle" && args[0] === hisFront) return { ok: false, front: true };
   return { ok: true };
 }
@@ -235,6 +240,19 @@ test("a download of a url with no tab comes through the agent's own tab on that 
   other.kill();
   await closedAs("owned", [tab, theirs]);
   showing = [];
+});
+
+// The same night, before that, a sign-in page came back for such an image
+// and was saved as the .png, with exit 0. Where the user is signed out of
+// the site, the tab opened on it gets the sign-in page too.
+test("a download of a url with no tab from a site the user is signed out of fails naming where it went, and saves nothing", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const dir = mkdtempSync(join(tmpdir(), "harness-download-"));
+  const url = "https://files.slack.com/files-pri/T1-F2/signed-out/shot.png";
+  await expect(runAs(agent.pid, () => callTool("download", { url, out: join(dir, "files", "shot.png") }))).rejects.toThrow(`${url} answered a web page (it went to https://slack.com/signin), not a .png file; nothing was saved`);
+  expect(existsSync(join(dir, "files"))).toBe(false);
+  agent.kill();
+  await closedAs("owned", [nextTab]);
 });
 
 // From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
