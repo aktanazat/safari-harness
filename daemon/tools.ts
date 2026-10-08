@@ -3,7 +3,7 @@
 
 import { bridge } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeOf, settledChallenge, type Challenge } from "./challenge.ts";
+import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
 import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
@@ -870,10 +870,11 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 // GEICO card form and a Touch ID prompt each held a handoff to its 110 s).
 // Text the page shows already is refused, since it would end the handoff at
 // once. If they are still on the tab, they get back the tab and app they had
-// in front. A block ends a handoff (no one can clear it), and so do 5
-// minutes with no call waiting. Once over, it answers only the calls that
-// carry its id (the caller's own later slices, which may come after it
-// ends), so they do not start another.
+// in front. A block ends a handoff (no one can clear it), and so does
+// idleMs with no call waiting: 5 minutes, or 30 for one a background call
+// started, whose agent checks back between its other steps. Once over, it
+// answers only the calls that carry its id (the caller's own later slices,
+// and a background call's check), so they do not start another.
 type Handoff = {
   id: number;
   start: number;
@@ -888,9 +889,13 @@ type Handoff = {
   alerted?: string;
   waiting: number;
   calledAt: number;
+  idleMs: number;
+  // Cloudflare's wall let Safari through before the user was called
+  byItself?: true;
 };
 const handoffs = new Map<number, Handoff>();
 const HANDOFF_IDLE_MS = 5 * 60_000;
+const BACKGROUND_IDLE_MS = 30 * 60_000;
 let handoffCount = 0;
 
 const blocked = (c: Challenge) => `${c.kind} turned this browser away: the page is a block, not a check, so no one can clear it. Try later or another way in.`;
@@ -900,18 +905,36 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
   try {
     // A look for until's text takes up to a second; a page that cannot
     // answer (it is loading) does not show it yet.
-    const [tabs, initial, before] = await Promise.all([listTabs(), challengeOf(tab), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
+    const [tabs, found, before] = await Promise.all([listTabs(), challengeOf(tab), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
     const first = tabs.find((t) => t.id === tab);
     if (!first) throw gone;
-    if (initial?.where === "block") throw new Error(blocked(initial));
+    if (found?.where === "block") throw new Error(blocked(found));
     if (before) throw new Error(`the page already shows "${until}": give until text it shows only once the user is done`);
+    let initial = found;
+    // Cloudflare's wall often lets Safari through by itself (challenge.ts),
+    // so the user hears only of one still up PASS_MS later, or of the check
+    // that takes its place.
+    if (until === undefined && passesByItself(initial)) {
+      const { challenge } = await settledChallenge(tab, PASS_MS);
+      tab = followTab(tab);
+      if (challenge?.where === "block") throw new Error(blocked(challenge));
+      if (challenge === undefined) {
+        const now = (await listTabs()).find((t) => t.id === tab);
+        if (!now) throw gone;
+        h.now = { url: now.url, title: now.title };
+        h.done = true;
+        h.byItself = true;
+        return;
+      }
+      initial = challenge ?? initial;
+    }
     h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
     const giveBack = await show(tab, { tabs: listTabs, activate: activateTab });
     notify(why);
     h.begun.resolve();
     // the first check the page answered with; null until it answers
     let seen = initial;
-    while (h.waiting > 0 || Date.now() - h.calledAt < HANDOFF_IDLE_MS) {
+    while (h.waiting > 0 || Date.now() - h.calledAt < h.idleMs) {
       const [, met] = await Promise.all([Bun.sleep(1000), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
       // Safari may have swapped the tab for another (continuity.ts)
@@ -942,14 +965,15 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
 // Starts or joins the tab's handoff and waits up to ms for it to end. The
 // first call that finds the user away (as the caller measured) is told to
 // alert them (alert: true) and returns at once; it reports how that went as
-// alerted, so no other call sends one.
-async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; alerted?: string; id?: number; until?: string }) {
+// alerted, so no other call sends one. background, on the call that starts
+// it, keeps it watched BACKGROUND_IDLE_MS with no call waiting.
+async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; alerted?: string; id?: number; until?: string; background?: true }) {
   let h = handoffs.get(tab);
   if (h && (h.done || h.error !== undefined) && h.id !== o.id) h = undefined;
   const joined = h !== undefined;
   if (!h) {
-    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > HANDOFF_IDLE_MS && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
-    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now() };
+    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > x.idleMs && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
+    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), idleMs: o.background ? BACKGROUND_IDLE_MS : HANDOFF_IDLE_MS };
     handoffs.set(tab, h);
     void watchHandoff(tab, why, h, o.until);
   }
@@ -963,7 +987,7 @@ async function handoffWait(tab: number, why: string, o: { ms: number; away: bool
     if (alert) session.alerted = "sending";
     else if (o.ms > 0) await Promise.race([session.over.promise, new Promise<void>((r) => { timer = setTimeout(r, Math.min(o.ms, 110000)); })]);
     if (session.error !== undefined) throw new Error(session.error);
-    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(joined ? { joined } : {}), ...(session.alerted ? { alerted: session.alerted } : {}), ...(alert ? { alert } : {}) };
+    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(session.byItself ? { byItself: true } : {}), ...(joined ? { joined } : {}), ...(session.alerted ? { alerted: session.alerted } : {}), ...(alert ? { alert } : {}) };
   } finally {
     clearTimeout(timer);
     session.waiting--;
@@ -1769,8 +1793,9 @@ export const TOOLS: Record<string, Tool> = {
   },
   // The daemon's half of handoff (handoff.ts runs in the caller). away says
   // the caller found the user away; alerted reports how its alert went; id
-  // names the handoff the caller's earlier call started or joined; until,
-  // from the call that starts it, is the text that shows once they are done.
+  // names the handoff the caller's earlier call started or joined; until
+  // and background, from the call that starts it, are the text that shows
+  // once they are done and a handoff watched with no call waiting.
   handoff_wait: {
     desc: "Start or join the tab's handoff and wait up to ms for the user.",
     params: {
@@ -1781,10 +1806,11 @@ export const TOOLS: Record<string, Tool> = {
       alerted: { type: "string", description: "how the alert to the user's phone went" },
       id: { type: "number", description: "the handoff an earlier call returned" },
       until: { type: "string", description: "text the page shows once the user is done" },
+      background: { type: "boolean", description: "started by a call that does not wait for the user" },
     },
     required: ["tab", "why", "ms"],
     hidden: true,
-    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }) }),
+    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }), ...(a.background === true ? { background: true as const } : {}) }),
   },
   net: {
     desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends.",

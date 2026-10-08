@@ -1358,6 +1358,9 @@ check, no solving services.
 - `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check,
   which often lets Safari through by itself, and answer with the page behind
   it; a `challenge: {kind: "cloudflare", where: "page"}` was still up at 8 s.
+  `handoff` on that wall waits up to 35 s more before it calls the user, and
+  answers `{done: true, byItself: true}`, with no notice or alert, when the
+  page lets Safari through meanwhile.
 - `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
   merely loads AWS's scripts.
 - A check that draws a moment after the page loads can be missing from
@@ -1383,6 +1386,14 @@ check, no solving services.
   When `done` is false, the answer's `hint` says to call it again on the
   same tab: that joins the same wait, with no second notice or alert. A
   block fails at once. Then carry on in the same tab.
+- `handoff {tab, why, background: true}` hands the tab over the same way
+  and returns once the notice is up and his phone is alerted if he is
+  away. Go on with other steps, then call it again with `background: true`
+  and the `id` it returned to see whether he is done: that joins the same
+  handoff with no second notice, even after it ended, and alerts his phone
+  then if he has walked away since. The daemon watches a background
+  handoff for 30 minutes with no call; past that, the next call starts
+  another. On a Cloudflare wall the first call takes up to the 35 s above.
 - Write `why` for the user: what to do and on which site ("Cars.com wants a
   human check before it shows the listing").
 - Use `handoff` for any step only the user can take in the tab: a passkey or

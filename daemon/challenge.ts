@@ -165,12 +165,17 @@ export async function challengeOf(tab: number): Promise<Challenge | null | undef
 // and on travel.state.gov drew theirs after 3.5 to 5.6 s, and egov's then
 // let the browser through by itself at about 40 s.
 const SETTLE_MS = 8000;
-export async function settledChallenge(tab: number): Promise<{ challenge: Challenge | null | undefined; top?: Facts }> {
-  const until = Date.now() + SETTLE_MS;
+// A check that waits on the browser rather than the user: Cloudflare's wall.
+export const passesByItself = (c: Challenge | null | undefined) => c?.kind === "cloudflare" && c.where === "page";
+// handoff waits this much longer on such a wall before it calls the user:
+// egov's let Safari through about 40 s after it showed, 8 of them in open.
+export const PASS_MS = 35_000;
+export async function settledChallenge(tab: number, ms = SETTLE_MS): Promise<{ challenge: Challenge | null | undefined; top?: Facts }> {
+  const until = Date.now() + ms;
   for (let waited = false; ; waited = true) {
     const frames = await framesOf(tab);
     const challenge = frames && classify(frames);
-    const checking = frames ? challenge?.kind === "cloudflare" && challenge.where === "page" : waited;
+    const checking = frames ? passesByItself(challenge) : waited;
     if (!checking || Date.now() >= until) return { challenge, ...(waited && frames ? { top: frames[0] } : {}) };
     await Bun.sleep(500);
   }

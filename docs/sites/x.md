@@ -10,6 +10,10 @@ Signed out, the global throws "not signed in to x.com in Safari". If Safari is o
 - The account menu's "Log out @<handle>" names the signed-in account.
 - "Add an existing account" goes to /i/jf/onboarding/web?mode=login, which shows a choice of sign-in options before any username field. Snapshot it before you wait for a field.
 
+## Bot checks
+- X can ask for an image puzzle on a sign-in or sign-up: a count on the left to match against pictures on the right. It is the user's: `handoff`, and hand it off even when the result names no `challenge`.
+- A Cloudflare check on /account/access is his too: `handoff`, never a click in its box, real input included.
+
 ## In safari repl
 The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state.
 - `x.getMe()`: the signed-in account: id, handle, name, bio, follower and following counts.

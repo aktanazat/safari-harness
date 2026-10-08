@@ -66,7 +66,9 @@ Bot checks
   never read its answer from a screenshot.
 - A `challenge` in a result: `handoff {tab, why}`. It alerts his phone
   when he is away and returns when he is done; `done: false` means call
-  again. `where: "block"` cannot be cleared: report it.
+  again. With `background: true` it returns at once: go on, and check
+  back with its `id`. A Cloudflare wall gets 35 s to let Safari through
+  first. `where: "block"` cannot be cleared: report it.
 
 Privacy and care
 - List his tabs only when the task is about a page he has open.

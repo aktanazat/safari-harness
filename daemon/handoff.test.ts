@@ -19,15 +19,16 @@ import { callTool } from "./tools.ts";
 // and the clock are fakes: a test moves the clock on once every call it
 // made has been taken up.
 
-type Page = { url: string; check?: "box" | "block"; text?: string };
+type Page = { url: string; check?: "box" | "block" | "wall"; text?: string };
 type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; use(tab: number): void };
 const MAIL = "com.apple.mail";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // Mail is in front. Safari's window shows the user's tab 3; the agent's tab
 // sits alone in an agent window behind it, which never holds the front tab,
-// on a page with a Cloudflare box, or a Cloudflare block, while page.check
-// says so; a wait for text answers at once whether page.text holds it.
+// on a page with a Cloudflare box, a Cloudflare block, or Cloudflare's
+// "Just a moment..." wall, while page.check says so; a wait for text answers
+// at once whether page.text holds it.
 // Safari shows the window of the tab activated last. The Mac records the
 // tabs the harness activates, the app in front, the notices, and the
 // alerts, each with whether its picture was there to send.
@@ -47,7 +48,7 @@ function mac(tab: number, page: Page): Mac {
       }
       if (op === "probe") {
         const frames = page.check === "box" ? ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2"] : [];
-        return answer({ value: [{ frame: 0, url: page.url, title: "Sign in", text: page.check === "block" ? "Sorry, you have been blocked" : "Sign in", markers: [], answered: [], frames }] });
+        return answer({ value: [{ frame: 0, url: page.url, title: page.check === "wall" ? "Just a moment..." : "Sign in", text: page.check === "block" ? "Sorry, you have been blocked" : "Sign in", markers: [], answered: [], frames }] });
       }
       if (op === "relay" && args[1] === "wait") return answer({ value: { found: (page.text ?? "").includes(args[2][1].text) } });
       if (op === "shot") return answer({ value: { data: PNG } });
@@ -368,4 +369,68 @@ test("a picture that arrives after the call ends does not start a phone alert", 
   page.check = undefined;
   await tick();
   expect(m.texts).toEqual([]);
+});
+
+// Cloudflare's wall often lets Safari through by itself (challenge.ts): the
+// user hears only of one still up PASS_MS after the handoff began.
+test("a Cloudflare wall that lets Safari through while the handoff waits ends it with no tab raised, notice, or alert", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/", check: "wall" };
+  const m = mac(84, page);
+  let result: unknown;
+  void handoff(84, "Clear the check", 60000).then((r) => (result = r));
+  await ticks(20);
+  page.check = undefined;
+  await ticks(2);
+  expect(result).toMatchObject({ done: true, byItself: true });
+  expect(m).toMatchObject({ activated: [], notices: [], texts: [] });
+});
+
+test("a Cloudflare wall still up once the handoff has waited on it goes to the user", async () => {
+  const page: Page = { url: "https://shop.example/", check: "wall" };
+  const m = mac(85, page);
+  void handoff(85, "Clear the check", 60000);
+  await ticks(40);
+  expect(m).toMatchObject({ activated: [85], notices: ["Clear the check"] });
+  page.check = undefined;
+  await tick();
+});
+
+type Background = { done: boolean; id: number; hint?: string; joined?: true; alerted?: string };
+const background = (tab: number, id?: number) => HANDOFF_TOOLS.handoff.run({ tab, why: "Clear the check", background: true, ...(id === undefined ? {} : { id }) }) as Promise<Background>;
+
+test("a background handoff returns at once with the notice up, and its check minutes later finds the user done, with no second notice", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(86, page);
+  let started: Background | undefined;
+  void background(86).then((r) => (started = r));
+  await tick();
+  // toMatchObject writes its matchers into what it checks, so read id first
+  const id = started?.id;
+  expect(typeof id).toBe("number");
+  expect(started).toMatchObject({ done: false, hint: expect.stringContaining("background") });
+  expect(m.notices).toEqual(["Clear the check"]);
+  // past the 5 minutes a handoff nobody waits on is watched
+  await tick(6 * 60_000);
+  page.check = undefined;
+  await tick();
+  let checked: Background | undefined;
+  void background(86, id).then((r) => (checked = r));
+  await tick();
+  expect(checked).toMatchObject({ done: true, joined: true });
+  expect(m.notices).toEqual(["Clear the check"]);
+});
+
+test("a background handoff alerts a user away from the Mac once before it returns", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(87, page);
+  const t = taken((a) => a.alerted !== undefined);
+  let result: Background | undefined;
+  void background(87).then((r) => (result = r));
+  await t;
+  expect(result).toMatchObject({ done: false, alerted: "sent" });
+  expect(m.texts).toEqual([{ line: expect.stringContaining("shop.example"), picture: true }]);
+  page.check = undefined;
+  await tick();
 });

@@ -832,7 +832,7 @@ async function main() {
 // Flags that take no value; the word after them is positional, unless it is
 // true or false: on 10-04 `eval --page true "const ..."` ran "true const
 // ..." and failed at its second word.
-const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true };
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
