@@ -12,7 +12,7 @@ export type Step = {
   // ms before the bench gives up on the answer (default 5000)
   timeout?: number;
   // what the answer must hold, as toMatchObject reads it; a step without one
-  // must answer with a value
+  // must answer with a value, and a load with its page's address
   answer?: unknown;
 } & (
   | {
@@ -21,7 +21,12 @@ export type Step = {
     // a page in bench/fixtures that an embedded frame shows: the op goes to
     // that frame's copy of content.js
     frame?: string;
+    // sent as background.js sends an action again after a stale ref: with
+    // the fingerprint the latest snapshot in that frame printed for the ref
+    kept?: true;
   }
+  // the tab loads another page in bench/fixtures
+  | { load: string }
   // the extension reloads and puts a fresh copy of content.js in the page,
   // as background.js's takeover does
   | { takeover: true }
@@ -70,14 +75,20 @@ const skip = unbuildable();
 // The test reporter names no skipped test, so the reason is printed once.
 if (skip !== null) console.warn(`the WebKit bench is skipped: ${skip}`);
 export const runner = skip === null ? build() : "";
-const page = (name: string) => pathToFileURL(join(import.meta.dir, "fixtures", name)).href;
+// A page in bench/fixtures; a query or hash after its name stays one.
+const page = (name: string) => {
+  const at = name.search(/[?#]/);
+  return pathToFileURL(join(import.meta.dir, "fixtures", at < 0 ? name : name.slice(0, at))).href + (at < 0 ? "" : name.slice(at));
+};
 
 // The answers in order: the load's, then one per step. Frame tokens are
 // random, so each prints as its frame's page in angle brackets.
 async function answers(row: Row): Promise<unknown[]> {
   const requests = [
     { load: page(row.page), frames: row.frames ?? 0 },
-    ...row.steps.map((s) => ("op" in s ? { op: s.op, args: s.args, frame: s.frame && page(s.frame), timeout: s.timeout } : { ...s, answer: undefined })),
+    ...row.steps.map((s) => ("op" in s ? { op: s.op, args: s.args, frame: s.frame && page(s.frame), kept: s.kept, timeout: s.timeout }
+      : "load" in s ? { load: page(s.load), timeout: s.timeout }
+      : { ...s, answer: undefined })),
   ];
   const proc = Bun.spawn([runner, join(ROOT, "extension")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(requests.map((r) => JSON.stringify(r) + "\n").join(""));
@@ -100,7 +111,7 @@ export function benchRows(title: string, rows: Row[]): void {
     test.each(rows.map((r) => [r.name, r] as const))("%s", async (_name, row) => {
       expect(await answers(row)).toMatchObject([
         { url: page(row.page) },
-        ...row.steps.map((s) => s.answer ?? { value: expect.anything() }),
+        ...row.steps.map((s) => s.answer ?? ("load" in s ? { url: page(s.load) } : { value: expect.anything() })),
       ]);
     }, 20_000);
   });

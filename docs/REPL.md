@@ -164,9 +164,10 @@ There is no `process` or `Bun`.
 - If a call timed out or its outcome is unknown after a submit, stop. Read
   the durable state (the order page, the sent folder, the saved record)
   before trying again; a second try can send twice.
-- A ref outlasts the page redrawing its element (the answer says
-  `healed`). A stale ref means its element left or the page loaded anew:
-  take a new `snapshot` and use the new refs.
+- A ref outlasts the page redrawing its element, and the tab loading the
+  same address again (the answer says `healed`). A stale ref means its
+  element left or the tab loaded another address: take a new `snapshot`
+  and use the new refs.
 - Large results go to a file (`fs.writeFile('rows.json', ...)`); print a
   count and the path, not the whole thing.
 - When another model judges a page, give it field names and labels, never

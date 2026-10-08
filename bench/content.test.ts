@@ -246,6 +246,34 @@ benchRows("content.js in WebKit", [
       { op: "click", args: ["1"], answer: { error: "stale ref 1; re-run snapshot" } },
     ],
   },
+  // On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref
+  // from their snapshot of it; each click failed as a stale ref.
+  // background.js sends such an action again with the ref's fingerprint
+  // from the tab's latest snapshot (kept).
+  {
+    name: "a ref from a snapshot taken before the page loaded anew presses its element, and the new page's refs count on past the snapshot's",
+    page: "reload.html",
+    steps: [
+      { op: "snapshot" }, // [1] Cancel, [2] Save
+      { load: "reload.html" },
+      { op: "click", args: ["2"], kept: true, answer: { value: { ok: true, healed: { ref: "2", now: "3" } } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Saved") } } },
+      // counted from 1, Save would be 1 now, and the agent's 1 (Cancel) would press it
+      { op: "click", args: ["1"], kept: true, answer: { value: { ok: true, healed: { ref: "1", now: "4" } } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Cancelled") } } },
+    ],
+  },
+  {
+    name: "a ref from a snapshot taken before a load stays stale at another address, on a page alike in every way, and heals at the snapshot's address with another hash",
+    page: "reload.html",
+    steps: [
+      { op: "snapshot" }, // [2] Save
+      { load: "reload.html?other" },
+      { op: "click", args: ["2"], kept: true, answer: { error: "stale ref 2; re-run snapshot" } },
+      { load: "reload.html#later" },
+      { op: "click", args: ["2"], kept: true, answer: { value: { ok: true, healed: { ref: "2", now: "3" } } } },
+    ],
+  },
   {
     name: "typing replaces a text field's value, with the input event the page listens for",
     page: "type.html",

@@ -12,11 +12,15 @@
 //           has reported in from it and from N embedded frames (default 0):
 //           {"url", "frames": [{"url", "token"}]}, token being the frame's
 //           window.__safariHarnessFrame
-//       {"op": NAME, "args": [...], "frame": URL, "timeout": MS}
+//       {"op": NAME, "args": [...], "frame": URL, "kept": true, "timeout": MS}
 //           hands content.js {__safariHarness: 1, id, op: NAME, args} as
 //           tabs.sendMessage does, in the page or in the embedded frame at
 //           URL, and prints its answer as it gave it: {"id", "value"} or
-//           {"id", "error"}
+//           {"id", "error"}. With kept, the message also holds what
+//           background.js sends an action with again after a stale ref:
+//           kept: {url, last, fingerprints: {REF: ...}}, as the latest
+//           snapshot answered in that frame, loads since included, for the
+//           ref args[0] names.
 //       {"takeover": true, "timeout": MS}
 //           reloads the extension and puts a fresh copy of content.js in
 //           the page, as background.js's takeover does: the claim set to
@@ -121,6 +125,9 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var mainURL: String?
     var threw: String?
     var frames: [(url: String, token: String, info: WKFrameInfo)] = []
+    // What the latest snapshot in each frame (the page's own under "")
+    // answered for background.js to keep, which keeps it across a load.
+    var kept: [String: [String: Any]] = [:]
 
     init(content: String, dialogs: String) {
         self.content = content
@@ -271,6 +278,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func send(_ op: String, _ request: [String: Any], reply: @escaping (Data) -> Void) {
         var frame: WKFrameInfo?
+        let at = request["frame"] as? String ?? ""
         if let url = request["frame"] as? String {
             let found = frames.filter { $0.url == url }
             guard found.count == 1 else { return reply(problem("\(found.count) embedded frames at \(url) reported in; an op goes to one")) }
@@ -279,17 +287,34 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             return reply(problem("content.js has not reported in from the page since it last changed"))
         }
         nextId += 1
-        let message: [String: Any] = ["__safariHarness": 1, "id": nextId, "op": op, "args": request["args"] as? [Any] ?? []]
+        let args = request["args"] as? [Any] ?? []
+        var message: [String: Any] = ["__safariHarness": 1, "id": nextId, "op": op, "args": args]
+        if request["kept"] as? Bool == true {
+            guard let snap = kept[at], let ref = args.first as? String, let fingerprint = (snap["fingerprints"] as? [String: Any])?[ref] else {
+                return reply(problem("no snapshot in this frame answered a fingerprint for \(args.first ?? "no ref")"))
+            }
+            message["kept"] = ["url": snap["url"] ?? NSNull(), "last": snap["last"] ?? NSNull(), "fingerprints": [ref: fingerprint]]
+        }
         guard let json = String(data: line(message), encoding: .utf8) else { return reply(problem("cannot encode \(op)")) }
-        web.callAsyncJavaScript("return await __benchSend(message)", arguments: ["message": json], in: frame, in: world) { result in
+        web.callAsyncJavaScript("return await __benchSend(message)", arguments: ["message": json], in: frame, in: world) { [self] result in
             switch result {
-            case .success(let answer as String): reply(Data(answer.utf8))
+            case .success(let answer as String):
+                if op == "snapshot" { keep(answer, at) }
+                reply(Data(answer.utf8))
             case .success: reply(problem("no copy of content.js answered \(op)"))
             case .failure(let error):
                 let js = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String
                 reply(problem("\(op) failed: \(js ?? error.localizedDescription)"))
             }
         }
+    }
+
+    // A snapshot's answer holds the fingerprints of the refs it printed, its
+    // address, and the last ref its page gave, for background.js to keep.
+    func keep(_ answer: String, _ frame: String) {
+        guard let parsed = (try? JSONSerialization.jsonObject(with: Data(answer.utf8))) as? [String: Any],
+              let value = parsed["value"] as? [String: Any], value["fingerprints"] != nil else { return }
+        kept[frame] = value
     }
 
     // ---------- takeover ----------

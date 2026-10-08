@@ -320,10 +320,12 @@ Read with `snapshot` when you do not yet know what is on the page.
   form: the action goes to the one element that looks the same, with the
   same text beside it (one row's "Delete", not the next row's), and its
   answer says `healed: {ref, now}`, where `now` is that element's new ref.
-  A ref is stale when its element left the page, when the page drew
-  several lookalikes in its place, and after the tab loads a new page:
-  take a new snapshot then. Take one after acting, too, to see what
-  changed. Never guess a ref.
+  The refs of the tab's latest snapshot heal the same way after the tab
+  loads the same address again (a reload, or `goto` the page it shows),
+  whatever follows the address's `#`. A ref is stale when its element left
+  the page, when the page drew several lookalikes in its place, and after
+  the tab loads another address: take a new snapshot then. Take one after
+  acting, too, to see what changed. Never guess a ref.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
   Matching ignores case and reaches into frames; a leading `(?i)` is
@@ -1678,8 +1680,8 @@ its own `safari` command.
   `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support`),
   then turn the Bridge back on.
 - "stale ref": the ref's element left the page, the page drew several
-  lookalikes in its place, or the tab loaded a new page. Take a new
-  snapshot.
+  lookalikes in its place, or the tab loaded another address (a reload of
+  the same one keeps the latest snapshot's refs). Take a new snapshot.
 - "tab N is busy with …": another call is acting on that tab (see Acting).
   Use your own tab, or try again once it is done.
 - Tools that changed in a deploy during your session: the MCP server

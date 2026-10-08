@@ -127,11 +127,12 @@ const PING_MS = 5000;
 const LOAD = crypto.randomUUID();
 
 // Asks the content script in the tab's frame to run op, and settles within
-// timeoutMs, whatever the page does: the daemon gives up 2 s later.
-async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0) {
+// timeoutMs, whatever the page does: the daemon gives up 2 s later. kept
+// goes with an op sent again after a stale ref (see "refs across a load").
+async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null) {
   const deadline = Date.now() + timeoutMs;
   const left = () => Math.max(deadline - Date.now(), 500);
-  const msg = { __safariHarness: 1, id: nextId(), op, args };
+  const msg = { __safariHarness: 1, id: nextId(), op, args, ...(kept && { kept }) };
   keepAwake(tabId);
   for (;;) {
     await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
@@ -231,7 +232,7 @@ async function ping(tabId, frameId, ms, script) {
 // (`navigated`) or a new tab (`newTab`), each once readable. A new tab that
 // jumps in front while the agent works in a background tab is sent behind
 // the user's tab again. Its waits end by the action's time limit.
-async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
+async function act(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null) {
   const deadline = Date.now() + timeoutMs;
   const source = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
@@ -256,7 +257,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0) {
   acting.set(tabId, claim);
   api.tabs.onUpdated.addListener(onUpdated);
   try {
-    const res = await toTab(tabId, op, args, deadline - Date.now(), frameId);
+    const res = await toTab(tabId, op, args, deadline - Date.now(), frameId, kept);
     if (res && res.error) return res;
     // an action answers an object; anything else is passed on as it came
     if (!res || !res.value || typeof res.value !== "object" || Array.isArray(res.value)) return res;
@@ -473,20 +474,28 @@ const MARK = / @@frame:([a-z0-9]+)@@$/;
 // A frame that loaded before its parent's script listened may not have told
 // the parent which frame it is, so its lines have no place in the parent's
 // snapshot. The parent says hello to such frames (unlinked in content.js),
-// and one more snapshot, after their answers, places them.
-async function snapshotFrame(tabId, args, timeoutMs, frameId) {
+// and one more snapshot, after their answers, places them. The fingerprints
+// a frame's snapshot answers with go into kept, not to the daemon (see
+// "refs across a load").
+async function snapshotFrame(tabId, args, timeoutMs, frameId, kept) {
   let res = await toTab(tabId, "snapshot", args, timeoutMs, frameId);
   if (res && res.value && res.value.unlinked) {
     await new Promise((resolve) => setTimeout(resolve, 150));
     res = await toTab(tabId, "snapshot", args, timeoutMs, frameId);
   }
-  if (res && res.value) delete res.value.unlinked;
+  if (res && res.value) {
+    const { url, fingerprints, last } = res.value;
+    if (fingerprints) kept.set(frameId, { url, last, fingerprints });
+    delete res.value.unlinked;
+    delete res.value.fingerprints;
+    delete res.value.last;
+  }
   return res;
 }
 
 // Puts each embedded frame's own snapshot under its <iframe> line, with
 // its refs prefixed by the frame's id. Frames nest, so this recurses.
-async function stitchFrames(tabId, snap, opts, tokens, depth) {
+async function stitchFrames(tabId, snap, opts, tokens, depth, kept) {
   const lines = snap.snapshot.split("\n");
   if (!lines.some((l) => MARK.test(l))) return snap;
   tokens ??= await frameTokens(tabId);
@@ -504,9 +513,9 @@ async function stitchFrames(tabId, snap, opts, tokens, depth) {
     let inner = [];
     if (frameId !== undefined && depth < 4 && out.length < limit) {
       try {
-        const res = await snapshotFrame(tabId, [{ ...opts, root: undefined, refPrefix: `f${frameId}:`, maxNodes: Math.max(50, limit - out.length) }], 10000, frameId);
+        const res = await snapshotFrame(tabId, [{ ...opts, root: undefined, refPrefix: `f${frameId}:`, maxNodes: Math.max(50, limit - out.length) }], 10000, frameId, kept);
         if (res && res.value && typeof res.value.snapshot === "string") {
-          const child = await stitchFrames(tabId, res.value, opts, tokens, depth + 1);
+          const child = await stitchFrames(tabId, res.value, opts, tokens, depth + 1, kept);
           truncated ||= child.truncated;
           inner = child.snapshot ? child.snapshot.split("\n") : [];
         }
@@ -536,12 +545,19 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
   }
   const { frameId, args } = frame ? { frameId: frame, args: domArgs } : frameOf(domArgs);
   if (domOp === "snapshot") {
-    const res = await snapshotFrame(tabId, args, timeoutMs, frameId);
-    if (res && res.value && typeof res.value.snapshot === "string") return { value: await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0) };
-    return res;
+    const kept = new Map();
+    const res = await snapshotFrame(tabId, args, timeoutMs, frameId, kept);
+    if (!res || !res.value || typeof res.value.snapshot !== "string") return res;
+    const value = await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0, kept);
+    snapshotRefs.set(tabId, kept);
+    return { value };
   }
-  const send = (id) => READS.has(domOp) ? toTab(tabId, domOp, args, timeoutMs, id) : act(tabId, domOp, args, timeoutMs, id);
-  const res = await send(frameId);
+  const deadline = Date.now() + timeoutMs;
+  const send = (id, ms = timeoutMs, kept = null) => READS.has(domOp) ? toTab(tabId, domOp, args, ms, id, kept) : act(tabId, domOp, args, ms, id, kept);
+  let res = await send(frameId);
+  // a ref from a snapshot taken before the page loaded anew (refs across a load)
+  const again = keptFor(tabId, frameId, res);
+  if (again) res = await send(frameId, deadline - Date.now(), again);
   if (frameId === 0 && res && typeof res.error === "string" && MISS.test(res.error)) {
     const tokens = await frameTokens(tabId).catch(() => new Map());
     for (const id of tokens.values()) {
@@ -561,6 +577,32 @@ function prefixed(res, frameId) {
   if (!healed) return res;
   return { ...res, value: { ...res.value, healed: { ref: `f${frameId}:${healed.ref}`, now: `f${frameId}:${healed.now}` } } };
 }
+
+// ---------- refs across a load ----------
+// A load starts a page's refs over, while the agent still holds the ones
+// its snapshot gave: on 10-07 Akyl's audit agents ran goto on the page they
+// were reading, then clicked a ref from their snapshot of it, and each
+// click failed as a stale ref (partners, calendar, inbox). The fingerprints
+// of the refs the tab's latest snapshot printed stay here, by frame, with
+// the frame's address and the last ref its page gave then. An action whose
+// page calls its ref stale goes once more with that ref's fingerprint, and
+// the page heals the ref only at that address, its hash aside (adopt in
+// content.js). A stale answer means the page did nothing, so sending again
+// never acts twice. One snapshot per tab, kept until the next one or until
+// the tab closes.
+const snapshotRefs = new Map(); // tabId -> Map of frameId -> { url, last, fingerprints }
+
+// What an action whose answer calls its ref stale goes again with: the
+// ref's fingerprint from the tab's latest snapshot, with that frame's
+// address and last ref then; null when that snapshot printed no such ref.
+function keptFor(tabId, frameId, res) {
+  const stale = res && typeof res.error === "string" ? /^stale ref (\d+)/.exec(res.error) : null;
+  const snap = stale && snapshotRefs.get(tabId)?.get(frameId);
+  const fingerprint = snap && snap.fingerprints[stale[1]];
+  return fingerprint ? { url: snap.url, last: snap.last, fingerprints: { [stale[1]]: fingerprint } } : null;
+}
+
+api.tabs.onRemoved.addListener((id) => { snapshotRefs.delete(id); });
 
 // ---------- waiting in every frame ----------
 // A wait is answered by whichever frame shows the text or selector first (a
@@ -1469,7 +1511,7 @@ if (api.tabs.onReplaced) {
   api.tabs.onReplaced.addListener(async (added, removed) => {
     pageLoads.delete(removed);
     send({ op: "tab", kind: "replaced", from: removed, to: added });
-    for (const map of [awake, frameWaits]) {
+    for (const map of [awake, frameWaits, snapshotRefs]) {
       if (!map.has(removed)) continue;
       map.set(added, map.get(removed));
       map.delete(removed);

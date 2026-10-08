@@ -8,7 +8,7 @@ import { expect, test } from "bun:test";
 
 const SOURCE = await Bun.file(new URL("./background.js", import.meta.url)).text();
 
-type Msg = { __safariHarness?: number; id: string; op: string; args?: unknown[] };
+type Msg = { __safariHarness?: number; id: string; op: string; args?: unknown[]; kept?: unknown };
 type Reply = { id: string; value?: unknown; error?: string };
 type Answer = { value?: unknown; error?: string };
 type Sender = { tab: { id: number; windowId: number }; frameId: number };
@@ -74,7 +74,7 @@ class Doc {
   shut = false;
   // What Safari gives as the tab's title while it shows this document.
   title = "";
-  does: (op: string) => unknown = () => ({ url: this.url });
+  does: (op: string, msg: Msg) => unknown = () => ({ url: this.url });
   constructor(readonly url: string, readonly live = true) {}
 }
 
@@ -135,7 +135,7 @@ async function start() {
       if (m.op === "ping") return { id: m.id, value: true };
       doc.ran.push(m.op);
       // content.js sends a failure it reports as { error } as an error
-      const value = await doc.does(m.op);
+      const value = await doc.does(m.op, m);
       return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { id: m.id, error: value.error } : { id: m.id, value };
     };
     w.__safariHarnessRun = (m: Msg) => (w.__safariHarnessInjected === claim ? answer(m) : null);
@@ -643,6 +643,30 @@ test("a stale ref or a heal in an embedded frame names the ref as the agent sent
   expect((await b.ask(tab, "click", ["f5:3"])).value).toEqual({ ok: true, healed: { ref: "f5:3", now: "f5:9" } });
   tab.doc.does = () => ({ error: "stale ref 3; re-run snapshot" });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
+});
+
+// On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref
+// from their snapshot of it, and each click failed as a stale ref
+// (partners, calendar, inbox).
+test("an action whose ref went stale with a load goes again with that ref's fingerprint from the tab's latest snapshot, which the daemon never sees", async () => {
+  const b = await start();
+  const url = "https://example.com/inbox";
+  const tab = b.open(url);
+  const button = (name: string) => ({ role: "button", name, tag: "button", near: "", path: "button:nth-of-type(1)", index: 0, count: 1 });
+  // the page drew another button at ref 2 between two snapshots
+  for (const [name, last] of [["Archive", 4], ["Save", 6]] as const) {
+    tab.doc.does = () => ({ url, snapshot: `[2] button "${name}"`, fingerprints: { 2: button(name) }, last });
+    expect((await b.ask(tab, "snapshot", [{}])).value).toEqual({ url, snapshot: `[2] button "${name}"` });
+  }
+  const fresh = new Doc(url);
+  const kept: unknown[] = [];
+  fresh.does = (_op, m) => {
+    kept.push(m.kept);
+    return m.kept ? { ok: true, healed: { ref: "2", now: "7" } } : { error: "stale ref 2; re-run snapshot" };
+  };
+  b.navigate(tab, fresh);
+  expect((await b.ask(tab, "click", ["2"])).value).toEqual({ ok: true, healed: { ref: "2", now: "7" } });
+  expect(kept).toEqual([undefined, { url, last: 6, fingerprints: { 2: button("Save") } }]);
 });
 
 const clickStep = (n: number) => ({ kind: "click", url: "https://example.com/", target: { role: "button", name: `Step ${n}`, tag: "button", near: "", path: "", index: 0, count: 1 } });

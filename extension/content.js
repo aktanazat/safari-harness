@@ -432,6 +432,7 @@
   const fingerprints = new Map(); // ref -> fingerprint, kept after its element leaves
   const FINGERPRINTS_MAX = 5000;
   let healedNow = null; // the heal the running request made
+  let carried = null; // the fingerprints the running request brought (adopt)
   // How much of an element's surroundings a fingerprint keeps: enough to
   // tell one row's "Delete" from the next.
   const NEAR_MAX = 80;
@@ -572,11 +573,12 @@
   }
   // ---- shared with daemon/fingerprint.ts: end ----
 
-  // The element a gone ref's fingerprint names, now with a ref of its own;
-  // null when no one element matches (none, or lookalikes it cannot tell
-  // apart), and the action fails as a stale ref.
+  // The element a gone ref's fingerprint names (this page's own, or one the
+  // request brought from before the page loaded: adopt), now with a ref of
+  // its own; null when no one element matches (none, or lookalikes it
+  // cannot tell apart), and the action fails as a stale ref.
   function heal(ref) {
-    const fp = fingerprints.get(ref);
+    const fp = fingerprints.get(ref) ?? carried?.[ref];
     if (!fp) return null;
     const els = tagged(fp.tag);
     const m = matchFingerprint(fp, els.map(candidateOf));
@@ -603,6 +605,24 @@
   // A reply carries the heal its request made beside what the op answered.
   function withHeal(value, healed) {
     return healed && value && typeof value === "object" && !Array.isArray(value) ? { ...value, healed } : value;
+  }
+
+  // ---------- refs across a load ----------
+  // A load starts the page's refs over, while the agent still holds the
+  // ones its snapshot gave: on 10-07 Akyl's audit agents ran goto on the
+  // page they were reading, then clicked a ref from their snapshot of it,
+  // and each click failed as a stale ref (partners, calendar, inbox). A
+  // snapshot answers with the fingerprints of the refs it printed and the
+  // last ref this page gave (outline); background.js keeps those of the
+  // tab's latest snapshot, and sends an action that met a stale ref again
+  // with that ref's (kept). At the address the snapshot read, its hash
+  // aside, the ref then heals as one the page drew anew does; at any other
+  // it stays stale, whatever there looks the same. Refs this page gives
+  // from then on count on from that last one, so none of them is a ref the
+  // agent holds for another element.
+  function adopt(kept) {
+    carried = kept && samePage(kept.url) ? kept.fingerprints : null;
+    if (carried) refSeq = Math.max(refSeq, kept.last);
   }
 
   // ---------- embedded frames ----------
@@ -901,12 +921,20 @@
     // Pass 2: print. A ref is given only to a line that is printed.
     const lines = [];
     let truncated = false;
+    // The fingerprint of each ref printed, for background.js to keep
+    // (adopt).
+    const printed = {};
+    const refOf = (el) => {
+      const ref = ensureRef(el);
+      printed[ref] = fingerprints.get(ref);
+      return ref;
+    };
     const push = (depth, text, n) => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
       if (query && !query(text) && !text.includes(FRAME_MARK)) return;
       if (lines.length >= maxLines) { truncated = true; return; }
-      const line = n ? `[${prefix}${ensureRef(n.el)}] ${text}` : text;
+      const line = n ? `[${prefix}${refOf(n.el)}] ${text}` : text;
       lines.push(query ? line : "  ".repeat(depth) + line);
     };
     const hrefOf = (n) => (n.el && n.el.href) || null;
@@ -998,7 +1026,7 @@
         const texts = allText(c);
         // a heading that only holds a link: one line
         if (c.role === "heading" && ek.length === 1 && ek[0].actionable && texts.length <= 1) {
-          push(depth, `${tag(c)} [${prefix}${ensureRef(ek[0].el)}] ${head(ek[0])}`);
+          push(depth, `${tag(c)} [${prefix}${refOf(ek[0].el)}] ${head(ek[0])}`);
           render(ek[0], depth + 1);
           continue;
         }
@@ -1012,7 +1040,7 @@
       }
     };
     render(top, 0);
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
   }
 
   // A page still drawing can show for a moment nothing a person sees: a
@@ -3886,10 +3914,13 @@
       : { id: msg.id, value: unsecret(safeClone(withHeal(value, healed))) };
     let out;
     healedNow = null;
+    adopt(msg.kept);
     try {
       out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
     } catch (e) {
       return Promise.resolve({ id: msg.id, error: unsecret(String(e && e.message || e)) });
+    } finally {
+      carried = null;
     }
     // Every handler resolves its target before its first await, so a heal
     // made now is this request's.
