@@ -216,17 +216,25 @@
   const LOG_MAX = 100;
   const URL_MAX = 500;
   const BODY_MAX = 300;
-  // The whole text of the latest KEPT_MAX text or JSON bodies, up to
-  // KEPT_TEXT_MAX characters each, for net's body: to read one server
-  // action's answer whole, an agent patched the page's fetch through eval
-  // (USCIS, 09-30). 90,000 characters and the request's fields fit in the
-  // 100,000 an MCP answer holds (callTool in mcp-tools.ts).
-  const KEPT_MAX = 10;
+  // The whole text of the text or JSON bodies of the requests the log
+  // lists, up to KEPT_TEXT_MAX characters each, for net's body: to read one
+  // server action's answer whole, an agent patched the page's fetch through
+  // eval (USCIS, 09-30). 90,000 characters and the request's fields fit in
+  // the 100,000 an MCP answer holds (callTool in mcp-tools.ts). They hold
+  // KEPT_BUDGET characters in all, the oldest let go first. Before, only
+  // the latest 10 were kept: on 10-07 Robinhood's pages answered three
+  // agents' asks for an accounts request the log still listed with "not
+  // kept", its page having polled a hundred times since.
   const KEPT_TEXT_MAX = 90_000;
+  const KEPT_BUDGET = 2_000_000;
   const kept = []; // { entry, text, truncated, arriving }
+  const trim = () => {
+    let total = kept.reduce((n, k) => n + k.text.length, 0);
+    while (kept.length > 0 && (total > KEPT_BUDGET || !net.log.includes(kept[0].entry))) total -= kept.shift().text.length;
+  };
   const keep = (k) => {
     kept.push(k);
-    if (kept.length > KEPT_MAX) kept.shift();
+    trim();
     return k;
   };
   const listen = EventTarget.prototype.addEventListener;
@@ -261,6 +269,7 @@
       entry.body = cut(k.text.slice(0, BODY_MAX + 1), BODY_MAX);
       k.truncated = k.text.length > KEPT_TEXT_MAX;
       if (k.truncated) k.text = k.text.slice(0, KEPT_TEXT_MAX);
+      trim();
       if (done || k.truncated || !kept.includes(k)) return;
       return reader.read().then(more);
     };
@@ -368,7 +377,7 @@
     const k = kept.findLast((x) => x.entry.url === ask.url && x.entry.t === ask.t);
     tell("__sh_net_body_answer", k
       ? { text: k.text, truncated: k.truncated, arriving: k.arriving }
-      : { error: `that request's body is not kept: net keeps the text or JSON bodies of the page's latest ${KEPT_MAX} such responses` });
+      : { error: "that request's body is no longer kept: net keeps the bodies of the requests its log lists, 2 million characters of them, the oldest let go first; fetch its url to ask again, with the page's sign-in" });
   });
   swap(plain, ours);
 

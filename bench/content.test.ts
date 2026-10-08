@@ -905,6 +905,23 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "the body of a request thirty requests back still comes back whole",
+    page: "net-many.html",
+    steps: [
+      { op: "wait", args: [null, { text: "done" }] },
+      { op: "netBody", args: [loggedAs(`body-0-${"x".repeat(1000)}`)], answer: { value: { text: `body-0-${"x".repeat(1000)}`, truncated: false } } },
+    ],
+  },
+  {
+    name: "past 2 million characters of bodies the oldest is let go, and the answer says how to ask for it again",
+    page: "net-budget.html",
+    steps: [
+      { op: "wait", args: [null, { text: "done" }], timeout: 15000 },
+      { op: "netBody", args: [loggedAs(`big-00-${"b".repeat(89_993)}`)], answer: { error: expect.stringContaining("fetch its url to ask again") } },
+      { op: "netBody", args: [loggedAs(`big-24-${"b".repeat(89_993)}`)], answer: { value: { text: `big-24-${"b".repeat(89_993)}`, truncated: false } } },
+    ],
+  },
+  {
     name: "fillCard puts the card's number, expiry in the field's own shape, code, name, and billing ZIP in a checkout, leaves a gift card and the shipping ZIP alone, and no answer holds the number or code",
     page: "card-form.html",
     steps: [

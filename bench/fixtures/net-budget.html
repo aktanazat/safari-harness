@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Net budget</title>
+<p id="state">loading</p>
+<script>
+// Twenty-five bodies of 90,000 characters one after another: more than
+// the 2 million characters net keeps of them in all.
+Date.now = () => 1000;
+(async () => {
+  for (let i = 0; i < 25; i++) await fetch(`data:text/plain,big-${String(i).padStart(2, "0")}-` + "b".repeat(89_993)).then((r) => r.text());
+  document.getElementById("state").textContent = "done";
+})();
+</script>

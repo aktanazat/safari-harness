@@ -903,10 +903,11 @@ with its `index` in the whole list. `net {tab, body}` returns one request's
 whole text or JSON response: `body` is its place in the list (from the end
 below 0: `-1` is the latest) or part of its url (the latest request with
 it). The answer is the request's entry with the body as `text`. The page
-keeps the whole bodies of its latest 10 such responses, each up to 90,000
-characters; a longer one comes back cut there with a `note` saying so, and
-one still arriving comes back as far as it came, with a note. An older
-request's body is gone: the call says so. CLI: `safari net --url
+keeps the whole bodies of the responses its log lists, each up to 90,000
+characters and 2 million characters in all, the oldest let go first; a
+longer one comes back cut there with a `note` saying so, and one still
+arriving comes back as far as it came, with a note. A body no longer kept:
+the call says so; `fetch` its url to ask again. CLI: `safari net --url
 offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
 
 ## Files, PDFs, and requests
