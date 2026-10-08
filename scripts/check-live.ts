@@ -325,16 +325,18 @@ await withPage(TARGETS, TARGETS_JS, async (tab) => {
 
 // ---------- no fixed pause after an action ----------
 
-// Each control's script retitles the page 1500 ms after the click. An
-// action that starts no load watches the page for 800 ms at most (its
-// receipt), so the page it returns still has the old title; a fixed pause,
-// or a wait for a load that never comes (3 s), would show the new one. The
-// order of two events, not a time budget. The link's scheme has no
-// handler, so no app opens.
+// Each control's script marks the page at once and retitles it 1500 ms
+// after the click. An action that starts no load watches a page that
+// reacted for 800 ms at most (its receipt), so the page it returns still
+// has the old title; a fixed pause, or a wait for a load that never comes
+// (3 s), would show the new one. The order of two events, not a time
+// budget. The mark matters: a page that shows no reaction is watched for
+// 2 s (RECEIPT_SPAN in content.js, since 10-05), past the retitle. The
+// link's scheme has no handler, so no app opens.
 const LATER_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
-  { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => setTimeout(() => { document.title = id + " retitled"; }, 1500)' }))`;
+  { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => { document.getElementById("mark").textContent = id + " clicked"; setTimeout(() => { document.title = id + " retitled"; }, 1500); }' }))`;
 
-await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:abc">App link</a>', LATER_JS, async (tab) => {
+await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:abc">App link</a> <p id=mark></p>', LATER_JS, async (tab) => {
   const r = await call("click", { tab, ref: "#later", snapshot: true });
   check("a click that starts no load returns before the page's later script runs",
     r.page?.title === "Example Domain" && r.navigated === undefined, { title: r.page?.title, navigated: r.navigated });
