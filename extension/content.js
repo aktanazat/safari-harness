@@ -1116,9 +1116,16 @@
 
   // A label stands for its field. The snapshot gives a label that wraps its
   // field a ref of its own; typing into that ref or picking an option on it
-  // means the field.
+  // means the field. A label no field takes as its own (no for, nothing
+  // inside) may still name one through aria-labelledby: on 10-07
+  // Robinhood's "Sell in" label named its combobox so, and getByLabel('Sell
+  // in').selectOption answered that the label was no <select> or combobox.
+  // Its list names the label too, so the field is the one that takes input.
   function fieldOf(el) {
-    return el && el.tagName === "LABEL" && el.control ? el.control : el;
+    if (!el || el.tagName !== "LABEL") return el;
+    if (el.control) return el.control;
+    const named = el.id ? [...el.getRootNode().querySelectorAll(`[aria-labelledby~="${CSS.escape(el.id)}"]`)] : [];
+    return named.find((n) => n.matches("select, input, textarea") || ["combobox", "textbox"].includes(getExplicitRole(n))) ?? el;
   }
 
   // isVisible alone passes the children of a display:none parent, because
@@ -1348,10 +1355,14 @@
   }
 
   const noOption = (choice, options) => ({ error: `no option "${choice}"; options: ${options.slice(0, 40).map((o) => o.label).join(" | ")}` });
+  // With no choice, select only lists the options, all of them: on 10-07 an
+  // agent asked for "__list__" and "zz-list-options" to read them.
+  const optionList = (options) => ({ options: options.map((o) => o.label) });
+  const optionsOf = (el) => [...el.options].map((o) => ({ label: o.label.trim(), value: o.value }));
 
   function selectOption(el, choice) {
     watchTarget(el);
-    const options = [...el.options].map((o) => ({ label: o.label.trim(), value: o.value }));
+    const options = optionsOf(el);
     const opt = optionNamed(options, choice);
     if (!opt) return noOption(choice, options);
     // the native setter, so framework value trackers see a real change
@@ -1368,7 +1379,8 @@
   // open. Else, a closed box is clicked open, and its list is a listbox that
   // was not on show before; an open box's is the one it showed an earlier
   // select, which a choice the list lacked left open. The option is
-  // clicked, as a person picks it, and the answer is its label.
+  // clicked, as a person picks it, and the answer is its label. With no
+  // choice the list is left open, as a miss leaves it, and listed.
   const LIST_WAIT_MS = 3000;
   const comboLists = new WeakMap(); // box -> the list it showed for select
   async function comboOption(box, choice) {
@@ -1394,6 +1406,7 @@
       const label = accessibleName(el);
       return { el, label, value: label };
     });
+    if (choice === null) return optionList(options);
     const opt = optionNamed(options, choice);
     if (!opt) return noOption(choice, options);
     return withReceipt(() => withOutcome(() => {
@@ -1404,12 +1417,12 @@
   }
 
   // select takes a <select>, a label of one, or a combobox, resolved before
-  // the first await (answer).
+  // the first await (answer). A null choice lists the options.
   function selectIn(ref, choice) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
-    if (el.tagName === "SELECT") return withReceipt(() => withOutcome(() => selectOption(el, choice)));
+    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : withReceipt(() => withOutcome(() => selectOption(el, choice)));
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice);
     return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
   }

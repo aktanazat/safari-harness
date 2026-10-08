@@ -61,7 +61,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              code texted to him (--secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
   safari press <key> [--ref R] --tab N       press a key
-  safari select <ref> <option> --tab N       choose a dropdown option
+  safari select <ref> [option] --tab N       choose a dropdown option; none lists them
   safari hover <ref> --tab N                 hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
@@ -692,7 +692,11 @@ async function main() {
       if (ref) args.ref = ref;
       break;
     }
-    case "select": args.ref = positional[0]; args.option = positional.slice(1).join(" "); break;
+    case "select": {
+      args.ref = positional[0];
+      if (positional.length > 1) args.option = positional.slice(1).join(" ");
+      break;
+    }
     case "hover": args.ref = positional[0]; break;
     case "upload": {
       if (positional.length) args.paths = positional.map((p) => resolve(p));

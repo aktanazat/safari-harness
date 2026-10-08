@@ -329,6 +329,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "select with no option lists every option of a <select> and picks none",
+    page: "select.html",
+    steps: [
+      { op: "snapshot" }, // [1] Plan
+      { op: "select", args: ["1", null], answer: { value: { options: ["Free", "Pro"] } } },
+      { op: "extract", answer: { value: { text: expect.not.stringContaining("Page saw") } } },
+    ],
+  },
+  {
     name: "select on a combobox the page draws opens it, waits for its list, and clicks the option its label names, not one of another list",
     page: "combobox.html",
     steps: [
@@ -354,6 +363,24 @@ benchRows("content.js in WebKit", [
       { op: "select", args: ["3", "Peru"], answer: { error: expect.stringContaining("BRAZIL (BR) | CANADA (CA) | KIRGHIZIA (KYRGYZSTAN) (KG)") } },
       { op: "select", args: ["3", "canada"], answer: { value: { ok: true, value: "CANADA (CA)" } } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Page saw CA") } } },
+    ],
+  },
+  {
+    name: "select with no option on a combobox lists its options and picks none, and a second select picks from the list left open",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [3] the nationality box
+      { op: "select", args: ["3", null], answer: { value: { options: ["BRAZIL (BR)", "CANADA (CA)", "KIRGHIZIA (KYRGYZSTAN) (KG)"] } } },
+      { op: "extract", answer: { value: { text: expect.not.stringContaining("Page saw") } } },
+      { op: "select", args: ["3", "canada"], answer: { value: { ok: true, value: "CANADA (CA)" } } },
+    ],
+  },
+  {
+    name: "select on a label that names its combobox through aria-labelledby, as getByLabel reaches it, picks from that combobox's list",
+    page: "combobox.html",
+    steps: [
+      { op: "select", args: ["Sell in", "Shares"], answer: { value: { ok: true, value: "Shares" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw Shares") } } },
     ],
   },
   {

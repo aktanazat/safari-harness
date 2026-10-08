@@ -7,7 +7,9 @@
      aria-controls). A city box has its list open already, and names it. A
      mousedown on either box while its list is open closes the list, as
      React's comboboxes do. A list of recent searches is a listbox too, on
-     show all along. -->
+     show all along. Robinhood's "Sell in" box (downshift, 10-07) is a
+     button named by a label it does not hold, through aria-labelledby, and
+     its list, drawn ahead of it here, names that label too. -->
 <ul role="listbox" aria-label="Recent searches">
   <li role="option">Last search: Oslo</li>
 </ul>
@@ -17,6 +19,12 @@
   <li role="option">Lyon</li>
   <li role="option">Paris</li>
 </ul>
+<ul role="listbox" id="units" aria-labelledby="sell-in" hidden>
+  <li role="option">Dollars</li>
+  <li role="option">Shares</li>
+</ul>
+<label id="sell-in">Sell in</label>
+<button role="combobox" aria-labelledby="sell-in" aria-haspopup="listbox" aria-expanded="false" aria-controls="units">Dollars</button>
 <p id="said"></p>
 <script>
   const said = document.getElementById("said");
@@ -53,6 +61,19 @@
   });
   for (const option of cities.querySelectorAll("[role=option]")) {
     option.addEventListener("click", () => {
+      said.textContent = `Page saw ${option.textContent}`;
+    });
+  }
+
+  const unitBox = document.querySelector("[aria-controls=units]");
+  const units = document.getElementById("units");
+  unitBox.addEventListener("mousedown", () => {
+    units.hidden = !units.hidden;
+    unitBox.setAttribute("aria-expanded", String(!units.hidden));
+  });
+  for (const option of units.querySelectorAll("[role=option]")) {
+    option.addEventListener("click", () => {
+      unitBox.textContent = option.textContent;
       said.textContent = `Page saw ${option.textContent}`;
     });
   }

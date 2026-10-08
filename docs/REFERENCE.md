@@ -348,7 +348,8 @@ Read with `snapshot` when you do not yet know what is on the page.
   `strict_selector` (a secret's source) fails instead.
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
   it opens the full address.
-- A dropdown shows its value and option count, not each option. Use `select`.
+- A dropdown shows its value and option count, not each option. `select`
+  with no option lists them; `select` with one picks it.
   A dropdown the page draws itself, with no `<select>` behind it, opens on
   `click`: snapshot again, and each option in the list it opens has a ref
   to click.
@@ -601,15 +602,18 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   safari type <ref> '{{code}}' --tab N --secret env --env VAR`. Only a CLI
   call's environment is read; through MCP, `repl`, or `safari do` the
   call fails, since their environments are not the caller's.
-- `select` picks a dropdown option by its label. A wrong label returns the
-  list of options. On a combobox the page draws itself (role combobox) it
-  clicks the box open, finds the list the box names (aria-controls,
-  aria-owns) or the listbox that appeared, matches labels as on a
-  `<select>`, and clicks the option; the answer's `value` is its label. A
-  wrong label leaves that list open, and a second `select` picks from it.
-  On any other dropdown the page draws, click it, then the option's ref in
-  a fresh snapshot.
-- `type` and `select` on a label's ref act on the field it labels.
+- `select` picks a dropdown option by its label. Without an option it
+  picks none and answers `{options: [...]}`, every label; a wrong label
+  fails with the first 40. On a combobox the page draws itself (role
+  combobox) it clicks the box open, finds the list the box names
+  (aria-controls, aria-owns) or the listbox that appeared, matches labels
+  as on a `<select>`, and clicks the option; the answer's `value` is its
+  label. A list or a wrong label leaves that list open, and a second
+  `select` picks from it. On any other dropdown the page draws, click it,
+  then the option's ref in a fresh snapshot.
+- `type` and `select` on a label's ref, or its text (`getByLabel` in the
+  REPL), act on the field it labels: the one it holds or names with `for`,
+  else the field that names the label through `aria-labelledby`.
 - A `click` on a control still disabled after `type` filled every field of
   its form says the page did not take scripted typing: type into its fields
   with `real_input` and the ref, then click again.

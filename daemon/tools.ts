@@ -651,9 +651,12 @@ export async function scroll(opts: { tab?: number; ref?: number | string; dx?: n
   return relay(tab, "scroll", [opts.dx ?? 0, dy]);
 }
 
-export async function select(opts: { tab?: number; ref: number | string; option: string }) {
+// With no option, select lists the options and picks none: on 10-07 an
+// agent asked Robinhood's "From" and "Sell in" boxes for "__list__" and
+// "zz-list-options" three times, to read the list a miss answers with.
+export async function select(opts: { tab?: number; ref: number | string; option?: string }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "select", [opts.ref, str(opts.option, "option")]);
+  return relay(tab, "select", [opts.ref, opts.option === undefined ? null : str(opts.option, "option")]);
 }
 
 export async function hover(opts: { tab?: number; ref: number | string }) {
@@ -1615,10 +1618,10 @@ export const TOOLS: Record<string, Tool> = {
     run: action(watched((a) => press(a as { tab: number; ref?: string; key: string }))),
   },
   select: {
-    desc: "Choose a dropdown option by label or value; an unknown option returns the list.",
+    desc: "Choose a dropdown option by label or value; without option, list the options.",
     params: { tab: TAB, ref: REF, option: { type: "string", description: "option label or value" }, snapshot: PAGE },
-    required: ["tab", "ref", "option"],
-    run: action((a) => select(a as { tab: number; ref: string; option: string })),
+    required: ["tab", "ref"],
+    run: action((a) => select(a as { tab: number; ref: string; option?: string })),
   },
   hover: {
     desc: "Hover a ref, for menus that open on mouse-over (not ones driven only by CSS :hover).",
