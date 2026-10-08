@@ -1257,9 +1257,11 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // file a ref's link or button downloads, or with only a tab, the file the
 // tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
 // Safari saves too) unless out says where.
-export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS) {
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ path: string; name: string; size: number; type: string }> {
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
+    const mine = await agentTabOn(url);
+    if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
     return saveFile((await bridge.request("fetchFile", [url], 120000)) as FilePayload, url, opts.out, folder);
   }
   const tab = await resolveTab(opts.tab);
@@ -1299,6 +1301,18 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// The calling agent's own tab on url's site, through which a file by url
+// alone comes with the cookies that site's pages send: the extension's own
+// fetch lacks some. On 10-07 a Slack image fetched with no tab came back as
+// Slack's sign-in page while its agent had a tab signed in to Slack open.
+async function agentTabOn(url: string): Promise<number | undefined> {
+  const owner = currentOwner();
+  const host = URL.parse(url)?.hostname;
+  if (owner === undefined || !host) return undefined;
+  const onSite = (t: TabInfo) => harnessTabs.get(t.id)?.owner === owner && site(URL.parse(t.url ?? "")?.hostname ?? "") === site(host);
+  return (await listTabs()).find(onSite)?.id;
 }
 
 // A click or key on a tab the harness opened reports the files Safari saved

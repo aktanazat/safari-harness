@@ -926,8 +926,10 @@ offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
   A `url` or `out` whose extension names a file (`.png`, `.pdf`, `.csv`,
   `.zip`…) that answers a web page instead fails, saying where it went, and
   saves nothing (CLI: exit 1): a sign-in page, most often, as a url fetched
-  without a tab carries no page's cookies. Pass the `tab` of a page signed
-  in to that site, or an `out` ending in `.html` to keep the page. A Slack
+  without a tab carries no page's cookies. A `url` with no tab comes
+  through a tab of yours on that site when you have one; else pass the
+  `tab` of a page signed in to that site, or an `out` ending in `.html` to
+  keep the page. A Slack
   file comes through the `slack` global: `client.download(file, out)`
   (`safari guide slack`). A name already taken gets ` (1)`. A download
   only the server starts, after a click the page cannot see, lands in

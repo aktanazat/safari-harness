@@ -33,6 +33,10 @@ function answer(op: string, args: unknown[]): unknown {
   if (op === "tabs.list") return showing;
   if (op === "probe") return [];
   if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
+  // a page's fetch carries its site's cookies; the extension's own fetch,
+  // without them, gets the site's sign-in page
+  if (op === "relay" && args[1] === "fetchFile") return { name: "", type: "image/png", size: 4, disposition: null, url: (args[2] as string[])[0], data: Buffer.from("png!").toString("base64") };
+  if (op === "fetchFile") return { name: "", type: "text/html", size: 13, disposition: null, url: "https://slack.com/signin", data: Buffer.from("<html>sign in").toString("base64") };
   if (op === "tabs.close" && args[1] === "idle" && args[0] === hisFront) return { ok: false, front: true };
   return { ok: true };
 }
@@ -205,6 +209,23 @@ test("an agent's action on its tab closed after its turn opens the page again bu
   expect(relays.at(-1)?.slice(0, 2)).toEqual([again, "extract"]);
   agent.kill();
   await closedAs("owned", [nextTab]);
+});
+
+// 10-07: a Slack image fetched with no tab came back as Slack's sign-in
+// page while its agent had a tab signed in to Slack open.
+test("a download of a url with no tab comes through the agent's own tab on that site, never another agent's", async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  await runAs(agent.pid, () => callTool("open", { url: "https://99-point.slack.com/archives/C1", background: true }));
+  const tab = nextTab;
+  showing = [{ id: tab, url: "https://99-point.slack.com/archives/C1" }];
+  const dir = mkdtempSync(join(tmpdir(), "harness-download-"));
+  const url = "https://files.slack.com/files-pri/T1-F1/shot.png";
+  await runAs(agent.pid, () => callTool("download", { url, out: join(dir, "shot.png") }));
+  expect(readFileSync(join(dir, "shot.png"), "utf8")).toBe("png!");
+  await expect(runAs(other.pid, () => callTool("download", { url, out: join(dir, "theirs.png") }))).rejects.toThrow("answered a web page");
+  agent.kill();
+  other.kill();
+  await closedAs("owned", [tab]);
 });
 
 // From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
