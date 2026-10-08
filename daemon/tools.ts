@@ -180,13 +180,19 @@ export async function closeTab(tab: number, why = "by a close call"): Promise<un
 // another tab since is left alone. A tab it cannot close now (not
 // connected, a sheet) is tried again each minute.
 const IDLE_MS = 20 * 60_000;
+// The most tabs one agent holds open: past it, its least recently used tab
+// closes (capTabs). On 10-07 a tire-price agent held 42 tabs in his Safari
+// within one turn. A tab so closed opens again on its agent's next call to
+// it (reopen), so only a form in progress (acted) and a site global's own
+// tab are spared.
+const MAX_TABS = 8;
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
 // daemon last listed, opened, or loaded it; seen: the extension connection
 // it was last listed or made on (bridge.extensionInfo), for a Safari that
-// started again (restored).
-type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true; url?: string; seen?: number };
+// started again (restored). over: past MAX_TABS, due to close (capTabs).
+type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true; over?: true; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
@@ -232,6 +238,18 @@ export function loadTabs(path: string): void {
 function own(tab: number, owner: number | undefined) {
   remember(tab, owner);
   save();
+  capTabs(owner);
+}
+
+// Marks owner's least recently used tabs past MAX_TABS for the sweep.
+function capTabs(owner: number | undefined) {
+  if (owner === undefined) return;
+  const mine = [...harnessTabs.values()].filter((t) => t.owner === owner && !t.orphan && !t.over);
+  const spare = mine.filter((t) => !t.acted && !t.site && !t.closing).sort((a, b) => a.used - b.used);
+  const extra = Math.min(mine.length - MAX_TABS, spare.length);
+  if (extra <= 0) return;
+  for (const t of spare.slice(0, extra)) t.over = true;
+  void sweep();
 }
 
 function remember(tab: number, owner: number | undefined, used = Date.now()) {
@@ -308,7 +326,7 @@ async function sweep() {
   if (!bridge.connected) return;
   const listed = await listTabs().catch((): TabInfo[] => []);
   const idle = Date.now() - IDLE_MS;
-  const due = [...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.used < idle));
+  const due = [...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.over || t.used < idle));
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
@@ -316,11 +334,13 @@ async function sweep() {
   await Promise.all(due.map(async ([tab, t]) => {
     try {
       const res = (await bridge.request("tabs.close", [tab, t.orphan ? "owned" : "idle"], 20000)) as { front?: true } | null;
-      if (res?.front) t.used = Date.now();
-      else {
+      if (res?.front) {
+        t.used = Date.now();
+        delete t.over;
+      } else {
         forget(tab);
         // endTurn marks the tabs it is done with as used at 0
-        const why = t.orphan ? "once its agent exited or was stopped" : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused";
+        const why = t.orphan ? "once its agent exited or was stopped" : t.over ? `as its agent opened more than ${MAX_TABS} tabs, the least recently used first` : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused";
         recordClosed(tab, why, shown.get(tab), t.orphan ? undefined : t.owner);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }

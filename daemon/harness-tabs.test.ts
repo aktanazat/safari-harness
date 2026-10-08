@@ -377,3 +377,25 @@ test("a restarted daemon closes a tab unused for 20 minutes before it started, a
   await settled();
   expect(closesAs("idle")).not.toContain(9022);
 });
+
+// On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.
+test("an agent opening a ninth tab closes its least recently used one, which its next call opens again", async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  const tabs: number[] = [];
+  for (let n = 0; n < 8; n++) {
+    await as("open", { url: `https://shop${n}.example/`, background: true });
+    tabs.push(nextTab);
+  }
+  showing = tabs.map((id, n) => ({ id, url: `https://shop${n}.example/` }));
+  // the first is used again, so the second is the least recently used
+  await as("info", { tab: tabs[0] });
+  await as("open", { url: "https://shop8.example/", background: true });
+  await closedAs("idle", [tabs[1]]);
+  await settled();
+  expect(closesAs("idle").filter((t) => tabs.includes(t))).toEqual([tabs[1]]);
+  expect(await as("info", { tab: tabs[1] })).toMatchObject({ note: expect.stringContaining("opened more than 8 tabs") });
+  agent.kill();
+  await closedAs("owned", [tabs[0]]);
+  showing = [];
+});

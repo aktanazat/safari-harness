@@ -131,8 +131,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   a few seconds after your agent process exits (claude, codex, a bun or
   python script, or the terminal's login session); the daemon keeps that
   list, with when each tab was last used, across its own restarts. A tab
-  nobody has used for 20 minutes
-  closes too, unless the user has it in front. Your next call on a tab of
+  nobody has used for 20 minutes closes too, unless the user has it in
+  front. Past 8 tabs open, your least recently used one closes as you open
+  another, unless an action has changed its page.
+  Your next call on a tab of
   yours closed at your turn's end or unused opens its page again in your
   window, loaded fresh under a new id; the answer carries a `note` and
   `replaced: {from, to}`, and the old id still reaches it. An action there
