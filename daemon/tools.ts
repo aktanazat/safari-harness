@@ -1260,12 +1260,24 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // file a ref's link or button downloads, or with only a tab, the file the
 // tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
 // Safari saves too) unless out says where.
-export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ path: string; name: string; size: number; type: string }> {
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ path: string; name: string; size: number; type: string; note?: string }> {
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
     const mine = await agentTabOn(url);
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
-    return saveFile((await bridge.request("fetchFile", [url], 120000)) as FilePayload, url, opts.out, folder);
+    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const signIn = signInOrigin(f, url, opts.out);
+    if (signIn === undefined) return saveFile(f, url, opts.out, folder);
+    // The extension's own fetch carries no sign-in, and a tab opened on the
+    // site the sign-in page answered from carries Safari's: on 10-07 a
+    // Slack image came back as the sign-in page of 99-point.slack.com,
+    // whose tab lands in Slack's app, and a tab there fetched the image. The
+    // tab stays the agent's, so the next file from that site comes through
+    // it (agentTabOn), not through another sign-in page: Akyl's burst of six
+    // signed-out fetches drew Slack's 429.
+    const opened = (await TOOLS.open.run({ url: `${signIn}/`, background: true })) as { id: number; url?: string };
+    const saved = await download({ ...opts, tab: opened.id }, folder);
+    return { ...saved, note: `the site answered with its sign-in page, so the file came through your tab ${opened.id} on ${pageHost(opened.url ?? signIn)}, opened for it; later files from that site come through it too` };
   }
   const tab = await resolveTab(opts.tab);
   if (opts.url !== undefined || opts.ref === undefined) {
@@ -1304,6 +1316,29 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// The origin a signed-out fetch was answered from, when it answered a web
+// page in place of the file its address or out names (askedExtension).
+function signInOrigin(f: FilePayload, url: string, out: string | undefined): string | undefined {
+  if (askedExtension(out, url) === undefined || !/^text\/html\b/i.test(f.type)) return undefined;
+  return URL.parse(f.url || url)?.origin;
+}
+
+// What a failed download's status means for the next try. A 404 is an
+// address the site does not know: on 10-07 Akyl built six Slack file
+// addresses from file ids and a made-up name, and each answered 404 until
+// it read the addresses from Slack's API. A 429 is a site turning away
+// requests that come too fast; that burst drew one.
+const DOWNLOAD_HINTS: Record<string, string> = {
+  "404": "nothing is at that address; take a file's address from its page (a ref's link) or the site's API rather than building it",
+  "429": "the site turned away requests coming this fast; wait a few seconds, then fetch one file at a time",
+};
+function downloadHint(e: unknown): never {
+  if (!(e instanceof Error)) throw e;
+  const status = /^download failed: HTTP (\d+)$/.exec(e.message)?.[1];
+  if (status !== undefined && Object.hasOwn(DOWNLOAD_HINTS, status)) throw new Error(`${e.message}: ${DOWNLOAD_HINTS[status]}`);
+  throw e;
 }
 
 // The calling agent's own tab on url's site, through which a file by url
@@ -1671,7 +1706,7 @@ export const TOOLS: Record<string, Tool> = {
   download: {
     desc: "Save the file a ref's link or button downloads, a url (tab optional), or the file tab shows, into ~/Downloads; returns its path.",
     params: { tab: TAB, ref: REF, url: { type: "string", description: "instead of ref" }, out: { type: "string", description: "path; /tmp/… for files you only read" } },
-    run: (a) => download(a as { tab?: number; ref?: string; url?: string; out?: string }),
+    run: (a) => download(a as { tab?: number; ref?: string; url?: string; out?: string }).catch(downloadHint),
   },
   dialog: {
     desc: "Alerts, confirms, and prompts come back with the action that raised them; confirm and prompt are dismissed unless you accept. read lists recent ones.",

@@ -931,9 +931,15 @@ offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
   `.zip`…) that answers a web page instead fails, saying where it went, and
   saves nothing (CLI: exit 1): a sign-in page, most often, as a url fetched
   without a tab carries no page's cookies. A `url` with no tab comes
-  through a tab of yours on that site when you have one; else pass the
-  `tab` of a page signed in to that site, or an `out` ending in `.html` to
-  keep the page. A Slack
+  through a tab of yours on that site when you have one. Else, when the
+  answer is a sign-in page, `download` opens a background tab of yours on
+  the site that answered, fetches the file through it, and says so in a
+  `note`; later files from that site come through that tab. A file still
+  answered with a web page fails as above: pass the `tab` of a page signed
+  in to that site, or an `out` ending in `.html` to keep the page. A 404
+  says nothing is at that address: take it from the page or the site's API
+  rather than building it. A 429 says to wait and fetch one file at a
+  time. A Slack
   file comes through the `slack` global: `client.download(file, out)`
   (`safari guide slack`). A name already taken gets ` (1)`. A download
   only the server starts, after a click the page cannot see, lands in

@@ -212,20 +212,29 @@ test("an agent's action on its tab closed after its turn opens the page again bu
 });
 
 // 10-07: a Slack image fetched with no tab came back as Slack's sign-in
-// page while its agent had a tab signed in to Slack open.
-test("a download of a url with no tab comes through the agent's own tab on that site, never another agent's", async () => {
+// page while its agent had a tab signed in to Slack open. An agent with no
+// such tab got sign-in pages too, six in a burst that drew Slack's 429.
+test("a download of a url with no tab comes through the agent's own tab on that site, never another agent's, else through one it opens where the sign-in page came from", async () => {
   const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
   await runAs(agent.pid, () => callTool("open", { url: "https://99-point.slack.com/archives/C1", background: true }));
   const tab = nextTab;
   showing = [{ id: tab, url: "https://99-point.slack.com/archives/C1" }];
   const dir = mkdtempSync(join(tmpdir(), "harness-download-"));
   const url = "https://files.slack.com/files-pri/T1-F1/shot.png";
+  const fetchedIn = () => relays.filter(([, op, a]) => op === "fetchFile" && (a as string[])[0] === url).map(([t]) => Number(t));
   await runAs(agent.pid, () => callTool("download", { url, out: join(dir, "shot.png") }));
-  expect(readFileSync(join(dir, "shot.png"), "utf8")).toBe("png!");
-  await expect(runAs(other.pid, () => callTool("download", { url, out: join(dir, "theirs.png") }))).rejects.toThrow("answered a web page");
+  await runAs(other.pid, () => callTool("download", { url, out: join(dir, "theirs.png") }));
+  const theirs = nextTab;
+  // the tab opened on the sign-in page's site lands in the signed-in app
+  expect(opens.at(-1)?.[0]).toBe("https://slack.com/");
+  showing.push({ id: theirs, url: "https://app.slack.com/client/T1" });
+  await runAs(other.pid, () => callTool("download", { url, out: join(dir, "again.png") }));
+  expect(fetchedIn()).toEqual([tab, theirs, theirs]);
+  expect(["shot.png", "theirs.png", "again.png"].map((f) => readFileSync(join(dir, f), "utf8"))).toEqual(["png!", "png!", "png!"]);
   agent.kill();
   other.kill();
-  await closedAs("owned", [tab]);
+  await closedAs("owned", [tab, theirs]);
+  showing = [];
 });
 
 // From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
