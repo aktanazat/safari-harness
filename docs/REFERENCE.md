@@ -221,10 +221,18 @@ calls. `safari repl "<code>"` (the `repl` tool over MCP) runs Playwright-style
 JavaScript: `openTab`, `snapshot`, `page.locator(ref).click()`,
 `page.waitForEvent('download')`, `page.pdf()`, cookie-bearing `fetch`, and
 site globals for Slack, Gmail, Notion, Google Docs and Sheets, Google
-search, YouTube, X, and Messages. `--session <name>` keeps bindings between
-calls; it ends with `--close` or after 30 minutes unused. Keep one name for
-a task: a session you start names, on a `hint:` line, the others your agent
-runs, so you go on in one of those instead. The tabs its code
+search, YouTube, X, and Messages. Without `--session`, a call runs in your
+agent's own session, `agent-<pid>`: the omp, claude or codex above your
+shell, else the first program above it that is not a shell. What one plain
+call binds (`globalThis.x = …`, a top-level `const`), your next plain call
+reads; the session ends when that agent exits or after 30 minutes unused.
+Subagents of one harness share it and take turns, so parallel work wants a
+`--session <name>` each. A call with only shells above it (launchd) runs in
+a session of its own. `--session <name>` keeps a task's bindings apart; it
+ends with `--close` or after 30 minutes unused. Keep one name for a task: a
+session you start names, on a `hint:` line, the others your agent runs, so
+you go on in one of those instead. A session's relative paths begin in its
+own folder (`pwd`), not your shell's. The tabs its code
 opens are yours, as if you had opened them: they open in your window and
 close when your turn ends or sit 20 minutes unused. A session's page whose
 tab has closed drops out of `tabs`; open it again in the same session. A site global whose tab is gone opens a

@@ -9,9 +9,10 @@ Tabs
   is his front tab, only when he asks about his page. Never navigate,
   type in, or close his tabs.
 - `open` on a site where you have a tab loads in it (`new: true` for a
-  second). Keep one `repl --session` name for a task, even after "that
-  tab is gone" (`openTab` again in it); `openTab` and a new session name
-  what you already hold.
+  second). `repl` without `--session` runs in your agent's own session:
+  what one call binds, your next reads. Keep one `--session` name for a
+  task apart, even after "that tab is gone" (`openTab` again in it);
+  `openTab` and a new session name what you already hold.
 - Your tabs close when your turn ends or after 20 minutes unused. `keep`
   one that waits on him, or that you need after a long step.
 - When a call says he paused or stopped you, do what it says.

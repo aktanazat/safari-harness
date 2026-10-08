@@ -21,6 +21,7 @@ import { invoke } from "../daemon/call.ts";
 import { nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
+import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
@@ -137,8 +138,9 @@ const USAGE = `safari — drive Safari from the terminal
                                              file, or stdin for -, need no shell quoting
 
   safari repl [--session name] [code]        Playwright-style JavaScript with site globals
-                                             (code from stdin when omitted, or --file path); see: safari guide repl
-  safari repl --list | --close <name>        named sessions still running; end one
+                                             (code from stdin when omitted, or --file path); without
+                                             --session, in this agent's own session; see: safari guide repl
+  safari repl --list | --close <name>        sessions still running; end one
 
   safari do "<task>" [--tab N] [--steps 30] [--model m]
                                              run the agent loop (local model); prints its session
@@ -418,7 +420,7 @@ async function replCommand(argv: string[]) {
   if (hasFlag("list", argv)) {
     const running = await listSessions();
     if (json) return print(running);
-    if (!running.length) return console.log("no named sessions running");
+    if (!running.length) return console.log("no sessions running");
     for (const s of running) console.log(`${s.id}  on ${s.host}  last used ${s.lastUsed.slice(0, 16).replace("T", " ")}  ${s.tabs.length} tab(s)  ${s.pwd}`);
     return;
   }
@@ -429,13 +431,20 @@ async function replCommand(argv: string[]) {
   const code = file !== undefined ? await Bun.file(resolve(file)).text() : argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
   if (!code.trim()) fail('usage: safari repl [--session name] "<code>" | --file path (or pipe the code in)', 2);
   let result: { output: string; error?: string };
-  if (session) {
-    const r = await runInSession(session, code, { host: flag("host", argv) });
-    if (r.started) console.error(`\x1b[2m(session ${session} started; it ends after 30 min unused, or: safari repl --close ${session})\x1b[0m`);
+  // Without --session, a call runs in its agent's own session (the agent
+  // above this process: owner.ts), so what one call binds the next reads:
+  // on 10-07 Akyl's globalThis.dmid was gone in its next call, each call
+  // then a session of its own. The session ends when that agent does.
+  const agent = session ? undefined : await ownerOf(process.pid);
+  const name = session ?? (agent === undefined ? undefined : `agent-${agent}`);
+  if (name !== undefined) {
+    const r = await runInSession(name, code, { host: flag("host", argv), endsWith: agent });
+    if (r.started) console.error(`\x1b[2m(session ${name} started; it ends ${agent === undefined ? "" : "when this agent exits or "}after 30 min unused, or: safari repl --close ${name})\x1b[0m`);
     if (r.hint !== undefined) console.error(`hint: ${r.hint}`);
     result = r;
   } else {
-    // One call, one session: its bindings and tabs end with it.
+    // No agent above this process (launchd ran it): one call, one session,
+    // whose bindings and tabs end with it.
     await connectHost(flag("host", argv));
     const one = new ReplSession("once");
     try {

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // A named REPL session is a process of its own that the first `safari repl
@@ -215,4 +215,33 @@ test("a session an agent starts names the sessions that agent already runs, and 
   expect(mine.hint).toContain("first (d.example)");
   const theirs = (await command(`runInSession("third", "1")`, true)) as { hint?: string };
   expect(theirs.hint).toBeUndefined();
+}, 30_000);
+
+// `safari repl` itself, run as an agent's shell runs it.
+const CLI = join(import.meta.dir, "../cli/safari.ts");
+
+// On 10-07 Akyl set globalThis.dmid in one plain call and found it gone in
+// the next: each call was then a session of its own.
+test("a value one plain safari repl call sets, the same agent's next plain call reads", async () => {
+  await run([process.execPath, CLI, "repl", "globalThis.dmid = 'D0123'"]);
+  expect(await run([process.execPath, CLI, "repl", "globalThis.dmid"])).toBe("D0123\n");
+}, 30_000);
+
+test("the session of an agent's plain safari repl calls ends when that agent exits", async () => {
+  // an agent of its own: it runs one plain call, says so, and stays
+  const agent = Bun.spawn([omp, "-e", `await Bun.spawn([process.execPath, ${JSON.stringify(CLI)}, "repl", "1"], { stdout: "ignore", stderr: "inherit" }).exited; console.log("ran"); await Bun.sleep(60_000);`], { env, stdout: "pipe", stderr: "inherit" });
+  await agent.stdout.getReader().read();
+  const session = `agent-${agent.pid}`;
+  const running = async () => ((await command("listSessions()")) as { id: string }[]).some((s) => s.id === session);
+  expect(await running()).toBe(true);
+  // A session that ends takes its socket away.
+  const sock = join(state, "repl", `${session}.sock`);
+  const ended = Promise.withResolvers<void>();
+  const watcher = watch(join(state, "repl"), () => {
+    if (!existsSync(sock)) ended.resolve();
+  });
+  agent.kill(9);
+  await ended.promise;
+  watcher.close();
+  expect(await running()).toBe(false);
 }, 30_000);

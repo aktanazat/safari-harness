@@ -10,16 +10,24 @@ declarations end with it. An error names the script line it came from when
 the stack shows one.
 
 ```sh
-safari repl "const p = await openTab('https://example.com'); console.log(await p.title())"
+safari repl "const p = await openTab('https://example.com')"
+safari repl "console.log(await p.title())"   # your next call still has p
 safari repl --session work "const p = await openTab('https://example.com')"
 safari repl --session work "console.log((await snapshot(p)).tree)"
 echo "console.log(await gmail.search(0, 'from:bank', {limit: 5}))" | safari repl --session work
-safari repl --list                  # named sessions still running
+safari repl --list                  # sessions still running
 safari repl --close work            # end one; its tabs close
 ```
 
-Without `--session`, a call is a session of its own: its tabs close when it
-ends. A named session runs in the background, keeps its bindings between
+Without `--session`, a call runs in your agent's own session, `agent-<pid>`:
+the omp, claude or codex above your shell, else the first program above it
+that is not a shell. What one plain call binds (`globalThis.x = …`, a
+top-level `const`), your next plain call reads, and its tabs stay yours as
+any session's do. It ends when that agent exits or after 30 minutes unused.
+Subagents of one harness share it and take turns, so parallel work wants a
+`--session` name each. A call with only shells above it (launchd) runs in a
+session of its own, whose bindings and tabs end with it.
+A named session runs in the background, keeps its bindings between
 calls from any terminal or agent, and ends after 30 minutes unused. The tabs
 its code opens are the calling agent's: they open in its window and close
 when its turn ends or after 20 minutes unused. Starting a session prints a

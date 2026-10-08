@@ -1,15 +1,19 @@
 // Named REPL sessions. Each runs in a process of its own, started by the
 // first call that names it, so its bindings last from one call to the
-// next, whichever terminal or agent makes it. Each call names the process
-// that made it (callFor in rpc.ts), so the tabs its code opens are the
-// agent's above that process: they open in that agent's window and close
-// as its turn ends, or after 20 minutes unused. It answers on a unix
-// socket only its user can open, and ends after half an hour unused,
-// closing the tabs it still has but one kept for the user. It is started
-// from the caller, so it has the caller's permissions (Full Disk Access
-// for imessage), which the daemon under launchd lacks.
+// next, whichever terminal or agent makes it. `safari repl` without a
+// name runs in the calling agent's own session, agent-<pid> (owner.ts
+// finds the agent), which also ends when that agent exits. Each call
+// names the process that made it (callFor in rpc.ts), so the tabs its
+// code opens are the agent's above that process: they open in that
+// agent's window and close as its turn ends, or after 20 minutes unused.
+// It answers on a unix socket only its user can open, and ends after half
+// an hour unused, closing the tabs it still has but one kept for the
+// user. It is started from the caller, so it has the caller's permissions
+// (Full Disk Access for imessage), which the daemon under launchd lacks.
 //
-//   bun daemon/repl-host.ts <id>     serve session <id> (callers start this)
+//   bun daemon/repl-host.ts <id> [pid]   serve session <id> (callers start
+//                                        this); with pid, it ends when
+//                                        that process does
 
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
@@ -19,7 +23,7 @@ import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
 import { pageHost } from "./notes.ts";
-import { ownerOf } from "./owner.ts";
+import { ownerOf, watchOwner } from "./owner.ts";
 import { callFor, ownCalls } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
@@ -55,7 +59,8 @@ async function info(id: string): Promise<SessionInfo | null> {
 
 // The session connects to its Mac itself: a tunnel this process opened
 // ends with this process, so the child gets the host's name, not its port.
-async function start(id: string, host: string | undefined): Promise<void> {
+// With endsWith, it also ends when that process does.
+async function start(id: string, host: string | undefined, endsWith: number | undefined): Promise<void> {
   const dir = join(REPL_DIR, id);
   await mkdir(dir, { recursive: true });
   await chmod(REPL_DIR, 0o700);
@@ -69,7 +74,7 @@ async function start(id: string, host: string | undefined): Promise<void> {
   const target = host ?? remote;
   if (target) env.SAFARI_HARNESS_HOST = target;
   const log = openSync(join(REPL_DIR, `${id}.log`), "a");
-  const child = spawn(process.execPath, [import.meta.path, id], {
+  const child = spawn(process.execPath, [import.meta.path, id, ...(endsWith === undefined ? [] : [String(endsWith)])], {
     cwd: dir,
     detached: true,
     stdio: ["ignore", log, log],
@@ -87,13 +92,14 @@ async function start(id: string, host: string | undefined): Promise<void> {
 }
 
 // Runs code in session id, starting the session if it is not running. A
-// session it starts says which others the calling agent runs.
-export async function runInSession(id: string, code: string, opts: { host?: string; timeoutMs?: number } = {}): Promise<ReplResult & { started: boolean; hint?: string }> {
+// session it starts says which others the calling agent runs, and ends
+// when the process endsWith names does, if one is named.
+export async function runInSession(id: string, code: string, opts: { host?: string; timeoutMs?: number; endsWith?: number } = {}): Promise<ReplResult & { started: boolean; hint?: string }> {
   checkSessionId(id);
   let started = false;
   const running = await info(id);
   if (!running) {
-    await start(id, opts.host);
+    await start(id, opts.host, opts.endsWith);
     started = true;
   } else if (opts.host && opts.host !== running.host) {
     throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
@@ -140,7 +146,7 @@ export async function closeSession(id: string): Promise<string> {
   return `session ${id} ended; its files stay in ${join(REPL_DIR, id)}`;
 }
 
-async function serve(id: string): Promise<void> {
+async function serve(id: string, endsWith: number | undefined): Promise<void> {
   ownCalls();
   const host = await connectHost(process.env.SAFARI_HARNESS_HOST);
   const session = new ReplSession(id, { cwd: process.cwd() });
@@ -195,10 +201,11 @@ async function serve(id: string): Promise<void> {
   });
   await chmod(sock, 0o600);
   rest();
+  if (endsWith !== undefined) watchOwner(endsWith, () => void end());
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => void end());
 }
 
 if (import.meta.main) {
   const id = checkSessionId(process.argv[2] ?? "");
-  await serve(id);
+  await serve(id, process.argv[3] === undefined ? undefined : Number(process.argv[3]));
 }
