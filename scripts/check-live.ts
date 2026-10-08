@@ -680,7 +680,9 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
       return Response.json(signed ? { results: ["account"] } : { detail: "Authentication credentials were not provided." }, { status: signed ? 200 : 401, headers: cors() });
     },
   });
-  const accounts = `http://localhost:${api.port}/accounts/`;
+  // Another port is another origin. Not localhost: from a page on
+  // 127.0.0.1, Safari's request to it never reached the server (10-07).
+  const accounts = `http://127.0.0.1:${api.port}/accounts/`;
   const page = Bun.serve({
     port: 0,
     fetch: () => new Response(`<title>signed in</title><script>fetch(${JSON.stringify(accounts)}, { headers: { Authorization: ${JSON.stringify(token)} } })</script>`, { headers: { "content-type": "text/html" } }),
