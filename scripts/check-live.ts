@@ -592,6 +592,18 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
   check("the page still reads each whole body itself", got.long === 100000 && (got.missing ?? 0) > 300, got);
 });
 
+// Runs command in Safari's AppleScript on the window that holds the tab
+// titled title (the tab is `held`, its window `w`): "" once done, else why
+// not. An agent's window holds its own page and its tabs, so the window's
+// name is whichever tab is current: on 10-07 a lookup by window name got
+// "Invalid index" and opened no tab.
+function inWindowHolding(title: string, command: string): string {
+  const script = ['tell application "Safari"', "repeat with w in windows", `set held to (tabs of w whose name is "${title}")`, "if (count of held) > 0 then",
+    command, "return", "end if", "end repeat", `error "no window holds a tab named ${title}"`, "end tell"];
+  const r = Bun.spawnSync(["osascript", ...script.flatMap((line) => ["-e", line])], { stdout: "pipe", stderr: "pipe" });
+  return r.exitCode === 0 ? "" : `osascript exited ${r.exitCode}: ${r.stderr.toString().trim()}`;
+}
+
 // ---------- the request log only in tabs agents work in ----------
 
 // A page that fetches as it loads, served here. A harness tab's log has the
@@ -642,14 +654,14 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
     const before = new Set((await listed()).map((t) => t.id));
-    Bun.spawnSync(["osascript", "-e", `tell application "Safari" to tell (first window whose name is "${title}") to make new tab with properties {URL:"${url}"}`]);
+    const made = inWindowHolding(title, `tell w to make new tab with properties {URL:"${url}"}`);
     for (let i = 0; i < 50 && other === undefined; i++) {
       await Bun.sleep(100);
       other = (await listed()).find((t) => !before.has(t.id) && t.url === url)?.id;
     }
     const atLoad = () => hits.filter((p) => p === "/at-load").length;
     const plain = (own: unknown) => String(own).startsWith("function fetch()");
-    let own: unknown = "no tab";
+    let own: unknown = made || "no tab";
     for (let i = 0; i < 30 && other !== undefined && !(plain(own) && atLoad() === 2); i++) {
       await Bun.sleep(100);
       own = (await call("eval", { tab: other, page: true, expression: "Function.prototype.toString.call(fetch)" })).result;
@@ -976,18 +988,64 @@ check("browsing_history leaves out the pages these checks opened, and counts the
 
 // ---------- tabs close with the program that opened them ----------
 
-// Here that program is a bun process that runs the CLI and exits. The
-// daemon looks each second (owner.ts), so the tab is gone within a few
-// seconds; the --keep tab must outlive a look after that.
+// Each program below stands for an agent: the daemon must take it for one
+// of its own. Since 10-06 (owner.ts, HARNESSES) a process anywhere under
+// omp, claude or codex works for that harness, so a child of this check,
+// run from an agent session, was that session: two "agents" were one, and
+// none exiting closed anything. So the program starts through a shell that
+// leaves it in the background and exits, launchd adopts it, and no harness
+// is above it; it waits for that before its first call. It prints its pid
+// first, for stopping it, then up to `lines` lines, read here through the
+// pipe it inherits; ended comes once it exits and the pipe closes. One
+// still running when this check exits is stopped then.
+const programs = new Set<number>();
+process.on("exit", () => {
+  for (const pid of programs) stopProgram(pid);
+});
+async function agentProgram(script: string, lines: number) {
+  const body = `process.stdout.write(process.pid + "\\n"); while (process.ppid !== 1) await Bun.sleep(10); ${script}`;
+  const shell = Bun.spawn(["/bin/sh", "-c", '"$@" &', "sh", process.execPath, "-e", body], { stdout: "pipe", stderr: "ignore" });
+  const reader = shell.stdout.getReader();
+  let out = "";
+  let done = false;
+  while (!done && out.split("\n").length < lines + 2) {
+    const chunk = await reader.read();
+    done = chunk.done;
+    if (chunk.value) out += new TextDecoder().decode(chunk.value);
+  }
+  const [first, ...rest] = out.trim().split("\n");
+  const pid = Number(first);
+  programs.add(pid);
+  const ended = (async () => {
+    while (!done) done = (await reader.read()).done;
+    programs.delete(pid);
+  })();
+  return { pid, lines: rest, ended };
+}
+function stopProgram(pid: number) {
+  programs.delete(pid);
+  try {
+    process.kill(pid);
+  } catch {
+    // it has exited already
+  }
+}
+// The tab id in a line `safari open --json` printed.
+function openedTab(line = ""): number {
+  const opened: unknown = line.startsWith("{") ? JSON.parse(line) : null;
+  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "number") throw new Error(`safari open failed: ${line}`);
+  return opened.id;
+}
+
+// Here that program runs the CLI and exits. The daemon looks each second
+// (owner.ts), so the tab is gone within a few seconds; the --keep tab must
+// outlive a look after that.
 const CLI = new URL("../cli/safari.ts", import.meta.url).pathname;
 async function openFromChild(keep: boolean): Promise<number> {
   const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json", ...(keep ? ["--keep"] : [])];
-  const child = Bun.spawn([process.execPath, "-e", `const r = Bun.spawnSync(${JSON.stringify(argv)}); process.stdout.write(r.stdout); process.stderr.write(r.stderr)`], { stdout: "pipe", stderr: "pipe" });
-  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
-  await child.exited;
-  const opened: unknown = JSON.parse(out || "null");
-  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "number") throw new Error(`safari open failed: ${err.trim() || out}`);
-  return opened.id;
+  const { lines, ended } = await agentProgram(`const r = Bun.spawnSync(${JSON.stringify(argv)}); process.stdout.write((r.stdout.toString().trim() || r.stderr.toString().trim().replaceAll("\\n", " ")) + "\\n")`, 1);
+  await ended;
+  return openedTab(lines[0]);
 }
 const tabIds = async () => new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
 const [owned, kept] = await Promise.all([openFromChild(false), openFromChild(true)]);
@@ -1009,8 +1067,9 @@ try {
 
 // Safari answers no close while a print sheet is up. The harness's own tab
 // closes anyway: the extension loads a blank page in it, which Safari soon
-// stops waiting on. The sheet is counted through System Events, by the
-// window's title, and cancelled if the close failed.
+// stops waiting on. The tab is made current in its window, which then
+// bears its title; the sheet is counted through System Events, by that
+// title, and cancelled if the close failed.
 {
   const title = `check-live-sheet-${Date.now()}`;
   const osa = (script: string) => Bun.spawnSync(["osascript", "-e", `tell application "System Events" to tell process "Safari" to ${script}`], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
@@ -1019,12 +1078,13 @@ try {
   try {
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
+    const current = inWindowHolding(title, "set current tab of w to item 1 of held");
     // an embedded page's print is Safari's own: dialogs.js answers the top page's
     await call("eval", { tab, expression: "(() => { const f = document.createElement('iframe'); document.body.append(f); setTimeout(() => f.contentWindow.print(), 200); return 1; })()" });
     await Bun.sleep(2500);
     const sheets = osa(`count sheets of ${win}`);
     const closed = await call("close", { tab }).then(() => true, (e: Error) => e.message);
-    check("a harness tab closes although a native sheet holds it", sheets === "1" && closed === true && !(await tabIds()).has(tab), { sheets, closed });
+    check("a harness tab closes although a native sheet holds it", sheets === "1" && closed === true && !(await tabIds()).has(tab), { sheets, closed, current });
   } finally {
     if ((await tabIds()).has(tab)) {
       osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${win})`);
@@ -1042,15 +1102,8 @@ try {
 type Placed = { id: number; windowId?: number; front?: boolean };
 async function agentWithTabs() {
   const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json"];
-  const child = Bun.spawn([process.execPath, "-e", `for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`], { stdout: "pipe", stderr: "ignore" });
-  const reader = child.stdout.getReader();
-  let out = "";
-  while (out.split("\n").length < 3) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    out += new TextDecoder().decode(value);
-  }
-  return { child, ids: out.trim().split("\n").map((line) => (JSON.parse(line) as { id: number }).id) };
+  const { pid, lines } = await agentProgram(`for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 2);
+  return { pid, ids: lines.map((line) => openedTab(line)) };
 }
 const appBefore = await frontApp();
 const userWindow = ((await call("tabs")) as Placed[]).find((t) => t.front)?.windowId;
@@ -1061,7 +1114,7 @@ try {
   check("each agent's tabs share one window of its own, not the user's", wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { wa, wb, userWindow });
   const appAfter = await frontApp();
   check("agent windows open behind the user's app", appAfter === appBefore, { appBefore, appAfter });
-  for (const a of agents) a.child.kill();
+  for (const a of agents) stopProgram(a.pid);
   let left = true;
   for (let waited = 0; left && waited < 20000; waited += 1000) {
     await Bun.sleep(1000);
@@ -1069,7 +1122,7 @@ try {
   }
   check("an agent's window closes once the agent exits", !left, { wa, wb });
 } finally {
-  for (const a of agents) a.child.kill();
+  for (const a of agents) stopProgram(a.pid);
 }
 
 // ---------- each task's own tab group ----------
@@ -1082,15 +1135,11 @@ try {
 type SpaceRow = { name: string; group: string; ended: boolean };
 async function agentWithGroup(task: string) {
   const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--group", task, "--json"];
-  const child = Bun.spawn([process.execPath, "-e", `process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`], { stdout: "pipe", stderr: "ignore" });
-  const reader = child.stdout.getReader();
-  let out = "";
-  while (!out.includes("\n")) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    out += new TextDecoder().decode(value);
-  }
-  return { child, space: (JSON.parse(out) as { space: { name: string; group: string } }).space };
+  const { pid, lines } = await agentProgram(`process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 1);
+  const opened: unknown = lines[0]?.startsWith("{") ? JSON.parse(lines[0]) : null;
+  const space = opened && typeof opened === "object" && "space" in opened ? opened.space : null;
+  if (!space || typeof space !== "object" || !("name" in space) || typeof space.name !== "string" || !("group" in space) || typeof space.group !== "string") throw new Error(`safari open --group failed: ${lines[0]}`);
+  return { pid, space: { name: space.name, group: space.group } };
 }
 const spaceRows = async () => ((await call("space", { op: "state" })) as { spaces: SpaceRow[] }).spaces;
 // Whether done comes true within ms, looked at once a second.
@@ -1110,13 +1159,13 @@ try {
   if (!grouped) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or groups are off): ${JSON.stringify(await spaceRows())}`);
   else {
     check("each task's window becomes a tab group of its own, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
-    for (const t of tasks) t.child.kill();
+    for (const t of tasks) stopProgram(t.pid);
     const gone = await within(120_000, async () => !(await spaceRows()).some((r) => names.includes(r.name)));
     if (gone) check("a task's tab group goes once its agent exits, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
     else console.log(`SKIP tab group delete: not done within 2 min (the user was at the keys): ${JSON.stringify(await spaceRows())}`);
   }
 } finally {
-  for (const t of tasks) t.child.kill();
+  for (const t of tasks) stopProgram(t.pid);
 }
 
 // ---------- snapshot size ----------
