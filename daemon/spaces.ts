@@ -8,14 +8,19 @@
 // gives every window a new id (adopt in background.js): about:blank runs no
 // content script to keep the window's id.
 //
-// Each window then becomes a Safari tab group of that name (his ask of
-// 09-28: a tab group per assignment). Safari gives extensions no tab groups
-// and the daemon has no Accessibility, so a keeper in the agent's terminal
-// makes and deletes them (keeper.ts, groups.ts), asking here what to do
-// through the hidden space tool; a window's size, which no other window
-// has, is how it finds the window on screen. Until the user has left the
-// keys alone a while the window stays plain (waiting); one that cannot
-// become a group says why (plain).
+// A window that comes to hold several of its agent's tabs (GROUP_AT) then
+// becomes a Safari tab group of that name (his ask of 09-28: a tab group
+// per assignment; of 10-07: a group only when the task needs several tabs).
+// Safari gives extensions no tab groups and the daemon has no
+// Accessibility, so a keeper in the agent's terminal makes and deletes them
+// (keeper.ts, groups.ts), asking here what to do through the hidden space
+// tool; a window's size, which no other window has, is how it finds the
+// window on screen. Until the user has left the keys alone a while the
+// window stays plain (waiting); one that cannot become a group says why
+// (plain). A window with fewer tabs is never the keeper's: it closes with
+// its tabs, while a group needs the keeper again to go, and on 10-07 the
+// keeper missed 55 of 91 deletes as the user worked, each miss an empty
+// window left in his Safari.
 //
 // When the agent exits, when its turn ends and the window holds nothing
 // but its page, or when the window has held nothing but its page for
@@ -63,6 +68,9 @@ const opening = new Set<string>();
 
 const IDLE_MS = 2 * 60_000;
 const SWEEP_MS = 5000;
+// How many of its agent's tabs a waiting window holds before the keeper
+// makes it a group (state).
+const GROUP_AT = 3;
 // Its live page (mission.ts), which the daemon serves on this port.
 const PAGE = `http://127.0.0.1:${Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)}/space`;
 
@@ -269,8 +277,12 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
     case "state": {
       const watched = [...spaces.values()].filter((s) => s.group !== "plain");
       const tabs = bridge.connected && watched.some((s) => s.group === "waiting" || s.group === "making") ? await listTabs() : undefined;
-      const row = async (s: Space, over: boolean) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(tabs && !over ? { tabs: (await located(s, tabs)).length } : {}) });
-      return { connected: bridge.connected, spaces: await Promise.all([...[...closing.values()].map((s) => row(s, true)), ...watched.map((s) => row(s, false))]) };
+      const counted = await Promise.all(watched.map(async (s) => ({ s, inWindow: tabs && (await located(s, tabs)) })));
+      // A waiting window holding fewer than GROUP_AT of its agent's tabs is
+      // not yet one the keeper makes a group of.
+      const due = counted.filter(({ s, inWindow }) => s.group !== "waiting" || (inWindow?.filter((t) => !isPage(t, s)).length ?? 0) >= GROUP_AT);
+      const row = (s: Space, over: boolean, inWindow?: TabInfo[]) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(inWindow ? { tabs: inWindow.length } : {}) });
+      return { connected: bridge.connected, spaces: [...[...closing.values()].map((s) => row(s, true)), ...due.map(({ s, inWindow }) => row(s, false, inWindow))] };
     }
     case "making":
       if (!live) return { ok: false };

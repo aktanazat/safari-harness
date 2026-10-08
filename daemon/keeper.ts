@@ -1,6 +1,7 @@
-// The tab group keeper: it makes each agent window (spaces.ts) a Safari tab
-// group named for its task once the user has left the keyboard and mouse
-// alone, and deletes the group when the task ends. It runs from the agent's
+// The tab group keeper: it makes an agent window (spaces.ts) that holds
+// several of its agent's tabs a Safari tab group named for its task once the
+// user has left the keyboard and mouse alone, and deletes the group when the
+// task ends. It runs from the agent's
 // terminal, whose Accessibility permission the steps need and the daemon
 // lacks: call.ts starts it, detached, after an open whose window is to be a
 // group or is one, and one keeper at a time does the work (the helper's

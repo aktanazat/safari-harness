@@ -212,12 +212,34 @@ test("an agent sizing its tab sizes its own window, which the keeper then looks 
   const s = safari();
   const h = agent();
   const t = await runAs(h.pid, () => openTab("https://h.example/", true));
+  // the keeper looks only for a window holding several tabs
+  for (const site of ["h2", "h3"]) await runAs(h.pid, () => openTab(`https://${site}.example/`, true));
   await runAs(h.pid, () => callTool("window", { tab: t.id, width: 390, height: 844 }));
   await callTool("window", { tab: 1, width: 390, height: 844 });
   const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; width: number; height: number }[] };
   expect(spaces.find((x) => x.name === t.space.name)).toMatchObject({ width: 390, height: 845 });
   expect(s.sized).toEqual([{ tab: t.id, whole: true }, { tab: 1, whole: false }]);
   h.kill();
+});
+
+// 10-07: every agent window became a tab group, a one-page look included,
+// and the keeper missed 55 of 91 deletes as the user worked, each miss an
+// empty window left in his Safari. A window with fewer tabs stays plain and
+// closes with them.
+test("an agent's window is the keeper's to make a tab group of only once it holds three of the agent's tabs", async () => {
+  safari();
+  const g = agent();
+  const offered = async () => {
+    // the keeper's view of the windows (spaceTool state, spaces.ts)
+    const state = (await spaceTool({ op: "state" })) as { spaces: { name: string }[] };
+    return state.spaces.map((x) => x.name);
+  };
+  const first = await runAs(g.pid, () => openTab("https://g1.example/", true));
+  await runAs(g.pid, () => openTab("https://g2.example/", true));
+  expect(await offered()).not.toContain(first.space.name);
+  await runAs(g.pid, () => openTab("https://g3.example/", true));
+  expect(await offered()).toContain(first.space.name);
+  g.kill();
 });
 
 // On 09-29 each new window of one agent repeated the same 330-character

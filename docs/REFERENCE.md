@@ -97,9 +97,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   starts again, the tabs it restores in your window stay yours: an id you
   held leads to its tab's new one (`replaced` in the next result says so),
   and they close as your other tabs do.
-- That window becomes a Safari tab group of the same name the first time he
-  has left the keyboard and mouse alone for 30 seconds, and stays a plain
-  window until then. `open` says which under `space`: `group` is `waiting`,
+- Once that window holds three of your tabs, it becomes a Safari tab group
+  of the same name the first time he has left the keyboard and mouse alone
+  for 30 seconds; a window with fewer stays plain and closes with your
+  tabs. `open` says which under `space`: `group` is `waiting`,
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
   `bun run helpers` has not built scripts/spaces, or groups are off); a
