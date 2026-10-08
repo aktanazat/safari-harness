@@ -37,18 +37,26 @@ export function nameIn(names: string[], name: string): string | undefined {
 // select's option, imessage_search's text; and, where a list follows, only
 // by the tools it names: click's text is the ref it names, press's is not.
 // action, code, note, mode, and js each failed a call in the 09-27 to
-// 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs.
+// 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
+// 10-07 net's query, the part of the address it keeps.
 const ALIASES: [string, string, string[]?][] = [
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"],
-  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"],
+  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do
-// instead: snapshot {url} and extract {url} each read no page on 09-29.
+// instead: snapshot {url} and extract {url} each read no page on 09-29,
+// and on 10-07 scroll --to bottom was asked if it meant --tab.
 const MISSES: [string, string, string][] = [
   ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
   ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
+  ["scroll", "to", "scroll moves by dy pixels (a dy past the page's length reaches its bottom, a negative one its top) or brings a ref into view; a snapshot already holds what is off screen"],
 ];
+
+// What to do instead of a parameter that asks tool for what it cannot do.
+export function missFor(tool: string, key: string): string | undefined {
+  return MISSES.find(([t, k]) => t === tool && k === key)?.[2];
+}
 
 // Tools that take the options of the tools they run: map gives each page's
 // read the options map does not take itself (map.ts).
@@ -104,8 +112,8 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
     // tab a step named, whether or not the step's tool takes one.
     const real = meant(taken, key)?.[0] ?? (key === "tab" ? key : undefined);
     if (real === undefined) {
-      const miss = MISSES.find(([t, k]) => t === tool && k === key);
-      if (miss) throw new Error(miss[2]);
+      const miss = missFor(tool, key);
+      if (miss) throw new Error(miss);
       const near = nearest(key, [...taken.params, ...taken.aliases.map(([alias]) => alias)]);
       throw new Error(`unknown parameter ${key} for ${tool}${near ? `; did you mean ${near}?` : ""} (params: ${taken.params.join(", ") || "none"})`);
     }

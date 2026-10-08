@@ -287,14 +287,16 @@ answer says what was used in a `note`: another case, or `-` for `_`
 (`browsing-history`, `max_bytes`), and names models reach for: `go` or
 `action` for `do`, `value` for `option`, `query` for `text`, `note` for
 `fact`, `code` or `js` for `expression`, `selector` for `root`, `x`/`y` for
-`dx`/`dy`, `files` for `paths`, and click's or hover's `text` for `ref`,
-each only on a tool that takes the second and not the first. `real_input
+`dx`/`dy`, `files` for `paths`, click's or hover's `text` for `ref`, and
+net's `query` for `url`, each only on a tool that takes the second and
+not the first. `real_input
 {type: "…"}` is `do: "type"` with that text, `do: "press"` is
 `do: "key"`, and `net {start: true}` is `do: "start"`. A parameter the
 tool does not take fails the call before anything runs, with the closest
 one: "unknown parameter optoin for select; did you mean option? (params:
 tab, ref, option, snapshot)"; `snapshot {url}` and `extract {url}` say to
-open the page first. The CLI takes tools the same way (`safari
+open the page first, and `scroll {to}` says how far `dy` goes. The CLI
+takes tools the same way (`safari
 browsing-history`, `safari real-input`), and the first word after a tool
 that takes `do` is its `do` (`safari passwords status`). A CLI flag no
 parameter answers to fails before any call and lists the command's flags;

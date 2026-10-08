@@ -18,7 +18,7 @@ import { resolve } from "node:path";
 import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { nameIn, nearest, paramFor } from "../daemon/guard.ts";
+import { missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
 import { daemonHttp } from "../daemon/rpc.ts";
 import { ownerOf } from "../daemon/owner.ts";
@@ -293,6 +293,8 @@ function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unk
     if (COMMON_FLAGS.includes(given) || own.includes(given)) continue;
     const found = paramFor(tools, tool, given);
     if (found === undefined) {
+      const miss = missFor(tool, given);
+      if (miss) fail(miss, 2);
       const listed = [...Object.keys(tools[tool].params), ...own];
       const near = nearest(given, listed);
       fail(`${cmd} takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${listed.map((f) => `--${f}`).join(" ")}; safari ${cmd} --help says what each does)`, 2);
