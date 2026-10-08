@@ -73,7 +73,10 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   // a tab Safari swapped for another is reached under its new id
   const now = followTab(id);
   const mine = harnessTabs.get(now);
-  if (mine) mine.used = Date.now();
+  if (mine) {
+    mine.used = Date.now();
+    save();
+  }
   return now;
 }
 
@@ -170,10 +173,12 @@ export async function closeTab(tab: number, why = "by a close call"): Promise<un
 // user (endTurn), once it exits (owner.ts), or once it sits untouched for
 // IDLE_MS; a turn's end and IDLE_MS spare a tab the user has in front. keep
 // leaves a tab open for him. Tabs a click opens from one inherit its
-// owner. The list is kept in a file, so a restarted daemon still closes
-// them, and the extension closes only a tab the harness owns, so an id
-// Safari has given another tab since is left alone. A tab it cannot close
-// now (not connected, a sheet) is tried again each minute.
+// owner. The list is kept in a file with when each tab was last used, so a
+// restarted daemon still closes them, and on time: on 10-07 four deploys in
+// three hours each gave a research agent's 13 tabs a fresh 20 minutes. The
+// extension closes only a tab the harness owns, so an id Safari has given
+// another tab since is left alone. A tab it cannot close now (not
+// connected, a sheet) is tried again each minute.
 const IDLE_MS = 20 * 60_000;
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
@@ -211,13 +216,17 @@ function recordClosed(tab: number, why: string, url?: string, agent?: number) {
 export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
-  let saved: Record<string, number | null> = {};
+  // A file written before 10-07 holds each tab's owner alone.
+  let saved: Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
-    saved = JSON.parse(readFileSync(path, "utf8")) as Record<string, number | null>;
+    saved = JSON.parse(readFileSync(path, "utf8")) as typeof saved;
   } catch {
     // none kept yet
   }
-  for (const [tab, owner] of Object.entries(saved)) remember(Number(tab), owner ?? undefined);
+  for (const [tab, kept] of Object.entries(saved)) {
+    const { owner, used } = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
+    remember(Number(tab), owner ?? undefined, used);
+  }
 }
 
 function own(tab: number, owner: number | undefined) {
@@ -225,8 +234,8 @@ function own(tab: number, owner: number | undefined) {
   save();
 }
 
-function remember(tab: number, owner: number | undefined) {
-  harnessTabs.set(tab, { owner, used: Date.now(), seen: bridge.extensionInfo?.connectedAt });
+function remember(tab: number, owner: number | undefined, used = Date.now()) {
+  harnessTabs.set(tab, { owner, used, seen: bridge.extensionInfo?.connectedAt });
   if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => orphan(owner)));
   sweeper ??= setInterval(sweep, 60_000);
   sweeper.unref();
@@ -341,7 +350,7 @@ function forget(tab: number) {
 function save() {
   if (!tabsFile) return;
   try {
-    writeFileSync(tabsFile, JSON.stringify(Object.fromEntries([...harnessTabs].map(([tab, t]) => [tab, t.owner ?? null]))));
+    writeFileSync(tabsFile, JSON.stringify(Object.fromEntries([...harnessTabs].map(([tab, t]) => [tab, { owner: t.owner ?? null, used: t.used }]))));
   } catch (e) {
     console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
   }

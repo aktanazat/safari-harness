@@ -36,7 +36,7 @@ const ext = {
 connect(ext);
 const file = join(mkdtempSync(join(tmpdir(), "continuity-")), "tabs.json");
 loadTabs(file);
-const owners = () => JSON.parse(readFileSync(file, "utf8")) as Record<string, number | null>;
+const owners = () => Object.fromEntries(Object.entries(JSON.parse(readFileSync(file, "utf8")) as Record<string, { owner: number | null }>).map(([tab, t]) => [tab, t.owner]));
 // what background.js sends when Safari swaps a tab, or a page opens one
 const fromExtension = (event: Record<string, unknown>) => bridge.handleMessage(JSON.stringify({ op: "tab", ...event }));
 

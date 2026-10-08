@@ -85,7 +85,7 @@ test("a restarted daemon closes the tabs of an agent that exited meanwhile, and 
   await closedAs("owned", [11]);
   await settled();
   expect(closesAs("owned")).toEqual([11]);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ 12: process.pid });
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ 12: { owner: process.pid, used: expect.any(Number) } });
 });
 
 // An agent that is done need not spend a turn on close. One it asked to
@@ -127,7 +127,8 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
   await closedAs("idle", [...done, hisFront]);
   await settled();
   expect(closesAs("idle")).toEqual([...done, hisFront].sort((a, b) => a - b));
-  const owners = JSON.parse(readFileSync(file, "utf8")) as Record<string, number>;
+  const saved = JSON.parse(readFileSync(file, "utf8")) as Record<string, { owner: number | null }>;
+  const owners = Object.fromEntries(Object.entries(saved).map(([tab, t]) => [tab, t.owner]));
   expect(owners).toMatchObject({ [hisFront]: agent.pid, [others]: other.pid });
   expect(owners).not.toContainAnyKeys([...done, kept].map(String));
   agent.kill();
@@ -362,4 +363,17 @@ test("a sweep asks nothing of Safari while its extension is gone", async () => {
     bridge.request = request;
     connect(ext);
   }
+});
+
+// On 10-07 four deploys in three hours each gave a research agent's 13
+// tabs a fresh 20 minutes, and they stayed open in his Safari.
+test("a restarted daemon closes a tab unused for 20 minutes before it started, and keeps one used just now", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  writeFileSync(file, JSON.stringify({ 9021: { owner: process.pid, used: Date.now() - 21 * 60_000 }, 9022: { owner: process.pid, used: Date.now() } }));
+  loadTabs(file);
+  // any agent's turn end sweeps every agent's tabs
+  endTurn(Bun.spawnSync(["true"]).pid);
+  await closedAs("idle", [9021]);
+  await settled();
+  expect(closesAs("idle")).not.toContain(9022);
 });
