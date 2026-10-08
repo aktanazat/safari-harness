@@ -945,7 +945,11 @@ offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
   page shows up in `~/Downloads` alone.
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
-  opening a page. `method` and `body` send a POST. From the CLI, pipe
+  opening a page. `method` and `body` send a POST. To a site the page's own
+  requests send an `Authorization` header to (an API that takes a token the
+  page keeps, not cookies), it goes from the page's own world with that
+  header, unless you give one; the answer carries a `note` saying so and
+  never the header. From the CLI, pipe
   `safari fetch --json …` into a JSON parser; the plain output is not one
   JSON document.
 - A site's own API: read the address the page itself calls from `net`,

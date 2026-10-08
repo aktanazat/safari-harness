@@ -281,8 +281,22 @@
       });
   };
   const XHR = XMLHttpRequest.prototype;
-  const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send };
+  const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send, setRequestHeader: XHR.setRequestHeader };
   const ours = {};
+
+  // The Authorization header the page's own requests last carried to each
+  // site (its origin), kept only in here: fetch (pageFetch in content.js)
+  // sends an agent's request to that site from here, with it. A site whose
+  // API takes a token its script keeps, not cookies, refused the agent's
+  // fetch otherwise: on 10-07 Robinhood answered 401 for the accounts a page
+  // signed in to it had just read.
+  const signIns = new Map(); // origin -> Authorization value
+  const signedIn = (url, headers) => {
+    try {
+      const value = new Headers(headers ?? undefined).get("authorization");
+      if (value) signIns.set(new URL(url, document.baseURI).origin, value);
+    } catch {}
+  };
   // Requests begun and not yet answered, with when each began, for an
   // action's receipt (below): a page still waiting on its own site is busy.
   const flying = new Map(); // entry -> Date.now() at its start
@@ -294,6 +308,7 @@
       const [input, init] = args;
       const req = input instanceof Request ? input : null;
       entry = { kind: "fetch", url: address(req ? req.url : input), method: String(init?.method ?? req?.method ?? "GET").toUpperCase() };
+      signedIn(req ? req.url : input, init?.headers ?? req?.headers);
     } catch {
       return pending;
     }
@@ -312,7 +327,7 @@
   // An XHR's entry is written when it ends, or when the page opens the same
   // request again first (from its own load handler, while the answer is
   // still there to read).
-  const xhrs = new WeakMap(); // request -> { entry, start } from open
+  const xhrs = new WeakMap(); // request -> { entry, start, url } from open
   const listening = new WeakSet();
   const ended = (xhr) => {
     const req = xhrs.get(xhr);
@@ -334,7 +349,7 @@
   ours.open = wrap(plain.open, (open, self, args) => {
     try { ended(self); } catch {}
     const out = Reflect.apply(open, self, args);
-    try { xhrs.set(self, { entry: { kind: "xhr", url: address(args[1]), method: String(args[0]).toUpperCase() }, start: null }); } catch {}
+    try { xhrs.set(self, { entry: { kind: "xhr", url: address(args[1]), method: String(args[0]).toUpperCase() }, start: null, url: String(args[1]) }); } catch {}
     return out;
   });
   ours.send = wrap(plain.send, (send, self, args) => {
@@ -352,6 +367,13 @@
     } catch {}
     return Reflect.apply(send, self, args);
   });
+  ours.setRequestHeader = wrap(plain.setRequestHeader, (set, self, args) => {
+    try {
+      const req = xhrs.get(self);
+      if (req) signedIn(req.url, [[String(args[0]), String(args[1])]]);
+    } catch {}
+    return Reflect.apply(set, self, args);
+  });
 
   // A tab no agent works in keeps the page's own fetch and XMLHttpRequest:
   // content.js says so once the page reports in, and a copy the page took
@@ -360,6 +382,7 @@
     if (window.fetch === from.fetch) window.fetch = to.fetch;
     if (XHR.open === from.open) XHR.open = to.open;
     if (XHR.send === from.send) XHR.send = to.send;
+    if (XHR.setRequestHeader === from.setRequestHeader) XHR.setRequestHeader = to.setRequestHeader;
   };
   state.logNet = () => swap(plain, ours);
   document.addEventListener("__sh_net_off", () => {
@@ -378,6 +401,32 @@
     tell("__sh_net_body_answer", k
       ? { text: k.text, truncated: k.truncated, arriving: k.arriving }
       : { error: "that request's body is no longer kept: net keeps the bodies of the requests its log lists, 2 million characters of them, the oldest let go first; fetch its url to ask again, with the page's sign-in" });
+  });
+  // An agent's fetch to a site the page sent a sign-in header to (fetch_ask
+  // from pageFetch in content.js) goes from here with that header, unless
+  // it has its own. sent answers within the ask, so content.js knows to
+  // wait; the response follows. With no header for that site, nothing
+  // answers, and content.js fetches as before.
+  document.addEventListener("__sh_fetch_ask", (e) => {
+    let ask;
+    let headers;
+    try {
+      ask = JSON.parse(e.detail);
+      headers = new Headers(ask.headers ?? undefined);
+      const value = signIns.get(new URL(ask.url, document.baseURI).origin);
+      if (!value || headers.has("authorization")) return;
+      headers.set("authorization", value);
+    } catch {
+      return;
+    }
+    tell("__sh_fetch_answer", { id: ask.id, sent: true });
+    Reflect.apply(plain.fetch, window, [ask.url, { method: ask.method, headers, body: ask.body ?? undefined, credentials: "include" }])
+      .then(async (res) => {
+        const text = await res.text();
+        return { status: res.status, url: res.url, type: res.headers.get("content-type"), text: text.slice(0, ask.max), truncated: text.length > ask.max };
+      })
+      .catch((err) => ({ error: String(err && err.message || err) }))
+      .then((answer) => tell("__sh_fetch_answer", { id: ask.id, answer }));
   });
   swap(plain, ours);
 

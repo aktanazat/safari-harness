@@ -11,7 +11,7 @@ Robinhood blocks page scripts on its support pages, so `repl` evaluate fails the
 - History: robinhood.com/account/history?type=transfers lists Robinhood transfers.
 
 ## Holdings
-- From a robinhood.com tab, `eval` can fetch https://api.robinhood.com/accounts/ and /positions/?account_number=<n>&non_default_account=<n> with header `Authorization: Bearer <token>`, the token being `JSON.parse(localStorage['web:auth_state']).access_token`. Return the data, never the token. Cookies alone get 401.
+- From a robinhood.com tab, `fetch` https://api.robinhood.com/accounts/ and /positions/?account_number=<n>&non_default_account=<n>: once the page has called the API itself (it does as it loads), `fetch` carries its `Authorization: Bearer` header, which cookies alone lack (401). The header stays in the page. Where the page has not called the API yet, `eval` (without `page: true`, which the page's policy refuses) can send `Authorization: Bearer` with `JSON.parse(localStorage['web:auth_state']).access_token`; return the data, never the token.
 - The credit_card and gold_card API paths do not answer.
 
 ## Support chat

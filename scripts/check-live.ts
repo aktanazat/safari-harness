@@ -660,6 +660,49 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
   }
 }
 
+// ---------- fetch with the page's sign-in header ----------
+
+// A site whose API, on another origin, takes a token the page's script
+// keeps, not cookies (Robinhood's, 10-07: the agent's fetch got 401). The
+// page sends it as it loads; the agent's fetch to that API then carries it,
+// and never shows it. A header the agent gives itself wins.
+{
+  const token = `Bearer check-${crypto.randomUUID()}`;
+  let pageOrigin = "";
+  const cors = () => ({ "access-control-allow-origin": pageOrigin, "access-control-allow-headers": "authorization", "access-control-allow-credentials": "true" });
+  const api = Bun.serve({
+    port: 0,
+    fetch(req) {
+      if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors() });
+      const signed = req.headers.get("authorization") === token;
+      return Response.json(signed ? { results: ["account"] } : { detail: "Authentication credentials were not provided." }, { status: signed ? 200 : 401, headers: cors() });
+    },
+  });
+  const accounts = `http://localhost:${api.port}/accounts/`;
+  const page = Bun.serve({
+    port: 0,
+    fetch: () => new Response(`<title>signed in</title><script>fetch(${JSON.stringify(accounts)}, { headers: { Authorization: ${JSON.stringify(token)} } })</script>`, { headers: { "content-type": "text/html" } }),
+  });
+  pageOrigin = `http://127.0.0.1:${page.port}`;
+  const tab = (await call("open", { url: `${pageOrigin}/`, background: true })).id as number;
+  try {
+    let net: { url: string; status?: number }[] = [];
+    for (let i = 0; i < 30 && !net.some((e) => e.url === accounts && e.status === 200); i++) {
+      await Bun.sleep(100);
+      net = (await call("net", { tab, do: "read" })).entries;
+    }
+    const got = await call("fetch", { tab, url: accounts });
+    check("fetch to an API the page signs in to with a header carries that header, and never shows it",
+      got.status === 200 && String(got.text).includes("account") && !JSON.stringify(got).includes(token.slice(7)), got);
+    const own = await call("fetch", { tab, url: accounts, headers: { Authorization: "Bearer wrong" } });
+    check("a sign-in header the agent gives itself wins", own.status === 401, own);
+  } finally {
+    await call("close", { tab });
+    await page.stop(true);
+    await api.stop(true);
+  }
+}
+
 // ---------- frames ----------
 
 // A srcdoc frame gets no extension script in Safari, so the page reads it

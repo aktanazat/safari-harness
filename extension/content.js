@@ -1494,15 +1494,20 @@
 
   // ---------- page fetch and downloads ----------
   // Requests from here carry the page's cookies, as the page's own would.
-  // base64 returns the body's bytes (a PDF, an image) instead of its text.
+  // One to a site the page's own requests sent a sign-in header to goes
+  // from the page's world with that header (signedFetch). base64 returns
+  // the body's bytes (a PDF, an image) instead of its text.
   async function pageFetch(url, opts = {}) {
-    const res = await fetch(new URL(url, location.href), {
+    const target = new URL(url, location.href);
+    const limit = opts.maxBytes || 50000;
+    const signed = opts.base64 ? null : signedFetch(target.href, opts, limit);
+    if (signed) return signed;
+    const res = await fetch(target, {
       method: opts.method || "GET",
       headers: opts.headers || undefined,
       body: opts.body ?? undefined,
       credentials: "include",
     });
-    const limit = opts.maxBytes || 50000;
     const head = { status: res.status, url: res.url, type: res.headers.get("content-type") };
     if (opts.base64) {
       const blob = await res.blob();
@@ -1515,6 +1520,36 @@
       text: text.length > limit ? text.slice(0, limit) : text,
       truncated: text.length > limit,
     };
+  }
+
+  // The page's world (dialogs.js) holds the header and says within the ask
+  // whether it sends the request; null when it does not. The header never
+  // leaves it.
+  function signedFetch(url, opts, limit) {
+    const id = `${Date.now()}-${Math.random()}`;
+    let sent = false;
+    const { promise, resolve } = Promise.withResolvers();
+    const take = (e) => {
+      let a;
+      try { a = JSON.parse(e.detail); } catch { return; }
+      if (a?.id !== id) return;
+      if (a.sent) {
+        sent = true;
+        return;
+      }
+      document.removeEventListener("__sh_fetch_answer", take);
+      resolve(a.answer);
+    };
+    document.addEventListener("__sh_fetch_answer", take, { signal: life.signal });
+    document.dispatchEvent(new CustomEvent("__sh_fetch_ask", { detail: JSON.stringify({ id, url, method: opts.method || "GET", headers: opts.headers || null, body: opts.body ?? null, max: limit }) }));
+    if (!sent) {
+      document.removeEventListener("__sh_fetch_answer", take);
+      return null;
+    }
+    return promise.then(({ error, ...answer }) => {
+      if (error) throw new Error(error);
+      return { ...answer, note: `sent with the sign-in header the page's own requests to ${new URL(url).host} carry` };
+    });
   }
 
   function base64Of(blob) {
