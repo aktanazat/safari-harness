@@ -13,7 +13,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Challenge } from "./challenge.ts";
-import { alert, isAway } from "./phone.ts";
+import { alert, dataFile, isAway, readJson } from "./phone.ts";
 import { rpc } from "./rpc.ts";
 import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 
@@ -35,7 +35,9 @@ type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; c
 async function alertUser(tab: number, h: Handed, end: number): Promise<string> {
   const site = h.url && URL.canParse(h.url) ? new URL(h.url).hostname.replace(/^www\./, "") : "a site";
   const [what, until] = h.challenge ? ["a check", "clear it"] : ["you", "are done"];
-  const line = `${process.env.SAFARI_HARNESS_AWAY === "1" ? "test of the bot-check alert: " : ""}${site} is waiting on ${what} in safari on your mac. the agent carries on by itself once you ${until}.`;
+  const viewer = readJson(dataFile("screen-viewer.json"));
+  const link = typeof viewer === "string" ? `\n\nopen your mac:\n${viewer}` : "";
+  const line = `${process.env.SAFARI_HARNESS_AWAY === "1" ? "test of the bot-check alert: " : ""}${site} is waiting on ${what} in safari on your mac. the agent carries on by itself once you ${until}.${link}`;
   const picture = join(tmpdir(), `safari-harness-${tab}-${Date.now()}.png`);
   try {
     const shot = await rpc("shot", { tab, out: picture }).then(() => undefined, (e: Error) => e.message);
