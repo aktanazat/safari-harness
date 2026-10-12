@@ -96,6 +96,8 @@ beforeEach(() => {
   process.env.SAFARI_HARNESS_AWAY = "0";
   dir = mkdtempSync(join(tmpdir(), "safari-handoff-"));
   spyOn(phone, "dataFile").mockImplementation((name) => join(dir, name));
+  // nothing here reaches the Akyl running on this Mac
+  spyOn(phone, "akyl").mockImplementation(async () => undefined);
   spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
     const result = callTool(tool, args);
     if (tool === "handoff_wait" && next?.is(args)) next.taken();
@@ -433,4 +435,70 @@ test("a background handoff alerts a user away from the Mac once before it return
   expect(m.texts).toEqual([{ line: expect.stringContaining("shop.example"), picture: true }]);
   page.check = undefined;
   await tick();
+});
+
+// Akyl's phone app shows the handoff beside the alert (akyl in phone.ts),
+// as a card it keeps while calls wait on the handoff and ends with it.
+type Told = { path: string; body: Record<string, unknown> };
+function toldAkyl(): Told[] {
+  const told: Told[] = [];
+  spyOn(phone, "akyl").mockImplementation(async (path, body) => void told.push({ path, body }));
+  return told;
+}
+
+test("a user away from the Mac finds the handoff in Akyl's app too: one card, kept up while calls wait on it, ended once they are done", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(88, page);
+  const told = toldAkyl();
+  let t = taken((a) => a.alerted !== undefined);
+  const first = handoff(88, "Clear the check", 1000);
+  await t;
+  const key = told[0]?.body.key;
+  expect(String(key)).toMatch(/^safari-88-\d+$/);
+  const card = { key, reason: "botCheck", title: "Cloudflare check on shop.example", task: "Clear the check", app: "Safari", from: "Safari helper", minutes: 5 };
+  expect(told).toEqual([{ path: "/handoff", body: card }]);
+  await tick();
+  expect(await first).toMatchObject({ done: false, alerted: "sent" });
+  // the agent calls again, and that call keeps the card up
+  t = taken(waits("Clear the check"));
+  const again = handoff(88, "Clear the check");
+  await t;
+  page.check = undefined;
+  await tick();
+  expect(await again).toMatchObject({ done: true, joined: true });
+  const kept = told.slice(0, -1);
+  expect(kept.length).toBeGreaterThanOrEqual(2);
+  expect(kept).toEqual(kept.map(() => ({ path: "/handoff", body: card })));
+  expect(told.at(-1)).toEqual({ path: "/handoff/end", body: { key, state: "done" } });
+  expect(m.texts).toHaveLength(1);
+});
+
+test("Akyl not running costs the phone alert nothing", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(89, page);
+  spyOn(phone, "akyl").mockImplementation(() => Promise.reject(new Error("Unable to connect. Is the computer able to access the url?")));
+  const t = taken((a) => a.alerted !== undefined);
+  const handed = handoff(89, "Clear the check");
+  await t;
+  page.check = undefined;
+  await tick();
+  expect(await handed).toMatchObject({ done: true, alerted: "sent" });
+  expect(m.texts).toEqual([{ line: expect.stringContaining("shop.example"), picture: true }]);
+});
+
+test("a site that blocks the browser after the alert ends Akyl's card as no longer needed", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  mac(90, page);
+  const told = toldAkyl();
+  const t = taken((a) => a.alerted !== undefined);
+  const handed = handoff(90, "Clear the check").then(() => "handed off", (e: Error) => e.message);
+  await t;
+  page.check = "block";
+  await tick();
+  expect(await handed).toContain("no one can clear it");
+  expect(told.map((x) => x.path)).toEqual(["/handoff", "/handoff/end"]);
+  expect(told[1]?.body).toEqual({ key: told[0]?.body.key, state: "cancelled" });
 });

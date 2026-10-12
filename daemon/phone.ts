@@ -1,8 +1,9 @@
 // The harness's alerts to the user's phone, on Telegram (telegram.ts):
 // handoff's, ask's, and the news of watch routines. Every alert goes out
-// through here. A log of them (alerts.jsonl), shared by every process that
-// sends one, holds them to LIMIT an hour across all agents and routines. It
-// keeps when each went and from which process, never the line.
+// through here, and a handoff's goes to Akyl's phone app beside it (akyl). A
+// log of them (alerts.jsonl), shared by every process that sends one, holds
+// them to LIMIT an hour across all agents and routines. It keeps when each
+// went and from which process, never the line.
 
 import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -103,8 +104,8 @@ function went(lines: Sent[]): Sent[] {
 
 // Sends line to his phone, with a picture's path when there is one, unless
 // LIMIT went in the last hour: then the error says so, and when the next
-// may go.
-export async function alert(line: string, picture?: string): Promise<void> {
+// may go. beside starts with the send and never changes how it goes.
+export async function alert(line: string, picture?: string, beside?: () => Promise<void>): Promise<void> {
   const now = Date.now();
   const lines = logLines();
   const hour = went(lines).filter((s) => now - s.at < HOUR_MS);
@@ -124,10 +125,25 @@ export async function alert(line: string, picture?: string): Promise<void> {
   mkdirSync(dirname(log), { recursive: true });
   // logged before it goes, so a process sending meanwhile counts it
   appendFileSync(log, `${JSON.stringify(sent)}\n`);
+  beside?.().catch(() => undefined);
   try {
     await sendTelegram(line, picture);
   } catch (e) {
     appendFileSync(log, `${JSON.stringify({ ...sent, failed: true })}\n`);
     throw e;
   }
+}
+
+// Akyl, the user's agent on this Mac, shows a handoff in its phone app: a
+// card with the window live, which the user can clear from the phone, and
+// which says when it ended. It is told beside the Telegram alert, never
+// instead of it: Akyl not running, or not answering in AKYL_MS, costs the
+// alert nothing. SAFARI_HARNESS_AKYL points at another Akyl, such as a test
+// one.
+const AKYL_MS = 1500;
+
+export async function akyl(path: "/handoff" | "/handoff/end", body: Record<string, unknown>): Promise<void> {
+  const base = process.env.SAFARI_HARNESS_AKYL ?? "http://127.0.0.1:7745";
+  const r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(AKYL_MS) });
+  if (!r.ok) throw new Error(`Akyl answered ${r.status} to ${path}`);
 }

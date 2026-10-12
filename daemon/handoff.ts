@@ -3,17 +3,19 @@
 // (handoffWait in tools.ts): it brings the tab to the front with a
 // notification, watches the page, and gives back the tab and app the user
 // had in front once they are done. This half alerts their phone when they
-// are away from the Mac, once per handoff, with a picture of the page. They
-// cannot answer the alert; the handoff ends when the page clears, or shows
-// the text until names. A background call starts or checks on the handoff,
-// sends the alert if one is due, and returns at once: its agent goes on
-// with other steps and checks back with the id the first one returned.
+// are away from the Mac, once per handoff, with a picture of the page, and
+// puts the handoff in Akyl's phone app beside the alert, where they can clear
+// it with the window live. They cannot answer the alert; the handoff ends
+// when the page clears, or shows the text until names. A background call
+// starts or checks on the handoff, sends the alert if one is due, and returns
+// at once: its agent goes on with other steps and checks back with the id
+// the first one returned.
 
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Challenge } from "./challenge.ts";
-import { alert, dataFile, isAway, readJson } from "./phone.ts";
+import { akyl, alert, dataFile, isAway, readJson } from "./phone.ts";
 import { rpc } from "./rpc.ts";
 import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
 
@@ -31,8 +33,29 @@ const SLICE_MS = 15000;
 // alert: true tells this call to send the alert; alerted is how it went.
 type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; byItself?: true; joined?: true; alerted?: string; alert?: true; id?: number; hint?: string };
 
+// Who checks the page, by the kind challenge.ts names, for the card's title.
+const VENDOR: Record<string, string> = { cloudflare: "Cloudflare", akamai: "Akamai", datadome: "DataDome", imperva: "Imperva", perimeterx: "HUMAN", "aws-waf": "AWS", kasada: "Kasada", apple: "Apple", recaptcha: "reCAPTCHA", hcaptcha: "hCaptcha", arkose: "Arkose", geetest: "GeeTest" };
+
+// The handoff as Akyl's app shows it (akyl in phone.ts). Sent again while
+// calls wait on it, it stays up as long as the daemon would watch it with no
+// call waiting: 5 minutes, or 30 for one a background call started.
+function card(tab: number, why: string, h: Handed, background: boolean): Record<string, unknown> {
+  const site = h.url && URL.canParse(h.url) ? new URL(h.url).hostname.replace(/^www\./, "") : "a site";
+  const reason = h.challenge ? "botCheck" : /passkey/i.test(why) ? "passkey" : /touch id|face id|fingerprint/i.test(why) ? "biometric" : /sign.?in|log.?in|password|code/i.test(why) ? "login" : "other";
+  return {
+    key: `safari-${tab}-${h.id}`,
+    reason,
+    title: h.challenge ? `${VENDOR[h.challenge.kind] ?? "Bot"} check on ${site}` : `${site} needs you`,
+    task: why,
+    app: "Safari",
+    ...(h.title ? { window: h.title } : {}),
+    from: "Safari helper",
+    minutes: background ? 30 : 5,
+  };
+}
+
 // A picture of the page (in front by now), with one plain line under it.
-async function alertUser(tab: number, h: Handed, end: number): Promise<string> {
+async function alertUser(tab: number, h: Handed, end: number, shown: Record<string, unknown>): Promise<string> {
   const site = h.url && URL.canParse(h.url) ? new URL(h.url).hostname.replace(/^www\./, "") : "a site";
   const [what, until] = h.challenge ? ["a check", "clear it"] : ["you", "are done"];
   const viewer = readJson(dataFile("screen-viewer.json"));
@@ -44,7 +67,7 @@ async function alertUser(tab: number, h: Handed, end: number): Promise<string> {
     // The call may have ended while the picture was being taken. Remove
     // that late picture, but do not start a phone send after the deadline.
     if (Date.now() >= end) return "not sent: the call ended before the picture arrived";
-    await alert(line, shot ? undefined : picture);
+    await alert(line, shot ? undefined : picture, () => akyl("/handoff", shown));
     return shot ? `sent, without the picture: ${shot}` : "sent";
   } finally {
     await rm(picture, { force: true });
@@ -69,16 +92,28 @@ async function handoff(given: unknown, why: string, ms = 60000, until?: string, 
   try {
     const tab = await beforeEnd(resolveTab(given, async () => (await rpc("tabs")) as TabInfo[]));
     if (Date.now() < end) {
+      // Once the alert went, Akyl's card follows each answer: kept up while
+      // the user has the step, ended with the handoff.
       const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number; until?: string; background?: true }) => {
-        h = (await beforeEnd(rpc("handoff_wait", { tab, why, ...o }))) as Handed;
+        try {
+          h = (await beforeEnd(rpc("handoff_wait", { tab, why, ...o }))) as Handed;
+        } catch (e) {
+          // the tab closed, or the site blocked the browser: nobody can do the step now
+          if (e !== expired && h.alerted?.startsWith("sent")) await akyl("/handoff/end", { key: `safari-${tab}-${h.id}`, state: "cancelled" }).catch(() => undefined);
+          throw e;
+        }
         heardAt = Date.now();
+        if (h.alerted?.startsWith("sent")) {
+          if (h.done) await beforeEnd(akyl("/handoff/end", { key: `safari-${tab}-${h.id}`, state: "done" }).catch(() => undefined));
+          else void akyl("/handoff", card(tab, why, h, background)).catch(() => undefined);
+        }
         return h;
       };
       // until and background go with the call that starts the handoff; the
       // later ones join it, and a background check names it by id
       first = await wait({ ms: 0, ...(until === undefined ? {} : { until }), ...(background ? { background: true } : {}), ...(id === undefined ? {} : { id }) });
       while (!h.done && Date.now() < end) {
-        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
+        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end, card(tab, why, h, background)).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
         if (alerted !== undefined) h = { ...h, alerted };
         // A probe that fails reads as at the Mac: the notification is up either way.
         const away = alerted === undefined && h.alerted === undefined && (await beforeEnd(isAway().catch(() => false)));
