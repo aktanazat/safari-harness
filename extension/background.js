@@ -55,6 +55,12 @@ function connect() {
       let msg;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
       if (msg.op === "tick") return tick();
+      // The daemon asks for this once the extension has answered nothing
+      // for a minute, or when safari extension reload asks (bridge.ts):
+      // Safari unloads it and loads it again, as turning it off and on in
+      // Safari Settings does, but asks for no password (10-13). Nothing
+      // answers it: this page goes with the reload.
+      if (msg.op === "reload") return api.runtime.reload();
       const answer = (obj) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(obj)); };
       handle(msg).then((value) => {
         if (msg.id !== undefined) answer({ id: msg.id, value });
@@ -1347,13 +1353,14 @@ async function inFront(tabId) {
 
 // ---------- ids across a reload ----------
 // Safari gives every tab and window a new id when the extension reloads (a
-// deploy), and agents and the daemon still hold the old ones. Each page
-// keeps the ids its tab and window had when it reported in (content.js),
-// in the extension's own world, which outlives the reload. The extension
-// reads those marks once it is reloaded, or at the first request for a tab
-// or window Safari no longer knows: each old id maps to the new id, and the
-// marks become the new ids for the next reload. The maps live in
-// storage.local, which outlives a reload too; an alias goes with its tab.
+// deploy, or the daemon's reload in connect), and agents and the daemon
+// still hold the old ones. Each page keeps the ids its tab and window had
+// when it reported in (content.js), in the extension's own world, which
+// outlives the reload. The extension reads those marks once it is reloaded,
+// or at the first request for a tab or window Safari no longer knows: each
+// old id maps to the new id, and the marks become the new ids for the next
+// reload. The maps live in storage.local, which outlives a reload too; an
+// alias goes with its tab.
 // The daemon is told each old tab id's new one (sendIds), so what it keeps
 // per tab, and the ids agents hold, follow their tabs. What is kept here in
 // session storage (the tabs the harness owns, and those it drives) does

@@ -152,8 +152,10 @@ async function start() {
     onUpdated.fire(tab.id, { status: "complete" }, row(tab));
   }
 
+  // When background.js asked Safari to reload the extension, by the clock.
+  const reloadsAsked: number[] = [];
   const browser = {
-    runtime: { onMessage, onInstalled: hook(), onStartup: hook(), onConnect: hook() },
+    runtime: { onMessage, onInstalled: hook(), onStartup: hook(), onConnect: hook(), reload: () => { reloadsAsked.push(clock.now); } },
     action: { onClicked, setBadgeText: async () => {}, setTitle: async () => {} },
     alarms: { onAlarm: hook(), create: () => {}, clear: async () => true },
     tabs: {
@@ -412,6 +414,7 @@ async function start() {
       kept.clear();
       browser.runtime.onInstalled.fire();
     },
+    reloadsAsked,
   };
 }
 
@@ -972,6 +975,16 @@ test("an old socket closing after its replacement opened leaves the replacement 
   old.onclose();
   await b.clock.advance(60_000);
   expect(b.sockets.length).toBe(2);
+});
+
+// 10-13: the extension answered nothing for over two minutes, its page
+// running all along, until it was turned off and on in Safari Settings, and
+// turning it on made macOS ask the owner for his password. The daemon asks
+// a stuck extension to reload itself instead (bridge.ts).
+test("the daemon's reload frame has the extension ask Safari to reload it", async () => {
+  const b = await start();
+  b.sockets[0]?.onmessage({ data: JSON.stringify({ op: "reload" }) });
+  expect(b.reloadsAsked).toHaveLength(1);
 });
 
 test("stopping a wait keeps the top page's change summary", async () => {

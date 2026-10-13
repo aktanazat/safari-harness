@@ -7,6 +7,8 @@
 //   extension -> daemon  {id, value} | {id, error}
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
 //   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
+//   daemon -> extension  {op:"reload"}     have Safari reload the extension,
+//                        stuck (see STUCK_MS) or asked to (reload)
 //   extension -> daemon  {op:"note", kind, ...}  an event for the journal
 //   extension -> daemon  {op:"tab", kind:"replaced", from, to}  Safari swapped a tab
 //   extension -> daemon  {op:"tab", kind:"popup", tab, opener, url}  an owned
@@ -37,6 +39,23 @@ const CONNECT_MS = 10000;
 // How long the connected extension has to answer a ping before a socket
 // that opened after it takes its place (see attach).
 const ALIVE_MS = 1500;
+
+// When the connected extension is stuck, and is asked to reload itself
+// (unanswered): two requests in a row timed out, and requests waited on it
+// for STUCK_MS in all with no answer, not even a late one. On 10-13 it
+// answered nothing for over two minutes while its page still ran, until an
+// agent turned it off and on in Safari Settings, and turning it on made
+// macOS ask the owner for his password; a reload unloads and loads it the
+// same way, asking nothing. That morning's slow spells of a swapping Mac
+// timed out 2 and 5 s requests for up to a minute and passed by themselves,
+// and a reload fails every request in flight, so the bar is a minute, and
+// one reload each RELOAD_EVERY_MS at most.
+const STUCK_MS = 60000;
+const RELOAD_EVERY_MS = 600000;
+
+// How long safari extension reload waits for the reloaded extension to
+// connect again; it takes a second or two (CONNECT_MS).
+const RELOADED_MS = 30000;
 
 // Minimal structural view of Bun's ServerWebSocket so the bridge stays
 // testable without a live server.
@@ -117,13 +136,23 @@ export class Bridge {
   private seq = 0;
   private pending = new Map<string, Pending>();
   private ticker: Timer | undefined;
-  private waiting = new Set<() => void>(); // requests waiting for a socket
+  private waiting = new Set<() => void>(); // requests waiting for a socket, and a reload for the next one
   // Sockets that opened while another was connected, each waiting to learn
   // whether that one still answers.
   private candidates = new Set<ExtSocket>();
   private said = new WeakMap<ExtSocket, Said>();
   // A copy that keeps retrying is refused twice a second: noted once.
   private refusing = false;
+  // The connected extension's answers, for telling when it is stuck
+  // (unanswered): when it last answered anything, how many requests in a
+  // row timed out since, and how long they waited in all, until when. Time
+  // none of them waited is left out: an hour with nothing asked is not an
+  // hour unanswered.
+  private answeredAt = 0;
+  private timeouts = 0;
+  private silentMs = 0;
+  private silentTo = 0;
+  private reloadedAt = -Infinity;
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
@@ -164,6 +193,7 @@ export class Bridge {
     const said = this.said.get(sock);
     this.sock = sock;
     this.refusing = false;
+    this.answered();
     this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
     this.ticks(said?.ticks ?? false);
     if (said?.renumbered) this.onTab(said.renumbered);
@@ -243,6 +273,8 @@ export class Bridge {
       return;
     }
     if (msg.id === undefined) return;
+    // an answer the daemon gave up on still shows the extension answers
+    if (from === this.sock) this.answered();
     const key = String(msg.id);
     const p = this.pending.get(key);
     if (!p) return;
@@ -286,7 +318,7 @@ export class Bridge {
     this.waiting.delete(resolve);
     if (this.sock) return this.sock;
     throw new Error(running
-      ? "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions)"
+      ? "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)"
       : `Safari was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
   }
 
@@ -294,10 +326,12 @@ export class Bridge {
     const sock = await this.socket();
     const id = `d${++this.seq}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    const sent = Date.now();
     const timer = setTimeout(() => {
       this.pending.delete(id);
       note("timeout", { op, ...(op === "relay" ? { tab: args[0], dom: args[1] } : {}), ms: timeoutMs });
       reject(new Error(`extension request ${op} timed out after ${timeoutMs}ms`));
+      this.unanswered(sock, sent);
     }, timeoutMs);
     this.pending.set(id, { resolve, reject, timer, sock });
     sock.send(JSON.stringify({ id, op, args }));
@@ -307,6 +341,50 @@ export class Bridge {
       if (e instanceof Error) e.message = String(unsecret(tab, e.message));
       throw e;
     });
+  }
+
+  private answered() {
+    this.answeredAt = Date.now();
+    this.timeouts = 0;
+    this.silentMs = 0;
+  }
+
+  // A request sent at sent timed out on the connected extension: a stuck
+  // one is asked to reload itself (STUCK_MS).
+  private unanswered(sock: ExtSocket, sent: number) {
+    const now = Date.now();
+    this.timeouts++;
+    this.silentMs += now - Math.max(sent, this.silentTo, this.answeredAt);
+    this.silentTo = now;
+    if (this.timeouts < 2 || this.silentMs < STUCK_MS || now - this.reloadedAt < RELOAD_EVERY_MS) return;
+    this.askReload(sock, `it answered nothing for ${Math.round(this.silentMs / 1000)} s while ${this.timeouts} requests in a row timed out`);
+  }
+
+  // Safari unloads the extension and loads it again (background.js): its
+  // socket closes, failing what it was asked, and a new one connects.
+  private askReload(sock: ExtSocket, why: string) {
+    this.reloadedAt = Date.now();
+    note("reload", { why });
+    sock.send('{"op":"reload"}');
+  }
+
+  // safari extension reload (main.ts): the reload a stuck extension gets,
+  // asked for whenever. Done once a new socket connects: how long it took.
+  async reload(): Promise<{ ms: number }> {
+    const sock = this.sock;
+    if (!sock) throw new Error("Safari extension not connected, so there is nothing to reload; run safari doctor for the fix");
+    const began = Date.now();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(resolve, RELOADED_MS);
+    this.waiting.add(resolve);
+    this.askReload(sock, "asked for (safari extension reload)");
+    await promise;
+    clearTimeout(timer);
+    this.waiting.delete(resolve);
+    if (this.sock && this.sock !== sock) return { ms: Date.now() - began };
+    throw new Error(this.sock === sock
+      ? `the extension did not reload within ${RELOADED_MS / 1000} s; run safari doctor for the fix`
+      : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run safari doctor for the fix`);
   }
 
   // relay a DOM op into the content script of a specific tab: its top page,

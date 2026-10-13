@@ -230,6 +230,15 @@ const rpcServer = Bun.serve({
       void stop(typeof reason === "string" && reason ? reason : "shutdown requested", SHUTDOWN_DRAIN_MS);
       return Response.json({ ok: true, inFlight });
     }
+    // safari extension reload (safari.ts): the reload the bridge gives a
+    // stuck extension by itself, asked for now.
+    if (url.pathname === "/extension/reload" && req.method === "POST") {
+      try {
+        return Response.json({ ok: true, value: await bridge.reload() });
+      } catch (e) {
+        return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
     return new Response("not found", { status: 404 });
   },
 });

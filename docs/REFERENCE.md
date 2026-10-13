@@ -1649,12 +1649,14 @@ its own `safari` command.
   `~/Library/Logs/safari-harness/daemon.log`.
 - `safari status` shows the daemon's recent events, one a line: its starts
   and stops and why, the extension connecting and disconnecting, requests
-  the extension never answered, pages that got a fresh copy of the
+  the extension never answered, the daemon asking a stuck extension to
+  reload itself, and why, pages that got a fresh copy of the
   harness's script, pages it could not be put in, agent windows opening
   and ending, the tabs it closed and why, each time an agent brought
   Safari to the front, and the user pausing, resuming, stopping, or taking
   over an agent from its page. `--json` prints the whole health answer.
-- When the extension reloads (every deploy of it), a page already open
+- When the extension reloads (every deploy of it, and each reload the
+  daemon asks for), a page already open
   gets a fresh copy of the harness's script at the next call to it, and
   that copy stops the one left behind: its page listeners come off and a
   wait it held ends. A page open since before the release of September
@@ -1691,8 +1693,19 @@ its own `safari` command.
 - "Safari is not running": the tool has started Safari hidden, without
   taking the screen; call again in a few seconds.
 - "Safari extension not connected" while Safari runs, or `extension` is
-  `null` in `safari status`: in Safari Settings, go to Extensions and turn
-  "Safari Harness Bridge" off and on. It should connect within seconds.
+  `null` in `safari status`: the extension is off, or it stopped and did
+  not connect again. In Safari Settings, go to Extensions and turn "Safari
+  Harness Bridge" off and on. Turning it on asks for the Mac's password or
+  Touch ID, so ask the user to do it. It should connect within seconds.
+- Calls fail with `extension request … timed out` while `safari status`
+  shows the extension connected: the extension is stuck. The daemon asks
+  it to reload itself once it has answered nothing for a minute while two
+  requests in a row timed out, at most once every ten minutes (`reload` in
+  `safari status`, with why). To do it now, run `safari extension reload`:
+  it takes a second or two and asks for no password. Calls in flight fail
+  and can be tried again; tab ids agents hold keep working. Turn the
+  extension off and on in Safari Settings only when `safari doctor` still
+  fails its round trip after a reload; that asks for the password.
 - `extension disconnected` on every call: two copies of the app are
   registered and knock each other offline. Keep only
   `/Applications/Safari Harness.app`.

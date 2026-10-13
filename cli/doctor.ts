@@ -25,7 +25,7 @@ const HEADROOM = join(homedir(), "memory", "bin", "host-headroom");
 const WEBDRIVER = join(homedir(), "Library", "WebDriver");
 const LOW_DISK_BYTES = 2 * 1024 ** 3;
 const HIGH_SWAP_MB = 2048;
-const EXTENSIONS = "in Safari > Settings > Extensions, turn Safari Harness Bridge off and on";
+const EXTENSIONS = "in Safari > Settings > Extensions, turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
 const TERMINAL = "turn on the terminal you run safari from";
 
 export type Status = "ok" | "warn" | "fail" | "off" | "skip";
@@ -249,7 +249,7 @@ export async function doctor(probe: Probes = LIVE): Promise<Check[]> {
     trip === undefined
       ? { name: "round trip", status: "skip", detail: missing }
       : "error" in trip
-        ? { name: "round trip", status: "fail", detail: trip.error, fix: `${EXTENSIONS}, then run safari doctor again` }
+        ? { name: "round trip", status: "fail", detail: trip.error, fix: `safari extension reload, then run safari doctor again; if the round trip still fails, ${EXTENSIONS}` }
         : { name: "round trip", status: "ok", detail: `a hidden tab opened, answered, and closed in ${trip.value} ms` },
     accessibilityCheck(access),
     "error" in messages

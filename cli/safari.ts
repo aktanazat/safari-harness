@@ -39,6 +39,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
+  safari extension reload                    reload the extension when calls time out;
+                                             unlike Safari Settings, asks no password
   safari agents                              agents using Safari now, and the page
                                              that pauses or stops them
   safari doctor                              check every part the harness needs on this
@@ -603,6 +605,17 @@ async function main() {
     console.log(h.extension ? `extension connected${h.extension.connectedAt ? ` since ${at(h.extension.connectedAt)}` : ""}` : "extension not connected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions");
     for (const { t, kind, ...rest } of h.journal ?? []) console.log(`${at(t)}  ${kind}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ""}`);
     return;
+  }
+
+  // extension reload: Safari reloads the extension, as the daemon has it do
+  // by itself once it is stuck (bridge.ts), and no password is asked for.
+  if (cmd === "extension") {
+    const [sub] = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
+    if (sub !== "reload") fail("usage: safari extension reload", 2);
+    const r = await fetch(`${daemonHttp()}/extension/reload`, { method: "POST" }).then((res) => res.json() as Promise<{ ok: boolean; value?: { ms: number }; error?: string }>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    if (!r.ok || !r.value) fail(r.error ?? "the daemon gave no answer");
+    if (json) return print(r.value);
+    return console.log(`the extension reloaded, and connected again in ${(r.value.ms / 1000).toFixed(1)} s`);
   }
 
   // agents: every agent that used Safari in the last hour, its last call,
