@@ -65,6 +65,9 @@ const LINK_MS = 20000;
 // where omp moves a shell command to the background: at 40 s each fill
 // that waited on him cost the agent an extra turn (09-29).
 export const ANSWER_MS = 25000;
+// How every call that needs the pairing and finds none fails; the
+// passwords tool pairs on this failure alone (fill.ts).
+export const LOCKED = "Apple Passwords is locked";
 // When the passwords call under way must answer: ANSWER_MS after the
 // daemon took it, however many helper steps it takes. A fill lists the
 // logins, then asks for the password, and either may wait its turn behind
@@ -762,7 +765,7 @@ export class ApplePasswords {
   private async session(): Promise<Session> {
     await this.settle();
     if (this.state.kind !== "unlocked") {
-      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. The code his Mac shows is read off its window, or he types it into a prompt there, never into the chat. Do not route around the lock.`);
+      throw new Error(`${LOCKED}: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. The code his Mac shows is read off its window, or he types it into a prompt there, never into the chat. Do not route around the lock.`);
     }
     this.hold();
     return this.state.session;

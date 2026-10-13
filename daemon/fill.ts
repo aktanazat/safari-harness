@@ -12,6 +12,7 @@ import { addressBooks } from "./imessage.ts";
 import { rpc } from "./rpc.ts";
 import { navigatedOf } from "./navigated.ts";
 import { confirmSave, pairPasswords } from "./pair.ts";
+import { LOCKED } from "./passwords.ts";
 import { cards, endApproval } from "./cards.ts";
 
 type Labeled = { label: string; primary: boolean };
@@ -127,9 +128,11 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   return { filled, ...(navigated ? { navigated } : {}), username: chosen.login?.username ?? "", site };
 }
 
-// Apple Passwords with no touch. pair, or a call that finds it locked,
-// pairs first (pair.ts): the code the Mac shows is read off its window, or
-// typed by the user into a prompt there. The agent learns only whether it
+// Apple Passwords with no touch. pair, or a call that fails because it is
+// locked, pairs first (pair.ts): the code the Mac shows is read off its
+// window, or typed by the user into a prompt there. A call that fails for
+// any other reason (no sign-in form, a tab that moved) pairs nothing: that
+// prompt would be his for nothing. The agent learns only whether it
 // paired, and the call goes on. The card steps run here, where the
 // keychain's card helper is (cards.ts); done also ends their Touch ID
 // approval.
@@ -145,7 +148,8 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     try {
       return await call();
     } catch (e) {
-      if (!["logins", "fill", "code", "change", "setup-code"].includes(String(a.do)) || (await unlocked())) throw e;
+      const locked = e instanceof Error && e.message.startsWith(LOCKED);
+      if (!["logins", "fill", "code", "change", "setup-code"].includes(String(a.do)) || !locked || (await unlocked())) throw e;
     }
   } else if (await unlocked()) {
     return { paired: true };

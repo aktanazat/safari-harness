@@ -4,14 +4,17 @@ import { join } from "node:path";
 import { FILL_TOOLS } from "./fill.ts";
 import * as pair from "./pair.ts";
 import * as phone from "./phone.ts";
+import { LOCKED } from "./passwords.ts";
 import * as daemonRpc from "./rpc.ts";
 
 // The daemon's side of Apple Passwords: locked until unlock gets the code
-// the Mac showed. Each call it gets is kept. The pairing's process runs in
-// this one, its state in a scratch folder, so no test shows a real prompt.
+// the Mac showed, and any other call fails as the daemon does when locked,
+// or with fail when given. Each call it gets is kept. The pairing's
+// process runs in this one, its state in a scratch folder, so no test
+// shows a real prompt.
 const CODE = "402913";
 const scratch: string[] = [];
-function fakeDaemon(): Record<string, unknown>[] {
+function fakeDaemon(fail?: string): Record<string, unknown>[] {
   const state = mkdtempSync("/private/var/tmp/pairing-test-");
   scratch.push(state);
   spyOn(phone, "dataFile").mockImplementation((name) => join(state, name));
@@ -31,6 +34,8 @@ function fakeDaemon(): Record<string, unknown>[] {
       unlocked = true;
       return { unlocked: true };
     }
+    if (fail !== undefined) throw new Error(fail);
+    if (!unlocked) throw new Error(`${LOCKED}: the pairing ended. Pair now: call passwords {do: "pair"} with the tab.`);
     return { ok: true };
   });
   return calls;
@@ -82,5 +87,26 @@ test("while the user is away and the code cannot be read, the call says he must 
   const asked = spyOn(pair, "askCode").mockResolvedValue({ code: CODE });
   expect(await FILL_TOOLS.passwords.run({ do: "pair" })).toEqual({ paired: false, why: expect.stringContaining("he must come to the Mac") });
   expect(calls.map((c) => c.do)).not.toContain("unlock");
+  expect(asked).not.toHaveBeenCalled();
+});
+
+test("a fill that finds Apple Passwords locked pairs off the Mac's window, then fills", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const calls = fakeDaemon();
+  spyOn(pair, "readCode").mockResolvedValue(CODE);
+  expect(await FILL_TOOLS.passwords.run({ do: "fill", tab: 7 })).toEqual({ ok: true });
+  expect(calls.map((c) => c.do)).toEqual(["fill", "status", "pair", "unlock", "fill"]);
+});
+
+// 10-13: a fill on a page with no sign-in form, while unpaired, started a
+// pairing that would have put a prompt in front of him for nothing.
+test("a fill that fails for a reason other than the lock pairs nothing and shows no prompt", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "0";
+  const calls = fakeDaemon("no sign-in form on this page");
+  const read = spyOn(pair, "readCode").mockResolvedValue(undefined);
+  const asked = spyOn(pair, "askCode").mockResolvedValue({ code: CODE });
+  await expect(FILL_TOOLS.passwords.run({ do: "fill", tab: 7 })).rejects.toThrow("no sign-in form on this page");
+  expect(calls.map((c) => c.do)).toEqual(["fill"]);
+  expect(read).not.toHaveBeenCalled();
   expect(asked).not.toHaveBeenCalled();
 });

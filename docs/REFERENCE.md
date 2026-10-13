@@ -1260,7 +1260,8 @@ Signing in, in this order:
    code off the Mac's window, and go on, with no Touch ID. The reader
    accepts the no-break space between the two halves of the code on
    macOS 27. Reading it needs the calling terminal's Accessibility
-   permission.
+   permission. A call that fails for any other reason, such as no sign-in
+   form on the page or a tab that moved, pairs nothing and shows no prompt.
    Where it cannot be read, a prompt on the Mac asks him to type the code,
    hidden as he types,
    and the digits go straight to the harness: the answer is
