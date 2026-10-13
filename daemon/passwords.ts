@@ -18,9 +18,13 @@
 // it reports unlocked.
 //
 // Each agent session that uses the pairing holds it until it calls done or
-// exits; five minutes after the last one lets go, the pairing ends and Helium
-// quits. Each time the pairing ends, the reason is kept for status and for
-// the error a locked call gets.
+// exits; eight hours after the last one lets go, the pairing ends and
+// Helium quits. Each time the pairing ends, the reason is kept for status
+// and for the error a locked call gets.
+//
+// A fill tries the login engram's vault keeps for the site first
+// (vault.ts), which needs neither the pairing nor Touch ID, and a login
+// Apple Passwords fills or a change saves is kept there too.
 //
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
@@ -36,6 +40,7 @@ import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
 import { site as siteOf } from "./receipt.ts";
 import { keepSecret } from "./redact.ts";
+import { memSecretVault, type Vault } from "./vault.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
@@ -44,8 +49,9 @@ const BRIDGE_SRC = join(import.meta.dir, "..", "passwords-bridge");
 const PAIRING = join(import.meta.dir, "..", "scripts", "pairing");
 // Opens the session the bridge keeps; lives in the Helium profile.
 const KEY_FILE = "harness-session.key";
-// How long the pairing outlasts the last session holding it.
-const GRACE_MIN = 5;
+// How long the pairing outlasts the last session holding it: hours, since
+// the user chose fewer prompts on 10-13; Helium holds about 200 MB meanwhile.
+const GRACE_H = 8;
 // The Helium the last daemon left running redials within a second of this
 // one starting; a new Helium's bridge says hello within a second or two.
 const ADOPT_MS = 3000;
@@ -329,6 +335,7 @@ export class ApplePasswords {
   private readonly keyFile: string;
   private readonly timers: Timers;
   private readonly approvalShown: () => Promise<boolean | undefined>;
+  private readonly vault: Vault;
   private link: HelperLink | null = null;
   // A link carries calls once its bridge has said hello and any session it
   // handed back has been proved.
@@ -359,12 +366,13 @@ export class ApplePasswords {
   // Seals the session the bridge keeps; the key file holds the same key.
   private stashKey: Buffer | null = null;
 
-  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined> } = {}) {
+  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown, vault = memSecretVault }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined>; vault?: Vault } = {}) {
     this.port = port;
     this.profile = profile;
     this.keyFile = join(profile, KEY_FILE);
     this.timers = timers;
     this.approvalShown = shown;
+    this.vault = vault;
   }
 
   // A bridge dialed in: a new Helium's, or that of the Helium the last
@@ -495,7 +503,7 @@ export class ApplePasswords {
       return {
         unlocked: true,
         sessions: this.holders.size,
-        ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_MIN} minutes after the last session holding it is done`,
+        ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_H} hours after the last session holding it is done`,
         ...(a ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
         ...(helper ? { helper } : {}),
       };
@@ -594,7 +602,7 @@ export class ApplePasswords {
 
   private startGrace() {
     this.grace?.cancel();
-    const ms = GRACE_MIN * 60_000;
+    const ms = GRACE_H * 3_600_000;
     this.grace = { ends: this.timers.now() + ms, cancel: this.timers.after(ms, () => this.end()) };
   }
 
@@ -754,7 +762,7 @@ export class ApplePasswords {
   private async session(): Promise<Session> {
     await this.settle();
     if (this.state.kind !== "unlocked") {
-      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. The user types the code his Mac shows into a prompt there, never into the chat. Do not route around the lock.`);
+      throw new Error(`Apple Passwords is locked: ${this.why}. Pair now: call passwords {do: "pair"} with the tab. The code his Mac shows is read off its window, or he types it into a prompt there, never into the chat. Do not route around the lock.`);
     }
     this.hold();
     return this.state.session;
@@ -934,21 +942,36 @@ export class ApplePasswords {
     return chosen;
   }
 
-  // Fills the saved login into the tab's sign-in form. The result names the
-  // fields filled, never the password, and where the page went when the
-  // form submitted itself.
-  async fill(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string }> {
-    await this.session();
+  // Fills the saved login into the tab's sign-in form: the one the vault
+  // keeps for its site, with no pairing and no Touch ID, else Apple
+  // Passwords' (source "apple" skips the vault, as when the vault's
+  // password is out of date), which the vault then keeps unless it keeps
+  // another login for the site. The result names the fields filled, never
+  // the password, where the page went when the form submitted itself, and
+  // why the vault could not keep the login.
+  async fill(tab: number, username?: string, source: "vault" | "apple" = "vault"): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; from?: "vault"; vault?: string }> {
     const form = await loginForm(tab);
     if (!form.password && !form.username) throw new Error("no sign-in form on this page");
     const { site } = form;
+    const type = async (login: string, secret: string | null) => {
+      keepSecret(tab, secret);
+      const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
+      const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
+      return { ...filledOf(res, sent, "login"), username: login, site };
+    };
+    const vault = await this.vault.login(site).then((kept) => ({ kept }), (e: Error) => ({ why: e.message }));
+    const kept = "kept" in vault ? vault.kept : undefined;
+    if (source === "vault" && kept && (username === undefined || username === kept.username)) {
+      return { ...(await type(kept.username, form.password ? kept.password : null)), from: "vault" };
+    }
+    await this.session();
     const { login, saved } = await this.chosenLogin(site, username);
     if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
-    keepSecret(tab, secret);
-    const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
-    const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
-    return { ...filledOf(res, sent, "login"), username: login, site };
+    const filled = await type(login, secret);
+    if (secret === null || (kept && kept.username !== login)) return filled;
+    if ("why" in vault) return { ...filled, vault: `not kept in the vault: ${vault.why}` };
+    return { ...filled, ...(await keeping(this.vault.keep(site, login, secret))) };
   }
 
   // Types the site's current verification code into the tab's code field,
@@ -1017,18 +1040,19 @@ export class ApplePasswords {
     return { username: login, site, ...(sites.includes(site) ? {} : { newLogin: true as const }), ...(helper ? { helper } : {}) };
   }
 
-  // Changing a password, second half, once its save was confirmed: types
-  // the new password into the tab's new-password fields, and the saved
-  // current one into an empty current-password field. The result never
-  // carries either password.
-  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true }> {
+  // Changing a password, second half, once its save was confirmed: keeps
+  // the new password in the vault, then types it into the tab's
+  // new-password fields, and the saved current one into an empty
+  // current-password field. The result never carries either password.
+  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true; vault?: string }> {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
+    const note = await keeping(this.vault.keep(c.site, c.login, c.secret));
     keepSecret(tab, c.current, c.secret);
     const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
-    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true };
+    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true, ...note };
   }
 
   dropChange(tab: number): void {
@@ -1046,6 +1070,12 @@ export class ApplePasswords {
     this.link = null;
     link?.close();
   }
+}
+
+// Why the vault could not keep a login, as a fill's result says it; nothing
+// when it did.
+function keeping(kept: Promise<void>): Promise<{ vault?: string }> {
+  return kept.then(() => ({}), (e: Error) => ({ vault: `not kept in the vault: ${e.message}` }));
 }
 
 // Hidden Helium with its own profile, never the user's: the native host

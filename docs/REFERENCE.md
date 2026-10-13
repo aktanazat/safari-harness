@@ -1173,8 +1173,14 @@ Signing in, in this order:
 
 1. Check for an existing session first: open the site and snapshot it. Most
    sites the user uses are already signed in.
-2. Saved logins come from the user's Apple Passwords through the `passwords`
-   tool:
+2. Saved logins come through the `passwords` tool, which never shows the
+   password: first the copy the user's engram vault keeps for the site,
+   with no pairing and no Touch ID (the result says `from: "vault"`),
+   else his Apple Passwords, whose login the vault then keeps (one login
+   per site; a fill naming another login leaves the vault's alone, and
+   `vault` says why one could not be kept). If the vault's password no
+   longer signs in, `fill` again with `source: "apple"`: it fills Apple
+   Passwords' login and replaces the vault's copy.
    - `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, with
      `waiting` while the Mac waits on Touch ID, or `{unlocked: false,
      reason}`.
@@ -1197,8 +1203,8 @@ Signing in, in this order:
      request is another agent's. `status` answers at once.
      If the window closes without an answer, the next call checks that
      it is gone and gives a just-approved reply 1 s to arrive. Otherwise
-     it ends that helper and clears the stuck request; a retry pairs again
-     with fresh Touch ID approval. A visible or unreadable prompt is left
+     it ends that helper and clears the stuck request; a retry pairs
+     again. A visible or unreadable prompt is left
      alone. A dismissed prompt is never reported as still waiting forever.
    - `passwords {do: "code", tab}` does the same for a verification code
      the user keeps in Apple Passwords (an authenticator setup): it types
@@ -1208,7 +1214,9 @@ Signing in, in this order:
      change-password, reset, or sign-up form: it makes a strong password in
      Safari's shape (shorter, without hyphens, when the fields allow fewer
      than 20 characters), saves it to Apple Passwords as the password of
-     the one login saved on the page's site, for the page's host or for
+     the one login saved on the page's site (and keeps it in the vault, so
+     the next `fill` needs no Touch ID; this is how a new account's
+     password is made), for the page's host or for
      another of the site's hosts (FHDA and ETS reset on a host of their
      own), and types it into every new-password field. An empty
      current-password field gets the saved password (which may need Touch
@@ -1247,11 +1255,12 @@ Signing in, in this order:
      The result names the code's issuer and account, never its key.
    - The form may sit in an embedded frame; the tools find it in any frame
      of the tab, and the login's site is that frame's own address.
-3. When the vault is locked, `logins`, `fill`, `code`, `change`, `setup-code`, and `pair` first ask
-   the user to approve with Touch ID (the prompt names the site), then pair,
-   read the 6-digit code off the Mac's window, and go on. The reader accepts
-   the no-break space between the two halves of the code on macOS 27.
-   Reading it needs the calling terminal's Accessibility permission.
+3. When Apple Passwords is locked, `logins`, `fill` (past the vault),
+   `code`, `change`, `setup-code`, and `pair` first pair, read the 6-digit
+   code off the Mac's window, and go on, with no Touch ID. The reader
+   accepts the no-break space between the two halves of the code on
+   macOS 27. Reading it needs the calling terminal's Accessibility
+   permission.
    Where it cannot be read, a prompt on the Mac asks him to type the code,
    hidden as he types,
    and the digits go straight to the harness: the answer is
@@ -1259,18 +1268,17 @@ Signing in, in this order:
    pass, never the code. Never ask for the code in the chat. The pairing
    runs in a process of its own, so a call from the CLI or through MCP
    waits 25 s for him, as a `fill` does; past that, `why` says what
-   the Mac is asking him (Touch ID or the code) while the pairing goes on:
+   the Mac is asking him (to type the code) while the pairing goes on:
    ask him to act on it, then call again, and that call, from any agent
    on the Mac, waits on the same pairing with no second prompt. While he is
-   away from the Mac the call says he must come to it: the code shows only
-   there. If the user declines Touch ID, the call fails: ask before
-   trying again. Do not route around
+   away and the code cannot be read, the call says he must come to the
+   Mac: the prompt shows only there. Do not route around
    the lock; the locked error says why (never paired since the hidden
    helper started, the helper restarted, every session was done with it,
    or Apple Passwords was turned off or asked to sign in again).
    The pairing serves every agent session on the Mac and survives a daemon
    restart. Each session holds it from its first `passwords` call until it
-   calls `passwords {do: "done"}` or exits; five minutes after the last
+   calls `passwords {do: "done"}` or exits; eight hours after the last
    hold ends, the pairing ends and the hidden Helium quits. `done` lets go
    of the caller's own hold only; there is no lock.
 4. A site that offers a passkey or Touch ID sign-in: click its passkey
@@ -1313,11 +1321,11 @@ keychain, not Apple Passwords:
   Stripe, Braintree, and Adyen payment frames, may receive card data.
   Other frames are skipped and named. Each frame receives only the
   fields it asks for, and a frame that has moved to another host is refused.
-- The first fill asks Touch ID. One approval covers fills for five
-  minutes in that MCP session; the next fill after that asks again.
-  `done` or ending the session ends the approval. Each CLI call is a
-  separate process, so it cannot reuse the previous call's approval.
-  No Mac login password substitutes for Touch ID.
+- The first fill asks Touch ID. One approval covers fills in that MCP
+  session until the Mac locks, for at most 12 hours; the next fill after
+  that asks again. `done` or ending the session ends the approval. Each
+  CLI call is a separate process, so it cannot reuse the previous call's
+  approval. No Mac login password substitutes for Touch ID.
 - A call waiting on Touch ID answers after 25 seconds with `waiting`;
   ask him to approve, then call `card-fill` again. The CLI waits for his
   answer. When he is away and no approval is open, filling is refused.
@@ -1328,8 +1336,9 @@ keychain, not Apple Passwords:
 - The number and CVC are cut from the tab's later text answers too.
   This needs copies in the tab's secret scrubber until the tab closes;
   no card is cached for another fill. Screenshots are not scrubbed.
-  During the approval's five minutes, anything driving that MCP session
-  can fill saved cards without another Touch ID.
+  Until the approval ends (the Mac locks, 12 hours pass, or `done`),
+  anything driving that MCP session can fill saved cards without another
+  Touch ID.
 - `passwords {do: "card-rm", card: "Work"}` removes the saved card after
   Touch ID. The card helper ships inside Safari Harness.app and needs
   its signed keychain entitlement; there is no file-storage fallback.

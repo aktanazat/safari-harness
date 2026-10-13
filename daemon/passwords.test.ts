@@ -13,6 +13,7 @@ import { ApplePasswords, HELIUM, launchHelium, quitHelium, type Timers } from ".
 import * as phone from "./phone.ts";
 import { tabSecrets } from "./redact.ts";
 import * as daemonRpc from "./rpc.ts";
+import type { Vault } from "./vault.ts";
 
 // The passwords tool promises: only the code the Mac shows unlocks it, a
 // wrong code cannot be retried, a fill puts the password into the page
@@ -193,10 +194,27 @@ afterAll(() => {
   for (const dir of profiles) rmSync(dir, { recursive: true, force: true });
 });
 
-function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), approvalShown: () => Promise<boolean | undefined> = async () => true) {
+// The vault keeps nothing here, unless a test hands in one that does
+// (memoryVault): the tests of Apple Passwords' own path fill from it.
+const NO_VAULT: Vault = { login: async () => undefined, keep: async () => {} };
+
+function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), approvalShown: () => Promise<boolean | undefined> = async () => true, vault = NO_VAULT) {
   profiles.push(profile);
   const clock = handClock();
-  return { p: new ApplePasswords({ profile, timers: clock.timers, approvalShown }), profile, clock };
+  return { p: new ApplePasswords({ profile, timers: clock.timers, approvalShown, vault }), profile, clock };
+}
+
+// The vault (vault.ts) as a map, one login per host.
+function memoryVault(logins: Record<string, { username: string; password: string }> = {}) {
+  const kept = new Map(Object.entries(logins));
+  const vault: Vault = {
+    login: async (host) => {
+      const login = kept.get(host);
+      return login && { ...login, host };
+    },
+    keep: async (host, username, password) => void kept.set(host, { username, password }),
+  };
+  return { kept, vault };
 }
 
 async function paired(p: ApplePasswords, helper = appleHelper()) {
@@ -468,7 +486,7 @@ test("a call that waited its turn behind another agent's Touch ID answers 25 s a
   const clock = steppedClock();
   const profile = mkdtempSync("/private/var/tmp/passwords-test-");
   profiles.push(profile);
-  const p = new ApplePasswords({ profile, timers: clock.timers, approvalShown: async () => true });
+  const p = new ApplePasswords({ profile, timers: clock.timers, approvalShown: async () => true, vault: NO_VAULT });
   fakeTab(`https://${SITE}/signin`);
   const hold = touchId();
   bridgeTo(p, appleHelper(), { hold });
@@ -497,17 +515,17 @@ const settled = () => new Promise<void>((r) => setImmediate(r));
 
 // A first call on the locked vault, as the caller runs it (pair.ts): the
 // daemon stays locked until unlock gets the code the Mac showed, the code
-// is read off the Mac's window, and the Touch ID prompt waits until the
-// test approves. The pairing's process runs in this one, its state in a
-// scratch folder. The clock is the test's.
+// cannot be read off the Mac's window, and the prompt asking him to type
+// it waits until the test types it. The pairing's process runs in this
+// one, its state in a scratch folder. The clock is the test's.
 function lockedVault() {
   process.env.SAFARI_HARNESS_AWAY = "0";
   jest.useFakeTimers();
   const state = mkdtempSync("/private/var/tmp/pairing-test-");
   profiles.push(state);
   spyOn(phone, "dataFile").mockImplementation((name) => join(state, name));
-  spyOn(pair, "startPairing").mockImplementation(async (site) => {
-    void pair.runPairing(site);
+  spyOn(pair, "startPairing").mockImplementation(async () => {
+    void pair.runPairing();
     return process.pid;
   });
   let unlocked = false;
@@ -521,9 +539,9 @@ function lockedVault() {
     if (!unlocked) throw new Error("Apple Passwords is locked: never paired since the hidden helper started");
     return { site: SITE, usernames: [USER] };
   });
-  spyOn(pair, "readCode").mockResolvedValue(CODE);
-  const touch = Promise.withResolvers<Record<string, unknown> | undefined>();
-  return { prompts: spyOn(pair, "approve").mockReturnValue(touch.promise), approve: () => touch.resolve({ approved: true }) };
+  spyOn(pair, "readCode").mockResolvedValue(undefined);
+  const typed = Promise.withResolvers<{ code: string }>();
+  return { prompts: spyOn(pair, "askCode").mockReturnValue(typed.promise), type: () => typed.resolve({ code: CODE }) };
 }
 
 // After every test: the spies, the clock, and the away flag go back, and
@@ -542,7 +560,7 @@ afterEach(() => {
 // more and the agent's call would have ended with no answer. On 10-04 a
 // CLI call, which then waited the pairing out, ran into the agent's 150 s
 // limit with nobody at the Mac. Now every caller answers as MCP did.
-test("a first call on the locked vault answers within 40 s with what the Mac waits on, and the next call gets the pairing he then approves, with no second prompt", async () => {
+test("a first call on the locked vault answers within 40 s with what the Mac waits on, and the next call gets the pairing he then types in, with no second prompt", async () => {
   const vault = lockedVault();
   let first: unknown;
   void FILL_TOOLS.passwords.run({ do: "logins" }).then((answer) => {
@@ -551,10 +569,10 @@ test("a first call on the locked vault answers within 40 s with what the Mac wai
   await settled();
   jest.advanceTimersByTime(40_000);
   await settled();
-  expect(first).toEqual({ paired: false, why: expect.stringContaining("Touch ID") });
+  expect(first).toEqual({ paired: false, why: expect.stringContaining("type the code") });
   const second = FILL_TOOLS.passwords.run({ do: "logins" });
   await settled();
-  vault.approve();
+  vault.type();
   await settled();
   jest.advanceTimersByTime(1000);
   expect(await second).toEqual({ site: SITE, usernames: [USER] });
@@ -587,6 +605,63 @@ test("change saves a new password and types nothing; typeChange then types the s
   expect(page.fresh).not.toBe(SECRET);
   expect(await bridge.tab(7, "extract")).toEqual({ text: "... ..." });
   await p.fill(7);
+  expect(page.password).toBe(page.fresh);
+});
+
+// 10-13: the user chose fewer Touch ID prompts over Apple Passwords asking
+// on every fill. A daemon never paired stands for one with nobody to
+// approve: a fill reaching Apple Passwords there fails as locked.
+test("a login Apple Passwords fills is kept in the vault, and the next fill types it with no pairing, and the tab's answers do not show it", async () => {
+  const { vault } = memoryVault();
+  const { p } = scratch(undefined, undefined, vault);
+  const page = fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  await p.fill(7);
+  delete page.password;
+  const never = scratch(undefined, undefined, vault).p;
+  expect(await never.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE, from: "vault" });
+  expect(page).toEqual({ username: USER, password: SECRET });
+  expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
+});
+
+test("a fill naming a login the vault does not keep fills Apple Passwords' one, and the vault keeps its own", async () => {
+  const other = { username: "other@example.com", password: "other password" };
+  const { kept, vault } = memoryVault({ [SITE]: other });
+  const { p } = scratch(undefined, undefined, vault);
+  const page = fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  expect(await p.fill(7, USER)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
+  expect(page).toEqual({ username: USER, password: SECRET });
+  expect(kept.get(SITE)).toEqual(other);
+});
+
+test("fill with source apple types Apple Passwords' password over an old one the vault keeps, and the vault then keeps the new one", async () => {
+  const { kept, vault } = memoryVault({ [SITE]: { username: USER, password: "old password" } });
+  const { p } = scratch(undefined, undefined, vault);
+  const page = fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  await p.fill(7, undefined, "apple");
+  expect(page.password).toBe(SECRET);
+  expect(kept.get(SITE)).toEqual({ username: USER, password: SECRET });
+});
+
+test("a fill whose login the vault cannot keep still fills, and says why", async () => {
+  const { p } = scratch(undefined, undefined, { login: async () => undefined, keep: async () => Promise.reject(new Error("the vault refused: locked")) });
+  const page = fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  expect(await p.fill(7)).toMatchObject({ filled: ["username", "password"], vault: "not kept in the vault: the vault refused: locked" });
+  expect(page).toEqual({ username: USER, password: SECRET });
+});
+
+test("a changed password is kept in the vault, so the next fill types the new one with no pairing", async () => {
+  const { vault } = memoryVault();
+  const { p } = scratch(undefined, undefined, vault);
+  const page = fakeTab(`https://${SITE}/account/password`);
+  await paired(p);
+  await p.change(7);
+  await p.typeChange(7);
+  await scratch(undefined, undefined, vault).p.fill(7);
+  expect(page.fresh).toBeString();
   expect(page.password).toBe(page.fresh);
 });
 

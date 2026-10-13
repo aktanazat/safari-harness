@@ -49,11 +49,14 @@ Before a site
 
 Signing in, in this order
 1. A session: most of his sites are signed in.
-2. `passwords` `fill`. Locked, it asks him for Touch ID and reads the
-   pairing code automatically; never ask for the code in chat. With him
-   away, use the site's emailed code or reset link. Call `passwords`
-   `done` when finished. One in his vault: `mem-secret run VAR -- safari
-   type <ref> '{{code}}' --tab N --secret env --env VAR`.
+2. `passwords` `fill`: the login the vault keeps, with no prompt, else
+   Apple Passwords', which pairs on its own (never ask for the code in
+   chat); if the vault's password fails, fill with `source: "apple"`. A
+   new account's password: `passwords` `change` on its sign-up form, which
+   keeps it. With him away and no login saved, use the site's emailed code
+   or reset link. Call `passwords` `done` when finished. Another secret in
+   his vault: `mem-secret run VAR -- safari type <ref> '{{code}}' --tab N
+   --secret env --env VAR`.
 3. A passkey: click its button, then `handoff`.
 4. A code: `imessage_wait_code`; an emailed one, `gmail.waitForMail` in
    `repl`, then `type {text:"{{code}}", secret:"page", from:<mail tab>}`.

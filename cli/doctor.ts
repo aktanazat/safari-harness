@@ -181,7 +181,7 @@ function passwordsCheck(got: Outcome<Pairing> | undefined): Check {
   if (got === undefined) return { name, status: "skip", detail: "needs the daemon" };
   if ("error" in got) return { name, status: "warn", detail: got.error };
   if (got.value.unlocked) return { name, status: "ok", detail: `paired with Apple Passwords; ${got.value.sessions ?? 0} session(s) hold it` };
-  return { name, status: "ok", detail: `not paired now (${got.value.reason ?? "no reason given"}); the next passwords call asks for Touch ID, then pairs` };
+  return { name, status: "ok", detail: `not paired now (${got.value.reason ?? "no reason given"}); the next passwords call that needs Apple Passwords pairs, reading the code off the Mac` };
 }
 
 // Group work turns off for good once Safari's menu stays open or it comes

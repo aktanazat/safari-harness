@@ -1,11 +1,12 @@
 // Pairing Apple Passwords without the chat. A call that finds it locked
-// asks the user to approve with Touch ID, the daemon pairs, and the code the
-// Mac then shows is read off the helper's window (scripts/pairing, with the
-// terminal's Accessibility access). Where it cannot be read, a prompt on
-// the Mac asks him to type the code, the answer hidden as he types, and the
-// digits go straight to the daemon: the agent learns only whether it
-// paired. He once took 7 minutes to send the code through the chat. The
-// code shows only on the Mac, so while he is away the call says he must
+// pairs at once, and the code the Mac then shows is read off the helper's
+// window (scripts/pairing, with the terminal's Accessibility access): no
+// Touch ID, as the user asked on 10-13, since Apple Passwords asks for it
+// anyway before it hands out any password. Where the code cannot be read,
+// a prompt on the Mac asks him to type it, the answer hidden as he types,
+// and the digits go straight to the daemon: the agent learns only whether
+// it paired. He once took 7 minutes to send the code through the chat. The
+// prompt shows only on the Mac, so while he is away the call says he must
 // come to it. It runs in a process of its own (startPairing), started
 // from the caller's, as fill.ts runs in the caller.
 
@@ -49,12 +50,6 @@ async function pairing(args: string[], timeout: number): Promise<Record<string, 
     const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
     throw new Error(`pairing ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
   }
-}
-
-// Touch ID, or his login password where there is no sensor: {approved},
-// and {why} when he declines; undefined when no prompt could be shown.
-export async function approve(reason: string): Promise<Record<string, unknown> | undefined> {
-  return pairing(["approve", reason], 120000).catch(() => undefined);
 }
 
 // The code the helper's window shows; undefined when it cannot be read.
@@ -151,9 +146,9 @@ function waitOn(what: string, then: string): void {
 // Starts the pairing's process for the agent this call works for, and
 // notes it at once, so a call that comes before the process writes waits
 // on it rather than starting another.
-export async function startPairing(site: string): Promise<number> {
+export async function startPairing(): Promise<number> {
   const agent = await agentOf();
-  const child = spawn(process.execPath, [import.meta.path, site, ...(agent === undefined ? [] : [String(agent)])], { detached: true, stdio: "ignore" });
+  const child = spawn(process.execPath, [import.meta.path, ...(agent === undefined ? [] : [String(agent)])], { detached: true, stdio: "ignore" });
   child.unref();
   if (child.pid === undefined) throw new Error("the pairing's process did not start");
   writeState({ pid: child.pid, waiting: waitText("Apple Passwords is pairing", "call again") });
@@ -183,35 +178,31 @@ async function answer(pid: number): Promise<Paired> {
   return ended;
 }
 
-// Pairs for a call that found Apple Passwords locked; site ends the reason
-// the Touch ID prompt gives. Throws when he declines Touch ID. On 09-29 a
-// first call waited 44 s for his Touch ID and 13 s more for the code, and
+// Pairs for a call that found Apple Passwords locked. On 09-29 a first
+// call waited 44 s for his Touch ID and 13 s more for the code, and
 // answered at 58 s, where an agent's call through MCP ends at 60. So a
 // call waits ANSWER_MS, as the daemon's calls do on Touch ID, then says
 // what the Mac waits on while the pairing goes on.
-export async function pairPasswords(site: string): Promise<Paired> {
-  if (await isAway().catch(() => false)) return { paired: false, why: "the user is away from the Mac, and the pairing code shows only there: he must come to the Mac" };
+export async function pairPasswords(): Promise<Paired> {
   const s = readState();
-  return answer(s && !s.ended && alive(s.pid) ? s.pid : await startPairing(site));
+  return answer(s && !s.ended && alive(s.pid) ? s.pid : await startPairing());
 }
 
 // The body of the pairing's process: the pairing, then how it ended.
-export async function runPairing(site: string): Promise<void> {
-  const ended: Ended = await steps(site).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+export async function runPairing(): Promise<void> {
+  const ended: Ended = await steps().catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
   writeState({ pid: process.pid, waiting, ended });
 }
 
 // The pairing itself, noting at each wait what the Mac waits on.
-async function steps(site: string): Promise<Paired> {
-  waitOn("the Mac is asking the user to approve Apple Passwords with Touch ID", "ask him to approve, then call again");
-  const approval = await approve(`let Safari Harness use your saved passwords${site}`);
-  if (approval && approval.approved !== true) throw new Error(`the user did not approve Apple Passwords (${String(approval.why)}); ask them before trying again`);
+async function steps(): Promise<Paired> {
   waitOn("Apple Passwords is pairing", "call again");
   const shown = await rpc("passwords", { do: "pair" });
   if (!shown || typeof shown !== "object" || !("codeShown" in shown)) return { paired: true };
   const helper = "helper" in shown && typeof shown.helper === "number" ? shown.helper : undefined;
-  let code = approval && helper !== undefined ? await readCode(helper) : undefined;
+  let code = helper === undefined ? undefined : await readCode(helper);
   if (code === undefined) {
+    if (await isAway().catch(() => false)) return { paired: false, why: "the pairing code could not be read off the Mac's window, and the user is away: he must come to the Mac to type it" };
     waitOn("the Mac is asking the user to type the code it shows into a prompt there", "ask him to type it there, never in the chat, then call again");
     const typed = await askCode();
     if ("why" in typed) return { paired: false, why: typed.why };
@@ -226,10 +217,10 @@ async function steps(site: string): Promise<Paired> {
   return { paired: true };
 }
 
-// The pairing's process: argv is the site the reason names, then the
-// agent it pairs for, whose calls hold the pairing (rpc.ts ownCalls).
+// The pairing's process: argv is the agent it pairs for, whose calls hold
+// the pairing (rpc.ts ownCalls).
 if (import.meta.main) {
-  const [site = "", agent] = process.argv.slice(2);
+  const [agent] = process.argv.slice(2);
   if (agent !== undefined) ownCalls(Number(agent));
-  await runPairing(site);
+  await runPairing();
 }

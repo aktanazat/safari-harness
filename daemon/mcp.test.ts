@@ -114,8 +114,11 @@ import { TOOLS } from "./tools.ts";
 // not say which lines are the agent's and which the associate's. handoff's
 // background and id (150, its description tightened) brought it to 24,567:
 // an agent that handed off a bot check sat out each 110 s wait instead of
-// going on with its other steps while the user cleared it.
-const TOOL_LIST_MAX_BYTES = 24_567;
+// going on with its other steps while the user cleared it. passwords' vault
+// fill and its source (164) brought it to 24,731: on 10-13 the user asked to
+// stop approving each sign-in with Touch ID, so a fill types the login the
+// vault keeps, and source apple refreshes one whose password went stale.
+const TOOL_LIST_MAX_BYTES = 24_731;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

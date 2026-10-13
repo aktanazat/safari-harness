@@ -123,8 +123,8 @@ scripts/
                     Safari's page area, and presses an element through
                     Safari's accessibility tree; needs Accessibility
                     permission
-  pairing.swift     helper: the Touch ID prompt, and the pairing code read
-                    off Apple's window; needs Accessibility permission
+  pairing.swift     helper: the pairing code read off Apple's window, and
+                    its Save Password button; needs Accessibility permission
   spaces.swift      helper: works an agent window's tab group sidebar through
                     Accessibility, Safari left in the background; needs
                     Accessibility permission

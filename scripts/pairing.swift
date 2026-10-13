@@ -1,11 +1,6 @@
-// Pairing Apple Passwords with one touch, for daemon/fill.ts: the user
-// approves with Touch ID, and the 6-digit code the Mac shows is read off the
-// window of Apple's password helper, so nobody reads it out.
-//   pairing approve REASON        Touch ID, or the login password where there
-//                                 is no sensor: {"approved"}, and {"why"} when
-//                                 the user declines. Exits 1 when no prompt
-//                                 could be shown or the system took it down.
-//                                 REASON finishes "<app> is trying to ..."
+// Pairing Apple Passwords with no touch, for daemon/pair.ts: the 6-digit
+// code the Mac shows is read off the window of Apple's password helper, so
+// nobody reads it out.
 //   pairing approval              whether the system authentication prompt
 //                                 is still on screen: {"showing": boolean}
 //   pairing code --pid N [--wait MS]
@@ -27,7 +22,6 @@ import AppKit
 import ApplicationServices
 import CoreImage
 import Foundation
-import LocalAuthentication
 
 func fail(_ message: String, _ code: Int32 = 1) -> Never {
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
@@ -55,31 +49,7 @@ func attribute(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     return AXUIElementCopyAttributeValue(el, name as CFString, &value) == .success ? value : nil
 }
 
-// ---------- approve ----------
-
-func approve(_ args: [String]) {
-    guard let reason = args.first, !reason.isEmpty else { fail("usage: pairing approve REASON", 2) }
-    let context = LAContext()
-    var error: NSError?
-    guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-        fail("this Mac cannot ask for Touch ID or the login password: \(error?.localizedDescription ?? "no reason given")")
-    }
-    let answered = DispatchSemaphore(value: 0)
-    var approved = false
-    var failure: Error?
-    context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, err in
-        approved = ok
-        failure = err
-        answered.signal()
-    }
-    answered.wait()
-    if approved { return printJSON(["approved": true]) }
-    // Cancelling, or failing to prove who they are, is the user's answer.
-    if let e = failure as? LAError, e.code == .userCancel || e.code == .authenticationFailed {
-        return printJSON(["approved": false, "why": e.localizedDescription])
-    }
-    fail("the Mac did not finish asking: \(failure?.localizedDescription ?? "no reason given")")
-}
+// ---------- approval ----------
 
 // Apple's helper can leave a request unanswered when its Touch ID prompt
 // closes. Look only for the system authentication window, never its text.
@@ -204,10 +174,9 @@ func qr() {
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
-case "approve": approve(rest)
 case "approval": approval()
 case "code": code(rest)
 case "confirm": confirm(rest)
 case "qr": qr()
-default: fail("usage: pairing approve REASON | approval | code --pid N [--wait MS] | confirm --pid N --site HOST [--new] [--wait MS] | qr < PNG", 2)
+default: fail("usage: pairing approval | code --pid N [--wait MS] | confirm --pid N --site HOST [--new] [--wait MS] | qr < PNG", 2)
 }

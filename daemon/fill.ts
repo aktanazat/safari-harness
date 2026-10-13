@@ -127,12 +127,12 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   return { filled, ...(navigated ? { navigated } : {}), username: chosen.login?.username ?? "", site };
 }
 
-// Apple Passwords with one touch. pair, or a call that finds it locked,
-// pairs first (pair.ts): the user approves with Touch ID, and the code the
-// Mac shows is read off its window or typed by him into a prompt there.
-// The agent learns only whether it paired, and the call goes on. The card
-// steps run here, where the keychain's card helper is (cards.ts); done
-// also ends their Touch ID approval.
+// Apple Passwords with no touch. pair, or a call that finds it locked,
+// pairs first (pair.ts): the code the Mac shows is read off its window, or
+// typed by the user into a prompt there. The agent learns only whether it
+// paired, and the call goes on. The card steps run here, where the
+// keychain's card helper is (cards.ts); done also ends their Touch ID
+// approval.
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   if (typeof a.do === "string" && a.do.startsWith("card")) return cards(a);
   if (a.do === "done") endApproval();
@@ -150,10 +150,7 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   } else if (await unlocked()) {
     return { paired: true };
   }
-  const tab = a.tab === undefined ? undefined : await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]).catch(() => undefined);
-  const form = tab === undefined ? undefined : await rpc("login_form", { tab }).catch(() => undefined);
-  const site = form && typeof form === "object" && "site" in form && typeof form.site === "string" ? ` to sign in to ${form.site}` : "";
-  const paired = await pairPasswords(site);
+  const paired = await pairPasswords();
   return a.do === "pair" || !paired.paired ? paired : call();
 }
 

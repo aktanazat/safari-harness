@@ -1548,7 +1548,7 @@ function capture(ops: Record<string, Capture>, a: Record<string, unknown>): Prom
 // passwords: pair, unlock, status, and done take no tab; logins, fill,
 // code, and change act on the tab's own site, and logins also on a site
 // named. Each agent session holds the pairing until it calls done or
-// exits, and the pairing ends a few minutes after the last.
+// exits, and the pairing ends hours after the last.
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   switch (a.do) {
     case "pair": {
@@ -1563,8 +1563,10 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
       return passwords.done();
     case "logins":
       return a.site === undefined ? passwords.loginsFor(await resolveTab(a.tab)) : passwords.loginsAt(str(a.site, "site"));
-    case "fill":
-      return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
+    case "fill": {
+      if (a.source !== undefined && a.source !== "vault" && a.source !== "apple") throw new Error("source must be vault or apple");
+      return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"), a.source);
+    }
     case "code":
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "change":
@@ -2084,8 +2086,8 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   passwords: {
-    desc: "Use Apple Passwords and cards without revealing secrets; never ask for them. fill signs in, code fills 2FA, logins lists usernames. change saves then fills a strong password; shared website entries are refused; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls ask Touch ID and read the pairing code automatically, or prompt on the Mac if unreadable. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, card: { type: "string", description: "label or last 4" } },
+    desc: "Use saved logins and cards without revealing secrets; never ask for them. fill signs in from the vault with no Touch ID, else from Apple Passwords, keeping a copy; source: apple if the vault's password fails. code fills 2FA, logins lists usernames. change saves then fills a strong password; shared website entries are refused; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls pair on their own, or prompt on the Mac. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],

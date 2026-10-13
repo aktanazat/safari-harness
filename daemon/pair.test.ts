@@ -15,8 +15,8 @@ function fakeDaemon(): Record<string, unknown>[] {
   const state = mkdtempSync("/private/var/tmp/pairing-test-");
   scratch.push(state);
   spyOn(phone, "dataFile").mockImplementation((name) => join(state, name));
-  spyOn(pair, "startPairing").mockImplementation(async (site) => {
-    void pair.runPairing(site);
+  spyOn(pair, "startPairing").mockImplementation(async () => {
+    void pair.runPairing();
     return process.pid;
   });
   const calls: Record<string, unknown>[] = [];
@@ -48,7 +48,6 @@ afterEach(() => {
 test("the user types the Mac's code into a prompt there, and the agent gets only paired", async () => {
   process.env.SAFARI_HARNESS_AWAY = "0";
   const calls = fakeDaemon();
-  spyOn(pair, "approve").mockResolvedValue({ approved: true });
   spyOn(pair, "readCode").mockResolvedValue(undefined);
   spyOn(pair, "askCode").mockResolvedValue({ code: CODE });
   const result = await FILL_TOOLS.passwords.run({ do: "pair" });
@@ -59,18 +58,29 @@ test("the user types the Mac's code into a prompt there, and the agent gets only
 test("a cancelled prompt pairs nothing and says why", async () => {
   process.env.SAFARI_HARNESS_AWAY = "0";
   const calls = fakeDaemon();
-  spyOn(pair, "approve").mockResolvedValue({ approved: true });
   spyOn(pair, "readCode").mockResolvedValue(undefined);
   spyOn(pair, "askCode").mockResolvedValue({ why: "the user cancelled the prompt" });
   expect(await FILL_TOOLS.passwords.run({ do: "pair" })).toEqual({ paired: false, why: "the user cancelled the prompt" });
   expect(calls.map((c) => c.do)).not.toContain("unlock");
 });
 
-test("while the user is away, the call says he must come to the Mac, and pairs nothing", async () => {
+// 10-13: he asked to stop approving each pairing with Touch ID.
+test("with nobody at the Mac, the code read off its window pairs, and no prompt is shown", async () => {
   process.env.SAFARI_HARNESS_AWAY = "1";
   const calls = fakeDaemon();
+  spyOn(pair, "readCode").mockResolvedValue(CODE);
+  const asked = spyOn(pair, "askCode").mockResolvedValue({ why: "the user cancelled the prompt" });
+  expect(await FILL_TOOLS.passwords.run({ do: "pair" })).toEqual({ paired: true });
+  expect(calls).toContainEqual({ do: "unlock", code: CODE });
+  expect(asked).not.toHaveBeenCalled();
+});
+
+test("while the user is away and the code cannot be read, the call says he must come to the Mac, and pairs nothing", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const calls = fakeDaemon();
+  spyOn(pair, "readCode").mockResolvedValue(undefined);
   const asked = spyOn(pair, "askCode").mockResolvedValue({ code: CODE });
   expect(await FILL_TOOLS.passwords.run({ do: "pair" })).toEqual({ paired: false, why: expect.stringContaining("he must come to the Mac") });
-  expect(calls.map((c) => c.do)).toEqual(["status"]);
+  expect(calls.map((c) => c.do)).not.toContain("unlock");
   expect(asked).not.toHaveBeenCalled();
 });
