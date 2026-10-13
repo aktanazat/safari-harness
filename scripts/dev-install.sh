@@ -168,7 +168,7 @@ if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -
   if [ ! -f "$app" ]; then
     tmp="$(mktemp -d /private/var/tmp/sh-build.XXXXXX)"
     if ! (cd "$REL/Safari Harness" && xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$tmp" -allowProvisioningUpdates build) >"$tmp/build.log" 2>&1; then
-      grep -E "error:" "$tmp/build.log" | head -20
+      grep -E "error:|errSec|failed with" "$tmp/build.log" | head -20 || true
       echo "the app did not build" >&2
       exit 1
     fi
