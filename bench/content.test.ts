@@ -115,6 +115,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a login fills a form that takes each field's value only as it loses focus, as Angular's updateOn blur does",
+    page: "blur-login.html",
+    steps: [
+      { op: "fillLogin", args: ["", "aktanazat", "hunter2"], answer: { value: { ok: true, filled: ["username", "password"] } } },
+      { op: "click", args: ["Sign In"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Signed in as aktanazat") } } },
+    ],
+  },
+  {
     name: "a code typed as a secret into the first of six digit boxes with no length limit goes one digit to a box, and no box shows its digit",
     page: "digit-boxes.html",
     steps: [

@@ -1736,6 +1736,18 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  // A field a saved login, password, or code fills is left as a person
+  // leaves it: an Angular form that updates on blur (ShopGoodwill's sign-in
+  // and reset, 10-13) takes the value only then, and in a tab in the back
+  // focus() on the next field fires no blur on this one. A Flutter field is
+  // not left: its blur would end the read of what was set.
+  function fillValue(el, value) {
+    setValue(el, value, value);
+    if (el.closest("flt-semantics")) return;
+    el.dispatchEvent(new FocusEvent("blur"));
+    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  }
+
   // Flutter's text fields (GEICO's sign-in) read what is typed only while
   // the page holds the field, from a frame after it gains focus until it
   // loses focus. Taking it, Flutter writes the text its own model holds
@@ -2000,7 +2012,7 @@
     for (const [field, value, name] of [[f.username, username, "username"], [f.password, password, "password"]]) {
       if (!field || !value) continue;
       if (!(await focusField(field))) return untaken(`the ${name} field`);
-      setValue(field, value, value);
+      fillValue(field, value);
       filled.push(name);
     }
     if (!filled.length) return { error: "the login form is gone; nothing was filled" };
@@ -2084,7 +2096,7 @@
     for (const [field, value, name] of fields) {
       if (!field || !value) continue;
       if (!(await focusField(field))) return untaken(`the ${name} field`);
-      setValue(field, value, value);
+      fillValue(field, value);
       filled.push(name);
     }
     return { ok: true, filled };
@@ -2143,7 +2155,7 @@
     for (const [i, field] of fields.entries()) {
       if (parts[i] === undefined) continue;
       if (!(await focusField(field))) return untaken("the code field");
-      setValue(field, parts[i], parts[i]);
+      fillValue(field, parts[i]);
     }
     return { ok: true, filled: ["code"] };
   }
