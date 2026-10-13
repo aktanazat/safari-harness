@@ -87,19 +87,40 @@ test("a card given in the chat is saved, listed by its label and last 4, and rem
   expect(await invoke("passwords", { do: "cards" }, true)).toMatchObject({ cards: [] });
 });
 
-// The owner's choice (10-01): one Touch ID covers card fills for 5 minutes.
-test("one Touch ID covers card fills for 5 minutes, and the first fill after them asks again", async () => {
+// The owner's choice (10-13): one Touch ID covers card fills until the Mac
+// locks, for at most 12 hours (on 10-01 it was 5 minutes).
+test("one Touch ID covers card fills past 5 minutes and up to 12 hours, and the first fill after them asks again", async () => {
   writeFileSync(store, JSON.stringify([VISA]));
   watchedPort();
   const before = approvals();
   const asked: number[] = [];
-  const start = Date.parse("2026-10-01T12:00:00Z");
-  for (const minutes of [0, 4, 6]) {
+  const start = Date.parse("2026-10-13T08:00:00Z");
+  for (const minutes of [0, 6, 12 * 60 - 1, 12 * 60]) {
     setSystemTime(new Date(start + minutes * 60_000));
     await fillVisa();
     asked.push(approvals() - before);
   }
-  expect(asked).toEqual([1, 1, 2]);
+  expect(asked).toEqual([1, 1, 1, 2]);
+});
+
+test("the Mac locking ends the approval: the next fill asks Touch ID again", async () => {
+  writeFileSync(store, JSON.stringify([VISA]));
+  watchedPort();
+  const before = approvals();
+  await fillVisa();
+  const pid = Number(readFileSync(join(dir, "serve.pid"), "utf8"));
+  process.kill(pid, "SIGUSR2");
+  // The test cannot reach the helper cards.ts spawned to await its end, so
+  // it looks until the helper's pid is gone.
+  for (const deadline = performance.now() + 3000; performance.now() < deadline; await Bun.sleep(5)) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      break;
+    }
+  }
+  await fillVisa();
+  expect(approvals() - before).toBe(2);
 });
 
 test("a card goes to the page's own frames and a card processor's, each only what its fields take; a frame from another site gets none and is named", async () => {

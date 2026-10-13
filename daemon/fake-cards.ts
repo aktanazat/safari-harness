@@ -3,7 +3,9 @@
 // for cards.test.ts: the same commands and answers, with the cards kept in
 // a file under FAKE_CARDS_DIR instead of the keychain, and a line added to
 // its approvals file for each Touch ID the helper would have asked: one
-// per serve process, at its first read.
+// per serve process, at its first read. A serve process writes its pid to
+// serve.pid and takes SIGUSR2 as the Mac locking, which ends it as the
+// lock ends the helper's.
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +35,8 @@ if (cmd === "list") {
   writeFileSync(store, JSON.stringify(saved().filter((c) => c.id !== arg)));
   console.log(JSON.stringify({ removed: listed(card) }));
 } else if (cmd === "serve") {
+  process.on("SIGUSR2", () => process.exit(0));
+  writeFileSync(join(dir, "serve.pid"), String(process.pid));
   let approved = false;
   for await (const line of createInterface({ input: process.stdin })) {
     const { read } = JSON.parse(line);

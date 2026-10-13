@@ -20,8 +20,9 @@
 //   serve                 reads {"read": ID, "site": HOST} lines and answers
 //                         each with {"card": {number, month, year, csc, name,
 //                         zip}} or {"error"}. The first read asks Touch ID, and
-//                         that approval opens every read of the next 5 minutes.
-//                         Ends with its input.
+//                         that approval opens every read until the Mac locks,
+//                         for at most 12 hours. Ends with its input, or when
+//                         the Mac locks.
 // Every other command prints one JSON line; an error goes to stderr with a
 // nonzero exit.
 import AppKit
@@ -33,8 +34,9 @@ import Security
 // card's id.
 let service = "at.aktan.safari-harness.card"
 let labelService = "at.aktan.safari-harness.card-label"
-// How long one Touch ID opens reads for (owner's choice, 10-01).
-let approvalSeconds: TimeInterval = 5 * 60
+// How long one Touch ID opens reads for when the Mac does not lock first
+// (owner's choice, 10-13).
+let approvalSeconds: TimeInterval = 12 * 60 * 60
 // A prompt nobody answers is taken down after this.
 let promptSeconds = 120
 
@@ -307,38 +309,47 @@ func hostName(_ raw: Any?) -> String {
 }
 
 // One process holds one approval: the caller keeps this running while it
-// fills cards, and a read past the approval's 5 minutes asks again. Card
-// data stays in no variable past the answer that carries it.
+// fills cards, and a read past the approval's 12 hours asks again. The Mac
+// locking ends the process, so the approval ends with what holds it and the
+// caller's next fill starts a new one (10-13). Card data stays in no
+// variable past the answer that carries it.
 func serve() -> Never {
-    var context: LAContext?
-    var approvedAt = Date.distantPast
-    while let text = readLine() {
-        var reply: [String: Any]
-        do {
-            guard let request = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any], let id = request["read"] as? String else {
-                throw Failure("each line must be {\"read\": ID, \"site\": HOST}")
+    // The Mac's lock comes as a distributed notification, which only the
+    // main thread's run loop receives, so the reads go on another thread.
+    DistributedNotificationCenter.default().addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: nil) { _ in exit(0) }
+    Thread {
+        var context: LAContext?
+        var approvedAt = Date.distantPast
+        while let text = readLine() {
+            var reply: [String: Any]
+            do {
+                guard let request = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any], let id = request["read"] as? String else {
+                    throw Failure("each line must be {\"read\": ID, \"site\": HOST}")
+                }
+                let card = try find(id)
+                if let old = context, Date().timeIntervalSince(approvedAt) >= approvalSeconds {
+                    old.invalidate()
+                    context = nil
+                }
+                let open: LAContext
+                if let current = context {
+                    open = current
+                } else {
+                    open = LAContext()
+                    try authenticate(open, reason: "fill your card \(card.label.label) on \(hostName(request["site"])), and approve card fills until your Mac locks")
+                    context = open
+                    approvedAt = Date()
+                }
+                reply = ["card": try secret(id, open)]
+            } catch {
+                reply = ["error": messageOf(error)]
             }
-            let card = try find(id)
-            if let old = context, Date().timeIntervalSince(approvedAt) >= approvalSeconds {
-                old.invalidate()
-                context = nil
-            }
-            let open: LAContext
-            if let current = context {
-                open = current
-            } else {
-                open = LAContext()
-                try authenticate(open, reason: "fill your card \(card.label.label) on \(hostName(request["site"])), and approve card fills for the next 5 minutes")
-                context = open
-                approvedAt = Date()
-            }
-            reply = ["card": try secret(id, open)]
-        } catch {
-            reply = ["error": messageOf(error)]
+            FileHandle.standardOutput.write(jsonLine(reply))
         }
-        FileHandle.standardOutput.write(jsonLine(reply))
-    }
-    context?.invalidate()
+        context?.invalidate()
+        exit(0)
+    }.start()
+    RunLoop.main.run()
     exit(0)
 }
 

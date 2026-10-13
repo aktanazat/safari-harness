@@ -19,17 +19,19 @@ import { rpc } from "./rpc.ts";
 
 const HELPER = "/Applications/Safari Harness.app/Contents/Helpers/Safari Harness Cards.app/Contents/MacOS/Safari Harness Cards";
 
-// One Touch ID opens card fills for 5 minutes (the owner's choice, 10-01):
-// a checkout that takes the card twice, after a decline or on its next
-// page, asks him once. The approval lives in one helper process (serve),
-// which the first fill past those 5 minutes ends, as do done and this
-// process's end; the helper keeps it no longer either. Each fill reads
-// its card again, rather than caching one for the next fill. The tab's
-// secret scrubber still holds the number and code until the tab closes.
-// For those 5 minutes, anything driving this process can fill a saved card
+// One Touch ID opens card fills until the Mac locks, for at most 12 hours
+// (the owner's choice, 10-13, trading the 5 minutes of 10-01 for fewer
+// prompts): a checkout that takes the card twice, after a decline or on its
+// next page, asks him once, and so do the checkouts after it. The approval
+// lives in one helper process (serve), which exits when the Mac locks; the
+// first fill past those 12 hours ends it, as do done and this process's
+// end; the helper keeps it no longer either. Each fill reads its card
+// again, rather than caching one for the next fill. The tab's secret
+// scrubber still holds the number and code until the tab closes. Until the
+// approval ends, anything driving this process can fill a saved card
 // without another prompt. A CLI process ends after its call, so it cannot
 // reuse an earlier CLI call's approval.
-const APPROVAL_MS = 5 * 60_000;
+const APPROVAL_MS = 12 * 60 * 60_000;
 
 // The CLI's process ends with its answer, and the helper holding his
 // Touch ID prompt ends with it, so a CLI call waits the prompt out
