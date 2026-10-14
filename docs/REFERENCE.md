@@ -64,7 +64,7 @@ Safari is the user's everyday browser, so treat his tabs as his.
   for the user, one he has in front, a site global's, or one whose page an
   action changed since it loaded (a form in progress). For a second tab
   beside it, to compare two pages, pass `new: true` (CLI `--new`). A
-  script's `openTab` (`repl`), `map`, and `replay` always open a tab of
+  script's `openTab` (`repl`), `map`, `replay`, and `playbooks run` open a tab of
   their own; `openTab` prints a `hint:` naming the tabs you had there:
   `goto` one of those next time, and close the one you are done with.
 - `open` and `goto` take a whole `http` or `https` address (or
@@ -1144,6 +1144,72 @@ one-time code, card, or hidden field keeps only its kind.
   every step went through, so a watch routine's `--replay <name>` reads the
   value a replay ends on.
 
+### Learning an agent's verified run
+
+`playbooks` learns only opted-in calls the agent makes through the harness.
+It does not watch the owner's browsing, keyboard, screens or Safari events.
+The tab must be a recent background tab this agent opened, never `front`.
+
+1. `playbooks {do: "learn", tab, goal: "Search the catalog", params: ["q"],
+   before: {selector: "#search"}}` starts learning on that one tab after the
+   start check passes. `params` lists field names, not values.
+2. Do the authorized task through the normal tools. Supported actions are
+   `type`, `click`, `select`, `press` and same-origin public-path `goto`.
+3. `playbooks {do: "save", tab, selector: "#results"}` requires the end check
+   to be observed now. `text` may be used instead, but it must be a generic
+   status, never a parameter value or private message. A failed action,
+   challenge, unsupported action or missing end check saves nothing.
+4. `playbooks {do: "run", url: "https://example.com/", goal: "Search the
+   catalog", vars: {q: "shoes"}}` filters verified recordings by the exact
+   public starting path and supplied parameter names. `tab` may supply
+   page context instead of `url`; replay still opens its own background tab.
+
+The existing recording format and folder hold the playbook. The goal and
+control names must be generic, without personal text. The playbook keeps
+no input value, page title, nearby text, private URL query or fragment.
+Only uniquely named native controls in the top document can be learned;
+their existing fingerprints are used without storing surrounding content.
+Frames, shadow controls, real input, append typing, arbitrary JS and
+helpers that hide actions invalidate the session rather than produce a
+partial recipe. `run` batches pass their individual supported steps through
+the same learning boundary.
+
+`playbooks {do: "list"}` lists validated learned runs and their gates.
+`playbooks {do: "cancel", tab}` discards a session. Sessions expire after
+30 minutes. `recordings show/rm` reads or removes a saved playbook as usual.
+
+The installed `jev choice` client sees only generic goals, origin and
+parameter names. It never receives current parameter values or page
+content. `none`, a low-confidence/unrecognized answer, a missing client or
+an exit failure returns `{ok: false, abstained: true, reason, hint}` without
+opening a tab. Exit 2 explicitly means the answer did not come from Jev.
+Continue with the normal agent; do not invent a substitute match.
+
+A Jev choice is advisory, never permission. Existing replay validates the
+recording again, checks the start path and condition, reacquires each
+unique target and checks its current field/link facts before acting. It
+stops on drift, ambiguity, unkept input, a bot check or a missing end
+condition. Success includes `verified: true`; a stopped replay leaves its
+tab open and says why.
+
+Send, spend, delete, stop, account-setting, sign-in, secret, submit and
+Enter boundaries stop before their step with `gate`. No `approved` flag
+bypasses this stop. Review the live page, show the exact proposed action
+to the owner where needed, and continue manually only after approval.
+CAPTCHAs and sign-in handoffs remain the owner's. Unverified agent
+recordings cannot be stored or replayed, including via direct `replay`.
+
+The CLI accepts the same arguments as flags:
+
+```
+safari playbooks learn --tab N --goal "Search the catalog" --params '["q"]' --before '{"selector":"#search"}'
+safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+safari playbooks run --url https://example.com/ --goal "Search the catalog" --vars '{"q":"shoes"}' --json
+```
+
+An abstain or stopped run exits 1. No automatic discovery retry, routine,
+daemon, model training or approval bypass is added.
+
 ## Logged-in sites and secrets
 
 The tabs carry the user's real sessions. Never print passwords, one-time codes,
@@ -1549,6 +1615,8 @@ safari routine add orders --at 09:00 --watch https://example.com/orders --replay
   `--text` (a regular expression over the page's text: its first group,
   else the whole match), `--eval` (a JavaScript expression), or `--replay`
   (a recording played back with `safari replay`, which must end on a read).
+  Learned agent playbooks are not unattended watches: they require an
+  explicit current request, parameter values and the same approval gates.
 - Each run opens the page in a background tab, reads the value, and closes
   the tab. The first run only records the value. After that, a different
   value alerts `<name>: <old> -> <new> (<url>)`. The last value is kept in

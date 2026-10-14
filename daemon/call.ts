@@ -12,6 +12,7 @@ import { quietly, rpc, takesNews } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
 import { secretType, typeSecret, type CallerEnv } from "./secret.ts";
 import { TOOLS, runSteps } from "./tools.ts";
+import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
 
 // model: the call counts as the model's own, as invoke's does.
 export type Invoke = (tool: string, args: Record<string, unknown>, model?: boolean) => Promise<unknown>;
@@ -55,6 +56,17 @@ async function asReal(tool: string, args: Record<string, unknown>, real: boolean
 // is a step of a run with real: true (asReal). caller: the environment of
 // whoever ran this process, which only the safari CLI gives (secret.ts).
 export async function invoke(tool: string, args: Record<string, unknown>, model = false, real = false, caller?: CallerEnv): Promise<unknown> {
+  const name = nameIn([...DAEMON_NAMES, ...CALLER_NAMES], tool) ?? tool;
+  const normalized = model ? checkCall(STEP_TOOLS, tool, args, true).args : args;
+  const run = () => invokeInner(tool, args, model, real, caller);
+  const result = model && name !== "run" && name !== "playbooks"
+    ? await learnAgentAction(name, normalized, run, rpc, real)
+    : await run();
+  if (model) await notePlaybookTab(name, normalized, result);
+  return result;
+}
+
+async function invokeInner(tool: string, args: Record<string, unknown>, model: boolean, real: boolean, caller?: CallerEnv): Promise<unknown> {
   // Model runs stay here so each step checks the site's real-input mark,
   // even without real: true (EOIR, 09-30). Internal runs keep the scripted
   // daemon path unless they explicitly contain a caller tool.

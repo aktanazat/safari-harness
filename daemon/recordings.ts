@@ -6,8 +6,10 @@
 import { chmodSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataFile } from "./phone.ts";
+import { isFingerprint } from "./fingerprint.ts";
+import type { Fingerprint } from "./fingerprint.ts";
 
-type Field = { type: string; autocomplete: string; name: string; id: string; label: string };
+export type Field = { type: string; autocomplete: string; name: string; id: string; label: string };
 export type Recording = { url: string; steps: unknown[]; title?: unknown; startedAt?: unknown };
 
 // content.js judges each field as he types; this copy judges each step
@@ -17,7 +19,7 @@ export type Recording = { url: string; steps: unknown[]; title?: unknown; starte
 // both on one table.
 const SECRET_HINTS = { password: /passw|passcode|\bpin\b/i, code: /\botp\b|one.?time|verification.?code|\b2fa\b|\bmfa\b/i, card: /\bcc-|card|cvv|cvc|csc|expir|security.?code/i };
 
-function secretOfField(f: Field): string | null {
+export function secretOfField(f: Field): string | null {
   const hints = `${f.name} ${f.id} ${f.label}`;
   if (f.type === "hidden") return "hidden";
   if (f.type === "password" || /\b(current|new)-password\b/i.test(f.autocomplete) || SECRET_HINTS.password.test(hints)) return "password";
@@ -52,6 +54,92 @@ function isRecording(v: unknown): v is Recording {
   return !!v && typeof v === "object" && "url" in v && typeof v.url === "string" && "steps" in v && Array.isArray(v.steps);
 }
 
+// Agent runs use the same recordings, but keep parameters, never their
+// values. This is the storage and replay boundary: a local recording cannot
+// opt out of validation by skipping the playbooks tool.
+export type Check = { text?: string; selector?: string };
+export type AgentStep = { kind: string; url: string; target?: Fingerprint; field?: Field; param?: string; key?: string; from?: string; gate?: string; href?: string };
+export type AgentRecording = Recording & { source: "agent"; verified: true; goal: string; params: string[]; before: Check; verify: Check; steps: AgentStep[] };
+
+export function checkOf(v: unknown): Check {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("a check needs text or selector");
+  const c = v as Record<string, unknown>;
+  if (Object.keys(c).some((k) => k !== "text" && k !== "selector")
+    || !Object.values(c).every((s) => typeof s === "string" && s.trim() !== "")
+    || (!c.text && !c.selector)) throw new Error("a check needs nonempty text or selector");
+  return c as Check;
+}
+
+// Keep generic task/control labels only, not mail text, credentials, or
+// private addresses. Callers still owe generic goals and structural checks.
+export function publicLabel(v: unknown): string {
+  if (typeof v !== "string" || !v.trim() || v.length > 300
+    || /[\r\n]|[\w.+-]+@[\w.-]+|\b\d{4,}\b|\b(?:bearer|cookie|token|secret|password)\s*[:=]|https?:\/\/|[A-Za-z0-9_-]{32,}/i.test(v)) throw new Error("use a short generic label, without private text or secrets");
+  return v.trim();
+}
+
+export function playbookUrl(v: unknown): string {
+  const u = typeof v === "string" ? URL.parse(v) : null;
+  if (!u || !["http:", "https:"].includes(u.protocol) || u.username || u.password
+    || /(?:reset|verify|invite|magic)[^/]*\/|[\w-]{32,}|@/i.test(decodeURIComponent(u.pathname))) throw new Error("the playbook needs a public page path, not a secret link");
+  return u.origin + u.pathname;
+}
+
+export function gateOfStep(s: AgentStep): string | undefined {
+  if (s.gate) return s.gate;
+  if (s.field && secretOfField(s.field)) return "sign-in or secret";
+  if (s.kind === "press" && s.key === "Enter") return "approval";
+  const label = `${s.target?.name ?? ""} ${s.field?.label ?? ""} ${new URL(s.url).pathname}`;
+  const gates: [string, RegExp][] = [
+    ["send", /\b(send|post|publish|reply|share|submit|message|invite)\b/i],
+    ["spend", /\b(buy|pay|purchase|order|checkout|subscribe|donate|book|transfer)\b/i],
+    ["delete", /\b(delete|remove|discard|trash|clear)\b/i],
+    ["stop", /\b(stop|cancel|unsubscribe|deactivate|disable)\b/i],
+    ["account settings", /\b(account|settings|password|security|billing)\b/i],
+    ["sign-in", /\b(sign[\s_-]?in|log[\s_-]?in|sign[\s_-]?up|verify|captcha|challenge)\b/i],
+  ];
+  return gates.find(([, pattern]) => pattern.test(label))?.[0];
+}
+
+export function assertAgentRecording(raw: Recording): asserts raw is AgentRecording {
+  const r = raw as Recording & Record<string, unknown>;
+  if (r.source !== "agent" || r.verified !== true) throw new Error("the agent run is not verified");
+  if (Object.keys(r).some((k) => !["url", "steps", "startedAt", "source", "verified", "goal", "params", "before", "verify"].includes(k))) throw new Error("the agent recording contains unrecognized data");
+  publicLabel(r.goal);
+  if (playbookUrl(r.url) !== r.url) throw new Error("agent recordings keep no URL query or fragment");
+  for (const c of [checkOf(r.before), checkOf(r.verify)]) for (const text of Object.values(c)) publicLabel(text);
+  if (!Array.isArray(r.params) || !r.params.every((p) => typeof p === "string" && /^[a-zA-Z][\w-]{0,63}$/.test(p))
+    || new Set(r.params).size !== r.params.length || !r.steps.length) throw new Error("the agent run needs steps and named parameters");
+  const used = new Set<string>();
+  for (const rawStep of r.steps) {
+    if (!rawStep || typeof rawStep !== "object" || Array.isArray(rawStep)) throw new Error("invalid agent step");
+    const s = rawStep as AgentStep;
+    if (Object.keys(s).some((k) => !["kind", "url", "target", "field", "param", "key", "from", "gate", "href"].includes(k))
+      || !["click", "type", "select", "press", "navigate"].includes(s.kind)
+      || playbookUrl(s.url) !== s.url || new URL(s.url).origin !== new URL(r.url).origin) throw new Error("the agent step contains unsafe or unsupported data");
+    if (s.kind === "navigate") {
+      if (s.from !== "user") throw new Error("invalid agent navigation");
+    } else {
+      const f = s.target;
+      if (!isFingerprint(f)
+        || f.near !== "" || f.path !== "" || f.index !== 0 || f.count !== 1
+        || !/^[a-z][a-z0-9-]*$/.test(f.tag) || Object.keys(f).length !== 7) throw new Error("agent targets must have one unique control label, without surrounding page text");
+      publicLabel(f.name);
+      if (s.href !== undefined && (playbookUrl(s.href) !== s.href || new URL(s.href).origin !== new URL(r.url).origin)) throw new Error("the link destination is unsafe");
+    }
+    if (s.gate !== undefined) publicLabel(s.gate);
+    if (s.kind === "press" && !["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(s.key ?? "")) throw new Error("unsupported agent key");
+    if (s.kind === "type" || s.kind === "select") {
+      if (!s.field || Object.keys(s.field).some((k) => !["type", "autocomplete", "name", "id", "label"].includes(k))
+        || Object.keys(s.field).length !== 5 || !Object.values(s.field).every((v) => typeof v === "string")) throw new Error("the field facts are missing");
+      for (const label of Object.values(s.field)) if (label) publicLabel(label);
+      if (typeof s.param !== "string" || !r.params.includes(s.param)) throw new Error("the field needs a named parameter");
+      used.add(s.param);
+    }
+  }
+  if (used.size !== r.params.length) throw new Error("the agent run has unused parameters");
+}
+
 const missing = (e: unknown) => e instanceof Error && "code" in e && e.code === "ENOENT";
 
 // A recording's name: its site and the minute it began, in local time
@@ -68,6 +156,7 @@ function stem(url: string, startedAt: number): string {
 // writes over a file.
 export function saveRecording(raw: unknown): string {
   if (!isRecording(raw)) throw new Error("not a recording: it needs a url and steps");
+  if ("source" in raw && raw.source === "agent") assertAgentRecording(raw);
   const dir = dataFile("recordings");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // a folder made earlier, or by hand, may let others read it
@@ -104,7 +193,7 @@ export function loadRecording(name: unknown): Recording {
 }
 
 // Newest first, each with what a caller tells them apart by.
-function listRecordings(): { name: string; url: string; title: string; steps: number; began: string }[] {
+export function listRecordings(): { name: string; url: string; title: string; steps: number; began: string }[] {
   let files: string[];
   try {
     files = readdirSync(dataFile("recordings"));

@@ -173,6 +173,16 @@ const USAGE = `safari — drive Safari from the terminal
   safari replay <name> [--tab N] [--vars '{"field":"text"}'] [--json]
                                              do a recording again in a background tab;
                                              exits 1 when a step fails
+  safari playbooks learn --tab N --goal "Search the catalog"
+                      --params '["q"]' --before '{"selector":"#search"}'
+                                             opt in to your agent's verified actions
+  safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+                                             save only after the end check is observed
+  safari playbooks list | cancel --tab N
+  safari playbooks run --url https://example.com/ --goal "Search the catalog"
+                      --vars '{"q":"shoes"}'
+                                             Jev chooses or abstains; replay checks
+                                             live targets and stops at owner gates
 
   safari guide sites                         sites with a usage guide
   safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
@@ -839,7 +849,9 @@ async function main() {
   }
 
   // The caller's environment goes with the call, for a type's secret "env".
-  print(await invoke(tool, args, true, false, process.env));
+  const result = await invoke(tool, args, true, false, process.env);
+  print(result);
+  if (name === "playbooks" && result && typeof result === "object" && "ok" in result && result.ok === false) process.exit(1);
 }
 
 // Flags that take no value; the word after them is positional, unless it is

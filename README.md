@@ -55,6 +55,9 @@ daemon/
                     each typed secret kept only as its kind
   replay.ts         a recording done again in a background tab, each step's
                     target found by its fingerprint
+  playbooks.ts      opt-in agent runs stored as verified, parameterized
+                    recordings; Jev chooses, replay checks live targets and
+                    stops before any approval or sign-in boundary
   save.ts           save on extract, snapshot, eval, and fetch: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
@@ -326,6 +329,39 @@ the page and alerts the user's phone when it changes. A script (`--script
 what it prints goes to the user's phone; `run --dry` gives it `DRY = true`
 and sends nothing. `--on YYYY-MM-DD` runs any routine once, on that day.
 Output goes to `~/Library/Logs/safari-harness/routines/`.
+
+### Verified agent playbooks
+
+An agent can opt in before a task on its own background tab. It declares a
+generic goal, parameter names and a start check. Only successful supported
+actions become steps. An observed end check is required before storage.
+
+```
+safari playbooks learn --tab N --goal "Search the catalog" --params '["q"]' --before '{"selector":"#search"}'
+# Do the authorized task with type/click/select/press/goto.
+safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+safari playbooks list
+safari playbooks run --url https://example.com/ --goal "Search the catalog" --vars '{"q":"shoes"}'
+```
+
+The existing recordings folder holds these playbooks. Input values, page
+titles, surrounding page text and URL query/fragment values are not kept.
+Use only generic control labels, public paths and structural checks.
+Private or secret-bearing tasks are not suitable for learning.
+
+Fixed validation filters candidates by the exact page and parameter names.
+The installed `jev` client chooses one or abstains. Parameter values never
+go to Jev. A choice is not approval: replay checks the start and end, finds
+each control again, and stops on drift, ambiguity, changed fields, bot
+checks and send/spend/delete/stop/account/sign-in boundaries. It leaves a
+stopped tab open for manual review. There is no approval flag bypass.
+
+`safari playbooks cancel --tab N` discards an unfinished learn session.
+Learning expires after 30 minutes. Arbitrary JS, real input, frames, shadow
+controls, append typing and helpers that hide their actions cannot be
+learned. Use the normal agent when the tool abstains or stops. No browser
+listener, automatic retry, routine or background learning is installed.
+
 
 ### MCP
 
