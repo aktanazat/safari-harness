@@ -249,6 +249,17 @@ new one once and runs the call again. A call waits at most 120 s; MCP
 clients may cut one at 60 s, so split long waits across calls. `safari
 guide repl` has the whole API and what to do when a run goes wrong.
 
+From a shell, pass a script with `safari repl --session <name> --file
+/absolute/script.js`. The REPL provides `fs` and `path`; it does not provide
+`require`, `process` or `Bun`. Page globals belong in `page.evaluate`, not
+in the script's outer environment.
+
+For a long listing task, process bounded groups and save completed rows with
+`fs.writeFile` after each group. Keep each item's own price and availability
+separate from recommendations elsewhere on the page. Missing primary facts
+stay unknown. A timeout can leave code running: preserve completed evidence
+and resolve the original run before dispatching the same work again.
+
 ## Several steps in one call
 
 `run` checks every step's tool, parameter names, and required arguments
@@ -1191,6 +1202,17 @@ unique target and checks its current field/link facts before acting. It
 stops on drift, ambiguity, unkept input, a bot check or a missing end
 condition. Success includes `verified: true`; a stopped replay leaves its
 tab open and says why.
+
+If the task already selected a saved learned playbook, use
+`replay {name, vars: {q: "shoes"}}` directly instead of asking Jev to choose
+again. The same learned-recording validation, live checks, gates and end
+condition still apply. Require both `ok: true` and `verified: true` in the
+final receipt; an ordinary toolbar recording has no learned end condition.
+
+Do not treat fewer outer requests as a speed, cost or memory result. A
+workflow comparison must include selection, actions, final checks and
+owned cleanup. Existing scripts remain the right tool for flows that
+cannot be learned.
 
 Send, spend, delete, stop, account-setting, sign-in, secret, submit and
 Enter boundaries stop before their step with `gate`. No `approved` flag

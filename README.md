@@ -356,6 +356,16 @@ each control again, and stops on drift, ambiguity, changed fields, bot
 checks and send/spend/delete/stop/account/sign-in boundaries. It leaves a
 stopped tab open for manual review. There is no approval flag bypass.
 
+When the task already names a learned playbook, use
+`safari replay <name> --vars '{"q":"shoes"}' --json`. This skips Jev's
+selection, not the recording validation, live checks, end check or approval
+gates. Check `ok: true` and `verified: true` before calling the learned task
+complete. An ordinary toolbar recording does not have that learned end check.
+
+Fewer outer tool requests are not proof of faster completion, lower cost or
+lower memory use. Include selection, replay, final checks and cleanup when
+comparing workflows.
+
 `safari playbooks cancel --tab N` discards an unfinished learn session.
 Learning expires after 30 minutes. Arbitrary JS, real input, frames, shadow
 controls, append typing and helpers that hide their actions cannot be
