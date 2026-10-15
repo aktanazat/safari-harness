@@ -118,12 +118,11 @@ const open = async () => {
   return t.id;
 };
 
-// Once the agent exits, its window's page closes; a watch left running would
-// outlive this file.
+// Exit alone is not task authority, and a kept page retains its window.
 afterAll(async () => {
-  const page = [...tabs.values()].find((t) => t.url.includes("/space?"));
   agent.kill();
-  if (page) await askedToClose(page.id);
+  await agent.exited;
+  await endTurn(agent.pid);
 });
 
 // A daemon left with the ids from before the deploy lists the agent's tabs

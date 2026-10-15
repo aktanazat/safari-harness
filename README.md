@@ -117,8 +117,8 @@ docs/REFERENCE.md   every tool in full (`safari guide reference`)
 docs/sites/         one note per site (`safari guide <site>`)
 bench/              the WebKit bench's rows for content.js, one page per
                     behavior in fixtures/ (see Tests)
-omp/index.ts        omp extension: tells the daemon as each turn ends, which
-                    closes the tabs the turn opened
+omp/index.ts        omp extension: releases disposable pages only through
+                    the owning runtime's current task/job/input authority
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -155,13 +155,26 @@ carry a password.
 | Port  | What |
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
-| 37334 | HTTP: `POST /rpc {tool,args}`, `GET /health`, `POST /turn-end {owner}`, `POST /shutdown` |
+| 37334 | HTTP: `POST /rpc {tool,args}`, `GET /health`, `POST /turn-end/prepare {owner}`, `POST /turn-end {owner,prepared}`, `POST /shutdown` |
 
 Both ports refuse any request that carries a web page's `Origin` header (403),
 because a web page can send requests to localhost too. Local clients such as
 the CLI, the MCP server and CDP tools send no `Origin`. Only the extension's
 `safari-web-extension://` origin may take the `/` extension socket, and only
 the bridge's extension origin may take `/passwords`.
+
+`turn-end/prepare` drains the owner's active calls and returns exact owned
+tab IDs with a call-generation token; it never closes a page. Only the
+runtime's committed release may submit that preparation to `turn-end`.
+An intervening owner call invalidates it. Missing preparations are rejected,
+and an unknown task, job, queued input or handoff remains protected.
+`agent_end`, exit, elapsed time and tab limits are not cleanup authority.
+
+The extension returns from the tracked `agent_end` hook before awaiting the
+runtime's full idle barrier, then rechecks authority for the original task
+identity. Hook return is not a physical-cleanup receipt. The owning runtime
+awaits external release and holds newly admitted input dispatch only after
+commit. An older runtime without this interface leaves resources open.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 `SAFARI_HARNESS_HTTP` (CLI/MCP). The extension reads `daemonPort` from
@@ -206,14 +219,32 @@ A deploy restarts only what changed. When the daemon's code differs from
 the running daemon's (`code` in `safari status --json`), the daemon stops
 taking calls, finishes the ones in flight, and exits; launchd starts the
 new one, and calls made meanwhile wait for it. If the new one does not
-come up, the previous release is put back. When the extension or the app
-changed, the app is installed over `/Applications` and Safari reloads the
+come up, checkpoint compatibility gates the fallback below. When the
+extension or the app changed, the app is installed over `/Applications`
+and Safari reloads the
 extension, which gives every tab a new id; the extension maps the ids
 agents hold to the new ones and tells the daemon, so each agent keeps its
 tabs. An agent session keeps its MCP server's code, and omp's extension,
 until it restarts.
 
-`scripts/dev-install.sh --rollback` goes back to the release before;
+`scripts/dev-install.sh --rollback` selects the previous release only when
+its reader supports the current writer's checkpoint format. Version-2
+checkpoints preserve dirty, held, foreign and resume metadata; the legacy
+flat-map reader cannot consume them. A downgrade to that reader is refused
+before changing the app, release link or daemon. Do not invoke an older
+release's unguarded installer to bypass this boundary.
+
+Before switching releases the installer snapshots the two existing
+checkpoints for its HTTP port, byte-for-byte, in a private temporary backup.
+On failed startup it stops the sole managed daemon before restoring or
+switching anything. A compatible fallback retains the newest state. A
+legacy fallback is allowed only if both checkpoints are unchanged since
+the snapshot; it restores those exact bytes and permissions before starting
+the old release. New files or changed metadata block fallback, retain the
+backup and current state, and leave the current release selected. No
+automatic downgrade or stale-state overwrite is attempted. Failed
+installations print the retained backup path; successful ones delete it.
+
 `~/.local/share/safari-harness/deploys.log` lists every deploy. The five
 latest releases stay, and any that was in use in the past week.
 

@@ -14,8 +14,8 @@
 #   - The daemon, when what it runs (daemon/codehash.ts) differs from what
 #     the running daemon reports, or its launchd job runs something else.
 #     It finishes its calls in flight first, and calls that arrive meanwhile
-#     wait for the new daemon (rpc.ts). If the new daemon does not answer,
-#     the previous release is put back.
+#     wait for the new daemon (rpc.ts). A failed start can return to the
+#     previous release only without losing newer checkpoint metadata.
 #   - The app and extension, when extension/ or "Safari Harness/" differ
 #     from the installed ones, or the extension is not connected. Safari
 #     reloads the extension, which reconnects to the daemon. Safari gives
@@ -41,6 +41,7 @@ JOBS="$HOME/Library/LaunchAgents"
 DAEMON=at.aktan.safari-harness.daemon
 MCP="$HOME/.omp/agent/mcp.json"
 EXTENSIONS="$HOME/.omp/agent/extensions"
+CHECKPOINTS="$ROOT/scripts/deploy-checkpoints.ts"
 # releases kept besides the current one, however old
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
@@ -95,8 +96,8 @@ helpers() {
 }
 
 # restart WHY: stops the daemon once its calls in flight finish and starts
-# the current release's; a new daemon that does not answer puts the
-# previous release back
+# the current release's. A fallback first stops that sole job, then either
+# retains compatible state or restores an unchanged pre-start snapshot.
 restart() {
   local old pid busy i
   old="$(health .pid)"
@@ -122,17 +123,29 @@ restart() {
   echo "daemon: no daemon of release $sha answered within 90 s; see ~/Library/Logs/safari-harness/daemon.log" >&2
   if [ -n "$before" ] && [ "$before" != "releases/$sha" ]; then
     local back="${before#releases/}"
-    before="releases/$sha"
-    point "$back"
-    launchctl kickstart -k "gui/$(id -u)/$DAEMON" >/dev/null 2>&1 || true
-    echo "put back release $back" >&2
+    if launchctl bootout "gui/$(id -u)/$DAEMON"; then
+      if bun "$CHECKPOINTS" restore "$DATA" "$BASE" "$checkpoint" "$RELEASES/$back" "$REL"; then
+        before="releases/$sha"
+        point "$back"
+        launchctl bootstrap "gui/$(id -u)" "$JOBS/$DAEMON.plist"
+        echo "put back release $back with compatible checkpoints" >&2
+      else
+        # The new checkpoint remains the sole state. Never start a legacy
+        # reader against it or discard changes made during failed startup.
+        launchctl bootstrap "gui/$(id -u)" "$JOBS/$DAEMON.plist"
+        echo "fallback blocked; current release and checkpoint bytes retained" >&2
+      fi
+    else
+      echo "could not stop the sole daemon; no checkpoint or release restored" >&2
+    fi
   fi
   exit 1
 }
 
 until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 tmp=""
-trap '[ -z "$tmp" ] || trash "$tmp"; rmdir "$LOCK"' EXIT
+checkpoint=""
+trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rmdir "$LOCK"' EXIT
 mkdir -p "$RELEASES"
 before="$(readlink "$CURRENT" 2>/dev/null || true)"
 
@@ -159,6 +172,13 @@ else
   fi
 fi
 REL="$RELEASES/$sha"
+
+# Refuse a manual downgrade before changing the app, links or daemon.
+# Checking the current writer as well as the files prevents a race with
+# its first version-2 write while the installer builds the app.
+previous="$CURRENT"
+[ -f "$previous/package.json" ] || previous="$REL"
+bun "$CHECKPOINTS" check "$DATA" "$BASE" "$previous" "$REL"
 
 # The app is built before anything changes, so a failed build changes nothing.
 key="$(cat "$REL/.extension")"
@@ -199,13 +219,14 @@ if [ -n "$found" ]; then
   [ -z "$left" ] || { echo "still registered, so Safari turns the extension off when it next starts:" >&2; sed 's/^/  /' <<<"$left" >&2; }
 fi
 
+checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
 point "$sha"
 echo "current: release $sha"
 [ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
 [ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
   echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
-# omp tells the daemon as each turn ends, which closes the tabs of the turn
-# (omp/index.ts); a session loads it as it starts
+# New omp sessions load the runtime-authorized release hook. Existing
+# sessions keep their loaded hook; agent_end alone is not task authority.
 [ ! -d "$EXTENSIONS" ] || [ "$(readlink "$EXTENSIONS/safari-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/safari-harness"
 for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
   [ -f "$plist" ] || continue
@@ -254,6 +275,8 @@ else
 fi
 
 [ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what" >>"$DATA/deploys.log"
+bun "$CHECKPOINTS" discard "$DATA" "$BASE" "$checkpoint"
+checkpoint=""
 
 # Kept: the current release, the newest KEEP others, any current in the
 # last week (an agent session's MCP server may still run it), and the one

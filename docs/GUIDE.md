@@ -13,10 +13,33 @@ Tabs
   what one call binds, your next reads. Keep one `--session` name for a
   task apart, even after "that tab is gone" (`openTab` again in it);
   `openTab` and a new session name what you already hold.
-- Your tabs close when your turn ends or after 20 minutes unused; your next
-  call on one opens its page again, fresh, and an action there asks you to
-  snapshot first. `keep` one that waits on him, or that you need after a
-  long step.
+- The owning OMP runtime authorizes cleanup from its current task, jobs,
+  admitted inputs and handoff state. An ended answer, cancellation, process
+  exit, page age or tab count is not completion. Older runtimes without this
+  authority leave pages open.
+- Cleanup first drains active calls without closing anything. The runtime
+  rechecks eligibility, then Safari checks the exact prepared tab IDs and
+  call generation before awaiting physical closure. New work invalidates
+  preparation; input after release is committed waits until release settles.
+- Kept pages, changed pages (including script actions), site sessions,
+  pending handoffs, unsent forms and your front tab stay open. Explicitly
+  `close` a changed page only when its work is safe to discard; `keep` a page
+  intended for the user. A protected or foreign tab also keeps its window
+  intact; cleanup does not move it to make a group deletable.
+- An ordinary HTTP(S) address can open again on your next read, even after
+  the daemon restarts. Concurrent reads open it once. This is a fresh page,
+  not restored form or script state. Snapshot it before an action; script
+  actions and state-changing requests are never replayed automatically.
+  Addresses with a query, fragment, userinfo or known secret path stay live.
+  The checkpoint saves addresses and protection flags, never form values
+  or credentials. An unknown or uninspectable page is not cleanup's to close.
+- A disconnected or refused cleanup leaves ownership recorded for the next
+  admitted attempt, not a delayed release after task authority expires.
+  A cancelled or failed task can release disposable resources only through
+  the same gate, without being reported as completed.
+- A daemon restart restores tab and window ownership, never a saved
+  cleanup permission. Pending window records remain intact until the
+  current owning runtime admits release again.
 - When a call says he paused or stopped you, do what it says.
 
 Turns

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, jest, mock, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -9,7 +9,8 @@ import { HANDOFF_TOOLS } from "./handoff.ts";
 import * as phone from "./phone.ts";
 import * as daemonRpc from "./rpc.ts";
 import * as telegram from "./telegram.ts";
-import { callTool } from "./tools.ts";
+import { callTool, endTurn, loadTabs } from "./tools.ts";
+import { runAs } from "./owner.ts";
 
 // handoff gives the user the tab for a step only they can take. The daemon's
 // half raises the tab with a notice, looks at the page once a second, and
@@ -20,7 +21,7 @@ import { callTool } from "./tools.ts";
 // made has been taken up.
 
 type Page = { url: string; check?: "box" | "block" | "wall"; text?: string };
-type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; use(tab: number): void };
+type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; use(tab: number): void };
 const MAIL = "com.apple.mail";
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
@@ -35,12 +36,18 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAY
 function mac(tab: number, page: Page): Mac {
   const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
   let shown = 1;
-  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
+  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], closed: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
       const answer = (reply: { value: unknown } | { error: string }) => queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
       if (op === "tabs.list") return answer({ value: tabs.map((t) => ({ ...t, url: t.id === tab ? page.url : t.url, ...(t.windowId === 1 ? { front: true } : {}), ...(t.windowId === shown ? { shown: true } : {}) })) });
+      if (op === "tabs.close") {
+        const index = tabs.findIndex(t => t.id === args[0]);
+        if (index >= 0) tabs.splice(index, 1);
+        m.closed.push(args[0]);
+        return answer({ value: { ok: true } });
+      }
       if (op === "tabs.activate") {
         m.activated.push(args[0]);
         m.use(args[0]);
@@ -91,6 +98,7 @@ const waits = (why: string) => (a: Args) => a.why === why && Number(a.ms) > 0 &&
 
 const away = process.env.SAFARI_HARNESS_AWAY;
 let dir = "";
+let checkpointDir: string | undefined;
 beforeEach(() => {
   jest.useFakeTimers();
   process.env.SAFARI_HARNESS_AWAY = "0";
@@ -112,6 +120,7 @@ afterEach(() => {
 afterAll(() => {
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
+  if (checkpointDir) rmSync(checkpointDir, { recursive: true, force: true });
 });
 
 const handoff = (tab: number, why: string, ms = 10000) => HANDOFF_TOOLS.handoff.run({ tab, why, ms });
@@ -131,6 +140,26 @@ test("a second handoff of the tab joins the first: one notice, and both return o
   expect(await first).toMatchObject({ done: true });
   expect(await again).toMatchObject({ done: true, joined: true });
   expect(m.notices).toEqual(["Clear the check on shop.example"]);
+});
+
+test("completion preserves a pending human handoff and closes it only after the user finishes", async () => {
+  const tab = 30001;
+  const page: Page = { url: "https://fixture.example/handoff", check: "box" };
+  const m = mac(tab, page);
+  const build = join(import.meta.dir, "../.build");
+  mkdirSync(build, { recursive: true });
+  checkpointDir = mkdtempSync(join(build, "handoff-state-"));
+  const checkpoint = join(checkpointDir, "tabs.json");
+  writeFileSync(checkpoint, JSON.stringify({ [tab]: { owner: process.pid, used: Date.now() } }));
+  loadTabs(checkpoint);
+  const handoff = await runAs(process.pid, () => callTool("handoff_wait", { tab, why: "Finish the fixture check", ms: 0, away: true }));
+  expect(handoff).toMatchObject({ done: false });
+  await endTurn(process.pid);
+  expect(m.closed).not.toContain(tab);
+  page.check = undefined;
+  await tick();
+  await endTurn(process.pid);
+  expect(m.closed).toContain(tab);
 });
 
 test.each([

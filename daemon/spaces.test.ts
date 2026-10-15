@@ -1,12 +1,12 @@
 import { afterAll, expect, setSystemTime, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
-import { runAs, watchOwner } from "./owner.ts";
-import { spaceTool } from "./spaces.ts";
+import { runAs } from "./owner.ts";
+import { spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -166,15 +166,25 @@ test("each agent's tabs open in a window of its own, never the user's, and a tas
   b.kill();
 });
 
-test("when an agent exits its window's page closes, and a tab it opened for the user stays", async () => {
+test("an exited agent's kept page and window remain intact without disposable completion authority", async () => {
   const s = safari();
   const c = agent();
   const his = await runAs(c.pid, () => openTab("https://hotel.example/booking", false));
   const page = pageIn(s.tabs, his.windowId)!;
   c.kill();
-  await until(() => s.closed.includes(page.id));
+  await c.exited;
+  await turnEnded(c.pid);
   expect(s.tabs.has(his.id)).toBe(true);
-  expect(s.closed).not.toContain(his.id);
+  expect(s.closed.filter(tab => tab === page.id || tab === his.id)).toEqual([]);
+});
+
+test("a copied marker URL does not authorize adopting or deleting an unknown group", async () => {
+  const s = safari();
+  const copied = { id: next++, url: `http://127.0.0.1:37334/space?title=foreign&owner=999999&id=unregistered`, windowId: next++, active: true };
+  s.tabs.set(copied.id, copied);
+  expect(await spaceTool({ op: "release", name: "foreign (agent 999999)" })).toEqual({ ok: false });
+  expect(s.tabs.get(copied.id)).toEqual(copied);
+  expect(s.closed).toEqual([]);
 });
 
 // 09-30: the windows of agents the user had stopped stayed open, each with
@@ -262,7 +272,7 @@ test("a window that stays plain says why once to its agent, not on its later ope
 // A deploy reloads the extension, and Safari renumbers every window: before,
 // the agent's next tab went into a second window, and the first one's page
 // stayed open for good.
-test("after an extension reload an agent's next tab joins the window it had, whose page still closes when it exits", async () => {
+test("after an extension reload an agent rejoins its old window, which closes after admitted empty cleanup", async () => {
   const s = safari();
   const e = agent();
   const first = await runAs(e.pid, () => openTab("https://e.example/1", true));
@@ -272,6 +282,9 @@ test("after an extension reload an agent's next tab joins the window it had, who
   expect(next.windowId).toBe(window);
   const page = pageIn(s.tabs, window)!;
   e.kill();
+  await callTool("close", { tab: first.id });
+  await callTool("close", { tab: next.id });
+  await turnEnded(e.pid);
   await until(() => s.closed.includes(page.id));
 });
 
@@ -279,7 +292,7 @@ test("after an extension reload an agent's next tab joins the window it had, who
 // extension started again: their tabs stayed behind in windows no one
 // owned, and each agent's next tab opened another window. The tech-week
 // sign-up agent went through five windows in two hours.
-test("after Safari starts again an agent's next tab joins the window it had, whose page still closes when it exits", async () => {
+test("after Safari starts again an agent rejoins its old window, which closes after admitted empty cleanup", async () => {
   const s = safari();
   const r = agent();
   const first = await runAs(r.pid, () => openTab("https://r.example/1", true));
@@ -289,13 +302,15 @@ test("after Safari starts again an agent's next tab joins the window it had, who
   const next = await runAs(r.pid, () => openTab("https://r.example/2", true));
   expect(next.windowId).toBe(page.windowId);
   r.kill();
+  for (const t of [...s.tabs.values()]) if (t.windowId === next.windowId && !t.url.includes("/space?")) await callTool("close", { tab: t.id });
+  await turnEnded(r.pid);
   await until(() => s.closed.includes(page.id));
 });
 
 // 10-05: three restarts of Safari each left one agent's tabs behind, under
 // new ids no one owned, in windows that read as the user's: 22 by the
 // afternoon, closed only by hand.
-test("after Safari starts again the tabs it restored stay their agents': they close as their agent exits, and its next open on the site loads in one", async () => {
+test("restored tabs retain exact ownership across admitted cleanup and later model reuse", async () => {
   const s = safari();
   const [r, q] = [agent(), agent()];
   const open = async (who: Bun.Subprocess, url: string) => {
@@ -313,16 +328,18 @@ test("after Safari starts again the tabs it restored stay their agents': they cl
   const now = (url: string) => [...s.tabs.values()].find((t) => t.url === url)!.id;
   const [mine, theirs] = [now("https://r.example/1"), now("https://q.example/1")];
   q.kill();
+  await endTurn(q.pid);
   await until(() => s.closed.includes(theirs));
   expect(await open(r, "https://r.example/2")).toBe(mine);
   expect(s.closed).not.toContain(mine);
   r.kill();
+  await endTurn(r.pid);
   await until(() => s.closed.includes(mine));
 });
 
-// Deleting a tab group closes its tabs: a tab the agent opened for the user
-// has to leave the group's window first, and the page stays for the delete.
-test("when a task whose window is a tab group ends, a tab it opened for the user moves out to a window of its own", async () => {
+// A kept page blocks group deletion. Cleanup cannot move protected or
+// foreign tabs merely to make the remaining window disposable.
+test("a grouped window containing a kept page remains intact and cannot be adopted for deletion", async () => {
   const s = safari();
   const g = agent();
   const his = await runAs(g.pid, () => openTab("https://hotel.example/booking", false, "trip"));
@@ -330,19 +347,15 @@ test("when a task whose window is a tab group ends, a tab it opened for the user
   expect(his.space).toEqual({ name: `trip (agent ${g.pid})`, group: "waiting" });
   await spaceTool({ op: "grouped", name });
   const page = pageIn(s.tabs, his.windowId)!;
-  const marker = Bun.spawnSync(["true"]).pid;
   g.kill();
   await g.exited;
-  // one owner sweep calls the watches in turn: the window's came first
-  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  await turnEnded(g.pid);
   const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
-  expect(spaces.filter((x) => x.name === name)).toMatchObject([{ ended: true }]);
-  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 1, left: 0 });
-  const moved = s.tabs.get(his.id)!.windowId;
-  expect([moved === his.windowId, moved === 1]).toEqual([false, false]);
+  expect(spaces.filter((x) => x.name === name)).toMatchObject([{ ended: false }]);
+  expect(await spaceTool({ op: "release", name })).toEqual({ ok: false });
+  expect(s.tabs.get(his.id)!.windowId).toBe(his.windowId!);
   expect(s.closed).not.toContain(page.id);
   expect(s.tabs.get(page.id)!.windowId).toBe(his.windowId!);
-  await spaceTool({ op: "gone", name });
 });
 
 // 10-07: agent 1431's two groups stood in windows it had sized to 390
@@ -356,10 +369,10 @@ test("an ended group's window its agent sized as narrow as a phone goes back to 
   await spaceTool({ op: "grouped", name });
   await runAs(g.pid, () => callTool("window", { tab: t.id, width: 390, height: 844 }));
   const page = pageIn(s.tabs, t.windowId)!;
-  const marker = Bun.spawnSync(["true"]).pid;
   g.kill();
   await g.exited;
-  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  await callTool("close", { tab: t.id });
+  await turnEnded(g.pid);
   const released = (await spaceTool({ op: "release", name })) as { width: number };
   expect(released.width).toBeGreaterThanOrEqual(1000);
   expect(s.sized.at(-1)).toEqual({ tab: page.id, whole: true });
@@ -369,18 +382,19 @@ test("an ended group's window its agent sized as narrow as a phone goes back to 
 // An agent that finishes in a second exits while the keeper makes its
 // window's group: before, the daemon closed the window under the steps, and
 // a group named for the task, or Untitled, stayed in the sidebar.
-test("a window whose agent exits while its group is being made stays until the keeper says how that went", async () => {
+test("an admitted empty cleanup during group creation waits for the keeper's result", async () => {
   const s = safari();
   const [g, p] = [agent(), agent()];
   const made = await runAs(g.pid, () => openTab("https://made.example/", true, "made"));
   const failed = await runAs(p.pid, () => openTab("https://failed.example/", true, "failed"));
   const pages = [made, failed].map((t) => pageIn(s.tabs, t.windowId)!.id);
   for (const t of [made, failed]) expect(await spaceTool({ op: "making", name: t.space.name })).toEqual({ ok: true });
-  const marker = Bun.spawnSync(["true"]).pid;
   g.kill();
   p.kill();
   await Promise.all([g.exited, p.exited]);
-  await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+  await callTool("close", { tab: made.id });
+  await callTool("close", { tab: failed.id });
+  await Promise.all([turnEnded(g.pid), turnEnded(p.pid)]);
   expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false]);
   await spaceTool({ op: "grouped", name: made.space.name });
   await spaceTool({ op: "plain", name: failed.space.name, why: "the new group took no name" });
@@ -405,6 +419,8 @@ test("the extension hears a window's tab group is being made from making until t
   expect([...s.regrouping]).toEqual([]);
   const page = pageIn(s.tabs, t.windowId)!;
   g.kill();
+  await callTool("close", { tab: t.id });
+  await turnEnded(g.pid);
   await until(() => s.closed.includes(page.id));
 });
 
@@ -436,20 +452,57 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   const after = await runAs(q.pid, () => restarted.spaceWindow());
   expect(after.window).toBe(before.window);
   q.kill();
+  await Promise.all([first.turnEnded(q.pid), restarted.turnEnded(q.pid)]);
   // Both have saved by the time the page closes, before the folder goes.
   await until(() => !pageIn(s.tabs, before.window));
 });
 
-// 10-04: agent 50573's window had stood on "Not tracked" since 10-02, its
-// agent long gone. The daemon had lost its record of the window, and
-// nothing else closes one.
-test("a restarted daemon closes the page of an agent window it holds no record of", async () => {
+test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent retains ownership but requires fresh runtime admission", async phase => {
+  const s = safari();
+  const q = agent();
+  const path = join(dir, `admission-${phase}.json`);
+  const first = await daemonOn(47343, `before-${phase}`);
+  const restarted = await daemonOn(47343, `after-${phase}`);
+  try {
+    first.loadSpaces(path);
+    const owned = await runAs(q.pid, () => first.spaceWindow());
+    const page = pageIn(s.tabs, owned.window)!;
+    const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
+    const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
+    writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
+    restarted.loadSpaces(path);
+    await restarted.turnEnded(q.pid + 1);
+    expect(s.tabs.has(page.id)).toBe(true);
+    expect(s.closed).not.toContain(page.id);
+    expect(await restarted.spaceTool({ op: "release", name: owned.name })).toEqual({ ok: false });
+    const retained = JSON.parse(readFileSync(path, "utf8")) as Record<typeof phase, Spaces.Space[]>;
+    const expected: Spaces.Space = { ...record };
+    delete expected.done;
+    expect(retained[phase]).toStrictEqual([expected]);
+    await restarted.turnEnded(q.pid);
+    if (phase === "closing") {
+      expect(await restarted.spaceTool({ op: "release", name: owned.name })).toMatchObject({ ok: true, left: 0 });
+      restarted.turnResumed(q.pid);
+      expect(await restarted.spaceTool({ op: "release", name: owned.name })).toEqual({ ok: false });
+      expect(s.tabs.has(page.id)).toBe(true);
+    } else {
+      expect(s.tabs.has(page.id)).toBe(false);
+    }
+  } finally {
+    q.kill();
+    await q.exited;
+  }
+});
+
+// A page address is not ownership evidence: a user can copy the same link.
+test("a restarted daemon leaves a window page it has no durable ownership record for", async () => {
   const s = safari();
   const daemon = await daemonOn(47341, "lost");
   s.tabs.set(900, { id: 900, url: "http://127.0.0.1:47341/space?id=gone&name=agent%2050573&size=1100x800", windowId: 901, active: true });
   daemon.loadSpaces(join(dir, "lost.json"));
-  await until(() => s.closed.includes(900), 8000);
-}, 15_000);
+  await daemon.turnEnded(process.pid);
+  expect({ retained: s.tabs.has(900), closed: s.closed }).toEqual({ retained: true, closed: [] });
+});
 
 test("a restarted daemon leaves a page the user opened from the agents list, and a group's window still queued for the keeper", async () => {
   const s = safari();
@@ -462,8 +515,9 @@ test("a restarted daemon leaves a page the user opened from the agents list, and
     // A lost window's, last: once it closes, the pass has looked at the others.
     page(913, "id=lost&name=agent%204243&size=1101x800", 914);
     daemon.loadSpaces(join(dir, "kept.json"));
-    await until(() => s.closed.includes(913), 8000);
-    expect(s.closed).toEqual([913]);
+    await daemon.turnEnded(process.pid);
+    expect(s.closed).toEqual([]);
+    expect([910, 911, 913].map(id => s.tabs.has(id))).toEqual([true, true, true]);
   } finally {
     changeQueue((q) => delete q["trip (agent 4242)"]);
   }
@@ -494,7 +548,7 @@ test("the tab group keeper's questions ask nothing of a quit Safari", async () =
 
 // He quit Safari: asking it anything would start it again. An exited
 // agent's page then waits, unasked, for the extension to come back.
-test("an agent's exit asks nothing of a quit Safari, and its window's page closes once Safari is back", async () => {
+test("an agent exit with Safari disconnected preserves its protected window and page after reconnect", async () => {
   const s = safari();
   const f = agent();
   const first = await runAs(f.pid, () => openTab("https://f.example/1", true));
@@ -507,17 +561,14 @@ test("an agent's exit asks nothing of a quit Safari, and its window's page close
     return Promise.reject(new Error("Safari is quit"));
   };
   try {
-    const marker = Bun.spawnSync(["true"]).pid;
     f.kill();
-    // one owner sweep calls the watches in turn: the window's came first
-    await new Promise<void>((resolve) => { const stop = watchOwner(marker, () => { stop(); resolve(); }); });
+    await turnEnded(f.pid);
     expect(asked).toEqual([]);
   } finally {
     bridge.request = request;
     connect(s.sock);
   }
-  // The next space sweep closes it, within 5 s on the real clock: the sweep
-  // runs on an interval the first open of this file started, before any fake
-  // clock could take it over.
-  await until(() => s.closed.includes(page.id), 8000);
+  await turnEnded(f.pid);
+  expect(s.closed).not.toContain(page.id);
+  expect(s.tabs.has(first.id)).toBe(true);
 }, 15_000);

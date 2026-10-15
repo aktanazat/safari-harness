@@ -11,8 +11,8 @@
 //     /rpc           {tool,args,caller} -> {ok,value|error}   (CLI + MCP client)
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
-//     /turn-end      {owner} omp handed the turn back: close that agent's
-//                    tabs (omp/index.ts)
+//     /turn-end/prepare {owner} drain and identify exact owned resources
+//     /turn-end      {owner,prepared} release after runtime authorization
 //     /shutdown      {reason} stop once the calls in flight finish
 //     /space         the live page an agent window opens on, with its state
 //                    and controls; /agents, every agent at work (mission.ts)
@@ -20,7 +20,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
-import { TOOLS, callTool, endTurn, loadTabs } from "./tools.ts";
+import { TOOLS, callTool, endTurn, prepareTurnEnd, loadTabs, type TurnPreparation } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent } from "./journal.ts";
@@ -51,8 +51,8 @@ note("start", {
   code: CODE,
   reason: !last ? "first start" : last.kind === "stop" ? `after a stop: ${String(last.reason)}` : "the previous daemon ended without stopping (it crashed or was killed)",
 });
-// Background tabs agents opened, and the windows they opened them in, so a
-// restart still closes them (tools.ts, spaces.ts).
+// Restore ownership and protection metadata, not prior cleanup permission.
+// The current owning runtime must admit release (tools.ts, spaces.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
 loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`));
 // The extension reports every load in its owned tabs (bridge.ts), including
@@ -216,14 +216,24 @@ const rpcServer = Bun.serve({
         if (--inFlight === 0) for (const wake of idle) wake();
       }
     }
-    // An omp turn ended (omp/index.ts), and with it its agent's use of the
-    // tabs it opened. omp's own pid names it: its tabs are those of its
-    // children (owner.ts).
-    if (url.pathname === "/turn-end" && req.method === "POST") {
-      const owner = safeParse(await req.text())?.owner;
+    // The owning runtime drains first, rechecks canonical task/job/input
+    // authority, then commits these exact resources. A legacy turn-end
+    // request without a preparation cannot establish that authority.
+    if ((url.pathname === "/turn-end/prepare" || url.pathname === "/turn-end") && req.method === "POST") {
+      const body = safeParse(await req.text());
+      const owner = body?.owner;
       if (!Number.isInteger(owner) || Number(owner) <= 1) return Response.json({ ok: false, error: "owner must be a process id" }, { status: 400 });
-      endTurn(Number(owner));
-      return Response.json({ ok: true });
+      inFlight++;
+      try {
+        if (url.pathname === "/turn-end/prepare") return Response.json(await prepareTurnEnd(Number(owner)));
+        const prepared = body?.prepared;
+        if (!prepared || typeof prepared !== "object" || !("owner" in prepared) || prepared.owner !== owner || !("epoch" in prepared) || typeof prepared.epoch !== "string" || !("tabs" in prepared) || !Array.isArray(prepared.tabs) || !prepared.tabs.every(tab => Number.isInteger(tab) && tab > 0)) {
+          return Response.json({ ok: false, error: "a current owned-resource preparation is required" }, { status: 409 });
+        }
+        return Response.json(await endTurn(Number(owner), prepared as TurnPreparation));
+      } finally {
+        if (--inFlight === 0) for (const wake of idle) wake();
+      }
     }
     if (url.pathname === "/shutdown" && req.method === "POST") {
       const reason = safeParse(await req.text())?.reason;

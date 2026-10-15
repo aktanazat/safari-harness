@@ -116,7 +116,7 @@ export class SiteKit {
     const tabs = await Promise.allSettled(this.tabs.values());
     this.tabs.clear();
     // A tab already gone needs no closing, and no new tab to close.
-    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.send("close", { tab: t.value }).catch(() => {}) : undefined)));
+    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.send("close", { tab: t.value, held: true }).catch(() => {}) : undefined)));
   }
 }
 
