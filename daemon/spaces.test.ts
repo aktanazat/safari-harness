@@ -208,7 +208,7 @@ test("an agent whose window the user closed gets a new one on its next open", as
   const s = safari();
   const d = agent();
   const first = await runAs(d.pid, () => openTab("https://d.example/1", true));
-  for (const t of [...s.tabs.values()]) if (t.windowId === first.windowId) s.tabs.delete(t.id);
+  for (const t of s.tabs.values()) if (t.windowId === first.windowId) s.tabs.delete(t.id);
   const next = await runAs(d.pid, () => openTab("https://d.example/2", true));
   expect(next.windowId).not.toBe(first.windowId);
   expect(next.windowId).not.toBe(1);
@@ -302,7 +302,7 @@ test("after Safari starts again an agent rejoins its old window, which closes af
   const next = await runAs(r.pid, () => openTab("https://r.example/2", true));
   expect(next.windowId).toBe(page.windowId);
   r.kill();
-  for (const t of [...s.tabs.values()]) if (t.windowId === next.windowId && !t.url.includes("/space?")) await callTool("close", { tab: t.id });
+  for (const t of s.tabs.values()) if (t.windowId === next.windowId && !t.url.includes("/space?")) await callTool("close", { tab: t.id });
   await turnEnded(r.pid);
   await until(() => s.closed.includes(page.id));
 });
