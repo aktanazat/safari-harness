@@ -26,6 +26,10 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   history: always,
   upload: (a) => a.find === undefined,
   eval: always,
+  fetch: (a) => {
+    const method = String(a.method ?? "GET").toUpperCase();
+    return a.body !== undefined || (method !== "GET" && method !== "HEAD");
+  },
   scroll: always,
   login_fill: always,
   card_fill: always,

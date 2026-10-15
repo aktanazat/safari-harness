@@ -66,7 +66,7 @@ class Clock {
 // copy of content.js ran, and does answers each; a held document (a dialog
 // open on it) answers nothing.
 class Doc {
-  readonly world: Record<string, unknown> = {};
+  readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] } };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
@@ -97,6 +97,7 @@ async function start() {
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number]>();
+  const heldCloses = new Set<number>();
   const hook = () => new Hook<unknown[]>();
   // Safari's storage areas keep what is put in them: session storage while
   // it runs (a recording lives there between steps), local storage past a
@@ -184,6 +185,7 @@ async function start() {
         return row(tab);
       },
       remove: async (id: number) => {
+        if (heldCloses.has(id)) return never();
         tabs.delete(tabOf(id).id);
         onRemoved.fire(id);
       },
@@ -384,6 +386,7 @@ async function start() {
     own(tab: Tab) {
       return session.set({ [`dialogs:${tab.id}`]: { accept: false, text: null } });
     },
+    holdClose(tab: Tab) { heldCloses.add(tab.id); },
     close(tab: Tab) {
       tabs.delete(tab.id);
       onRemoved.fire(tab.id);
@@ -1125,7 +1128,7 @@ test("clearing a page's storage deletes every cookie its script reads, whatever 
 
 // 10-05: an OAuth consent tab an agent raised in its own window closed as
 // its turn ended, while he was authorizing in it (01a10ea8).
-test("an idle close leaves an agent's tab he has in front, and takes it once he is in another window", async () => {
+test.each(["idle", "owned"])("an %s close leaves an agent's tab he has in front, and takes it once he is in another window", async (only) => {
   const b = await start();
   const his = b.open("https://example.org/");
   b.focus(his);
@@ -1136,10 +1139,50 @@ test("an idle close leaves an agent's tab he has in front, and takes it once he 
   await b.own(consent);
   b.focus(consent);
   await b.clock.advance(0);
-  expect(await b.request("tabs.close", [consent.id, "idle"])).toEqual({ value: { ok: false, front: true } });
+  expect(await b.request("tabs.close", [consent.id, only])).toEqual({ value: { ok: false, front: true } });
   b.focus(his);
   await b.clock.advance(0);
-  expect(await b.request("tabs.close", [consent.id, "idle"])).toEqual({ value: { ok: true } });
+  expect(await b.request("tabs.close", [consent.id, only])).toEqual({ value: { ok: true } });
+});
+
+test.each([
+  ["text", { tagName: "INPUT", value: "draft", defaultValue: "" }],
+  ["textarea", { tagName: "TEXTAREA", value: "draft", defaultValue: "" }],
+  ["checkbox", { tagName: "INPUT", type: "checkbox", checked: true, defaultChecked: false }],
+  ["selection", { tagName: "SELECT", options: [{ selected: false, defaultSelected: true }, { selected: true, defaultSelected: false }] }],
+  ["editable", { isContentEditable: true, textContent: "draft" }],
+])("automatic cleanup preserves an unsent %s without returning its contents", async (_kind, field) => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/form"); await b.own(tab);
+  tab.doc.world.document = { querySelectorAll: () => [field] };
+  const result = await b.request("tabs.close", [tab.id, "owned"]);
+  const listing = await b.request("tabs.list", []);
+  expect({ result, count: (listing.value as unknown[]).length }).toEqual({ result: { value: { ok: false, protected: "form" } }, count: 1 });
+});
+
+test("automatic cleanup closes an untouched select whose browser default is its first option", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/select"); await b.own(tab);
+  tab.doc.world.document = { querySelectorAll: () => [{ tagName: "SELECT", options: [{ selected: true, defaultSelected: false }, { selected: false, defaultSelected: false }] }] };
+  expect(await b.request("tabs.close", [tab.id, "idle"])).toEqual({ value: { ok: true } });
+  expect(((await b.request("tabs.list", [])).value as unknown[]).length).toBe(0);
+});
+
+test("automatic cleanup preserves a page Safari will not let it inspect", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/blocked"); await b.own(tab);
+  tab.doc.shut = true;
+  expect(await b.request("tabs.close", [tab.id, "owned"])).toEqual({ value: { ok: false, protected: "unreadable" } });
+  expect(((await b.request("tabs.list", [])).value as unknown[]).length).toBe(1);
+});
+
+test("automatic cleanup never replaces a page with a blank page when Safari refuses its close", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/result"); await b.own(tab); b.holdClose(tab);
+  const result = b.request("tabs.close", [tab.id, "idle"]);
+  await b.clock.advance(15000);
+  expect(await result).toMatchObject({ error: expect.stringContaining("Safari did not close the tab") });
+  expect(tab.doc.url).toBe("https://fixture.example/result");
 });
 
 // 10-07: each size an agent asked for split its tab out of its window into

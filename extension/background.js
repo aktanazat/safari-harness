@@ -1007,7 +1007,26 @@ async function handle(msg) {
     case "tabs.close": {
       const [tabId, only] = args;
       if (only && !(await ownsTab(tabId))) return { ok: false };
-      if (only === "idle" && await inFront(tabId)) return { ok: false, front: true };
+      if (only && await inFront(tabId)) return { ok: false, front: true };
+      if (only) {
+        // Inspect every frame without returning a field's value. If a page
+        // cannot be inspected, automatic cleanup leaves it alone.
+        const frames = await api.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => [...window.document.querySelectorAll("input, textarea, select, [contenteditable]")].some((field) => {
+            if (field.isContentEditable) return field.textContent.trim().length > 0;
+            if (field.tagName === "SELECT") {
+              const options = [...field.options];
+              const hasDefault = options.some((option) => option.defaultSelected);
+              return options.some((option, index) => option.selected !== (hasDefault ? option.defaultSelected : index === 0 && !field.multiple));
+            }
+            if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
+            return field.value !== field.defaultValue;
+          }),
+        }).catch(() => []);
+        if (!frames.length || frames.some((frame) => typeof frame.result !== "boolean")) return { ok: false, protected: "unreadable" };
+        if (frames.some((frame) => frame.result)) return { ok: false, protected: "form" };
+      }
       // resolve once Safari has dropped the tab, so a following list omits it
       let onRemoved;
       const gone = new Promise((resolve) => {
@@ -1025,7 +1044,7 @@ async function handle(msg) {
       const within = (p, ms) => Promise.race([p, new Promise((resolve) => timers.push(setTimeout(resolve, ms, false)))]);
       try {
         if (await within(api.tabs.remove(tabId).then(() => gone), 5000)) return { ok: true };
-        if (await ownsTab(tabId)) {
+        if (!only && await ownsTab(tabId)) {
           api.tabs.update(tabId, { url: "about:blank" }).catch(() => {});
           for (let i = 0; i < 10; i++) {
             if (await within(gone, 1000)) return { ok: true };
@@ -1192,6 +1211,7 @@ async function handle(msg) {
         return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
       });
       await markAgentWindow(tab.windowId);
+      await ownTab(tab.id);
       if (size) await api.windows.update(tab.windowId, dims);
       return { windowId: tab.windowId, tabId: tab.id };
     }

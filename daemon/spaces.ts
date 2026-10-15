@@ -22,23 +22,17 @@
 // keeper missed 55 of 91 deletes as the user worked, each miss an empty
 // window left in his Safari.
 //
-// When the agent exits, when its turn ends and the window holds nothing
-// but its page, or when the window has held nothing but its page for
-// IDLE_MS, the assignment ends. A plain window's page closes: the window
-// goes with the agent's last tab (tools.ts closes them), and a tab it kept
-// stays there for the user. A group waits for the keeper, which moves
-// every tab but the page out to windows of the user's own
-// (release) and deletes the group, closing the page with it. So does a
-// window the keeper is making a group of, until it says how that went:
-// closed under its steps, the window left a group no one deleted. Only a
-// caller's own call may start a Safari the user quit (socket in bridge.ts):
-// while the extension is gone, an ended window waits for it to come back.
+// An admitted completion ends an empty owned window. A process exiting or
+// a page being old is not completion authority: background work may still
+// need its resources. A group waits for the keeper, which first moves any
+// protected tabs out before deleting it. Only a caller's own call may start
+// a Safari the user quit; ended windows wait while the extension is gone.
 // The windows are saved as they change, so a restarted daemon picks up
-// where the last left off (loadSpaces), and the page of a window no record
-// holds any more closes at the next sweep (reclaim).
+// where the last left off (loadSpaces). A page with no durable ownership
+// record is not enough evidence to close a window.
 
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
@@ -55,7 +49,7 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; emptySince?: number; done?: true; unwatch?: () => void };
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; done?: true };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -63,10 +57,6 @@ const making = new Map<string, Promise<Space>>();
 const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
-// The ids of windows being opened, whose pages show before their records.
-const opening = new Set<string>();
-
-const IDLE_MS = 2 * 60_000;
 const SWEEP_MS = 5000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
@@ -144,6 +134,7 @@ export async function spaceWindow(group?: string): Promise<Space> {
   const had = spaces.get(key);
   if (had && (await located(had)).length > 0) {
     delete had.done;
+    save();
     return had;
   }
   if (had) await end(had);
@@ -151,24 +142,17 @@ export async function spaceWindow(group?: string): Promise<Space> {
   if (!made) {
     made = (async () => {
       const id = randomUUID();
-      opening.add(id);
-      try {
-        const name = spaceName(group, owner);
-        const size = nextSize();
-        // The name and size also find the window of a group a restarted
-        // daemon no longer knows (orphaned).
-        const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-        const w = (await bridge.request("windows.open", [page, size])) as { windowId: number };
-        const off = groupsOff();
-        const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
-        spaces.set(key, space);
-        watch(space);
-        save();
-        note("window opened", { name, owner: owner ?? null });
-        return space;
-      } finally {
-        opening.delete(id);
-      }
+      const name = spaceName(group, owner);
+      const size = nextSize();
+      const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
+      const w = (await bridge.request("windows.open", [page, size])) as { windowId: number };
+      const off = groupsOff();
+      const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      spaces.set(key, space);
+      sweepSoon();
+      save();
+      note("window opened", { name, owner: owner ?? null });
+      return space;
     })();
     making.set(key, made);
     made.finally(() => making.delete(key)).catch(() => {});
@@ -176,16 +160,10 @@ export async function spaceWindow(group?: string): Promise<Space> {
   return made;
 }
 
-function watch(space: Space) {
-  if (space.owner !== undefined) space.unwatch = watchOwner(space.owner, () => void end(space).catch((e) => console.error(`[safari-harness] closing the window of ${space.key} failed:`, e)));
-  sweepSoon();
-}
 
-// The windows, saved as they change, so a restarted daemon (a deploy)
-// still knows them: an agent's next tab joins its window, the window still
-// closes when the agent exits, and the keeper still deletes its group.
-// Before, a restart left every agent window open for good.
-type Kept = Omit<Space, "unwatch" | "emptySince" | "done">;
+// A restart preserves exact window ownership, never inventing completion
+// from a process id or copied marker address.
+type Kept = Space;
 let spacesFile: string | undefined;
 
 export function loadSpaces(path: string): void {
@@ -198,19 +176,20 @@ export function loadSpaces(path: string): void {
   }
   for (const s of saved.spaces ?? []) {
     spaces.set(s.key, s);
-    watch(s);
+    sweepSoon();
   }
   for (const s of saved.closing ?? []) closing.set(s.name, s);
   for (const s of saved.ended ?? []) ended.add(s);
-  // The first sweep also closes what the last daemon lost track of.
   sweepSoon();
 }
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.why ? { why: s.why } : {}) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.why ? { why: s.why } : {}), ...(s.done ? { done: true } : {}) });
   try {
-    writeFileSync(spacesFile, JSON.stringify({ spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }));
+    const pending = `${spacesFile}.tmp`;
+    writeFileSync(pending, JSON.stringify({ spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
+    renameSync(pending, spacesFile);
   } catch (e) {
     console.error("[safari-harness] window list not written:", e instanceof Error ? e.message : e);
   }
@@ -249,16 +228,6 @@ function pageAt(t: TabInfo): { tab: number; window: number; id: string; name: st
   return id && name && width && height ? { tab: t.id, window: t.windowId, id, name, size: { width, height } } : undefined;
 }
 
-// The window of a group a restarted daemon no longer knows, found by the
-// name and size its page's address carries.
-async function orphaned(name: string): Promise<Space | undefined> {
-  const p = (await listTabs()).map(pageAt).find((x) => x?.name === name);
-  if (!p) return undefined;
-  const s: Space = { key: `orphan:${name}`, id: p.id, window: p.window, name, size: p.size, group: "grouped" };
-  closing.set(name, s);
-  save();
-  return s;
-}
 
 // The keeper's side (keeper.ts). state lists the windows that are or will
 // be groups and the ended groups, with each window's size and, while Safari
@@ -308,11 +277,13 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
     }
     case "release": {
       if (!bridge.connected) return { ok: false };
-      const s = closing.get(name) ?? (await orphaned(name));
-      if (!s) return { ok: true, tabs: 0, left: 0 };
-      // A tab can close meanwhile (close-on-exit): it needs no moving then.
-      for (const t of await located(s)) if (!isPage(t, s)) await bridge.request("tabs.detach", [t.id, s.window]).catch(() => undefined);
+      const s = closing.get(name);
+      if (!s) return { ok: false };
       const now = await located(s);
+      const left = now.filter((t) => !isPage(t, s)).length;
+      // A kept, foreign, or newly added page is never moved to enable
+      // deletion. Leave the whole group intact until it is truly empty.
+      if (left) return { ok: true, tabs: now.length, left, ...s.size };
       // Safari hides the tab bar of a window as narrow as a phone's, and the
       // keeper counts a window's tabs in it: on 10-07 it waited for good on
       // agent 1431's groups, whose windows the agent had sized to 390
@@ -348,23 +319,22 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 
 async function end(space: Space) {
   if (spaces.get(space.key) === space) spaces.delete(space.key);
-  space.unwatch?.();
-  space.unwatch = undefined;
   note("window ended", { name: space.name, owner: space.owner ?? null });
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
     return;
   }
-  if (!bridge.connected) {
-    ended.add(space);
-    save();
-    return;
+  ended.add(space);
+  save();
+  if (!bridge.connected) return;
+  const page = (await located(space)).find((t) => isPage(t, space));
+  if (page) {
+    const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
+    if (result.ok !== true) return;
   }
   ended.delete(space);
   save();
-  const page = (await located(space)).find((t) => isPage(t, space));
-  if (page) await bridge.request("tabs.close", [page.id], 10000);
 }
 
 let sweeping: Timer | undefined;
@@ -374,46 +344,23 @@ function sweepSoon() {
   sweeping.unref();
 }
 
-// The page of an agent window no record here holds closes, and the window
-// with it unless it holds a tab: the daemon lost the record (a deploy, an
-// extension reload it could not follow, a close that failed), and nothing
-// else would close it. On 10-04 agent 50573's window had stood on "Not
-// tracked" for two days, its agent long gone. A window being opened shows
-// its page before its record, and a group still queued is the keeper's to
-// delete (orphaned), once its tabs have moved out.
-async function reclaim(tabs: TabInfo[]) {
-  const records = [...spaces.values(), ...closing.values(), ...ended];
-  const lost = tabs.flatMap((t) => {
-    const p = pageAt(t);
-    return p && !opening.has(p.id) && !records.some((s) => s.id === p.id) ? [p] : [];
-  });
-  if (lost.length === 0) return;
-  const queued = readQueue();
-  for (const p of lost) {
-    if (Object.hasOwn(queued, p.name)) continue;
-    try {
-      await bridge.request("tabs.close", [p.tab], 10000);
-      note("lost window closed", { name: p.name });
-    } catch (e) {
-      console.error(`[safari-harness] closing the lost window of ${p.name} failed:`, e instanceof Error ? e.message : e);
-    }
-  }
+let spaceSweeping: Promise<void> | undefined;
+
+function sweep(): Promise<void> {
+  spaceSweeping ??= sweepOnce().finally(() => { spaceSweeping = undefined; });
+  return spaceSweeping;
 }
 
-async function sweep() {
+async function sweepOnce() {
   if (!bridge.connected) return;
   // A pass that begins with nothing to watch is the last, once it has
   // closed what windows that ended since left behind.
   const idle = spaces.size === 0 && ended.size === 0;
   for (const s of [...ended]) await end(s);
   const tabs = await listTabs();
-  await reclaim(tabs);
-  const now = Date.now();
   for (const s of [...spaces.values()]) {
     const inWindow = await located(s, tabs);
-    if (inWindow.some((t) => !isPage(t, s))) s.emptySince = undefined;
-    else s.emptySince ??= now;
-    if (inWindow.length === 0 || (s.emptySince !== undefined && (s.done || now - s.emptySince >= IDLE_MS))) await end(s);
+    if (inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
   // A window opened meanwhile keeps the sweep going.
   if (!idle || spaces.size > 0 || ended.size > 0) return;
@@ -421,13 +368,22 @@ async function sweep() {
   sweeping = undefined;
 }
 
+// A new owned call invalidates an earlier completion's empty-window intent.
+export function turnResumed(owner: number): void {
+  for (const s of spaces.values()) if (s.owner === owner) delete s.done;
+  save();
+}
+
 // owner handed its turn back to the user (endTurn, tools.ts), which closes
 // its tabs: each of its windows then ends at the first sweep that finds it
 // holding nothing but its page. Before, the window stayed two minutes
 // after its last tab, and the user saw agents that had stopped still open.
-export function turnEnded(owner: number): void {
+export async function turnEnded(owner: number): Promise<void> {
   for (const s of spaces.values()) if (s.owner === owner) s.done = true;
-  if (spaces.size > 0) sweepSoon();
+  save();
+  if (spaces.size > 0 || ended.size > 0) sweepSoon();
+  if (spaceSweeping) await spaceSweeping;
+  await sweep();
 }
 
 // The assignment whose window's page carries id, for that page

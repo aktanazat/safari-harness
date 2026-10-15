@@ -36,20 +36,18 @@ const ext = {
 connect(ext);
 const file = join(mkdtempSync(join(tmpdir(), "continuity-")), "tabs.json");
 loadTabs(file);
-const owners = () => Object.fromEntries(Object.entries(JSON.parse(readFileSync(file, "utf8")) as Record<string, { owner: number | null }>).map(([tab, t]) => [tab, t.owner]));
+const owners = () => Object.fromEntries(Object.entries(JSON.parse(readFileSync(file, "utf8")).tabs as Record<string, { owner: number | null }>).map(([tab, t]) => [tab, t.owner]));
 // what background.js sends when Safari swaps a tab, or a page opens one
 const fromExtension = (event: Record<string, unknown>) => bridge.handleMessage(JSON.stringify({ op: "tab", ...event }));
 
 const agent = Bun.spawn(["sleep", "60"]);
-// Once the agent exits, the daemon closes its tabs and stops watching it; a
-// watch left running would outlive this file and its timer.
+// Exit is not authority. Teardown explicitly admits disposable cleanup
+// and awaits the same receipt used by the owning runtime.
 afterAll(async () => {
-  const mine = Object.entries(owners()).filter(([, owner]) => owner === agent.pid).map(([tab]) => Number(tab));
-  const { promise, resolve } = Promise.withResolvers<void>();
-  onClose = () => { if (mine.every((tab) => closed.includes(tab))) resolve(); };
-  onClose();
   agent.kill();
-  await promise;
+  await agent.exited;
+  const receipt = await endTurn(agent.pid);
+  expect(receipt.failed).toBe(0);
 });
 const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
 // the tab the stand-in handed out last is the one just opened

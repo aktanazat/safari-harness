@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -28,7 +28,9 @@ import { keepSecret, redacted, redactUrl, tabSecrets } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { replay } from "./replay.ts";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { copyFile, writeFile, mkdtemp, mkdir, readdir, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
@@ -161,42 +163,42 @@ async function reuseTab(address: string, space: Space, among?: Set<number>): Pro
 // off-screen window can keep Safari from closing it; the extension tries
 // for 15 s and says so. This limit is only for an extension that never
 // answers.
-export async function closeTab(tab: number, why = "by a close call"): Promise<unknown> {
+export async function closeTab(tab: number, why = "by a close call", only?: "idle"): Promise<unknown> {
   const id = followTab(num(tab, "tab"));
-  const res = await bridge.request("tabs.close", [id], 20000);
-  forget(id);
-  recordClosed(id, why);
+  const res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+  if (res && typeof res === "object" && "ok" in res && res.ok === true) {
+    recordClosed(id, why);
+    forget(id);
+    save();
+  } else if (res && typeof res === "object" && "protected" in res && res.protected === "form") {
+    const mine = harnessTabs.get(id);
+    if (mine) mine.acted = true;
+    save();
+  }
   return res;
 }
 
-// A tab an agent opens closes when the agent hands its turn back to the
-// user (endTurn), once it exits (owner.ts), or once it sits untouched for
-// IDLE_MS; a turn's end and IDLE_MS spare a tab the user has in front. keep
-// leaves a tab open for him. Tabs a click opens from one inherit its
-// owner. The list is kept in a file with when each tab was last used, so a
-// restarted daemon still closes them, and on time: on 10-07 four deploys in
-// three hours each gave a research agent's 13 tabs a fresh 20 minutes. The
-// extension closes only a tab the harness owns, so an id Safari has given
-// another tab since is left alone. A tab it cannot close now (not
-// connected, a sheet) is tried again each minute.
-const IDLE_MS = 20 * 60_000;
-// The most tabs one agent holds open: past it, its least recently used tab
-// closes (capTabs). On 10-07 a tire-price agent held 42 tabs in his Safari
-// within one turn. A tab so closed opens again on its agent's next call to
-// it (reopen), so only a form in progress (acted) and a site global's own
-// tab are spared.
-const MAX_TABS = 8;
+// Only an admitted completion may release disposable pages. Age, tab count
+// and owner exit cannot prove that a task or background work has finished.
+// Protection flags and URL-only resume points share the existing checkpoint.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
 // daemon last listed, opened, or loaded it; seen: the extension connection
 // it was last listed or made on (bridge.extensionInfo), for a Safari that
-// started again (restored). over: past MAX_TABS, due to close (capTabs).
-type HarnessTab = { owner?: number; used: number; orphan?: true; closing?: true; acted?: true; site?: true; over?: true; url?: string; seen?: number };
+// started again (restored). done: cleanup was explicitly admitted for it.
+type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
 let sweeper: Timer | undefined;
+type OwnerCalls = { epoch: string; pending: Set<Promise<void>> };
+const activeCalls = new Map<number, OwnerCalls>();
+const calling = new AsyncLocalStorage<boolean>();
+export type TurnPreparation = { owner: number; epoch: string; tabs: number[] };
+type TurnReceipt = { ok: true; closed: number; retained: number; failed: number; deferred: boolean; invalidated?: true };
+const endingTurns = new Map<number, Promise<TurnReceipt>>();
+let sweepingTabs: Promise<void> | undefined;
 
 // Each tab the harness closed of late, with why, when, and what it showed,
 // for a later call that names it (goneWhy). Late in September a chat tab
@@ -205,17 +207,27 @@ let sweeper: Timer | undefined;
 // agent: the agent it was closed under, as that agent's turn ended or
 // after 20 minutes unused; that agent's next call to it opens it again
 // (reopen).
-type Closed = { why: string; at: number; url?: string; agent?: number };
+type Closed = { why: string; at: number; url?: string; agent?: number; to?: number };
 const closedTabs = new Map<number, Closed>();
 const CLOSED_KEPT = 500;
 
 function recordClosed(tab: number, why: string, url?: string, agent?: number) {
   // what was typed there as a secret goes with it (redact.ts)
   tabSecrets.delete(tab);
+  keepers.delete(tab);
   closedTabs.delete(tab);
   closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }), ...(agent === undefined ? {} : { agent }) });
   // a Map keeps its keys in the order they went in, the oldest first
   if (closedTabs.size > CLOSED_KEPT) closedTabs.delete(closedTabs.keys().next().value!);
+}
+
+// Only an ordinary address is a durable resume point. Query strings,
+// fragments, userinfo and known token paths may contain credentials or
+// submitted form values; keeping the live page is safer than guessing.
+function resumeAddress(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  const parsed = URL.parse(url);
+  return parsed && (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && redactUrl(url) === url ? url : undefined;
 }
 
 // The daemon names the file once, as it starts.
@@ -223,34 +235,30 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  let saved: Record<string, { owner: number | null; used: number } | number | null> = {};
+  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed"> & { owner?: number | null };
+  type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
+  let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
     saved = JSON.parse(readFileSync(path, "utf8")) as typeof saved;
   } catch {
     // none kept yet
   }
-  for (const [tab, kept] of Object.entries(saved)) {
-    const { owner, used } = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
-    remember(Number(tab), owner ?? undefined, used);
+  const state = saved.version === 2 ? saved as Saved : undefined;
+  const rows = state?.tabs ?? saved as Record<string, SavedTab | number | null>;
+  for (const [tab, kept] of Object.entries(rows)) {
+    const t: SavedTab = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
+    remember(Number(tab), typeof t.owner === "number" ? t.owner : undefined, t.used);
+    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
   }
+  for (const [tab, closed] of Object.entries(state?.closed ?? {})) closedTabs.set(Number(tab), { ...closed, url: resumeAddress(closed.url) });
+  for (const [tab, keeper] of Object.entries(state?.keepers ?? {})) keptBy(Number(tab), keeper);
 }
 
 function own(tab: number, owner: number | undefined) {
   remember(tab, owner);
   save();
-  capTabs(owner);
 }
 
-// Marks owner's least recently used tabs past MAX_TABS for the sweep.
-function capTabs(owner: number | undefined) {
-  if (owner === undefined) return;
-  const mine = [...harnessTabs.values()].filter((t) => t.owner === owner && !t.orphan && !t.over);
-  const spare = mine.filter((t) => !t.acted && !t.site && !t.closing).sort((a, b) => a.used - b.used);
-  const extra = Math.min(mine.length - MAX_TABS, spare.length);
-  if (extra <= 0) return;
-  for (const t of spare.slice(0, extra)) t.over = true;
-  void sweep();
-}
 
 function remember(tab: number, owner: number | undefined, used = Date.now()) {
   harnessTabs.set(tab, { owner, used, seen: bridge.extensionInfo?.connectedAt });
@@ -262,6 +270,7 @@ function remember(tab: number, owner: number | undefined, used = Date.now()) {
 function orphan(owner: number) {
   watches.delete(owner);
   for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
+  save();
   void sweep();
 }
 
@@ -280,15 +289,40 @@ export function tabsOpenedBy(owner: number | undefined): number {
   return n;
 }
 
-// owner handed its turn back to the user (main.ts, told by omp/index.ts):
-// it is done with its tabs, as if it had left them for IDLE_MS, and its
-// window goes once they have (spaces.ts). Before, they stayed open until
-// it exited or left them for 20 minutes; his order of 09-28 is to close a
-// tab once it has served its purpose.
-export function endTurn(owner: number): void {
-  for (const t of harnessTabs.values()) if (t.owner === owner) t.used = 0;
-  turnEnded(owner);
-  void sweep();
+// Drain only. The runtime rechecks its canonical completion authority after
+// this returns, then commits a release carrying these exact resources.
+export async function prepareTurnEnd(owner: number): Promise<TurnPreparation> {
+  while (activeCalls.get(owner)?.pending.size) await Promise.all(activeCalls.get(owner)!.pending);
+  const calls = activeCalls.get(owner) ?? { epoch: randomUUID(), pending: new Set<Promise<void>>() };
+  activeCalls.set(owner, calls);
+  return { owner, epoch: calls.epoch, tabs: [...harnessTabs].filter(([, t]) => t.owner === owner).map(([tab]) => tab) };
+}
+
+export function endTurn(owner: number, prepared?: TurnPreparation): Promise<TurnReceipt> {
+  const pending = endingTurns.get(owner);
+  if (pending) return pending;
+  const owned = [...harnessTabs].filter(([, t]) => t.owner === owner).map(([tab]) => tab);
+  if (prepared && (prepared.owner !== owner || prepared.epoch !== (activeCalls.get(owner)?.epoch ?? null) || prepared.tabs.length !== owned.length || owned.some(tab => !prepared.tabs.includes(tab)))) {
+    return Promise.resolve({ ok: true, closed: 0, retained: owned.length, failed: 0, deferred: false, invalidated: true });
+  }
+  // Install the barrier synchronously: later owner calls wait for release,
+  // then read a freshly reopened safe URL rather than joining this sweep.
+  const ending = Promise.resolve().then(async () => {
+    await Promise.all(activeCalls.get(owner)?.pending ?? []);
+    const before = tabsOpenedBy(owner);
+    for (const t of harnessTabs.values()) if (t.owner === owner) t.done = true;
+    save();
+    if (sweepingTabs) await sweepingTabs;
+    await sweep();
+    await turnEnded(owner);
+    for (const t of harnessTabs.values()) if (t.owner === owner) delete t.done;
+    save();
+    const retained = tabsOpenedBy(owner);
+    const failed = [...harnessTabs.values()].filter((t) => t.owner === owner && t.failed).length;
+    return { ok: true as const, closed: before - retained, retained, failed, deferred: !bridge.connected };
+  }).finally(() => endingTurns.delete(owner));
+  endingTurns.set(owner, ending);
+  return ending;
 }
 
 // A tab the user is to see or answer outlives its agent's turn and its
@@ -300,6 +334,7 @@ export function keepTab(tab: number): { ok: true } {
   forget(id);
   const keeper = currentOwner();
   if (keeper !== undefined) keptBy(id, keeper);
+  save();
   return { ok: true };
 }
 
@@ -315,39 +350,49 @@ function keptBy(tab: number, keeper: number) {
   keeperWatches.set(keeper, watchOwner(keeper, () => {
     keeperWatches.delete(keeper);
     for (const [kept, k] of keepers) if (k === keeper) keepers.delete(kept);
+    save();
   }));
 }
 
-async function sweep() {
+function sweep(): Promise<void> {
+  sweepingTabs ??= sweepOnce().finally(() => { sweepingTabs = undefined; });
+  return sweepingTabs;
+}
+
+async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
   // own call may (socket in bridge.ts). The next sweep tries again. Each
   // sweep lists the tabs, which notes what they show and finds those a
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
   const listed = await listTabs().catch((): TabInfo[] => []);
-  const idle = Date.now() - IDLE_MS;
-  const due = [...harnessTabs].filter(([, t]) => !t.closing && (t.orphan || t.over || t.used < idle));
+  const due = [...harnessTabs].filter(([, t]) => t.done && !t.closing && !t.acted && !t.site && !t.handoff && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined) && (t.owner === undefined || !activeCalls.get(t.owner)?.pending.size));
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
   const shown = new Map(listed.map((t) => [t.id, t.url]));
   await Promise.all(due.map(async ([tab, t]) => {
     try {
-      const res = (await bridge.request("tabs.close", [tab, t.orphan ? "owned" : "idle"], 20000)) as { front?: true } | null;
+      if (harnessTabs.get(tab) !== t) return;
+      const res = (await bridge.request("tabs.close", [tab, "idle"], 20000)) as { ok?: boolean; front?: true; protected?: string } | null;
       if (res?.front) {
         t.used = Date.now();
-        delete t.over;
+      } else if (res?.ok !== true) {
+        if (res?.protected === "form") t.acted = true;
+        else t.failed = true;
       } else {
+        // Record the resume point before dropping ownership, in the same file.
+        const why = "as its agent's turn ended";
+        recordClosed(tab, why, resumeAddress(shown.get(tab)), t.owner);
         forget(tab);
-        // endTurn marks the tabs it is done with as used at 0
-        const why = t.orphan ? "once its agent exited or was stopped" : t.over ? `as its agent opened more than ${MAX_TABS} tabs, the least recently used first` : t.used === 0 ? "as its agent's turn ended" : "after 20 minutes unused";
-        recordClosed(tab, why, shown.get(tab), t.orphan ? undefined : t.owner);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }
     } catch (e) {
       console.error(`[safari-harness] closing tab ${tab} failed:`, e instanceof Error ? e.message : e);
+      t.failed = true;
     } finally {
       delete t.closing;
+      save();
     }
   }));
 }
@@ -359,6 +404,7 @@ function forget(tab: number) {
   if (t.owner !== undefined && ![...harnessTabs.values()].some((o) => o.owner === t.owner)) {
     watches.get(t.owner)?.();
     watches.delete(t.owner);
+    if (!activeCalls.get(t.owner)?.pending.size) activeCalls.delete(t.owner);
   }
   if (harnessTabs.size === 0) {
     clearInterval(sweeper);
@@ -370,7 +416,14 @@ function forget(tab: number) {
 function save() {
   if (!tabsFile) return;
   try {
-    writeFileSync(tabsFile, JSON.stringify(Object.fromEntries([...harnessTabs].map(([tab, t]) => [tab, { owner: t.owner ?? null, used: t.used }]))));
+    const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
+      const url = resumeAddress(t.url);
+      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+    }));
+    const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
+    const pending = `${tabsFile}.tmp`;
+    writeFileSync(pending, JSON.stringify({ version: 2, tabs, closed, keepers: Object.fromEntries(keepers) }), { mode: 0o600 });
+    renameSync(pending, tabsFile);
   } catch (e) {
     console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
   }
@@ -402,6 +455,7 @@ bridge.onTab = (e) => {
     keptBy(e.tab, keeper);
     queuePopup(keeper, { tab: e.tab, url: e.url, kept: true });
   } else return;
+  save();
   note("popup", { tab: e.tab, opener: e.opener });
 };
 
@@ -410,7 +464,7 @@ bridge.onTab = (e) => {
 // and their windows still say whose they are. An agent that exits first
 // takes its window's record with it (spaces.ts).
 bridge.onConnect = () => {
-  if (harnessTabs.size > 0) void listTabs().catch(() => {});
+  if (harnessTabs.size > 0) void sweep();
 };
 
 // Old tab ids and their tabs' ids now: what the daemon keeps per tab, and
@@ -442,14 +496,19 @@ function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): v
 function sighted(tabs: TabInfo[]): void {
   const now = bridge.extensionInfo?.connectedAt;
   const listed = new Map(tabs.map((t) => [t.id, t]));
+  const owners = ownersByPage(tabs);
+  let changed = false;
   const lost: [number, HarnessTab][] = [];
   for (const [id, t] of harnessTabs) {
     const shown = listed.get(id);
-    if (shown && (t.seen === now || t.url === undefined || shown.url === t.url)) {
+    if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owners.get(shown.windowId) === t.owner))) {
+      changed ||= t.url !== shown.url || t.seen !== now;
       t.url = shown.url;
       t.seen = now;
+      t.unsafe = shown.url !== undefined && resumeAddress(shown.url) === undefined ? true : undefined;
     } else if (t.seen !== now && t.owner !== undefined && t.url !== undefined && !t.closing) lost.push([id, t]);
   }
+  if (changed) save();
   if (lost.length > 0) restored(lost, tabs);
 }
 
@@ -491,8 +550,8 @@ function moveKept(from: number, to: number): boolean {
   move(lastSnapshot, from, to);
   move(handoffs, from, to);
   move(tabSecrets, from, to);
-  move(keepers, from, to);
-  return move(harnessTabs, from, to);
+  const kept = move(keepers, from, to);
+  return move(harnessTabs, from, to) || kept;
 }
 
 function move<V>(map: Map<number, V>, from: number, to: number): boolean {
@@ -507,6 +566,8 @@ export async function navigate(tab: number, url: string): Promise<TabInfo> {
   const t = (await bridge.request("tabs.navigate", [num(tab, "tab"), webAddress(url)])) as TabInfo;
   const mine = harnessTabs.get(t.id);
   if (mine && t.url !== undefined) mine.url = t.url;
+  if (mine && t.url !== undefined) mine.unsafe = resumeAddress(t.url) === undefined ? true : undefined;
+  save();
   return t;
 }
 
@@ -984,6 +1045,11 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
   } catch (e) {
     h.error = e instanceof Error ? e.message : String(e);
   } finally {
+    if (h.done) {
+      const mine = harnessTabs.get(tab);
+      if (mine) delete mine.handoff;
+      save();
+    }
     // one that ran out of callers leaves nothing to answer
     if (handoffs.get(tab) === h && !h.done && h.error === undefined) handoffs.delete(tab);
     h.begun.resolve();
@@ -1003,6 +1069,9 @@ async function handoffWait(tab: number, why: string, o: { ms: number; away: bool
   if (!h) {
     for (const [t, x] of handoffs) if (Date.now() - x.calledAt > x.idleMs && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
     h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), idleMs: o.background ? BACKGROUND_IDLE_MS : HANDOFF_IDLE_MS };
+    const mine = harnessTabs.get(tab);
+    if (mine) mine.handoff = true;
+    save();
     handoffs.set(tab, h);
     void watchHandoff(tab, why, h, o.until);
   }
@@ -1632,10 +1701,11 @@ export const TOOLS: Record<string, Tool> = {
       const t = await openIn(space, address, !!a.background, !!a.background || !a.keep);
       if (a.keep) keepTab(t.id);
       else own(t.id, currentOwner());
-      const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
       const held = harnessTabs.get(t.id);
       if (held) held.url = t.url;
       if (a.site === true && held) held.site = true;
+      save();
+      const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
       const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
       return had === undefined ? result : beside(result, "hint", had);
     },
@@ -1657,7 +1727,13 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: OWN_TAB },
     unlisted: { held: { type: "boolean", description: "only while the harness holds it: a kept tab stays" } },
     required: ["tab"],
-    run: async (a) => (a.held === true && !harnessTabs.has(followTab(num(a.tab, "tab"))) ? { ok: true, kept: true } : closeTab(num(a.tab, "tab"))),
+    run: async (a) => {
+      const tab = num(a.tab, "tab");
+      const mine = harnessTabs.get(followTab(tab));
+      if (a.held === true && !mine) return { ok: true, kept: true };
+      if (a.held === true && (mine?.acted || mine?.handoff || mine?.unsafe || (mine?.url !== undefined && resumeAddress(mine.url) === undefined))) return { ok: true, protected: true };
+      return closeTab(tab, "by a close call", a.held === true ? "idle" : undefined);
+    },
   },
   keep: {
     desc: "Leave a tab you opened open for the user when your turn ends: a page he asked to see, or a form waiting on his answer. Your other tabs close then.",
@@ -2220,6 +2296,29 @@ export function formatResult(value: unknown): string {
 // false leaves its caller's news (continuity.ts) to a later call, as
 // real_input's steps do (input.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
+  const owner = currentOwner();
+  if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news);
+  const ending = endingTurns.get(owner);
+  if (ending) await ending;
+  if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
+  const settled = Promise.withResolvers<void>();
+  const active = activeCalls.get(owner) ?? { epoch: randomUUID(), pending: new Set<Promise<void>>() };
+  active.epoch = randomUUID();
+  active.pending.add(settled.promise);
+  activeCalls.set(owner, active);
+  for (const t of harnessTabs.values()) if (t.owner === owner) delete t.done;
+  turnResumed(owner);
+  save();
+  try {
+    return await calling.run(true, () => invokeTool(name, args, model, news));
+  } finally {
+    active.pending.delete(settled.promise);
+    if (active.pending.size === 0 && tabsOpenedBy(owner) === 0) activeCalls.delete(owner);
+    settled.resolve();
+  }
+}
+
+async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
   try {
     const back = await reopen(call.tool, call.args);
@@ -2242,22 +2341,36 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
 // checkout): it says so, and the agent looks first. A tab the agent or the
 // user closed stays closed, another agent's never opens, and neither does
 // one a caller's own steps name (hidden tools: real_input's in input.ts).
-const FRESH_ACTIONS: Record<string, true> = { goto: true, eval: true, scroll: true };
+const FRESH_ACTIONS: Record<string, true> = { goto: true, scroll: true };
+
+const reopening = new Map<number, Promise<{ tab: TabInfo; closed: Closed }>>();
 
 async function reopen(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
   if (tool === "close" || TOOLS[tool].hidden || args.tab === undefined || args.tab === "front") return undefined;
-  const tab = followTab(Number(args.tab));
-  const closed = closedTabs.get(tab);
   const agent = currentOwner();
-  if (closed?.agent === undefined || closed.agent !== agent || !closed.url?.startsWith("http")) return undefined;
-  closedTabs.delete(tab);
-  const t = await openIn(await spaceWindow(), closed.url, true, true);
-  own(t.id, agent);
-  const held = harnessTabs.get(t.id);
-  if (held) held.url = t.url ?? closed.url;
-  recordReplaced(tab, t.id);
-  const was = `tab ${args.tab} had closed ${closed.why} at ${localTime(new Date(closed.at))}; it is open again on ${redactUrl(closed.url)}, loaded fresh`;
-  if (acts(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new Error(`${was} as tab ${t.id}, so its refs and anything typed there are gone: snapshot it, then act`);
+  const old = Number(args.tab);
+  const prior = closedTabs.get(old);
+  if (prior !== undefined && prior.agent === agent && prior.to !== undefined) recordReplaced(old, prior.to);
+  const tab = followTab(old);
+  const closed = closedTabs.get(tab);
+  if (closed?.agent === undefined || closed.agent !== agent || resumeAddress(closed.url) === undefined) return undefined;
+  let opening = reopening.get(tab);
+  if (!opening) {
+    opening = (async () => {
+      const t = await openIn(await spaceWindow(), closed.url!, true, true);
+      own(t.id, agent);
+      const held = harnessTabs.get(t.id);
+      if (held) held.url = t.url ?? closed.url;
+      closed.to = t.id;
+      recordReplaced(tab, t.id);
+      save();
+      return { tab: t, closed };
+    })().finally(() => reopening.delete(tab));
+    reopening.set(tab, opening);
+  }
+  const opened = await opening;
+  const was = `tab ${args.tab} had closed ${opened.closed.why} at ${localTime(new Date(opened.closed.at))}; it is open again on ${redactUrl(opened.closed.url!)}, loaded fresh`;
+  if (acts(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new Error(`${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: snapshot it, then act`);
   return was;
 }
 
@@ -2274,20 +2387,29 @@ function goneWhy(e: unknown, tab: unknown): unknown {
 // stuck loading) is loaded again and the read asked once more, as the error
 // tells the agent to do: in the car and insurance searches of late
 // September, agents spent 31 turns doing it by hand. Only a page no action
-// has changed since it loaded is loaded again, since that undoes the
-// action; an eval counts as a read here, as nearly every one is.
-const ASKED_AGAIN: Record<string, true> = { snapshot: true, extract: true, eval: true, data: true, info: true, wait: true, fetch: true };
+// has changed since it loaded, since a reload undoes the action. Arbitrary
+// eval is an action: it may change script state or submit, even if it times out.
+const ASKED_AGAIN: Record<string, true> = { snapshot: true, extract: true, data: true, info: true, wait: true, fetch: true };
 const HELD = /did not answer.*; reload it with goto and retry$/;
 
 async function revived(tool: string, args: Record<string, unknown>): Promise<unknown> {
   const tab = followTab(Number(args.tab));
+  const before = harnessTabs.get(tab);
+  if (before && acts(tool, args)) {
+    before.acted = true;
+    save();
+  }
   try {
     const result = await TOOLS[tool].run(args);
     // A goto, or an action that led to another page, leaves a fresh page.
     const mine = harnessTabs.get(tab);
     const went = navigatedOf(result)?.url;
     if (mine && went !== undefined) mine.url = went;
-    if (mine && tool !== "eval" && acts(tool, args)) mine.acted = tool === "goto" || went !== undefined ? undefined : true;
+    if (mine && acts(tool, args)) {
+      mine.acted = tool === "goto" || went !== undefined ? undefined : true;
+      if (tool === "goto") delete mine.handoff;
+    }
+    if (mine && (went !== undefined || acts(tool, args))) save();
     return result;
   } catch (e) {
     const mine = harnessTabs.get(tab);
