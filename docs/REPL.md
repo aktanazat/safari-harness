@@ -43,7 +43,8 @@ outside the page: read `document`, `window` and the rest through
 ## Tabs
 
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
-  `page`. Tabs a session opens close with it, but one kept for the user
+  `page`. `const page = await openTab(url)` works too, and keeps `page`
+  for later calls. Tabs a session opens close with it, but one kept for the user
   (`keep`) stays. Using `page` before any tab is open or attached throws.
   In a later call of the session, `openTab` of an address it opened before
   loads that tab again, unless it is kept, in front, or an action changed
@@ -169,7 +170,15 @@ There is no `process` or `Bun`.
   element left or the tab loaded another address: take a new `snapshot`
   and use the new refs.
 - Large results go to a file (`fs.writeFile('rows.json', ...)`); print a
-  count and the path, not the whole thing.
+  count and the path, not the whole thing. Output past 10,000 characters
+  is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
+  and the answer is its first 2,000 characters and that path.
+- Reading a script bundle or a page's source: write it to a file
+  (`fs.writeFile`) or let the output spill to one, then grep the file for
+  the API path or name you want, instead of printing slices of it.
+- Sleeps: wait on the page instead (`waitForSelector`, `locator.waitFor`).
+  Past a minute of `waitForTimeout` in 10 minutes, one `hint:` line says
+  so, with the latest total.
 - When another model judges a page, give it field names and labels, never
   the values the user typed or the site showed.
 - `safari repl --close <name>` and start again under the same name when

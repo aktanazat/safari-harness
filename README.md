@@ -113,7 +113,7 @@ cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless
 cli/doctor.ts       `safari doctor`: checks each part the harness needs on
                     this Mac and prints the fix for each that fails
 docs/GUIDE.md       the short card of rules (`safari guide`)
-docs/REFERENCE.md   every tool in full (`safari guide reference`)
+docs/REFERENCE.md   every tool in full, one section each (`safari guide <tool>`)
 docs/sites/         one note per site (`safari guide <site>`)
 bench/              the WebKit bench's rows for content.js, one page per
                     behavior in fixtures/ (see Tests)
@@ -251,8 +251,9 @@ latest releases stay, and any that was in use in the past week.
 ## Use
 
 `safari guide` is the short card of rules: tabs, sign-in, bot checks, and
-waiting. `safari guide reference` covers every tool in full. The omp skill
-`safari` points agents at both.
+waiting. `safari guide <tool>` prints one tool's section of the reference,
+`safari guide reference` lists its sections. The omp skill `safari` points
+agents at both.
 
 ```
 safari open https://example.com --bg   # prints the new tab's id, say 7

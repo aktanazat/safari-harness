@@ -1,5 +1,6 @@
 // The guides `safari guide` prints: docs/GUIDE.md, the short card of rules;
-// docs/REFERENCE.md ("reference"), every tool in full; docs/REPL.md for
+// one section of docs/REFERENCE.md, a tool's (`safari guide eval`) or an
+// idea's (`safari guide reference troubleshooting`); docs/REPL.md for
 // safari repl; and one per site in docs/sites/, followed by the notes
 // agents have learned on that site (notes.ts).
 
@@ -10,11 +11,76 @@ import { bundled, covering, covers, type Guide } from "./site-guides.ts";
 
 const DOCS = new URL("../docs/", import.meta.url);
 
+// which is what followed `safari guide`, its words joined by spaces.
 export async function guide(which?: string): Promise<string | null> {
-  if (!which) return readFile(new URL("GUIDE.md", DOCS), "utf8");
-  if (which === "repl") return readFile(new URL("REPL.md", DOCS), "utf8");
-  if (which === "reference") return readFile(new URL("REFERENCE.md", DOCS), "utf8");
-  return siteGuide(which);
+  const words = (which ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return readFile(new URL("GUIDE.md", DOCS), "utf8");
+  const [first, ...rest] = words;
+  if (first === "repl" && rest.length === 0) return readFile(new URL("REPL.md", DOCS), "utf8");
+  const reference = await readFile(new URL("REFERENCE.md", DOCS), "utf8");
+  if (first === "reference") return referenceSection(reference, rest.join(" "));
+  const tool = rest.length === 0 ? sections(reference).find((s) => s.tool === toolName(first)) : undefined;
+  if (tool) return tool.text;
+  return (await siteGuide(words.join(" "))) ?? find(sections(reference), words.join(" "))?.text ?? null;
+}
+
+// A `## ` section of the reference, up to the next `#` or `## ` heading.
+// A tool's heading is its name alone (`## real_input`); an idea's is a
+// phrase (`## Two lanes: this harness or Apple's safaridriver`).
+type Section = { heading: string; tool?: string; text: string };
+
+function sections(md: string): Section[] {
+  const out: Section[] = [];
+  let open: { heading: string; lines: string[] } | undefined;
+  const close = () => {
+    if (!open) return;
+    const tool = /^[a-z_]+$/.test(open.heading) ? open.heading : undefined;
+    out.push({ heading: open.heading, ...(tool ? { tool } : {}), text: `${open.lines.join("\n").trimEnd()}\n` });
+    open = undefined;
+  };
+  for (const line of md.split("\n")) {
+    if (/^#{1,2} /.test(line)) {
+      close();
+      if (line.startsWith("## ")) open = { heading: line.slice(3).trim(), lines: [line] };
+    } else open?.lines.push(line);
+  }
+  close();
+  return out;
+}
+
+// real-input and Real_Input name real_input.
+const toolName = (name: string) => name.toLowerCase().replace(/-/g, "_");
+
+// A tool by its name, else the idea whose heading starts with the words,
+// else the first whose heading holds them.
+function find(all: Section[], words: string): Section | undefined {
+  const q = words.toLowerCase();
+  return all.find((s) => s.tool === toolName(q))
+    ?? all.find((s) => !s.tool && s.heading.toLowerCase().startsWith(q))
+    ?? all.find((s) => !s.tool && s.heading.toLowerCase().includes(q));
+}
+
+// `safari guide reference` lists the sections: on 10-16 an agent printed
+// all 113 KB of the reference (omp showed 52 KB of it), and others paged
+// it with sed. `all` prints the whole file; a name prints that section.
+function referenceSection(md: string, words: string): string | null {
+  if (words === "all") return md;
+  const all = sections(md);
+  if (words) return find(all, words)?.text ?? null;
+  const ideas = all.filter((s) => !s.tool).map((s) => `  ${s.heading}`);
+  const tools = all.flatMap((s) => (s.tool ? [s.tool] : []));
+  return [
+    "The reference, a section at a time. `safari guide <tool>` prints one tool's section (safari guide eval);",
+    "`safari guide reference <words>` an idea's, by the first words of its heading (safari guide reference troubleshooting);",
+    "`safari guide reference all` the whole file.",
+    "",
+    "Ideas:",
+    ...ideas,
+    "",
+    "Tools:",
+    `  ${tools.join(", ")}`,
+    "",
+  ].join("\n");
 }
 
 // "sites" lists every guide, and the hosts with learned notes.
@@ -73,6 +139,7 @@ function labels(host: string): string[] {
 // it, and the call that lists every site (list). $s is a shell variable the
 // shell passed as written, as it did for an agent's loop on 09-29.
 export function noGuide(which: string, list = "safari guide sites"): string {
+  if (/^reference\s/.test(which)) return `no section of the reference is named ${which.replace(/^reference\s+/, "")}; safari guide reference lists them`;
   if (/^\$\{?\w+\}?$/.test(which)) return `no guide for ${which}: the shell passed the variable as written, so it was empty or unset, or in single quotes; give the site itself, like geico.com`;
   const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").split(/[/:]/)[0]);
   // a label two letters or fewer from one asked for, and not all of it
