@@ -190,7 +190,10 @@ const rpcServer = Bun.serve({
         root: ROOT,
         inFlight,
         ...(stopping ? { stopping } : {}),
-        extension: bridge.connected ? (bridge.extensionInfo ?? { connected: true }) : null,
+        // connected, stuck, how long since it answered, each kind's timeouts
+        // in a row (bridge.ts); an older daemon sends null while not connected
+        extension: bridge.health(),
+        latency: bridge.latency(),
         tools: Object.keys(TOOLS),
         journal: recent(),
       });

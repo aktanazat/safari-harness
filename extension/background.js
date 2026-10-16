@@ -64,11 +64,13 @@ function connect() {
       const answer = (obj) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(obj)); };
       handle(msg).then((value) => {
         if (msg.id !== undefined) answer({ id: msg.id, value });
-      }, (err) => {
+      }, async (err) => {
+        if (msg.id === undefined) return;
         const text = String(err && err.message || err);
-        // An id Safari no longer knows that no reload maps (adopt): the tab
-        // closed, Safari has quit since, or its page kept no mark.
-        if (msg.id !== undefined) answer({ id: msg.id, error: /Tab not found|Tab '\d+' was not found/.test(text) ? "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user; a tab you need past your turn must be kept with keep; find it with tabs, or open it again" : text });
+        // An id Safari no longer knows that no reload maps (adopt): the
+        // answer says what closed its tab, as far as this page saw (goneText).
+        const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
+        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : text });
       });
     };
     sock.onclose = () => {
@@ -126,6 +128,41 @@ const START_MS = { load: 3000, tab: 3000, script: 400 };
 // then, not at the request's own limit; a heavy page starting up answers
 // well within it.
 const PING_MS = 5000;
+// A page silent to a ping stays so for a while: a dialog stays open, a load
+// stays stuck. Through 10-16 the daemon's log holds 807 silent pings, 62.6
+// minutes of requests each waiting out PING_MS, one tab silent 39 times.
+// For SILENT_MS after, a request to that frame asks it once, for QUICK_MS,
+// and fails then (unlessSilent); an answer, or a new document in the frame,
+// forgets it.
+const SILENT_MS = 30_000;
+const QUICK_MS = 1000;
+const silent = new Map(); // tabId -> Map of frameId -> { from, at }: silent since from, last seen so at
+// A Safari call that may never answer is given up at its deadline, with the
+// phase it was in (bounded), and one that takes SLOW_MS is noted. On 10-13
+// and 10-16 tab lists came in storms, each waiting out the daemon's limit,
+// and one Safari call that never answers holds a list as long. A list says
+// which window is in front within LIST_MS, adopt reads each page's mark
+// within MARK_MS, and a close reads a page's forms within FORM_MS.
+const SLOW_MS = 2000;
+const LIST_MS = 2500;
+const MARK_MS = 2000;
+const FORM_MS = 3000;
+function bounded(step, phase, until) {
+  const began = Date.now();
+  const late = Promise.withResolvers();
+  const timer = setTimeout(() => late.reject(Object.assign(new Error(`Safari did not answer ${phase} in time`), { phase })), Math.max(0, until - began));
+  return Promise.race([step, late.promise]).finally(() => {
+    clearTimeout(timer);
+    const ms = Date.now() - began;
+    if (ms >= SLOW_MS) send({ op: "note", kind: "slow-phase", phase, ms });
+  });
+}
+// The page lays out at a window's new size a moment after Safari sizes it,
+// so the window tool reads the viewport again until it changes, for up to
+// VIEWPORT_MS: seven window calls in one slice answered the viewport from
+// before (390 asked, 1440 told), and their agent reloaded pages and
+// measured innerWidth to be sure (S99).
+const VIEWPORT_MS = 1000;
 // This load of the extension. A reload leaves each open page's script world
 // in place, bound to the old load's messaging, which reaches no one: a copy
 // of the script this load puts in such a world is asked through
@@ -136,35 +173,49 @@ const LOAD = crypto.randomUUID();
 // timeoutMs, whatever the page does: the daemon gives up 2 s later. kept
 // goes with an op sent again after a stale ref (see "refs across a load").
 async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null) {
-  const deadline = Date.now() + timeoutMs;
+  const began = Date.now();
+  const deadline = began + timeoutMs;
   const left = () => Math.max(deadline - Date.now(), 500);
   const msg = { __safariHarness: 1, id: nextId(), op, args, ...(kept && { kept }) };
+  let refused = false;
   keepAwake(tabId);
   for (;;) {
     await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
     let sent = false;
     try {
+      await unlessSilent(tabId, frameId);
       // A document known to answer takes the request at once: one trip, not
       // a ping and then the request. One that takes nothing did not run it,
       // and is asked as below.
       const known = knownWay(tabId, frameId, op);
       if (known) {
         sent = true;
-        const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, msg, left(), frameId, known === "script"));
+        const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, msg, left(), frameId, known === "script"), began);
         if (res !== undefined) return res;
         sent = false;
         ways.get(tabId)?.delete(frameId);
       }
       // A page may hold no copy of the script that answers: one left behind
       // when the extension reloaded answers nothing, and Safari skips
-      // injecting some pages (after a redirect). Put a fresh copy in.
-      let how = await reach(tabId, frameId, Math.min(PING_MS, left()));
+      // injecting some pages (after a redirect). Put a fresh copy in. An
+      // embedded frame that took none is not given one again until the tab
+      // loads anew or the frame reports in: through 10-16, 3,599 of 3,603
+      // copies put in embedded frames (ads, trackers) answered nothing,
+      // each a line in the log.
+      let how = await reach(tabId, frameId, Math.min(PING_MS, left()), began);
       if (!how) {
         if (frameId === 0 && failedPage(await api.tabs.get(tabId))) break;
-        await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
-        how = await reach(tabId, frameId, Math.min(PING_MS, left()));
-        send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
-        if (!how) break;
+        if (shutFrames.get(tabId)?.has(frameId)) break;
+        refused = await ensureContent(tabId, frameId, Math.min(PING_MS, left()), true);
+        how = refused ? null : await reach(tabId, frameId, Math.min(PING_MS, left()), began);
+        if (!refused && (frameId === 0 || how)) send({ op: "note", kind: "reinject", tab: tabId, frame: frameId, answered: how !== null, ...(how === "script" ? { through: "script" } : {}) });
+        if (!how) {
+          if (frameId !== 0) {
+            if (!shutFrames.has(tabId)) shutFrames.set(tabId, new Set());
+            shutFrames.get(tabId).add(frameId);
+          }
+          break;
+        }
       }
       learnWay(tabId, frameId, how);
       sent = true;
@@ -172,7 +223,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       if (res !== undefined) return res;
       break;
     } catch (e) {
-      if (e.timedOut && op === "eval") throw ranPast(timeoutMs);
+      if (e.timedOut && op === "eval") throw await ranPast(tabId, timeoutMs);
       if (!e.navigated) throw e;
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
@@ -185,7 +236,16 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
   // popup opened with no address was told to reload, and its agent read,
   // reloaded, and tried to close it for a minute (01a0f14c, 09-30).
   if (frameId === 0 && (!t.url || t.url === "about:blank") && t.status === "complete") throw new Error("this tab is blank (a popup opened with no address): there is nothing in it to read; goto an address in it, or close it");
-  throw new Error(`the page at ${t.url || "about:blank"} did not answer; reload it with goto and retry`);
+  // Safari keeps the extension off a site the user has not allowed it on.
+  // Through 10-16 it refused 451 times, in 357 tabs, and each request was
+  // told to reload a page that reloading could not open to it.
+  if (refused && frameId === 0) {
+    const host = /^https?:\/\/([^/?#]+)/.exec(t.url || "")?.[1];
+    throw new Error(host
+      ? `Safari has not allowed the extension on ${host}: in Safari Settings, Extensions, Safari Harness Bridge: Edit Websites, set ${host} to Allow; then retry`
+      : `Safari lets no extension into ${t.url}: goto a web address in this tab, or use another`);
+  }
+  throw new Error(`the page at ${t.url || "about:blank"} did not answer in ${Math.round((Date.now() - began) / 1000)} s; reload it with goto and retry`);
 }
 
 // Safari's own page for a site that never answered takes no script: a
@@ -201,8 +261,13 @@ const unopened = (url) => new Error(`Safari could not open ${url}: the site did 
 // An eval the page took but did not finish in time is the agent's code
 // running long: a page that answers nothing fails its ping first, in words
 // of its own. On 09-30 evals that scrolled and slept in a loop were told
-// the page did not answer (01a0f039, 01a0f031).
-const ranPast = (ms) => new Error(`your code ran past ${Math.round(ms / 1000)} s; the page answered and is fine. Keep sleeps and long loops out of eval: a loop across steps goes in repl, and wait {text} waits for words the page will show`);
+// the page did not answer (01a0f039, 01a0f031). In a tab behind another, a
+// video's play() and an animation never settle: on 10-16 an eval that
+// awaited play() there ran out its 30 s (AkylUsage).
+async function ranPast(tabId, ms) {
+  const behind = await api.tabs.get(tabId).then((t) => !t.active, () => false);
+  return new Error(`your code ran past ${Math.round(ms / 1000)} s; the page answered and is fine.${behind ? " This tab is behind another in its window, where a video's play() and an animation never settle: activate it first, or don't await them." : ""} Keep sleeps and long loops out of eval: a loop across steps goes in repl, and wait {text} waits for words the page will show`);
+}
 
 // Whether the tab still holds the frame: one the page took away (GEICO's,
 // 09-29) answers nothing, while the page itself may be fine.
@@ -213,25 +278,46 @@ async function hasFrame(tabId, frameId) {
 
 // How a copy of the script that answers is reached in the frame: by
 // message, through executeScript (a page open since before a reload), or
-// not at all (null).
-async function reach(tabId, frameId, ms) {
-  if (await ping(tabId, frameId, ms, false)) return "message";
-  return (await ping(tabId, frameId, ms, true)) ? "script" : null;
+// not at all (null). since: when the request began, for its error.
+async function reach(tabId, frameId, ms, since) {
+  if (await ping(tabId, frameId, ms, false, since)) return "message";
+  return (await ping(tabId, frameId, ms, true, since)) ? "script" : null;
 }
 
 // Whether that copy answers, asked the one way: false at once when none
 // took the message. A page that says nothing in ms is held (see PING_MS),
-// and the request fails.
-async function ping(tabId, frameId, ms, script) {
+// and the request fails, saying how long the page has answered nothing:
+// since the request began (since), or since an earlier one did while it
+// stayed silent. On 10-14 a page a print sheet held was said to have not
+// answered "within 5 s" after 43.7 s (AkylUsage).
+async function ping(tabId, frameId, ms, script, since = Date.now()) {
   try {
     const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "ping" }, ms, frameId, script);
-    return !!res && res.value === true;
+    const answered = !!res && res.value === true;
+    if (answered) silent.get(tabId)?.delete(frameId);
+    return answered;
   } catch (e) {
     if (!e.timedOut) throw e;
-    send({ op: "note", kind: "silent", tab: tabId, frame: frameId, ms });
+    const was = silent.get(tabId)?.get(frameId);
+    if (!was) send({ op: "note", kind: "silent", tab: tabId, frame: frameId, ms });
+    const from = Math.min(since, was?.from ?? since);
+    if (!silent.has(tabId)) silent.set(tabId, new Map());
+    silent.get(tabId).set(frameId, { from, at: Date.now() });
     const { url } = await api.tabs.get(tabId);
-    throw new Error(`the page at ${url || "about:blank"} did not answer within ${Math.round(ms / 1000)} s (a dialog open on it, or a page stuck loading, holds it); reload it with goto and retry`);
+    throw new Error(`the page at ${url || "about:blank"} did not answer in ${Math.round((Date.now() - from) / 1000)} s (a dialog open on it, or a page stuck loading, holds it); reload it with goto and retry`);
   }
+}
+
+// A frame silent within SILENT_MS is asked once, for QUICK_MS, before a
+// request goes to it, and the request fails then if it still is.
+async function unlessSilent(tabId, frameId) {
+  const was = silent.get(tabId)?.get(frameId);
+  if (!was) return;
+  if (Date.now() - was.at >= SILENT_MS) {
+    silent.get(tabId).delete(frameId);
+    return;
+  }
+  await ping(tabId, frameId, QUICK_MS, ways.get(tabId)?.get(frameId) === "script", was.from);
 }
 
 // Run an action and report what it caused: a new page in this tab
@@ -385,7 +471,8 @@ async function openedPage(tabId, until) {
 // Puts a copy of content.js in the frame, where Safari left none; with
 // takeOver, a fresh one that takes over from any copy already there (see
 // the claim at the top of content.js). The copy is marked this load's. A
-// page stuck loading may never run it, so this gives up after ms.
+// page stuck loading may never run it, so this gives up after ms. Answers
+// whether Safari keeps the extension out of the frame.
 async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false) {
   const target = { tabId, frameIds: [frameId] };
   const release = api.scripting.executeScript({
@@ -398,8 +485,13 @@ async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false)
   });
   const inject = release
     .then(() => api.scripting.executeScript({ target, files: ["content.js"] }))
-    .catch((e) => send({ op: "note", kind: "inject failed", tab: tabId, frame: frameId, error: String(e) }));
-  await Promise.race([inject, new Promise((resolve) => setTimeout(resolve, ms))]);
+    .then(() => false, (e) => {
+      send({ op: "note", kind: "inject failed", tab: tabId, frame: frameId, error: String(e) });
+      return /does not have access/.test(String(e));
+    });
+  const late = Promise.withResolvers();
+  const timer = setTimeout(late.resolve, ms, false);
+  return Promise.race([inject, late.promise]).finally(() => clearTimeout(timer));
 }
 
 // ---------- one trip per request ----------
@@ -410,6 +502,7 @@ async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false)
 // without a load being seen takes nothing, which settles undefined, and the
 // request is then asked as before.
 const ways = new Map(); // tabId -> Map of frameId -> "message" | "script"
+const shutFrames = new Map(); // tabId -> Set of embedded frames that took no fresh copy (toTab)
 
 function learnWay(tabId, frameId, how) {
   if (!ways.has(tabId)) ways.set(tabId, new Map());
@@ -429,9 +522,9 @@ function knownWay(tabId, frameId, op) {
 // that too fails the request then, as the ping first would have, not at the
 // request's own limit, and a page busy with a long request (a wait, a slow
 // fetch) answers it and goes on.
-function unlessHeld(tabId, frameId, script, reply) {
+function unlessHeld(tabId, frameId, script, reply, since) {
   const held = Promise.withResolvers();
-  const timer = setTimeout(() => ping(tabId, frameId, PING_MS, script).catch(held.reject), PING_MS);
+  const timer = setTimeout(() => ping(tabId, frameId, PING_MS, script, since).catch(held.reject), PING_MS);
   return Promise.race([reply, held.promise]).finally(() => clearTimeout(timer));
 }
 
@@ -441,19 +534,35 @@ function unlessHeld(tabId, frameId, script, reply) {
 // meanwhile is left to the script's answer. On 09-30 page-world code past
 // 30 s was told only that the daemon's request timed out.
 function pageTimed(tabId, frameId, ms, run) {
+  const began = Date.now();
   const stop = Promise.withResolvers();
-  const held = setTimeout(() => reach(tabId, frameId, PING_MS).catch((e) => e.navigated || stop.reject(e)), PING_MS);
-  const late = setTimeout(() => stop.reject(ranPast(ms)), ms);
+  const held = setTimeout(() => reach(tabId, frameId, PING_MS, began).catch((e) => e.navigated || stop.reject(e)), PING_MS);
+  const late = setTimeout(() => ranPast(tabId, ms).then(stop.reject), ms);
   return Promise.race([run, stop.promise]).finally(() => {
     clearTimeout(held);
     clearTimeout(late);
   });
 }
 
-api.tabs.onUpdated.addListener((id, info) => { if (info.status === "loading") ways.delete(id); });
-api.tabs.onRemoved.addListener((id) => { ways.delete(id); });
+// A new load forgets what was known of the tab's frames; a frame that
+// reports in is neither silent nor shut.
+api.tabs.onUpdated.addListener((id, info) => {
+  if (info.status !== "loading") return;
+  ways.delete(id);
+  silent.delete(id);
+  shutFrames.delete(id);
+});
+api.tabs.onRemoved.addListener((id) => {
+  ways.delete(id);
+  silent.delete(id);
+  shutFrames.delete(id);
+});
 api.runtime.onMessage.addListener((m, sender) => {
-  if (m && m.__safariHarnessReady === 1 && sender.tab) learnWay(sender.tab.id, sender.frameId || 0, "message");
+  if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
+  const frameId = sender.frameId || 0;
+  learnWay(sender.tab.id, frameId, "message");
+  silent.get(sender.tab.id)?.delete(frameId);
+  shutFrames.get(sender.tab.id)?.delete(frameId);
 });
 
 // ---------- embedded frames ----------
@@ -652,25 +761,30 @@ async function waitInFrames(tabId, args, timeoutMs) {
   });
 }
 
-// Asks every frame of the tab at once what it holds (__safariHarnessProbe
-// in content.js), top page first: a sign-in form or a bot check may sit in
-// an embedded frame of another site.
+// Asks every frame of the tab what it holds (__safariHarnessProbe in
+// content.js), top page first: a sign-in form or a bot check may sit in an
+// embedded frame of another site. The top page is asked alone first, and
+// the embedded frames get FRAMES_MS after it: one that answers nothing (a
+// frame stuck loading) held every probe until the daemon gave up at 2 s,
+// 1,060 times through 10-16, 35.8 minutes in all.
+const FRAMES_MS = 500;
 async function probeFrames(tabId, what, arg) {
   keepAwake(tabId);
   await waitReady(tabId, 15000);
-  const ask = () => api.scripting.executeScript({
-    target: { tabId, allFrames: true },
+  await unlessSilent(tabId, 0);
+  const ask = (frames) => api.scripting.executeScript({
+    target: { tabId, ...frames },
     func: (w, a) => (window.__safariHarnessProbe ? window.__safariHarnessProbe[w](a) : null),
     args: [what, arg ?? null],
   });
-  let results = await ask();
+  let [top] = await ask({ frameIds: [0] });
   // Safari skipped injecting the top page's script (after a redirect): add it.
-  if (!results.some((r) => r.frameId === 0 && r.result)) {
+  if (!top?.result) {
     await ensureContent(tabId, 0);
-    results = await ask();
+    [top] = await ask({ frameIds: [0] });
   }
-  const found = results.filter((r) => r.result);
-  return [...found.filter((r) => r.frameId === 0), ...found.filter((r) => r.frameId !== 0)].map((r) => ({ frame: r.frameId, ...r.result }));
+  const embedded = await bounded(ask({ allFrames: true }), "probe frames", Date.now() + FRAMES_MS).catch(() => []);
+  return [top, ...embedded.filter((r) => r.frameId !== 0)].filter((r) => r?.result).map((r) => ({ frame: r.frameId, ...r.result }));
 }
 
 // ---------- network and console capture ----------
@@ -718,6 +832,15 @@ function pageCapture(kind, cmd) {
     return true;
   }
   const key = Symbol.for("safari-harness.capture");
+  // The page's uncaught errors and failed script loads since it loaded
+  // come too, start or not, kept by dialogs.js from the page's first
+  // script: a page that threw as it loaded read 0 nodes, and console read
+  // had none of its errors (S99PartB). A read puts nothing in the page: the
+  // daemon's wait reads them on a page that drew nothing.
+  if (cmd === "read") {
+    const thrown = (window[Symbol.for("safari-harness.page")]?.errors ?? []).map(({ t, message }) => ({ level: "error", text: message, t, uncaught: true }));
+    return { entries: [...thrown, ...(window[key]?.console.log ?? [])].sort((a, b) => a.t - b.t).slice(-100) };
+  }
   let s = window[key];
   if (!s) {
     s = window[key] = { console: { on: false, log: [] } };
@@ -734,7 +857,6 @@ function pageCapture(kind, cmd) {
     }
   }
   const c = s.console;
-  if (cmd === "read") return { entries: c.log.slice(-100) };
   c.on = cmd === "start";
   if (c.on) c.log.length = 0;
   return { ok: true };
@@ -898,6 +1020,11 @@ async function pageValue(tabId, op, args) {
 }
 
 const FULL_PAGE_MAX = 12; // screens
+// A page's animations stall in a tab behind another, and an agent worked
+// around them by hand before its shots (S99PartA). Unless live, a shot
+// first finishes the page's finite ones, and those they start, for up to
+// SETTLE_MS.
+const SETTLE_MS = 1000;
 
 async function screenshot(tabId, opts) {
   const t = await api.tabs.get(tabId);
@@ -911,11 +1038,18 @@ async function screenshot(tabId, opts) {
     if (opts.annotate) await pageValue(tabId, "annotate", [true]);
     if (flip) await api.tabs.update(tabId, { active: true });
     try {
+      const settle = async () => {
+        if (opts.live) return;
+        const settled = await toTab(tabId, "settle", [SETTLE_MS], SETTLE_MS + 2000).catch(() => null);
+        if (settled?.value?.finished) await toTab(tabId, "painted", [], 3000).catch(() => {});
+      };
       await toTab(tabId, "painted", [], 3000).catch(() => {});
+      await settle();
       if (!page) shots.push({ y: 0, url: await grab() });
       for (let y = 0; page && y < page.h && shots.length < FULL_PAGE_MAX; y += page.ih) {
         await pageValue(tabId, "eval", [`(scrollTo(0, ${y}), scrollY)`]);
         await toTab(tabId, "painted", [], 3000).catch(() => {});
+        await settle();
         shots.push({ y: (await pageValue(tabId, "eval", ["scrollY"])).result, url: await grab() });
       }
     } finally {
@@ -981,14 +1115,20 @@ async function handle(msg) {
   if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus" && op !== "windows.resolve" && op !== "windows.regrouping") args[0] = await resolveTab(args[0]);
   switch (op) {
     case "tabs.list": {
-      const tabs = await api.tabs.query({});
+      const tabs = await bounded(api.tabs.query({}), "tabs.query", Date.now() + 2 * LIST_MS);
       // Every window has an active tab; front is the one in the window the
       // user had in front last, the tab tab: "front" names. shown is the one
       // Safari shows in front, which may be in an agent window an agent raised.
-      const [focused, shown] = await Promise.all([frontWindow(false), frontWindow(true)]);
+      // Past LIST_MS the tabs go without either, each partial with the phase
+      // Safari did not answer (see LIST_MS).
+      const until = Date.now() + LIST_MS;
+      const fronts = await Promise.all([frontWindow(false, until), frontWindow(true, until)]).then(([focused, shown]) => ({ focused, shown }), (e) => {
+        if (!e.phase) throw e;
+        return { partial: e.phase };
+      });
       return tabs
         .filter((t) => t.id !== undefined)
-        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(t.active && t.windowId === focused ? { front: true } : {}), ...(t.active && t.windowId === shown ? { shown: true } : {}) }));
+        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(fronts.partial ? { partial: fronts.partial } : {}), ...(t.active && t.windowId === fronts.focused ? { front: true } : {}), ...(t.active && t.windowId === fronts.shown ? { shown: true } : {}) }));
     }
     case "tabs.open": {
       // owned: the daemon may close it, and its dialogs are answered here
@@ -999,7 +1139,8 @@ async function handle(msg) {
       if (owned) await ownTab(tab.id);
       const { tab: t, loading } = await openedPage(tab.id, Date.now() + 15000);
       if (failedPage(t)) {
-        api.tabs.remove(t.id).catch(() => {});
+        closing.add(t.id);
+        api.tabs.remove(t.id).catch(() => closing.delete(t.id));
         throw unopened(url);
       }
       return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}) };
@@ -1010,8 +1151,9 @@ async function handle(msg) {
       if (only && await inFront(tabId)) return { ok: false, front: true };
       if (only) {
         // Inspect every frame without returning a field's value. If a page
-        // cannot be inspected, automatic cleanup leaves it alone.
-        const frames = await api.scripting.executeScript({
+        // cannot be inspected, or does not answer within FORM_MS (a dialog
+        // holds it), automatic cleanup leaves it alone.
+        const frames = await bounded(api.scripting.executeScript({
           target: { tabId, allFrames: true },
           func: () => [...window.document.querySelectorAll("input, textarea, select, [contenteditable]")].some((field) => {
             if (field.isContentEditable) return field.textContent.trim().length > 0;
@@ -1023,7 +1165,7 @@ async function handle(msg) {
             if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
             return field.value !== field.defaultValue;
           }),
-        }).catch(() => []);
+        }), "forms", Date.now() + FORM_MS).catch(() => []);
         if (!frames.length || frames.some((frame) => typeof frame.result !== "boolean")) return { ok: false, protected: "unreadable" };
         if (frames.some((frame) => frame.result)) return { ok: false, protected: "form" };
       }
@@ -1042,6 +1184,7 @@ async function handle(msg) {
       // went through in 21 ms; one 1 s after it still hung).
       const timers = [];
       const within = (p, ms) => Promise.race([p, new Promise((resolve) => timers.push(setTimeout(resolve, ms, false)))]);
+      closing.add(tabId);
       try {
         if (await within(api.tabs.remove(tabId).then(() => gone), 5000)) return { ok: true };
         if (!only && await ownsTab(tabId)) {
@@ -1055,6 +1198,7 @@ async function handle(msg) {
       } finally {
         for (const t of timers) clearTimeout(t);
         api.tabs.onRemoved.removeListener(onRemoved);
+        closing.delete(tabId);
       }
     }
     case "tabs.navigate": {
@@ -1187,6 +1331,8 @@ async function handle(msg) {
       const t = await api.tabs.get(tabId);
       const alone = (await api.tabs.query({ windowId: t.windowId })).length === 1;
       const dims = { width: Math.round(size.width), height: Math.round(size.height) };
+      const view = () => toTab(tabId, "tabInfo", [], 5000).then((r) => r?.value?.viewport, () => undefined);
+      const was = await view();
       let sized;
       if (whole || alone) {
         const others = (await api.windows.getAll()).filter((w) => w.id !== t.windowId);
@@ -1197,8 +1343,14 @@ async function handle(msg) {
         await markAgentWindow(w.id);
         sized = await api.windows.update(w.id, dims);
       }
-      const r = await toTab(tabId, "tabInfo", []);
-      return { ok: true, windowId: sized.id, size: { width: sized.width, height: sized.height }, viewport: r && r.value && r.value.viewport };
+      let viewport = await view();
+      for (const end = Date.now() + VIEWPORT_MS; viewport && was && viewport.w === was.w && viewport.h === was.h && Date.now() < end;) {
+        const pause = Promise.withResolvers();
+        setTimeout(pause.resolve, 100);
+        await pause.promise;
+        viewport = await view();
+      }
+      return { ok: true, windowId: sized.id, size: { width: sized.width, height: sized.height }, viewport };
     }
     // A window of an agent's own (daemon/spaces.ts), made behind the user's
     // without focus, of a size no other window has: its keeper, which sees
@@ -1325,6 +1477,52 @@ async function ownTab(tabId) {
   await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
 }
 
+// ---------- tabs gone ----------
+// Why a tab the daemon names is gone. The answer once named the end of a
+// turn, 20 minutes unused, or the user, whatever closed it: on 10-16 a
+// Safari panic reset ended six hunt agents' windows, and each of 12 calls
+// after was told its turn had ended (HuntsUsage). Safari says when a tab
+// goes with its window, the harness marks its own closes, and the rest are
+// the user's or the page's own. A tab not seen to go was given its id
+// before this load of the extension. Kept in session storage, which
+// outlives this page while Safari runs and empties as the extension goes.
+const GONE_KEPT = 500;
+const closedTabs = new Map(); // tabId -> { at, how: "harness" | "window" | "user" }
+const closing = new Set(); // tabs the harness is closing now
+const goneRead = store.get(["gone", "goneSince"]).then(async ({ gone = [], goneSince }) => {
+  const seen = [...closedTabs];
+  closedTabs.clear();
+  for (const [id, closed] of [...gone, ...seen]) closedTabs.set(id, closed);
+  if (goneSince === undefined) await store.set({ goneSince: Date.now() });
+  return goneSince ?? Date.now();
+}, () => Date.now());
+
+api.tabs.onRemoved.addListener((id, info) => {
+  closedTabs.delete(id);
+  closedTabs.set(id, { at: Date.now(), how: closing.delete(id) ? "harness" : info?.isWindowClosing ? "window" : "user" });
+  for (const old of closedTabs.keys()) {
+    if (closedTabs.size <= GONE_KEPT) break;
+    closedTabs.delete(old);
+  }
+  goneRead.then(() => store.set({ gone: [...closedTabs] })).catch(() => {});
+});
+
+// What the daemon is told of a tab Safari no longer knows.
+async function goneText(tabId) {
+  const since = await goneRead;
+  const closed = closedTabs.get(tabId);
+  const ago = (at) => {
+    const s = Math.round((Date.now() - at) / 1000);
+    return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
+  };
+  const why = !Number.isSafeInteger(tabId) ? ""
+    : closed?.how === "harness" ? `: the harness closed it ${ago(closed.at)} ago (at the end of a turn, or after 20 minutes unused); a tab you need past your turn must be kept with keep`
+    : closed?.how === "window" ? `: it closed with its window ${ago(closed.at)} ago`
+    : closed ? `: the user or its own page closed it ${ago(closed.at)} ago`
+    : `: Safari has had no tab ${tabId} in the ${ago(since)} since the extension started, so it closed before then (Safari quit or crashed, or the extension reloaded), or that id was never a tab's`;
+  return `that tab is gone${why}; find it with tabs, or open it again`;
+}
+
 // On 09-30 the daemon noted only loads a tool answered with: eval, a later
 // redirect or refresh, and real input still looked like the user's visits.
 // Safari's tab updates see all of those. drivenTabs is not ownership: an
@@ -1367,8 +1565,12 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 async function inFront(tabId) {
   const t = await api.tabs.get(tabId);
   if (!t.active) return false;
-  const [his, shown] = await Promise.all([frontWindow(false), frontWindow(true)]);
-  return t.windowId === his || t.windowId === shown;
+  // a front Safari cannot tell in time counts as his: the tab stays
+  const until = Date.now() + LIST_MS;
+  return Promise.all([frontWindow(false, until), frontWindow(true, until)]).then(([his, shown]) => t.windowId === his || t.windowId === shown, (e) => {
+    if (!e.phase) throw e;
+    return true;
+  });
 }
 
 // ---------- ids across a reload ----------
@@ -1404,7 +1606,9 @@ async function resolveWindow(windowId) {
 async function adopt() {
   const { tabAliases: tabs = {}, windowAliases: windows = {} } = await api.storage.local.get(["tabAliases", "windowAliases"]);
   const open = await api.tabs.query({});
-  const marks = await Promise.all(open.map((t) => api.scripting.executeScript({
+  // A page that never answers (stuck loading, or a dialog holds it) held
+  // adopt, and every list and close behind it: each mark gets MARK_MS.
+  const marks = await Promise.all(open.map((t) => bounded(api.scripting.executeScript({
     target: { tabId: t.id, frameIds: [0] },
     func: (tab, win) => {
       const was = { tab: window.__safariHarnessTab, window: window.__safariHarnessWindow };
@@ -1413,7 +1617,7 @@ async function adopt() {
       return was;
     },
     args: [t.id, t.windowId],
-  }).then(([r]) => r && r.result, () => undefined)));
+  }), "adopt", Date.now() + MARK_MS).then(([r]) => r && r.result, () => undefined)));
   for (const [i, t] of open.entries()) {
     alias(tabs, marks[i]?.tab, t.id);
     alias(windows, marks[i]?.window, t.windowId);
@@ -1502,13 +1706,16 @@ api.windows.onRemoved.addListener((id) => {
 
 // The window focused last: with agents, whichever it is; without, the one
 // the user had in front last, leaving agent windows out.
-async function frontWindow(agents) {
+async function frontWindow(agents, until = Date.now() + LIST_MS) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
-  if (adopted) await adopted.catch(() => {});
+  if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
   const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
-    api.storage.local.get(["focusOrder", "agentWindows"]),
-    api.windows.getAll(),
-    api.windows.getLastFocused().then((w) => w.id, () => undefined),
+    bounded(api.storage.local.get(["focusOrder", "agentWindows"]), "storage.local.get", until),
+    bounded(api.windows.getAll(), "windows.getAll", until),
+    bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
+      if (e.phase) throw e;
+      return undefined;
+    }),
   ]);
   const ids = new Set(open.map((w) => w.id));
   return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));

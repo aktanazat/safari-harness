@@ -47,14 +47,14 @@ function refOf(snap: string, pattern: RegExp): string {
 // The site's own styles go too: since its 2026 redesign they stretch the
 // body to the window's height and more, so a printed fixture took 2 pages.
 async function withPage(html: string, setup: string, body: (tab: number) => Promise<void>) {
-  const before = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+  const before = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
   const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
   try {
     await call("eval", { tab, expression: `(() => { document.querySelectorAll("style").forEach((s) => s.remove()); document.body.innerHTML = ${JSON.stringify(html)}; ${setup}; return 1; })()` });
     await body(tab);
   } finally {
     await call("close", { tab });
-    const strays = ((await call("tabs")) as (Tab & { url: string })[])
+    const strays = ((await call("tabs")).tabs as (Tab & { url: string })[])
       .filter((t) => !before.has(t.id) && t.url.startsWith("https://example.org/"));
     for (const t of strays) await call("close", { tab: t.id });
   }
@@ -104,7 +104,7 @@ if (phase === "--after-install") {
   const byOldId = await call("info", { tab: s.tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
   const ms = Date.now() - start;
   check("a tab opened before the reload answers at once by the id it had", byOldId === s.url && ms < 2000, { byOldId, ms });
-  const tab = ((await call("tabs")) as (Tab & { url: string })[]).find((t) => t.url === s.url)?.id;
+  const tab = ((await call("tabs")).tabs as (Tab & { url: string })[]).find((t) => t.url === s.url)?.id;
   if (tab !== undefined) {
     await call("click", { tab, ref: s.ref });
     const text = (await call("eval", { tab, expression: "document.querySelector('button').textContent" })).result;
@@ -166,11 +166,11 @@ await withPage(FORM, FORM_JS, async (tab) => {
     await call("eval", { tab, expression: 'document.getElementById("fout").textContent' }));
   await Bun.file(file).delete();
 
-  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   const opened = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
   check("a click that opens a tab reports newTab", opened.newTab?.url === "https://example.org/", opened);
   if (opened.newTab) await call("close", { tab: opened.newTab.id });
-  const activeNow = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const activeNow = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
 
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
@@ -183,13 +183,13 @@ await withPage(FORM, FORM_JS, async (tab) => {
 
 // ---------- several steps in one call ----------
 
-const tabsBefore = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const tabsBefore = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
 const read = await call("run", { steps: [
   { tool: "open", args: { url: "https://example.com/", background: true } },
   { tool: "eval", args: { expression: "document.title" } },
   { tool: "close" },
 ] });
-const leftover = ((await call("tabs")) as Tab[]).filter((t) => !tabsBefore.has(t.id));
+const leftover = ((await call("tabs")).tabs as Tab[]).filter((t) => !tabsBefore.has(t.id));
 for (const t of leftover) await call("close", { tab: t.id });
 check("run opens, reads, and closes its own tab in one call",
   read.steps.length === 3 && read.steps[1].value?.result === "Example Domain" && leftover.length === 0, { read, leftover });
@@ -208,14 +208,14 @@ check("run stops at the first failing step and says so",
   { stopped, stoppedTitle });
 
 // A failed run must not leave its tab open: close steps still run.
-const before2 = new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const before2 = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
 const cleaned = await call("run", { steps: [
   { tool: "open", args: { url: "https://example.com/", background: true } },
   { tool: "click", args: { ref: "999" } },
   { tool: "eval", args: { expression: "1" } },
   { tool: "close" },
 ] });
-const left2 = ((await call("tabs")) as Tab[]).filter((t) => !before2.has(t.id));
+const left2 = ((await call("tabs")).tabs as Tab[]).filter((t) => !before2.has(t.id));
 for (const t of left2) await call("close", { tab: t.id });
 check("a failed run still runs its close step",
   left2.length === 0 && cleaned.notRun === 1 && cleaned.steps.at(-1)?.tool === "close" && cleaned.steps.at(-1)?.step === 4 && cleaned.steps.at(-1)?.error === undefined,
@@ -231,21 +231,24 @@ check("a page tool without tab is an error, not a read of the front tab", untarg
 // that were in front. Our tab sits in an agent window, which never holds
 // the user's front tab, even raised: "front" names the tab he was on. A
 // failure prints only whose tab it was; his page is never read.
-const TAB_OPS = { tabs: () => call("tabs") as Promise<Tab[]>, activate: (tab: number) => call("activate", { tab }) };
+const TAB_OPS = { tabs: async () => (await call("tabs")).tabs as Tab[], activate: (tab: number) => call("activate", { tab }) };
 await withPage("<p>front check</p>", 'document.title = "front check"', async (tab) => {
-  const rows = await inFront(tab, TAB_OPS, () => call("tabs") as Promise<(Tab & { windowId: number })[]>);
+  const rows = await inFront(tab, TAB_OPS, async () => (await call("tabs")).tabs as (Tab & { windowId: number })[]);
   const ours = rows.find((t) => t.id === tab);
   const front = rows.filter((t) => t.front);
   check('tab "front" stays the user\'s tab while an agent tab is raised', front.length === 1 && front[0].windowId !== ours?.windowId,
     front.length === 1 ? (front[0].id === tab ? "ours" : "another agent window's tab") : `${front.length} tabs marked front`);
 });
 
+// A close of a tab the harness closed already succeeds at once and says
+// when (closeTab): on 10-16 `safari close 5203` failed after the repl had
+// closed it.
 const closed = (await call("open", { url: "https://example.com/", background: true })).id as number;
 await call("close", { tab: closed });
 const closeStart = Date.now();
-const closedAgain = await call("close", { tab: closed }).then(() => "resolved", (e: Error) => e.message);
+const closedAgain = await call("close", { tab: closed });
 const closeMs = Date.now() - closeStart;
-check("closing a tab that is gone says so at once", closedAgain.startsWith("close: that tab is gone") && closeMs < 5000, { closedAgain, closeMs });
+check("closing a tab the harness closed already says when, at once", closedAgain.ok === true && String(closedAgain.already).startsWith(`tab ${closed} was closed by a close call at`) && closeMs < 5000, { closedAgain, closeMs });
 
 // ---------- a page whose script stops answering, and actions that navigate ----------
 
@@ -635,7 +638,7 @@ function inWindowHolding(title: string, command: string): string {
   });
   const url = `http://127.0.0.1:${server.port}/`;
   const title = `check-live-net-${Date.now()}`;
-  const listed = async () => (await call("tabs")) as (Tab & { url?: string })[];
+  const listed = async () => (await call("tabs")).tabs as (Tab & { url?: string })[];
   const tab = (await call("open", { url, background: true })).id as number;
   let other: number | undefined;
   try {
@@ -787,7 +790,7 @@ const alertTexts = () => (existsSync(dataFile("alerts.jsonl")) ? readFileSync(da
 await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
-  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   const [userApp, textsBefore] = [await frontApp(), alertTexts()];
   process.env.SAFARI_HARNESS_AWAY = "0";
   try {
@@ -797,7 +800,7 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   } finally {
     delete process.env.SAFARI_HARNESS_AWAY;
   }
-  const [nowFront, nowApp] = [((await call("tabs")) as Tab[]).find((t) => t.front)?.id, await frontApp()];
+  const [nowFront, nowApp] = [((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id, await frontApp()];
   check("handoff gives back the tab and app the user had in front", nowFront === userFront && nowApp === userApp, { nowFront, userFront, nowApp, userApp });
   const textsAfter = alertTexts();
   check("handoff with the user at the Mac sends nothing", textsAfter === textsBefore, { textsBefore, textsAfter });
@@ -808,9 +811,9 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
 await withPage("<h1>Sorry, you have been blocked</h1><p>You are unable to access example.com</p>", 'document.title = "Attention Required! | Cloudflare"', async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the site blocked the browser", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "block", snap.challenge);
-  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   const refused = await CALLER_TOOLS.handoff.run({ tab, why: SELF_TEST, ms: 3000 }).then(() => "handed off", (e: Error) => e.message);
-  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const nowFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   check("handoff refuses a block without raising the tab", refused.includes("no one can clear it") && nowFront === userFront, { refused, nowFront, userFront });
 });
 
@@ -974,7 +977,7 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
 const TRUST = `<button id=b onclick="this.dataset.trusted = event.isTrusted">Real</button><input id=f>`;
 
 await withPage(TRUST, "", async (tab) => {
-  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   await call("click", { tab, ref: "#b" });
   const scripted = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
   const app = await frontApp();
@@ -987,7 +990,7 @@ await withPage(TRUST, "", async (tab) => {
   await CALLER_TOOLS.real_input.run({ tab, do: "type", ref: "#f", text: "abc" });
   await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
   const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;
-  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const nowFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   check("real_input types and presses keys, and gives the front tab back", typed === "ab" && nowFront === userFront, { typed, nowFront, userFront });
 });
 
@@ -1013,10 +1016,10 @@ const SHOWN = `<style>@keyframes sh-fade { from { opacity: 0 } }</style><p id=ou
 const SHOWN_JS = `document.getElementById("out").addEventListener("animationend", (e) => { e.target.textContent = "Now drawn"; })`;
 
 await withPage(SHOWN, SHOWN_JS, async (tab) => {
-  const userFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   const hidden = await call("wait", { tab, text: "Now drawn", ms: 1500 });
   const shown = await call("wait", { tab, text: "Now drawn", ms: 5000, front: true });
-  const nowFront = ((await call("tabs")) as Tab[]).find((t) => t.front)?.id;
+  const nowFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   check("wait front shows a hidden tab until it draws, then gives the front tab back", !hidden.found && shown.found && nowFront === userFront, { hidden, shown, nowFront, userFront });
 });
 

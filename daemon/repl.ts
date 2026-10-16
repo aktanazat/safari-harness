@@ -14,10 +14,18 @@ import { inspect } from "node:util";
 import { invoke as defaultInvoke, type Invoke } from "./call.ts";
 import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
+import { saveAnswer } from "./save.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
 
 export const REPL_TIMEOUT_MS = 120_000;
+
+// A run's output past this many characters is saved whole, and the result
+// keeps its head and the file's path. On 10-14 one agent's 36 runs reading
+// Calendly's and Ashby's bundles printed 250 KB, two of them 30 KB of
+// minified source each, cut only where the MCP reply cuts (mcp-tools.ts).
+const SPILL_CHARS = 10_000;
+const SPILL_HEAD_CHARS = 2_000;
 
 export type ReplResult = { output: string; error?: string };
 
@@ -588,8 +596,16 @@ export class ReplSession {
   readonly #trees = new Map<string, string>();
   readonly #transpiler = new Bun.Transpiler({ loader: "ts", replMode: true });
   // What the script's `page` holds: the last page opened or attached, or
-  // whatever the script assigned to it.
-  #page: unknown;
+  // whatever the script assigned to it. It is a plain global, as every
+  // other one is: the transpiler hoists `const page = ...` to `var page`,
+  // and over a global with a getter and setter that var read undefined
+  // ever after, though the setter took the value (10-16).
+  get #page(): unknown {
+    return this.#g.page;
+  }
+  set #page(value: unknown) {
+    this.#g.page = value;
+  }
   #out: string[] = [];
   #chain: Promise<unknown> = Promise.resolve();
   // Which call of the session this is, and the address each tab its
@@ -609,40 +625,17 @@ export class ReplSession {
     this.kit = new SiteKit(this.#invoke, undefined, this.cwd);
     this.#ctx = vm.createContext({});
     this.#g = vm.runInContext("globalThis", this.#ctx) as Record<string, unknown>;
-    Object.assign(this.#g, this.#globals());
-    Object.defineProperty(this.#g, "page", {
-      configurable: true,
-      enumerable: true,
-      get: () => {
-        if (this.#page === undefined) throw new Error("no page yet: openTab(url) or attachBrowserTab(id) first");
-        return this.#page;
-      },
-      set: (value: unknown) => { this.#page = value; },
-    });
-    this.#defineSites();
+    Object.assign(this.#g, this.#globals(), this.#sites(), { page: undefined });
   }
 
-  // A site global is made the first time code uses it, once per session.
-  // Assigning to its name replaces it, as with any other global.
-  #defineSites(): void {
-    const made = new Map<string, object>();
-    const names = [...Object.keys(SITE_GLOBALS), ...Object.keys(SITE_ALIASES)];
-    for (const name of names) {
-      const source = SITE_ALIASES[name] ?? name;
-      Object.defineProperty(this.#g, name, {
-        configurable: true,
-        enumerable: true,
-        get: () => {
-          let site = made.get(source);
-          if (!site) {
-            site = SITE_GLOBALS[source](this.kit);
-            made.set(source, site);
-          }
-          return site;
-        },
-        set: (value: unknown) => Object.defineProperty(this.#g, name, { value, writable: true, configurable: true, enumerable: true }),
-      });
-    }
+  // The site globals, made with the session: making one opens nothing
+  // until a method runs (sites/index.ts). Plain values, so a script that
+  // declares `const x = ...` over one has its own x, as with page.
+  #sites(): Record<string, object> {
+    const made: Record<string, object> = {};
+    for (const [name, site] of Object.entries(SITE_GLOBALS)) made[name] = site(this.kit);
+    for (const [alias, source] of Object.entries(SITE_ALIASES)) made[alias] = made[source];
+    return made;
   }
 
   call(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
@@ -663,9 +656,17 @@ export class ReplSession {
 
   // A hint beside a result goes to the script's output on a line of its
   // own, as formatResult prints one (tools.ts), once in a run however
-  // many of its actions came back with it.
+  // many of its actions came back with it. A hint that differs from an
+  // earlier one only in its numbers takes that one's place: on 10-16 one
+  // script printed "you slept 60 s ...", "61 s", "62 s" ... on 80 lines
+  // (guard.ts).
   showHint(hint: unknown): void {
-    if (!this.#quiet && typeof hint === "string" && !this.#out.includes(`hint: ${hint}`)) this.#out.push(`hint: ${hint}`);
+    if (this.#quiet || typeof hint !== "string") return;
+    const line = `hint: ${hint}`;
+    const kind = line.replace(/\d+/g, "#");
+    const at = this.#out.findIndex((l) => l.replace(/\d+/g, "#") === kind);
+    if (at >= 0) this.#out[at] = line;
+    else this.#out.push(line);
   }
 
   // Runs one call's code after any earlier call has finished.
@@ -705,22 +706,30 @@ export class ReplSession {
       // prototype; a `return x` the transpiler let through, as x itself.
       const value = done !== null && typeof done === "object" && Object.getPrototypeOf(done) === null ? ("value" in done ? done.value : undefined) : done;
       if (value !== undefined) this.#out.push(show(value));
-      return { output: this.#flush() };
+      return { output: await this.#flush() };
     } catch (e) {
       const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
       const text = errorText(e);
       // Scripts written for the page reach for its globals, which only the page has.
-      const hint = /^ReferenceError: (document|window|localStorage|location) is not defined/.test(text) ? "\nscripts run outside the page; read it with page.evaluate(() => ...)" : "";
-      return { output: this.#flush(), error: `${text}${where ? `\nat ${where} of the script` : ""}${hint}` };
+      const hint = /^ReferenceError: (document|window|localStorage|location) is not defined/.test(text)
+        ? "\nscripts run outside the page; read it with page.evaluate(() => ...)"
+        : this.#page === undefined && /\(evaluating 'page\./.test(text)
+          ? "\nhint: no page yet: openTab(url) or attachBrowserTab(id) first"
+          : "";
+      return { output: await this.#flush(), error: `${text}${where ? `\nat ${where} of the script` : ""}${hint}` };
     } finally {
       clearTimeout(timer);
     }
   }
 
-  #flush(): string {
+  // The run's output; past SPILL_CHARS, saved whole and its head returned
+  // with the path. A person reads a quiet session's output, not a file.
+  async #flush(): Promise<string> {
     const text = this.#out.join("\n");
     this.#out = [];
-    return text;
+    if (this.#quiet || text.length <= SPILL_CHARS) return text;
+    const path = await saveAnswer(text);
+    return `${text.slice(0, SPILL_HEAD_CHARS)}\n…cut at ${SPILL_HEAD_CHARS} of ${text.length} characters; the whole output is in ${path}: grep it or read the part you need`;
   }
 
   #print(args: unknown[]): void {
@@ -745,11 +754,11 @@ export class ReplSession {
   }
 
   // The tabs tool's rows. An agent's own call lists its tabs, the user's
-  // front tab, and a line counting his others; all lists his too, their
+  // front tab, and a note counting his others; all lists his too, their
   // addresses cut at the path (tabs-view.ts). A page may be one of his.
   async #rows(all = false): Promise<TabRow[]> {
-    const rows = (await this.call("tabs", all ? { all: true } : {})) as unknown[];
-    return rows.filter((r): r is TabRow => typeof r === "object" && r !== null);
+    const r = (await this.call("tabs", all ? { all: true } : {})) as { tabs: unknown[] };
+    return r.tabs.filter((t): t is TabRow => typeof t === "object" && t !== null);
   }
 
   #forget(p: Page): void {

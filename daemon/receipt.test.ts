@@ -326,7 +326,7 @@ test("a wait with only ms on a page that cannot be watched waits out its ms and 
 // On 10-07 a support chat took 160 waits of 30 s; a wait now holds 110 s.
 test("a text wait the page never meets says those words never showed; a 60 s wait is kept whole, and an ms past 110000 says it was cut", async () => {
   safari({ wait: () => ({ found: false }) });
-  expect(await callTool("wait", { tab: 7, text: "zzqq1", ms: 200000 })).toMatchObject({ ok: true, found: false, hint: expect.stringContaining("never showed those words"), note: expect.stringContaining("at most 110000") });
+  expect(await callTool("wait", { tab: 7, text: "zzqq1", ms: 200000 })).toMatchObject({ ok: false, found: false, hint: expect.stringContaining("never showed those words"), note: expect.stringContaining("at most 110000") });
   const minute = await callTool("wait", { tab: 7, selector: "#done", ms: 60000 });
   expect(JSON.stringify(minute)).not.toMatch(/never showed|at most/);
 });

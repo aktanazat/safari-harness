@@ -10,7 +10,10 @@ import { dirname } from "node:path";
 
 export type JournalEvent = { t: string; kind: string } & Record<string, unknown>;
 
-const MAX = 200;
+// 200 held three minutes of a storm, which notes about one event a second,
+// and storms ran 5 to 29 minutes (10-08 to 10-16): their starts were gone
+// by the time anyone looked.
+const MAX = 2000;
 let events: JournalEvent[] = [];
 let file: string | undefined;
 let appended = 0;
@@ -27,35 +30,60 @@ function rewrite(path: string) {
   appended = 0;
 }
 
+// A storm notes about one event a second, nearly all one timeout again and
+// again (DaemonLogs): an event alike to the one before it (its kind and
+// fields, times and count aside) joins it, n counting them, since when the
+// first came, t when the latest did.
+function alike(a: JournalEvent, b: JournalEvent): boolean {
+  const fields = (e: JournalEvent) => JSON.stringify(Object.entries(e).filter(([k]) => k !== "t" && k !== "n" && k !== "since"));
+  return fields(a) === fields(b);
+}
+
+function joined(run: JournalEvent, e: JournalEvent): JournalEvent {
+  const n = typeof e.n === "number" ? e.n : (typeof run.n === "number" ? run.n : 1) + 1;
+  return { ...e, n, since: typeof run.since === "string" ? run.since : run.t };
+}
+
 // Loads the events an earlier daemon left in path and appends new ones to
 // it. Returns the earlier events, oldest first.
 export function openJournal(path: string): JournalEvent[] {
   mkdirSync(dirname(path), { recursive: true });
-  let earlier: JournalEvent[] = [];
+  const earlier: JournalEvent[] = [];
   try {
-    earlier = readFileSync(path, "utf8").split("\n").flatMap((line) => {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      let v: unknown;
       try {
-        const v: unknown = JSON.parse(line);
-        return isEvent(v) ? [v] : [];
+        v = JSON.parse(line);
       } catch {
-        return [];
+        continue;
       }
-    }).slice(-MAX);
+      if (!isEvent(v)) continue;
+      // each event of a run was written as it joined
+      const last = earlier.at(-1);
+      if (last && alike(last, v)) earlier[earlier.length - 1] = joined(last, v);
+      else earlier.push(v);
+    }
   } catch {
     // no journal yet
   }
+  const kept = earlier.slice(-MAX);
   file = path;
-  events = [...earlier, ...events].slice(-MAX);
+  events = [...kept, ...events].slice(-MAX);
   rewrite(path);
-  return earlier;
+  return kept;
 }
 
 export function note(kind: string, fields: Record<string, unknown> = {}): void {
-  const e: JournalEvent = { t: new Date().toISOString(), kind, ...fields };
-  events.push(e);
+  const fresh: JournalEvent = { t: new Date().toISOString(), kind, ...fields };
+  const last = events.at(-1);
+  const e = last && alike(last, fresh) ? joined(last, fresh) : fresh;
+  if (e === fresh) events.push(e);
+  else events[events.length - 1] = e;
   if (events.length > MAX) events = events.slice(-MAX);
   if (!file) return;
-  console.log(`[safari-harness] ${kind}`, Object.keys(fields).length ? JSON.stringify(fields) : "");
+  // The log says the first of a run, and again each time it doubles.
+  const n = typeof e.n === "number" ? e.n : 1;
+  if ((n & (n - 1)) === 0) console.log(`[safari-harness] ${kind}`, Object.keys(fields).length ? JSON.stringify(fields) : "", ...(n > 1 ? [`(${n} alike since ${String(e.since)})`] : []));
   // The bridge notes as it connects and fails requests: a journal it cannot
   // write (its folder deleted, the disk full) must not stop either.
   try {

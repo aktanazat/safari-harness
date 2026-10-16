@@ -56,19 +56,26 @@ let mine: Row;
 
 // A research agent listed his whole Safari six times in one errand
 // (01a0da2f), and a tab list carried an OAuth state token into a subagent.
+// The count of his others is a note beside the rows, never a row: on 10-11
+// a script reading each row's url failed on it ("'str' object has no
+// attribute 'get'").
 test("an agent sees its own tabs, his front tab, and a count of his others; host and all show his, cut at the path", async () => {
   mine = (await as("open", { url: "https://example.com/done?code=x&order=7", background: true })) as Row;
   expect(mine.url).toBe("https://example.com/done?code=...&order=7");
-  expect(await as("tabs", {})).toEqual([
-    { id: mine.id, windowId: mine.windowId, url: "https://example.com/done?code=...&order=7" },
-    { id: 7001, windowId: 7000, active: true, front: true },
-    expect.stringMatching(/^the user has 3 other tabs;/),
-  ]);
-  expect(await as("tabs", { host: "github.com" })).toEqual([
-    { id: 7001, windowId: 7000, url: "https://github.com/me/repo", title: "Repo", active: true, front: true },
-    { id: 7003, windowId: 7000, url: "https://gist.github.com/me/1", title: "Gist" },
-  ]);
-  const all = (await as("tabs", { all: true })) as Row[];
+  expect(await as("tabs", {})).toEqual({
+    tabs: [
+      { id: mine.id, windowId: mine.windowId, url: "https://example.com/done?code=...&order=7" },
+      { id: 7001, windowId: 7000, active: true, front: true },
+    ],
+    note: expect.stringMatching(/^the user has 2 other tabs;/),
+  });
+  expect(await as("tabs", { host: "github.com" })).toEqual({
+    tabs: [
+      { id: 7001, windowId: 7000, url: "https://github.com/me/repo", title: "Repo", active: true, front: true },
+      { id: 7003, windowId: 7000, url: "https://gist.github.com/me/1", title: "Gist" },
+    ],
+  });
+  const { tabs: all } = (await as("tabs", { all: true })) as { tabs: Row[] };
   expect(all.map((t) => t.url)).toEqual([
     "https://github.com/me/repo",
     "https://mail.google.com/mail/u/0/",
@@ -79,7 +86,7 @@ test("an agent sees its own tabs, his front tab, and a count of his others; host
 });
 
 test("a caller with no agent behind it gets every tab, secrets in addresses still cut", async () => {
-  const every = (await callTool("tabs", {})) as Row[];
+  const { tabs: every } = (await callTool("tabs", {})) as { tabs: Row[] };
   expect(every.map((t) => t.id)).toEqual([...tabs.keys()]);
   expect(every.find((t) => t.id === 7002)?.url).toBe("https://mail.google.com/mail/u/0/?state=...#inbox");
   expect(every.find((t) => t.id === 7001)?.url).toBe("https://github.com/me/repo?tab=settings#readme");

@@ -1,9 +1,11 @@
 // safari doctor: whether each part the harness needs works on this Mac,
 // with the one step that fixes each that does not. It only looks: it
-// changes no setting and starts no Safari, and it closes the one tab it
-// opens, hidden in a window of its own, for its round trip. It runs in the
-// calling process, because the Accessibility and Full Disk Access that the
-// input helper and Messages need belong to the caller (caller.ts).
+// changes no setting and starts no Safari. It answers within FAST_MS, with
+// the daemon's /health and one list of Safari's tabs through the daemon;
+// with --deep it also times a round trip through a page, in one tab it
+// opens hidden, in a window of its own, and closes. It runs in the calling
+// process, because the Accessibility and Full Disk Access that the input
+// helper and Messages need belong to the caller (caller.ts).
 
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
@@ -26,12 +28,22 @@ const WEBDRIVER = join(homedir(), "Library", "WebDriver");
 const LOW_DISK_BYTES = 2 * 1024 ** 3;
 const HIGH_SWAP_MB = 2048;
 const EXTENSIONS = "in Safari > Settings > Extensions, turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
+const RELOAD = "safari extension reload, then run safari doctor again";
 const TERMINAL = "turn on the terminal you run safari from";
+// On 10-13 and 10-16 doctor took 30 s while the extension was stuck: its
+// round trip waited out windows.open's limit, and host-headroom alone may
+// take 30 s. Each probe has until FAST_MS, one still running then counts
+// as not answering, and the round trip runs with --deep. /health has
+// HEALTH_MS of it, and the tab list asked once it answers, the rest.
+const FAST_MS = 3000;
+const HEALTH_MS = 1500;
 
 export type Status = "ok" | "warn" | "fail" | "off" | "skip";
 export type Check = { name: string; status: Status; detail: string; fix?: string };
-// What the doctor reads of the daemon's /health (main.ts).
-export type Health = { pid?: number; stopping?: string; extension: { connectedAt?: number } | null };
+// What the doctor reads of the daemon's /health (main.ts): the extension
+// as the bridge tells it (bridge.ts health), null from an older daemon
+// while it is not connected.
+export type Health = { pid?: number; stopping?: string; extension: { connected: boolean; stuck: boolean; timeouts: Record<string, number>; connectedAt?: number } | null };
 export type Pairing = { unlocked: boolean; reason?: string; sessions?: number };
 
 // One fact each. The ones that can fail throw with the reason; the rest
@@ -41,6 +53,8 @@ export type Probes = {
   health: () => Promise<Health | null>;
   launchd: () => Promise<boolean>;
   extensionKeys: () => Promise<{ deployed?: string; installed?: string }>;
+  // how many tabs Safari has, as the daemon lists them for an agent
+  tabs: () => Promise<number>;
   roundTrip: () => Promise<number>;
   accessibility: () => Promise<void>;
   messages: () => Promise<void>;
@@ -54,11 +68,17 @@ export type Probes = {
 
 type Outcome<T> = { value: T } | { error: string };
 
-async function outcome<T>(probe: () => Promise<T>): Promise<Outcome<T>> {
+// What probe answers, or why it did not: by the time by (performance.now),
+// when there is one.
+async function outcome<T>(probe: () => Promise<T>, by = Infinity): Promise<Outcome<T>> {
+  const { promise: late, resolve } = Promise.withResolvers<Outcome<T>>();
+  const timer = by === Infinity ? undefined : setTimeout(() => resolve({ error: `no answer within ${FAST_MS / 1000} s` }), Math.max(0, by - performance.now()));
   try {
-    return { value: await probe() };
+    return await Promise.race([probe().then((value) => ({ value })), late]);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -75,7 +95,7 @@ const LIVE: Probes = {
   safariRunning: async () => (await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited) === 0,
   health: async () => {
     try {
-      const res = await fetch(`${daemonHttp()}/health`, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${daemonHttp()}/health`, { signal: AbortSignal.timeout(HEALTH_MS) });
       // the daemon's own answer (main.ts)
       const health = (await res.json()) as Health;
       return health;
@@ -85,6 +105,11 @@ const LIVE: Probes = {
   },
   launchd: async () => daemonLoaded(),
   extensionKeys: async () => ({ deployed: record(join(DATA, "current", ".extension")), installed: record(join(DATA, "installed-extension")) }),
+  tabs: async () => {
+    // the tabs tool's answer (tools.ts)
+    const listed = (await rpc("tabs", {})) as { tabs: unknown[] };
+    return listed.tabs.length;
+  },
   // Through the page's own script and back: the doctor's /space page runs
   // the content script, as every http page does.
   roundTrip: async () => {
@@ -101,7 +126,7 @@ const LIVE: Probes = {
   // The helper checks its permission before anything else, and reads only
   // where Safari's page area is.
   accessibility: async () => {
-    await input(["webarea"]);
+    await input(["webarea"], FAST_MS);
   },
   messages: async () => {
     const db = openChatDb();
@@ -117,8 +142,9 @@ const LIVE: Probes = {
     return pairing;
   },
   safaridriverMcp: async () => {
-    const help = spawnSync("/usr/bin/safaridriver", ["--help"], { encoding: "utf8", timeout: 10000 });
-    return `${help.stdout ?? ""}${help.stderr ?? ""}`.includes("--mcp");
+    const help = Bun.spawn(["/usr/bin/safaridriver", "--help"], { stdout: "pipe", stderr: "pipe", timeout: FAST_MS });
+    const said = await Promise.all([new Response(help.stdout).text(), new Response(help.stderr).text()]);
+    return said.join("").includes("--mcp");
   },
   remoteAutomation: async () => {
     const plists = existsSync(WEBDRIVER) ? readdirSync(WEBDRIVER).filter((f) => f.endsWith(".plist")) : [];
@@ -130,7 +156,7 @@ const LIVE: Probes = {
   },
   swapMb: async () => {
     if (!existsSync(HEADROOM)) return undefined;
-    const { stdout } = await execFileAsync(HEADROOM, ["--json"], { timeout: 30000 });
+    const { stdout } = await execFileAsync(HEADROOM, ["--json"], { timeout: FAST_MS });
     const reading: unknown = JSON.parse(stdout);
     if (reading && typeof reading === "object" && "host" in reading && reading.host && typeof reading.host === "object" && "swap_used_mb" in reading.host && typeof reading.host.swap_used_mb === "number") return reading.host.swap_used_mb;
     throw new Error("its answer has no host.swap_used_mb");
@@ -151,6 +177,19 @@ function launchdCheck(loaded: boolean, answering: boolean): Check {
   if (loaded) return { name: "launchd", status: "ok", detail: "the daemon's job is loaded, so it runs from login on" };
   if (answering) return { name: "launchd", status: "warn", detail: "no job: this daemon stops when the terminal that started it closes", fix: "safari daemon install" };
   return { name: "launchd", status: "fail", detail: "the daemon's job is not loaded", fix: "safari daemon install" };
+}
+
+// Stuck: a kind of request the extension has left unanswered twice in a
+// row, which then fails at once until it answers again (bridge.ts).
+function extensionCheck(extension: Health["extension"]): Check {
+  const name = "extension";
+  if (!extension?.connected) return { name, status: "fail", detail: "Safari Harness Bridge is not connected", fix: EXTENSIONS };
+  if (extension.stuck) {
+    const unanswered = Object.entries(extension.timeouts).map(([op, n]) => `${op} ${n}`).join(", ");
+    return { name, status: "fail", detail: `connected, but stuck: requests it left unanswered in a row: ${unanswered}`, fix: `${RELOAD}; if it stays stuck, ${EXTENSIONS}` };
+  }
+  const since = extension.connectedAt;
+  return { name, status: "ok", detail: `connected${since ? ` since ${new Date(since).toLocaleString("sv").slice(5, 16)}` : ""}` };
 }
 
 function versionCheck(keys: { deployed?: string; installed?: string }): Check {
@@ -199,9 +238,10 @@ function swapCheck(got: Outcome<number | undefined>): Check {
   return { name: "swap", status: "ok", detail: `${Math.round(got.value)} MB of swap in use` };
 }
 
-function laneCheck(mcp: boolean, remote: boolean): Check {
+function laneCheck(mcp: Outcome<boolean>, remote: boolean): Check {
   const name = "safaridriver";
-  if (!mcp) return { name, status: "off", detail: "this Mac's safaridriver has no --mcp, so Apple's own automation lane is not available" };
+  if ("error" in mcp) return { name, status: "skip", detail: `safaridriver --help failed: ${mcp.error}` };
+  if (!mcp.value) return { name, status: "off", detail: "this Mac's safaridriver has no --mcp, so Apple's own automation lane is not available" };
   if (!remote) {
     return {
       name,
@@ -213,44 +253,57 @@ function laneCheck(mcp: boolean, remote: boolean): Check {
   return { name, status: "ok", detail: "Apple's safaridriver --mcp may drive Safari for public pages (safari guide reference, \"Two lanes\")" };
 }
 
-export async function doctor(probe: Probes = LIVE): Promise<Check[]> {
-  const [safari, health, loaded, keys, access, messages, mcp, remote, free, swap] = await Promise.all([
-    probe.safariRunning(),
-    probe.health(),
+export async function doctor(probe: Probes = LIVE, { deep = false }: { deep?: boolean } = {}): Promise<Check[]> {
+  const by = performance.now() + FAST_MS;
+  const facts = Promise.all([
     probe.launchd(),
     probe.extensionKeys(),
-    outcome(probe.accessibility),
-    outcome(probe.messages),
-    probe.safaridriverMcp(),
+    outcome(probe.accessibility, by),
+    outcome(probe.messages, by),
+    outcome(probe.safaridriverMcp, by),
     probe.remoteAutomation(),
     probe.freeBytes(),
-    outcome(probe.swapMb),
+    outcome(probe.swapMb, by),
   ]);
+  const [safari, health] = await Promise.all([probe.safariRunning(), probe.health()]);
   const up = health !== null && !health.stopping;
-  const connected = up && safari && health.extension !== null;
+  const extension = up ? health.extension : null;
+  const connected = safari && extension?.connected === true;
   // Nothing that asks the daemon runs while it is down (a call waits 15 s
-  // for it), and no tab opens while Safari is not running: opening one
-  // would start it.
-  const [trip, pairing] = await Promise.all([connected ? outcome(probe.roundTrip) : undefined, up ? outcome(probe.passwords) : undefined]);
-  const missing = !up ? "needs the daemon" : !safari ? "needs Safari running" : "needs the extension";
-  const since = health?.extension?.connectedAt;
+  // for it), no tab opens while Safari is not running (opening one would
+  // start it), and no tab list is asked of an extension that is stuck: the
+  // daemon would answer it at once that it is.
+  const listed = async () => {
+    const started = performance.now();
+    return { tabs: await probe.tabs(), ms: Math.round(performance.now() - started) };
+  };
+  const [[loaded, keys, access, messages, mcp, remote, free, swap], tabs, pairing, trip] = await Promise.all([
+    facts,
+    connected && !extension?.stuck ? outcome(listed, by) : undefined,
+    up ? outcome(probe.passwords, by) : undefined,
+    deep && connected ? outcome(probe.roundTrip) : undefined,
+  ]);
+  const missing = !up ? "needs the daemon" : !safari ? "needs Safari running" : !connected ? "needs the extension" : "the extension is stuck";
   return [
     safari
       ? { name: "safari", status: "ok", detail: "running" }
       : { name: "safari", status: "warn", detail: "not running, so the checks that need it did not run", fix: "open Safari, then run safari doctor again" },
     daemonCheck(health, loaded),
     launchdCheck(loaded, health !== null),
-    !up || !safari
-      ? { name: "extension", status: "skip", detail: missing }
-      : health.extension === null
-        ? { name: "extension", status: "fail", detail: "Safari Harness Bridge is not connected", fix: EXTENSIONS }
-        : { name: "extension", status: "ok", detail: `connected${since ? ` since ${new Date(since).toLocaleString("sv").slice(5, 16)}` : ""}` },
+    !up || !safari ? { name: "extension", status: "skip", detail: missing } : extensionCheck(extension),
+    tabs === undefined
+      ? { name: "tabs", status: "skip", detail: missing }
+      : "error" in tabs
+        ? { name: "tabs", status: "fail", detail: tabs.error, fix: `${RELOAD}; if Safari's tabs still do not list, ${EXTENSIONS}` }
+        : { name: "tabs", status: "ok", detail: `Safari listed its ${tabs.value.tabs} tabs in ${tabs.value.ms} ms` },
     versionCheck(keys),
-    trip === undefined
-      ? { name: "round trip", status: "skip", detail: missing }
-      : "error" in trip
-        ? { name: "round trip", status: "fail", detail: trip.error, fix: `safari extension reload, then run safari doctor again; if the round trip still fails, ${EXTENSIONS}` }
-        : { name: "round trip", status: "ok", detail: `a hidden tab opened, answered, and closed in ${trip.value} ms` },
+    !deep
+      ? { name: "round trip", status: "skip", detail: "safari doctor --deep opens a hidden tab and times a round trip through its page" }
+      : trip === undefined
+        ? { name: "round trip", status: "skip", detail: missing }
+        : "error" in trip
+          ? { name: "round trip", status: "fail", detail: trip.error, fix: `${RELOAD}; if the round trip still fails, ${EXTENSIONS}` }
+          : { name: "round trip", status: "ok", detail: `a hidden tab opened, answered, and closed in ${trip.value} ms` },
     accessibilityCheck(access),
     "error" in messages
       ? { name: "messages", status: "fail", detail: "cannot read the Messages database, so codes sent by text are not found", fix: `System Settings > Privacy & Security > Full Disk Access: ${TERMINAL}` }

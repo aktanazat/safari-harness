@@ -6,7 +6,7 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs } from "./owner.ts";
-import { spaceTool, turnEnded } from "./spaces.ts";
+import { spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -85,10 +85,18 @@ function safari() {
       return { ok: true, windowId: tabs.get(id as number)!.windowId, size: { width, height: height + 1 } };
     },
   };
+  // An op that throws is the extension's error answer.
   const sock: ExtSocket = {
     send(data) {
       const { id, op, args } = JSON.parse(data) as { id?: string; op: string; args: unknown[] };
-      if (id !== undefined) queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: ops[op](args) })));
+      if (id === undefined) return;
+      let reply: { value: unknown } | { error: string };
+      try {
+        reply = { value: ops[op](args) };
+      } catch (e) {
+        reply = { error: e instanceof Error ? e.message : String(e) };
+      }
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
     },
     close() {},
   };
@@ -115,7 +123,7 @@ function safari() {
       tabs.set(id, { ...t, id, windowId: windows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, reload, relaunch, oldTabs, regrouping, sized };
+  return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized };
 }
 
 // An agent process, to open tabs for and then end.
@@ -572,3 +580,73 @@ test("an agent exit with Safari disconnected preserves its protected window and 
   expect(s.closed).not.toContain(page.id);
   expect(s.tabs.has(first.id)).toBe(true);
 }, 15_000);
+
+// An ended window whose page's close fails, with the page's own id for
+// spaceEnded; fail throws the extension's answer to that close.
+async function unclosable(fail: () => never) {
+  const s = safari();
+  const a = agent();
+  const t = await runAs(a.pid, () => openTab("https://unclosable.example/", true));
+  const page = pageIn(s.tabs, t.windowId)!;
+  const close = s.ops["tabs.close"];
+  let asked = 0;
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== page.id) return close(args);
+    asked++;
+    return fail();
+  };
+  await callTool("close", { tab: t.id });
+  a.kill();
+  await a.exited;
+  return { pid: a.pid, id: new URL(page.url).searchParams.get("id")!, asked: () => asked };
+}
+
+// In the daemon log of 09-30 to 10-16 about 55 closes of lost windows
+// failed as "that tab is gone": the page had closed already, and each
+// sweep asked again.
+test("an ended window whose page Safari says is already gone is closed, and not asked again", async () => {
+  const w = await unclosable(() => {
+    throw new Error("that tab is gone: Safari knows no tab by that id");
+  });
+  await turnEnded(w.pid);
+  await turnEnded(w.pid);
+  expect({ asked: w.asked(), ended: spaceEnded(w.id) }).toEqual({ asked: 1, ended: false });
+});
+
+// One lost window's close failed 69 times in 5.7 min, a try each sweep.
+test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then left", async () => {
+  let now = Date.now();
+  const tries: number[] = [];
+  const start = now;
+  const w = await unclosable(() => {
+    tries.push(now - start);
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  });
+  try {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+      now = start + at;
+      setSystemTime(new Date(now));
+      await turnEnded(w.pid);
+    }
+  } finally {
+    setSystemTime();
+  }
+  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000], ended: true });
+});
+
+// A stuck extension (bridge.ts) answers no list; the keeper stopped at
+// the error, where it waits for a quit Safari.
+test("the keeper's look at the windows tells it Safari is away while the extension answers no list", async () => {
+  safari();
+  const k = agent();
+  await runAs(k.pid, () => openTab("https://stuck.example/", true));
+  const request = bridge.request;
+  bridge.request = () => Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again"));
+  try {
+    expect(await spaceTool({ op: "state" })).toMatchObject({ connected: false });
+  } finally {
+    bridge.request = request;
+  }
+  expect(await spaceTool({ op: "state" })).toMatchObject({ connected: true });
+  k.kill();
+});

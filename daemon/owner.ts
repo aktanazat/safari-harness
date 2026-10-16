@@ -100,7 +100,7 @@ function sweepOnce() {
       try {
         onExit();
       } catch (e) {
-        console.error(`[safari-harness] cleanup after pid ${pid} exited failed:`, e);
+        console.error(`[safari-harness] cleanup after pid ${pid} exited failed:`, e instanceof Error ? e.message : e);
       }
     }
   }

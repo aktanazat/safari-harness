@@ -2,7 +2,7 @@
 // new id (a page it prepared ahead, shown in the tab's place), and gives
 // every tab a new id when the extension reloads (a deploy of it): a call
 // with an old id reaches the tab under its new one, and its result says
-// replaced: {from, to}, so the agent can move to the new id. A popup an
+// replaced: {from, to}, and that the old id goes on working. A popup an
 // agent's page opens later, outside any action (a sign-in window a script
 // opens), is that agent's tab too, and the agent's next result says popup:
 // {tab, url}. One that a tab the agent kept for the user opens stays his,
@@ -52,8 +52,8 @@ export function queuePopup(owner: number, popup: Popup): void {
 
 // Runs a tool call and adds its news to the result: replaced when the call
 // named a tab by an old id, and the caller's oldest unreported popup. A
-// result that is not an object (a list of tabs, a failure) carries none,
-// and the popup waits for the next.
+// result that is not an object (a list, a text) carries none, and the
+// popup waits for the next.
 export async function withTabNews(tab: unknown, run: () => Promise<unknown>): Promise<unknown> {
   const result = await run();
   if (result === null || typeof result !== "object" || Array.isArray(result)) return result;
@@ -77,7 +77,9 @@ export function splitNews(value: News): { line: string; rest: object } | null {
   if (!replaced && !popup) return null;
   const opened = popup ? `opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}` : "";
   const lines = [
-    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}; use ${replaced.to}`] : []),
+    // From 10-04 to 10-12 a 99point agent read "use 117776" as an order and
+    // listed its tabs again after each renumbering; the old id still works.
+    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}; ${replaced.from} still reaches it`] : []),
     // a popup of a tab the agent kept is the user's, as that tab is
     ...(popup ? [popup.kept ? `a tab you kept ${opened}; it stays open for the user` : `your page ${opened}; it is yours to use and close`] : []),
   ];

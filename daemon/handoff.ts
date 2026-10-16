@@ -17,7 +17,8 @@ import { join } from "node:path";
 import type { Challenge } from "./challenge.ts";
 import { akyl, alert, dataFile, isAway, readJson } from "./phone.ts";
 import { rpc } from "./rpc.ts";
-import { resolveTab, TAB, type TabInfo, type Tool } from "./tools.ts";
+import { resolveTab, TAB, type Tool } from "./tools.ts";
+import { rowsOf } from "./tabs-view.ts";
 
 // An MCP client set up as README.md says gives up on a tool call at 130 s,
 // and its agent hears nothing: on 10-05 a handoff on AWS's captcha page had
@@ -90,7 +91,7 @@ async function handoff(given: unknown, why: string, ms = 60000, until?: string, 
   let heardAt = start;
   let lastAway: boolean | undefined;
   try {
-    const tab = await beforeEnd(resolveTab(given, async () => (await rpc("tabs")) as TabInfo[]));
+    const tab = await beforeEnd(resolveTab(given, async () => rowsOf(await rpc("tabs"))));
     if (Date.now() < end) {
       // Once the alert went, Akyl's card follows each answer: kept up while
       // the user has the step, ended with the handoff.

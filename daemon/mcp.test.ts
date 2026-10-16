@@ -118,7 +118,16 @@ import { TOOLS } from "./tools.ts";
 // fill and its source (164) brought it to 24,731: on 10-13 the user asked to
 // stop approving each sign-in with Touch ID, so a fill types the login the
 // vault keeps, and source apple refreshes one whose password went stale.
-const TOOL_LIST_MAX_BYTES = 24_731;
+// The playbooks tool (1,272) brought it to 26,003 at b394b19 without a
+// raise here. shots (524), eval's timeoutMs (81), scroll's to (75), wait's
+// miss (22), and shot's absolute out (9) brought it to 26,714: a 99point
+// agent took 45 shot calls and 47 resizes for 14 pages at two widths
+// (S99PartA), its fetch-timing evals ran 25 to 30 s against a 30 s cap it
+// could not raise (S99PartB), and on 10-16 an agent's `safari scroll --to
+// bottom` was refused as unknown (HuntsUsage). shot's live (110) brought it
+// to 26,824: a shot now ends the page's finite animations first, and live
+// keeps them running for a shot of the motion itself.
+const TOOL_LIST_MAX_BYTES = 26_824;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

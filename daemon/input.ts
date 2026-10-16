@@ -13,13 +13,14 @@ import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
 import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
+import { rowsOf } from "./tabs-view.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
 
 // Real input reaches tabs through the daemon's RPC port. It gives the user
 // back his own front tab, so it lists his tabs too (tabs-view.ts).
-const VIA_RPC: TabOps = { tabs: async () => (await rpc("tabs", { all: true })) as TabInfo[], activate: (tab) => rpc("activate", { tab }) };
+const VIA_RPC: TabOps = { tabs: async () => rowsOf(await rpc("tabs", { all: true })), activate: (tab) => rpc("activate", { tab }) };
 
 type PageState = { marks: number; focus: boolean };
 

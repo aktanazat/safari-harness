@@ -18,7 +18,7 @@ import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
-import { guideFor } from "./site-guides.ts";
+import { errorPage, guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
@@ -33,11 +33,13 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { copyFile, writeFile, mkdtemp, mkdir, readdir, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, extname, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 
 // front: the active tab of the window the user had in front last; shown: the
-// active tab of the window Safari shows in front, agent windows included
-export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean };
+// active tab of the window Safari shows in front, agent windows included;
+// partial: the step of the listing Safari's windows did not finish within
+// 2.5 s (background.js), when no tab says front or shown
+export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean; partial?: string };
 
 type Relay = (tabId: number, op: string, args?: unknown[], timeoutMs?: number) => Promise<unknown>;
 const relay: Relay = (tabId, op, args = [], timeoutMs) => bridge.tab(tabId, op, args, timeoutMs);
@@ -66,8 +68,11 @@ export async function listTabs(): Promise<TabInfo[]> {
 export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = listTabs): Promise<number> {
   if (tab === undefined || tab === null) throw new Error('tab is required: the id open returned (CLI --tab <id>), or "front" for the tab the user has in front (CLI --tab front)');
   if (tab === "front") {
-    const front = (await tabs()).find((t) => t.front);
-    if (!front) throw new Error("Safari has no front tab");
+    const listed = await tabs();
+    const front = listed.find((t) => t.front);
+    // A listing Safari's windows did not finish names no front tab
+    // (partial), which is not Safari having none.
+    if (!front) throw new Error(listed.some((t) => typeof t.partial === "string") ? "Safari did not say which tab is in front within 2.5 s; try again, or name the tab by its id" : "Safari has no front tab");
     return front.id;
   }
   const id = typeof tab === "number" ? tab : Number(tab);
@@ -99,11 +104,23 @@ function webAddress(url: unknown): string {
 // running while hidden, and lets the daemon close it (background.js).
 export async function openTab(url: string, background = false, group?: string, owned = background): Promise<TabInfo & { space: SpaceNote }> {
   const address = webAddress(url);
-  return openIn(await spaceWindow(group), address, background, owned);
+  return openIn(group, await spaceWindow(group), address, background, owned);
 }
 
-async function openIn(space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }> {
-  const t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
+// A window that closed since its space last found it fails the open: from
+// 10-12 to 10-16 opens failed "Invalid call to tabs.create(). Window not
+// found." after the agent's window closed, 8.7 s each (S99PartC). The space
+// is found again, in a new window when its own is gone, and the open tried
+// once more.
+async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }> {
+  let t: TabInfo;
+  try {
+    t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
+  } catch (e) {
+    if (!(e instanceof Error) || !/Window not found/i.test(e.message)) throw e;
+    space = await spaceWindow(group);
+    t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
+  }
   return { ...t, space: spaceNote(space) };
 }
 
@@ -162,10 +179,30 @@ async function reuseTab(address: string, space: Space, among?: Set<number>): Pro
 // A native sheet on the tab (a sign-in or permission prompt) or an
 // off-screen window can keep Safari from closing it; the extension tries
 // for 15 s and says so. This limit is only for an extension that never
-// answers.
+// answers. A tab the harness held or closed that Safari no longer has is
+// closed already, and the answer says how: on 10-16 `safari close 5203`
+// failed "that tab is gone" after the repl had closed it (HuntsUsage). A
+// listing first finds one a Safari that started again holds under a new id
+// (sighted).
 export async function closeTab(tab: number, why = "by a close call", only?: "idle"): Promise<unknown> {
-  const id = followTab(num(tab, "tab"));
-  const res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+  let id = followTab(num(tab, "tab"));
+  let res: unknown;
+  try {
+    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.startsWith("that tab is gone") || (!closedTabs.has(id) && !harnessTabs.has(id))) throw e;
+    await listTabs().catch((): TabInfo[] => []);
+    if (followTab(id) === id) {
+      // what closed it: the harness's own record of a close it made, else
+      // the extension's word from Safari (goneWhy)
+      const closed = closedTabs.get(id);
+      const already = closed && !closed.found ? goneCause(id, tab) : e.message;
+      lost(id, false);
+      return { ok: true, already };
+    }
+    id = followTab(id);
+    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+  }
   if (res && typeof res === "object" && "ok" in res && res.ok === true) {
     recordClosed(id, why);
     forget(id);
@@ -187,7 +224,9 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // daemon last listed, opened, or loaded it; seen: the extension connection
 // it was last listed or made on (bridge.extensionInfo), for a Safari that
 // started again (restored). done: cleanup was explicitly admitted for it.
-type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; url?: string; seen?: number };
+// failed: its last close at a turn's end did not close it; retry: how many
+// of those closes threw, and when the next may go (sweepOnce).
+type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
@@ -205,28 +244,72 @@ let sweepingTabs: Promise<void> | undefined;
 // closed while its agent waited 50 minutes on a subagent, and "that tab is
 // gone" alone sent it after an extension restart: 10 turns to recover.
 // agent: the owner whose admitted cleanup released the tab; only that
-// owner's later call can reopen its safe address (reopen).
-type Closed = { why: string; at: number; url?: string; agent?: number; to?: number };
+// owner's later call can reopen its safe address (reopen). found: Safari
+// had closed it already when the harness looked, so at is when the harness
+// found it gone (lost).
+type Closed = { why: string; at: number; url?: string; agent?: number; to?: number; found?: true };
 const closedTabs = new Map<number, Closed>();
 const CLOSED_KEPT = 500;
 
-function recordClosed(tab: number, why: string, url?: string, agent?: number) {
+function recordClosed(tab: number, why: string, url?: string, agent?: number, found?: true) {
   // what was typed there as a secret goes with it (redact.ts)
   tabSecrets.delete(tab);
   keepers.delete(tab);
   closedTabs.delete(tab);
-  closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }), ...(agent === undefined ? {} : { agent }) });
+  closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }), ...(agent === undefined ? {} : { agent }), ...(found ? { found } : {}) });
   // a Map keeps its keys in the order they went in, the oldest first
   if (closedTabs.size > CLOSED_KEPT) closedTabs.delete(closedTabs.keys().next().value!);
 }
 
-// Only an ordinary address is a durable resume point. Query strings,
-// fragments, userinfo and known token paths may contain credentials or
-// submitted form values; keeping the live page is safer than guessing.
+// Whether the extension connected again since Safari last listed a tab the
+// harness holds: a reload of the extension, or a Safari that started again,
+// ends its connection (bridge.extensionInfo). The user's own closes, a
+// window's, and a page's come on the same connection.
+function reconnectedSince(t: HarnessTab): boolean {
+  return t.seen !== bridge.extensionInfo?.connectedAt;
+}
+const LOST_RECONNECTED = "as the extension connected again (an extension reload, or Safari starting again after a crash or an update)";
+const LOST_OUTSIDE = "outside the harness (by the user, its window closing, or the page itself)";
+
+// A tab the harness holds that Safari says is gone is recorded as found
+// so, with the page it showed, and let go: on 10-16 eight such tabs stayed
+// their agents' until a sweep 20 minutes on (HuntsUsage). reopens: its
+// agent's next call that names it opens it again (reopen).
+function lost(tab: number, reopens: boolean): void {
+  const t = harnessTabs.get(tab);
+  if (!t) return;
+  recordClosed(tab, reconnectedSince(t) ? LOST_RECONNECTED : LOST_OUTSIDE, resumeAddress(t.url), reopens ? t.owner : undefined, true);
+  forget(tab);
+  note("tab gone", { tab, owner: t.owner ?? null });
+}
+
+// What closed a tab Safari says is gone, for a call that named it as: on
+// 10-16 Safari lost every hunt tab as it restored its windows after a
+// crash, and six agents were told their turns had ended or the tabs sat
+// unused (HuntsUsage). A tab the harness closed says why, when, and what it
+// showed; one it holds, how it was lost. The harness records every close
+// of its own, so of any other tab it knows it did not close it.
+function goneCause(tab: number, as: unknown): string {
+  const closed = closedTabs.get(tab);
+  if (closed) {
+    const showed = closed.url ? ` (it showed ${redactUrl(closed.url)})` : "";
+    return `tab ${as} was closed ${closed.why} ${closed.found ? "by" : "at"} ${localTime(new Date(closed.at))}${showed}`;
+  }
+  const held = harnessTabs.get(tab);
+  if (held) return `tab ${as}${held.url ? ` (it showed ${redactUrl(held.url)})` : ""} was closed ${reconnectedSince(held) ? LOST_RECONNECTED : LOST_OUTSIDE}`;
+  return `the harness did not close tab ${as}: the user, its window closing, or a Safari restart or crash did, or no tab had that id`;
+}
+
+// Only an ordinary address is a durable resume point. Fragments, userinfo,
+// and an address that carries a secret (a token, a code, a signature:
+// redact.ts) may hold credentials or submitted form values; keeping the
+// live page is safer than guessing. A query string without one is a
+// search: on 10-16 no eBay, Depop, or Grailed search could open again
+// after Safari lost its tab (HuntsUsage).
 function resumeAddress(url: string | undefined): string | undefined {
   if (url === undefined) return undefined;
   const parsed = URL.parse(url);
-  return parsed && (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && redactUrl(url) === url ? url : undefined;
+  return parsed && (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password && !parsed.hash && redactUrl(url) === url ? url : undefined;
 }
 
 // The daemon names the file once, as it starts.
@@ -234,7 +317,7 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed"> & { owner?: number | null };
+  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed" | "retry"> & { owner?: number | null };
   type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
   let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
@@ -358,6 +441,15 @@ function sweep(): Promise<void> {
   return sweepingTabs;
 }
 
+// A close at a turn's end that threw (the extension did not answer, or a
+// native sheet held the tab past its 15 s) goes again 1, 2, then 4 minutes
+// on, then not again this turn, as a window's page does (spaces.ts): on
+// 10-13 the daemon logged 69 failed closes in 5.7 minutes, every sweep
+// asking again, about 55 of them of tabs already gone (DaemonLogs). A tab
+// already gone is let go as found closed (lost); a refusal waits for the
+// next turn's end.
+const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+
 async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
   // own call may (socket in bridge.ts). The next sweep tries again. Each
@@ -365,7 +457,8 @@ async function sweepOnce() {
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
   const listed = await listTabs().catch((): TabInfo[] => []);
-  const due = [...harnessTabs].filter(([, t]) => t.done && !t.closing && !t.acted && !t.site && !t.handoff && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined) && (t.owner === undefined || !activeCalls.get(t.owner)?.pending.size));
+  const now = Date.now();
+  const due = [...harnessTabs].filter(([, t]) => t.done && !t.closing && !t.acted && !t.site && !t.handoff && !t.unsafe && (t.retry === undefined || (t.retry.tries <= CLOSE_RETRY_MS.length && now >= t.retry.at)) && (t.url === undefined || resumeAddress(t.url) !== undefined) && (t.owner === undefined || !activeCalls.get(t.owner)?.pending.size));
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
@@ -380,15 +473,26 @@ async function sweepOnce() {
         if (res?.protected === "form") t.acted = true;
         else t.failed = true;
       } else {
-        // Record the resume point before dropping ownership, in the same file.
+        // Record the resume point before dropping ownership, in the same
+        // file: the page it showed last listed, else last opened or loaded.
         const why = "as its agent's turn ended";
-        recordClosed(tab, why, resumeAddress(shown.get(tab)), t.owner);
+        recordClosed(tab, why, resumeAddress(shown.get(tab) ?? t.url), t.owner);
         forget(tab);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }
     } catch (e) {
-      console.error(`[safari-harness] closing tab ${tab} failed:`, e instanceof Error ? e.message : e);
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.startsWith("that tab is gone")) {
+        // its turn had ended, so it opens again as a closed one does, unless
+        // the user may have closed it
+        lost(tab, reconnectedSince(t));
+        return;
+      }
+      const tries = (t.retry?.tries ?? 0) + 1;
+      const wait = CLOSE_RETRY_MS[tries - 1];
+      t.retry = { tries, at: Date.now() + (wait ?? 0) };
       t.failed = true;
+      console.error(`[safari-harness] closing tab ${tab} failed: ${message}; ${wait === undefined ? "not tried again this turn" : `trying again in ${wait / 1000} s`}`);
     } finally {
       delete t.closing;
       save();
@@ -639,6 +743,18 @@ function withNotes(result: object): object {
   return { ...rest, ...(slug === undefined ? {} : { guide: `safari guide ${slug}` }), ...(notes === undefined ? {} : { notes }), ...(space === undefined ? {} : { space }) };
 }
 
+// A page a site guide names as the site's error page (error-titles) is not
+// the page asked for: on 10-16 a hunt's eBay searches answered "Error Page
+// | eBay", which open and goto returned as a page like any other, and an
+// agent read its empty rows as no listings (HuntsUsage). The tab stays.
+function flagged(result: object): object {
+  const title = "title" in result && typeof result.title === "string" ? result.title : "";
+  const url = "url" in result && typeof result.url === "string" ? result.url : "";
+  if (!errorPage(url, title)) return result;
+  const slug = guideFor(url);
+  return { ...result, ok: false, warning: `${pageHost(url)} answered with its error page ("${title}"), not the page asked for${slug === undefined ? "" : `; safari guide ${slug} says what to try`}` };
+}
+
 // The latest whole-page snapshot of each tab, for diff: those of the last
 // SNAPSHOTS_KEPT tabs snapshotted, since nothing tells the daemon when a
 // tab the user or a page closes goes, and it kept every one for good.
@@ -726,12 +842,24 @@ export async function press(opts: { tab?: number; ref?: number | string; key: st
 }
 
 // A ref scrolls its element to the middle of the view: on 09-29 an agent
-// called scroll with a ref to bring a control into sight.
-export async function scroll(opts: { tab?: number; ref?: number | string; dx?: number; dy?: number }) {
+// called scroll with a ref to bring a control into sight. to goes all the
+// way to the page's top or bottom: on 10-16 an agent's `safari scroll --to
+// bottom` was refused as unknown (HuntsUsage).
+const ALL_THE_WAY = 1e9;
+
+export async function scroll(opts: { tab?: number; ref?: number | string; dx?: number; dy?: number; to?: string }) {
   const tab = await resolveTab(opts.tab);
   if (opts.ref !== undefined) {
     await relay(tab, "locate", [String(opts.ref)]);
     return { ok: true };
+  }
+  if (opts.to !== undefined) {
+    const to = opts.to;
+    if (to !== "top" && to !== "bottom") throw new Error("to must be top or bottom");
+    return relay(tab, "scroll", [0, to === "top" ? -ALL_THE_WAY : ALL_THE_WAY]).catch((e: unknown) => {
+      if (e instanceof Error && e.message.startsWith("nothing moved")) return { ok: true, already: `the page is at its ${to} already` };
+      throw e;
+    });
   }
   const dy = opts.dy ?? (opts.dx ? 0 : 600);
   return relay(tab, "scroll", [opts.dx ?? 0, dy]);
@@ -798,16 +926,25 @@ const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, ext
 const PAGE_EVAL_BLOCKED = "this page's security policy blocks eval in its own world (page: true). Without page, eval runs in the extension's world, which this page allows: it sees the DOM, localStorage, and fetch with the page's cookies, not the page's script variables. net lists the page's own requests with their bodies";
 const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
 
-export async function evaluate(opts: { tab?: number; expression: string; page?: boolean }) {
+// eval's code has 30 s, or timeoutMs, 5 minutes at most: on 10-09 an
+// agent's fetch-timing evals ran 25 to 30 s, and with no longer limit to
+// ask for it parked a promise on window and polled it across calls
+// (S99PartB).
+const EVAL_MS = 30000;
+const EVAL_MAX_MS = 300000;
+
+export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; timeoutMs?: number }) {
   const tab = await resolveTab(opts.tab);
+  const limit = opts.timeoutMs === undefined ? EVAL_MS : num(opts.timeoutMs, "timeoutMs");
+  if (limit < 1 || limit > EVAL_MAX_MS) throw new Error(`timeoutMs must be from 1 to ${EVAL_MAX_MS} (5 minutes); split longer work across calls`);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
   // The extension gets eval's limit too, and answers first, as through
   // bridge.tab: code past it is told so, not that the request timed out.
-  const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), 30000], 32000).catch((e: unknown) => {
+  const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), limit], limit + 2000).catch((e: unknown) => {
     throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(refused) : e;
   });
-  const answer = opts.page ? inPage(PAGE_EVAL_BLOCKED) : bridge.tab(tab, "eval", [code], 30000, Number(frame)).catch((e: unknown) => {
+  const answer = opts.page ? inPage(PAGE_EVAL_BLOCKED) : bridge.tab(tab, "eval", [code], limit, Number(frame)).catch((e: unknown) => {
     if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage(EVAL_BLOCKED);
     throw e;
   });
@@ -816,18 +953,20 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   // callbacks (dialogs.js). On 10-04 an eval that awaited one ran its full
   // 30 s (01a104d2), and one did on 09-27 (01a0e20a).
   return answer.catch(async (e: unknown) => {
-    if (!opts.page && e instanceof Error && e.message.startsWith("your code ran past") && code.includes("requestAnimationFrame")) throw new Error(`${e.message}. eval's requestAnimationFrame never fires while the tab is hidden; use setTimeout`);
+    const past = e instanceof Error && e.message.startsWith("your code ran past");
+    if (past && !opts.page && code.includes("requestAnimationFrame")) throw new Error(`${e.message}. eval's requestAnimationFrame never fires while the tab is hidden; use setTimeout`);
+    if (past && limit < EVAL_MAX_MS) throw new Error(`${e.message}. Code that needs longer can have timeoutMs, up to ${EVAL_MAX_MS} (CLI --timeout SECS, up to ${EVAL_MAX_MS / 1000})`);
     throw await unanswered(e);
   });
 }
 
 // eval {reader} runs the script an agent saved for the tab's site, or a
 // site above it (learn), in the world it was saved for.
-async function runReader(tab: number | undefined, name: string) {
+async function runReader(tab: number | undefined, name: string, timeoutMs?: number) {
   const id = await resolveTab(tab);
   const { url } = (await relay(id, "tabInfo")) as { url?: string };
   const reader = readerFor(url ?? "", name);
-  return evaluate({ tab: id, expression: reader.expression, page: reader.page });
+  return evaluate({ tab: id, expression: reader.expression, page: reader.page, timeoutMs });
 }
 
 // as: "table" reads the page's tables and repeated card lists as rows,
@@ -869,6 +1008,37 @@ const STOPPED_MS = 1000;
 // call at 130 s (handoff.ts keeps the same margin). At 30 s, a Philips
 // support chat took 160 waits, 33 minutes of them, each a turn (10-07).
 export const WAIT_MAX_MS = 110000;
+
+// A page gone quiet that shows nothing has not drawn yet: in a 99point
+// session a wait for quiet ended on an app's empty page, and the snapshot
+// after it read "(0 nodes)" (S99PartC). Such a wait goes on until the page
+// shows text, a picture, a canvas, a video, or a frame, ms at most; a page
+// blank still is a miss. A page whose policy refuses eval counts as drawn.
+const BLANK = "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show";
+const DRAWN = "(() => { const b = document.body; return !b || b.innerText.trim() !== '' || !!b.querySelector('img, canvas, video, svg, iframe, embed, object') || [...b.querySelectorAll('*')].some((e) => e.shadowRoot); })()";
+const DRAW_POLL_MS = 250;
+
+async function drawnBy(tab: number, deadline: number): Promise<boolean> {
+  for (;;) {
+    const answer = await relay(tab, "eval", [DRAWN]).catch(() => undefined);
+    if (!(answer && typeof answer === "object" && "result" in answer && answer.result === false)) return true;
+    if (Date.now() + DRAW_POLL_MS > deadline) return false;
+    await Bun.sleep(DRAW_POLL_MS);
+  }
+}
+
+// A page that hit an error may draw nothing however long a wait looks for
+// its text, as a blank read says (undrawnHint in content.js): a wait that
+// ends on a blank page names the errors the page kept since it began, the
+// latest 3, in the same words. A page whose errors cannot be read in 2 s
+// gets BLANK.
+async function blankHint(tab: number): Promise<string> {
+  const read = (await relay(tab, "consoleRead", [], 2000).catch(() => null)) as { entries?: { text: string; uncaught?: boolean }[] } | null;
+  const errors = (read?.entries ?? []).filter((e) => e.uncaught === true).map((e) => e.text);
+  if (errors.length === 0) return BLANK;
+  const count = errors.length === 1 ? "an error" : `${errors.length} errors${errors.length > 3 ? ", the latest" : ""}`;
+  return `the page went quiet but shows nothing, and it hit ${count}: ${errors.slice(-3).join("; ")}. Waiting for its text may not help: read them with console (do: read), or reload it (history, do: reload)`;
+}
 
 // Waits until the page shows what the wait asks for (ms is then the
 // timeout, at most WAIT_MAX_MS): a selector or text, the first of several
@@ -931,14 +1101,19 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
       return { ok: true, waitedMs: Date.now() - start, ...cut };
     }
     const { found: met, which, already, added, hint, meanwhile } = await Promise.race([seen.catch((e) => { if (late) return timeUp.promise; throw e; }), timeUp.promise]);
-    const found = met && !late;
+    const quietOnly = opts.quiet === true && opts.selector === undefined && opts.text === undefined && opts.any === undefined && opts.gone === undefined && opts.url === undefined && opts.changed !== true;
+    const drew = !(met && !late && quietOnly) || (await drawnBy(tab, start + limit));
+    const found = met && !late && drew;
     const waitedMs = Date.now() - start;
     if (found) return { ok: true, found, waitedMs, ...(which === undefined ? {} : { which }), ...(already ? { already } : {}), ...(added === undefined ? {} : { added }), ...(hint === undefined ? {} : { hint }) };
     const now = (await listTabs()).find((t) => t.id === tab);
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
-    const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined].filter((h) => h !== undefined);
-    return withChallenge({ ok: true, found, waitedMs, url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
+    const blank = drew ? undefined : await blankHint(tab);
+    const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);
+    // A miss is not ok: on 10-16 agents read a wait's ok: true beside
+    // found: false, after 20 s, as the page they waited for (HuntsUsage).
+    return withChallenge({ ok: false, found, waitedMs, ...(drew ? {} : { empty: true }), url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
   } finally {
     clearTimeout(timer);
   }
@@ -987,13 +1162,13 @@ let handoffCount = 0;
 const blocked = (c: Challenge) => `${c.kind} turned this browser away: the page is a block, not a check, so no one can clear it. Try later or another way in.`;
 
 async function watchHandoff(tab: number, why: string, h: Handoff, until?: string) {
-  const gone = new Error("that tab is gone: it was closed; find it with tabs");
+  const gone = () => new Error(`that tab is gone: ${goneCause(tab, tab)}; open it again`);
   try {
     // A look for until's text takes up to a second; a page that cannot
     // answer (it is loading) does not show it yet.
     const [tabs, found, before] = await Promise.all([listTabs(), challengeOf(tab), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
     const first = tabs.find((t) => t.id === tab);
-    if (!first) throw gone;
+    if (!first) throw gone();
     if (found?.where === "block") throw new Error(blocked(found));
     if (before) throw new Error(`the page already shows "${until}": give until text it shows only once the user is done`);
     let initial = found;
@@ -1006,7 +1181,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (challenge?.where === "block") throw new Error(blocked(challenge));
       if (challenge === undefined) {
         const now = (await listTabs()).find((t) => t.id === tab);
-        if (!now) throw gone;
+        if (!now) throw gone();
         h.now = { url: now.url, title: now.title };
         h.done = true;
         h.byItself = true;
@@ -1026,7 +1201,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       // Safari may have swapped the tab for another (continuity.ts)
       tab = followTab(tab);
       const now = tabs.find((t) => t.id === tab);
-      if (!now) throw gone;
+      if (!now) throw gone();
       if (challenge?.where === "block") throw new Error(blocked(challenge));
       if (seen === null) seen = challenge;
       h.now = { url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
@@ -1203,8 +1378,8 @@ export async function clearSite(opts: { tab?: unknown; url?: string }) {
   // until its turn ends; tabsView shows a caller with no agent behind it
   // every tab on the site.
   const kept = tabs.filter((t) => keepers.has(t.id));
-  const his = [...kept, ...(await tabsView(tabs, new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), { host: domain }))
-    .filter((t): t is TabInfo => typeof t !== "string" && !mine.some((m) => m.id === t.id) && !kept.some((k) => k.id === t.id))];
+  const his = [...kept, ...(await tabsView(tabs, new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), { host: domain })).tabs
+    .filter((t) => !mine.some((m) => m.id === t.id) && !kept.some((k) => k.id === t.id))];
   if (his.length > 0) throw new Error(`${domain} is open in the user's tabs: ${his.map((t) => `tab ${t.id} ${URL.parse(t.url ?? "")?.origin}`).join(", ")}. A clear would sign him out there, and his pages would set its cookies again: ask him to close them, then clear again`);
   const why = `by a cookies clear of ${domain}`;
   // before the pages below delete the cookies their scripts read
@@ -1263,21 +1438,106 @@ async function scratchFile(prefix: string, name: string): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), prefix)), name);
 }
 
-type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean };
+// out as an absolute path, or undefined when not given. A relative one is
+// refused, not written against the daemon's own folder: from 10-04 a
+// 99point agent's `--out ui-evidence/...` shots went there while its own
+// folder stayed empty (S99PartB). The CLI makes a relative one absolute
+// against its own folder.
+function absoluteOut(out: unknown): string | undefined {
+  if (out === undefined) return undefined;
+  const path = str(out, "out");
+  if (!isAbsolute(path)) throw new Error(`out must be an absolute path, not ${path}: the CLI makes a relative one absolute against its folder, a tool call cannot`);
+  return path;
+}
+
+type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean };
 
 // What the tab shows, as base64 PNG (Safari's own capture: no window
 // chrome, no screen-recording permission). ref crops to one element;
 // annotate draws the snapshot's refs on the page for the capture; fullPage
-// scrolls and stitches (sticky headers repeat).
+// scrolls and stitches (sticky headers repeat). The extension ends the
+// page's finite animations first, up to 1 s, so a shot shows where they
+// land; live leaves them running.
 export async function captureTab(tab: number, opts: ShotOpts = {}) {
-  return (await bridge.request("shot", [tab, { ref: opts.ref, annotate: !!opts.annotate, fullPage: !!opts.fullPage }], 60000)) as { data: string; screens?: number; cut?: boolean };
+  return (await bridge.request("shot", [tab, { ref: opts.ref, annotate: !!opts.annotate, fullPage: !!opts.fullPage, live: !!opts.live }], 60000)) as { data: string; screens?: number; cut?: boolean };
 }
 
 export async function screenshot(opts: ShotOpts & { tab?: number; out?: string } = {}) {
+  const asked = absoluteOut(opts.out);
   const r = await captureTab(await resolveTab(opts.tab), opts);
-  const out = opts.out ?? await scratchFile("safari-shot-", "shot.png");
+  const out = asked ?? await scratchFile("safari-shot-", "shot.png");
+  await mkdir(dirname(out), { recursive: true });
   await writeFile(out, Buffer.from(r.data, "base64"));
   return { path: out, ...(r.screens ? { screens: r.screens } : {}), ...(r.cut ? { cut: "page longer than 12 screens; the rest is not in the image" } : {}) };
+}
+
+// Each address at each width, in a tab of the harness's own that closes
+// after, so no agent's window changes size: the window takes each width
+// once, and each page loads at it and is shot once quiet. A 99point agent
+// took its before-and-after shots by hand, 45 shot calls and 47 resizes
+// for 14 pages at two widths, a sleep before each (S99PartA). The files are
+// named for each address and width; a pair that fails says why in its
+// place, and the rest go on.
+const SHOTS_QUIET_MS = 3000;
+
+export async function shots(opts: { urls?: unknown; widths?: unknown; out?: unknown; fullPage?: boolean }) {
+  if (!Array.isArray(opts.urls) || opts.urls.length === 0) throw new Error('shots needs urls: ["https://…", …]');
+  if (!Array.isArray(opts.widths) || opts.widths.length === 0) throw new Error("shots needs widths: [390, 1440]");
+  const dir = absoluteOut(opts.out);
+  if (dir === undefined) throw new Error("shots needs out: the folder for its PNGs");
+  const urls = [...new Set(opts.urls.map(webAddress))];
+  const widths = [...new Set(opts.widths.map((w) => num(w, "width")))];
+  const stems = stemsOf(urls);
+  await mkdir(dir, { recursive: true });
+  const t = await openTab("about:blank", true, "shots");
+  own(t.id, currentOwner());
+  const files: ({ url: string; width: number; path: string } | { url: string; width: number; error: string })[] = [];
+  const why = async (e: unknown) => {
+    const explained = await unopened(e);
+    return explained instanceof Error ? explained.message : String(explained);
+  };
+  try {
+    for (const width of widths) {
+      // a phone's height under 768 points wide, a laptop's from there
+      const sized = await viewport({ tab: t.id, width, height: width < 768 ? 844 : 900 }).then(() => undefined, why);
+      for (const url of urls) {
+        if (sized !== undefined) {
+          files.push({ url, width, error: `the window did not take width ${width}: ${sized}` });
+          continue;
+        }
+        try {
+          await navigate(t.id, url);
+          await wait({ tab: t.id, ms: SHOTS_QUIET_MS });
+          const shot = await captureTab(t.id, { fullPage: !!opts.fullPage });
+          const path = join(dir, `${stems.get(url)}-${width}.png`);
+          await writeFile(path, Buffer.from(shot.data, "base64"));
+          files.push({ url, width, path });
+        } catch (e) {
+          files.push({ url, width, error: await why(e) });
+        }
+      }
+    }
+  } finally {
+    await closeTab(t.id, "as its shots ended").catch(() => {});
+  }
+  return files.some((f) => "error" in f) ? { ok: false, files } : { files };
+}
+
+// A file name stem for each address: its host without www and its path, in
+// lowercase letters, digits, and dashes; a second address with the same
+// stem gets -2, then -3.
+function stemsOf(urls: string[]): Map<string, string> {
+  const stems = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const url of urls) {
+    const u = new URL(url);
+    const base = `${u.hostname.replace(/^www\./, "")}${u.pathname}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "page";
+    let stem = base;
+    for (let n = 2; taken.has(stem); n++) stem = `${base}-${n}`;
+    taken.add(stem);
+    stems.set(url, stem);
+  }
+  return stems;
 }
 
 // ---------- downloads ----------
@@ -1346,7 +1606,11 @@ function askedExtension(out: string | undefined, url: string): string | undefine
 // A web page in place of a file asked for by its extension is refused:
 // on 10-07 a Slack image fetched without a signed-in tab came back as
 // Slack's sign-in page, saved as a .png, with exit 0. An out ending in
-// .html keeps the page.
+// .html keeps the page. JSON in place of another kind of file is most
+// often the site's error: on 10-12 an Apple key saved as a .p8 was
+// application/json (AkylUsage). It is kept as it came, and the answer is
+// not ok and quotes its start. Any extension out ends with asks for its
+// kind of file.
 async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string) {
   const asked = askedExtension(out, url);
   if (asked !== undefined && /^text\/html\b/i.test(f.type)) {
@@ -1355,8 +1619,12 @@ async function saveFile(f: FilePayload, url: string, out: string | undefined, fo
   }
   const path = out ?? await freePath(folder, nameOf(f, url));
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, Buffer.from(f.data, "base64"));
-  return { path, name: basename(path), size: f.size, type: f.type };
+  const data = Buffer.from(f.data, "base64");
+  await writeFile(path, data);
+  const saved = { path, name: basename(path), size: f.size, type: f.type };
+  const kind = out !== undefined && extname(out) ? extname(out).slice(1).toLowerCase() : asked;
+  if (kind === undefined || /json|^txt$/.test(kind) || !/^(?:application|text)\/(?:[\w.+-]+\+)?json\b/i.test(f.type)) return saved;
+  return { ok: false as const, ...saved, warning: `the site answered JSON, not a .${kind} file; that is most often an error, and it reads: ${data.toString("utf8", 0, 200)}` };
 }
 
 const isFile = (f: unknown): f is FilePayload => !!f && typeof f === "object" && "data" in f && typeof f.data === "string";
@@ -1378,14 +1646,15 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // file a ref's link or button downloads, or with only a tab, the file the
 // tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
 // Safari saves too) unless out says where.
-export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ path: string; name: string; size: number; type: string; note?: string }> {
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ ok?: false; path: string; name: string; size: number; type: string; warning?: string; note?: string }> {
+  const out = absoluteOut(opts.out);
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
     const mine = await agentTabOn(url);
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
     const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    const signIn = signInOrigin(f, url, opts.out);
-    if (signIn === undefined) return saveFile(f, url, opts.out, folder);
+    const signIn = signInOrigin(f, url, out);
+    if (signIn === undefined) return saveFile(f, url, out, folder);
     // The extension's own fetch carries no sign-in, and a tab opened on the
     // site the sign-in page answered from carries Safari's: on 10-07 a
     // Slack image came back as the sign-in page of 99-point.slack.com,
@@ -1403,7 +1672,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
     const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    return saveFile(f, url, opts.out, folder);
+    return saveFile(f, url, out, folder);
   }
   const ref = String(opts.ref);
   // A file the server sends after the click is saved by Safari itself, never
@@ -1413,7 +1682,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
     const f = await relay(tab, "download", [ref], 120000);
-    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", opts.out, folder);
+    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", out, folder);
   } catch (e) {
     const got = saved ? await saved() : {};
     // A file Safari saved itself is answered as saveFile answers one, and
@@ -1421,7 +1690,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // list and failed ("src must be a string").
     const file = got.downloaded?.[0];
     if (file) {
-      const path = opts.out ?? file.path;
+      const path = out ?? file.path;
       if (path !== file.path) {
         await mkdir(dirname(path), { recursive: true });
         await copyFile(file.path, path);
@@ -1430,10 +1699,34 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
       return { path, name: basename(path), size: file.bytes, type: "" };
     }
     if (got.downloading) throw new Error(`Safari was still saving ${got.downloading.join(", ")} after 30 s; the file lands there when it is done`);
-    throw e;
+    // A fetch of the link that got no answer is made again once, by url, as
+    // its agent did by hand: on 10-12 a download by ref failed "Load
+    // failed" alone in 0.7 s, and its agent found the address in the page's
+    // resource timings and fetched it by url (AkylUsage). A url's fetch
+    // falls back to the extension's own, which the page's rules (CORS) do
+    // not hold. One that fails again says why, as fetch's does, and where
+    // the link goes. unanswered() explains Load failed alone.
+    const link = await linkOf(tab, ref);
+    if (link === undefined || (await unanswered(e)) === e) throw await unanswered(e, link);
+    try {
+      const fetched = await download({ tab, url: link, out: opts.out }, folder);
+      return { ...fetched, note: `the page's own fetch of the file got no answer (Load failed), so it was fetched again from ${redactUrl(link)}` };
+    } catch (again) {
+      const why = await unanswered(e, link);
+      throw new Error(`${why instanceof Error ? why.message : String(why)}; the link goes to ${redactUrl(link)}, and fetching it again failed too: ${again instanceof Error ? again.message : String(again)}`);
+    }
   } finally {
     clearTimeout(stop);
   }
+}
+
+// The address a ref's link names, made whole against its page's.
+async function linkOf(tab: number, ref: string): Promise<string | undefined> {
+  const fact = await relay(tab, "element", [ref, "attr", "href"]).catch(() => undefined);
+  const href = fact && typeof fact === "object" && "value" in fact ? fact.value : undefined;
+  if (typeof href !== "string" || href === "") return undefined;
+  const page = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  return URL.parse(href, page)?.href;
 }
 
 // The origin a signed-out fetch was answered from, when it answered a web
@@ -1497,6 +1790,7 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
     return { url, ...(await pdfText(file, opts.maxBytes)) };
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
+  const asked = absoluteOut(opts.out);
   const tab = await resolveTab(opts.tab);
   // Reading the page is an eval, which a page that navigates meanwhile
   // answers with where it went instead: the new page is read once more.
@@ -1508,7 +1802,8 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
   const page = (await read()) ?? (await read());
   if (!page) throw new Error("the page kept navigating while it was read; save it once it settles");
   const { html, url, title } = page;
-  const out = opts.out ?? await scratchFile("safari-pdf-", `${(title || "page").replace(/[/\\:\0]/g, "_").slice(0, 80)}.pdf`);
+  const out = asked ?? await scratchFile("safari-pdf-", `${(title || "page").replace(/[/\\:\0]/g, "_").slice(0, 80)}.pdf`);
+  await mkdir(dirname(out), { recursive: true });
   // Its first line says what the PDF shows: on 09-29 GEICO's page printed
   // twice as its notice that the browser was too old, and the answer, a
   // path and a page count, did not say so.
@@ -1519,9 +1814,10 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; out?
 
 // A tab in its agent's window sizes that window, the agent's other tabs and
 // all (background.js "window"), and the window's keeper finds it at the
-// size Safari gave it.
+// size Safari gave it. A tab opened again is reached by its old id
+// (followTab), as every page tool reaches it.
 export async function viewport(opts: { tab: number; width: number; height: number }) {
-  const tab = num(opts.tab, "tab");
+  const tab = followTab(num(opts.tab, "tab"));
   const window = (await listTabs()).find((t) => t.id === tab)?.windowId;
   const whole = window !== undefined && windowOwners().has(window);
   const sized = (await bridge.request("window", [tab, { width: num(opts.width, "width"), height: num(opts.height, "height") }, whole])) as { windowId: number; size: { width: number; height: number } };
@@ -1541,7 +1837,7 @@ type Param = {
   type?: "string" | "number" | "boolean" | "array" | "object";
   description: string;
   enum?: string[];
-  items?: { type: "string" } | { type: "object"; properties: Record<string, { type: "string" | "object" }>; required: string[] };
+  items?: { type: "string" | "number" } | { type: "object"; properties: Record<string, { type: "string" | "object" }>; required: string[] };
 };
 export type Tool = {
   desc: string;
@@ -1684,24 +1980,25 @@ export const TOOLS: Record<string, Tool> = {
     required: ["url"],
     run: async (a) => {
       const address = webAddress(a.url);
-      const space = await spaceWindow(a.group === undefined ? undefined : str(a.group, "group"));
+      const group = a.group === undefined ? undefined : str(a.group, "group");
+      const space = await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
       const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
-        const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
+        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
         return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
       }
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
-      const t = await openIn(space, address, !!a.background, !!a.background || !a.keep);
+      const t = await openIn(group, space, address, !!a.background, !!a.background || !a.keep);
       if (a.keep) keepTab(t.id);
       else own(t.id, currentOwner());
       const held = harnessTabs.get(t.id);
       if (held) held.url = t.url;
       if (a.site === true && held) held.site = true;
       save();
-      const result = await withPage(withNotes(await afterWall(t, t.id)), t.id, a.snapshot);
+      const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
       const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
       return had === undefined ? result : beside(result, "hint", had);
     },
@@ -1741,9 +2038,9 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["tab", "url"],
-    run: action(async (a) => withNotes(await afterWall(await navigate(a.tab, str(a.url, "url")), a.tab))),
+    run: action(async (a) => withNotes(flagged(await afterWall(await navigate(a.tab, str(a.url, "url")), a.tab)))),
   },
-  activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(num(a.tab, "tab")) },
+  activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
   snapshot: {
     desc: "Page outline with [ref]s for click, type, select, and hover, embedded frames included (refs like f3:12). Refs outlast redraws; snapshot again to see what an action changed.",
     params: {
@@ -1805,22 +2102,23 @@ export const TOOLS: Record<string, Tool> = {
   },
   scroll: {
     desc: "Scroll the page. Rarely needed: snapshots include off-screen elements.",
-    params: { tab: TAB, dx: { type: "number", description: "pixels right" }, dy: { type: "number", description: "pixels down, default 600" } },
+    params: { tab: TAB, dx: { type: "number", description: "pixels right" }, dy: { type: "number", description: "pixels down, default 600" }, to: { type: "string", enum: ["top", "bottom"], description: "all the way" } },
     unlisted: { ref: REF },
     required: ["tab"],
-    run: (a) => scroll(a as { tab?: number; ref?: string; dx?: number; dy?: number }),
+    run: (a) => scroll(a as { tab?: number; ref?: string; dx?: number; dy?: number; to?: string }),
   },
   eval: {
-    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.scripts, sh.wait. Your code must end within 30 s: split long loops across calls.",
-    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, save: SAVE },
+    desc: "Run JS in the page and return its last value as JSON; statements and await work. Sees the DOM; with page: true, also the page's script variables. To read a fact, use extract {query}: a selector you remember may be gone. Helpers: sh.q, sh.qa (shadow roots too), sh.text, sh.jsonld, sh.scripts, sh.wait. Your code must end within timeoutMs: split long loops across calls.",
+    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, save: SAVE },
     required: ["tab"],
     run: saving("eval", (a) => {
+      const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
       if (a.reader === undefined) {
         if (a.expression === undefined) throw new Error("eval needs expression, or reader: a script saved with learn");
-        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page });
+        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page, timeoutMs });
       }
       if (a.expression !== undefined) throw new Error("give expression or reader, not both");
-      return runReader(a.tab as number | undefined, str(a.reader, "reader"));
+      return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
     }),
   },
   fetch: {
@@ -1868,7 +2166,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 110000; only ms: ends once quiet. A miss says what changed.",
+    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 110000; only ms: ends once quiet. A miss answers ok: false and says what changed.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -1945,9 +2243,15 @@ export const TOOLS: Record<string, Tool> = {
   },
   shot: {
     desc: "Screenshot the tab's page; returns a PNG path. ref crops to it; annotate labels refs; fullPage stitches the whole page.",
-    params: { tab: TAB, ref: REF, annotate: { type: "boolean", description: "draw ref labels" }, fullPage: { type: "boolean", description: "whole page" }, out: { type: "string", description: "PNG path" } },
+    params: { tab: TAB, ref: REF, annotate: { type: "boolean", description: "draw ref labels" }, fullPage: { type: "boolean", description: "whole page" }, live: { type: "boolean", description: "leave animations running (a shot ends finite ones first, up to 1 s)" }, out: { type: "string", description: "absolute PNG path" } },
     required: ["tab"],
-    run: (a) => screenshot(a as { tab?: number; ref?: string; annotate?: boolean; fullPage?: boolean; out?: string }),
+    run: (a) => screenshot(a as { tab?: number; ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean; out?: string }),
+  },
+  shots: {
+    desc: "Screenshot each URL at each window width, in a tab of its own that closes after; returns each PNG's path.",
+    params: { urls: { type: "array", items: { type: "string" }, description: "addresses" }, widths: { type: "array", items: { type: "number" }, description: "points, as [390, 1440]" }, out: { type: "string", description: "absolute folder for the PNGs" }, fullPage: { type: "boolean", description: "whole pages" } },
+    required: ["urls", "widths", "out"],
+    run: (a) => shots(a),
   },
   pdf: {
     desc: "save prints the page to PDF; read returns a PDF's text (path, or the tab's PDF).",
@@ -2302,7 +2606,12 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   active.epoch = randomUUID();
   active.pending.add(settled.promise);
   activeCalls.set(owner, active);
-  for (const t of harnessTabs.values()) if (t.owner === owner) delete t.done;
+  for (const t of harnessTabs.values()) {
+    if (t.owner !== owner) continue;
+    delete t.done;
+    // the turn's end tries a close that failed afresh (sweepOnce)
+    delete t.retry;
+  }
   turnResumed(owner);
   save();
   try {
@@ -2317,12 +2626,43 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
 async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean): Promise<unknown> {
   const call = checkCall(TOOLS, name, args, model);
   try {
-    const back = await reopen(call.tool, call.args);
-    const result = redacted(await guard(call, model, () => inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)))));
+    let back = await reopen(call.tool, call.args);
+    const result = redacted(await guard(call, model, async () => {
+      for (let tries = 0; ; tries++) {
+        try {
+          return await inLane(call.tool, call.args, resolveTab, () => (news ? withTabNews(call.args.tab, () => revived(call.tool, call.args)) : revived(call.tool, call.args)));
+        } catch (e) {
+          const again = tries === 0 ? await lostReopened(e, call.tool, call.args) : undefined;
+          if (again === undefined) throw e;
+          back = again.note ?? back;
+        }
+      }
+    }));
     return back === undefined ? result : beside(result, "note", back);
   } catch (e) {
     throw await unopened(goneWhy(e, call.args.tab));
   }
+}
+
+// A tab its agent held that Safari lost as the extension connected again
+// (Safari starting again after a crash or an update) opens again on its
+// safe address for that agent's call, as one closed at its turn's end does
+// (reopen): on 10-16 Safari lost every hunt tab as it restored its windows
+// after a crash, and six agents spent about 14 calls finding and opening
+// them again (HuntsUsage). One lost on the same connection may be the
+// user's close, which stays closed. A listing first finds one Safari
+// restored under a new id (sighted), and the call goes again on it.
+async function lostReopened(e: unknown, tool: string, args: Record<string, unknown>): Promise<{ note?: string } | undefined> {
+  if (!(e instanceof Error) || !e.message.startsWith("that tab is gone") || args.tab === undefined || args.tab === "front") return undefined;
+  const id = followTab(Number(args.tab));
+  const held = harnessTabs.get(id);
+  const owner = currentOwner();
+  if (!held || owner === undefined || held.owner !== owner || !reconnectedSince(held) || resumeAddress(held.url) === undefined) return undefined;
+  await listTabs().catch((): TabInfo[] => []);
+  if (followTab(id) !== id) return {};
+  lost(id, true);
+  const note = await reopen(tool, args);
+  return note === undefined ? undefined : { note };
 }
 
 // A tab released after its owner's admitted cleanup opens again on its
@@ -2352,7 +2692,7 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
   let opening = reopening.get(tab);
   if (!opening) {
     opening = (async () => {
-      const t = await openIn(await spaceWindow(), closed.url!, true, true);
+      const t = await openIn(undefined, await spaceWindow(), closed.url!, true, true);
       own(t.id, agent);
       const held = harnessTabs.get(t.id);
       if (held) held.url = t.url ?? closed.url;
@@ -2364,18 +2704,19 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
     reopening.set(tab, opening);
   }
   const opened = await opening;
-  const was = `tab ${args.tab} had closed ${opened.closed.why} at ${localTime(new Date(opened.closed.at))}; it is open again on ${redactUrl(opened.closed.url!)}, loaded fresh`;
+  const was = `tab ${args.tab} had closed ${opened.closed.why} ${opened.closed.found ? "by" : "at"} ${localTime(new Date(opened.closed.at))}; it is open again on ${redactUrl(opened.closed.url!)}, loaded fresh`;
   if (acts(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new Error(`${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: snapshot it, then act`);
   return was;
 }
 
-// The extension knows only that a tab is gone; one the harness closed
-// itself is named with why, when, and what it showed (closedTabs).
+// The extension says what closed a tab, from Safari's word (background.js);
+// of a close the harness made itself, its own record says more: at a
+// turn's end, by a cookies clear, or by a close call, and what it showed.
 function goneWhy(e: unknown, tab: unknown): unknown {
-  const closed = e instanceof Error && e.message.startsWith("that tab is gone") ? closedTabs.get(followTab(Number(tab))) : undefined;
-  if (!closed) return e;
-  const showed = closed.url ? ` (it showed ${redactUrl(closed.url)})` : "";
-  return new Error(`that tab is gone: tab ${tab} was closed ${closed.why} at ${localTime(new Date(closed.at))}${showed}; open it again`);
+  if (!(e instanceof Error) || !e.message.startsWith("that tab is gone") || tab === undefined || tab === "front") return e;
+  const id = followTab(Number(tab));
+  const closed = closedTabs.get(id);
+  return closed && !closed.found ? new Error(`that tab is gone: ${goneCause(id, tab)}; open it again`) : e;
 }
 
 // A page an agent opened that stops answering (a dialog holds it, or it is

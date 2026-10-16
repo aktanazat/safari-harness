@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, mock, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, mock, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { CALLER_TOOLS } from "./caller.ts";
 import { connect } from "./fake-safari.ts";
@@ -95,6 +95,9 @@ test.each([
   ["scroll", "y", "dy"],
   ["scroll", "x", "dx"],
   ["upload", "files", "paths"],
+  ["shot", "path", "out"],
+  ["download", "path", "out"],
+  ["passwords", "account", "username"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });

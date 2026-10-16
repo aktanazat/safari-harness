@@ -30,7 +30,7 @@ function check(name: string, pass: boolean, detail: unknown) {
   console.log(`${pass ? "PASS" : "FAIL"} ${name}${pass ? "" : `\n     got: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`}`);
 }
 
-async function health(): Promise<{ pid?: number; extension?: unknown } | undefined> {
+async function health(): Promise<{ pid?: number; extension?: { connected?: boolean } | null } | undefined> {
   return fetch(`${HTTP}/health`).then((r) => r.json()).catch(() => undefined);
 }
 
@@ -42,7 +42,7 @@ async function restart(): Promise<void> {
   if (r.exitCode !== 0) throw new Error(`launchctl kickstart failed: ${r.stderr.toString()}`);
   for (let i = 0; i < 120; i++) {
     const h = await health();
-    if (h?.pid && h.pid !== before && h.extension) return;
+    if (h?.pid && h.pid !== before && h.extension?.connected) return;
     await Bun.sleep(500);
   }
   throw new Error("the daemon and the extension did not come back within 60s");

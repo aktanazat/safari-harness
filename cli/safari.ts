@@ -15,7 +15,8 @@
 //
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
-import { TOOLS, formatResult, resolveTab, type TabInfo, type Tool } from "../daemon/tools.ts";
+import { TOOLS, formatResult, resolveTab, type Tool } from "../daemon/tools.ts";
+import { rowsOf } from "../daemon/tabs-view.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
@@ -36,6 +37,7 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari guide                               the short card of rules for browsing
   safari guide reference                     every tool in full
+  safari help <command>                      one command's usage and flags
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
@@ -47,8 +49,10 @@ const USAGE = `safari — drive Safari from the terminal
                                              Mac, with the fix for each that fails
   safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
                                              --site lists his on one site, --all every tab
-  safari open <url> [--bg] [--keep] [--new]  open a tab, or load in yours on that site
+  safari open <url> [--bg] [--keep] [--new] [--id]
+                                             open a tab, or load in yours on that site
                                              (--new: a second one); prints its id
+                                             (--id: the id alone, for T=$(safari open ...))
   safari goto <url> --tab N                  navigate
   safari back|forward|reload --tab N         history
   safari close <tab>                         close a tab
@@ -70,7 +74,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari upload --find <words> --tab N       list the user's files that match, to pick
                                              one (iCloud Drive, Documents, Desktop,
                                              Downloads); attaches nothing
-  safari scroll <dy> --tab N                 scroll
+  safari scroll <dy> --tab N [--to top|bottom]
+                                             scroll by dy, or all the way to the page's top or bottom
 
   Page commands need --tab N, the id open printed, or --tab front for the
   tab the user has in front. Tabs a command opens close when omp's turn
@@ -85,8 +90,11 @@ const USAGE = `safari — drive Safari from the terminal
   (or --save <file>, for a path starting with / ./ or ../), and print only
   its path, size, and first 500 characters.
 
-  safari eval <js> --tab N [--page]          run JS, print the last value as JSON
-                                             (code from --file path, or stdin when omitted;
+  safari eval <js> --tab N [--page] [--raw]  run JS, print the last value as JSON
+                                             (--raw: the value alone, a string unquoted;
+                                             code from --expression js, --file path, or
+                                             stdin when omitted; --timeout secs lets it
+                                             run up to 300 s, 30 when omitted;
                                              --reader name runs a script saved with learn)
   safari extract --tab N [--selector s]      readable text
   safari extract --as table --tab N          tables and card lists as JSON rows
@@ -95,7 +103,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
   safari wait <ms> --tab N                   until the page goes quiet, ms at most
-  safari wait [--selector s] [--text t] [--ms timeout] --tab N [--front]
+  safari wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
   safari wait --any '["a","b"]' | --gone t | --url part|/re/ | --quiet --tab N
@@ -110,8 +118,12 @@ const USAGE = `safari — drive Safari from the terminal
   safari cookies --tab N                     cookies for the page
   safari cookies clear --tab N|--url U       forget the site (cookies, storage);
                                              closes your tabs on it
-  safari shot --tab N [--out file.png] [--ref R] [--annotate] [--full]
-                                             screenshot what the tab shows
+  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live]
+                                             screenshot what the tab shows (--live leaves
+                                             its animations running; else they end first)
+  safari shots <url>... --widths 390,1440 --out folder [--full]
+                                             shoot each page at each width into the folder,
+                                             each file named for its address and width
   safari download <ref|url> [--out file] [--tab N]
                                              save a file into ~/Downloads; a url needs
                                              no tab, a tab alone saves the file it shows
@@ -127,6 +139,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
   safari window <width> <height> --tab N     resize the tab's window to that size
+  safari window --size 390x844 --tab N       the same, as WIDTHxHEIGHT
   safari history-search [text]               search Safari browsing history
   safari fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card
@@ -209,22 +222,83 @@ const USAGE = `safari — drive Safari from the terminal
   safari ask "<question>"                    away from the Mac, send the question to your phone
                                              (answer it back here); at the Mac, send nothing
 
-  Every command takes --host <ssh-host> to use another Mac's Safari, and
-  --json to print JSON. Messages, Contacts, history, and fill commands run
-  in this terminal (they need its Full Disk Access), not in the daemon.
-  A command's parameters also work as flags (click --ref 3 is click 3), and
-  safari <command> --help lists them.
+  Every command takes --host <ssh-host> to use another Mac's Safari,
+  --json to print JSON, and -q (or --quiet) to print nothing when it works
+  and one line on stderr when it misses or fails. A miss (ok, found, or
+  kept false) exits 1, as a failure does, with or without -q; on wait,
+  --quiet also waits for the page to go quiet. Messages, Contacts, history,
+  and fill commands run in this terminal (they need its Full Disk Access),
+  not in the daemon. A command's parameters also work as flags (click
+  --ref 3 is click 3), and safari help <command> lists them.
 `;
 
 const json = process.argv.includes("--json");
+
+// -q, or --quiet, on any command: nothing printed when it works, and one
+// line on stderr when it misses or fails. From 10-01 to 10-04 a 99point
+// agent sent 450 of its 933 safari commands to /dev/null, and the misses
+// went with them: a type whose text never landed, a wait that found
+// nothing (S99PartA). say writes that line, and show what a flag asks to
+// print alone (eval --raw, open --id), quiet or not.
+const quiet = process.argv.includes("-q") || hasFlag("quiet", process.argv);
+const say = console.error.bind(console);
+const show = console.log.bind(console);
+if (quiet) console.log = console.error = () => {};
 
 function print(value: unknown) {
   console.log(json ? JSON.stringify(value) : formatResult(value));
 }
 
 function fail(message: string, code = 1): never {
-  console.error(`error: ${message}`);
+  say(`error: ${quiet ? message.replace(/\s*\n\s*/g, " ") : message}`);
   process.exit(code);
+}
+
+// An answer that missed, in one line: a run step that failed, a shots
+// page that did, or ok, found, or kept false.
+function missOf(r: unknown): string | undefined {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return undefined;
+  const a = r as { ok?: unknown; found?: unknown; kept?: unknown; steps?: unknown; notRun?: unknown; files?: unknown };
+  const step = Array.isArray(a.steps) ? a.steps.find((s) => typeof s?.error === "string") : undefined;
+  if (step) return `[${step.step} ${step.tool}] ${step.error}${typeof a.notRun === "number" && a.notRun > 0 ? `; the ${a.notRun} other step${a.notRun === 1 ? "" : "s"} did not run` : ""}`;
+  const shots = Array.isArray(a.files) ? a.files.filter((f) => typeof f?.error === "string") : [];
+  if (shots.length) return shots.map((f) => `${f.url} at ${f.width}: ${f.error}`).join("; ");
+  return a.ok === false || a.found === false || a.kept === false ? JSON.stringify(r) : undefined;
+}
+
+// A miss exits 1, with or without -q, so a && chain stops at it: a wait
+// that found nothing exited 0 (S99PartA). Its line goes to stderr when
+// stdout holds nothing of it: quiet, or a value printed alone.
+function exitOnMiss(result: unknown, alone = false): void {
+  const miss = missOf(result);
+  if (miss === undefined) return;
+  if (quiet || alone) say(`miss: ${miss}`);
+  process.exit(1);
+}
+
+function answer(result: unknown): void {
+  print(result);
+  exitOnMiss(result);
+}
+
+// eval --raw: the value alone, for n=$(safari eval --raw ...): a string as
+// it is, anything else as JSON on one line, nothing for undefined. Agents
+// cut it out with grep -o '"result".*' 47 times (S99PartA). The answer's
+// other words (note, hint) go to stderr.
+function printRaw(result: unknown): void {
+  const { result: value, ...more } = result as { result?: unknown };
+  for (const [k, v] of Object.entries(more)) if (k !== "ok") console.error(`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+  if (value !== undefined) show(typeof value === "string" ? value : JSON.stringify(value));
+  exitOnMiss(result);
+}
+
+// open --id: the tab's id alone, for T=$(safari open <url> --id). Agents
+// scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
+// takes the first number an error names too.
+function printId(result: unknown): void {
+  const { id } = result as { id?: unknown };
+  if (id !== undefined) show(String(id));
+  exitOnMiss(result, true);
 }
 
 function flag(name: string, argv: string[]): string | undefined {
@@ -283,11 +357,13 @@ function toolDef(cmd: string): Tool | undefined {
 
 // Flags every command takes, and those a command reads beside its tool's
 // parameters (open --bg, snapshot --max).
-const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot"];
-const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg"], snapshot: ["max"], shot: ["full"], eval: ["file"], run: ["steps-file"] };
+const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet"];
+const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg", "id"], snapshot: ["max"], shot: ["full"], shots: ["full"], eval: ["file", "timeout", "raw"], wait: ["timeout"], window: ["size"], run: ["steps-file"] };
 // A parameter a command takes under another flag: tabs's host is --site,
 // since --host names another Mac. Its help said --host (10-04, 01a10737).
-const FLAG_FOR: Record<string, Record<string, string>> = { tabs: { host: "site" } };
+// shot's fullPage is --full, as its usage says: its help listed --fullPage
+// under [--full] (S99PartC).
+const FLAG_FOR: Record<string, Record<string, string>> = { tabs: { host: "site" }, shot: { fullPage: "full" }, shots: { fullPage: "full" } };
 
 // A tool's parameters given as --name value, however the name is written
 // (--max-bytes, or --note for learn's fact, as a model's call may name
@@ -336,9 +412,23 @@ function commandHelp(cmd: string): string | null {
   });
   const def = toolDef(cmd);
   if (!def) return usage.length ? usage.join("\n") : null;
-  const params = Object.entries(def.params).map(([name, p]) =>
-    `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${def.required?.includes(name) ? " (required)" : ""}\n      ${p.description}`);
+  // A parameter the usage gives as a word is a flag too: window's help
+  // listed --width as required under <width>, and agents read --help 6
+  // times for window and shot alone (S99PartA).
+  const params = Object.entries(def.params).map(([name, p]) => {
+    const how = [...(def.required?.includes(name) ? ["required"] : []), ...(usage.some((l) => l.includes(`<${name}>`)) ? [`or as <${name}> above`] : [])].join(", ");
+    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${how ? ` (${how})` : ""}\n      ${p.description}`;
+  });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
+}
+
+// A command that is none names the nearest one: `safari windows` printed
+// all of USAGE (S99PartC).
+function unknownCommand(cmd: string): never {
+  const commands = [...USAGE.matchAll(/^ {2}safari ([\w|-]+)/gm)].flatMap((m) => m[1].split("|"));
+  const tools = [...Object.entries(TOOLS), ...Object.entries(CALLER_TOOLS)].filter(([, t]) => !t.hidden).map(([n]) => n);
+  const near = nearest(cmd, [...commands, ...tools, ...Object.keys(ALIAS)]);
+  return fail(`unknown command: ${cmd}${near ? `; did you mean ${near}?` : ""} (safari --help lists every command)`, 2);
 }
 
 async function readStdin(): Promise<string> {
@@ -477,26 +567,51 @@ async function fillCommand(argv: string[]) {
   const what = argv.find((a, i) => !a.startsWith("--") && !isFlagValue(i, argv));
   await connectHost(flag("host", argv));
   const { tab } = tabArg(argv);
-  if (what === "address") return print(await invoke("fill_address", { tab, label: flag("label", argv), root: flag("root", argv) }));
+  if (what === "address") return answer(await invoke("fill_address", { tab, label: flag("label", argv), root: flag("root", argv) }));
   if (what === "login") {
     const username = flag("user", argv);
-    return print(hasFlag("bitwarden", argv) ? await invoke("bitwarden", { do: "fill", tab, username }) : await invoke("passwords", { do: "fill", tab, username }));
+    return answer(hasFlag("bitwarden", argv) ? await invoke("bitwarden", { do: "fill", tab, username }) : await invoke("passwords", { do: "fill", tab, username }));
   }
   fail("usage: safari fill address [--label home] | login [--bitwarden] [--user name]", 2);
 }
+
+// The daemon's answer at path, as JSON. Only a refused connection means
+// nothing listens there, which daemon install fixes: on 10-16 a reload
+// whose fetch failed after 28 s said to install the daemon that was
+// running (S99PartC, DaemonLogs). Anything else says what came back.
+async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const base = daemonHttp();
+  const res = await fetch(`${base}${path}`, init).catch((e: unknown) =>
+    fail(e instanceof Error && "code" in e && e.code === "ConnectionRefused"
+      ? `daemon not reachable at ${base}: nothing listens there; start it with: safari daemon install`
+      : `the daemon at ${base} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`));
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    fail(`the daemon at ${base} answered ${path} with HTTP ${res.status}, not JSON: ${text.slice(0, 200) || "nothing"}`);
+  }
+  if (!res.ok) fail(`the daemon at ${base} answered ${path} with HTTP ${res.status}: ${text.slice(0, 200)}`);
+  return body as T;
+}
+
+// The extension's own events, which status lists: tab and window events
+// are not.
+const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
 
 async function main() {
   // This process ends with its answer, and a card's Touch ID prompt with
   // it: a card fill waits until he answers. A pairing runs in a process of
   // its own and answers within 25 s, as through MCP (pair.ts).
   waitCardsOut();
-  const [cmd, ...rest] = process.argv.slice(2);
-  if (!cmd || cmd === "help" || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
-  if (rest.includes("--help")) {
-    const text = commandHelp(cmd);
-    if (text === null) fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
-    console.log(text);
-    return;
+  const [cmd, ...rest] = process.argv.slice(2).filter((a) => a !== "-q");
+  if (!cmd || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
+  // help <command> prints that command alone, as <command> --help does,
+  // where it printed all of USAGE.
+  if (cmd === "help" || rest.includes("--help")) {
+    const which = cmd === "help" ? rest.find((a) => !a.startsWith("-")) : cmd;
+    return console.log(which === undefined ? USAGE : commandHelp(which) ?? unknownCommand(which));
   }
 
   if (cmd === "serve") {
@@ -515,7 +630,9 @@ async function main() {
   }
 
   if (cmd === "guide") {
-    const which = rest.find((a) => !a.startsWith("--"));
+    // Every word names the guide: guide reference two lanes read only its
+    // first word, and printed the whole reference.
+    const which = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ") || undefined;
     const { guide, noGuide } = await import("../daemon/guides.ts");
     const text = await guide(which);
     if (text === null) fail(noGuide(which ?? ""));
@@ -528,7 +645,7 @@ async function main() {
     const { daemonInstall, daemonUninstall } = await import("./launchd.ts");
     if (sub === "install") console.log(await daemonInstall());
     else if (sub === "uninstall") console.log(await daemonUninstall());
-    else { console.error("usage: safari daemon install|uninstall"); process.exit(2); }
+    else fail("usage: safari daemon install|uninstall", 2);
     return;
   }
 
@@ -555,10 +672,7 @@ async function main() {
       process.exit(code);
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
-    } else {
-      console.error("usage: safari routine add|list|run|remove");
-      process.exit(2);
-    }
+    } else fail("usage: safari routine add|list|run|remove", 2);
     return;
   }
 
@@ -600,20 +714,29 @@ async function main() {
     } catch (e) {
       r = { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
-    print(r);
-    process.exit(r && typeof r === "object" && "ok" in r && r.ok === true ? 0 : 1);
+    return answer(r);
   }
 
-  // status: the daemon, its extension, and what happened to them lately,
-  // one event a line (--json: the whole health answer).
+  // status: the daemon; its extension, stuck (connected, but its calls
+  // time out), connected, or disconnected; and the extension's own events
+  // of the last 10 minutes, 5 at most (--json: the whole health answer).
+  // It printed every tab and window event, 2.2 KB for a yes or no, and
+  // said connected while every call timed out (S99PartC).
   if (cmd === "status") {
-    type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connectedAt?: number } | null; journal?: JournalEvent[] };
-    const h = await fetch(`${daemonHttp()}/health`).then((r) => r.json() as Promise<Health>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connected?: boolean; stuck?: boolean; sinceAnswerMs?: number | null; timeouts?: Record<string, number>; connectedAt?: number } | null; journal?: JournalEvent[] };
+    const h = await daemonJson<Health>("/health");
     if (json) return print(h);
     const at = (t: string | number) => new Date(t).toLocaleString("sv").slice(5);
     console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
-    console.log(h.extension ? `extension connected${h.extension.connectedAt ? ` since ${at(h.extension.connectedAt)}` : ""}` : "extension not connected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions");
-    for (const { t, kind, ...rest } of h.journal ?? []) console.log(`${at(t)}  ${kind}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ""}`);
+    const e = h.extension;
+    const missed = Object.entries(e?.timeouts ?? {}).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n} in a row`).join(", ");
+    const answered = typeof e?.sinceAnswerMs === "number" ? `, last answered ${Math.round(e.sinceAnswerMs / 1000)} s ago` : "";
+    console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
+      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; run: safari extension reload`
+      : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
+    const since = Date.now() - 10 * 60_000;
+    const events = (h.journal ?? []).filter((ev) => Object.hasOwn(EXTENSION_EVENTS, ev.kind) && Date.parse(ev.t) >= since).slice(-5);
+    for (const { t, kind, ...more } of events) console.log(`${at(t)}  ${kind}${Object.keys(more).length ? `  ${JSON.stringify(more)}` : ""}`);
     return;
   }
 
@@ -622,7 +745,7 @@ async function main() {
   if (cmd === "extension") {
     const [sub] = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
     if (sub !== "reload") fail("usage: safari extension reload", 2);
-    const r = await fetch(`${daemonHttp()}/extension/reload`, { method: "POST" }).then((res) => res.json() as Promise<{ ok: boolean; value?: { ms: number }; error?: string }>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    const r = await daemonJson<{ ok: boolean; value?: { ms: number }; error?: string }>("/extension/reload", { method: "POST" });
     if (!r.ok || !r.value) fail(r.error ?? "the daemon gave no answer");
     if (json) return print(r.value);
     return console.log(`the extension reloaded, and connected again in ${(r.value.ms / 1000).toFixed(1)} s`);
@@ -632,7 +755,7 @@ async function main() {
   // and the pages that show it and let the user pause or stop it (--json:
   // the whole answer).
   if (cmd === "agents") {
-    const o = await fetch(`${daemonHttp()}/agents.json`).then((r) => r.json() as Promise<Overview>, () => fail(`daemon not reachable at ${daemonHttp()} — run: safari daemon install`));
+    const o = await daemonJson<Overview>("/agents.json");
     if (json) return print(o);
     for (const a of o.agents) {
       const tabs = a.tabs === null ? "" : `, ${a.tabs} tab${a.tabs === 1 ? "" : "s"}`;
@@ -653,7 +776,7 @@ async function main() {
     const { newSession } = await import("../daemon/sessions.ts");
     const tab = flag("tab", rest);
     const rec = await newSession(task, {
-      tab: tab === undefined ? undefined : await resolveTab(tab, async () => (await invoke("tabs", {})) as TabInfo[]),
+      tab: tab === undefined ? undefined : await resolveTab(tab, async () => rowsOf(await invoke("tabs", {}))),
       host,
       model: flag("model", rest) ?? process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
       baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1",
@@ -677,7 +800,7 @@ async function main() {
     };
     const call = sub ? calls[sub] : undefined;
     if (!call) fail("usage: safari imessage chats|history|search|files|code|send …, or safari contacts <name>", 2);
-    print(await invoke(...call, true));
+    answer(await invoke(...call, true));
     return;
   }
 
@@ -694,7 +817,14 @@ async function main() {
 
   switch (cmd) {
     case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? null; break;
-    case "open": args.url = positional[0]; args.background = hasFlag("bg", rest); break;
+    case "open": {
+      // open opens a tab of its own: `open <url> --tab 12153` opened tab
+      // 13608 and left 12153 on its old page (S99PartC).
+      if (args.tab !== undefined) fail(`open takes no --tab: it opens a tab of its own. To load the page in tab ${String(args.tab)}, run: safari goto ${positional[0] ?? "<url>"} --tab ${String(args.tab)}`, 2);
+      args.url = positional[0];
+      args.background = hasFlag("bg", rest);
+      break;
+    }
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
     case "close": case "focus": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
@@ -724,23 +854,21 @@ async function main() {
     }
     case "hover": args.ref = positional[0]; break;
     case "upload": {
-      if (positional.length) args.paths = positional.map((p) => resolve(p));
+      if (positional.length) args.paths = positional;
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;
     }
     case "scroll": args.dy = Number(positional[0] ?? 600); break;
     case "eval": {
-      // a reader saved for the site (learn) is the code
-      const reader = flag("reader", rest);
-      if (reader !== undefined) {
-        args.reader = reader;
-        break;
-      }
-      // --file, or stdin, carries a script with no quoting to get right
+      // --timeout is in seconds, as the error that suggests it says
+      const secs = flag("timeout", rest);
+      if (secs !== undefined) args.timeoutMs = Number(secs) * 1000;
+      // --file carries a script with no quoting to get right; the code may
+      // also come as --expression, as a --reader saved with learn, or on stdin
       const file = flag("file", rest);
-      args.expression = file !== undefined ? await Bun.file(resolve(file)).text() : positional.join(" ") || (await readStdin());
-      if (!String(args.expression).trim()) fail('usage: safari eval "<js>" --tab N [--page] | --file path (or pipe the code in)', 2);
+      if (file !== undefined) args.expression = await Bun.file(resolve(file)).text();
+      else if (positional.length) args.expression = positional.join(" ");
       args.page = hasFlag("page", rest);
       break;
     }
@@ -753,11 +881,17 @@ async function main() {
     case "wait": {
       const ms = positional[0] ?? flag("ms", rest);
       if (ms !== undefined) args.ms = Number(ms);
+      // --timeout in seconds, as eval's: agents wrote wait --timeout, and
+      // it was refused (S99PartC)
+      const secs = flag("timeout", rest);
+      if (secs !== undefined) args.ms = Number(secs) * 1000;
       const sel = flag("selector", rest);
       if (sel) args.selector = sel;
       const text = flag("text", rest);
       if (text) args.text = text;
       if (hasFlag("front", rest)) args.front = true;
+      // --quiet waits for the page to go quiet, and quiets the output too
+      if (hasFlag("quiet", rest)) args.quiet = true;
       break;
     }
     case "net": case "console": {
@@ -773,11 +907,25 @@ async function main() {
       break;
     }
     case "shot": {
-      const out = flag("out", rest);
-      if (out) args.out = out;
+      // A path is this terminal's, and one given as a word is the file too:
+      // from 10-04 a 99point agent's `--out ui-evidence/...` shots went to
+      // the daemon's folder (S99PartB), which now refuses a relative one.
+      const given = flag("out", rest);
+      if (given !== undefined && positional[0] !== undefined) fail(`shot takes one path, not both --out ${given} and ${positional[0]}`, 2);
+      const out = given ?? positional[0];
+      if (out !== undefined) args.out = resolve(out);
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       args.annotate = hasFlag("annotate", rest);
+      args.fullPage = hasFlag("full", rest);
+      break;
+    }
+    case "shots": {
+      args.urls = positional;
+      const widths = flag("widths", rest);
+      if (widths !== undefined) args.widths = widths.split(",").map(Number);
+      const out = flag("out", rest);
+      if (out !== undefined) args.out = resolve(out);
       args.fullPage = hasFlag("full", rest);
       break;
     }
@@ -802,7 +950,15 @@ async function main() {
       if (out) args.out = resolve(out);
       break;
     }
-    case "window": args.width = Number(positional[0]); args.height = Number(positional[1]); break;
+    case "window": {
+      // --size WIDTHxHEIGHT too, as agents wrote it (S99PartC)
+      const size = flag("size", rest);
+      const wh = size === undefined ? positional : /^(\d+)x(\d+)$/i.exec(size)?.slice(1);
+      if (wh === undefined) fail(`--size takes WIDTHxHEIGHT in points, as 390x844, not ${size}`, 2);
+      args.width = Number(wh[0]);
+      args.height = Number(wh[1]);
+      break;
+    }
     case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
@@ -834,7 +990,7 @@ async function main() {
     }
     default: {
       // Any tool by name, however it is written (login-form for login_form).
-      tool = toolName(cmd) ?? fail(`unknown command: ${cmd}\n\n${USAGE}`, 2);
+      tool = toolName(cmd) ?? unknownCommand(cmd);
       // safari passwords status: the word after a tool that takes do is its do.
       if (positional[0] !== undefined && toolDef(tool)?.params.do) args.do = positional[0];
     }
@@ -847,17 +1003,28 @@ async function main() {
       if (args[k] === undefined || args[k] === "" || Number.isNaN(args[k])) args[k] = v;
     }
   }
+  // A path is this terminal's, as a word or as --paths: the daemon, in a
+  // folder of its own, found no such file.
+  if (name === "upload" && Array.isArray(args.paths)) args.paths = args.paths.map((p) => resolve(String(p)));
+  // eval's code from stdin, when no word, --expression, --file, or --reader gave it
+  if (cmd === "eval" && args.reader === undefined) {
+    if (args.expression === undefined || args.expression === "") args.expression = await readStdin();
+    if (!String(args.expression).trim()) fail('usage: safari eval "<js>" --tab N [--page] | --expression js | --file path (or pipe the code in)', 2);
+  }
+  const raw = cmd === "eval" && hasFlag("raw", rest);
+  if (raw && args.save !== undefined) fail("eval --raw prints the value, and --save writes it to a file: give one of them", 2);
 
   // The caller's environment goes with the call, for a type's secret "env".
   const result = await invoke(tool, args, true, false, process.env);
-  print(result);
-  if (name === "playbooks" && result && typeof result === "object" && "ok" in result && result.ok === false) process.exit(1);
+  if (raw) return printRaw(result);
+  if (cmd === "open" && hasFlag("id", rest)) return printId(result);
+  answer(result);
 }
 
 // Flags that take no value; the word after them is positional, unless it is
 // true or false: on 10-04 `eval --page true "const ..."` ran "true const
 // ..." and failed at its second word.
-const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true };
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, live: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];

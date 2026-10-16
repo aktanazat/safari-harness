@@ -137,7 +137,7 @@ test("after a deploy gives every tab a new id, an agent's calls on its old ids r
     expect(await as("info", { tab: old })).toMatchObject({ replaced: { from: old, to: now(old) } });
     expect(reached.at(-1)).toBe(now(old));
   }
-  expect(await as("tabs", {})).toEqual([expect.objectContaining({ id: now(first) }), expect.objectContaining({ id: now(second) })]);
+  expect(await as("tabs", {})).toEqual({ tabs: [expect.objectContaining({ id: now(first) }), expect.objectContaining({ id: now(second) })] });
   // one kept by its old id outlasts the turn; the other closes as it ends
   await as("keep", { tab: second });
   endTurn(agent.pid);

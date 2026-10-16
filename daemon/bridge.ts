@@ -8,7 +8,7 @@
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
 //   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
 //   daemon -> extension  {op:"reload"}     have Safari reload the extension,
-//                        stuck (see STUCK_MS) or asked to (reload)
+//                        stuck (see STUCK_AFTER) or asked to (reload)
 //   extension -> daemon  {op:"note", kind, ...}  an event for the journal
 //   extension -> daemon  {op:"tab", kind:"replaced", from, to}  Safari swapped a tab
 //   extension -> daemon  {op:"tab", kind:"popup", tab, opener, url}  an owned
@@ -40,22 +40,56 @@ const CONNECT_MS = 10000;
 // that opened after it takes its place (see attach).
 const ALIVE_MS = 1500;
 
-// When the connected extension is stuck, and is asked to reload itself
-// (unanswered): two requests in a row timed out, and requests waited on it
-// for STUCK_MS in all with no answer, not even a late one. On 10-13 it
-// answered nothing for over two minutes while its page still ran, until an
-// agent turned it off and on in Safari Settings, and turning it on made
-// macOS ask the owner for his password; a reload unloads and loads it the
-// same way, asking nothing. That morning's slow spells of a swapping Mac
-// timed out 2 and 5 s requests for up to a minute and passed by themselves,
-// and a reload fails every request in flight, so the bar is a minute, and
-// one reload each RELOAD_EVERY_MS at most.
-const STUCK_MS = 60000;
-const RELOAD_EVERY_MS = 600000;
+// When one kind of request (its op) is stuck on the connected extension:
+// STUCK_AFTER of them in a row timed out, with no answer to one since, not
+// even a late one. Kinds apart: on 10-13 tabs.list went unanswered for
+// minutes while the extension went on answering pages' relays, each answer
+// set the count of timeouts back to none, and in 17 days of storms (3,054
+// timed-out requests) the extension reloaded itself once.
+const STUCK_AFTER = 2;
+
+// While a kind is stuck its requests fail at once (extension stuck: …),
+// not each at its own limit: on 10-13 map's opens waited out 30 s each all
+// through a storm. One goes through each TRIAL_MS to learn whether the
+// extension answers again, and its answer ends it.
+const TRIAL_MS = 10_000;
+
+// A kind stuck RELOAD_AFTER_MS since its first timeout, or since the last
+// reload, has the extension asked to reload itself, RELOADS times in
+// RELOADS_MS at most. On 10-13 it answered nothing for over two minutes
+// while its page still ran, until an agent turned it off and on in Safari
+// Settings, and turning it on made macOS ask the owner for his password; a
+// reload unloads and loads it the same way, asking nothing, and one asked
+// by hand that day ended a storm in 10 s. That morning's slow spells of a
+// swapping Mac timed out 2 and 5 s requests for up to a minute and passed
+// by themselves, and a reload fails every request in flight, so the bar is
+// a minute. One reload in ten minutes was the most before, while storms
+// ran 5 to 29 min: a second now comes a minute after a first that did not
+// end it.
+const RELOAD_AFTER_MS = 60_000;
+const RELOADS = 2;
+const RELOADS_MS = 600_000;
 
 // How long safari extension reload waits for the reloaded extension to
 // connect again; it takes a second or two (CONNECT_MS).
 const RELOADED_MS = 30000;
+
+// How long a tabs.list waits when its caller sets no limit: the extension
+// answers one within 2.5 s with what it has by then (background.js), and on
+// 10-13 map's opens each waited 30 s on one that never came.
+const LIST_MS = 5000;
+
+// A tabs.list asked within JOIN_MS of another still unanswered shares its
+// answer rather than asking again: on 10-13 the sweep, the agent windows'
+// pages, and agents asked over each other, 191 of a storm's 235 timeouts.
+// Never one asked before the extension's latest answer (epoch): a caller
+// that closed a tab lists the tabs after the close.
+const JOIN_MS = 1000;
+
+// The bounds (ms) of /health's counts of how long each kind of request took
+// to answer: the daemon log had only timeouts, so no one could say how
+// slow tabs.list was on a good day.
+const LATENCY_MS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
 // Minimal structural view of Bun's ServerWebSocket so the bridge stays
 // testable without a live server.
@@ -114,10 +148,25 @@ function tabEvent(m: WireMessage): TabEvent | null {
 type Pending = {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
-  timer: Timer;
+  // a ping's time limit; a request's are its callers' (Asked)
+  timer?: Timer;
   // the socket the request went out on: only that extension can answer it
   sock: ExtSocket;
+  asked?: Asked;
 };
+
+// A request on the wire and the callers waiting on it, each until its own
+// limit: one, or each tabs.list caller that shared it (JOIN_MS). It ends
+// unanswered once the last of them gives up; ms is the longest limit, and
+// latencyKey what its answer's time counts under (a relay by its page op).
+type Asked = { id: string; op: string; latencyKey: string; detail: Record<string, unknown>; sock: ExtSocket; sent: number; epoch: number; ms: number; waiters: Set<Waiter> };
+type Waiter = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
+
+// One kind of request's timeouts in a row on the connected extension: how
+// many, since when it was asked through them, when the latest came, the
+// ids of those an answer may still come for, and when one may go as the
+// trial while it is stuck (Infinity while one waits).
+type Run = { misses: number; since: number; last: number; ids: Set<string>; trial: number };
 
 // What a socket last said about itself: its user agent, whether it wants
 // ticks, and the new ids a reload gave the tabs. A socket waiting to take
@@ -131,6 +180,16 @@ type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
 // the page's own script answer here without passing content.js's cut.
 const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true };
 
+// The requests whose time is a page's or a site's, not the extension's: a
+// tab's (FROM_TAB, and shot, window, storage.clear, which reach into its
+// page) wait on a page a dialog can hold, and fetchFile on a server. Their
+// timeouts make no kind stuck.
+const ELSEWHERE: Record<string, true> = { ...FROM_TAB, shot: true, window: true, "storage.clear": true, fetchFile: true };
+// An answer that took this long from the extension itself is noted: the
+// log held only timeouts, so no one could say which kinds were slow
+// (DaemonLogs).
+const SLOW_ANSWER_MS = 5000;
+
 export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
@@ -143,16 +202,18 @@ export class Bridge {
   private said = new WeakMap<ExtSocket, Said>();
   // A copy that keeps retrying is refused twice a second: noted once.
   private refusing = false;
-  // The connected extension's answers, for telling when it is stuck
-  // (unanswered): when it last answered anything, how many requests in a
-  // row timed out since, and how long they waited in all, until when. Time
-  // none of them waited is left out: an hour with nothing asked is not an
-  // hour unanswered.
+  // The connected extension's answers, for telling when a kind of request
+  // is stuck on it: when it last answered anything, each kind's timeouts in
+  // a row, and when the daemon asked it to reload itself, the latest last.
+  // An answer can change what tabs.list says, so a list asked after one
+  // shares none asked before (epoch, listing).
   private answeredAt = 0;
-  private timeouts = 0;
-  private silentMs = 0;
-  private silentTo = 0;
-  private reloadedAt = -Infinity;
+  private runs = new Map<string, Run>();
+  private reloads: number[] = [];
+  private epoch = 0;
+  private listing: Asked | undefined;
+  // how long the extension took over each kind of request (LATENCY_MS)
+  private answeredIn = new Map<string, number[]>();
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
@@ -193,7 +254,8 @@ export class Bridge {
     const said = this.said.get(sock);
     this.sock = sock;
     this.refusing = false;
-    this.answered();
+    this.answeredAt = Date.now();
+    this.runs.clear();
     this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
     this.ticks(said?.ticks ?? false);
     if (said?.renumbered) this.onTab(said.renumbered);
@@ -227,6 +289,7 @@ export class Bridge {
     const lost = this.drop(sock, "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again");
     if (this.sock !== sock) return;
     this.sock = null;
+    this.runs.clear();
     this.extensionInfo = null;
     this.ticks(false);
     note("disconnect", lost ? { unanswered: lost } : {});
@@ -253,6 +316,7 @@ export class Bridge {
     }
     if (msg.op === "load") {
       if (from && from === this.sock && typeof msg.url === "string" && typeof msg.from === "number" && Number.isFinite(msg.from) && typeof msg.to === "number" && Number.isFinite(msg.to) && msg.from <= msg.to) {
+        this.epoch++;
         noteLoad({ from: msg.from, to: msg.to, urls: [msg.url] });
       }
       return;
@@ -265,6 +329,7 @@ export class Bridge {
         if (from) this.said.set(from, { ticks: false, ...this.said.get(from), renumbered: event });
         return;
       }
+      this.epoch++;
       this.onTab(event);
       return;
     }
@@ -273,10 +338,10 @@ export class Bridge {
       return;
     }
     if (msg.id === undefined) return;
-    // an answer the daemon gave up on still shows the extension answers
-    if (from === this.sock) this.answered();
     const key = String(msg.id);
     const p = this.pending.get(key);
+    // an answer the daemon gave up on still shows the extension answers
+    if (from === this.sock) this.heard(key, p?.asked, msg.error === undefined);
     if (!p) return;
     this.pending.delete(key);
     clearTimeout(p.timer);
@@ -322,48 +387,148 @@ export class Bridge {
       : `Safari was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
   }
 
-  async request(op: string, args: unknown[] = [], timeoutMs = 30000): Promise<unknown> {
+  async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000): Promise<unknown> {
     const sock = await this.socket();
-    const id = `d${++this.seq}`;
-    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-    const sent = Date.now();
-    const timer = setTimeout(() => {
-      this.pending.delete(id);
-      note("timeout", { op, ...(op === "relay" ? { tab: args[0], dom: args[1] } : {}), ms: timeoutMs });
-      reject(new Error(`extension request ${op} timed out after ${timeoutMs}ms`));
-      this.unanswered(sock, sent);
-    }, timeoutMs);
-    this.pending.set(id, { resolve, reject, timer, sock });
-    sock.send(JSON.stringify({ id, op, args }));
-    if (!Object.hasOwn(FROM_TAB, op)) return promise;
+    const answer = this.ask(sock, op, args, timeoutMs);
+    if (!Object.hasOwn(FROM_TAB, op)) return answer;
     const tab = Number(args[0]);
-    return promise.then((v) => unsecret(tab, v), (e: unknown) => {
+    return answer.then((v) => unsecret(tab, v), (e: unknown) => {
       if (e instanceof Error) e.message = String(unsecret(tab, e.message));
       throw e;
     });
   }
 
-  private answered() {
-    this.answeredAt = Date.now();
-    this.timeouts = 0;
-    this.silentMs = 0;
+  // Whether a kind of request is stuck on the connected extension.
+  get stuck(): boolean {
+    return [...this.runs.values()].some((r) => r.misses >= STUCK_AFTER);
   }
 
-  // A request sent at sent timed out on the connected extension: a stuck
-  // one is asked to reload itself (STUCK_MS).
-  private unanswered(sock: ExtSocket, sent: number) {
+  // The extension as /health tells it (main.ts): connected or not, stuck or
+  // not, how long since it last answered anything, and each kind of
+  // request's timeouts in a row; while connected, its user agent and when
+  // it connected.
+  health(): { connected: boolean; stuck: boolean; sinceAnswerMs: number | null; timeouts: Record<string, number>; ua?: string; connectedAt?: number } {
+    return {
+      connected: this.sock !== null,
+      stuck: this.stuck,
+      sinceAnswerMs: this.sock === null ? null : Date.now() - this.answeredAt,
+      timeouts: Object.fromEntries([...this.runs].map(([op, r]) => [op, r.misses])),
+      ...this.extensionInfo,
+    };
+  }
+
+  // How long each kind of request took to answer since the daemon started:
+  // for each, how many answers came within each of boundsMs, and last how
+  // many took longer. A relay counts by its page op.
+  latency(): { boundsMs: number[]; ops: Record<string, number[]> } {
+    return { boundsMs: LATENCY_MS, ops: Object.fromEntries(this.answeredIn) };
+  }
+
+  // Sends op on sock, or has a tabs.list caller share one asked within
+  // JOIN_MS; the caller waits until timeoutMs. A stuck kind's request fails
+  // at once, but for one each TRIAL_MS.
+  private ask(sock: ExtSocket, op: string, args: unknown[], timeoutMs: number): Promise<unknown> {
     const now = Date.now();
-    this.timeouts++;
-    this.silentMs += now - Math.max(sent, this.silentTo, this.answeredAt);
-    this.silentTo = now;
-    if (this.timeouts < 2 || this.silentMs < STUCK_MS || now - this.reloadedAt < RELOAD_EVERY_MS) return;
-    this.askReload(sock, `it answered nothing for ${Math.round(this.silentMs / 1000)} s while ${this.timeouts} requests in a row timed out`);
+    const list = op === "tabs.list" && args.length === 0;
+    const run = this.runs.get(op);
+    const shared = this.listing;
+    if (run && run.misses >= STUCK_AFTER) {
+      if (now < run.trial) throw new Error(`extension stuck: the Safari extension has answered none of the last ${run.misses} ${op} requests (for ${Math.round((now - run.since) / 1000)} s); run safari extension reload, then try again`);
+      run.trial = Infinity;
+    } else if (list && shared && shared.sock === sock && shared.epoch === this.epoch && now - shared.sent <= JOIN_MS && this.pending.has(shared.id)) {
+      return this.wait(shared, timeoutMs);
+    }
+    const id = `d${++this.seq}`;
+    const relay = op === "relay";
+    const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set() };
+    const each = (settle: (w: Waiter) => void) => {
+      for (const w of asked.waiters) {
+        clearTimeout(w.timer);
+        settle(w);
+      }
+      asked.waiters.clear();
+    };
+    // The caller waits before the request goes out: an answer may come
+    // inside send (a test's extension answers there).
+    const answer = this.wait(asked, timeoutMs);
+    if (list) this.listing = asked;
+    this.pending.set(id, { resolve: (v) => each((w) => w.resolve(v)), reject: (e) => each((w) => w.reject(e)), sock, asked });
+    try {
+      sock.send(JSON.stringify({ id, op, args }));
+    } catch (e) {
+      this.pending.delete(id);
+      each((w) => w.reject(e instanceof Error ? e : new Error(String(e))));
+    }
+    return answer;
+  }
+
+  private wait(asked: Asked, timeoutMs: number): Promise<unknown> {
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    asked.ms = Math.max(asked.ms, timeoutMs);
+    const waiter: Waiter = {
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        asked.waiters.delete(waiter);
+        reject(new Error(`extension request ${asked.op} timed out after ${timeoutMs}ms`));
+        if (asked.waiters.size === 0) this.unanswered(asked);
+      }, timeoutMs),
+    };
+    asked.waiters.add(waiter);
+    return promise;
+  }
+
+  // The connected extension answered request id (asked, unless the daemon
+  // had given up on it): any answer, a late one or an error too, ends its
+  // kind's run of timeouts.
+  private heard(id: string, asked: Asked | undefined, ok: boolean) {
+    const now = Date.now();
+    this.answeredAt = now;
+    if (asked !== this.listing) this.epoch++;
+    const op = asked?.op ?? [...this.runs].find(([, r]) => r.ids.has(id))?.[0];
+    const run = op === undefined ? undefined : this.runs.get(op);
+    if (op !== undefined && run) {
+      this.runs.delete(op);
+      if (run.misses >= STUCK_AFTER) note("unstuck", { op, ms: now - run.since });
+    }
+    if (!asked || !ok) return;
+    const ms = now - asked.sent;
+    const counts = this.answeredIn.get(asked.latencyKey) ?? Array<number>(LATENCY_MS.length + 1).fill(0);
+    const within = LATENCY_MS.findIndex((bound) => ms <= bound);
+    counts[within === -1 ? LATENCY_MS.length : within]++;
+    this.answeredIn.set(asked.latencyKey, counts);
+    if (ms > SLOW_ANSWER_MS && !Object.hasOwn(ELSEWHERE, asked.op)) note("slow", { op: asked.op, ms });
+  }
+
+  // No one waits on request asked any longer, and the extension never
+  // answered it. Its kind's run grows: stuck, its requests fail at once
+  // (ask), and stuck a while, the extension is asked to reload itself.
+  private unanswered(asked: Asked) {
+    this.pending.delete(asked.id);
+    const now = Date.now();
+    note("timeout", { op: asked.op, ...asked.detail, ms: asked.ms });
+    if (asked !== this.listing) this.epoch++;
+    if (asked.sock !== this.sock || Object.hasOwn(ELSEWHERE, asked.op)) return;
+    const run = this.runs.get(asked.op) ?? { misses: 0, since: asked.sent, last: now, ids: new Set<string>(), trial: 0 };
+    // asked again after a quiet spell: time no one asked is not time the
+    // extension failed to answer
+    if (asked.sent - run.last > RELOAD_AFTER_MS) run.since = asked.sent;
+    run.misses++;
+    run.last = now;
+    run.ids.add(asked.id);
+    run.trial = now + TRIAL_MS;
+    this.runs.set(asked.op, run);
+    if (run.misses === STUCK_AFTER) note("stuck", { op: asked.op, ms: now - run.since });
+    const reloaded = this.reloads.at(-1) ?? -Infinity;
+    this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
+    if (run.misses < STUCK_AFTER || now - Math.max(run.since, reloaded) < RELOAD_AFTER_MS || this.reloads.length >= RELOADS) return;
+    this.reloads.push(now);
+    this.askReload(asked.sock, `${asked.op} went unanswered for ${Math.round((now - run.since) / 1000)} s, ${run.misses} requests in a row`);
   }
 
   // Safari unloads the extension and loads it again (background.js): its
   // socket closes, failing what it was asked, and a new one connects.
   private askReload(sock: ExtSocket, why: string) {
-    this.reloadedAt = Date.now();
     note("reload", { why });
     sock.send('{"op":"reload"}');
   }

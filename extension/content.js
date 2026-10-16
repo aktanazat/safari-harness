@@ -1067,6 +1067,16 @@
   const DRAW_WAIT_MS = 2000;
   const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
   const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
+  // A page that hit an error may draw nothing however long a wait looks for
+  // its text: on 10-09 an agent waited 25 s on one whose script had thrown,
+  // then read an empty console (S99PartB). A blank read names the errors
+  // the page kept since it began (dialogs.js), failed script loads among them.
+  function undrawnHint() {
+    const errors = hear(0)?.errors ?? [];
+    if (errors.length === 0) return UNDRAWN_PAGE;
+    const count = errors.length === 1 ? "an error" : `${errors.length} errors${errors.length > 3 ? ", the latest" : ""}`;
+    return `the page has drawn nothing, and it hit ${count}: ${errors.slice(-3).join("; ")}. Waiting for its text may not help: read them with console (do: read), or reload it (history, do: reload), then snapshot again`;
+  }
   function snapshot(opts = {}) {
     const top = window === window.top;
     // Flutter's host element sits in the page itself, so only a page with
@@ -1086,7 +1096,7 @@
       return found(again, now);
     }, DRAW_WAIT_MS).then((held) => {
       if (!held && placeholder && document.hidden && !tickPort) return { ...latest, hint: FLUTTER_UNDRAWN };
-      if (!held && !placeholder && !outline({}, true).seen) return { ...latest, hint: UNDRAWN_PAGE };
+      if (!held && !placeholder && !outline({}, true).seen) return { ...latest, hint: undrawnHint() };
       return latest;
     });
   }
@@ -3838,6 +3848,28 @@
     loaded: async (ms) => ({ loading: stillLoading() && !(await whenPage(() => !stillLoading(), ms)) }),
     // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
     painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
+    // Finishes the page's running finite animations and transitions, and
+    // those they start, for up to ms, before a screenshot (screenshot in
+    // background.js); endless ones (spinners) run on.
+    settle: async (ms) => {
+      const until = Date.now() + ms;
+      let finished = 0;
+      for (;;) {
+        const running = document.getAnimations().filter((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime));
+        if (running.length === 0 || Date.now() >= until) return { finished };
+        for (const a of running) {
+          try {
+            a.finish();
+            finished++;
+          } catch {
+            // one at rate 0 has no end to go to
+          }
+        }
+        const next = Promise.withResolvers();
+        setTimeout(next.resolve, 16);
+        await next.promise;
+      }
+    },
     clickAt: (x, y) => withReceipt(() => withOutcome(() => clickAt(x, y))),
     hover,
     select: selectIn,
@@ -3967,11 +3999,14 @@
   // the harness owns gets back how to answer its dialogs.
   // It also keeps its tab's and window's ids, for the extension to map
   // after it reloads (adopt in background.js).
-  api.runtime.sendMessage({ __safariHarnessReady: 1 }).then((r) => {
+  api.runtime.sendMessage({ __safariHarnessReady: 1 }).then((r) => r, () => null).then((r) => {
+    // A print the page raised as it loaded waits on this word (dialogs.js):
+    // in a tab not the harness's, or with no extension to answer, it shows.
+    if (!r?.dialogs) document.dispatchEvent(new Event("__sh_dialog_known"));
     if (!r) return;
     window.__safariHarnessTab = r.tab;
     window.__safariHarnessWindow = r.window;
     if (r.dialogs) setDialogs(r.dialogs);
     if (r.net === false) document.dispatchEvent(new Event("__sh_net_off"));
-  }, () => {});
+  });
 })();

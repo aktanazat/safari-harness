@@ -404,7 +404,7 @@ export class ApplePasswords {
     let msg: { hello?: Hello; helper?: HelperMsg; closed?: string };
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.hello) {
-      this.greet(msg.hello).catch((e) => console.error("[safari-harness] the password bridge's hello failed:", e));
+      this.greet(msg.hello).catch((e) => console.error("[safari-harness] the password bridge's hello failed:", e instanceof Error ? e.message : e));
       return;
     }
     if (msg.closed !== undefined) {

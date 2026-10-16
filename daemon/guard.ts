@@ -38,19 +38,19 @@ export function nameIn(names: string[], name: string): string | undefined {
 // by the tools it names: click's text is the ref it names, press's is not.
 // action, code, note, mode, and js each failed a call in the 09-27 to
 // 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
-// 10-07 net's query, the part of the address it keeps.
+// 10-07 net's query, the part of the address it keeps; in the 10-12 to
+// 10-16 logs shot's path and passwords' account.
 const ALIASES: [string, string, string[]?][] = [
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"],
   ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
+  ["path", "out", ["shot", "shots", "download"]], ["account", "username", ["passwords"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do
-// instead: snapshot {url} and extract {url} each read no page on 09-29,
-// and on 10-07 scroll --to bottom was asked if it meant --tab.
+// instead: snapshot {url} and extract {url} each read no page on 09-29.
 const MISSES: [string, string, string][] = [
   ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
   ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
-  ["scroll", "to", "scroll moves by dy pixels (a dy past the page's length reaches its bottom, a negative one its top) or brings a ref into view; a snapshot already holds what is off screen"],
 ];
 
 // What to do instead of a parameter that asks tool for what it cannot do.

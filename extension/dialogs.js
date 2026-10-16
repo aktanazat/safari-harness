@@ -43,9 +43,35 @@
     seen("prompt", message, answer);
     return answer;
   };
+  // A page may print as it loads, before content.js has said whose tab
+  // this is: Gmail's print view likely does, and on 10-14 requests to a
+  // harness tab on it failed for 43.7 s (AkylUsage). Until content.js says
+  // (a policy, or __sh_dialog_known once the extension answered its
+  // report), a print waits: in a tab the harness owns it is then answered
+  // as an armed one is, in the user's it shows. With no word in
+  // PRINT_WAIT_MS (no extension to answer), it shows.
+  const PRINT_WAIT_MS = 3000;
+  let known = false;
+  let heldPrint = null;
+  const releasePrint = () => {
+    const print = heldPrint;
+    heldPrint = null;
+    if (!print) return;
+    if (state.armed) seen("print", "", null);
+    else print();
+  };
   window.print = function () {
-    if (!state.armed) return native.print.apply(this, arguments);
-    seen("print", "", null);
+    if (state.armed) {
+      seen("print", "", null);
+    } else if (known) {
+      return native.print.apply(this, arguments);
+    } else if (!heldPrint) {
+      heldPrint = () => native.print.call(this);
+      setTimeout(() => {
+        known = true;
+        releasePrint();
+      }, PRINT_WAIT_MS);
+    }
   };
   addEventListener("beforeunload", (e) => { if (state.armed) e.stopImmediatePropagation(); }, true);
   document.addEventListener("__sh_dialog_policy", (e) => {
@@ -56,7 +82,14 @@
       state.accept = !!p.accept;
       state.text = typeof p.text === "string" ? p.text : null;
       if (p.owned) own();
+      known = true;
+      releasePrint();
     } catch {}
+  });
+  // content.js's word that this tab is not the harness's (print, above).
+  document.addEventListener("__sh_dialog_known", () => {
+    known = true;
+    releasePrint();
   });
 
   // ---------- downloads ----------
@@ -437,12 +470,19 @@
   // did not catch, which are kept whether the log is on or not. The answer
   // goes back within the ask.
   const ERRORS_MAX = 20;
-  const errors = []; // { t, message }
+  const errors = (state.errors = []); // { t, message }; console read shows them too (pageCapture in background.js)
   const thrown = (message) => {
     errors.push({ t: Date.now(), message: cut(message, 200) });
     if (errors.length > ERRORS_MAX) errors.shift();
   };
   addEventListener("error", (e) => thrown(String(e.message)));
+  // A script or style sheet that failed to load fires its error at its tag,
+  // where only a listener that captures hears it.
+  addEventListener("error", (e) => {
+    const tag = e.target;
+    if (tag instanceof HTMLScriptElement && tag.src) thrown(`failed to load script ${tag.src}`);
+    else if (tag instanceof HTMLLinkElement && tag.rel === "stylesheet") thrown(`failed to load style sheet ${tag.href}`);
+  }, true);
   addEventListener("unhandledrejection", (e) => {
     let why = "";
     try { why = e.reason instanceof Error ? e.reason.message : String(e.reason); } catch {}

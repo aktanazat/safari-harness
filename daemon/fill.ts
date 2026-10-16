@@ -7,7 +7,8 @@
 // carries what was filled, only which fields got it.
 
 import { Database } from "bun:sqlite";
-import { resolveTab, TAB, TOOLS, type TabInfo, type Tool } from "./tools.ts";
+import { resolveTab, TAB, TOOLS, type Tool } from "./tools.ts";
+import { rowsOf } from "./tabs-view.ts";
 import { addressBooks } from "./imessage.ts";
 import { rpc } from "./rpc.ts";
 import { navigatedOf } from "./navigated.ts";
@@ -101,7 +102,7 @@ type BwItem = { id: string; name: string; type: number; login?: { username?: str
 async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
   const status = (JSON.parse(await bw(["status"])) as { status: string }).status;
   if (BW_LOCKED[status]) throw new Error(BW_LOCKED[status]);
-  const tab = await resolveTab(a.tab, async () => (await rpc("tabs")) as TabInfo[]);
+  const tab = await resolveTab(a.tab, async () => rowsOf(await rpc("tabs")));
   const form = await rpc("login_form", { tab });
   if (!form || typeof form !== "object" || !("site" in form) || typeof form.site !== "string" || !("frame" in form) || typeof form.frame !== "number") throw new Error("the tab's sign-in form did not answer; reload it with goto and try again");
   const site = form.site;

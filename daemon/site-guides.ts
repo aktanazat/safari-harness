@@ -2,7 +2,9 @@
 // and `hosts:` front matter. A hosts entry is a domain, optionally with a
 // path prefix (docs.google.com/spreadsheets); subdomains match, and the
 // longest matching entry wins. `real-input: true` marks the guide's hosts
-// for real input, as learn {site, real: true} does (notes.ts). `safari
+// for real input, as learn {site, real: true} does (notes.ts).
+// `error-titles:` names the exact titles of the site's error page, comma
+// separated: open and goto answer such a page as not ok (tools.ts). `safari
 // guide` prints them (guides.ts); the first result on a site names its own
 // (tools.ts).
 
@@ -10,13 +12,14 @@ import { readdirSync, readFileSync } from "node:fs";
 
 const SITES = new URL("../docs/sites/", import.meta.url);
 
-export type Guide = { slug: string; name: string; hosts: string[]; real: boolean; text: string };
+export type Guide = { slug: string; name: string; hosts: string[]; real: boolean; errorTitles: string[]; text: string };
 
 export function bundled(): Guide[] {
   return readdirSync(SITES).filter((f) => f.endsWith(".md")).sort().map((f) => {
     const text = readFileSync(new URL(f, SITES), "utf8");
     const hosts = (/^hosts:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((h) => h.trim()).filter(Boolean);
-    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, real: /^real-input:\s*true\s*$/m.test(text), text };
+    const errorTitles = (/^error-titles:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, real: /^real-input:\s*true\s*$/m.test(text), errorTitles, text };
   });
 }
 
@@ -45,4 +48,18 @@ export function guideFor(url: string): string | undefined {
   if (!URL.canParse(url)) return undefined;
   const { hostname, pathname } = new URL(url);
   return covering(bundled(), hostname, pathname)?.slug;
+}
+
+// The guides as the daemon started, read once: open and goto ask of every
+// page they load (errorPage).
+let guides: Guide[] | undefined;
+
+// Whether the page at url, titled title, is its site's error page, as its
+// guide's error-titles name it: on 10-16 a hunt's eBay searches answered
+// "Error Page | eBay", which an agent read as no listings (HuntsUsage).
+export function errorPage(url: string, title: string): boolean {
+  const parsed = URL.parse(url);
+  if (!parsed || title.trim() === "") return false;
+  guides ??= bundled();
+  return covering(guides, parsed.hostname, parsed.pathname)?.errorTitles.includes(title.trim()) ?? false;
 }

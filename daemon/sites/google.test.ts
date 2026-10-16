@@ -35,7 +35,7 @@ function safari(messages: Message[], landing: number[] = [0], mailbox: Mail[] = 
       live.set(opened, landing[opened - 1] ?? 0);
       return { id: opened };
     }
-    if (tool === "tabs") return [...live].map(([id, account]) => ({ id, url: `https://mail.google.com/mail/u/${account}/#inbox`, title: "Inbox (2) - Gmail" }));
+    if (tool === "tabs") return { tabs: [...live].map(([id, account]) => ({ id, url: `https://mail.google.com/mail/u/${account}/#inbox`, title: "Inbox (2) - Gmail" })) };
     const account = live.get(Number(args.tab));
     if (account === undefined) throw new Error("that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user");
     const expression = String(args.expression);

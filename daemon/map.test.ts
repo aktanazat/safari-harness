@@ -17,6 +17,8 @@ const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const CLEARING = "https://clearing.example/";
+// eBay's error page, as its guide names it (docs/sites/ebay.md).
+const ERRORED = "https://ebay.com/sch/i.html?_nkw=lamp";
 
 // Pages whose read takes 31.5 s, as each of six Yelp pages' eval did on
 // 09-30 (01a0f031).
@@ -55,7 +57,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "tabs.list") return { value: [...tabs.values()] };
   if (op === "tabs.open") {
-    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: args[0] === LOST ? "Page Not Found" : "Page" };
+    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: args[0] === LOST ? "Page Not Found" : args[0] === ERRORED ? "Error Page | eBay" : "Page" };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
     return { value: tab };
@@ -162,11 +164,31 @@ test("a page that fails is reported in its place, and the others are still read"
   expect(pages[2]).toMatchObject({ error: "no content root" });
 });
 
+// On 10-13 two maps took 30 s each and answered every page "extension
+// request tabs.list timed out after 30000ms", without isError, as a map
+// that had worked.
+test("a map whose every page the extension left unanswered fails as a whole, extension stuck; one page failing on its own still answers the pages", async () => {
+  const silent = (tool: string) => (tool === "open" ? Promise.reject(new Error("extension request tabs.list timed out after 5000ms")) : Promise.resolve({ ok: true }));
+  const stuck = (tool: string, args: Record<string, unknown>) => (args.url === urls(3)[2] ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again")) : silent(tool));
+  await expect(mapPages({ urls: urls(3) }, stuck)).rejects.toThrow(/^extension stuck: .* none of map's 3 pages \(its tabs\.list requests went unanswered\); run safari extension reload/);
+  const oneOwn = (tool: string, args: Record<string, unknown>) => (args.url === urls(3)[0] ? Promise.reject(new Error(`Safari could not open ${urls(3)[0]}: the site did not answer`)) : silent(tool));
+  expect((await mapPages({ urls: urls(3) }, oneOwn)).pages.map((p) => p.ok)).toEqual([false, false, false]);
+});
+
 // An eval or fetch read carries no title, and an address may have led to a
 // page not found.
 test("each page carries the title its tab opened with", async () => {
   const pages = await map({ urls: ["https://shop.example/a", LOST], what: "eval", expression: "document.title" });
   expect(pages.map((p) => [p.url, p.title])).toEqual([["https://shop.example/a", "Page"], [LOST, "Page Not Found"]]);
+});
+
+// 10-16: a hunt's eBay searches answered "Error Page | eBay", which an
+// agent read as no listings (HuntsUsage).
+test("a page that opened as its site's error page fails with open's warning, and is not read", async () => {
+  readUrls.length = 0;
+  const pages = await map({ urls: [ERRORED, "https://shop.example/a"] });
+  expect(pages[0]).toMatchObject({ url: ERRORED, ok: false, error: expect.stringContaining("answered with its error page") });
+  expect(readUrls).toEqual(["https://shop.example/a"]);
 });
 
 test("every tab map opens is closed, a failed page's and a bot check's included", async () => {

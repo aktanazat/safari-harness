@@ -246,13 +246,16 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   switch (a.op) {
     case "state": {
       const watched = [...spaces.values()].filter((s) => s.group !== "plain");
-      const tabs = bridge.connected && watched.some((s) => s.group === "waiting" || s.group === "making") ? await listTabs() : undefined;
+      // A stuck extension (bridge.ts) answers no list: the keeper waits as
+      // for a quit Safari, where the error a list threw stopped it.
+      const asks = bridge.connected && !bridge.stuck && watched.some((s) => s.group === "waiting" || s.group === "making");
+      const tabs = asks ? await listTabs().catch(() => undefined) : undefined;
       const counted = await Promise.all(watched.map(async (s) => ({ s, inWindow: tabs && (await located(s, tabs)) })));
       // A waiting window holding fewer than GROUP_AT of its agent's tabs is
       // not yet one the keeper makes a group of.
       const due = counted.filter(({ s, inWindow }) => s.group !== "waiting" || (inWindow?.filter((t) => !isPage(t, s)).length ?? 0) >= GROUP_AT);
       const row = (s: Space, over: boolean, inWindow?: TabInfo[]) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(inWindow ? { tabs: inWindow.length } : {}) });
-      return { connected: bridge.connected, spaces: [...[...closing.values()].map((s) => row(s, s.done === true)), ...due.map(({ s, inWindow }) => row(s, false, inWindow))] };
+      return { connected: bridge.connected && !bridge.stuck && (!asks || tabs !== undefined), spaces: [...[...closing.values()].map((s) => row(s, s.done === true)), ...due.map(({ s, inWindow }) => row(s, false, inWindow))] };
     }
     case "making":
       if (!live) return { ok: false };
@@ -319,9 +322,21 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, or raised");
 }
 
+// A window page Safari would not close (a native sheet holds it, or the
+// extension does not answer) is asked again after one, two, then four
+// minutes, and then left until the daemon starts again: in the daemon log
+// of 09-30 to 10-16 one lost window's close failed 69 times in 5.7 min,
+// one try each sweep, each a wait in the extension's queue. A page
+// already gone is closed.
+const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const unclosed = new Map<Space, { tries: number; at: number }>();
+
 async function end(space: Space) {
-  if (spaces.get(space.key) === space) spaces.delete(space.key);
-  note("window ended", { name: space.name, owner: space.owner ?? null });
+  // once: each sweep ends again a window whose page is still open
+  if (spaces.get(space.key) === space) {
+    spaces.delete(space.key);
+    note("window ended", { name: space.name, owner: space.owner ?? null });
+  }
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
@@ -334,9 +349,23 @@ async function end(space: Space) {
   if (!space.done || inWindow.some(t => !isPage(t, space))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
-    const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
-    if (result.ok !== true) return;
+    const failed = unclosed.get(space);
+    if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
+    try {
+      const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
+      if (result.ok !== true) return;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      if (!why.startsWith("that tab is gone")) {
+        const tries = (failed?.tries ?? 0) + 1;
+        const wait = CLOSE_RETRY_MS[tries - 1];
+        unclosed.set(space, { tries, at: Date.now() + (wait ?? 0) });
+        note("window not closed", { name: space.name, error: why, retryS: wait === undefined ? null : wait / 1000 });
+        return;
+      }
+    }
   }
+  unclosed.delete(space);
   ended.delete(space);
   save();
 }

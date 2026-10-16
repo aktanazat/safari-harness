@@ -37,9 +37,13 @@ type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for, the read, its
 // arguments, where to save it.
 type Job = { wait?: Record<string, unknown>; read: SaveKind; args: Record<string, unknown>; target?: Target; call: Call };
-type Opened = { id: number; url?: string; title?: string; challenge?: Challenge };
+type Opened = { id: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// A page that failed because the extension answered nothing (bridge.ts),
+// and the kind of request it left unanswered.
+const UNANSWERED = /extension request (\S+) timed out|extension stuck: .*? none of the last \d+ (\S+) requests/;
 
 function readOf(what: unknown): SaveKind {
   const read = READS.find((r) => r === what);
@@ -95,7 +99,14 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
   await Promise.race([Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker)), late]);
   clearTimeout(timer);
   await Promise.all(writing);
-  return { pages: urls.map((url, i) => pages[i] ?? unfinished(url, began[i])) };
+  const answered = urls.map((url, i) => pages[i] ?? unfinished(url, began[i]));
+  // An extension that answers nothing fails each page alike, and a list of
+  // failed pages read as a map that worked: on 10-13 two maps took 30 s
+  // each and answered every page "extension request tabs.list timed out".
+  const unanswered = answered.map((p) => (p.ok ? null : UNANSWERED.exec(p.error)));
+  const [first] = unanswered;
+  if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the Safari extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); run safari extension reload, then map again`);
+  return { pages: answered };
 }
 
 // A page map answered without: still being read, or not begun.
@@ -113,7 +124,7 @@ async function visit(url: string, job: Job): Promise<Page | (() => Promise<Page>
   let opened: Opened | undefined;
   let outcome: Outcome;
   try {
-    // open answers {id, url, title, challenge?} or throws; callTool types every answer unknown
+    // open answers {id, url, title, challenge?, ok?, warning?} or throws; callTool types every answer unknown
     opened = (await job.call("open", { url, background: true })) as Opened;
     outcome = await readTab(opened, url, job);
   } catch (e) {
@@ -136,6 +147,10 @@ async function visit(url: string, job: Job): Promise<Page | (() => Promise<Page>
 async function readTab(opened: Opened, url: string, { wait, read, args, target, call }: Job): Promise<Outcome> {
   const check = opened.challenge;
   if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], challenge: check };
+  // open answers a site's error page (its guide's error-titles) as not ok,
+  // with a warning: the page holds nothing to read. On 10-16 a hunt's eBay
+  // searches answered "Error Page | eBay", read as no listings (HuntsUsage).
+  if (opened.ok === false && opened.warning) return { ok: false, error: opened.warning };
   if (wait) {
     const missed = missOf(await call("wait", { ...wait, tab: opened.id }));
     if (missed) return check ? { ...missed, challenge: check } : missed;

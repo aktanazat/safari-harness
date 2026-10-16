@@ -289,7 +289,7 @@ export function gmail(kit: SiteKit) {
 
   // The tab as the browser lists it; undefined once it is gone.
   async function listed(tab: number): Promise<{ id: number; url?: string; title?: string } | undefined> {
-    const tabs = (await kit.invoke("tabs", {})) as { id: number; url?: string; title?: string }[];
+    const { tabs } = (await kit.invoke("tabs", {})) as { tabs: { id: number; url?: string; title?: string }[] };
     return tabs.find((t) => t.id === tab);
   }
 

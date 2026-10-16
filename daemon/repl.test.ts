@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -19,7 +19,7 @@ function session(refusal: "thrown" | "returned" = "thrown") {
   const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
     calls.push([tool, args]);
     if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
-    if (tool === "tabs") return [{ id: 7, url: "https://example.com/", title: "Example" }];
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://example.com/", title: "Example" }] };
     if (tool === "eval" && args.page && refusal === "thrown") throw new Error(BLOCKED);
     if (tool === "eval" && args.page) return { error: WEBKIT };
     if (tool === "eval") return { result: "extension" };
@@ -38,6 +38,40 @@ test.each([
 test.each(["thrown", "returned"] as const)("page.evaluate on a page whose policy refuses eval answers from the extension's world (refusal %s)", async (refusal) => {
   const { repl } = session(refusal);
   expect(await repl.run("await openTab('https://example.com')\nawait page.evaluate(() => document.title)")).toEqual({ output: "extension" });
+});
+
+// On 10-16 `const page = await openTab(url)` failed with "undefined is not
+// an object (evaluating 'page.evaluate')": the transpiler hoists the
+// declaration to `var page`, which read undefined over a global accessor.
+test.each(["const", "let", "var"])("a script that declares page with %s over openTab's page uses it, and the next script still has it", async (decl) => {
+  const { repl } = session();
+  expect(await repl.run(`${decl} page = await openTab('https://example.com')\nawait page.evaluate(() => document.title)`)).toEqual({ output: "extension" });
+  expect(await repl.run("page.url()")).toEqual({ output: "https://example.com/" });
+});
+
+// x is the X site global, and `const x = ...` read undefined the same way.
+test("a script that declares a site global's name has its own value, in that script and the next", async () => {
+  const { repl } = session();
+  expect(await repl.run("const x = 5\nx")).toEqual({ output: "5" });
+  expect(await repl.run("x * 2")).toEqual({ output: "10" });
+});
+
+test("page before any tab is opened fails saying to open one", async () => {
+  expect((await session().repl.run("page.url()")).error).toContain("no page yet: openTab(url) or attachBrowserTab(id) first");
+});
+
+const saved: string[] = [];
+afterEach(() => {
+  for (const path of saved.splice(0)) rmSync(path, { force: true });
+});
+
+// On 10-14 two runs reading a site's bundle printed 30 KB of minified source.
+test("a run's output past 10 000 characters is saved whole, and the result keeps its head and the file's path", async () => {
+  const r = await session().repl.run("console.log('a'.repeat(6_000))\nconsole.log('b'.repeat(6_000))");
+  const path = /the whole output is in (\S+): grep it/.exec(r.output)?.[1];
+  if (path) saved.push(path);
+  expect(r.output).toStartWith(`${"a".repeat(2_000)}\n…cut at 2000 of 12001 characters`);
+  expect(readFileSync(String(path), "utf8")).toBe(`${"a".repeat(6_000)}\n${"b".repeat(6_000)}`);
 });
 
 test("page.fill types the text into the target it names", async () => {
@@ -101,7 +135,7 @@ test("page.waitForTimeout counts toward the agent's sleep budget, and past it th
   const owner = 109;
   const invoke = async (tool: string, args: Record<string, unknown>, model?: boolean): Promise<unknown> => {
     if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
-    if (tool === "tabs") return [{ id: 7, url: "https://example.com/", title: "Example" }];
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://example.com/", title: "Example" }] };
     if (tool === "wait") return runAs(owner, () => callTool(tool, args, model));
     return { ok: true };
   };
@@ -109,6 +143,30 @@ test("page.waitForTimeout counts toward the agent's sleep budget, and past it th
   expect(await runAs(owner, () => callTool("wait", { tab: 7, ms: 30_000 }, true))).not.toHaveProperty("hint");
   expect(await repl.run("await openTab('https://example.com')\nawait page.waitForTimeout(30_000)")).toEqual({ output: "" });
   expect((await repl.run("await page.waitForTimeout(30_000)")).output).toMatch(/^hint: you slept 90 s\b.*\bwait with text or selector\b/);
+});
+
+// On 10-16 a script that scrolled and slept in a loop printed "you slept
+// 60 s ...", then 61 s, 62 s ... on 80 lines of one result.
+test("a script that sleeps past the budget again and again prints the sleep hint once, with the latest total", async () => {
+  jest.useFakeTimers();
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay" && args[1] === "wait") jest.advanceTimersByTime(30_000);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify(op === "relay" ? { id, value: { found: true } } : { id, error: `no ${op} here` })));
+    },
+    close() {},
+  });
+  const owner = 110;
+  const invoke = async (tool: string, args: Record<string, unknown>, model?: boolean): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
+    if (tool === "wait") return runAs(owner, () => callTool(tool, args, model));
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  // 30 s slept before the script; its three sleeps go past the budget twice.
+  await runAs(owner, () => callTool("wait", { tab: 7, ms: 30_000 }, true));
+  expect(await repl.run("await openTab('https://example.com')\nfor (let i = 0; i < 3; i++) await page.waitForTimeout(30_000)")).toEqual({ output: expect.stringMatching(/^hint: you slept 120 s\b[^\n]*$/) });
 });
 
 // On 09-30 (01a0f14c) waitForURL('**/apply/frm?<id>') ran out its 30 s on
@@ -135,7 +193,7 @@ test.each([
 // page.url() without the query the page's own info carried.
 test("attachBrowserTab starts page.url() at the tab's full address, query included", async () => {
   const invoke = async (tool: string): Promise<unknown> => {
-    if (tool === "tabs") return [{ id: 7, url: "https://apply.example.edu/apply/frm", title: "Awards" }];
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://apply.example.edu/apply/frm", title: "Awards" }] };
     if (tool === "info") return { url: "https://apply.example.edu/apply/frm?ebbbc633-1226", title: "Awards and Honors", ready: "complete" };
     return { ok: true };
   };
@@ -147,7 +205,7 @@ test("attachBrowserTab starts page.url() at the tab's full address, query includ
 // the tab list's cut address, its query gone.
 test("a page attached from a tab this session did not open keeps its full address in the next script", async () => {
   const invoke = async (tool: string): Promise<unknown> => {
-    if (tool === "tabs") return [{ id: 7, url: "https://apply.example.edu/apply/frm", title: "Awards" }];
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://apply.example.edu/apply/frm", title: "Awards" }] };
     if (tool === "info") return { url: "https://apply.example.edu/apply/frm?ebbbc633-1226", title: "Awards and Honors", ready: "complete" };
     return { ok: true };
   };
