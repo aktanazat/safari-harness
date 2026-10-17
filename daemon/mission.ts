@@ -164,7 +164,8 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
     call.ms = Math.round(performance.now() - began);
     agent.running.delete(call);
     agent.last = Date.now();
-    // A tab a call in flight opened after the user stopped its agent goes too.
+    // A tab a call in flight opened after the user stopped its agent is marked
+    // too: it closes with the others when the agent's turn ends.
     if (ran && owner !== undefined && agent.stopped !== undefined) closeTabsOf(owner);
   }
 }
@@ -602,9 +603,9 @@ const SCRIPT = String.raw`
     resume: () => "Resumed.",
     drive: (out) => out.tab === null ? "Paused. It has no tab open to hand you." : "Paused, with its tab in front. Give it back when you are done.",
     giveback: () => "Given back. It carries on.",
-    stop: () => "Stopped. Its tabs close, and its calls fail from now on.",
+    stop: () => "Stopped. Its calls fail from now on, and its tabs close when it ends its turn.",
   };
-  const ARMING = "Press again to stop it. Its tabs close, and its calls fail from now on.";
+  const ARMING = "Press again to stop it. Its calls fail from now on, and its tabs close when it ends its turn.";
   let timer = 0;
   let loading = false;
   let again = false;
