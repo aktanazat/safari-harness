@@ -1079,8 +1079,11 @@ async function blankHint(tab: number, end: number): Promise<string> {
 // the tab there all of ms: what it waits on is an animation, which a quiet
 // page does not rule out.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
-  const tab = await resolveTab(opts.tab);
-  if (opts.look !== undefined) return relay(tab, "wait", [null, { look: opts.look }]);
+  // The wait's time runs from the call, finding the user's front tab in it:
+  // a list Safari was slow to give held a 3 s wait on --tab front 5 s more
+  // (smoke run after the 10-16 deploy).
+  const start = Date.now();
+  if (opts.look !== undefined) return relay(await resolveTab(opts.tab), "wait", [null, { look: opts.look }]);
   const named = waitsOnPage(opts);
   if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const asked = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
@@ -1090,8 +1093,13 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   // A wait cut to the limit says so: its answer at the limit is not all of
   // the ms an agent asked for.
   const cut = asked > limit ? { note: `ms is at most ${most}: call wait again to wait longer` } : {};
+  // null: Safari listed no tabs by the limit
+  const listed = Promise.withResolvers<null>();
+  const listing = setTimeout(() => listed.resolve(null), start + limit - Date.now());
+  const tab = await Promise.race([resolveTab(opts.tab), listed.promise]).finally(() => clearTimeout(listing));
+  if (tab === null) return named ? { ok: false, found: false, unanswered: true, waitedMs: Date.now() - start, hint: UNANSWERED, ...cut } : { ok: true, waitedMs: Date.now() - start, ...cut };
   if (!named && opts.front) {
-    await Bun.sleep(limit);
+    await Bun.sleep(Math.max(0, start + limit - Date.now()));
     return { ok: true, ...cut };
   }
   if (opts.any !== undefined && !(Array.isArray(opts.any) && opts.any.length > 0 && opts.any.every((t) => typeof t === "string"))) throw new Error("any must be a list of texts");
@@ -1103,7 +1111,6 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
       throw new Error(`url ${url} is not a valid /regex/: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  const start = Date.now();
   // when a wait on the page answers, its reads of the tab done (STOPPED_MS)
   const end = start + limit + STOPPED_MS;
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
@@ -1120,7 +1127,7 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     stop();
     if (named) timer = setTimeout(() => timeUp.resolve(null), STOPPED_MS);
     else timeUp.resolve(null);
-  }, limit);
+  }, start + limit - Date.now());
   try {
     if (!named) {
       await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
@@ -2211,9 +2218,12 @@ export const TOOLS: Record<string, Tool> = {
     },
     required: ["tab"],
     unlisted: { look: { type: "string", description: "run's token for the look before an action" }, after: { type: "string", description: "match words new since the run's look" } },
+    // wait finds the tab in its own time; one kept on screen needs it first
     run: async (a) => {
-      const o = { ...(a as Parameters<typeof wait>[0] & { front?: boolean }), tab: await resolveTab(a.tab) };
-      return o.front ? inFront(o.tab, { tabs: listTabs, activate: activateTab }, () => wait(o)) : wait(o);
+      const o = a as Parameters<typeof wait>[0] & { front?: boolean };
+      if (!o.front) return wait(o);
+      const tab = await resolveTab(o.tab);
+      return inFront(tab, { tabs: listTabs, activate: activateTab }, () => wait({ ...o, tab }));
     },
   },
   data: {

@@ -107,3 +107,16 @@ test("a wait the page answers found in the second after its limit is found", asy
   answersWhenStopped({ found: true });
   expect(await callTool("wait", { tab: 7, text: "Example Domain", ms: 100 })).toMatchObject({ ok: true, found: true });
 });
+
+// On 10-16 wait --tab front listed Safari's tabs before its time began, and
+// a list Safari was slow to give held a 3 s wait 5 s more (smoke run after
+// the deploy).
+test("a wait on the front tab counts finding it in its ms, and says the page gave no answer while Safari lists no tabs", async () => {
+  const lists = answersWhenStopped({ found: true }, false);
+  const start = Date.now();
+  const got = await callTool("wait", { tab: "front", text: "Example Domain", ms: 100 });
+  // tabs.list's own limit is 5 s (LIST_MS in bridge.ts)
+  expect(Date.now() - start).toBeLessThan(1000);
+  expect(got).toMatchObject({ ok: false, found: false, unanswered: true, hint: expect.stringContaining("says nothing of what it shows") });
+  for (const id of lists) bridge.handleMessage(JSON.stringify({ id, value: [] }));
+}, 10_000);
