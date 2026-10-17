@@ -1251,6 +1251,11 @@ Wait for the page, not the clock.
   `empty: true`. A wait with only `ms` waited for nothing in particular
   and stays `ok: true`; one on `quiet` alone keeps waiting until the page
   has drawn something.
+- A wait on a tab id answers by its `ms` and a second more, slow Safari or
+  not. One the page gave no answer by then adds `unanswered: true`: it says
+  nothing of what the page shows, so wait again or look with `snapshot`.
+  A miss leaves out the address, title, or bot check it could not read by
+  then.
 - Waiting longer than 110 s (a build, a payment, a reply that takes
   minutes): call `wait` again with the same condition until it is
   `found`, each call up to `ms: 110000`, rather than a shell `sleep`. In a

@@ -708,9 +708,9 @@ async function ontoMainDisplay(tab: number, size: { width: number; height: numbe
   return { x, y, width, height };
 }
 
-// snapshot and a missed wait say when the tab shows a bot check
-// (challenge.ts), as open and goto do: the agent hands it to the user with
-// handoff. A result still coming has its probe sent beside it.
+// snapshot says when the tab shows a bot check (challenge.ts), as open,
+// goto, and a missed wait do: the agent hands it to the user with handoff.
+// A result still coming has its probe sent beside it.
 async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
   const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
   return challenge ? { ...r, challenge } : r;
@@ -1000,8 +1000,17 @@ const NEVER_SHOWN = "the page never showed those words; open and goto already wa
 // the next call still catches a reply that comes in between.
 const NOTHING_NEW = "no new lines yet; call wait with changed again, and a reply that comes in between still counts";
 
+// A wait the page gave no answer by its end says nothing of what the page
+// shows: on 10-16, with Safari taking 4 to 13 s a call after a deploy, a
+// wait for "Example Domain" on example.com, which showed it all along,
+// answered after 11 s that the page never showed those words.
+const UNANSWERED = "the page gave no answer in time (Safari or the page is slow), so this says nothing of what it shows: wait again, or look with snapshot";
+
 // Let a stopped page send its change summary, without letting a page held
-// by navigation or a dialog hold the caller indefinitely (USCIS, 09-30).
+// by navigation or a dialog hold the caller indefinitely (USCIS, 09-30). A
+// wait on the page answers by its ms and STOPPED_MS more, what a miss reads
+// of the tab included: on 10-16 a 3 s wait failed "extension request
+// tabs.list timed out after 5000ms" as it read where the tab was.
 const STOPPED_MS = 1000;
 
 // The longest wait. An MCP client set up as README.md says gives up on a
@@ -1018,9 +1027,23 @@ const BLANK = "the page went quiet but shows nothing yet: no text, picture, or f
 const DRAWN = "(() => { const b = document.body; return !b || b.innerText.trim() !== '' || !!b.querySelector('img, canvas, video, svg, iframe, embed, object') || [...b.querySelectorAll('*')].some((e) => e.shadowRoot); })()";
 const DRAW_POLL_MS = 250;
 
-async function drawnBy(tab: number, deadline: number): Promise<boolean> {
+// What p comes to by deadline (a Date.now()), or undefined: past it, or
+// when p fails.
+async function by<T>(p: Promise<T>, deadline: number): Promise<T | undefined> {
+  let timer: Timer | undefined;
+  const past = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now())); });
+  try {
+    return await Promise.race([p.catch(() => undefined), past]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Each look is cut at end, where the wait answers; one with no answer
+// counts as drawn, as a refused eval does.
+async function drawnBy(tab: number, deadline: number, end: number): Promise<boolean> {
   for (;;) {
-    const answer = await relay(tab, "eval", [DRAWN]).catch(() => undefined);
+    const answer = await by(relay(tab, "eval", [DRAWN], Math.max(1, end - Date.now())), end);
     if (!(answer && typeof answer === "object" && "result" in answer && answer.result === false)) return true;
     if (Date.now() + DRAW_POLL_MS > deadline) return false;
     await Bun.sleep(DRAW_POLL_MS);
@@ -1030,10 +1053,10 @@ async function drawnBy(tab: number, deadline: number): Promise<boolean> {
 // A page that hit an error may draw nothing however long a wait looks for
 // its text, as a blank read says (undrawnHint in content.js): a wait that
 // ends on a blank page names the errors the page kept since it began, the
-// latest 3, in the same words. A page whose errors cannot be read in 2 s
-// gets BLANK.
-async function blankHint(tab: number): Promise<string> {
-  const read = (await relay(tab, "consoleRead", [], 2000).catch(() => null)) as { entries?: { text: string; uncaught?: boolean }[] } | null;
+// latest 3, in the same words. A page whose errors cannot be read in 2 s,
+// or by the wait's end, gets BLANK.
+async function blankHint(tab: number, end: number): Promise<string> {
+  const read = (await by(relay(tab, "consoleRead", [], 2000), end)) as { entries?: { text: string; uncaught?: boolean }[] } | undefined;
   const errors = (read?.entries ?? []).filter((e) => e.uncaught === true).map((e) => e.text);
   if (errors.length === 0) return BLANK;
   const count = errors.length === 1 ? "an error" : `${errors.length} errors${errors.length > 3 ? ", the latest" : ""}`;
@@ -1081,39 +1104,46 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     }
   }
   const start = Date.now();
+  // when a wait on the page answers, its reads of the tab done (STOPPED_MS)
+  const end = start + limit + STOPPED_MS;
   const stop = () => { relay(tab, "waitStop").catch(() => {}); };
   const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named, ...(opts.changed === true ? { changed: true } : {}), ...(opts.after === undefined ? {} : { after: opts.after }) };
   const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<Seen>;
   // A page that answers only after the limit (it navigated, and the new page
   // began the wait again) still holds a wait: end that one too.
   seen.catch(stop);
-  const timeUp = Promise.withResolvers<Seen>();
+  // null: the page gave no answer by the end (UNANSWERED)
+  const timeUp = Promise.withResolvers<Seen | null>();
   let late = false;
   let timer = setTimeout(() => {
     late = true;
     stop();
-    if (named) timer = setTimeout(() => timeUp.resolve({ found: false }), STOPPED_MS);
-    else timeUp.resolve({ found: false });
+    if (named) timer = setTimeout(() => timeUp.resolve(null), STOPPED_MS);
+    else timeUp.resolve(null);
   }, limit);
   try {
     if (!named) {
       await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
       return { ok: true, waitedMs: Date.now() - start, ...cut };
     }
-    const { found: met, which, already, added, hint, meanwhile } = await Promise.race([seen.catch((e) => { if (late) return timeUp.promise; throw e; }), timeUp.promise]);
+    const answered = await Promise.race([seen.catch((e) => { if (late) return timeUp.promise; throw e; }), timeUp.promise]);
+    if (answered === null) return { ok: false, found: false, unanswered: true, waitedMs: Date.now() - start, hint: UNANSWERED, ...cut };
+    const { found: met, which, already, added, hint, meanwhile } = answered;
     const quietOnly = opts.quiet === true && opts.selector === undefined && opts.text === undefined && opts.any === undefined && opts.gone === undefined && opts.url === undefined && opts.changed !== true;
-    const drew = !(met && !late && quietOnly) || (await drawnBy(tab, start + limit));
-    const found = met && !late && drew;
+    // A page that answers found in the second after the limit shows what
+    // the wait asked for: it was found, late.
+    const drew = !(met && quietOnly) || (await drawnBy(tab, start + limit, end));
+    const found = met && drew;
     const waitedMs = Date.now() - start;
     if (found) return { ok: true, found, waitedMs, ...(which === undefined ? {} : { which }), ...(already ? { already } : {}), ...(added === undefined ? {} : { added }), ...(hint === undefined ? {} : { hint }) };
-    const now = (await listTabs()).find((t) => t.id === tab);
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
-    const blank = drew ? undefined : await blankHint(tab);
+    // what the tab shows, each read left out when it has no answer by the end
+    const [now, challenge, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeOf(tab), end), drew ? undefined : blankHint(tab, end)]);
     const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);
     // A miss is not ok: on 10-16 agents read a wait's ok: true beside
     // found: false, after 20 s, as the page they waited for (HuntsUsage).
-    return withChallenge({ ok: false, found, waitedMs, ...(drew ? {} : { empty: true }), url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut }, tab);
+    return { ok: false, found, waitedMs, ...(drew ? {} : { empty: true }), url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut, ...(challenge ? { challenge } : {}) };
   } finally {
     clearTimeout(timer);
   }

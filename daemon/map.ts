@@ -169,9 +169,12 @@ function pageError(value: unknown): { ok: false; error: string } | undefined {
 }
 
 // A page that never showed what the wait asked for is most often another
-// page (a redirect, a page not found): the address and title say which.
+// page (a redirect, a page not found): the address and title say which. A
+// page that gave the wait no answer in time (unanswered, a loaded Safari)
+// may show it all the same.
 function missOf(seen: unknown): { ok: false; error: string } | undefined {
   if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
+  if ("unanswered" in seen && seen.unanswered === true) return { ok: false, error: "it gave the wait no answer in time (Safari or the page was slow), so whether it shows what wait asked for is not known: map it again" };
   const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
   const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
   return { ok: false, error: `it did not show what wait asked for; the tab is at ${at}${title}` };

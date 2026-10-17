@@ -46,3 +46,64 @@ test("a quiet wait that ends on a blank page with no errors says it shows nothin
     hint: "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show",
   });
 });
+
+// On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for
+// "Example Domain" on example.com, which showed it all along, answered
+// after 11 s that the page never showed those words.
+test("a text wait the page gives no answer by its end says it cannot tell, never that the words did not show", async () => {
+  const waits: string[] = [];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      if (op === "relay" && args[1] === "wait") return void waits.push(id);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? { ok: true } : [] })));
+    },
+    close() {},
+  });
+  const got = await callTool("wait", { tab: 7, text: "Example Domain", ms: 100 });
+  expect(got).toMatchObject({ ok: false, found: false, unanswered: true, hint: expect.stringContaining("says nothing of what it shows") });
+  expect(JSON.stringify(got)).not.toMatch(/never showed/);
+  for (const id of waits) bridge.handleMessage(JSON.stringify({ id, value: { found: true } }));
+});
+
+// A page that answers its wait once the daemon stops it, at the limit, with
+// stopped, as a page does with what changed meanwhile. Each tabs.list is
+// kept unanswered in lists when listing is false.
+function answersWhenStopped(stopped: unknown, listing = true) {
+  const lists: string[] = [];
+  let wait: string | undefined;
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      if (op === "tabs.list" && !listing) return void lists.push(id);
+      if (op === "relay" && args[1] === "wait") return void (wait = id);
+      queueMicrotask(() => {
+        if (op === "relay" && args[1] === "waitStop") bridge.handleMessage(JSON.stringify({ id: wait, value: stopped }));
+        bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? { ok: true } : [] }));
+      });
+    },
+    close() {},
+  });
+  return lists;
+}
+
+// On 10-16 a 3 s wait failed "extension request tabs.list timed out after
+// 5000ms" as it read where the tab was, on a Mac too loaded to list them.
+test("a missed wait answers by its ms and a second more while Safari lists no tabs, leaving out the address", async () => {
+  const lists = answersWhenStopped({ found: false, meanwhile: ["new: Loading"] }, false);
+  const start = Date.now();
+  const got = await callTool("wait", { tab: 7, text: "zzz", ms: 100 });
+  // tabs.list's own limit is 5 s (LIST_MS in bridge.ts)
+  expect(Date.now() - start).toBeLessThan(5000);
+  expect(lists).toHaveLength(1);
+  expect(got).toMatchObject({ ok: false, found: false, meanwhile: ["new: Loading"], hint: expect.stringContaining("never showed those words") });
+  expect(JSON.stringify(got)).not.toContain('"url"');
+  for (const id of lists) bridge.handleMessage(JSON.stringify({ id, value: [] }));
+});
+
+// A page that saw the words as it was stopped answers found after the
+// limit: they are on the page all the same.
+test("a wait the page answers found in the second after its limit is found", async () => {
+  answersWhenStopped({ found: true });
+  expect(await callTool("wait", { tab: 7, text: "Example Domain", ms: 100 })).toMatchObject({ ok: true, found: true });
+});

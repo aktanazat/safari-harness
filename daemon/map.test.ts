@@ -10,12 +10,14 @@ import { WAIT_NEEDS } from "./receipt.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
-// a wait asks for (a page that is not there). CLEARING's check lets the
-// browser through on the tab's fourth probe.
+// a wait asks for (a page that is not there), it gives a wait no answer (a
+// Safari too loaded to). CLEARING's check lets the browser through on the
+// tab's fourth probe.
 const GONE = "https://gone.example/";
 const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
+const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
 // eBay's error page, as its guide names it (docs/sites/ebay.md).
 const ERRORED = "https://ebay.com/sch/i.html?_nkw=lamp";
@@ -28,14 +30,16 @@ const SLOW_MS = 31_500;
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
 // once, a SLOW page's after SLOW_MS, or, while holding, when the test lets
-// them. A wait is answered at once, found on every page but LOST. Waits and
-// reads are noted in order.
+// them. A wait is answered at once, found on every page but LOST, except
+// SILENT's, held. Waits and reads are noted in order.
 const tabs = new Map<number, { id: number; windowId: unknown; url: string; title: string }>();
 const opened: number[] = [];
 const closed: number[] = [];
 const readUrls: string[] = [];
 const asked: string[] = [];
 const held: (() => void)[] = [];
+// SILENT's waits, answered when the test lets them
+const unanswered: (() => void)[] = [];
 let holding = false;
 let stuck: string | undefined;
 let nextTab = 0;
@@ -89,8 +93,10 @@ connect({
       const url = tabs.get(Number(args[0]))?.url ?? "";
       const [, want] = args[2] as [unknown, { text?: string }];
       asked.push(`wait ${url} for ${want.text}`);
+      if (url === SILENT) return void unanswered.push(() => reply({ value: { found: true } }));
       return reply({ value: { found: url !== LOST } });
     }
+    if (args[1] === "waitStop") return reply({ value: { ok: true } });
     if (holding) held.push(() => reply(read(Number(args[0]))));
     else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]))), SLOW_MS);
     else reply(read(Number(args[0])));
@@ -265,6 +271,17 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
   expect(asked).toEqual(["wait https://shop.example/a for Price", "read https://shop.example/a", `wait ${LOST} for Price`]);
   expect(pages[0]).toMatchObject({ ok: true, value: { text: "text of https://shop.example/a" } });
   expect(pages[1]).toMatchObject({ ok: false, error: `it did not show what wait asked for; the tab is at ${LOST} ("Page Not Found")` });
+});
+
+// On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for
+// words a page showed all along answered that it never showed them.
+test("with wait, a page that gives the wait no answer in time is not read, and is not said to lack what wait asked for", async () => {
+  asked.length = 0;
+  const pages = await map({ urls: [SILENT], wait: { text: "Price", ms: 100 } });
+  for (const release of unanswered.splice(0)) release();
+  expect(asked).toEqual([`wait ${SILENT} for Price`]);
+  expect(pages[0]).toMatchObject({ ok: false, error: expect.stringContaining("no answer in time") });
+  expect(pages[0]).not.toMatchObject({ error: expect.stringContaining("did not show") });
 });
 
 test("map refuses a wait that asks for nothing before opening any page", async () => {
