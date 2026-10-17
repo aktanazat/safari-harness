@@ -2273,7 +2273,9 @@ once when an error starts with `extension stuck:`, or after two `tabs.list
 timed out` (or `extension request … timed out`) errors in a row; do not
 run `doctor`, `guide`, or `status` first, and never loop on them. While the
 extension is stuck every call fails at once with an error starting
-`extension stuck:` that names this command.
+`extension stuck:` that names this command. Timeouts in the first 20 s
+after it connects (a deploy, a reload, Safari starting) make nothing
+stuck: it is still finding Safari's tabs then.
 
 Calls fail with `extension request … timed out` while `safari status`
 shows the extension connected: the extension is stuck. The daemon asks

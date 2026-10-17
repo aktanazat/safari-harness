@@ -48,6 +48,13 @@ const ALIVE_MS = 1500;
 // timed-out requests) the extension reloaded itself once.
 const STUCK_AFTER = 2;
 
+// Requests sent in the first CONNECT_GRACE_MS after the extension connects
+// make no kind stuck: it is still finding Safari's tabs and windows again
+// (adopt in background.js), which a swapping Mac stretches. On 10-16 a
+// deploy's connect took 6 s to adopt them, two tabs.list requests sent 3
+// and 7 s after it timed out, and every tabs.list failed at once for 12 s.
+const CONNECT_GRACE_MS = 20_000;
+
 // While a kind is stuck its requests fail at once (extension stuck: …),
 // not each at its own limit: on 10-13 map's opens waited out 30 s each all
 // through a storm. One goes through each TRIAL_MS to learn whether the
@@ -509,6 +516,7 @@ export class Bridge {
     note("timeout", { op: asked.op, ...asked.detail, ms: asked.ms });
     if (asked !== this.listing) this.epoch++;
     if (asked.sock !== this.sock || Object.hasOwn(ELSEWHERE, asked.op)) return;
+    if (asked.sent - (this.extensionInfo?.connectedAt ?? 0) < CONNECT_GRACE_MS) return;
     const run = this.runs.get(asked.op) ?? { misses: 0, since: asked.sent, last: now, ids: new Set<string>(), trial: 0 };
     // asked again after a quiet spell: time no one asked is not time the
     // extension failed to answer

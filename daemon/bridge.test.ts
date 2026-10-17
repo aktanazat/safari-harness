@@ -140,6 +140,13 @@ async function timesOut(bridge: Bridge, op: string, ms: number) {
 
 const settled = () => new Promise<void>((r) => setImmediate(r));
 
+// An extension connected long enough that its timeouts count toward stuck:
+// the 20 s after a connect (CONNECT_GRACE_MS in bridge.ts) are past.
+function pastGrace(bridge: Bridge, sock: ExtSocket) {
+  bridge.attach(sock);
+  jest.advanceTimersByTime(20_000);
+}
+
 // An extension socket that holds each request until the test answers it.
 function holding(bridge: Bridge) {
   const asked: { id: string; op: string }[] = [];
@@ -164,21 +171,39 @@ test("two requests of one kind in a row that time out make it stuck: the next fa
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = extension(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "tabs.list", 5000);
   expect(bridge.health()).toMatchObject({ connected: true, stuck: false, timeouts: { "tabs.list": 1 } });
   await timesOut(bridge, "tabs.list", 5000);
-  expect(bridge.health()).toMatchObject({ connected: true, stuck: true, sinceAnswerMs: 10000, timeouts: { "tabs.list": 2 } });
+  expect(bridge.health()).toMatchObject({ connected: true, stuck: true, sinceAnswerMs: 30000, timeouts: { "tabs.list": 2 } });
   expect(recent().at(-1)).toMatchObject({ kind: "stuck", op: "tabs.list" });
   await expect(bridge.request("tabs.list")).rejects.toThrow(/^extension stuck: .* tabs\.list requests .*run safari extension reload/);
   expect(ext.asked).toEqual(["tabs.list", "tabs.list"]);
+});
+
+// 10-16: a deploy's connect took 6 s to adopt Safari's tabs, two tabs.list
+// requests sent 3 and 7 s after it timed out, and every tabs.list then
+// failed at once for 12 s.
+test("requests sent in the first 20 s after a connect make nothing stuck, however many time out; later ones do", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = extension(bridge);
+  bridge.attach(ext.sock);
+  // sent at 0, 5, 10, and 15 s
+  for (let i = 0; i < 4; i++) await timesOut(bridge, "tabs.list", 5000);
+  expect(bridge.health()).toMatchObject({ stuck: false, timeouts: {} });
+  // sent at 20 and 25 s
+  await timesOut(bridge, "tabs.list", 5000);
+  await timesOut(bridge, "tabs.list", 5000);
+  expect(bridge.health()).toMatchObject({ stuck: true, timeouts: { "tabs.list": 2 } });
+  expect(ext.asked).toHaveLength(6);
 });
 
 test("an answer to another kind leaves a stuck kind stuck, and a page or a site that holds its requests makes nothing stuck", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = holding(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "tabs.list", 5000);
   await timesOut(bridge, "tabs.list", 5000);
   const focus = bridge.request("windows.focus", [1]);
@@ -194,7 +219,7 @@ test("a stuck kind lets one request through each ten seconds, and its answer end
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = holding(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "tabs.list", 5000);
   await timesOut(bridge, "tabs.list", 5000);
   jest.advanceTimersByTime(9000);
@@ -222,7 +247,7 @@ test("a late answer ends its kind's run of timeouts", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = holding(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "windows.open", 30000);
   ext.answer(ext.asked[0].id, "late");
   await timesOut(bridge, "windows.open", 30000);
@@ -234,7 +259,7 @@ test("an extension that connects again is not stuck", async () => {
   const bridge = new Bridge();
   const old = extension(bridge);
   const back = extension(bridge, "back");
-  bridge.attach(old.sock);
+  pastGrace(bridge, old.sock);
   await timesOut(bridge, "tabs.list", 5000);
   await timesOut(bridge, "tabs.list", 5000);
   bridge.detach(old.sock);
@@ -248,7 +273,7 @@ test("one request that times out, however long it waited, does not reload the ex
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = extension(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "windows.open", 120000);
   expect(ext.asked).toEqual(["windows.open"]);
 });
@@ -258,7 +283,7 @@ test("requests that time out an hour apart, nothing asked between them, do not r
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = extension(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   await timesOut(bridge, "windows.open", 30000);
   jest.advanceTimersByTime(60 * 60_000);
   await timesOut(bridge, "windows.open", 30000);
@@ -273,7 +298,7 @@ test("a kind unanswered for a minute while it is asked has the extension reload 
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = extension(bridge);
-  bridge.attach(ext.sock);
+  pastGrace(bridge, ext.sock);
   // tabs.list stuck for 10 s: too soon to reload
   await timesOut(bridge, "tabs.list", 5000);
   await timesOut(bridge, "tabs.list", 5000);
@@ -290,14 +315,15 @@ test("a kind unanswered for a minute while it is asked has the extension reload 
 test("a reload that does not help is followed by a second a minute later, and by no third within ten minutes", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
-  const start = Date.now();
   const reloads: number[] = [];
-  bridge.attach({
+  let start = 0;
+  pastGrace(bridge, {
     send(data: string) {
       if (data === '{"op":"reload"}') reloads.push((Date.now() - start) / 1000);
     },
     close() {},
   });
+  start = Date.now();
   // an agent asks every ten seconds; while stuck, all but the trial fail at once
   while (Date.now() - start < 11 * 60_000) {
     void bridge.request("windows.open", [], 30000).catch(() => {});
