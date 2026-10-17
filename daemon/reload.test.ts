@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { callTool, endTurn } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 701, 702...; the user's own
@@ -48,11 +48,19 @@ connect({
   close() {},
 });
 
-// The calls run as this process, an agent whose turn ends with the file, so
-// the window its tabs open in closes then: a window no turn's end can close
-// stays watched, and its sweep asked later files' Safari for its tabs.
-const call = (tool: string, args: Record<string, unknown>) => runAs(process.pid, () => callTool(tool, args));
-afterAll(() => endTurn(process.pid));
+// The calls run as an agent whose turn ends with the file, so the window
+// its tabs open in closes then: a window no turn's end can close stays
+// watched, and its sweep asked later files' Safari for its tabs. The agent
+// then exits, and the file waits until the daemon has seen it go, so no
+// watch on it outlasts the file (owner.test.ts runs watches on a fake clock).
+const agent = Bun.spawn(["sleep", "60"]);
+const call = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+afterAll(async () => {
+  await endTurn(agent.pid);
+  agent.kill();
+  await agent.exited;
+  await new Promise<void>((gone) => watchOwner(agent.pid, gone));
+});
 
 const hold = (tab: number) => {
   const page = pages.get(tab);
