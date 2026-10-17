@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Overview } from "./mission.ts";
 
 // A named REPL session is a process of its own that the first `safari repl
 // --session` command starts and leaves running (repl-host.ts); each command
@@ -143,23 +144,26 @@ process.exit(0);`;
 }
 
 // Settles once the daemon's owner sweep has run since now: an agent (an
-// agent harness whose child calls) opens a tab and is killed, and its tab
-// closes in the first sweep that finds it gone, after the tabs of every
-// agent that ended before it. The daemon names the agent as the call
-// arrives, so the child is done with then.
+// agent harness whose child calls) makes a call and is killed, and the
+// agents list (what safari agents prints) says it ended once the first
+// sweep that finds it gone has run, a sweep that looks at every process
+// watched before it. An exit closes no tab (6fc219a), so the list is what
+// tells. The daemon names the agent as the call arrives, so the child is
+// done with then. That sweep runs once a second on the daemon's own clock,
+// in a process of its own, and the list answers only when asked, so this
+// asks until it says so.
 async function ownerSweep(): Promise<void> {
   const agent = Bun.spawn([omp, "-e", "await Bun.write(Bun.stdout, `${Bun.spawn(['sleep', '60']).pid}\\n`); await Bun.sleep(60_000)"], { stdout: "pipe" });
   const { value } = await agent.stdout.getReader().read();
   const caller = Number(new TextDecoder().decode(value).trim());
-  const res = await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://marker.example/", background: true }, caller }) });
-  const { value: tab } = (await res.json()) as { value: { id: number } };
+  await fetch(`http://127.0.0.1:${httpPort}/rpc`, { method: "POST", body: JSON.stringify({ tool: "tabs", args: {}, caller }) });
   process.kill(caller, 9);
-  const gone = Promise.withResolvers<void>();
-  heardClose = () => {
-    if (closed.includes(tab.id)) gone.resolve();
-  };
   agent.kill(9);
-  await gone.promise;
+  const ended = async () => {
+    const { agents } = (await (await fetch(`http://127.0.0.1:${httpPort}/agents.json`)).json()) as Overview;
+    return agents.some((a) => a.owner === agent.pid && a.status === "ended");
+  };
+  while (!(await ended())) await Bun.sleep(100);
 }
 
 afterAll(async () => {
@@ -202,7 +206,10 @@ test("a named session's tab closes when the turn of the agent that ran the code 
   heardClose = () => {
     if (closed.includes(tab)) gone.resolve();
   };
-  await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: me.pid }) });
+  // as the agent's runtime ends its turn (omp/index.ts): it prepares, then
+  // releases what the preparation names (6fc219a)
+  const prepared: unknown = await (await fetch(`http://127.0.0.1:${httpPort}/turn-end/prepare`, { method: "POST", body: JSON.stringify({ owner: me.pid }) })).json();
+  await fetch(`http://127.0.0.1:${httpPort}/turn-end`, { method: "POST", body: JSON.stringify({ owner: me.pid, prepared }) });
   await gone.promise;
   expect(closed).toContain(tab);
 }, 30_000);
