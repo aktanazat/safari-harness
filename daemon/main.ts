@@ -31,6 +31,7 @@ import { saveRecording } from "./recordings.ts";
 import { notify } from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
 import { loadsFile, openLoads } from "./loads.ts";
+import { fromAutomation } from "./automation.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -71,7 +72,7 @@ bridge.onRecording = (recording) => {
 };
 
 type SocketScope =
-  | { kind: "extension" }
+  | { kind: "extension"; automation: boolean }
   | { kind: "passwords" }
   | { kind: "browser"; connId: number }
   | { kind: "page"; tabId: number; connId: number };
@@ -116,7 +117,7 @@ function refuse(req: Request, url: URL): Response {
 const server = Bun.serve<SocketScope>({
   hostname: "127.0.0.1",
   port: wsPort,
-  fetch(req, srv) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
     if (!allowed(req, callerOf(url.pathname))) return refuse(req, url);
     if (url.pathname.startsWith("/devtools/")) {
@@ -127,15 +128,18 @@ const server = Bun.serve<SocketScope>({
         : { kind: "browser", connId };
       return srv.upgrade(req, { data: scope }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
-    if (url.pathname === "/" || url.pathname === "/passwords") {
-      const kind = url.pathname === "/" ? "extension" : "passwords";
-      return srv.upgrade(req, { data: { kind } }) ? undefined : new Response("upgrade failed", { status: 400 });
+    if (url.pathname === "/") {
+      const automation = await fromAutomation(srv.requestIP(req)?.port ?? 0);
+      return srv.upgrade(req, { data: { kind: "extension", automation } }) ? undefined : new Response("upgrade failed", { status: 400 });
+    }
+    if (url.pathname === "/passwords") {
+      return srv.upgrade(req, { data: { kind: "passwords" } }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     return new Response("not found", { status: 404 });
   },
   websocket: {
     open(ws) {
-      if (ws.data.kind === "extension") bridge.attach(ws);
+      if (ws.data.kind === "extension") bridge.attach(ws, ws.data.automation);
       else if (ws.data.kind === "passwords") passwords.attach(ws);
     },
     message(ws, raw) {

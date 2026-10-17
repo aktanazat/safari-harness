@@ -243,8 +243,16 @@ export class Bridge {
   // as Apple's safaridriver opens, and that copy sees none of the user's
   // windows. The newest socket used to win, so the two copies took it from
   // each other twice a second for as long as the session lasted. The
-  // connected one keeps it while it answers a ping.
-  attach(sock: ExtSocket) {
+  // connected one keeps it while it answers a ping. A ping under load says
+  // nothing about which copy is the user's, so a copy from a Safari
+  // launched for automation (automation.ts) is refused outright (10-17);
+  // 4002 tells it to stop trying (background.js).
+  attach(sock: ExtSocket, automation = false) {
+    if (automation) {
+      note("connect", { refused: "a copy of the extension in a Safari launched for automation, which sees none of the user's windows" });
+      sock.close(4002, "this Safari was launched for automation");
+      return;
+    }
     const old = this.sock;
     if (old === sock) return;
     if (old === null) return this.take(sock);

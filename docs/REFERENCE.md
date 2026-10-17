@@ -59,12 +59,11 @@ the setting is on.
   what a first-time visitor sees, and nothing touches the user's windows.
 - A public page that only needs reading is cheaper still without Safari
   (`safari guide reference reading`).
-- While a session of Apple's lane is open, Safari runs a second copy of
-  this harness's extension inside it. The daemon keeps the copy that was
-  connected first, the user's; a daemon restart during a session can leave
-  it with the session's copy, which sees none of his tabs, until the
-  session ends. Safari keeps a session whose driver was killed, not ended,
-  for about 6 minutes, and starts no new one meanwhile.
+- A session of Apple's lane runs in a second Safari, launched for
+  automation, with its own copy of this harness's extension, which sees
+  none of the user's tabs. The daemon refuses that copy, so the lane and
+  this harness run side by side. Safari keeps a session whose driver was
+  killed, not ended, for about 6 minutes, and starts no new one meanwhile.
 
 ## Tab lifecycle: work in your own tab
 

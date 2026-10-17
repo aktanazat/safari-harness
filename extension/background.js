@@ -22,12 +22,18 @@ async function getPort() {
   }
 }
 
+// The daemon refuses the copy of this extension in a Safari that Apple's
+// safaridriver launched for WebDriver, with 4002 (automation.ts): that
+// copy sees none of the user's windows, so it stops trying for good.
+let automationCopy = false;
+
 // Each socket's handlers act on that socket alone. They once used the
 // latest one: an old socket closing after its replacement opened dropped
 // the new one and opened a third, and a request's answer went out on
 // whichever socket was newest. The daemon then saw each socket miss its
 // ping and swapped them every 1.5 s, failing every request (09-29).
 function connect() {
+  if (automationCopy) return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   getPort().then((p) => {
     // another wake-up may have connected while the port was read
@@ -73,10 +79,11 @@ function connect() {
         answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : text });
       });
     };
-    sock.onclose = () => {
+    sock.onclose = (ev) => {
       if (ws !== sock) return;
       ws = null;
-      scheduleReconnect();
+      if (ev.code === 4002) automationCopy = true;
+      else scheduleReconnect();
     };
     sock.onerror = () => { try { sock.close(); } catch {} };
   });
