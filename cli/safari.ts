@@ -364,6 +364,12 @@ const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg", "
 // shot's fullPage is --full, as its usage says: its help listed --fullPage
 // under [--full] (S99PartC).
 const FLAG_FOR: Record<string, Record<string, string>> = { tabs: { host: "site" }, shot: { fullPage: "full" }, shots: { fullPage: "full" } };
+// Parameters that name a file or folder, which the CLI resolves against the
+// folder it runs in, given as words or as flags: the daemon runs in a
+// folder of its own, so it refuses a relative out and found no relative
+// upload (S99PartB). Their help said absolute, as the tools' do (smoke run
+// after the 10-16 deploy).
+const PATH_PARAMS: Record<string, string[]> = { shot: ["out"], shots: ["out"], download: ["out"], pdf: ["out", "path"], upload: ["paths"] };
 
 // A tool's parameters given as --name value, however the name is written
 // (--max-bytes, or --note for learn's fact, as a model's call may name
@@ -415,9 +421,11 @@ function commandHelp(cmd: string): string | null {
   // A parameter the usage gives as a word is a flag too: window's help
   // listed --width as required under <width>, and agents read --help 6
   // times for window and shot alone (S99PartA).
+  const paths = PATH_PARAMS[toolName(cmd) ?? ""] ?? [];
   const params = Object.entries(def.params).map(([name, p]) => {
     const how = [...(def.required?.includes(name) ? ["required"] : []), ...(usage.some((l) => l.includes(`<${name}>`)) ? [`or as <${name}> above`] : [])].join(", ");
-    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${how ? ` (${how})` : ""}\n      ${p.description}`;
+    const desc = paths.includes(name) ? `${(p.description ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")} (a relative path is taken from the current folder)` : p.description;
+    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${how ? ` (${how})` : ""}\n      ${desc}`;
   });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
@@ -916,7 +924,7 @@ async function main() {
       const given = flag("out", rest);
       if (given !== undefined && positional[0] !== undefined) fail(`shot takes one path, not both --out ${given} and ${positional[0]}`, 2);
       const out = given ?? positional[0];
-      if (out !== undefined) args.out = resolve(out);
+      if (out !== undefined) args.out = out;
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       args.annotate = hasFlag("annotate", rest);
@@ -927,8 +935,6 @@ async function main() {
       args.urls = positional;
       const widths = flag("widths", rest);
       if (widths !== undefined) args.widths = widths.split(",").map(Number);
-      const out = flag("out", rest);
-      if (out !== undefined) args.out = resolve(out);
       args.fullPage = hasFlag("full", rest);
       break;
     }
@@ -936,8 +942,6 @@ async function main() {
       const target = positional[0];
       if (target !== undefined && /^https?:/.test(target)) args.url = target;
       else if (target !== undefined) args.ref = target;
-      const out = flag("out", rest);
-      if (out) args.out = resolve(out);
       break;
     }
     case "dialog":
@@ -948,9 +952,7 @@ async function main() {
     case "map": args.urls = positional; break;
     case "pdf": {
       args.do = positional[0] ?? "save";
-      if (positional[1]) args.path = resolve(positional[1]);
-      const out = flag("out", rest);
-      if (out) args.out = resolve(out);
+      if (positional[1]) args.path = positional[1];
       break;
     }
     case "window": {
@@ -1006,9 +1008,12 @@ async function main() {
       if (args[k] === undefined || args[k] === "" || Number.isNaN(args[k])) args[k] = v;
     }
   }
-  // A path is this terminal's, as a word or as --paths: the daemon, in a
-  // folder of its own, found no such file.
-  if (name === "upload" && Array.isArray(args.paths)) args.paths = args.paths.map((p) => resolve(String(p)));
+  // A path is this terminal's, as a word or as a flag (PATH_PARAMS).
+  for (const key of PATH_PARAMS[name ?? ""] ?? []) {
+    const v = args[key];
+    if (typeof v === "string" && v !== "") args[key] = resolve(v);
+    else if (Array.isArray(v)) args[key] = v.map((p) => resolve(String(p)));
+  }
   // eval's code from stdin, when no word, --expression, --file, or --reader gave it
   if (cmd === "eval" && args.reader === undefined) {
     if (args.expression === undefined || args.expression === "") args.expression = await readStdin();

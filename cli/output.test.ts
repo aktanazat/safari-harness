@@ -155,6 +155,22 @@ test("upload sends files named relative to where it runs as whole paths, given b
   expect(sent).toEqual([join(home, "resume.pdf"), join(home, "resume.pdf")]);
 });
 
+// shot's help said absolute PNG path and upload's absolute file paths, while
+// the CLI takes a relative one from its folder; pdf read --path was sent as
+// written (smoke run after the 10-16 deploy).
+test("a path flag's help says a relative path is taken from the current folder, and each such path is sent whole, pdf --path too", async () => {
+  const helps = await Promise.all(["shot", "shots", "upload"].map((cmd) => safari(["help", cmd])));
+  expect(helps.filter((h) => h.code !== 0 || h.out.includes("absolute"))).toEqual([]);
+  expect(helps[0].out).toContain("  --out <string>\n      PNG path (a relative path is taken from the current folder)");
+  calls.length = 0;
+  answers = {};
+  expect((await safari(["pdf", "read", "--path", "report.pdf"])).code).toBe(0);
+  expect((await safari(["shots", "https://shop.example/", "--widths", "390", "--out", "shots"])).code).toBe(0);
+  expect((await safari(["shot", "page.png", "--tab", "7"])).code).toBe(0);
+  expect((await safari(["download", "12", "--out", "file.bin", "--tab", "7"])).code).toBe(0);
+  expect(calls.map((c) => [c.tool, c.args.path ?? c.args.out])).toEqual([["pdf", join(home, "report.pdf")], ["shots", join(home, "shots")], ["shot", join(home, "page.png")], ["download", join(home, "file.bin")]]);
+}, 30_000);
+
 // safari guide reference two lanes searched for "reference" alone (S99PartC).
 test("guide takes every word after it", async () => {
   const lanes = await safari(["guide", "reference", "two", "lanes"]);
