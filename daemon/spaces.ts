@@ -394,19 +394,19 @@ function sweep(): Promise<void> {
 
 async function sweepOnce() {
   if (!bridge.connected) return;
-  // A pass that begins with nothing to watch is the last, once it has
-  // closed what windows that ended since left behind.
-  const idle = spaces.size === 0 && ended.size === 0;
+  // A pass that begins with nothing to watch is the last, and asks Safari
+  // nothing: nothing would read its list of tabs.
+  if (spaces.size === 0 && ended.size === 0) {
+    clearInterval(sweeping);
+    sweeping = undefined;
+    return;
+  }
   for (const s of [...ended]) if (s.done) await end(s);
   const tabs = await listTabs();
   for (const s of [...spaces.values()]) {
     const inWindow = await located(s, tabs);
     if (inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
-  // A window opened meanwhile keeps the sweep going.
-  if (!idle || spaces.size > 0 || ended.size > 0) return;
-  clearInterval(sweeping);
-  sweeping = undefined;
 }
 
 // A new owned call invalidates an earlier completion's empty-window intent.

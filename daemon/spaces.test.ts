@@ -536,6 +536,22 @@ test("a restarted daemon leaves a page the user opened from the agents list, and
   }
 }, 15_000);
 
+// A turn's end with no window to watch asked Safari for its tabs, and
+// nothing read the list. In a full test run such a list reached the next
+// file's Safari, which counts the lists it is asked for (tools-wait.test.ts).
+test("a turn's end with no window to watch asks Safari nothing", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47344, "idle");
+  const list = s.ops["tabs.list"];
+  let lists = 0;
+  s.ops["tabs.list"] = (args) => {
+    lists++;
+    return list(args);
+  };
+  await daemon.turnEnded(process.pid);
+  expect(lists).toBe(0);
+});
+
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
   const s = safari();
   const h = agent();
