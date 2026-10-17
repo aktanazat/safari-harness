@@ -344,6 +344,11 @@ function isSavePath(i: number, argv: string[]): boolean {
   return argv[i - 1] === "--save" && /^\.{0,2}\//.test(argv[i] ?? "");
 }
 
+// What a command's help says of --save: a word after it is its file only
+// when it starts as a path does (isSavePath), so --save rows.json saves
+// into the saved folder and reads rows.json as the command's word.
+const SAVE_HOW = " (--save alone saves into the saved folder; give a path as --save=<path> or --save ./<path>, a relative one taken from the current folder)";
+
 // The tool a command runs, where its name differs, and a tool's name
 // however it is written (real-input for real_input).
 const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings" };
@@ -424,7 +429,8 @@ function commandHelp(cmd: string): string | null {
   const paths = PATH_PARAMS[toolName(cmd) ?? ""] ?? [];
   const params = Object.entries(def.params).map(([name, p]) => {
     const how = [...(def.required?.includes(name) ? ["required"] : []), ...(usage.some((l) => l.includes(`<${name}>`)) ? [`or as <${name}> above`] : [])].join(", ");
-    const desc = paths.includes(name) ? `${(p.description ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")} (a relative path is taken from the current folder)` : p.description;
+    let desc = p.description;
+    if (name === "save" || paths.includes(name)) desc = `${(desc ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")}${name === "save" ? SAVE_HOW : " (a relative path is taken from the current folder)"}`;
     return `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${how ? ` (${how})` : ""}\n      ${desc}`;
   });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");

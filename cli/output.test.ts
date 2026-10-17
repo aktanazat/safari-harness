@@ -171,6 +171,18 @@ test("a path flag's help says a relative path is taken from the current folder, 
   expect(calls.map((c) => [c.tool, c.args.path ?? c.args.out])).toEqual([["pdf", join(home, "report.pdf")], ["shots", join(home, "shots")], ["shot", join(home, "page.png")], ["download", join(home, "file.bin")]]);
 }, 30_000);
 
+// --save's help said "an absolute path", and --save rows.json saves into
+// the saved folder, reading rows.json as the command's word: the help says
+// the two ways a relative path is taken.
+test("--save's help says how to name a relative file, and each way it names sends the path whole", async () => {
+  expect((await safari(["help", "eval"])).out).toContain("  --save <string>\n      true, or a path for the whole output; returns its path, size, and first 500 characters (--save alone saves into the saved folder; give a path as --save=<path> or --save ./<path>, a relative one taken from the current folder)");
+  calls.length = 0;
+  answers = {};
+  expect((await safari(["eval", "document.title", "--tab", "7", "--save=rows.json"])).code).toBe(0);
+  expect((await safari(["extract", "--tab", "7", "--save", "./out/page.txt"])).code).toBe(0);
+  expect(calls.map((c) => c.args.save)).toEqual([join(home, "rows.json"), join(home, "out", "page.txt")]);
+}, 30_000);
+
 // safari guide reference two lanes searched for "reference" alone (S99PartC).
 test("guide takes every word after it", async () => {
   const lanes = await safari(["guide", "reference", "two", "lanes"]);
