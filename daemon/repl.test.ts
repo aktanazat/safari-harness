@@ -280,3 +280,16 @@ test("a script with a string left open fails naming the line it is on", async ()
   const r = await repl.run("const a = 1\nconst s = 'one\ntwo'");
   expect(r.error).toStartWith("SyntaxError: Unterminated string literal (line 2, column 11): const s = 'one\n");
 });
+
+// On 10-16, with Safari slow after a deploy, a wait on example.com, which
+// showed its words all along, read as a miss.
+test("a waitForSelector the page gave no answer says whether it appeared is unknown, not that it did not appear", async () => {
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
+    if (tool === "wait") return { ok: false, found: false, unanswered: true, waitedMs: 2000 };
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  const { error } = await repl.run("await openTab('https://example.com')\nawait page.waitForSelector('h1', { timeout: 1000 })");
+  expect(error).toContain("the page gave no answer in time (Safari or the page is slow), so whether h1 appeared within 1 s is unknown; wait for it again");
+});

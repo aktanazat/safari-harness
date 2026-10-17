@@ -157,7 +157,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
       case "read": {
         // without a selector, wait would sleep out its whole limit
         if (typeof s.selector !== "string") throw new Error("the step names nothing to read");
-        if (fields(await call("wait", { tab, selector: s.selector, ms: FIND_MS })).found !== true) throw new Error(`nothing on the page is where the text was read (${s.selector})`);
+        shown(await call("wait", { tab, selector: s.selector, ms: FIND_MS }), `nothing on the page is where the text was read (${s.selector})`, `whether the text is at ${s.selector} is unknown`);
         value = String(await call("element", { tab, ref: s.selector, what: "innerText" })).replace(/\s+/g, " ").trim();
         return;
       }
@@ -174,7 +174,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
       if (playbookUrl(fields(first).url) !== learned.url) throw new Error("the first page changed path; no steps were replayed");
       const before = await call("wait", { tab, ...learned.before, ms: FIND_MS });
       wallOf(before, tab);
-      if (fields(before).found !== true) throw new Error("the start condition is missing; no steps were replayed");
+      shown(before, "the start condition is missing; no steps were replayed", "whether the start condition holds is unknown; no steps were replayed");
     }
     for (const [i, s] of rec.steps.entries()) {
       at = i + 1;
@@ -184,7 +184,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
       at = rec.steps.length + 1;
       const checked = await call("wait", { tab, ...learned.verify, ms: FIND_MS });
       wallOf(checked, tab);
-      if (fields(checked).found !== true) throw new Error("the end condition was not verified");
+      shown(checked, "the end condition was not verified", "whether the end condition holds is unknown; it was not verified");
     }
   } catch (e) {
     return failed(e, tab, at, rec.steps[at - 1], quiet, done, call);
@@ -193,6 +193,16 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
   // with the caller's other tabs.
   if (!given) await call("close", { tab }).catch(() => {});
   return { ok: true, ...done, ...(value === undefined ? {} : { value }), ...(learned ? { verified: true } : {}) };
+}
+
+// A wait the page gave no answer by its end (unanswered: wait in tools.ts)
+// says nothing of what the page shows, and the replay fails saying so, not
+// that the page lacks it: on 10-16, with Safari slow after a deploy, a wait
+// on example.com, which showed its words all along, read as a miss.
+function shown(w: unknown, missing: string, unknown: string): void {
+  const f = fields(w);
+  if (f.found === true) return;
+  throw new Error(f.unanswered === true ? `the page gave no answer in time (Safari or the page is slow), so ${unknown}` : missing);
 }
 
 // A failed replay leaves its tab open, for the caller to look at, hand to

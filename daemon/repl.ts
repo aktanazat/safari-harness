@@ -409,8 +409,12 @@ export class Page {
     throw new Error(`waitForEvent supports "download" and "popup", not ${JSON.stringify(event)}`);
   }
   async waitForSelector(selector: string, opts: { timeout?: number } = {}): Promise<Locator> {
-    const r = (await this.call("wait", { selector: String(selector), ms: opts.timeout ?? 10_000 })) as { found?: boolean };
-    if (!r.found) throw new Error(`${selector} did not appear within ${Math.round((opts.timeout ?? 10_000) / 1000)} s`);
+    const ms = opts.timeout ?? 10_000;
+    const r = (await this.call("wait", { selector: String(selector), ms })) as { found?: boolean; unanswered?: boolean };
+    // A wait the page gave no answer by its end says nothing of the page
+    // (wait in tools.ts): on 10-16, with Safari slow, one read as a miss.
+    if (r.unanswered === true) throw new Error(`the page gave no answer in time (Safari or the page is slow), so whether ${selector} appeared within ${Math.round(ms / 1000)} s is unknown; wait for it again`);
+    if (!r.found) throw new Error(`${selector} did not appear within ${Math.round(ms / 1000)} s`);
     // Then reads where the page is, as waitForTimeout does.
     await this.info();
     return this.locator(selector);

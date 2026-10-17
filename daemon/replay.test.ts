@@ -154,3 +154,17 @@ test("vars that name no field of the recording are refused before anything opens
   await expect(replay({ name, vars: { query: "shoes" } }, p.call, clock())).rejects.toThrow("no field in this recording is named query; its fields: username, q, Search");
   expect(p.calls).toEqual([]);
 });
+
+// On 10-16, with Safari slow after a deploy, a wait on example.com, which
+// showed its words all along, read as a miss: a read whose wait the page
+// gave no answer fails saying so, and a miss still fails as a miss.
+test("a read step whose wait the page gave no answer fails saying the text's place is unknown, not that it is gone", async () => {
+  const name = recorded([{ kind: "read", url: "https://shop.example/", target: fp("paragraph", "3 results"), selector: "#count" }]);
+  const run = (wait: unknown) => replay({ name }, page({
+    open: () => ({ id: 7, url: "https://shop.example/", title: "Shop" }),
+    wait: () => wait,
+    snapshot: () => ({ url: "https://shop.example/", title: "Shop", nodes: 1, snapshot: "" }),
+  }).call, clock());
+  expect(await run({ ok: false, found: false, unanswered: true, waitedMs: 11000 })).toMatchObject({ ok: false, failedAt: 1, error: "step 1 (read): the page gave no answer in time (Safari or the page is slow), so whether the text is at #count is unknown" });
+  expect(await run({ ok: false, found: false, waitedMs: 10000 })).toMatchObject({ ok: false, failedAt: 1, error: "step 1 (read): nothing on the page is where the text was read (#count)" });
+});
