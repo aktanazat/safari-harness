@@ -714,7 +714,7 @@ async function main() {
   // line on stderr, with its fix.
   if (cmd === "doctor") {
     const { doctor, report } = await import("./doctor.ts");
-    const checks = await doctor();
+    const checks = await doctor(undefined, { deep: hasFlag("deep", rest) });
     const failed = checks.filter((c) => c.status === "fail");
     console.log(json ? JSON.stringify({ ok: failed.length === 0, checks }) : report(checks));
     if (quiet) for (const c of failed) say(`fail: ${c.name}: ${c.detail}${c.fix ? `; fix: ${c.fix}` : ""}`);
