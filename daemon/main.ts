@@ -172,9 +172,14 @@ const idle = new Set<() => void>();
 const SIGNAL_DRAIN_MS = 15000;
 const SHUTDOWN_DRAIN_MS = 60000;
 
+// idleTimeout 0: Bun's default cut a request its handler had not answered
+// within 10 s, so safari extension reload, which waits up to 30 s for the
+// extension to connect again, failed as "daemon not reachable" (10-16,
+// 10-17). Every route bounds its own wait.
 const rpcServer = Bun.serve({
   hostname: "127.0.0.1",
   port: httpPort,
+  idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url);
     // The agent windows' pages call back from their own origin, which the
