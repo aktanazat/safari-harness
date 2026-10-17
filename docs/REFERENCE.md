@@ -2236,7 +2236,8 @@ extension (connected, stuck, or disconnected, and whether it is the
 deployed release's), Accessibility, Messages access, the passwords
 pairing, free disk, swap, and Apple's safaridriver lane. It answers in
 about 3 s, changes no setting, starts no Safari, and exits 1 when a check
-fails (`--json` for data). `--deep` adds a round trip through a hidden tab
+fails (`--json` for data; `-q` prints only the failed checks, a line each
+on stderr with its fix). `--deep` adds a round trip through a hidden tab
 it opens and closes, which takes longer.
 
 Run it once when a call fails with no reason. It is not a ritual: never

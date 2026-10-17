@@ -692,13 +692,16 @@ async function main() {
   }
 
   // doctor: this Mac's harness only, whatever host is the default; it exits
-  // 1 when a check fails (--json: the checks as data).
+  // 1 when a check fails (--json: the checks as data). Under -q it printed
+  // nothing at all, the failures with the rest: each failed check is a
+  // line on stderr, with its fix.
   if (cmd === "doctor") {
     const { doctor, report } = await import("./doctor.ts");
     const checks = await doctor();
-    const failed = checks.some((c) => c.status === "fail");
-    console.log(json ? JSON.stringify({ ok: !failed, checks }) : report(checks));
-    process.exit(failed ? 1 : 0);
+    const failed = checks.filter((c) => c.status === "fail");
+    console.log(json ? JSON.stringify({ ok: failed.length === 0, checks }) : report(checks));
+    if (quiet) for (const c of failed) say(`fail: ${c.name}: ${c.detail}${c.fix ? `; fix: ${c.fix}` : ""}`);
+    process.exit(failed.length > 0 ? 1 : 0);
   }
 
   // Everything below talks to a daemon: this Mac's, or --host's.

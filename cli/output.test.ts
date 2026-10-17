@@ -107,6 +107,20 @@ test("status tells a daemon that is not running from one that answered an error,
   expect(events[0]).toMatch(/ {2}stuck {2}\{"op":"snapshot"\}$/);
 });
 
+// On 10-16 doctor -q exited 1 and printed nothing: which check failed, and
+// its fix, were quieted with the rest (smoke run after the deploy).
+test("doctor -q prints each failed check alone, a line each on stderr with its fix, and exits 1", async () => {
+  const stopped = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+  const gone = `http://127.0.0.1:${stopped.port}`;
+  await stopped.stop(true);
+  const { out, err, code } = await safari(["doctor", "-q"], gone);
+  expect(code).toBe(1);
+  expect(out).toBe("");
+  const lines = err.split("\n");
+  expect(lines.filter((l) => !/^fail: [^:]+: /.test(l))).toEqual([]);
+  expect(lines.filter((l) => l.startsWith(`fail: daemon: not answering at ${gone}; fix: `))).toHaveLength(1);
+}, 30_000);
+
 // Agents cut the answer's value out with grep 47 times, and an open's id
 // 48 times (S99PartA).
 test("eval --raw prints the value alone, a text bare, with other words on stderr, and --expression is the code", async () => {
