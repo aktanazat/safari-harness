@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { callTool } from "./tools.ts";
+import { runAs } from "./owner.ts";
+import { callTool, endTurn } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 701, 702...; the user's own
 // front tab is 700. A page set held stops answering, as a page a dialog
@@ -47,12 +48,18 @@ connect({
   close() {},
 });
 
+// The calls run as this process, an agent whose turn ends with the file, so
+// the window its tabs open in closes then: a window no turn's end can close
+// stays watched, and its sweep asked later files' Safari for its tabs.
+const call = (tool: string, args: Record<string, unknown>) => runAs(process.pid, () => callTool(tool, args));
+afterAll(() => endTurn(process.pid));
+
 const hold = (tab: number) => {
   const page = pages.get(tab);
   if (page) page.held = true;
 };
 const open = async (url: string) => {
-  const t = await callTool("open", { url, background: true });
+  const t = await call("open", { url, background: true });
   if (!t || typeof t !== "object" || !("id" in t) || typeof t.id !== "number") throw new Error("open gave no tab");
   return t.id;
 };
@@ -63,31 +70,31 @@ test("a read of a page that stopped answering loads it again and reads it once m
   const tab = await open("https://dealer.example/car/1");
   loads.length = 0;
   hold(tab);
-  expect(await callTool("extract", { tab })).toMatchObject({ text: "text of https://dealer.example/car/1", note: expect.stringContaining("loaded again") });
+  expect(await call("extract", { tab })).toMatchObject({ text: "text of https://dealer.example/car/1", note: expect.stringContaining("loaded again") });
   expect(loads).toEqual(["https://dealer.example/car/1"]);
-  await callTool("close", { tab });
+  await call("close", { tab });
 });
 
 // Loading the page again would undo what the agent did to it: a form half
 // filled is empty again.
 test("a page an action changed since it loaded is left to the agent, and a goto makes it fresh again", async () => {
   const tab = await open("https://insurer.example/quote");
-  await callTool("click", { tab, ref: "Next" });
+  await call("click", { tab, ref: "Next" });
   loads.length = 0;
   hold(tab);
-  await expect(callTool("extract", { tab })).rejects.toThrow("did not answer");
+  await expect(call("extract", { tab })).rejects.toThrow("did not answer");
   expect(loads).toEqual([]);
-  await callTool("goto", { tab, url: "https://insurer.example/start" });
+  await call("goto", { tab, url: "https://insurer.example/start" });
   hold(tab);
-  expect(await callTool("extract", { tab })).toMatchObject({ text: "text of https://insurer.example/start" });
+  expect(await call("extract", { tab })).toMatchObject({ text: "text of https://insurer.example/start" });
   expect(loads).toEqual(["https://insurer.example/start", "https://insurer.example/start"]);
-  await callTool("close", { tab });
+  await call("close", { tab });
 });
 
 test("the user's own tab is never loaded again, named as front or by its id", async () => {
   loads.length = 0;
   hold(HIS);
-  await expect(callTool("extract", { tab: "front" })).rejects.toThrow("did not answer");
-  await expect(callTool("extract", { tab: HIS })).rejects.toThrow("did not answer");
+  await expect(call("extract", { tab: "front" })).rejects.toThrow("did not answer");
+  await expect(call("extract", { tab: HIS })).rejects.toThrow("did not answer");
   expect(loads).toEqual([]);
 });
