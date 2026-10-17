@@ -552,6 +552,32 @@ test("a turn's end with no window to watch asks Safari nothing", async () => {
   expect(lists).toBe(0);
 });
 
+// A window the user closed before its agent's turn ended waits for that
+// turn's end, which sweeps by itself. Meanwhile every sweep, each 5 s, asked
+// Safari for its tabs for as long as the daemon ran, and nothing read them.
+test("a window closed before its agent's turn ended leaves the sweep asking Safari nothing", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47345, "closed");
+  const q = agent();
+  try {
+    const owned = await runAs(q.pid, () => daemon.spaceWindow());
+    for (const t of s.tabs.values()) if (t.windowId === owned.window) s.tabs.delete(t.id);
+    // A pass finds the window gone; it ends, and waits for its agent's turn.
+    await daemon.turnEnded(process.pid);
+    const list = s.ops["tabs.list"];
+    let lists = 0;
+    s.ops["tabs.list"] = (args) => {
+      lists++;
+      return list(args);
+    };
+    await daemon.turnEnded(process.pid);
+    expect(lists).toBe(0);
+  } finally {
+    await daemon.turnEnded(q.pid);
+    q.kill();
+  }
+});
+
 test("the tab group keeper's questions ask nothing of a quit Safari", async () => {
   const s = safari();
   const h = agent();

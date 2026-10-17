@@ -394,14 +394,16 @@ function sweep(): Promise<void> {
 
 async function sweepOnce() {
   if (!bridge.connected) return;
-  // A pass that begins with nothing to watch is the last, and asks Safari
-  // nothing: nothing would read its list of tabs.
-  if (spaces.size === 0 && ended.size === 0) {
+  // A pass with no window to locate, and no ended one whose agent's turn has
+  // ended, is the last, and asks Safari nothing: a window that ended before
+  // its agent's turn did waits for turnEnded, which sweeps by itself.
+  if (spaces.size === 0 && ![...ended].some((s) => s.done)) {
     clearInterval(sweeping);
     sweeping = undefined;
     return;
   }
   for (const s of [...ended]) if (s.done) await end(s);
+  if (spaces.size === 0) return;
   const tabs = await listTabs();
   for (const s of [...spaces.values()]) {
     const inWindow = await located(s, tabs);
