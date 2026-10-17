@@ -210,6 +210,9 @@ test("when an agent's turn ends its window closes with its tabs, unless it holds
   await until(() => s.closed.includes(pages[2]), 8000);
   expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false, true]);
   for (const p of [keeper, working, done]) p.kill();
+  // An exit closes no tab (6fc219a), and the files after this one reuse
+  // these tab ids: the working agent's tab closes at its admitted cleanup.
+  await endTurn(working.pid);
 }, 15_000);
 
 test("an agent whose window the user closed gets a new one on its next open", async () => {

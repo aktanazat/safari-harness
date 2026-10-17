@@ -3,8 +3,8 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { missionRoute, watched, type Overview } from "./mission.ts";
-import { runAs } from "./owner.ts";
-import { callTool } from "./tools.ts";
+import { runAs, watchOwner } from "./owner.ts";
+import { callTool, endTurn } from "./tools.ts";
 
 type Tab = { id: number; url: string; title: string; windowId: number; active: boolean };
 
@@ -76,11 +76,12 @@ function safari() {
   return { tabs, closed };
 }
 
-// One Safari for the whole file: a tab of an agent that has ended closes a
-// second later, and must find the Safari it was opened in.
+// One Safari for the whole file: every agent's tabs close as this file
+// ends, at the cleanup its runtime admits, and must find the Safari they
+// were opened in.
 const s = safari();
 
-const spawned: { kill(): void; exited: Promise<number> }[] = [];
+const spawned: { pid: number; kill(): void; exited: Promise<number> }[] = [];
 
 // An agent process, to call as and then end.
 function agent() {
@@ -89,14 +90,18 @@ function agent() {
   return p;
 }
 
-// Once its agent exits, owner.ts sees it on its once-a-second check of the
-// kernel, and the harness closes that agent's tabs and window; no fake
-// clock reaches a check that already runs. The files after this one share
-// that check and reuse these tab ids, so this one ends when all is closed.
+// Neither an agent's exit nor a stop is cleanup authority (6fc219a): its
+// tabs and window close at the cleanup its runtime admits as its turn ends
+// (endTurn in tools.ts). The files after this one reuse these tab ids, and
+// a later file's fake clock drives the owner sweep only once no watch is
+// left running it on the real one: this file ends once all is closed and
+// the daemon has seen every agent here exit.
 afterAll(async () => {
   for (const p of spawned) p.kill();
   await Promise.all(spawned.map((p) => p.exited));
+  for (const p of spawned) await endTurn(p.pid);
   await Promise.all([...s.tabs.values()].filter((t) => t.windowId !== 1).map((t) => s.closed(t.id)));
+  await Promise.all(spawned.map((p) => new Promise<void>((resolve) => watchOwner(p.pid, resolve))));
 });
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
@@ -184,14 +189,19 @@ test("a call held for a minute and a half fails with the pause message", async (
   }
 });
 
-test("a stopped agent's next call fails with the stop message and its tabs close, while another agent's stay", async () => {
+// A stop is not cleanup authority (6fc219a): the stopped agent's tabs wait,
+// like every agent's, for the cleanup its runtime admits as the turn the
+// stop ends.
+test("a stopped agent's next call fails with the stop message, and its tabs close at its admitted cleanup, not at the stop, while another agent's stay", async () => {
   const [a, b] = [agent(), agent()];
   const aTab = await open(a.pid, "https://a.example/");
   const bTab = await open(b.pid, "https://b.example/");
-  const gone = s.closed(aTab);
   expect((await press(pageOf(aTab), "stop")).status).toBe(200);
-  await gone;
   await expect(call(a.pid, "info", { tab: aTab })).rejects.toThrow("the user stopped this task from its window; stop and tell the user what you had done");
+  await settled();
+  expect(s.tabs.has(aTab)).toBe(true);
+  await endTurn(a.pid);
+  expect(s.tabs.has(aTab)).toBe(false);
   expect(s.tabs.has(bTab)).toBe(true);
   expect(await call(b.pid, "info", { tab: bTab })).toMatchObject({ url: "https://b.example/" });
 });
@@ -243,6 +253,9 @@ test("what an agent types appears neither in its record nor in the pages' JSON, 
   expect(record[0].args).not.toContain("q");
   const everything = JSON.stringify(record) + (await (await ask(`${page.origin}/agents.json`)).text());
   expect(everything).not.toContain(typed);
+  // A page typed in is a form in progress, which no cleanup closes: only
+  // its agent's own close does.
+  await call(a.pid, "close", { tab });
 });
 
 const listed = async (owner: number) => ((await (await ask("http://127.0.0.1:37334/agents.json")).json()) as Overview).agents.find((a) => a.owner === owner);
