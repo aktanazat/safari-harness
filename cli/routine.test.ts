@@ -80,7 +80,7 @@ test("a routine that makes more calls than the log keeps logs the first ones, sa
 });
 
 // A script routine runs a saved repl script with no model.
-async function runScript(name: string, code: string, schedule: unknown, flags: string[]): Promise<{ code: number; out: string }> {
+async function runScript(name: string, code: string, schedule: unknown, flags: string[]): Promise<{ code: number; out: string; err: string }> {
   writeFileSync(join(routines, `${name}.js`), code);
   writeFileSync(join(routines, `${name}.json`), JSON.stringify({ name, schedule, created: "2026-10-07" }));
   const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), "routine", "run", name, ...flags], {
@@ -88,8 +88,8 @@ async function runScript(name: string, code: string, schedule: unknown, flags: s
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [out, exit] = await Promise.all([new Response(p.stdout).text(), p.exited]);
-  return { code: exit, out };
+  const [out, err, exit] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  return { code: exit, out, err };
 }
 
 test("a script routine's practice run (--dry) runs the script with DRY true", async () => {
@@ -104,4 +104,12 @@ test("a routine set for one day that launchd starts on another day runs nothing"
   expect(code).toBe(1);
   expect(out).toContain("missed did not run");
   expect(existsSync(join(home, "Library", "Logs", "safari-harness", "routines", "missed.last"))).toBe(false);
+});
+
+// Under -q a failed run printed nothing at all, its failure with the rest
+// (Tools.md, 10-16): its one line on stderr says why.
+test("a routine run that fails under -q prints its one line on stderr and nothing else", async () => {
+  const { code, out, err } = await runScript("missed-quiet", `console.log("ran")`, { at: { hour: 6, minute: 36 }, on: { year: 2020, month: 1, day: 1 } }, ["--scheduled", "-q"]);
+  expect({ code, out }).toEqual({ code: 1, out: "" });
+  expect(err.trimEnd().split("\n")).toEqual([expect.stringMatching(/^error: exit 1: missed-quiet did not run: it was set to run /)]);
 });

@@ -683,6 +683,9 @@ async function main() {
       const { code, log, note } = await routineRun(pos[0], { dry: hasFlag("dry", r), scheduled: hasFlag("scheduled", r) });
       if (note !== undefined) console.log(note);
       console.log(log ? `exit ${code}; log: ${log}` : `exit ${code}`);
+      // Under -q a failed run printed nothing at all (Tools.md, 10-16): its
+      // one line on stderr has the exit, the note's first line, and the log.
+      if (quiet && code !== 0) say(`error: exit ${code}${note ? `: ${note.split("\n")[0]}` : ""}${log ? `; log: ${log}` : ""}`);
       process.exit(code);
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
