@@ -681,6 +681,49 @@ test("an ended window whose page Safari will not close is asked again after one,
   expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000], ended: true });
 });
 
+// Between the tries of a close that failed, every 5 s sweep asked Safari for
+// its tabs to find a page it was not yet to close again.
+test("an ended window waiting to try its close again asks Safari nothing until the try is due", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47346, "backoff");
+  const q = agent();
+  const owned = await runAs(q.pid, () => daemon.spaceWindow());
+  const page = pageIn(s.tabs, owned.window)!;
+  const [close, list] = [s.ops["tabs.close"], s.ops["tabs.list"]];
+  const start = Date.now();
+  const tries: number[] = [];
+  let now = start;
+  let lists = 0;
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== page.id) return close(args);
+    tries.push(now - start);
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  };
+  s.ops["tabs.list"] = (args) => {
+    lists++;
+    return list(args);
+  };
+  const pass = async (at: number) => {
+    now = start + at;
+    setSystemTime(new Date(now));
+    await daemon.turnEnded(q.pid);
+  };
+  try {
+    await pass(0);
+    const waiting = lists;
+    await pass(59_000);
+    expect(lists).toBe(waiting);
+    await pass(60_000);
+    expect(tries).toEqual([0, 60_000]);
+  } finally {
+    // The third try, two minutes on, closes the page: the window is gone.
+    s.ops["tabs.close"] = close;
+    await pass(180_000);
+    setSystemTime();
+    q.kill();
+  }
+});
+
 // A stuck extension (bridge.ts) answers no list; the keeper stopped at
 // the error, where it waits for a quit Safari.
 test("the keeper's look at the windows tells it Safari is away while the extension answers no list", async () => {

@@ -353,12 +353,14 @@ async function end(space: Space) {
   ended.add(space);
   save();
   if (!bridge.connected || !space.done) return;
+  // A page whose close failed is looked for again only once its next try is
+  // due: until then a sweep would list Safari's tabs for nothing.
+  const failed = unclosed.get(space);
+  if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
   const inWindow = await located(space);
   if (!space.done || inWindow.some(t => !isPage(t, space))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
-    const failed = unclosed.get(space);
-    if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
     try {
       const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
