@@ -1,10 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { ReplSession } from "./repl.ts";
 import { windowOwners } from "./spaces.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
@@ -75,6 +75,25 @@ const closesAs = (only: string) => closes.filter(([, how]) => how === only).map(
 // the answers settle in microtasks, which all run before the next turn
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
+// An agent that keeps a tab. A tab it kept stays its own until the daemon
+// sees it exit (keepTab in tools.ts), on its once-a-second look at the
+// kernel, and the files after this one reuse these tab ids: this one ends
+// once the daemon has seen each such agent exit. One owner sweep calls the
+// watches in turn, and the keeper's came first.
+const keeping: { pid: number; kill(): void; exited: Promise<number> }[] = [];
+function keeper() {
+  const p = Bun.spawn(["sleep", "60"]);
+  keeping.push(p);
+  return p;
+}
+afterAll(async () => {
+  await Promise.all(keeping.map(async (p) => {
+    p.kill();
+    await p.exited;
+    await new Promise<void>((resolve) => watchOwner(p.pid, resolve));
+  }));
+});
+
 // Before, the daemon kept its tab owners in memory: after a restart, the
 // tabs of an agent that had exited stayed open for good.
 test("a restarted daemon releases an exited agent's tabs only after admitted cleanup, never another owner's", async () => {
@@ -92,7 +111,7 @@ test("a restarted daemon releases an exited agent's tabs only after admitted cle
 // An agent that is done need not spend a turn on close. One it asked to
 // keep is the user's.
 test("admitted cleanup after exit releases disposable tabs and popups but preserves kept and changed pages", async () => {
-  const agent = Bun.spawn(["sleep", "60"]);
+  const agent = keeper();
   const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   await as("open", { url: "https://example.com/", background: true }); // tab 1
   await as("click", { tab: 1, ref: "Elsewhere" }); // opens tab 100
@@ -116,7 +135,7 @@ test("admitted cleanup after exit releases disposable tabs and popups but preser
 test("when an agent's turn ends its tabs close, except one it kept, one the user has in front, and another agent's", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
   loadTabs(file);
-  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const [agent, other] = [keeper(), Bun.spawn(["sleep", "60"])];
   // the tab the stand-in handed out last is the one just opened
   const open = async (who: number, args: Record<string, unknown> = {}) => {
     await runAs(who, () => callTool("open", { url: "https://example.com/", ...args }));
@@ -145,7 +164,7 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
 // 10-02: a repl session that ended after 30 minutes unused closed the
 // TikTok sign-up its agent had kept for the user from the CLI.
 test("a repl session's end closes the tabs it opened, but not one kept for the user", async () => {
-  const agent = Bun.spawn(["sleep", "60"]);
+  const agent = keeper();
   const invoke = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   const repl = new ReplSession("kept", { cwd: mkdtempSync(join(tmpdir(), "repl-kept-")), invoke });
   await repl.run("await openTab('https://example.com/')\nawait openTab('https://example.com/')");
@@ -292,7 +311,7 @@ test("an open on a site where the agent already has a tab names that tab, and ne
 // 10-05: the hint did not stop one agent's tire research from holding
 // tirerack.com in two of its 17 tabs.
 test("a model's open loads in its agent's tab on that site, never in a form in progress, a kept tab, or another agent's, nor with new: true", async () => {
-  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const [agent, other] = [keeper(), Bun.spawn(["sleep", "60"])];
   type Opened = { id: number; windowId?: number; note?: string };
   const model = async (who: number, tool: string, args: Record<string, unknown>) => (await runAs(who, () => callTool(tool, args, true))) as Opened;
   const open = async (who: number, url: string, more: Record<string, unknown> = {}) => {
