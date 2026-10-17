@@ -33,7 +33,7 @@
 
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { bridge } from "./bridge.ts";
+import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
@@ -127,12 +127,20 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
 }
 
 // The window an open by the calling agent goes in, made when it has none
-// or the user closed it.
-export async function spaceWindow(group?: string): Promise<Space> {
+// or the user closed it. A tab list that times out leaves the window as it
+// was: on 10-16 an open failed "extension request tabs.list timed out after
+// 5000ms" on a Mac too loaded for Safari to list its tabs in 5 s (smoke run
+// after the deploy). Only lost, the window an open just found gone, is then
+// made anew. A stuck extension's error still fails the open at once.
+export async function spaceWindow(group?: string, lost?: Space): Promise<Space> {
   const owner = currentOwner();
   const key = `${owner ?? "daemon"}:${group ?? ""}`;
   const had = spaces.get(key);
-  if (had && (await located(had)).length > 0) {
+  const inWindow = had && (await located(had).catch((e: unknown) => {
+    if (e instanceof TimedOut) return undefined;
+    throw e;
+  }));
+  if (had && (inWindow === undefined ? had !== lost : inWindow.length > 0)) {
     delete had.done;
     save();
     return had;

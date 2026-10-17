@@ -86,6 +86,11 @@ const RELOADED_MS = 30000;
 // 10-13 map's opens each waited 30 s on one that never came.
 const LIST_MS = 5000;
 
+// A request the extension did not answer within its limit, from a slow
+// Safari as from a stuck extension: an open goes on without the tab list
+// (spaceWindow in spaces.ts).
+export class TimedOut extends Error {}
+
 // A tabs.list asked within JOIN_MS of another still unanswered shares its
 // answer rather than asking again: on 10-13 the sweep, the agent windows'
 // pages, and agents asked over each other, 191 of a storm's 235 timeouts.
@@ -477,7 +482,7 @@ export class Bridge {
       reject,
       timer: setTimeout(() => {
         asked.waiters.delete(waiter);
-        reject(new Error(`extension request ${asked.op} timed out after ${timeoutMs}ms`));
+        reject(new TimedOut(`extension request ${asked.op} timed out after ${timeoutMs}ms`));
         if (asked.waiters.size === 0) this.unanswered(asked);
       }, timeoutMs),
     };

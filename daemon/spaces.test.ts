@@ -34,6 +34,8 @@ function safari() {
   const oldWindows = new Map<number, number>();
   // What the daemon told the extension of each tab it sized.
   const sized: { tab: number; whole: boolean }[] = [];
+  // Ops a Safari too loaded to answer leaves unanswered.
+  const silent = new Set<string>();
   const ops: Record<string, (args: unknown[]) => unknown> = {
     "tabs.list": () => [...tabs.values()],
     "tabs.open": ([url, background, windowId]) => {
@@ -89,7 +91,7 @@ function safari() {
   const sock: ExtSocket = {
     send(data) {
       const { id, op, args } = JSON.parse(data) as { id?: string; op: string; args: unknown[] };
-      if (id === undefined) return;
+      if (id === undefined || silent.has(op)) return;
       let reply: { value: unknown } | { error: string };
       try {
         reply = { value: ops[op](args) };
@@ -123,7 +125,7 @@ function safari() {
       tabs.set(id, { ...t, id, windowId: windows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized };
+  return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized, silent };
 }
 
 // An agent process, to open tabs for and then end.
@@ -652,4 +654,30 @@ test("the keeper's look at the windows tells it Safari is away while the extensi
   }
   expect(await spaceTool({ op: "state" })).toMatchObject({ connected: true });
   k.kill();
+});
+
+// On 10-16 an open failed "extension request tabs.list timed out after
+// 5000ms" as it looked for its agent's window, on a Mac too loaded for
+// Safari to list its tabs in 5 s (smoke run after the deploy).
+test("an open goes on in its agent's window while Safari lists no tabs, and fails at once when the extension is stuck", async () => {
+  const s = safari();
+  const o = agent();
+  const first = await runAs(o.pid, () => openTab("https://slow.example/1", true));
+  const request = bridge.request;
+  let stuck = false;
+  // tabs.list's 5 s limit, cut to 50 ms
+  bridge.request = (op, args, ms) => (stuck && op === "tabs.list" ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again")) : request.call(bridge, op, args, op === "tabs.list" ? 50 : ms));
+  s.silent.add("tabs.list");
+  try {
+    const next = await runAs(o.pid, () => openTab("https://slow.example/2", true));
+    expect(next.windowId).toBe(first.windowId);
+    stuck = true;
+    const tabs = s.tabs.size;
+    await expect(runAs(o.pid, () => openTab("https://slow.example/3", true))).rejects.toThrow(/^extension stuck: /);
+    expect(s.tabs.size).toBe(tabs);
+  } finally {
+    bridge.request = request;
+    s.silent.clear();
+    o.kill();
+  }
 });

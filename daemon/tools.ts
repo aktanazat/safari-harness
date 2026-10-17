@@ -118,7 +118,7 @@ async function openIn(group: string | undefined, space: Space, address: string, 
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   } catch (e) {
     if (!(e instanceof Error) || !/Window not found/i.test(e.message)) throw e;
-    space = await spaceWindow(group);
+    space = await spaceWindow(group, space);
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   }
   return { ...t, space: spaceNote(space) };
