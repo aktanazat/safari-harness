@@ -13,9 +13,9 @@ Tabs
   is his front tab, only when he asks about his page. Never navigate,
   type in, or close his tabs.
 - `open` on a site where you have a tab loads in it (`new: true` for a
-  second). Your tabs close when your turn ends; a finished task needs no
-  `close`. Kept pages, changed pages, pending handoffs, unsent forms, and
-  his front tab stay. `keep` a page meant for him.
+  second). Your tabs close when your turn ends, so a task's last call is
+  never `close`. Kept pages, changed pages, pending handoffs, unsent
+  forms, and his front tab stay. `keep` a page meant for him.
 - A tab id you hold keeps working after its tab closed idle or at a turn's
   end: the next call opens the page again, fresh, and names the new id.
   Snapshot before acting there. Do not open another tab or start another
@@ -43,9 +43,10 @@ Turns
   For a wait of minutes, call `wait` again (110 s each) until it matches:
   `safari guide wait`.
 - Read the whole output. Narrow a read with `query` (plain text; `a|b` is
-  either) or `root`, never `head` or `sed`. A CLI step whose answer you do
-  not need takes `-q`: silent when it works, one line and exit 1 when it
-  misses. Never `>/dev/null`, which hides the miss too.
+  either) or `root`, never `| head`, `| grep`, or `sed`, which can hide a
+  failed call. The tab id alone: `safari open --id URL`. A CLI step whose
+  answer you do not need takes `-q`: silent when it works, one line and
+  exit 1 when it misses. Never `>/dev/null`, which hides the miss too.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
 - `innerText` empty on a page that shows text: shadow DOM. Read it with
