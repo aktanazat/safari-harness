@@ -7,7 +7,10 @@
 // process, which sends each frame of the checkout only what that frame's
 // fields take, and only to frames on the page's own site or a card
 // processor's. No answer carries a digit, and the tab's answers have the
-// number and security code cut from then on (card_fill in tools.ts).
+// number and security code cut from then on (card_fill in tools.ts). While
+// the user is away from the Mac, a card he set up for his iPhone there
+// (card-phone) is approved on the phone with Face ID instead
+// (phone-cards.ts).
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -15,6 +18,7 @@ import { INPUT_TOOLS } from "./input.ts";
 import { navigatedOf } from "./navigated.ts";
 import { ANSWER_MS, localTime, within } from "./passwords.ts";
 import { isAway } from "./phone.ts";
+import { approveOnPhone, endPhoneApprovals, enrollOnPhone, forgetPhoneCards, openedOnPhone, phoneCardIds } from "./phone-cards.ts";
 import { rpc } from "./rpc.ts";
 
 const HELPER = "/Applications/Safari Harness.app/Contents/Helpers/Safari Harness Cards.app/Contents/MacOS/Safari Harness Cards";
@@ -131,7 +135,7 @@ function serve(): Session {
       if ("card" in reply && s.approvedAt === undefined) {
         s.approvedAt = Date.now();
         expiry = setTimeout(() => {
-          if (session === s) endApproval();
+          if (session === s) closeSession();
         }, APPROVAL_MS);
         expiry.unref();
       }
@@ -143,10 +147,16 @@ function serve(): Session {
   return s;
 }
 
-// Ends the approval: the next fill asks Touch ID again. done calls it.
-export function endApproval(): void {
+function closeSession(): void {
   session?.child.kill();
   session = undefined;
+}
+
+// Ends the approvals, the Mac's Touch ID one and those his phone gave: the
+// next fill asks again. done calls it.
+export function endApproval(): void {
+  closeSession();
+  endPhoneApprovals();
 }
 
 function cardOf(value: unknown): Card {
@@ -158,9 +168,19 @@ function cardOf(value: unknown): Card {
 // The card's digits, through the approval that is open or a new one. A
 // Touch ID he has not answered within ANSWER_MS stays up, and the call
 // says so; the next call's read queues behind it and asks nothing more.
-async function read(card: Listed, host: string): Promise<Card | { waiting: string }> {
-  if (session?.approvedAt !== undefined && Date.now() - session.approvedAt >= APPROVAL_MS) endApproval();
-  if (session?.approvedAt === undefined && (await isAway().catch(() => false))) throw new Error("the user is away from the Mac, and a card fill needs his Touch ID there: he must come to the Mac");
+// Away from the Mac, a card set up for his phone is approved there, and
+// the window that approval opens serves the fills on that site after it.
+async function read(card: Listed, host: string, again: string, amount?: string): Promise<Card | { waiting: string }> {
+  if (session?.approvedAt !== undefined && Date.now() - session.approvedAt >= APPROVAL_MS) closeSession();
+  if (session?.approvedAt === undefined) {
+    const opened = openedOnPhone(card, host);
+    if (opened) return cardOf(opened.card);
+    if (await isAway().catch(() => false)) {
+      const got = await approveOnPhone(card, host, amount, waitOut);
+      if (!got) throw new Error("the user is away from the Mac, and a card fill needs his Touch ID there: he must come to the Mac (there, card-phone sets up his iPhone's Face ID for fills while he is away)");
+      return "waiting" in got ? got : cardOf(got.card);
+    }
+  }
   const s = (session ??= serve());
   if (s.approvedAt === undefined) s.askedAt ??= localTime();
   const owed = Promise.withResolvers<Reply>();
@@ -168,7 +188,7 @@ async function read(card: Listed, host: string): Promise<Card | { waiting: strin
   s.child.stdin.write(`${JSON.stringify({ read: card.id, site: host })}\n`);
   if (!waitOut && !(await within(owed.promise, ANSWER_MS))) {
     owed.promise.catch(() => {});
-    return { waiting: `the Mac is asking the user to approve card fills with Touch ID (since ${s.askedAt}); ask him to approve, then call card-fill again` };
+    return { waiting: `the Mac is asking the user to approve card fills with Touch ID (since ${s.askedAt}); ask him to approve, then call ${again} again` };
   }
   const reply = await owed.promise;
   if (typeof reply.error === "string") throw new Error(reply.error);
@@ -178,10 +198,13 @@ async function read(card: Listed, host: string): Promise<Card | { waiting: strin
 async function listed(): Promise<Listed[]> {
   const { cards } = await helper(["list"]);
   if (!Array.isArray(cards)) throw new Error("the card helper gave no list of cards");
-  return cards.map((v: unknown) => {
+  const saved = cards.map((v: unknown) => {
     const c = v && typeof v === "object" ? Object.fromEntries(Object.entries(v)) : {};
     return { id: String(c.id ?? ""), label: String(c.label ?? ""), brand: String(c.brand ?? ""), last4: String(c.last4 ?? ""), exp: String(c.exp ?? ""), name: String(c.name ?? "") };
   });
+  // A card removed, or saved again (a new id), takes its phone setup along.
+  forgetPhoneCards(new Set(saved.map((c) => c.id)));
+  return saved;
 }
 
 // What to do when no card is saved. On 10-05 an agent told only to have
@@ -225,6 +248,16 @@ async function remove(a: Reply): Promise<unknown> {
   const card = pick(await listed(), a.card);
   if (await isAway().catch(() => false)) throw new Error("the user is away from the Mac, where he approves removing a card with Touch ID: he must come to the Mac");
   return onHim(helper(["rm", card.id]), `the Mac is asking the user to approve removing ${card.label} with Touch ID; ask him to approve, then call cards`);
+}
+
+// card-phone: at the Mac, his Touch ID gives the card, and his iPhone's
+// Face ID then keeps a sealed copy only it opens (phone-cards.ts).
+async function phone(a: Reply): Promise<unknown> {
+  const card = pick(await listed(), a.card);
+  if (await isAway().catch(() => false)) throw new Error("setting up Face ID for a card needs the user at the Mac, for its Touch ID, with his iPhone: he must come to the Mac");
+  const got = await read(card, "iphone", "card-phone");
+  if ("waiting" in got) return got;
+  return enrollOnPhone(card, got, waitOut);
 }
 
 function framesOf(value: unknown): Frame[] {
@@ -289,6 +322,8 @@ function missesOf(res: unknown): Miss[] {
 // needs (docs/sites/geico.md). No Touch ID is asked of a page with no card
 // fields to take it.
 async function fill(a: Reply): Promise<unknown> {
+  const amount = a.amount === undefined ? undefined : String(a.amount).trim();
+  if (amount !== undefined && (!amount || amount.length > 40 || /\p{Cc}/u.test(amount))) throw new Error("amount is the order's total as the page shows it, one line of at most 40 characters");
   const resolved = await rpc("resolve_tab", { tab: a.tab });
   const tab = resolved && typeof resolved === "object" && "tab" in resolved && typeof resolved.tab === "number" ? resolved.tab : undefined;
   if (tab === undefined) throw new Error("the tab did not resolve; name it by the id open returned");
@@ -303,7 +338,7 @@ async function fill(a: Reply): Promise<unknown> {
   if (trusted.length === 0) {
     throw new Error(skipped.length ? `the card fields here sit in frames from ${skipped.join(", ")}, neither ${top.host} nor a card processor the harness knows; nothing was filled` : "the page shows no card fields: open the step that asks for the card, then call card-fill again");
   }
-  const got = await read(card, top.host);
+  const got = await read(card, top.host, "card-fill", amount);
   if ("waiting" in got) return got;
   const filled: string[] = [];
   const typed: string[] = [];
@@ -364,7 +399,8 @@ export async function cards(a: Reply): Promise<unknown> {
   switch (a.do) {
     case "cards": {
       const saved = await listed();
-      return saved.length ? { cards: saved, next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: `none is saved: ${NONE_SAVED}` };
+      const onPhone = phoneCardIds();
+      return saved.length ? { cards: saved.map((c) => (onPhone.has(c.id) ? { ...c, phone: true } : c)), next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: `none is saved: ${NONE_SAVED}` };
     }
     case "card-save":
       return save(a);
@@ -372,6 +408,8 @@ export async function cards(a: Reply): Promise<unknown> {
       return fill(a);
     case "card-rm":
       return remove(a);
+    case "card-phone":
+      return phone(a);
   }
-  throw new Error("do must be cards, card-save, card-fill, or card-rm");
+  throw new Error("do must be cards, card-save, card-fill, card-phone, or card-rm");
 }

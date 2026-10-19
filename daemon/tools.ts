@@ -28,6 +28,7 @@ import { keepSecret, redacted, redactUrl, tabSecrets } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { replay } from "./replay.ts";
+import { CARD_PHONE } from "./passkey.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2554,9 +2555,10 @@ export const TOOLS: Record<string, Tool> = {
       return bridge.tab(tab, "fillCard", [str(a.site, "site"), card, secrets], 30000, a.frame === undefined ? 0 : num(a.frame, "frame"));
     },
   },
+  card_phone: CARD_PHONE,
   passwords: {
-    desc: "Use saved logins and cards without revealing secrets; never ask for them. fill signs in from the vault with no Touch ID, else from Apple Passwords, keeping a copy; source: apple if the vault's password fails. code fills 2FA, logins lists usernames. change saves then fills a strong password; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls pair on their own, or prompt on the Mac. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" } },
+    desc: "Use saved logins and cards without revealing secrets; never ask for them. fill signs in from the vault with no Touch ID, else from Apple Passwords, keeping a copy; source: apple if the vault's password fails. code fills 2FA, logins lists usernames. change saves then fills a strong password; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls pair on their own, or prompt on the Mac. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. card-phone, at the Mac, lets his iPhone's Face ID approve card-fill while he is away; pass amount, the total. done releases access; status explains locking.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],

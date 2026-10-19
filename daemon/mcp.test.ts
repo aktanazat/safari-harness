@@ -143,8 +143,11 @@ import { TOOLS } from "./tools.ts";
 // snapshot's interactive, imessage_search's chat, and run's example as an
 // object (206) brought it to 27,905: in those two weeks snapshot with
 // interactive failed 7 calls, a search naming its chat 4, and a run sent
-// as the bare list its example showed 3.
-const TOOL_LIST_MAX_BYTES = 27_905;
+// as the bare list its example showed 3. passwords' card-phone and amount
+// (150) brought it to 28,055: the user is mostly on his iPhone, away from
+// the Mac, and on 10-19 he asked that his Face ID there approve the card
+// fills that stalled on the Mac's Touch ID until he came back.
+const TOOL_LIST_MAX_BYTES = 28_055;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

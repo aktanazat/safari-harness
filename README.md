@@ -47,6 +47,13 @@ daemon/
   ask.ts            ask: an agent's question put on the user's phone when he
                     is away, for him to answer back at the Mac
   phone.ts          every alert to the user's phone: at most 6 an hour
+  passkey.ts        the card approval page the user's iPhone opens over
+                    tailscale serve, and the daemon's check of each Face ID
+                    answer: a passkey's signature on a single-use challenge
+  phone-cards.ts    card fills he approves on his iPhone while away: each
+                    card set up for it is kept sealed under a key only its
+                    passkey gives after Face ID; one approval covers that
+                    card on that site for 30 minutes
   telegram.ts       sends an alert, and its picture, to his Telegram through
                     ~/.local/bin/tell-aktan
   watch.ts          watch routines: one value read off a page on a schedule,
@@ -158,12 +165,15 @@ carry a password.
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
 | 37334 | HTTP: `POST /rpc {tool,args}`, `GET /health`, `POST /turn-end/prepare {owner}`, `POST /turn-end {owner,prepared}`, `POST /shutdown` |
+| 37335 | HTTP on 127.0.0.1, from the first card approval: the page his iPhone opens to approve a card fill, through `tailscale serve` |
 
-Both ports refuse any request that carries a web page's `Origin` header (403),
+37333 and 37334 refuse any request that carries a web page's `Origin` header (403),
 because a web page can send requests to localhost too. Local clients such as
 the CLI, the MCP server and CDP tools send no `Origin`. Only the extension's
 `safari-web-extension://` origin may take the `/` extension socket, and only
-the bridge's extension origin may take `/passwords`.
+the bridge's extension origin may take `/passwords`. 37335 serves only the
+approval page: an answer must come from that page's own origin and carry
+the card's passkey signature over that request's challenge.
 
 `turn-end/prepare` drains the owner's active calls and returns exact owned
 tab IDs with a call-generation token; it never closes a page. `turn-end`
@@ -174,7 +184,8 @@ send nothing. When an owner process exits, the daemon releases its
 disposable pages and empty windows by itself. Kept, changed and front
 pages stay either way.
 
-Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
+Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
+`SAFARI_HARNESS_PHONE_PORT` (daemon),
 `SAFARI_HARNESS_HTTP` (CLI/MCP). The extension reads `daemonPort` from
 `chrome.storage.local` if you need to move it.
 
@@ -200,6 +211,15 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 4. Run `safari doctor`. It checks every part, the extension connection
    and Accessibility and Full Disk Access for your terminal included, and
    prints the fix for each that fails.
+5. For card fills the user approves with Face ID on his iPhone (iOS 18 or
+   later, on the same tailnet) while away from the Mac, give the approval
+   page an HTTPS address on the tailnet once:
+   `tailscale serve --bg --https=8447 http://127.0.0.1:37335`. Never a
+   Funnel: the daemon refuses a page open to the internet. Then, at the
+   Mac with the phone, `safari passwords card-phone --card <label>` sets
+   up one card: Touch ID on the Mac, then the link that reaches Telegram,
+   opened in Safari on the phone, "Set up with Face ID", and "Confirm
+   with Face ID".
 
 ## Deploys
 

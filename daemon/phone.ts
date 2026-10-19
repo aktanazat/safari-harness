@@ -6,7 +6,7 @@
 // went and from which process, never the line.
 
 import { execFile } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -72,10 +72,15 @@ export function readJson(path: string): unknown {
 }
 
 // Written whole and renamed over the old one, so another process never
-// reads half of it.
-export function writeJson(path: string, value: unknown): void {
+// reads half of it. mode, when given, is the file's before any of it is
+// written.
+export function writeJson(path: string, value: unknown, mode?: number): void {
   mkdirSync(dirname(path), { recursive: true });
   const part = `${path}.${process.pid}`;
+  if (mode !== undefined) {
+    writeFileSync(part, "", { mode });
+    chmodSync(part, mode);
+  }
   writeFileSync(part, `${JSON.stringify(value)}\n`);
   renameSync(part, path);
 }

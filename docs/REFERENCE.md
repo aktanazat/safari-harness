@@ -1834,7 +1834,22 @@ keychain, not Apple Passwords:
   approval. No Mac login password substitutes for Touch ID.
 - A call waiting on Touch ID answers after 25 seconds with `waiting`;
   ask him to approve, then call `card-fill` again. The CLI waits for his
-  answer. When he is away and no approval is open, filling is refused.
+  answer. When he is away and no approval is open, a card set up with
+  `card-phone` is approved on his iPhone instead; any other card is
+  refused.
+- `passwords {do: "card-phone", card: "Work"}`, with him at the Mac and
+  his iPhone (iOS 18 or later) at hand, sets that card up for Face ID:
+  Touch ID on the Mac, then a link on his phone where Face ID makes the
+  card's passkey. The Mac keeps only a copy sealed under a key that the
+  passkey gives after Face ID. Away from the Mac, `card-fill` sends his
+  phone a link to a page that shows the site, the card, and `amount`, the
+  total, when you pass it. His Face ID there fills the card as Touch ID
+  would and covers fills of that card on that site for 30 minutes; another
+  site needs its own approval. While the link waits, the call answers
+  `waiting` as for Touch ID. A declined link, or one left 10 minutes, is
+  an error. `cards` marks set-up cards `phone: true`; removing or saving
+  a card again ends its setup. The page needs `tailscale serve` (README,
+  Setup).
 - The result names fields, never their values. A text field the page
   rejects gets real keystrokes; `typed` says those keys were sent, not
   that the page kept them. Check the page before continuing. Missing
@@ -1844,7 +1859,8 @@ keychain, not Apple Passwords:
   no card is cached for another fill. Screenshots are not scrubbed.
   Until the approval ends (the Mac locks, 12 hours pass, or `done`),
   anything driving that MCP session can fill saved cards without another
-  Touch ID.
+  Touch ID; a Face ID approval likewise covers its card and site for 30
+  minutes.
 - `passwords {do: "card-rm", card: "Work"}` removes the saved card after
   Touch ID. The card helper ships inside Safari Harness.app and needs
   its signed keychain entitlement; there is no file-storage fallback.
