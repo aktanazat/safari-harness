@@ -15,7 +15,7 @@ Signed out, the global throws "not signed in to x.com in Safari". If Safari is o
 - A Cloudflare check on /account/access is his too: `handoff`, never a click in its box, real input included.
 
 ## In safari repl
-The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state.
+The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state. The paged reads (`getTimeline`, `search`, `getUserTweets`, `getBookmarks`) answer `nextCursor` for the next page; past the last page X repeats the cursor it was asked with, and that page comes back with no `nextCursor`.
 - `x.getMe()`: the signed-in account: id, handle, name, bio, follower and following counts.
 - `x.getUser(handle)`: one account by handle (or profile url).
 - `x.getTweet(idOrUrl)`: one post: text, author, counts, views, and what it replies to or quotes.

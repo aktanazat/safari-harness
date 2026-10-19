@@ -307,6 +307,10 @@ export function x(kit: SiteKit) {
     const t = timeline(await graphql(name, hint, variables));
     // The home feed ignores count; trim to what was asked and keep the server's cursor.
     if (t.tweets.length > count) t.tweets = t.tweets.slice(0, count);
+    // Past the last page X answers no posts and the cursor it was asked
+    // with, so a loop that pages until there is no cursor would ask for that
+    // page forever (10-19, bookmarks): there is no next page.
+    if (t.nextCursor === variables.cursor) delete t.nextCursor;
     return t;
   }
 
