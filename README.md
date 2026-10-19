@@ -113,6 +113,8 @@ cli/launchd.ts      always-on daemon and scheduled routines (launchd + headless
 cli/doctor.ts       `safari doctor`: checks each part the harness needs on
                     this Mac and prints the fix for each that fails
 docs/GUIDE.md       the short card of rules (`safari guide`)
+docs/skill-head.md  the safari skill's head: a deploy writes it and the card
+                    to ~/.agents/skills/safari/SKILL.md
 docs/REFERENCE.md   every tool in full, one section each (`safari guide <tool>`)
 docs/sites/         one note per site (`safari guide <site>`)
 bench/              the WebKit bench's rows for content.js, one page per

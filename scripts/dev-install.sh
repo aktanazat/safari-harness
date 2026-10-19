@@ -223,6 +223,16 @@ checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
 point "$sha"
 echo "current: release $sha"
 [ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
+# The safari skill, which agents read before their first call, is
+# docs/skill-head.md and then the card (docs/GUIDE.md) word for word: the
+# two never drift, and agents need no `safari guide` call after reading it,
+# which 215 calls made in the two weeks before 10-19.
+skill="$HOME/.agents/skills/safari/SKILL.md"
+if [ -f "$CURRENT/docs/skill-head.md" ]; then
+  mkdir -p "${skill%/*}"
+  cat "$CURRENT/docs/skill-head.md" "$CURRENT/docs/GUIDE.md" >"$skill.new"
+  mv "$skill.new" "$skill"
+fi
 [ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
   echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
 # New omp sessions load the runtime-authorized release hook. Existing

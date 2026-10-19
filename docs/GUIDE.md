@@ -1,10 +1,12 @@
 # Safari Harness: the rules
 
 The tools drive the user's real Safari: his logins, cookies, and tabs.
-Read this card once. After your context is compacted, do not read it, the
-skill, or the reference again: `safari guide <tool>` prints that tool's
-section (`safari guide eval`), `safari guide reference` lists the other
-sections, `safari guide repl` the script API.
+Read this card once; it is also the safari skill. After your context is
+compacted, do not read it or the reference again: `safari guide <tool>`
+prints that tool's section (`safari guide eval`), `safari guide
+reference` lists the other sections, `safari guide <site>` a site's
+guide, `safari guide repl` the script API, and `safari <command> --help`
+one command's flags.
 
 Tabs
 - `open` returns a tab id; pass it as `tab` to every call. `tab: "front"`
@@ -50,7 +52,6 @@ Turns
 - `type` answering `kept: false`, `invalid`, or `next`, or a site error
   after a click: redo it once with `real_input` before changing account,
   network, or cookies; if it works, `learn {site, real: true}`.
-- `replay {name}` redoes a task he showed you with the toolbar button.
 - Run `safari` commands in the foreground; never start one in the
   background and poll it.
 

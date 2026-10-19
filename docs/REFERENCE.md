@@ -1908,13 +1908,14 @@ it reads the page's own script variables.
 
 ## guide
 
-`safari guide` prints the short card of rules. `safari guide <tool>`
-prints that tool's section of this reference (`safari guide eval`); after
-your context is compacted, ask for the one section you need rather than
-reading the skill, the card, or this file again. `safari guide reference`
-lists the sections, `safari guide reference <section>` prints one
-(`safari guide reference troubleshooting`), and `safari guide reference
-all` the whole file. `safari guide repl` prints the script API.
+`safari guide` prints the short card of rules, which the safari skill
+carries word for word: an agent that read the skill has it. `safari guide
+<tool>` prints that tool's section of this reference (`safari guide
+eval`); after your context is compacted, ask for the one section you need
+rather than reading the skill, the card, or this file again. `safari
+guide reference` lists the sections, `safari guide reference <section>`
+prints one (`safari guide reference troubleshooting`), and `safari guide
+reference all` the whole file. `safari guide repl` prints the script API.
 
 `safari guide sites` lists the sites with a note; `safari guide slack` or
 `safari guide x.com` prints one (a subdomain finds its site's note). A note

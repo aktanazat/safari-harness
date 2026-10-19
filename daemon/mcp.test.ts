@@ -130,8 +130,12 @@ import { TOOLS } from "./tools.ts";
 // taking query words or {query, root, diff}, and wait's snapshot (264),
 // brought it to 27,082: in the logs from 09-28 to 10-19 agents read the
 // page with snapshot in the turn after 373 actions on its tab, and
-// snapshot: true could have given 92 of those reads; this gives 343.
-const TOOL_LIST_MAX_BYTES = 27_082;
+// snapshot: true could have given 92 of those reads; this gives 343. The
+// repl tool's crib of its main calls (411) brought it to 27,493: in the
+// two weeks before 10-19 agents ran `safari guide repl` or `safari guide
+// reference` 155 times, 21.8 minutes of their time, most for the few
+// calls a script needs.
+const TOOL_LIST_MAX_BYTES = 27_493;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
