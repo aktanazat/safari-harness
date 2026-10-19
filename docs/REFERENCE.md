@@ -1824,7 +1824,7 @@ keychain, not Apple Passwords:
   billing ZIP. `card` also accepts the last four or the listed id; leave
   it out only when one card is saved.
 - The top page must use https. Its own host and subdomains, and embedded
-  Stripe, Braintree, and Adyen payment frames, may receive card data.
+  Stripe, Braintree, Adyen, and Cybersource payment frames, may receive card data.
   Other frames are skipped and named. Each frame receives only the
   fields it asks for, and a frame that has moved to another host is refused.
 - The first fill asks Touch ID. One approval covers fills in that MCP

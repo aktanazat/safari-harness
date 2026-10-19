@@ -153,6 +153,8 @@ test.each([
   ["https://shop.example", "https://evil.example"],
   ["https://shop.example", "https://stripe.com"],
   ["https://shop.example", "https://js.stripe.com.evil.example"],
+  ["https://shop.example", "https://up.cybersource.com.evil.example"],
+  ["https://shop.example", "https://evil.cybersource.com"],
 ])("a checkout at %s with card fields at %s is refused before asking Touch ID", async (topOrigin, origin) => {
   writeFileSync(store, JSON.stringify([VISA]));
   watchedPort();

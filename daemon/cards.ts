@@ -43,9 +43,10 @@ export function waitCardsOut(on = true): void {
   waitOut = on;
 }
 
-// Embedded card fields served by Stripe, Braintree, or Adyen. Do not trust
-// arbitrary pages on the processors' parent domains.
-const PROCESSOR_FRAME = /^(?:[a-z0-9-]+\.)*js\.stripe\.com$|^(?:[a-z0-9-]+\.)+braintreegateway\.com$|^checkoutshopper-[a-z0-9-]+\.adyen\.com$|^(?:[a-z0-9-]+\.)*cdn\.adyen\.com$/;
+// Embedded card fields served by Stripe, Braintree, Adyen, or Cybersource
+// Unified Checkout (AAA's renewal, 10-19). Do not trust arbitrary pages on
+// the processors' parent domains.
+const PROCESSOR_FRAME = /^(?:[a-z0-9-]+\.)*js\.stripe\.com$|^(?:[a-z0-9-]+\.)+braintreegateway\.com$|^checkoutshopper-[a-z0-9-]+\.adyen\.com$|^(?:[a-z0-9-]+\.)*cdn\.adyen\.com$|^up\.cybersource\.com$/;
 
 type Reply = Record<string, unknown>;
 // What names a saved card: all an agent sees of one.
