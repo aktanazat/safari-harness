@@ -175,8 +175,8 @@ test("a page that fails is reported in its place, and the others are still read"
 // that had worked.
 test("a map whose every page the extension left unanswered fails as a whole, extension stuck; one page failing on its own still answers the pages", async () => {
   const silent = (tool: string) => (tool === "open" ? Promise.reject(new Error("extension request tabs.list timed out after 5000ms")) : Promise.resolve({ ok: true }));
-  const stuck = (tool: string, args: Record<string, unknown>) => (args.url === urls(3)[2] ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again")) : silent(tool));
-  await expect(mapPages({ urls: urls(3) }, stuck)).rejects.toThrow(/^extension stuck: .* none of map's 3 pages \(its tabs\.list requests went unanswered\); run safari extension reload/);
+  const stuck = (tool: string, args: Record<string, unknown>) => (args.url === urls(3)[2] ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); try again in a minute")) : silent(tool));
+  await expect(mapPages({ urls: urls(3) }, stuck)).rejects.toThrow(/^extension stuck: .* none of map's 3 pages \(its tabs\.list requests went unanswered\); map again in a minute/);
   const oneOwn = (tool: string, args: Record<string, unknown>) => (args.url === urls(3)[0] ? Promise.reject(new Error(`Safari could not open ${urls(3)[0]}: the site did not answer`)) : silent(tool));
   expect((await mapPages({ urls: urls(3) }, oneOwn)).pages.map((p) => p.ok)).toEqual([false, false, false]);
 });

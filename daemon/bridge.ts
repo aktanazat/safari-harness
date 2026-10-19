@@ -19,6 +19,7 @@
 //                        in teach mode, to save (recordings.ts)
 //   extension -> daemon  {op:"load", url, from, to}  an owned tab loaded a page
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { note } from "./journal.ts";
 import { unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
@@ -55,10 +56,11 @@ const STUCK_AFTER = 2;
 // and 7 s after it timed out, and every tabs.list failed at once for 12 s.
 const CONNECT_GRACE_MS = 20_000;
 
-// While a kind is stuck its requests fail at once (extension stuck: …),
-// not each at its own limit: on 10-13 map's opens waited out 30 s each all
-// through a storm. One goes through each TRIAL_MS to learn whether the
-// extension answers again, and its answer ends it.
+// While a kind is stuck its requests do not each wait out their own limit:
+// on 10-13 map's opens waited 30 s each all through a storm. A model's call
+// has the extension reloaded (healed); the harness's own fail at once
+// (extension stuck: …). One goes through each TRIAL_MS to learn whether
+// the extension answers again, and its answer ends it.
 const TRIAL_MS = 10_000;
 
 // A kind stuck RELOAD_AFTER_MS since its first timeout, or since the last
@@ -77,8 +79,15 @@ const RELOAD_AFTER_MS = 60_000;
 const RELOADS = 2;
 const RELOADS_MS = 600_000;
 
-// How long safari extension reload waits for the reloaded extension to
-// connect again; it takes a second or two (CONNECT_MS).
+// A model's call that meets a stuck kind has the extension reloaded at
+// once, within the same RELOADS in RELOADS_MS, and its request goes out
+// once it connects again (healed). From 10-05 to 10-19 such calls failed
+// at once 44 times in 17 stuck spells, each telling the agent to reload
+// it, and agents ran safari extension reload 27 times.
+
+// How long a reload (safari extension reload, or a model's call that met a
+// stuck kind) waits for the extension to connect again; it takes a second
+// or two (CONNECT_MS).
 const RELOADED_MS = 30000;
 
 // How long a tabs.list waits when its caller sets no limit: the extension
@@ -226,6 +235,10 @@ export class Bridge {
   private listing: Asked | undefined;
   // how long the extension took over each kind of request (LATENCY_MS)
   private answeredIn = new Map<string, number[]>();
+  // A model's call (healing) and how long it waited on a reload; the reload
+  // the calls that meet a stuck kind wait on together.
+  private healer = new AsyncLocalStorage<{ reloadedMs?: number }>();
+  private reloading: Promise<ExtSocket> | null = null;
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
@@ -453,7 +466,7 @@ export class Bridge {
     const run = this.runs.get(op);
     const shared = this.listing;
     if (run && run.misses >= STUCK_AFTER) {
-      if (now < run.trial) throw new Error(`extension stuck: the Safari extension has answered none of the last ${run.misses} ${op} requests (for ${Math.round((now - run.since) / 1000)} s); run safari extension reload, then try again`);
+      if (now < run.trial) return this.healed(sock, op, args, timeoutMs, run, now);
       run.trial = Infinity;
     } else if (list && shared && shared.sock === sock && shared.epoch === this.epoch && now - shared.sent <= JOIN_MS && this.pending.has(shared.id)) {
       return this.wait(shared, timeoutMs);
@@ -554,23 +567,64 @@ export class Bridge {
     sock.send('{"op":"reload"}');
   }
 
+  // Has the extension on sock reload (askReload) and waits for it to
+  // connect again: its new socket, or an error after RELOADED_MS.
+  private async reconnect(sock: ExtSocket, why: string): Promise<ExtSocket> {
+    this.askReload(sock, why);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(resolve, RELOADED_MS);
+    this.waiting.add(resolve);
+    await promise;
+    clearTimeout(timer);
+    this.waiting.delete(resolve);
+    if (this.sock && this.sock !== sock) return this.sock;
+    throw new Error(this.sock === sock
+      ? `the extension did not reload within ${RELOADED_MS / 1000} s; run safari doctor for the fix`
+      : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run safari doctor for the fix`);
+  }
+
+  // A request of a kind stuck now (ask). In a model's call (healing) the
+  // extension reloads, once for every call that meets a stuck kind
+  // meanwhile and at most RELOADS times in RELOADS_MS, its own reloads
+  // (unanswered) counted, and the request goes out once it is back; the
+  // call learns how long it waited. Otherwise the request fails at once.
+  private healed(sock: ExtSocket, op: string, args: unknown[], timeoutMs: number, run: Run, now: number): Promise<unknown> {
+    const heal = this.healer.getStore();
+    const stuck = `extension stuck: the Safari extension has answered none of the last ${run.misses} ${op} requests (for ${Math.round((now - run.since) / 1000)} s)`;
+    if (!heal) throw new Error(`${stuck}; try again in a minute`);
+    if (!this.reloading) {
+      this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
+      if (this.reloads.length >= RELOADS) throw new Error(`${stuck}, and it was reloaded ${RELOADS} times in the last ${RELOADS_MS / 60_000} minutes; try again in a minute, then tell the user Safari is not answering`);
+      this.reloads.push(now);
+      this.reloading = this.reconnect(sock, `${op} went unanswered for ${Math.round((now - run.since) / 1000)} s, ${run.misses} requests in a row, and a call met it`).finally(() => {
+        this.reloading = null;
+      });
+    }
+    return this.reloading.then((fresh) => {
+      heal.reloadedMs = Date.now() - now;
+      return this.ask(fresh, op, args, timeoutMs);
+    }, (e: unknown) => {
+      throw new Error(`${stuck}, and reloading it did not help: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+
+  // Runs a model's call (guard.ts), whose requests of a stuck kind have
+  // the extension reloaded (healed): its value, and how long it waited on
+  // a reload if it did.
+  async healing<T>(call: () => Promise<T>): Promise<{ value: T; reloadedMs: number | undefined }> {
+    const heal: { reloadedMs?: number } = {};
+    const value = await this.healer.run(heal, call);
+    return { value, reloadedMs: heal.reloadedMs };
+  }
+
   // safari extension reload (main.ts): the reload a stuck extension gets,
   // asked for whenever. Done once a new socket connects: how long it took.
   async reload(): Promise<{ ms: number }> {
     const sock = this.sock;
     if (!sock) throw new Error("Safari extension not connected, so there is nothing to reload; run safari doctor for the fix");
     const began = Date.now();
-    const { promise, resolve } = Promise.withResolvers<void>();
-    const timer = setTimeout(resolve, RELOADED_MS);
-    this.waiting.add(resolve);
-    this.askReload(sock, "asked for (safari extension reload)");
-    await promise;
-    clearTimeout(timer);
-    this.waiting.delete(resolve);
-    if (this.sock && this.sock !== sock) return { ms: Date.now() - began };
-    throw new Error(this.sock === sock
-      ? `the extension did not reload within ${RELOADED_MS / 1000} s; run safari doctor for the fix`
-      : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run safari doctor for the fix`);
+    await this.reconnect(sock, "asked for (safari extension reload)");
+    return { ms: Date.now() - began };
   }
 
   // relay a DOM op into the content script of a specific tab: its top page,

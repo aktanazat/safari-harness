@@ -144,3 +144,31 @@ test("waiting on the clock past a minute in 10 minutes gets a hint to wait on th
   jest.advanceTimersByTime(10 * 60_000);
   expect(await sleep()).not.toHaveProperty("hint");
 });
+
+// 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
+// times, each telling the agent to reload the extension, and agents ran
+// safari extension reload 27 times.
+test("a model's call that meets a stuck extension has it reloaded inside the call, and its answer says so", async () => {
+  jest.useFakeTimers();
+  const asked: string[] = [];
+  connect({ send: (data: string) => void asked.push(JSON.parse(data).op), close() {} });
+  jest.advanceTimersByTime(20_000);
+  for (let i = 0; i < 2; i++) {
+    const listed = bridge.request("tabs.list", [], 5000);
+    await new Promise<void>((r) => setImmediate(r));
+    jest.advanceTimersByTime(5000);
+    await expect(listed).rejects.toThrow("timed out");
+  }
+  const call = model(109, "tabs", {});
+  await new Promise<void>((r) => setImmediate(r));
+  expect(asked).toEqual(["tabs.list", "tabs.list", "reload"]);
+  jest.advanceTimersByTime(3000);
+  connect({
+    send(data: string) {
+      const { id } = JSON.parse(data);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: [] })));
+    },
+    close() {},
+  });
+  expect(await call).toMatchObject({ note: "the extension was stuck; reloaded in 3 s" });
+});

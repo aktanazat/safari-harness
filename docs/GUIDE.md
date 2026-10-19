@@ -55,9 +55,11 @@ Turns
   background and poll it.
 
 When a call fails
-- An error starting `extension stuck:`, or two `tabs.list timed out` in a
-  row: run `safari extension reload` once, then go on. Never loop on
-  `status`, `doctor`, or `guide`.
+- A stuck extension (two `timed out` errors in a row) is reloaded inside
+  the next call that needs it, and that call's answer says so. An error
+  starting `extension stuck:` means reloading did not help: try once more
+  a minute later, then tell the user. Never run `safari extension
+  reload`; never loop on `status`, `doctor`, or `guide`.
 - A call failing with no reason: `safari doctor` once. It is not a ritual:
   never before a task or after a call that worked.
 

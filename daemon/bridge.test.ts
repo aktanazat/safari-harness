@@ -167,7 +167,7 @@ afterEach(() => {
 
 // 10-13: tabs.list went unanswered for minutes while the extension answered
 // pages' relays, and map's opens each waited out 30 s on it.
-test("two requests of one kind in a row that time out make it stuck: the next fails at once, naming the fix, and /health says so", async () => {
+test("two requests of one kind in a row that time out make it stuck: the harness's own next one fails at once, and /health says so", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
   const ext = extension(bridge);
@@ -177,7 +177,7 @@ test("two requests of one kind in a row that time out make it stuck: the next fa
   await timesOut(bridge, "tabs.list", 5000);
   expect(bridge.health()).toMatchObject({ connected: true, stuck: true, sinceAnswerMs: 30000, timeouts: { "tabs.list": 2 } });
   expect(recent().at(-1)).toMatchObject({ kind: "stuck", op: "tabs.list" });
-  await expect(bridge.request("tabs.list")).rejects.toThrow(/^extension stuck: .* tabs\.list requests .*run safari extension reload/);
+  await expect(bridge.request("tabs.list")).rejects.toThrow("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); try again in a minute");
   expect(ext.asked).toEqual(["tabs.list", "tabs.list"]);
 });
 
@@ -331,6 +331,55 @@ test("a reload that does not help is followed by a second a minute later, and by
     jest.advanceTimersByTime(10_000);
   }
   expect(reloads).toEqual([60, 140, 660]);
+});
+
+// 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
+// times, each telling the agent to reload the extension, and agents ran
+// safari extension reload 27 times.
+test("a model's calls that meet a stuck kind share one reload of the extension, go out once it is back, and learn how long they waited", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const old = holding(bridge);
+  pastGrace(bridge, old.sock);
+  await timesOut(bridge, "tabs.list", 5000);
+  await timesOut(bridge, "tabs.list", 5000);
+  const calls = Promise.all([bridge.healing(() => bridge.request("tabs.list")), bridge.healing(() => bridge.request("tabs.list"))]);
+  await settled();
+  expect(old.asked.map((a) => a.op)).toEqual(["tabs.list", "tabs.list", "reload"]);
+  jest.advanceTimersByTime(2000);
+  const back = holding(bridge);
+  bridge.detach(old.sock);
+  bridge.attach(back.sock);
+  await settled();
+  for (const { id } of back.asked) back.answer(id, ["a tab"]);
+  expect(await calls).toEqual([{ value: ["a tab"], reloadedMs: 2000 }, { value: ["a tab"], reloadedMs: 2000 }]);
+});
+
+// A reload fails every request in flight, and two that did not help will
+// not help a moment later.
+test("past two reloads in ten minutes, a model's call that meets a stuck kind fails at once, as the harness's own do", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  let ext = holding(bridge);
+  for (let i = 0; i < 2; i++) {
+    pastGrace(bridge, ext.sock);
+    await timesOut(bridge, "tabs.list", 5000);
+    await timesOut(bridge, "tabs.list", 5000);
+    const healed = bridge.healing(() => bridge.request("tabs.list"));
+    await settled();
+    const back = holding(bridge);
+    bridge.detach(ext.sock);
+    bridge.attach(back.sock);
+    await settled();
+    back.answer(back.asked[0].id, []);
+    expect(await healed).toEqual({ value: [], reloadedMs: 0 });
+    ext = back;
+  }
+  pastGrace(bridge, ext.sock);
+  await timesOut(bridge, "tabs.list", 5000);
+  await timesOut(bridge, "tabs.list", 5000);
+  await expect(bridge.healing(() => bridge.request("tabs.list"))).rejects.toThrow("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s), and it was reloaded 2 times in the last 10 minutes");
+  expect(ext.asked.map((a) => a.op)).toEqual(["tabs.list", "tabs.list", "tabs.list"]);
 });
 
 // 10-13: the sweep, the agent windows' pages, and agents asked for the tab

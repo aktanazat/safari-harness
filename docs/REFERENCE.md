@@ -603,10 +603,12 @@ things unless its saved task explicitly says to.
 - A call that fails with no reason: run `safari doctor` once (`safari
   guide doctor`). It is not a ritual: never before a task, never twice in
   a row, never in a loop with `status`.
-- `extension stuck:` at the start of an error, or two `tabs.list timed
-  out` errors in a row: run `safari extension reload` once, then go on
-  (`safari guide extension`). Do not run `doctor`, `guide`, or `status`
-  first, and never loop on them.
+- A stuck extension (two `tabs.list timed out` errors in a row) is
+  reloaded inside the next call that needs it, and that call's answer
+  says so (`safari guide extension`). An error starting `extension
+  stuck:` means reloading did not help: try once more a minute later,
+  then tell the user. Do not run `safari extension reload`, `doctor`,
+  `guide`, or `status` for it, and never loop on them.
 - `daemon not reachable`: run `safari daemon install`. Its log is at
   `~/Library/Logs/safari-harness/daemon.log`.
 - When the extension reloads (every deploy of it, and each reload the
@@ -905,8 +907,8 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   addresses; for more, call it again with the next 20. Never sleep
   between pages: give `wait` instead.
 - When every page timed out because the extension stopped answering, the
-  call fails with an error starting `extension stuck:`: run `safari
-  extension reload` once and map again.
+  call fails with an error starting `extension stuck:`: map again once, a
+  minute later.
 
 ## repl
 
@@ -2261,8 +2263,7 @@ it opens and closes, which takes longer.
 
 Run it once when a call fails with no reason. It is not a ritual: never
 before a task, never after a call that worked, never in a loop with
-`status`. For `extension stuck:`, run `safari extension reload` instead
-(`safari guide extension`).
+`status`. For `extension stuck:`, see `safari guide extension`.
 
 ## status
 
@@ -2288,21 +2289,25 @@ connected.
 
 ## extension
 
-`safari extension reload` makes the Safari extension reload itself. Run it
-once when an error starts with `extension stuck:`, or after two `tabs.list
-timed out` (or `extension request … timed out`) errors in a row; do not
-run `doctor`, `guide`, or `status` first, and never loop on them. While the
-extension is stuck every call fails at once with an error starting
-`extension stuck:` that names this command. Timeouts in the first 20 s
-after it connects (a deploy, a reload, Safari starting) make nothing
+A stuck extension is reloaded inside the call that meets it. Once two
+requests of one kind in a row timed out, the next agent call that needs
+that kind has Safari reload the extension (a second or two, no
+password), waits up to 30 s for it to connect again, sends its request
+then, and answers with a note: `the extension was stuck; reloaded in N
+s`. Calls that meet it meanwhile share that reload. Timeouts in the first
+20 s after it connects (a deploy, a reload, Safari starting) make nothing
 stuck: it is still finding Safari's tabs then.
 
-Calls fail with `extension request … timed out` while `safari status`
-shows the extension connected: the extension is stuck. The daemon asks
-it to reload itself once it has answered nothing for a minute while two
-requests in a row timed out, at most twice in ten minutes (`reload` in
-`safari status`, with why). To do it now, run `safari extension reload`:
-it takes a second or two and asks for no password. Calls in flight fail
-and can be tried again; tab ids agents hold keep working. Turn the
-extension off and on in Safari Settings only when `safari doctor` still
-fails its round trip after a reload; that asks for the password.
+An error starting `extension stuck:` means the extension was already
+reloaded twice in ten minutes, or did not come back within 30 s: try once
+more a minute later, then tell the user Safari is not answering. Do not
+run `doctor`, `guide`, or `status` first, and never loop on them.
+
+The daemon also has the extension reload itself once it has answered
+nothing for a minute while two requests in a row timed out (`reload` in
+`safari status`, with why); those reloads count toward the same two in
+ten minutes. `safari extension reload` does it by hand: it takes a second
+or two and asks for no password. Calls in flight fail and can be tried
+again; tab ids agents hold keep working. Turn the extension off and on in
+Safari Settings only when `safari doctor` still fails its round trip
+after a reload; that asks for the password.

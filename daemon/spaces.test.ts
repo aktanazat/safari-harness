@@ -731,7 +731,7 @@ test("the keeper's look at the windows tells it Safari is away while the extensi
   const k = agent();
   await runAs(k.pid, () => openTab("https://stuck.example/", true));
   const request = bridge.request;
-  bridge.request = () => Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again"));
+  bridge.request = () => Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); try again in a minute"));
   try {
     expect(await spaceTool({ op: "state" })).toMatchObject({ connected: false });
   } finally {
@@ -751,7 +751,7 @@ test("an open goes on in its agent's window while Safari lists no tabs, and fail
   const request = bridge.request;
   let stuck = false;
   // tabs.list's 5 s limit, cut to 50 ms
-  bridge.request = (op, args, ms) => (stuck && op === "tabs.list" ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); run safari extension reload, then try again")) : request.call(bridge, op, args, op === "tabs.list" ? 50 : ms));
+  bridge.request = (op, args, ms) => (stuck && op === "tabs.list" ? Promise.reject(new Error("extension stuck: the Safari extension has answered none of the last 2 tabs.list requests (for 10 s); try again in a minute")) : request.call(bridge, op, args, op === "tabs.list" ? 50 : ms));
   s.silent.add("tabs.list");
   try {
     const next = await runAs(o.pid, () => openTab("https://slow.example/2", true));

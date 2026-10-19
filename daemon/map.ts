@@ -105,7 +105,7 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
   // each and answered every page "extension request tabs.list timed out".
   const unanswered = answered.map((p) => (p.ok ? null : UNANSWERED.exec(p.error)));
   const [first] = unanswered;
-  if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the Safari extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); run safari extension reload, then map again`);
+  if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the Safari extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); map again in a minute, and if it fails the same way, tell the user Safari is not answering`);
   return { pages: answered };
 }
 

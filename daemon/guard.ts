@@ -12,13 +12,15 @@
 // in a loop is told to wait on the page instead. On 01a0e20a an agent slept
 // 98 times, 829 s in all. An agent that reads a tab with snapshot right
 // after an action there is told once that the action could have answered
-// with that page.
+// with that page. A model's call that meets a stuck extension has it
+// reloaded inside the call (healing in bridge.ts), and its answer says so.
 //
 // Calls the harness makes itself (the REPL's locators, the tab group
 // keeper, the site kits) poll on purpose and name their options exactly,
 // so neither applies to them.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { bridge } from "./bridge.ts";
 import { acts } from "./lanes.ts";
 import { READS } from "./map.ts";
 import { currentOwner } from "./owner.ts";
@@ -204,15 +206,19 @@ export function beside(result: unknown, key: "note" | "hint", text: string): unk
 const byModel = new AsyncLocalStorage<boolean>();
 export const fromModel = () => byModel.getStore() === true;
 
-// Runs a checked call, and for a model's, watches it for loops, notes a
-// read its last action could have answered, and adds the notes its check
-// made.
+// Runs a checked call, and for a model's, reloads a stuck extension inside
+// it, watches it for loops, notes a read its last action could have
+// answered, and adds the notes its check made.
 export async function guard(call: Checked, model: boolean, run: () => Promise<unknown>): Promise<unknown> {
-  const owner = model ? currentOwner() : undefined;
-  const start = Date.now();
-  const result = await byModel.run(model, () => (owner === undefined ? run() : watch(call, owner, run)));
-  const read = owner === undefined ? result : folds(call, owner, start, result);
-  return call.notes.length ? beside(read, "note", call.notes.join("; ")) : read;
+  let result: unknown;
+  if (model) {
+    const owner = currentOwner();
+    const start = Date.now();
+    const { value, reloadedMs } = await bridge.healing(() => byModel.run(true, () => (owner === undefined ? run() : watch(call, owner, run))));
+    const read = owner === undefined ? value : folds(call, owner, start, value);
+    result = reloadedMs === undefined ? read : beside(read, "note", `the extension was stuck; reloaded in ${Math.ceil(reloadedMs / 1000)} s`);
+  } else result = await byModel.run(false, run);
+  return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
 }
 
 // The sixth call in a row with the same arguments and the same answer, in

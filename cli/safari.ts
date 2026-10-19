@@ -41,8 +41,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
   safari daemon install|uninstall            keep the daemon always on (launchd)
   safari status                              daemon + extension health
-  safari extension reload                    reload the extension when calls time out;
-                                             unlike Safari Settings, asks no password
+  safari extension reload                    reload the extension by hand (calls reload
+                                             a stuck one themselves); asks no password
   safari agents                              agents using Safari now, and the page
                                              that pauses or stops them
   safari doctor                              check every part the harness needs on this
