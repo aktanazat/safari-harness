@@ -359,7 +359,7 @@ export class ApplePasswords {
   private kept = new Map<string, Approval>();
   // Changed passwords saved but not yet typed, by tab, until typeChange or
   // CHANGE_MS: agents changing several sites at once each keep their own.
-  private pendingChanges = new Map<number, { frame: number; fresh: number; host: string; site: string; login: string; current: string | null; secret: string; drop: () => void }>();
+  private pendingChanges = new Map<number, { frame: number; fresh: number; host: string; site: string; sharedWith: string[]; login: string; current: string | null; secret: string; drop: () => void }>();
   // Replies carry no request id, so one request at a time.
   private queue: Promise<unknown> = Promise.resolve();
   // Agent sessions holding the pairing, by pid, each with its exit watch.
@@ -920,8 +920,11 @@ export class ApplePasswords {
   // the old. Several, as that second entry and the real one now are, or
   // none, as when Paradox resets its login.paradoxplaza.com login on
   // paradoxinteractive.com, are not guessed at: the call names those listed
-  // and what to pass, and saves nothing.
-  private async changedLogin(host: string, username?: string, entry?: string): Promise<{ login: string; site: string; saved: boolean; sites: string[] }> {
+  // and what to pass, and saves nothing. A login saved for several
+  // websites is one entry, so changing it changes them all: the DMV's was
+  // shared with other state services, and is changed only once the caller
+  // says shared, as USC's sign-on hosts (10-19) are one account.
+  private async changedLogin(host: string, username: string | undefined, entry: string | undefined, shared: boolean): Promise<{ login: string; site: string; saved: boolean; sites: string[]; sharedWith: string[] }> {
     let chosen: { login: string; site: string; saved: boolean; sites: string[] };
     if (entry !== undefined) {
       const site = httpsHost(`https://${entry}`);
@@ -940,9 +943,9 @@ export class ApplePasswords {
       }
       chosen = { ...fits[0], saved: true };
     }
-    const others = chosen.sites.filter((s) => s !== chosen.site);
-    if (others.length) throw new Error(`the saved login ${chosen.login} for ${chosen.site} is shared with ${others.join(", ")}; changing it would replace the password for every attached website. Separate this login in Apple Passwords first, then call change again; no password was generated, saved, or typed`);
-    return chosen;
+    const sharedWith = chosen.sites.filter((s) => s !== chosen.site);
+    if (sharedWith.length && !shared) throw new Error(`the saved login ${chosen.login} for ${chosen.site} is shared with ${sharedWith.join(", ")}; changing it would replace the password for every attached website. If they are all one account behind one sign-on, call change again with shared: true; otherwise separate this login in Apple Passwords first. No password was generated, saved, or typed`);
+    return { ...chosen, sharedWith };
   }
 
   // Fills the saved login into the tab's sign-in form: the one the vault
@@ -1022,12 +1025,12 @@ export class ApplePasswords {
   // takes lives only in the page; the current password is read first,
   // while the saved one is still it, and only as the helper gives it to the
   // form's own host, as fill does: never for a site the caller names.
-  async change(tab: number, username?: string, entry?: string): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
+  async change(tab: number, username?: string, entry?: string, shared = false): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
     const own = httpsHost(form.origin);
-    const { login, site, saved, sites } = await this.changedLogin(own, username, entry);
+    const { login, site, saved, sites, sharedWith } = await this.changedLogin(own, username, entry, shared);
     let current: string | null = null;
     if (form.current === "empty") {
       if (entry !== undefined && site !== own) throw new Error("the form asks for the current password, which is filled only on the site it is saved for; call change without site");
@@ -1038,24 +1041,29 @@ export class ApplePasswords {
     this.dropChange(tab);
     await this.save(site, login, secret);
     const drop = this.timers.after(CHANGE_MS, () => this.dropChange(tab));
-    this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, host: own, site, login, current, secret, drop });
+    this.pendingChanges.set(tab, { frame: form.frame, fresh: form.fresh ?? 1, host: own, site, sharedWith, login, current, secret, drop });
     const helper = runningHelper(this.profile);
     return { username: login, site, ...(sites.includes(site) ? {} : { newLogin: true as const }), ...(helper ? { helper } : {}) };
   }
 
   // Changing a password, second half, once its save was confirmed: keeps
-  // the new password in the vault, then types it into the tab's
-  // new-password fields, and the saved current one into an empty
-  // current-password field. The result never carries either password.
-  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; saved: true; vault?: string }> {
+  // the new password in the vault, for every website a shared login is
+  // saved for, then types it into the tab's new-password fields, and the
+  // saved current one into an empty current-password field. The result
+  // never carries either password.
+  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; sharedWith?: string[]; saved: true; vault?: string }> {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
-    const note = await keeping(this.vault.keep(c.site, c.login, c.secret));
+    const notes: string[] = [];
+    for (const site of [c.site, ...c.sharedWith]) {
+      const { vault } = await keeping(this.vault.keep(site, c.login, c.secret));
+      if (vault) notes.push(c.sharedWith.length ? `${site}: ${vault}` : vault);
+    }
     keepSecret(tab, c.current, c.secret);
     const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
-    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, saved: true, ...note };
+    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, ...(c.sharedWith.length ? { sharedWith: c.sharedWith } : {}), saved: true, ...(notes.length ? { vault: notes.join("; ") } : {}) };
   }
 
   dropChange(tab: number): void {

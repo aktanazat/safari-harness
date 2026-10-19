@@ -1972,7 +1972,7 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
     case "code":
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "change":
-      return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"), a.site === undefined ? undefined : str(a.site, "site"));
+      return passwords.change(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"), a.site === undefined ? undefined : str(a.site, "site"), a.shared === true);
     // The halves of change the caller runs around the helper's window
     // (fill.ts); not in the tool's enum.
     case "change-type":
@@ -2506,8 +2506,8 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   passwords: {
-    desc: "Use saved logins and cards without revealing secrets; never ask for them. fill signs in from the vault with no Touch ID, else from Apple Passwords, keeping a copy; source: apple if the vault's password fails. code fills 2FA, logins lists usernames. change saves then fills a strong password; shared website entries are refused; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls pair on their own, or prompt on the Mac. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" } },
+    desc: "Use saved logins and cards without revealing secrets; never ask for them. fill signs in from the vault with no Touch ID, else from Apple Passwords, keeping a copy; source: apple if the vault's password fails. code fills 2FA, logins lists usernames. change saves then fills a strong password; you submit. Set field passwordrules first. setup-code saves the visible authenticator QR; code confirms. Locked calls pair on their own, or prompt on the Mac. Retry clears dismissed approval. cards lists, card-fill fills, card-save asks on the Mac. done releases access; status explains locking.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],

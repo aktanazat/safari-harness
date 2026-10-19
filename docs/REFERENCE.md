@@ -1299,6 +1299,10 @@ what an action reports).
   through the editor's own editing events, so the editor keeps the text;
   `append: true` adds at the end. An editor that names no role of its own
   (ProseMirror's) shows in `snapshot` as a `textbox` with a ref.
+- `type` into a field sends the `input` event, a `keyup`, and `change`, so
+  a form that checks a field on keyup (USC's date of birth, older jQuery
+  validators) accepts the text; the keyup names no key, so nothing takes
+  it for Enter.
 - `type` answers `{ok, kept, typed: "N chars"}`, never the text. `kept` is
   judged once the page has had 300 ms with the text; a field that
   reformats figures (`1234` shown as `$1,234.00`) counts as kept. `kept` is
@@ -1715,10 +1719,13 @@ Passwords' login and replaces the vault's copy.
   `site`, the host the login is saved for (Paradox resets on another
   site), or the page's own host for a new login. Given another host as
   `site`, a form asking the current password is refused.
-  a saved login attached to several websites must be separated before
-  a password reset. naming one website does not bypass this check.
-  `change` refuses before generating, saving, or typing a new password
-  and names the other websites attached to that login.
+  A saved login attached to several websites is one entry, so changing it
+  changes all of them: `change` refuses before generating, saving, or
+  typing a new password, and names the other websites. When they are one
+  account behind one sign-on (USC's login, netid, and you hosts), pass
+  `shared: true`: the result's `sharedWith` names them, and the vault
+  keeps the new password for each. Otherwise separate the login in Apple
+  Passwords first; naming one website does not bypass this check.
   A site that states rules the made password misses (Costco wants one
   of `!@#$&`) takes them as the new-password field's `passwordrules`
   attribute in Apple's syntax, set with `eval` before `change`

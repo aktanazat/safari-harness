@@ -318,6 +318,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "typing ends with the keyup a page validates the field on, as USC's date of birth does, so the page accepts the text",
+    page: "keyup.html",
+    steps: [
+      { op: "snapshot" }, // [1] Date of birth
+      { op: "type", args: ["1", "05/23/2005"], answer: { value: { ok: true, kept: true } } },
+      { op: "extract", answer: { value: { text: "Date accepted: 05/23/2005" } } },
+    ],
+  },
+  {
     name: "typing replaces a contenteditable's text",
     page: "type.html",
     steps: [

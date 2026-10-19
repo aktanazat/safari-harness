@@ -1759,11 +1759,16 @@
     return { ok: true, shown, dpr: devicePixelRatio, innerWidth, innerHeight };
   }
 
-  // The native setter, so framework value trackers (React) see a real edit.
+  // The native setter, so framework value trackers (React) see a real edit,
+  // and a keyup last, as a person's typing ends: jQuery-era forms validate
+  // on keyup (USC's date of birth stayed "Please check this again!" and its
+  // Next sent nothing, 10-19). Its key names no character, so no handler
+  // takes it for Enter.
   function setValue(el, value, data) {
     const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
     el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, cancelable: true, key: "Unidentified" }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 

@@ -749,6 +749,24 @@ test.each([
   expect(signIn.password).toBe(SECRET);
 });
 
+// USC's NetID login is saved for login.usc.edu, netid.usc.edu, and
+// you.usc.edu, one account behind one sign-on (10-19): refused, its change
+// had to go around the harness, and Apple Passwords kept the old password.
+test("change with shared changes a login saved for several websites, and keeps the new password in the vault for each, so a fill on another types it", async () => {
+  const other = "sso.example.com";
+  const { vault } = memoryVault();
+  const { p } = scratch(undefined, undefined, vault);
+  const url = `https://${SITE}/reset`;
+  const page = fakeTab(url, { frame: 0, url, current: "none" });
+  await paired(p, appleHelper([{ USR: USER, sites: [SITE, other] }]));
+  expect(await p.change(7, USER, undefined, true)).toMatchObject({ username: USER, site: SITE });
+  expect(await p.typeChange(7)).toMatchObject({ site: SITE, sharedWith: [other] });
+  const signIn = fakeTab(`https://${other}/signin`);
+  await scratch(undefined, undefined, vault).p.fill(7, USER);
+  expect(page.fresh).toBeString();
+  expect(signIn.password).toBe(page.fresh);
+});
+
 // A login saved only on another site may be another account, so change
 // names it and saves nothing, where it made a new entry for the page's
 // host; site then names the login's host, or the page's own for a new one,

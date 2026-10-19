@@ -1,0 +1,4 @@
+<!doctype html>
+<title>Keyup</title>
+<input aria-label="Date of birth" onkeyup="note.textContent = /^\d\d\/\d\d\/\d{4}$/.test(this.value) ? `Date accepted: ${this.value}` : 'Please check this again!'">
+<p id="note"></p>
