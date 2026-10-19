@@ -1377,3 +1377,45 @@ test("a shot finishes the page's animations and lets it paint before the picture
     ["message painted", "capture"],
   ]);
 });
+
+// On 10-19 SheerID's verification form sat in a frame of its own over
+// Adorama's page: a wait for its "Add documents" to go answered at once,
+// and extract read the empty dialog around it.
+async function sheerid() {
+  const b = await start();
+  const tab = b.open("https://www.adorama.com/");
+  const form = b.frame(tab, 5, "https://services.sheerid.com/verify/");
+  form.world.__safariHarnessFrame = "sheerid";
+  return { b, tab, form };
+}
+
+test("a wait for text to go holds while an embedded frame still shows it, and ends once the frame no longer does", async () => {
+  const { b, tab, form } = await sheerid();
+  tab.doc.does = (op) => (op === "wait" ? { found: true, already: true, hint: '"Add documents" was not on the page as the wait began' } : { url: tab.doc.url });
+  const left = Promise.withResolvers<unknown>();
+  const asked: unknown[] = [];
+  form.does = (op, m) => {
+    if (op !== "wait") return { url: form.url };
+    asked.push(m.args);
+    return left.promise;
+  };
+  let answer: Answer | undefined;
+  void b.ask(tab, "wait", [null, { gone: "Add documents" }]).then((a) => (answer = a));
+  await b.clock.advance(1000);
+  expect(answer).toBeUndefined();
+  expect(asked).toEqual([[null, { gone: "Add documents" }, expect.anything()]]);
+  left.resolve({ found: true });
+  await b.clock.advance(0);
+  expect(answer).toEqual({ value: { found: true } });
+});
+
+test("extract reads an embedded frame shown in what it read, which the page cannot read itself, after the page's own text", async () => {
+  const { b, tab, form } = await sheerid();
+  tab.doc.does = (op) => (op === "extract"
+    ? { url: tab.doc.url, title: "Adorama", text: "", truncated: false, note: 'no line on the page contains "documents" (the page has 0 characters of text)', frames: [{ token: "sheerid", name: 'iframe "SheerID Verification Form"' }] }
+    : { url: tab.doc.url });
+  form.does = () => ({ url: form.url, title: "SheerID", text: "Add documents", truncated: false });
+  expect(await b.ask(tab, "extract", [{ query: "documents" }])).toEqual({
+    value: { url: tab.doc.url, title: "Adorama", text: 'iframe "SheerID Verification Form":\nAdd documents', truncated: false },
+  });
+});

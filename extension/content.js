@@ -646,14 +646,36 @@
 
   // Where this frame's viewport sits in the top page's viewport, and the
   // top viewport's size; each ancestor adds its <iframe>'s content box.
-  function frameOffset() {
+  // box, a part of this frame's viewport, is scrolled into view in each
+  // ancestor on the way: an element of a frame below a dialog's fold stayed
+  // there when only the <iframe> was shown (SheerID's form, 10-19).
+  function frameOffset(box = null) {
     if (window === window.top) return Promise.resolve({ x: 0, y: 0, innerWidth, innerHeight });
     return new Promise((resolve) => {
       const id = Math.random().toString(36).slice(2);
       offsetWaiters.set(id, resolve);
-      parent.postMessage({ __shOffset: id }, "*");
+      parent.postMessage({ __shOffset: id, box }, "*");
       setTimeout(() => { if (offsetWaiters.delete(id)) resolve(null); }, 3000);
     });
+  }
+
+  const isBox = (b) => !!b && typeof b === "object" && ["x", "y", "width", "height"].every((k) => Number.isFinite(b[k]));
+
+  // Scrolls each box that holds el, nearest first, then the window, until
+  // rect (in this viewport) shows, centered on an axis where it did not.
+  function reveal(el, rect) {
+    const center = (at, size, from, span) => (at >= from && at + size <= from + span ? 0 : at + size / 2 - (from + span / 2));
+    let { x, y } = rect;
+    const outer = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
+    for (let box = outer(el); box && box !== document.body && box !== document.documentElement; box = outer(box)) {
+      if (box.scrollHeight <= box.clientHeight && box.scrollWidth <= box.clientWidth) continue;
+      const b = box.getBoundingClientRect();
+      const [left, top] = [box.scrollLeft, box.scrollTop];
+      box.scrollBy({ left: center(x, rect.width, b.left + box.clientLeft, box.clientWidth), top: center(y, rect.height, b.top + box.clientTop, box.clientHeight), behavior: "instant" });
+      x -= box.scrollLeft - left;
+      y -= box.scrollTop - top;
+    }
+    window.scrollBy({ left: center(x, rect.width, 0, innerWidth), top: center(y, rect.height, 0, innerHeight), behavior: "instant" });
   }
 
   addEventListener("message", (e) => {
@@ -667,15 +689,22 @@
     } else if (typeof d.__shOffset === "string") {
       const f = frameElementOf(e.source);
       if (!f) return;
-      f.scrollIntoView({ block: "nearest", behavior: "instant" });
-      const r = f.getBoundingClientRect();
       const cs = getComputedStyle(f);
-      frameOffset().then((o) => {
+      const content = () => {
+        const r = f.getBoundingClientRect();
+        return { x: r.left + f.clientLeft + parseFloat(cs.paddingLeft), y: r.top + f.clientTop + parseFloat(cs.paddingTop) };
+      };
+      const box = isBox(d.box) ? d.box : null;
+      const here = (c) => box && { x: c.x + box.x, y: c.y + box.y, width: box.width, height: box.height };
+      if (box) reveal(f, here(content()));
+      else f.scrollIntoView({ block: "nearest", behavior: "instant" });
+      const c = content();
+      frameOffset(here(c)).then((o) => {
         if (!o) return;
         e.source.postMessage({
           __shOffsetReply: d.__shOffset,
-          x: o.x + r.left + f.clientLeft + parseFloat(cs.paddingLeft),
-          y: o.y + r.top + f.clientTop + parseFloat(cs.paddingTop),
+          x: o.x + c.x,
+          y: o.y + c.y,
           innerWidth: o.innerWidth,
           innerHeight: o.innerHeight,
         }, "*");
@@ -691,15 +720,14 @@
   for (const f of deepQueryAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
 
   // The element's box in the top page's viewport, in CSS pixels, scrolled
-  // into view: where a real mouse click must land.
+  // into view in every frame it is in: where a real mouse click must land,
+  // and what a screenshot of it crops to.
   async function locate(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const r = el.getBoundingClientRect();
-    const o = await frameOffset();
-    if (!o) return { error: "could not place this frame on the page" };
-    let x = r.x + o.x, y = r.y + o.y;
+    let x = r.x, y = r.y;
     // an element of a frame read inline: add each <iframe>'s content box
     for (let w = el.ownerDocument.defaultView; w && w !== window; w = w.parent) {
       const f = w.frameElement;
@@ -708,7 +736,9 @@
       x += fr.left + f.clientLeft;
       y += fr.top + f.clientTop;
     }
-    return { x, y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
+    const o = await frameOffset({ x, y, width: r.width, height: r.height });
+    if (!o) return { error: "could not place this frame on the page" };
+    return { x: x + o.x, y: y + o.y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
   }
 
   // real_input's click on a tab not in front (daemon/input.ts) presses the
@@ -1729,15 +1759,6 @@
     return { ok: true, shown, dpr: devicePixelRatio, innerWidth, innerHeight };
   }
 
-  // The element's box in this viewport, for cropping a screenshot.
-  function rectOf(ref) {
-    const el = resolve(ref);
-    if (!el) return missing(ref);
-    el.scrollIntoView({ block: "nearest", behavior: "instant" });
-    const r = el.getBoundingClientRect();
-    return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: devicePixelRatio, innerWidth, innerHeight };
-  }
-
   // The native setter, so framework value trackers (React) see a real edit.
   function setValue(el, value, data) {
     const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -2584,14 +2605,15 @@
   }
 
   // What extract reads by default: a dialog open over the page (claude.ai's
-  // Settings read as the chat behind it, 09-29); else the page's main
+  // Settings read as the chat behind it, 09-29), or one that shows only an
+  // embedded frame (SheerID's form on Adorama, 10-19); else the page's main
   // region, or its only article, unless that holds little of the page's
   // text (Amazon's Prime page put only the account's name in it, 09-29);
   // else the whole body (the first of many articles is a card, not the
   // content). A root other than the main region comes with a note.
   function contentRoot() {
     const box = openDialog();
-    if (box && norm(box.innerText ?? "")) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    if (box && (norm(box.innerText ?? "") || framesIn(box).length)) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
     const articles = document.querySelectorAll("article");
     const main = document.querySelector("main, [role=main]") ?? (articles.length === 1 ? articles[0] : null);
     if (!main) return { root: document.body };
@@ -2599,6 +2621,13 @@
     const inBody = norm(document.body.innerText ?? "").length;
     if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: "the main region holds little of the page's text, so this is the whole page" };
     return { root: main };
+  }
+
+  // The embedded frames shown in root that have a copy of this script of
+  // their own (another site's, which this copy cannot read): background.js
+  // reads each and adds its text after this frame's (extractFrames).
+  function framesIn(root) {
+    return deepQueryAll("iframe, frame").filter((f) => childToken.has(f) && root.contains(f) && shown(f)).map((f) => ({ token: childToken.get(f), name: named(f) }));
   }
 
   // query keeps the lines containing it, searched across the whole body. A
@@ -2643,6 +2672,7 @@
       notes.push("parts of the page were still loading, and their placeholder lines are left out");
     }
     const limit = opts.maxBytes || 20000;
+    const frames = opts.strict_selector === true ? [] : framesIn(at.root);
     return {
       url: location.href,
       title: document.title,
@@ -2651,6 +2681,7 @@
       ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
       ...(loading ? { loading: true } : {}),
       ...(opts.query && !text ? regexHint(opts.query) : {}),
+      ...(frames.length ? { frames } : {}),
     };
   }
 
@@ -3300,10 +3331,12 @@
   //          for 500 ms (QUIET_SPAN), with no request to its own site out
   //   changed  lines new since the last look (added; see lastLook), in the
   //          selector's element when there is one
-  // Text matches case and spacing aside (shows). gone, url, and quiet are
-  // the top page's to decide: an embedded frame answers at once that it has
-  // not seen them. quiet comes with time, so it also wakes on a timer, and
-  // on an owned tab's ticks where Safari holds the timer. A page still
+  // Text matches case and spacing aside (shows). url and quiet are the top
+  // page's to decide: an embedded frame answers at once that it has not
+  // seen them. gone each frame decides for its own text, and background.js
+  // ends the wait once none shows it (waitInFrames). quiet comes with
+  // time, so it also wakes on a timer, and on an owned tab's ticks where
+  // Safari holds the timer. A page still
   // waiting on its own site (its listings, its prices) has not settled,
   // whatever it shows meanwhile: such a request counts as a change.
   function waitFor(selector, spec, id = null) {
@@ -3316,7 +3349,7 @@
     // A run takes this look before its action, not after its receipt:
     // text that arrived during the action still counts (EOIR, 09-30).
     const after = want.after != null && actLook?.token === want.after ? actLook.lines : null;
-    if (window !== window.top && (want.gone != null || want.url != null || want.quiet)) return { found: false };
+    if (window !== window.top && (want.url != null || want.quiet)) return { found: false };
     const start = Date.now();
     let last = start;
     const region = selector ?? "";
@@ -3886,7 +3919,6 @@
     typeMark,
     typeField,
     sendButton,
-    rect: rectOf,
     annotate,
     dialogs: setDialogs,
     fetch: pageFetch,

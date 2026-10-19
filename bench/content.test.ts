@@ -197,6 +197,31 @@ benchRows("content.js in WebKit", [
     frames: 1,
     steps: [{ op: "snapshot", args: [{ refPrefix: "f1:" }], frame: "frame.html", answer: { value: { snapshot: '[f1:1] button "Frame button"' } } }],
   },
+  // On 10-19 SheerID's form sat in a frame inside a dialog over Adorama's
+  // page: extract read the page behind it, a wait for its text to go
+  // answered at once, and its lower button stayed below the dialog's fold.
+  {
+    name: "extract reads a dialog that shows only an embedded frame, and names that frame for its own copy to read",
+    page: "frame-dialog.html",
+    frames: 1,
+    steps: [{ op: "extract", answer: { value: { note: expect.stringContaining("open over the page"), frames: [{ token: "<frame-tall.html>", name: 'iframe "Form"' }] } } }],
+  },
+  {
+    name: "a frame waits for its own text to go, rather than answering at once that the top page decides",
+    page: "frame-dialog.html",
+    frames: 1,
+    steps: [{ op: "wait", args: [null, { gone: "Add documents" }], frame: "frame-tall.html", timeout: 300, answer: { error: "bench: wait did not answer within 300 ms" } }],
+  },
+  {
+    name: "an element of a frame below a dialog's fold is scrolled into the dialog's view as it is located",
+    page: "frame-dialog.html",
+    frames: 1,
+    steps: [
+      { op: "snapshot", frame: "frame-tall.html" }, // [1] button "Upload"
+      { op: "locate", args: ["1"], frame: "frame-tall.html" },
+      { op: "eval", args: ["(s => s > 600 && s < 1000)(document.querySelector('[role=dialog]').scrollTop)"], answer: { value: { ok: true, result: true } } },
+    ],
+  },
   {
     name: "a click on a ref presses the element the snapshot gave that ref",
     page: "click.html",

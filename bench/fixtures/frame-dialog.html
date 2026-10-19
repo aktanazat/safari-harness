@@ -1,0 +1,9 @@
+<!doctype html>
+<title>Dialog with a frame</title>
+<style>
+  body { margin: 0; height: 3000px; }
+  [role=dialog] { position: fixed; top: 50px; left: 50px; width: 400px; height: 300px; overflow: auto; }
+  iframe { display: block; width: 360px; height: 1200px; border: 0; }
+</style>
+<p>The page behind the dialog.</p>
+<div role="dialog" aria-label="Verify"><iframe title="Form" src="frame-tall.html"></iframe></div>

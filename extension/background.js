@@ -125,7 +125,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "rect", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -687,7 +687,44 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
       if (r && !(typeof r.error === "string" && MISS.test(r.error))) return r;
     }
   }
+  if (domOp === "extract") res = await extractFrames(tabId, res, (args && args[0]) || {});
   return frame || frameId === 0 ? res : prefixed(res, frameId);
+}
+
+// extract adds the text of each embedded frame shown in what it read, after
+// the frame's own, under the <iframe>'s name: a page cannot read a frame of
+// another site, and SheerID's form open over Adorama read as the empty
+// dialog it sat in (10-19). A frame's lines stand in for the notes of a
+// page that had none of its own.
+async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
+  const value = res && res.value;
+  if (!value || !Array.isArray(value.frames)) return res;
+  const { frames, ...own } = value;
+  if (depth >= 4) return { ...res, value: own };
+  tokens ??= await frameTokens(tabId).catch(() => new Map());
+  const parts = [];
+  for (const { token, name } of frames) {
+    const frameId = tokens.get(token);
+    if (frameId === undefined) continue;
+    const read = await toTab(tabId, "extract", [{ ...opts, selector: undefined }], 10000, frameId).catch(() => null);
+    const inner = (await extractFrames(tabId, read, opts, tokens, depth + 1))?.value;
+    if (inner && inner.text) parts.push({ name, inner });
+  }
+  if (!parts.length) return { ...res, value: own };
+  const { note, hint, ...rest } = own;
+  const text = [own.text, ...parts.map((p) => `${p.name}:\n${p.inner.text}`)].filter(Boolean).join("\n\n");
+  const notes = [own.text ? note : undefined, ...parts.map((p) => p.inner.note)].filter(Boolean);
+  const limit = opts.maxBytes || 20000;
+  return {
+    ...res,
+    value: {
+      ...rest,
+      text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
+      truncated: text.length > limit || parts.some((p) => p.inner.truncated),
+      ...(notes.length ? { note: notes.join("; ") } : {}),
+      ...(own.text && hint ? { hint } : {}),
+    },
+  };
 }
 
 // A ref of an embedded frame reads "f<frameId>:<ref>", and the frame's own
@@ -730,9 +767,13 @@ api.tabs.onRemoved.addListener((id) => { snapshotRefs.delete(id); });
 // A wait is answered by whichever frame shows the text or selector first (a
 // sign-in form often sits in an embedded frame), and a frame that loads
 // meanwhile joins in. The top page's answer stands for the whole tab: a
-// miss there (stopped, or ended by a newer wait) ends the wait. waitStop
-// from the daemon asks the top page to end it and report what changed,
-// then ends the other frames. The id keeps that from ending a newer wait.
+// miss there (stopped, or ended by a newer wait) ends the wait. gone holds
+// only once no frame shows the text: each embedded frame is asked for gone
+// alone, and a found from the top page waits for them. Only the top page
+// was asked before, and SheerID's form, still up in its frame over
+// Adorama, read as gone (10-19). waitStop from the daemon asks the top page
+// to end it and report what changed, then ends the other frames. The id
+// keeps that from ending a newer wait.
 const frameWaits = new Map(); // tabId -> Map of wait id -> { join, stop }
 
 async function waitInFrames(tabId, args, timeoutMs) {
@@ -749,6 +790,11 @@ async function waitInFrames(tabId, args, timeoutMs) {
   const waits = frameWaits.get(tabId) || new Map();
   frameWaits.set(tabId, waits);
   return new Promise((resolve, reject) => {
+    const gone = args[1]?.gone != null;
+    const showing = new Set(); // embedded frames that still show the text gone names
+    let top = null; // the top page's found, held while a frame shows that text
+    let listed = false; // every frame there was as the wait began has been asked
+    let lingered = false; // a frame showed it as it was asked: not gone before the wait
     const end = (settle) => {
       if (!waits.delete(id)) return;
       if (waits.size === 0 && frameWaits.get(tabId) === waits) frameWaits.delete(tabId);
@@ -756,15 +802,43 @@ async function waitInFrames(tabId, args, timeoutMs) {
       for (const frameId of asked) api.tabs.sendMessage(tabId, stop, { frameId }).catch(() => {});
       settle();
     };
+    const finish = () => {
+      if (!top || !listed || showing.size) return;
+      const value = { ...top.value };
+      if (lingered) { delete value.already; delete value.hint; }
+      end(() => resolve({ ...top, value }));
+    };
     const join = (frameId) => {
       asked.add(frameId);
-      toTab(tabId, "wait", [args[0] ?? null, args[1] ?? null, id], Math.max(deadline - Date.now(), 1000), frameId).then((res) => {
-        if (frameId === 0 || (res && res.value && res.value.found)) end(() => resolve(res));
-      }, (e) => { if (frameId === 0) end(() => reject(e)); });
+      const watch = gone && frameId !== 0;
+      if (watch) showing.add(frameId);
+      const spec = watch ? [null, { gone: args[1].gone }, id] : [args[0] ?? null, args[1] ?? null, id];
+      toTab(tabId, "wait", spec, Math.max(deadline - Date.now(), 1000), frameId).then((res) => {
+        const found = !!(res && res.value && res.value.found);
+        if (watch) {
+          if (!found) return;
+          if (!res.value.already) lingered = true;
+          showing.delete(frameId);
+          return finish();
+        }
+        if (frameId === 0 && gone && found) {
+          top = res;
+          return finish();
+        }
+        if (frameId === 0 || found) end(() => resolve(res));
+      }, (e) => {
+        if (frameId === 0) return end(() => reject(e));
+        // a frame gone, or one that answers nothing, shows nobody the text
+        if (watch) { showing.delete(frameId); finish(); }
+      });
     };
-    waits.set(id, { join, stop: () => toTab(tabId, "waitStop", [id], 1000, 0).catch(() => end(() => resolve({ value: { found: false } }))) });
+    const stopped = () => end(() => resolve({ value: { found: false } }));
+    waits.set(id, { join, stop: () => (top ? stopped() : toTab(tabId, "waitStop", [id], 1000, 0).catch(stopped)) });
     join(0);
-    frameTokens(tabId).then((tokens) => { for (const frameId of tokens.values()) if (waits.has(id)) join(frameId); }, () => {});
+    frameTokens(tabId).then((tokens) => { for (const frameId of tokens.values()) if (waits.has(id)) join(frameId); }, () => {}).finally(() => {
+      listed = true;
+      finish();
+    });
   });
 }
 
@@ -1037,7 +1111,7 @@ async function screenshot(tabId, opts) {
   const t = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: t.windowId });
   const flip = front && front.id !== tabId;
-  const box = opts.ref ? await relayOp(tabId, "rect", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
+  const box = opts.ref ? await relayOp(tabId, "locate", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
   const page = opts.fullPage && !box ? await pageValue(tabId, "eval", ["({ h: document.documentElement.scrollHeight, y: scrollY, ih: innerHeight, iw: innerWidth })"]).then((v) => v.result) : null;
   const grab = () => api.tabs.captureVisibleTab(t.windowId, { format: "png" });
   const shots = [];

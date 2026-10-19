@@ -1001,6 +1001,9 @@ the part you need.
 `extract` reads a dialog open over the page first (its `note` says
 `selector: "body"` reads the page behind it), else the page's `main` or
 only article, else the whole page when `main` holds little of its text.
+An embedded frame of another site shown in what it read (a verification
+form in a dialog) is read too: its text follows the page's, under the
+frame's name.
 A page with no text yet, loading placeholders or lines such as "The page
 is loading. Please wait", or `aria-busy` on its main region or body, gets
 up to 2 s to draw; those lines are left out, with a `note`, and
@@ -1127,7 +1130,8 @@ words the page will show.
 ## shot
 
 `shot {tab}` is for visual proof. It returns a PNG path of what the tab shows,
-without Safari's toolbar. `ref` crops to one element, `annotate: true`
+without Safari's toolbar. `ref` crops to one element, in an embedded frame
+too (it is scrolled into view first), `annotate: true`
 draws each snapshot ref as a numbered box, and `fullPage: true` scrolls
 and stitches the whole page (up to 12 screens; a sticky header repeats).
 A tab behind another comes to the front of its window for a moment, then
@@ -1191,8 +1195,8 @@ Wait for the page, not the clock.
   included), and `quiet: true` for 500 ms without a change to the page
   (clocks, progress bars, and video aside) and with no request to its own
   site still out (one out past 2 s, such as a long poll, does not count).
-  Given together, all must hold. `gone`, `url`, and `quiet` read the top
-  page, not its frames.
+  Given together, all must hold. `url` and `quiet` read the top page, not
+  its frames; `gone` holds once neither the page nor any frame shows it.
 - A whole-page `snapshot` of a page that shows nothing a person sees yet,
   neither a word nor a control (a blank page, or Bank of America's sign-in,
   which shows just a skip link in a one-pixel box while it draws), waits
@@ -1377,7 +1381,8 @@ does (`safari guide reference acting`), files it downloaded included.
 
 ## scroll
 
-- `scroll {tab, ref}` brings that element to the middle of the view.
+- `scroll {tab, ref}` brings that element to the middle of the view, past
+  each box and frame it sits in (a form in a frame inside a dialog).
 - `scroll` is rarely needed: snapshots include off-screen elements, and
   clicks scroll to their target. It scrolls the window; on a page whose
   window does not move (an app that scrolls a pane of its own, a Flutter
