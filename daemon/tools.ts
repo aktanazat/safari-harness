@@ -1902,20 +1902,48 @@ export const REF: Param = { description: "snapshot ref, CSS selector, or visible
 // clientY count it: click's x and y, and real_input's (input.ts).
 export const X: Param = { type: "number", description: "page x, without ref" };
 export const Y: Param = { type: "number", description: "page y, without ref" };
-const PAGE: Param = { type: "boolean", description: "also return the page after the action" };
+// An action's snapshot: true answers with the page it led to; words, with
+// only the lines that have them, as snapshot's query keeps; {query, root,
+// diff}, as snapshot takes them. In the logs from 09-28 to 10-19 agents
+// read the page with snapshot in the turn after 373 actions on its tab:
+// snapshot: true could have given 92 of those reads, and the rest were a
+// query, a region, a diff, or a read after a wait.
+const PAGE: Param = { description: "true, query words, or {query, root, diff}: also return the page after it" };
 const SAVE: Param = { description: "true, or an absolute path for the whole output; returns its path, size, and first 500 characters" };
 
-// With `snapshot: true` an action also returns the page it led to, saving
-// the agent a separate snapshot call.
+// With snapshot an action also returns the page it led to, read as
+// snapshot reads it (with its bot-check probe; a whole page is the tab's
+// last snapshot for diff), saving the agent a separate read.
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
-  if (!want) return result;
+  const read = pageRead(want);
+  if (read === undefined) return result;
   const opened = newTabOf(result)?.id;
-  const page = (await relay(opened ?? tab, "snapshot", [{}])) as Snapshot;
-  return { ...(result as object), page: shieldSnapshot(page) };
+  return { ...(result as object), page: await snapshot({ ...read, tab: opened ?? tab }) };
+}
+
+// What an action's snapshot asks of the page after it: snapshot's own
+// query, root, and diff.
+export type PageRead = { query?: string; root?: string; diff?: boolean };
+
+// An action's snapshot as a PageRead, or undefined for no read; the CLI
+// may pass true and false as words. A tool reads it before it acts, so a
+// bad one fails before the page is touched.
+export function pageRead(want: unknown): PageRead | undefined {
+  if (want === undefined || want === false || want === "false") return undefined;
+  if (want === true || want === "true") return {};
+  if (typeof want === "string") return { query: want };
+  if (want && typeof want === "object" && !Array.isArray(want)) {
+    const { query, root, diff, ...rest } = want as Record<string, unknown>;
+    const other = Object.keys(rest);
+    if (other.length > 0) throw new Error(`snapshot takes query, root, and diff, not ${other.join(", ")}`);
+    return { query: query === undefined ? undefined : str(query, "snapshot's query"), root: root === undefined ? undefined : str(root, "snapshot's root"), diff: diff === true };
+  }
+  throw new Error(`snapshot takes true, words (only the lines with them), or {query, root, diff}, not ${JSON.stringify(want)}`);
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
   return async (a: Record<string, unknown>) => {
+    pageRead(a.snapshot);
     const tab = await resolveTab(a.tab);
     // A click, a key, or an option answers with what it did to the page.
     const result = withEffect(await run({ ...a, tab }));
@@ -2020,6 +2048,7 @@ export const TOOLS: Record<string, Tool> = {
     unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" } },
     required: ["url"],
     run: async (a) => {
+      pageRead(a.snapshot);
       const address = webAddress(a.url);
       const group = a.group === undefined ? undefined : str(a.group, "group");
       const space = await spaceWindow(group);
@@ -2219,15 +2248,20 @@ export const TOOLS: Record<string, Tool> = {
       changed: { type: "boolean", description: "new lines since last look (added)" },
       ms: { type: "number", description: "timeout" },
       front: { type: "boolean", description: "keep the tab on screen meanwhile" },
+      snapshot: PAGE,
     },
     required: ["tab"],
     unlisted: { look: { type: "string", description: "run's token for the look before an action" }, after: { type: "string", description: "match words new since the run's look" } },
-    // wait finds the tab in its own time; one kept on screen needs it first
+    // wait finds the tab in its own time; one kept on screen needs it
+    // first. A page that gave the wait no answer is not read after it: it
+    // would hold the read too.
     run: async (a) => {
       const o = a as Parameters<typeof wait>[0] & { front?: boolean };
-      if (!o.front) return wait(o);
-      const tab = await resolveTab(o.tab);
-      return inFront(tab, { tabs: listTabs, activate: activateTab }, () => wait({ ...o, tab }));
+      pageRead(a.snapshot);
+      const tab = o.front ? await resolveTab(o.tab) : undefined;
+      const result = tab === undefined ? await wait(o) : await inFront(tab, { tabs: listTabs, activate: activateTab }, () => wait({ ...o, tab }));
+      if (a.snapshot === undefined || (result && typeof result === "object" && "unanswered" in result)) return result;
+      return withPage(result, tab ?? (await resolveTab(o.tab)), a.snapshot);
     },
   },
   data: {

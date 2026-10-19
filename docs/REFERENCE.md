@@ -361,8 +361,12 @@ carrying the page in context.
   while its window is in front, as GitHub's Authorize does: `activate` the
   tab first.
 - Every action reports what it caused: `navigated` (this tab loaded a new
-  page) or `newTab`. Pass `snapshot: true` to get the resulting page in the
-  same call; that is the fastest way to act and then read.
+  page) or `newTab`. Pass `snapshot: true` (CLI `--snapshot`) to get the
+  page after it in the same call, `snapshot: "words"` (CLI
+  `--snapshot=words`) for only its lines that have those words, or
+  `snapshot: {query, root, diff}` as the `snapshot` tool takes them: the
+  fastest way to act and then read. `wait` takes it too. A `snapshot` of a
+  tab as the next call after an action there gets a note saying so, once.
 - An action or `eval` whose page leaves before it answers (a submit, a
   redirect) still answers, with `ok: true` and the page it loaded as
   `navigated`. It is never sent twice.
@@ -1197,6 +1201,9 @@ Wait for the page, not the clock.
   site still out (one out past 2 s, such as a long poll, does not count).
   Given together, all must hold. `url` and `quiet` read the top page, not
   its frames; `gone` holds once neither the page nor any frame shows it.
+- `snapshot: true`, words, or `{query, root, diff}` (CLI `--snapshot`,
+  `--snapshot=words`) answers with the page as the wait ends, as an
+  action's does; a wait the page gave no answer comes without it.
 - A whole-page `snapshot` of a page that shows nothing a person sees yet,
   neither a word nor a control (a blank page, or Bank of America's sign-in,
   which shows just a skip link in a one-pixel box while it draws), waits

@@ -41,6 +41,21 @@ test("a true or false after a flag that takes no value sets that flag and is not
   ]);
 });
 
+// The page after an action, whole or for some words, comes in its answer
+// (PAGE in tools.ts). A word after a bare --snapshot stays the command's.
+test("--snapshot reads the page after an action whole, and --snapshot=<words> only its lines that have them", async () => {
+  calls.length = 0;
+  for (const argv of [["press", "Enter", "--tab", "7", "--snapshot"], ["press", "Enter", "--tab", "7", "--snapshot=Total"], ["wait", "--tab", "7", "--snapshot", "3000"], ["wait", "--tab", "7", "--snapshot=false", "3000"]]) {
+    expect(await safari(argv)).toEqual({ err: "", code: 0 });
+  }
+  expect(calls.map((c) => c.args)).toEqual([
+    { tab: 7, key: "Enter", snapshot: true },
+    { tab: 7, key: "Enter", snapshot: "Total" },
+    { tab: 7, ms: 3000, snapshot: true },
+    { tab: 7, ms: 3000 },
+  ]);
+});
+
 // On 09-29 `safari learn geico.com --note "..."` saved nothing and said
 // nothing: the CLI dropped every flag its tool did not name.
 test("a flag the command does not take fails before any call, naming the flags it does take", async () => {

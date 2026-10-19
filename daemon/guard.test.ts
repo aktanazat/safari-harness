@@ -56,6 +56,18 @@ test("a read whose answer changes is never stopped, and neither is an action tha
   }
 });
 
+// In the logs from 09-28 to 10-19 agents read a tab with snapshot in the
+// turn after 373 actions on it, a page the action's own snapshot gives.
+test("an owner's first snapshot of the tab its last action ran on says the action could have answered with it", async () => {
+  safari((op) => ({ value: op === "snapshot" ? { url: "https://shop.example/cart", title: "Cart", nodes: 1, truncated: false, snapshot: "Total $42.10" } : { ok: true } }));
+  await model(108, "click", { tab: 7, ref: "Next" });
+  expect(await model(108, "snapshot", { tab: 8 })).not.toHaveProperty("note");
+  await model(108, "click", { tab: 7, ref: "Next" });
+  expect(await model(108, "snapshot", { tab: 7, query: "Total" })).toMatchObject({ note: 'next time pass snapshot: "Total" to click (CLI --snapshot=Total): its answer then has this page, one call instead of two' });
+  await model(108, "click", { tab: 7, ref: "Next" });
+  expect(await model(108, "snapshot", { tab: 7 })).not.toHaveProperty("note");
+});
+
 test("the same check after each new step is not a loop; after the same step again and again it is", async () => {
   safari((op) => ({ value: op === "tabInfo" ? { url: "https://shop.example/form", title: "Form" } : { ok: true } }));
   for (let i = 1; i <= 8; i++) {

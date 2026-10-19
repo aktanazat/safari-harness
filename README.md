@@ -260,6 +260,7 @@ safari open https://example.com --bg   # prints the new tab's id, say 7
 safari snapshot --tab 7                # [ref]s for click/type
 safari snapshot --query price --tab 7  # only the lines that mention "price"
 safari click 2 --snapshot --tab 7      # click, then print the page it led to
+safari click 2 --snapshot=Total --tab 7  # only the lines of that page with "Total"
 safari select 5 "US 8" --tab 7         # dropdown option by label
 safari upload ~/photo.jpg --tab 7      # the page's file input
 safari back --tab 7

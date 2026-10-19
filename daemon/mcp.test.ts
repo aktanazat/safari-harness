@@ -126,8 +126,12 @@ import { TOOLS } from "./tools.ts";
 // could not raise (S99PartB), and on 10-16 an agent's `safari scroll --to
 // bottom` was refused as unknown (HuntsUsage). shot's live (110) brought it
 // to 26,824: a shot now ends the page's finite animations first, and live
-// keeps them running for a shot of the motion itself.
-const TOOL_LIST_MAX_BYTES = 26_824;
+// keeps them running for a shot of the motion itself. An action's snapshot
+// taking query words or {query, root, diff}, and wait's snapshot (264),
+// brought it to 27,082: in the logs from 09-28 to 10-19 agents read the
+// page with snapshot in the turn after 373 actions on its tab, and
+// snapshot: true could have given 92 of those reads; this gives 343.
+const TOOL_LIST_MAX_BYTES = 27_082;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

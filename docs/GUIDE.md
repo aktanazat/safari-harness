@@ -26,6 +26,10 @@ Turns
   (gmail, slack), with one `--session` name per task.
 - More than three pages of one kind: one `map` call (up to 20 addresses,
   4 at a time). Never a loop of `goto`, nor a bash loop of `map` or `eval`.
+- An action and the read after it are one call: `snapshot: true` (CLI
+  `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
+  or `wait` answers with the page after it, and `snapshot: "words"` with
+  only its lines that have them.
 - Wait on the page, never the clock: `wait {text}` with words only the
   next page shows, `{selector}`, or `{changed: true}` for new lines. No
   `sleep` in bash or `eval`, no made-up words. `open`, `goto`, and `click`

@@ -83,7 +83,8 @@ const USAGE = `safari — drive Safari from the terminal
   unused; --keep on open, or safari keep <tab>, leaves one open for him.
 
   Actions (open goto back forward reload click clickat type press select
-  hover upload) take --snapshot to print the resulting page too.
+  hover upload) and wait take --snapshot to print the page after them too,
+  or --snapshot=<words> for only its lines that have those words.
 
   Reads (snapshot eval extract fetch) take --save to write the whole output
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
@@ -349,6 +350,17 @@ function isSavePath(i: number, argv: string[]): boolean {
 // into the saved folder and reads rows.json as the command's word.
 const SAVE_HOW = " (--save alone saves into the saved folder; give a path as --save=<path> or --save ./<path>, a relative one taken from the current folder)";
 
+// --snapshot prints the page after an action whole, and --snapshot=<words>
+// only its lines that have them. A word after a bare --snapshot is the
+// command's own, unless it is true or false (BOOLEAN_FLAGS).
+function snapshotArg(argv: string[]): Record<string, unknown> {
+  if (hasFlag("snapshot", argv)) return { snapshot: true };
+  const words = flag("snapshot", argv);
+  return words === undefined || words === "false" ? {} : { snapshot: words === "true" ? true : words };
+}
+
+const SNAPSHOT_HOW = "also print the page after it; --snapshot=<words> prints only its lines that have them";
+
 // The tool a command runs, where its name differs, and a tool's name
 // however it is written (real-input for real_input).
 const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings" };
@@ -431,7 +443,9 @@ function commandHelp(cmd: string): string | null {
     const how = [...(def.required?.includes(name) ? ["required"] : []), ...(usage.some((l) => l.includes(`<${name}>`)) ? [`or as <${name}> above`] : [])].join(", ");
     let desc = p.description;
     if (name === "save" || paths.includes(name)) desc = `${(desc ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")}${name === "save" ? SAVE_HOW : " (a relative path is taken from the current folder)"}`;
-    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`}${how ? ` (${how})` : ""}\n      ${desc}`;
+    if (name === "snapshot") desc = SNAPSHOT_HOW;
+    const value = name === "snapshot" ? "[=<words>]" : p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`;
+    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${value}${how ? ` (${how})` : ""}\n      ${desc}`;
   });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
@@ -833,7 +847,7 @@ async function main() {
     fail(`${cmd} takes words and flags, not a JSON object: safari call ${toolName(cmd) ?? cmd} '${positional[0]}' (flags such as --tab still apply), or its flags (safari ${cmd} --help)`, 2);
   }
   let tool = ALIAS[cmd] ?? cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...(hasFlag("snapshot", rest) ? { snapshot: true } : {}) };
+  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...snapshotArg(rest) };
 
   switch (cmd) {
     case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? null; break;

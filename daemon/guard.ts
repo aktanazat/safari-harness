@@ -10,7 +10,9 @@
 // The loop guard: an agent that makes one call over and over and gets the
 // same answer each time is stopped with a next step, and one that sleeps
 // in a loop is told to wait on the page instead. On 01a0e20a an agent slept
-// 98 times, 829 s in all.
+// 98 times, 829 s in all. An agent that reads a tab with snapshot right
+// after an action there is told once that the action could have answered
+// with that page.
 //
 // Calls the harness makes itself (the REPL's locators, the tab group
 // keeper, the site kits) poll on purpose and name their options exactly,
@@ -89,6 +91,9 @@ export function paramFor(tools: Record<string, Tool>, tool: string, key: string)
 }
 
 export type Checked = { tool: string; args: Record<string, unknown>; notes: string[] };
+// Checked calls whose tool can answer with the page after it (its own
+// snapshot), as checkCall found them.
+const answersPage = new WeakSet<Checked>();
 
 // The tool and arguments a call means. A model's call may name either in
 // another way, and each one taken so is noted; a name the tool does not
@@ -122,7 +127,9 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
     args[real] = value;
     from[real] = key;
   }
-  return { tool, args, notes };
+  const checked = { tool, args, notes };
+  if (Object.hasOwn(tools[tool].params, "snapshot")) answersPage.add(checked);
+  return checked;
 }
 
 // Check a run before any step acts (USCIS / EOIR, 09-30). Its tabs may
@@ -197,12 +204,15 @@ export function beside(result: unknown, key: "note" | "hint", text: string): unk
 const byModel = new AsyncLocalStorage<boolean>();
 export const fromModel = () => byModel.getStore() === true;
 
-// Runs a checked call, and for a model's, watches it for loops and adds
-// the notes its check made.
+// Runs a checked call, and for a model's, watches it for loops, notes a
+// read its last action could have answered, and adds the notes its check
+// made.
 export async function guard(call: Checked, model: boolean, run: () => Promise<unknown>): Promise<unknown> {
   const owner = model ? currentOwner() : undefined;
+  const start = Date.now();
   const result = await byModel.run(model, () => (owner === undefined ? run() : watch(call, owner, run)));
-  return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
+  const read = owner === undefined ? result : folds(call, owner, start, result);
+  return call.notes.length ? beside(read, "note", call.notes.join("; ")) : read;
 }
 
 // The sixth call in a row with the same arguments and the same answer, in
@@ -285,6 +295,36 @@ function slept(owner: number, args: Record<string, unknown>, start: number, resu
   return beside(result, "hint", `you slept ${Math.round(total / 1000)} s in the last 10 minutes; wait with text or selector instead: it returns as soon as the page shows it`);
 }
 
+// An action's own snapshot answers with the page after it, so a snapshot
+// of that tab as the next call costs a call and a turn: in the logs from
+// 09-28 to 10-19 agents did so after 373 actions, at a median 2.6 s of
+// the model's time each. An owner's first such read says so; 97% of them
+// came within 30 s of the action.
+const FOLD_MS = 30_000;
+const lastActs = new Map<number, { tool: string; tab: string; at: number }>();
+const toldFold = new Set<number>();
+
+function folds(call: Checked, owner: number, start: number, result: unknown): unknown {
+  const { tool, args } = call;
+  const last = lastActs.get(owner);
+  lastActs.delete(owner);
+  if (answersPage.has(call)) {
+    // open answers with the tab it made
+    const tab = tool === "open" && result && typeof result === "object" && "id" in result ? result.id : args.tab;
+    if (args.snapshot === undefined && tab !== undefined) lastActs.set(owner, { tool, tab: String(tab), at: Date.now() });
+    return result;
+  }
+  if (tool !== "snapshot" || !last || toldFold.has(owner) || start - last.at > FOLD_MS || String(args.tab) !== last.tab) return result;
+  if (args.save !== undefined || args.maxNodes !== undefined || args.showHidden !== undefined) return result;
+  toldFold.add(owner);
+  const { query, root, diff } = args;
+  const plain = root === undefined && diff === undefined;
+  const value = !plain ? JSON.stringify({ query, root, diff }) : query === undefined ? "true" : JSON.stringify(query);
+  const words = String(query);
+  const cli = !plain ? "" : query === undefined ? " (CLI --snapshot)" : ` (CLI --snapshot=${/^[\w.$-]+$/.test(words) ? words : JSON.stringify(words)})`;
+  return beside(result, "note", `next time pass snapshot: ${value} to ${last.tool}${cli}: its answer then has this page, one call instead of two`);
+}
+
 // Forgets streaks and sleeps too old to count.
 function sweep(now: number) {
   for (const [owner, seen] of watches) {
@@ -292,6 +332,7 @@ function sweep(now: number) {
     else for (const [key, s] of seen.calls) if (now - s.times[s.times.length - 1] >= REPEAT_MS) seen.calls.delete(key);
   }
   for (const [owner, list] of sleeps) if (list.every((s) => now - s.at >= SLEEP_MS)) sleeps.delete(owner);
+  for (const [owner, act] of lastActs) if (now - act.at > FOLD_MS) lastActs.delete(owner);
 }
 
 // JSON with every object's keys in order, so equal values hash the same.

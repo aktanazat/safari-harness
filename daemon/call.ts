@@ -11,7 +11,7 @@ import { beside, checkCall, checkStep, nameIn } from "./guard.ts";
 import { quietly, rpc, takesNews } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
 import { secretType, typeSecret, type CallerEnv } from "./secret.ts";
-import { TOOLS, runSteps } from "./tools.ts";
+import { TOOLS, pageRead, runSteps, type PageRead } from "./tools.ts";
 import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
 
 // model: the call counts as the model's own, as invoke's does.
@@ -39,16 +39,17 @@ function callerSteps(tool: string, args: Record<string, unknown>): boolean {
 // Check Status ignored scripted clicks, and my.uscis.gov kept no scripted
 // text. Answers the real_input call it becomes and why, or undefined. The
 // harness's own calls (a site's helpers) go as written.
-type Routed = { args: Record<string, unknown>; snapshot: boolean; why: string };
+type Routed = { args: Record<string, unknown>; page: PageRead | undefined; why: string };
 
 async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<Routed | undefined> {
   const name = nameIn(DAEMON_NAMES, tool);
   if (name !== "click" && name !== "type") return undefined;
   const { snapshot, ...a } = checkCall(TOOLS, tool, args, true).args;
   if (a.ref === undefined) return undefined;
+  const page = pageRead(snapshot);
   const site = real ? undefined : await rpc("real_site", { tab: a.tab });
   if (!real && typeof site !== "string") return undefined;
-  return { args: { ...a, do: name }, snapshot: snapshot === true, why: real ? "sent as real input: the run has real: true" : `sent as real input: ${String(site)} is marked for it (learn)` };
+  return { args: { ...a, do: name }, page, why: real ? "sent as real input: the run has real: true" : `sent as real input: ${String(site)} is marked for it (learn)` };
 }
 
 // model: the call is one a model wrote. The daemon checks the calls it
@@ -98,7 +99,7 @@ async function withNews(tab: unknown, run: () => Promise<unknown>): Promise<unkn
 async function runHere(tool: string, args: Record<string, unknown>, model: boolean, coded: boolean, routed: Routed | undefined, caller: CallerEnv | undefined): Promise<unknown> {
   if (routed) {
     const result = beside(await invoke("real_input", routed.args, model), "note", routed.why);
-    return routed.snapshot ? { ...(result as object), page: await rpc("snapshot", { tab: routed.args.tab }) } : result;
+    return routed.page ? { ...(result as object), page: await rpc("snapshot", { tab: routed.args.tab, ...routed.page }) } : result;
   }
   if (nameIn(CALLER_NAMES, tool) === undefined) {
     const a = checkCall(TOOLS, tool, args, model).args;

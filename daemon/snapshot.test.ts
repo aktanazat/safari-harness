@@ -40,3 +40,38 @@ test("a snapshot asks every frame about a bot check while the page is still bein
   safari.answer();
   expect(await snap).toMatchObject({ snapshot: '[1] button "Sign in"', challenge: { kind: "cloudflare", where: "box" } });
 });
+
+// In the logs from 09-28 to 10-19 agents read a tab with snapshot in the
+// turn after 373 actions on it: snapshot: true could have given 92 of
+// those reads, and the rest asked for some words or a region, or came
+// after a wait. Safari here answers each request at once, for a cart page
+// whose snapshot keeps the lines with the words its query names, and
+// records each request sent to the page.
+function cartSafari() {
+  const sent: string[] = [];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay") sent.push(args[1]);
+      const read: { query?: string } | undefined = op === "relay" && args[1] === "snapshot" ? args[2][0] : undefined;
+      const lines = ['[1] button "Pay"', "Total $42.10", "Shipping $5.00"].filter((l) => read?.query === undefined || l.includes(read.query));
+      const value = op !== "relay" ? [] : read ? { url: "https://shop.example/cart", title: "Cart", nodes: 3, truncated: false, snapshot: lines.join("\n") } : args[1] === "wait" ? { found: true } : { ok: true };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  return sent;
+}
+
+test("an action or a wait answers with the page after it, whole or only the lines with the words its snapshot names", async () => {
+  cartSafari();
+  expect(await callTool("click", { tab: 7, ref: "Next", snapshot: "Total" })).toMatchObject({ page: { snapshot: "Total $42.10" } });
+  expect(await callTool("wait", { tab: 7, text: "Total", snapshot: true })).toMatchObject({ found: true, page: { snapshot: '[1] button "Pay"\nTotal $42.10\nShipping $5.00' } });
+});
+
+test("an action's snapshot that is not true, words, or {query, root, diff} fails before the page is asked anything", async () => {
+  const sent = cartSafari();
+  await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toThrow("snapshot takes query, root, and diff, not selector");
+  await expect(callTool("wait", { tab: 7, text: "Total", snapshot: 3 })).rejects.toThrow("snapshot takes true, words (only the lines with them), or {query, root, diff}, not 3");
+  expect(sent).toEqual([]);
+});

@@ -66,6 +66,25 @@ test("a text wait the page gives no answer by its end says it cannot tell, never
   for (const id of waits) bridge.handleMessage(JSON.stringify({ id, value: { found: true } }));
 });
 
+// A page that gives a wait no answer would hold the read after it too.
+test("a wait the page gave no answer leaves out the page its snapshot asked for", async () => {
+  const waits: string[] = [];
+  const reads: string[] = [];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      if (op === "relay" && args[1] === "wait") return void waits.push(id);
+      if (op === "relay" && args[1] === "snapshot") reads.push(id);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? { ok: true } : [] })));
+    },
+    close() {},
+  });
+  const got = await callTool("wait", { tab: 7, text: "Example Domain", ms: 100, snapshot: true });
+  expect(got).toMatchObject({ ok: false, found: false, unanswered: true });
+  expect(reads).toEqual([]);
+  for (const id of waits) bridge.handleMessage(JSON.stringify({ id, value: { found: true } }));
+});
+
 // A page that answers its wait once the daemon stops it, at the limit, with
 // stopped, as a page does with what changed meanwhile. Each tabs.list is
 // kept unanswered in lists when listing is false.
