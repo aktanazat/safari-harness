@@ -108,8 +108,9 @@ const USAGE = `safari — drive Safari from the terminal
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
   safari wait --any '["a","b"]' | --gone t | --url part|/re/ | --quiet --tab N
-                                             the first text shown (which), text gone,
-                                             an address, or 0.5 s without a change
+                                             the first text shown (named in the
+                                             answer), text gone, an address, or
+                                             0.5 s without a change
   safari wait --changed [--ms 25000] --tab N new lines since the last look (added):
                                              a chat's reply; call again until found
   safari net read|start|stop --tab N         fetch/XHR since the page loaded
@@ -211,8 +212,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari imessage chats [--limit N]          recent conversations
   safari imessage history <chat> [--limit N] [--since rowid]
                                              one conversation (id, phone, email, or name)
-  safari imessage search [text] [--from who] [--days 90]
-                                             search messages
+  safari imessage search [text] [--from who] [--chat who] [--days 90]
+                                             search messages, or one conversation's
   safari imessage files <id>... [--out /absolute/folder] [--clipboard]
                                              ids from history/search files; fetch originals,
                                              save copies or copy verified file URLs
@@ -829,7 +830,7 @@ async function main() {
       contacts: ["contacts", { name: pos.join(" ") }],
       chats: ["imessage_chats", { limit: numFlag("limit") }],
       history: ["imessage_history", { chat: pos.join(" "), limit: numFlag("limit"), since: numFlag("since") }],
-      search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), days: numFlag("days"), limit: numFlag("limit") }],
+      search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), chat: flag("chat", rest), days: numFlag("days"), limit: numFlag("limit") }],
       files: ["imessage_files", { ids: pos, out: flag("out", rest), clipboard: hasFlag("clipboard", rest) }],
       code: ["imessage_wait_code", { seconds: numFlag("seconds"), since: numFlag("since") }],
       send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: hasFlag("approved", rest) }],

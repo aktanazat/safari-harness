@@ -86,3 +86,26 @@ test("an unknown attachment prevents saving the rest of a requested batch", asyn
   expect(result.error).toContain("no visible Messages attachment: unknown");
   expect(existsSync(out)).toBe(false);
 });
+
+// On 10-07 and 10-12 agents searched one conversation's texts by naming
+// it, four times, and each call failed: search took no chat.
+test("a search with a chat finds the words in that conversation only", async () => {
+  const { home, db } = fixture();
+  db.exec(`
+    INSERT INTO chat VALUES ('iMessage;-;other@example.com','other@example.com',NULL,'iMessage',45);
+    INSERT INTO handle VALUES ('other@example.com');
+    INSERT INTO chat_handle_join VALUES (2,2);
+    INSERT INTO message VALUES ('BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',812678400000000001,0,'more photos',NULL,0,2,0,0);
+    INSERT INTO chat_message_join VALUES (2,2,812678400000000001);
+  `);
+  db.close();
+  const all = await invoke(home, "imessage_search", { text: "photos", days: 36500 });
+  const one = await invoke(home, "imessage_search", { text: "photos", chat: "other@example.com", days: 36500 });
+  expect(all.value.map((m: { text: string }) => m.text)).toEqual(["more photos", "photos"]);
+  expect(one.value.map((m: { text: string }) => m.text)).toEqual(["more photos"]);
+  const cli = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "safari.ts"), "imessage", "search", "photos", "--chat", "other@example.com", "--days", "36500", "--json"], {
+    env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
+  });
+  const [printed] = await Promise.all([new Response(cli.stdout).text(), cli.exited]);
+  expect(JSON.parse(printed).map((m: { text: string }) => m.text)).toEqual(["more photos"]);
+});

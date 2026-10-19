@@ -12,7 +12,7 @@ import * as nodePath from "node:path";
 import { homedir } from "node:os";
 import { inspect } from "node:util";
 import { invoke as defaultInvoke, type Invoke } from "./call.ts";
-import { lineDiff } from "./tools.ts";
+import { lineDiff, refLines } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
 import { SiteKit } from "./sites/kit.ts";
@@ -106,9 +106,6 @@ function rootedFs(cwd: string): typeof fsp {
 function rootedPath(cwd: string): typeof nodePath {
   return { ...nodePath, resolve: (...parts: string[]) => nodePath.resolve(cwd, ...parts) };
 }
-
-// A snapshot line that carries a ref ("[12] button ...", "h2 [3] link ...").
-const HAS_REF = /\[(?:f\d+:)?\d+\]/;
 
 // The page's security policy refused to run code in its own world, in
 // WebKit's words or the daemon's (EVAL_BLOCKED in tools.ts, thrown).
@@ -884,7 +881,7 @@ export class ReplSession {
     const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes ?? 600, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
     this.showNotes(snap);
     const lines = snap.snapshot.split("\n");
-    const body = opts.interactive ? lines.filter((l) => HAS_REF.test(l)).map((l) => l.trimStart()) : lines;
+    const body = opts.interactive ? refLines(lines) : lines;
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
     const warn = snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : [];
     const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...body, ...cut].join("\n");

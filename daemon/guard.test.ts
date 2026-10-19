@@ -94,7 +94,8 @@ test("a parameter the tool does not take fails before the page is asked, naming 
   expect(sent).toEqual([]);
 });
 
-// Names agents wrote in the 09-27 to 09-30 logs, each a failed call.
+// Names agents wrote in the 09-27 to 09-30 logs, and map's script on
+// 10-05, each a failed call.
 test.each([
   ["eval", "code", "expression"],
   ["history", "action", "do"],
@@ -110,6 +111,7 @@ test.each([
   ["shot", "path", "out"],
   ["download", "path", "out"],
   ["passwords", "account", "username"],
+  ["map", "script", "expression"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });
@@ -126,6 +128,12 @@ test("a real_input call written as the type tool's, or with press for key, runs 
 
 test("snapshot given an address says to open it first", () => {
   expect(() => checkCall(TOOLS, "snapshot", { url: "https://www.geico.com" }, true)).toThrow("snapshot reads the page a tab shows; open the url first (open) and pass its tab");
+});
+
+// On 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut each
+// page's text.
+test("map given max says what keeps each page short instead", () => {
+  expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
 });
 
 test("waiting on the clock past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {

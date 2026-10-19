@@ -56,6 +56,14 @@ test("--snapshot reads the page after an action whole, and --snapshot=<words> on
   ]);
 });
 
+// On 10-07 and 10-08 `safari snapshot --interactive` failed twice: the
+// snapshot took no such flag, though the repl's snapshot does.
+test("--interactive asks the snapshot for only the lines with refs", async () => {
+  calls.length = 0;
+  expect(await safari(["snapshot", "--interactive", "--tab", "7"])).toEqual({ err: "", code: 0 });
+  expect(calls).toEqual([{ tool: "snapshot", args: { tab: 7, interactive: true } }]);
+});
+
 // On 09-29 `safari learn geico.com --note "..."` saved nothing and said
 // nothing: the CLI dropped every flag its tool did not name.
 test("a flag the command does not take fails before any call, naming the flags it does take", async () => {

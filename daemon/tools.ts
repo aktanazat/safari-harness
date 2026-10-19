@@ -761,7 +761,7 @@ function flagged(result: object): object {
 const lastSnapshot = new Map<number, string>();
 const SNAPSHOTS_KEPT = 50;
 
-export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean } = {}) {
+export async function snapshot(opts: { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean; interactive?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
   // The bot-check probe goes out with the snapshot request: sent after its
   // answer, it added 5 of the 14 ms a snapshot of cnn.com took. A page still
@@ -770,9 +770,12 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   // to answer.
   const read = (root: string | undefined) => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
   const { page, missed } = await narrowed("root", opts.root, read);
-  const snap = shieldSnapshot(page);
+  const shielded = shieldSnapshot(page);
+  // interactive keeps the lines with refs, a view of the page as a root or
+  // a query is, so the next diff still runs from the whole page
+  const snap = opts.interactive === true ? { ...shielded, snapshot: refLines(shielded.snapshot.split("\n")).join("\n") } : shielded;
   if (missed) return { ...snap, note: missed };
-  if (opts.root !== undefined || opts.query !== undefined) return snap;
+  if (opts.root !== undefined || opts.query !== undefined || opts.interactive === true) return snap;
   const before = lastSnapshot.get(tab);
   // a Map keeps its keys in the order they went in, the oldest first
   lastSnapshot.delete(tab);
@@ -812,6 +815,14 @@ export function lineDiff(a: string[], b: string[]): string {
     else out.push(`+ ${b[j++]}`);
   }
   return out.join("\n");
+}
+
+// A snapshot's lines that carry a ref ("[12] button ...", "h2 [3] link
+// ..."), unindented: what the page offers to act on. The repl's snapshot
+// takes interactive so, and from 10-07 to 10-12 agents gave it to the
+// snapshot tool or command seven times, each a failed call.
+export function refLines(lines: string[]): string[] {
+  return lines.filter((l) => /\[(?:f\d+:)?\d+\]/.test(l)).map((l) => l.trimStart());
 }
 
 export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number }) {
@@ -2029,7 +2040,7 @@ function cardSecrets(card: Record<string, unknown>): string[] {
 
 export const TOOLS: Record<string, Tool> = {
   run: {
-    desc: 'Check all steps, then run in order until an error. A text wait after an action counts new lines only. Missing tab uses the latest opened or named tab. Example: [{"tool":"open","args":{"url":"https://example.com"}},{"tool":"extract"},{"tool":"close"}]',
+    desc: 'Check all steps, then run in order until an error. A text wait after an action counts new lines only. Missing tab uses the latest opened or named tab. Pass an object: {"steps":[{"tool":"open","args":{"url":"https://example.com"}},{"tool":"extract"}]}',
     params: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" } }, required: ["tool"] }, description: "{tool, args} objects; args as that tool takes them" } },
     required: ["steps"],
     // real: true sends the steps' click and type on a ref as real input;
@@ -2119,11 +2130,12 @@ export const TOOLS: Record<string, Tool> = {
       root: { type: "string", description: "CSS selector or ref of the region" },
       maxNodes: { type: "number", description: "line limit, default 600" },
       diff: { type: "boolean", description: "only lines changed since this tab's last snapshot" },
+      interactive: { type: "boolean", description: "only lines with refs" },
       save: SAVE,
     },
     unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" } },
     required: ["tab"],
-    run: saving("snapshot", async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean }))),
+    run: saving("snapshot", async (a) => withNotes(await snapshot(a as { tab?: number; root?: string; query?: string; maxNodes?: number; diff?: boolean; showHidden?: boolean; interactive?: boolean }))),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
@@ -2237,7 +2249,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait for text (body or title), a selector, any text (which), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 110000; only ms: ends once quiet. A miss answers ok: false and says what changed.",
+    desc: "Wait for text (body or title), a selector, any of several texts (the answer names the one shown), gone body text, url, new lines (changed), or quiet. ms: timeout, default 10000, max 110000; only ms: ends once quiet. A miss answers ok: false and says what changed.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },

@@ -75,3 +75,24 @@ test("an action's snapshot that is not true, words, or {query, root, diff} fails
   await expect(callTool("wait", { tab: 7, text: "Total", snapshot: 3 })).rejects.toThrow("snapshot takes true, words (only the lines with them), or {query, root, diff}, not 3");
   expect(sent).toEqual([]);
 });
+
+// From 10-07 to 10-12 agents gave snapshot interactive seven times, as the
+// repl's snapshot takes it, and each call failed. The read is a view of
+// the page, as one with a query is, so a diff after it still runs from
+// the last whole page. Safari here answers each request at once with a
+// sign-in form whose fields sit indented under it.
+const SIGN_IN = 'form "Sign in"\n  [1] textbox "Email"\n  Forgot your email?\n  [2] button "Next"';
+
+test("a snapshot with interactive keeps only the lines with refs, unindented", async () => {
+  connect({
+    send(data: string) {
+      const { id, op } = JSON.parse(data);
+      const value = op === "relay" ? { url: "https://shop.example/login", title: "Sign in", nodes: 4, truncated: false, snapshot: SIGN_IN } : [];
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  expect(await callTool("snapshot", { tab: 8 })).toMatchObject({ snapshot: SIGN_IN });
+  expect(await callTool("snapshot", { tab: 8, interactive: true })).toMatchObject({ snapshot: '[1] textbox "Email"\n[2] button "Next"' });
+  expect(await callTool("snapshot", { tab: 8, diff: true })).toMatchObject({ snapshot: "(no change)" });
+});

@@ -43,18 +43,21 @@ export function nameIn(names: string[], name: string): string | undefined {
 // action, code, note, mode, and js each failed a call in the 09-27 to
 // 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
 // 10-07 net's query, the part of the address it keeps; in the 10-12 to
-// 10-16 logs shot's path and passwords' account.
+// 10-16 logs shot's path and passwords' account; on 10-05 map's script.
 const ALIASES: [string, string, string[]?][] = [
-  ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["note", "fact"], ["mode", "what"],
+  ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
   ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
   ["path", "out", ["shot", "shots", "download"]], ["account", "username", ["passwords"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do
-// instead: snapshot {url} and extract {url} each read no page on 09-29.
+// instead: snapshot {url} and extract {url} each read no page on 09-29,
+// and on 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut
+// each page's text.
 const MISSES: [string, string, string][] = [
   ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
   ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
+  ["map", "max", "map takes no max: to keep each page's text short pass query (only lines with it) or selector, or save for a file per page; urls holds at most 20 addresses, and follow has its own max"],
 ];
 
 // What to do instead of a parameter that asks tool for what it cannot do.

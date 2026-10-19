@@ -140,7 +140,11 @@ import { TOOLS } from "./tools.ts";
 // The crib's page.waitForChange (33) brought it to 27,699: in those two
 // weeks scripts slept 1,935 s past the sleep budget in 19 sessions, where
 // the hint's way out, text or a selector, was one they could not name.
-const TOOL_LIST_MAX_BYTES = 27_699;
+// snapshot's interactive, imessage_search's chat, and run's example as an
+// object (206) brought it to 27,905: in those two weeks snapshot with
+// interactive failed 7 calls, a search naming its chat 4, and a run sent
+// as the bare list its example showed 3.
+const TOOL_LIST_MAX_BYTES = 27_905;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

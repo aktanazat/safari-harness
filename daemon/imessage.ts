@@ -210,7 +210,7 @@ export function history(opts: { chat: string; limit?: number; since?: number }) 
   }
 }
 
-export function search(opts: { text?: string; from?: string; days?: number; limit?: number }) {
+export function search(opts: { text?: string; from?: string; chat?: string; days?: number; limit?: number }) {
   const text = String(opts.text ?? "").trim().toLowerCase();
   const from = String(opts.from ?? "").trim();
   if (!text && !from) throw new Error("search needs text and/or from");
@@ -220,6 +220,9 @@ export function search(opts: { text?: string; from?: string; days?: number; limi
   try {
     const book = loadContacts();
     const names = nameIndex(book);
+    // chat keeps one conversation's texts: on 10-07 and 10-12 agents named
+    // one by number to search it, four times, and each call failed
+    const only = opts.chat === undefined ? undefined : resolveChat(db, opts.chat, names).id;
     // `from` is a handle or a contact name; a name covers all of that contact's handles.
     const fromKeys = new Set<string>();
     if (from) {
@@ -235,6 +238,7 @@ export function search(opts: { text?: string; from?: string; days?: number; limi
       ORDER BY m.date DESC`).all(since) as (MsgRow & { chat: string; cid: number; ident: string; dn: string | null; svc: string; style: number })[];
     const hits = [];
     for (const r of rows) {
+      if (only !== undefined && r.cid !== only) continue;
       if (fromKeys.size && (r.me === 1 || !r.handle || !fromKeys.has(handleKey(r.handle)))) continue;
       const msg = toMessage(r, names);
       if (text && !msg.text.toLowerCase().includes(text)) continue;
@@ -660,14 +664,15 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: (a) => receiveFiles(a as { ids: string[]; out?: string; clipboard?: boolean }),
   },
   imessage_search: {
-    desc: "Search texts across conversations; from limits the sender.",
+    desc: "Search texts across conversations; chat keeps one, from limits the sender.",
     params: {
       text: { type: "string", description: "words to find, case-insensitive" },
+      chat: { type: "string", description: "one conversation: id, phone, email, or name" },
       from: { type: "string", description: "sender: contact name, phone, or email" },
       days: { type: "number", description: "how far back, default 90" },
       limit: { type: "number", description: "default 30, max 200" },
     },
-    run: async (a) => search(a as { text?: string; from?: string; days?: number; limit?: number }),
+    run: async (a) => search(a as { text?: string; from?: string; chat?: string; days?: number; limit?: number }),
   },
   imessage_wait_code: {
     desc: "Wait for a sign-in code by text, including the last minute. Returns {status:'received',code,from} or {status:'timeout',since}; pass since back to keep waiting. Type it into the page; never repeat it in chat.",
