@@ -63,8 +63,6 @@ const ext = {
 };
 connect(ext);
 
-// Only an explicit admitted cleanup closes disposable pages. Neither
-// process exit nor elapsed time is task-completion authority.
 function closedAs(only: string, tabs: number[]): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   onClose = () => { if (tabs.every((t) => closes.some(([tab, how]) => tab === t && how === only))) resolve(); };
@@ -95,13 +93,13 @@ afterAll(async () => {
 });
 
 // Before, the daemon kept its tab owners in memory: after a restart, the
-// tabs of an agent that had exited stayed open for good.
-test("a restarted daemon releases an exited agent's tabs only after admitted cleanup, never another owner's", async () => {
+// tabs of an agent that had exited stayed open for good. From 10-14 to
+// 10-19 they stayed again, as only a turn end omp never sent could close them.
+test("a restarted daemon closes an exited agent's tabs by itself, never another owner's", async () => {
   const exited = Bun.spawnSync(["true"]).pid;
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
   writeFileSync(file, JSON.stringify({ 11: exited, 12: process.pid }));
   loadTabs(file);
-  await endTurn(exited);
   await closedAs("idle", [11]);
   await settled();
   expect(closesAs("idle")).toEqual([11]);

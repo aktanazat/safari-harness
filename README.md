@@ -166,17 +166,13 @@ the CLI, the MCP server and CDP tools send no `Origin`. Only the extension's
 the bridge's extension origin may take `/passwords`.
 
 `turn-end/prepare` drains the owner's active calls and returns exact owned
-tab IDs with a call-generation token; it never closes a page. Only the
-runtime's committed release may submit that preparation to `turn-end`.
-An intervening owner call invalidates it. Missing preparations are rejected,
-and an unknown task, job, queued input or handoff remains protected.
-`agent_end`, exit, elapsed time and tab limits are not cleanup authority.
-
-The extension returns from the tracked `agent_end` hook before awaiting the
-runtime's full idle barrier, then rechecks authority for the original task
-identity. Hook return is not a physical-cleanup receipt. The owning runtime
-awaits external release and holds newly admitted input dispatch only after
-commit. An older runtime without this interface leaves resources open.
+tab IDs with a call-generation token; it never closes a page. `turn-end`
+then releases that preparation; an intervening owner call invalidates it,
+and a request without one is rejected. omp's main session sends both at
+its final `agent_end` (`omp/index.ts`); subagents share its process id and
+send nothing. When an owner process exits, the daemon releases its
+disposable pages and empty windows by itself. Kept, changed and front
+pages stay either way.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 `SAFARI_HARNESS_HTTP` (CLI/MCP). The extension reads `daemonPort` from

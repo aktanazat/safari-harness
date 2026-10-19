@@ -188,6 +188,20 @@ test("an exited agent's kept page and window remain intact without disposable co
   expect(s.closed.filter(tab => tab === page.id || tab === his.id)).toEqual([]);
 });
 
+// From 10-14 to 10-19 a window ended only at a turn end omp never sent, and
+// every exited agent's window stayed in his Safari.
+test("an exited agent's window that holds only its page closes without a turn end", async () => {
+  const s = safari();
+  const x = agent();
+  const t = await runAs(x.pid, () => openTab("https://exit.example/", true));
+  const page = pageIn(s.tabs, t.windowId)!;
+  await runAs(x.pid, () => callTool("close", { tab: t.id }));
+  x.kill();
+  await x.exited;
+  await until(() => s.closed.includes(page.id), 8000);
+  expect(s.tabs.has(page.id)).toBe(false);
+}, 15_000);
+
 test("a copied marker URL does not authorize adopting or deleting an unknown group", async () => {
   const s = safari();
   const copied = { id: next++, url: `http://127.0.0.1:37334/space?title=foreign&owner=999999&id=unregistered`, windowId: next++, active: true };
@@ -212,8 +226,8 @@ test("when an agent's turn ends its window closes with its tabs, unless it holds
   await until(() => s.closed.includes(pages[2]), 8000);
   expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false, true]);
   for (const p of [keeper, working, done]) p.kill();
-  // An exit closes no tab (6fc219a), and the files after this one reuse
-  // these tab ids: the working agent's tab closes at its admitted cleanup.
+  // The files after this one reuse these tab ids: the working agent's tab
+  // closes at its cleanup.
   await endTurn(working.pid);
 }, 15_000);
 

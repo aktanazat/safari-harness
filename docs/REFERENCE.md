@@ -104,9 +104,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   close turns groups off for a day; `~/.local/share/safari-harness/groups-off.json`
   says why, and removing it turns them on sooner. `safari doctor` warns
   while it is there, and each agent is told why once, not on every open.
-- When your process exits, your turn ends and the window holds only its
-  page, or the window has held only its page for two minutes, the task
-  ends. A plain window's page closes: the window goes with
+- When your turn ends or your process exits and the window holds only its
+  page, the task ends. A plain window's page closes: the window goes with
   your last tab, and a tab you kept stays there for him. A tab group's tabs
   left for him (kept) move to windows of their own, then the group is
   deleted with its page, again only while he is away from the keys. A
@@ -114,20 +113,17 @@ Safari is the user's everyday browser, so treat his tabs as his.
   `~/.local/share/safari-harness/groups.json`; the keeper tries it again
   ten minutes later, or the next keeper does. Until then its page says
   the task has ended.
-- Your tabs close when your turn ends: as omp hands the turn back to the
-  user, or he interrupts it, it tells the daemon (`omp/index.ts`), which
-  closes every tab you opened, and tabs they opened, whether you called it
-  through MCP, the CLI, or a `repl --session`, and then your window. A finished task needs no
-  `close` call. One the user has in front
-  stays until he has left it for 20 minutes. Outside omp they close within
-  a few seconds after your agent process exits (claude, codex, a bun or
-  python script, or the terminal's login session); the daemon keeps that
-  list, with when each tab was last used, across its own restarts. A tab
-  nobody has used for 20 minutes closes too, unless the user has it in
-  front. Past 8 tabs open, your least recently used one closes as you open
-  another, unless an action has changed its page.
+- Your tabs close when your turn ends: as omp's main session hands the turn
+  back to the user, it tells the daemon (`omp/index.ts`), which closes every
+  tab you opened, and tabs they opened, whether you called it through MCP,
+  the CLI, or a `repl --session`, and then your window. A subagent's end
+  closes nothing, since it shares the process. A finished task needs no
+  `close` call. One the user has in front stays. Outside omp, and for any
+  tab a turn end left, they close within a few seconds after your agent
+  process exits (claude, codex, omp, a bun or python script); the daemon
+  keeps that list across its own restarts.
   Your next call on a tab of
-  yours closed at your turn's end or unused opens its page again in your
+  yours closed at your turn's end opens its page again in your
   window, loaded fresh under a new id; the answer carries a `note` and
   `replaced: {from, to}`, and the old id still reaches it. An action there
   (a click, typing) does not run, since its refs and anything typed are
@@ -158,14 +154,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
 
 ### Cleanup authority
 
-- The owning omp runtime authorizes cleanup from its current task, jobs,
-  admitted inputs and handoff state. An ended answer, cancellation, process
-  exit, page age or tab count is not completion. Older runtimes without this
-  authority leave pages open.
-- Cleanup first drains active calls without closing anything. The runtime
-  rechecks eligibility, then Safari checks the exact prepared tab ids and
-  call generation before awaiting physical closure. New work invalidates
-  preparation; input after release is committed waits until release settles.
+- The main session's final turn end and the owning process's exit release
+  disposable pages. A subagent's end, cancellation mid-turn, page age or
+  tab count release nothing.
+- Cleanup first drains active calls without closing anything. Safari then
+  checks the exact prepared tab ids and call generation before closing. New
+  work invalidates the preparation.
 - Kept pages, changed pages (including script actions), site sessions,
   pending handoffs, unsent forms and his front tab stay open. `close` a
   changed page only when its work is safe to discard; `keep` a page

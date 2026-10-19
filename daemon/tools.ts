@@ -344,22 +344,24 @@ function own(tab: number, owner: number | undefined) {
 
 function remember(tab: number, owner: number | undefined, used = Date.now()) {
   harnessTabs.set(tab, { owner, used, seen: bridge.extensionInfo?.connectedAt });
-  if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => orphan(owner)));
+  if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => exited(owner)));
   sweeper ??= setInterval(sweep, 60_000);
   sweeper.unref();
 }
 
 function orphan(owner: number) {
-  watches.delete(owner);
   for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
   save();
   void sweep();
 }
 
-// Record that the user stopped the owner, without inventing task authority.
-// Only an admitted cleanup may release its disposable pages.
+function exited(owner: number) {
+  watches.delete(owner);
+  orphan(owner);
+  void endTurn(owner).catch(() => {});
+}
+
 export function closeTabsOf(owner: number): void {
-  watches.get(owner)?.();
   orphan(owner);
 }
 

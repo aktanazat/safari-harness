@@ -228,9 +228,8 @@ const rpcServer = Bun.serve({
         if (--inFlight === 0) for (const wake of idle) wake();
       }
     }
-    // The owning runtime drains first, rechecks canonical task/job/input
-    // authority, then commits these exact resources. A legacy turn-end
-    // request without a preparation cannot establish that authority.
+    // The caller drains first, then releases the exact resources it was
+    // given; a newer call in between invalidates the preparation.
     if ((url.pathname === "/turn-end/prepare" || url.pathname === "/turn-end") && req.method === "POST") {
       const body = safeParse(await req.text());
       const owner = body?.owner;

@@ -22,11 +22,11 @@
 // keeper missed 55 of 91 deletes as the user worked, each miss an empty
 // window left in his Safari.
 //
-// An admitted completion ends an empty owned window. A process exiting or
-// a page being old is not completion authority: background work may still
-// need its resources. A group waits for the keeper and remains intact
-// while it contains any protected or foreign page. Only a caller's own
-// call may start a Safari the user quit; ended windows wait while it is gone.
+// A turn's end or its agent's exit ends an empty owned window: an exited
+// agent can use none of its windows again. A group waits for the keeper and
+// remains intact while it contains any protected or foreign page. Only a
+// caller's own call may start a Safari the user quit; ended windows wait
+// while it is gone.
 // The windows are saved as they change, so a restarted daemon picks up
 // where the last left off (loadSpaces). A page with no durable ownership
 // record is not enough evidence to close a window.
@@ -157,6 +157,7 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
       const off = groupsOff();
       const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
+      watchExit(owner);
       sweepSoon();
       save();
       note("window opened", { name, owner: owner ?? null });
@@ -185,11 +186,23 @@ export function loadSpaces(path: string): void {
   for (const s of saved.spaces ?? []) {
     delete s.done;
     spaces.set(s.key, s);
+    watchExit(s.owner);
     sweepSoon();
   }
-  for (const s of saved.closing ?? []) { delete s.done; closing.set(s.name, s); }
-  for (const s of saved.ended ?? []) { delete s.done; ended.add(s); }
+  for (const s of saved.closing ?? []) { delete s.done; closing.set(s.name, s); watchExit(s.owner); }
+  for (const s of saved.ended ?? []) { delete s.done; ended.add(s); watchExit(s.owner); }
   sweepSoon();
+}
+
+const exitWatched = new Set<number>();
+
+function watchExit(owner: number | undefined) {
+  if (owner === undefined || exitWatched.has(owner)) return;
+  exitWatched.add(owner);
+  watchOwner(owner, () => {
+    exitWatched.delete(owner);
+    void turnEnded(owner).catch(() => {});
+  });
 }
 
 function save() {
