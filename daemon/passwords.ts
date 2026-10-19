@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
+import { isAway } from "./phone.ts";
 import { site as siteOf } from "./receipt.ts";
 import { keepSecret } from "./redact.ts";
 import { memSecretVault, type Vault } from "./vault.ts";
@@ -816,6 +817,11 @@ export class ApplePasswords {
       const known = this.kept.get(ask.key) ?? (this.pending?.key === ask.key ? this.pending : undefined);
       if (known) return known;
       const s = await this.session();
+      // A prompt nobody answers holds the helper for every agent: in the
+      // two weeks of logs before 10-19, 9 passwords calls failed on one,
+      // and the call that shows one waits out its 25 s first. So with the
+      // user away, nothing is asked; a probe that fails reads as at the Mac.
+      if (await isAway().catch(() => false)) throw new Error(`the user is away from the Mac, where Apple Passwords asks for his Touch ID before it gives ${ask.what}, so nothing was asked: a prompt no one answers holds the helper for every agent. Call handoff on this tab, which alerts his phone and ends once he has done the step himself, or call ${ask.again} again once he is back`);
       const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), gaveUp: false };
       this.pending = next;
       next.reply.then(() => {

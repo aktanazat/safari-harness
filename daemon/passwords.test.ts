@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, jest, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, jest, mock, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -309,6 +309,43 @@ test("a fill waiting on Touch ID answers before the agent's call ends, and the s
   expect(page).toEqual({ username: USER, password: SECRET });
 });
 
+// In the two weeks of logs before 10-19, 9 passwords calls failed on a
+// Touch ID prompt nobody was at the Mac to answer: the call that showed it
+// waited out its 25 s, and the prompt then held Apple's helper for every
+// agent, once for 44 minutes.
+test("away from the Mac, a fill the vault cannot do asks for no Touch ID and answers at once, naming handoff; an away probe that fails reads as at the Mac", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const { helper } = await paired(p);
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  expect(await locked(p.fill(7))).toBe(`the user is away from the Mac, where Apple Passwords asks for his Touch ID before it gives a sign-in for ${SITE}, so nothing was asked: a prompt no one answers holds the helper for every agent. Call handoff on this tab, which alerts his phone and ends once he has done the step himself, or call fill again once he is back`);
+  expect([helper.queries, page]).toEqual([[`4 ${SITE}`], {}]);
+  spyOn(phone, "isAway").mockRejectedValue(new Error("the away probe timed out"));
+  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
+  expect(helper.queries).toEqual([`4 ${SITE}`, `4 ${SITE}`, `5 ${SITE}`]);
+});
+
+test("a sign-in the user approved before he walked away still fills, asking nothing more", async () => {
+  const { p, clock } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const hold = touchId();
+  const helper = appleHelper();
+  bridgeTo(p, helper, { hold });
+  await runAs(AGENT, async () => {
+    await p.pair();
+    await p.unlock(CODE);
+  });
+  const answering = clock.armed();
+  const first = locked(runAs(AGENT, () => p.fill(7)));
+  await answering;
+  clock.runOut();
+  await first;
+  hold.approve();
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
+  expect([page, helper.queries.filter((q) => q.startsWith("5 "))]).toEqual([{ username: USER, password: SECRET }, [`5 ${SITE}`]]);
+});
+
 test.each(["status", "fill"] as const)("after a dismissed Touch ID prompt, %s releases the abandoned request so a new pairing can fill", async (action) => {
   const { p, clock } = scratch(undefined, async () => false);
   const page = fakeTab(`https://${SITE}/signin`);
@@ -544,9 +581,13 @@ function lockedVault() {
   return { prompts: spyOn(pair, "askCode").mockReturnValue(typed.promise), type: () => typed.resolve({ code: CODE }) };
 }
 
-// After every test: the spies, the clock, and the away flag go back, and
-// the secrets typed into tab 7 are dropped.
+// Before every test the user is at the Mac, so no test reads this Mac's own
+// idle time. After every test: the spies, the clock, and the away flag go
+// back, and the secrets typed into tab 7 are dropped.
 const away = process.env.SAFARI_HARNESS_AWAY;
+beforeEach(() => {
+  process.env.SAFARI_HARNESS_AWAY = "0";
+});
 afterEach(() => {
   mock.restore();
   jest.useRealTimers();

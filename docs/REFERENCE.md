@@ -1721,7 +1721,10 @@ Passwords' login and replaces the vault's copy.
 - The Mac may ask the user to approve the password with Touch ID. The
   call waits 25 s for him, then says the Mac is asking while the request
   goes on: ask him to approve, then call `fill` again. That call gets the
-  password he approved (kept 5 minutes) with no second prompt. Until he
+  password he approved (kept 5 minutes) with no second prompt. When he is
+  away from the Mac (locked, asleep, or idle 3 minutes), the call asks
+  for nothing and says so at once: `handoff` the tab, which alerts his
+  phone, or call again once he is back. Until he
   acts, Apple's helper answers nothing else, so every other `passwords`
   call, from any agent, waits for him and runs once he has; one still
   waiting 25 s after it began says what it waits on, and whether the
