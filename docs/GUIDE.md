@@ -25,7 +25,8 @@ Tabs
 Turns
 - One step per call: `run` for several tools (`safari run --steps-file`
   when steps hold quotes); `repl` for loops, downloads, and a site's API
-  (gmail, slack), with one `--session` name per task.
+  (gmail, slack), with one `--session` name per task. Write a script or
+  steps file and run it in the same message: one turn, not two.
 - More than three pages of one kind: one `map` call (up to 20 addresses,
   4 at a time). A listing and the pages it links to are one call too:
   `map {urls: [listing], follow: {match: "a.item"}}`. Never a loop of

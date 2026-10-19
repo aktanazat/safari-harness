@@ -6,9 +6,9 @@ description: Read for any browser work that needs javascript, the owner's login 
 Page work goes through the safari MCP tools (`open`, `snapshot`, `map`,
 `repl`, ...). The `safari` CLI is for `guide`, `doctor`, `--help`,
 `routine`, `do`, and for programs that cannot call the tools: write code
-to a file and run `safari eval --file path --tab N` or `safari repl --file
-path`, never escaped onto one line. If `safari` is not found, it is `bun
-~/Developer/safari-harness/cli/safari.ts`.
+to a file and run it in the same message (`safari eval --file path --tab
+N`, `safari repl --file path`), never escaped onto one line. If `safari`
+is not found, it is `bun ~/Developer/safari-harness/cli/safari.ts`.
 
 The card below is what `safari guide` prints: you have it, so do not run
 that.
