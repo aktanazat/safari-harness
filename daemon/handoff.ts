@@ -32,7 +32,8 @@ const LIMIT_MS = 110000;
 const SLICE_MS = 15000;
 
 // alert: true tells this call to send the alert; alerted is how it went.
-type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; byItself?: true; joined?: true; alerted?: string; alert?: true; id?: number; hint?: string };
+// why is what the user is to do, as the call that started it said.
+type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; byItself?: true; joined?: true; alerted?: string; alert?: true; id?: number; why?: string; hint?: string };
 
 // Who checks the page, by the kind challenge.ts names, for the card's title.
 const VENDOR: Record<string, string> = { cloudflare: "Cloudflare", akamai: "Akamai", datadome: "DataDome", imperva: "Imperva", perimeterx: "HUMAN", "aws-waf": "AWS", kasada: "Kasada", apple: "Apple", recaptcha: "reCAPTCHA", hcaptcha: "hCaptcha", arkose: "Arkose", geetest: "GeeTest" };
@@ -40,8 +41,9 @@ const VENDOR: Record<string, string> = { cloudflare: "Cloudflare", akamai: "Akam
 // The handoff as Akyl's app shows it (akyl in phone.ts). Sent again while
 // calls wait on it, it stays up as long as the daemon would watch it with no
 // call waiting: 5 minutes, or 30 for one a background call started.
-function card(tab: number, why: string, h: Handed, background: boolean): Record<string, unknown> {
+function card(tab: number, h: Handed, background: boolean): Record<string, unknown> {
   const site = h.url && URL.canParse(h.url) ? new URL(h.url).hostname.replace(/^www\./, "") : "a site";
+  const why = h.why ?? "";
   const reason = h.challenge ? "botCheck" : /passkey/i.test(why) ? "passkey" : /touch id|face id|fingerprint/i.test(why) ? "biometric" : /sign.?in|log.?in|password|code/i.test(why) ? "login" : "other";
   return {
     key: `safari-${tab}-${h.id}`,
@@ -79,7 +81,7 @@ async function alertUser(tab: number, h: Handed, end: number, shown: Record<stri
 // this call stops; only the daemon keeps watching the handoff. An alert
 // already sending cannot be recalled, and its late outcome is not reported
 // by a continuation: a CLI caller exits as soon as it prints the answer.
-async function handoff(given: unknown, why: string, ms = 60000, until?: string, background = false, id?: number): Promise<Handed> {
+async function handoff(given: unknown, why: string | undefined, ms = 60000, until?: string, background = false, id?: number): Promise<Handed> {
   const start = Date.now();
   const end = start + Math.min(ms, LIMIT_MS);
   const expired = Symbol("handoff deadline");
@@ -97,7 +99,7 @@ async function handoff(given: unknown, why: string, ms = 60000, until?: string, 
       // the user has the step, ended with the handoff.
       const wait = async (o: { ms: number; away?: boolean; alerted?: string; id?: number; until?: string; background?: true }) => {
         try {
-          h = (await beforeEnd(rpc("handoff_wait", { tab, why, ...o }))) as Handed;
+          h = (await beforeEnd(rpc("handoff_wait", { tab, ...(why === undefined ? {} : { why }), ...o }))) as Handed;
         } catch (e) {
           // the tab closed, or the site blocked the browser: nobody can do the step now
           if (e !== expired && h.alerted?.startsWith("sent")) await akyl("/handoff/end", { key: `safari-${tab}-${h.id}`, state: "cancelled" }).catch(() => undefined);
@@ -106,7 +108,7 @@ async function handoff(given: unknown, why: string, ms = 60000, until?: string, 
         heardAt = Date.now();
         if (h.alerted?.startsWith("sent")) {
           if (h.done) await beforeEnd(akyl("/handoff/end", { key: `safari-${tab}-${h.id}`, state: "done" }).catch(() => undefined));
-          else void akyl("/handoff", card(tab, why, h, background)).catch(() => undefined);
+          else void akyl("/handoff", card(tab, h, background)).catch(() => undefined);
         }
         return h;
       };
@@ -114,7 +116,7 @@ async function handoff(given: unknown, why: string, ms = 60000, until?: string, 
       // later ones join it, and a background check names it by id
       first = await wait({ ms: 0, ...(until === undefined ? {} : { until }), ...(background ? { background: true } : {}), ...(id === undefined ? {} : { id }) });
       while (!h.done && Date.now() < end) {
-        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end, card(tab, why, h, background)).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
+        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end, card(tab, h, background)).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
         if (alerted !== undefined) h = { ...h, alerted };
         // A probe that fails reads as at the Mac: the notification is up either way.
         const away = alerted === undefined && h.alerted === undefined && (await beforeEnd(isAway().catch(() => false)));
@@ -144,6 +146,7 @@ function answer(h: Handed, first: Handed | undefined, background: boolean): Hand
   const out: Handed = { ...h, alerted: h.alerted ?? "not sent: at the Mac" };
   if (!background) delete out.id;
   delete out.alert;
+  delete out.why;
   if (out.alerted === "sending") out.alerted = "sending; outcome not confirmed";
   if (!out.done) {
     out.hint = !background ? "call handoff again on the same tab"
@@ -165,9 +168,10 @@ export const HANDOFF_TOOLS: Record<string, Tool> = {
       background: { type: "boolean", description: "return at once" },
       id: { type: "number", description: "a background handoff's" },
     },
-    required: ["tab", "why"],
+    required: ["tab"],
     run: async (a) => {
-      if (typeof a.why !== "string") throw new Error("why must be a string");
+      if (a.why !== undefined && typeof a.why !== "string") throw new Error("why must be a string");
+      if (a.why === undefined && a.id === undefined) throw new Error("why must say what the user is to do");
       if (a.until !== undefined && typeof a.until !== "string") throw new Error("until must be text the page shows once the user is done");
       const ms = a.ms === undefined ? undefined : Number(a.ms);
       if (ms !== undefined && !Number.isFinite(ms)) throw new Error("ms must be a number");

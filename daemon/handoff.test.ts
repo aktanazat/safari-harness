@@ -531,3 +531,26 @@ test("a site that blocks the browser after the alert ends Akyl's card as no long
   expect(told.map((x) => x.path)).toEqual(["/handoff", "/handoff/end"]);
   expect(told[1]?.body).toEqual({ key: told[0]?.body.key, state: "cancelled" });
 });
+
+// On 10-19 an agent checking its background handoff by id was refused for
+// leaving out why, which the call that started it had already given.
+test("a background handoff checked by its id alone alerts a user who walked away since with the step it was started with", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(91, page);
+  const told = toldAkyl();
+  let started: Background | undefined;
+  void background(91).then((r) => (started = r));
+  await tick();
+  const id = started?.id;
+  expect(typeof id).toBe("number");
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  const t = taken((a) => a.alerted !== undefined);
+  let checked: Background | undefined;
+  void HANDOFF_TOOLS.handoff.run({ tab: 91, background: true, id }).then((r) => (checked = r as Background));
+  await t;
+  expect(checked).toMatchObject({ done: false, joined: true, alerted: "sent" });
+  expect(told[0]).toMatchObject({ path: "/handoff", body: { task: "Clear the check", minutes: 30 } });
+  expect(m.notices).toEqual(["Clear the check"]);
+  page.check = undefined;
+  await tick();
+});

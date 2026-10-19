@@ -1175,6 +1175,9 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 // and a background call's check), so they do not start another.
 type Handoff = {
   id: number;
+  // what the user is to do, as the call that started it said: a later call
+  // naming the id may leave it out
+  why: string;
   start: number;
   // settled once the tab is in front with the notice up, or the handoff failed
   begun: PromiseWithResolvers<void>;
@@ -1270,13 +1273,14 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
 // alert them (alert: true) and returns at once; it reports how that went as
 // alerted, so no other call sends one. background, on the call that starts
 // it, keeps it watched BACKGROUND_IDLE_MS with no call waiting.
-async function handoffWait(tab: number, why: string, o: { ms: number; away: boolean; alerted?: string; id?: number; until?: string; background?: true }) {
+async function handoffWait(tab: number, why: string | undefined, o: { ms: number; away: boolean; alerted?: string; id?: number; until?: string; background?: true }) {
   let h = handoffs.get(tab);
   if (h && (h.done || h.error !== undefined) && h.id !== o.id) h = undefined;
   const joined = h !== undefined;
   if (!h) {
+    if (why === undefined) throw new Error(o.id === undefined ? "why must say what the user is to do" : `handoff ${o.id} on this tab is over: start a new one with why`);
     for (const [t, x] of handoffs) if (Date.now() - x.calledAt > x.idleMs && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
-    h = { id: ++handoffCount, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), idleMs: o.background ? BACKGROUND_IDLE_MS : HANDOFF_IDLE_MS };
+    h = { id: ++handoffCount, why, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), idleMs: o.background ? BACKGROUND_IDLE_MS : HANDOFF_IDLE_MS };
     const mine = harnessTabs.get(tab);
     if (mine) mine.handoff = true;
     save();
@@ -1293,7 +1297,7 @@ async function handoffWait(tab: number, why: string, o: { ms: number; away: bool
     if (alert) session.alerted = "sending";
     else if (o.ms > 0) await Promise.race([session.over.promise, new Promise<void>((r) => { timer = setTimeout(r, Math.min(o.ms, 110000)); })]);
     if (session.error !== undefined) throw new Error(session.error);
-    return { id: session.id, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(session.byItself ? { byItself: true } : {}), ...(joined ? { joined } : {}), ...(session.alerted ? { alerted: session.alerted } : {}), ...(alert ? { alert } : {}) };
+    return { id: session.id, why: session.why, done: session.done, waitedMs: Date.now() - session.start, ...session.now, ...(session.byItself ? { byItself: true } : {}), ...(joined ? { joined } : {}), ...(session.alerted ? { alerted: session.alerted } : {}), ...(alert ? { alert } : {}) };
   } finally {
     clearTimeout(timer);
     session.waiting--;
@@ -2241,7 +2245,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Start or join the tab's handoff and wait up to ms for the user.",
     params: {
       tab: TAB,
-      why: { type: "string", description: "for the notice" },
+      why: { type: "string", description: "for the notice; a call with id may leave it out" },
       ms: { type: "number", description: "max 110000" },
       away: { type: "boolean", description: "the user is away from the Mac" },
       alerted: { type: "string", description: "how the alert to the user's phone went" },
@@ -2249,9 +2253,9 @@ export const TOOLS: Record<string, Tool> = {
       until: { type: "string", description: "text the page shows once the user is done" },
       background: { type: "boolean", description: "started by a call that does not wait for the user" },
     },
-    required: ["tab", "why", "ms"],
+    required: ["tab", "ms"],
     hidden: true,
-    run: async (a) => handoffWait(await resolveTab(a.tab), str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }), ...(a.background === true ? { background: true as const } : {}) }),
+    run: async (a) => handoffWait(await resolveTab(a.tab), a.why === undefined ? undefined : str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }), ...(a.background === true ? { background: true as const } : {}) }),
   },
   net: {
     desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends.",

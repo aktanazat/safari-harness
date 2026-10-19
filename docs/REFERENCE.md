@@ -1513,7 +1513,8 @@ does (`safari guide reference acting`), files it downloaded included.
 - `handoff {tab, why, background: true}` hands the tab over the same way
   and returns once the notice is up and his phone is alerted if he is
   away. Go on with other steps, then call it again with `background: true`
-  and the `id` it returned to see whether he is done: that joins the same
+  and the `id` it returned (`why` may be left out then) to see whether he
+  is done: that joins the same
   handoff with no second notice, even after it ended, and alerts his phone
   then if he has walked away since. The daemon watches a background
   handoff for 30 minutes with no call; past that, the next call starts
