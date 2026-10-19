@@ -1,0 +1,14 @@
+<!doctype html>
+<title>Repeated matches</title>
+<!-- Alike things a script took one of by its place (10-05, 10-07, 10-15):
+     price buttons of one name, the first hidden, radio buttons, and list
+     items, one of them with hidden text that only textContent reads. -->
+<button class="price" hidden onclick="said.textContent = 'Pressed the hidden price'">See price</button>
+<button class="price" onclick="said.textContent = 'Pressed price 1'">See price</button>
+<button class="price" onclick="said.textContent = 'Pressed price 2'">See price</button>
+<button class="price" onclick="said.textContent = 'Pressed price 3'">See price</button>
+<label><input type="radio" name="slot" value="9am"> 9 am</label>
+<label><input type="radio" name="slot" value="noon"> Noon</label>
+<label><input type="radio" name="slot" value="5pm"> 5 pm</label>
+<ul><li class="item">One</li><li class="item">Two<span hidden> (sold out)</span></li><li class="item">Three</li></ul>
+<p id="said"></p>

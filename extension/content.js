@@ -1169,8 +1169,13 @@
   // text= is visible text alone, as Playwright writes it: "15" is a ref,
   // text=15 the day 15 in a date picker.
   const CSS_HINT = /[#.[\]:>*=~^$|+()]/;
+  // "<target> >> nth=<i>", as Playwright's locator.nth(i) writes it: the
+  // target's match at i in matchesOf's order, counted from the end when i
+  // is negative.
+  const NTH = /^(.*\S)\s*>>\s*nth=(-?\d+)$/s;
   function resolve(target) {
     const key = String(target).trim();
+    if (NTH.test(key)) return matchesOf(key)[0] ?? null;
     if (key.startsWith("text=")) return byText(key.slice(5));
     if (/^\d+$/.test(key)) {
       const el = refMap.get(key);
@@ -1180,6 +1185,30 @@
       return dom ?? heal(key);
     }
     return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
+  }
+
+  // Every element a target names, in page order, for a locator's count,
+  // nth, and all: a selector's matches, shown or not, as Playwright counts
+  // them; for text, the shown controls of that very name, else the one
+  // element resolve finds. In the two weeks of logs before 10-19, scripts
+  // took the fourth "See out-the-door price" button, the third radio
+  // button, and a gallery's nth thumbnail so, and locators had no nth.
+  function matchesOf(key) {
+    const nth = NTH.exec(key);
+    if (nth) {
+      const el = matchesOf(nth[1]).at(Number(nth[2]));
+      return el ? [el] : [];
+    }
+    const ref = /^\d+$/.test(key);
+    const text = key.startsWith("text=");
+    if (!ref && !text && CSS_HINT.test(key)) {
+      try { return deepQueryAll(key); } catch { /* not a selector: text */ }
+    }
+    const want = ref ? "" : (text ? key.slice(5) : key).replace(/\s+/g, " ").trim().toLowerCase();
+    const named = want ? [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]).filter((el) => isInteractive(el) && shown(el) && accessibleName(el).replace(/\s+/g, " ").toLowerCase() === want) : [];
+    if (named.length) return named.map(fieldOf);
+    const one = resolve(key);
+    return one ? [one] : [];
   }
 
   // A label stands for its field. The snapshot gives a label that wraps its
@@ -3453,16 +3482,14 @@
 
   // One fact about the element a target names (ref, selector, or text, as
   // actions take them), for the REPL's locators. count and visible answer
-  // for a target that matches nothing; the rest report it missing.
+  // for a target that matches nothing, and texts and innerTexts with every
+  // match's text, as allTextContents and allInnerTexts read them; the rest
+  // report it missing.
   function elementInfo(target, what, name) {
     const key = String(target).trim();
-    if (what === "count") {
-      if (/^\d+$/.test(key)) return { value: resolve(key) ? 1 : 0 };
-      if (CSS_HINT.test(key)) {
-        try { return { value: deepQueryAll(key).length }; } catch { /* not a selector: count by text */ }
-      }
-      return { value: resolve(key) ? 1 : 0 };
-    }
+    if (what === "count") return { value: matchesOf(key).length };
+    if (what === "texts") return { value: matchesOf(key).map((el) => el.textContent) };
+    if (what === "innerTexts") return { value: matchesOf(key).map((el) => el.innerText ?? el.textContent) };
     const el = resolve(key);
     if (what === "visible") return { value: !!el && shown(el) };
     if (!el) return missing(target);

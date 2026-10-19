@@ -325,3 +325,65 @@ test("page.waitForChange waits for lines the page did not have, as wait's change
   expect((await repl.run("await page.waitForChange({ timeout: 1000 })")).error).toContain("nothing new appeared within 1 s");
   expect(asked).toEqual([{ tab: 7, changed: true, ms: 10_000 }, { tab: 7, changed: true, ms: 1000 }]);
 });
+
+// In the two weeks of logs before 10-19, three scripts took a locator's nth
+// match and one its last, which locators lacked. The page counts matches
+// (matchesOf in content.js), so each locator names its place in its target.
+test("a locator's nth, last, and all name each match by its place, and allTextContents reads every match in one call", async () => {
+  const calls: [string, Record<string, unknown>][] = [];
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    calls.push([tool, args]);
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Booking" };
+    if (tool === "element" && args.what === "count") return 3;
+    if (tool === "element" && args.what === "texts") return ["9 am", "Noon", "5 pm"];
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  const script = [
+    "await openTab('https://example.com')",
+    "const slots = page.locator('input[type=radio]')",
+    "await slots.nth(2).click()",
+    "await slots.last().click()",
+    "const all = await slots.all()",
+    "const texts = await slots.allTextContents()",
+    "all.map((s) => s.target).join(', ') + ': ' + texts.join(', ')",
+  ];
+  expect(await repl.run(script.join("\n"))).toEqual({ output: "input[type=radio] >> nth=0, input[type=radio] >> nth=1, input[type=radio] >> nth=2: 9 am, Noon, 5 pm" });
+  expect(calls.filter(([tool]) => tool === "click")).toEqual([
+    ["click", { tab: 7, ref: "input[type=radio] >> nth=2" }],
+    ["click", { tab: 7, ref: "input[type=radio] >> nth=-1" }],
+  ]);
+  expect(calls.filter(([tool]) => tool === "element").map(([, a]) => a.what)).toEqual(["count", "texts"]);
+});
+
+// On 10-05 a script waited with page.waitForFunction for a button to show.
+test("page.waitForFunction runs the function in the page until it returns something truthy, and returns that", async () => {
+  let looks = 0;
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Tires" };
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://example.com/", title: "Tires" }] };
+    if (tool === "eval") return { result: ++looks < 3 ? false : args.expression };
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  const r = await repl.run("await openTab('https://example.com')\nawait page.waitForFunction((label) => document.body.innerText.includes(label), 'See price')");
+  expect(r).toEqual({ output: '((label) => document.body.innerText.includes(label))("See price")' });
+  expect(looks).toBe(3);
+  looks = -1e9;
+  expect((await repl.run("await page.waitForFunction(() => false, undefined, { timeout: 1000 })")).error).toContain("the function returned nothing truthy within 1 s");
+});
+
+// 5 of the 8 "Bun is not defined" in the two weeks of logs before 10-19 came
+// from Bun.write, which scripts reach for to save a page's text.
+test("Bun.write writes a file, its relative path from the session's folder as fs's are, and returns the bytes written", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "repl-test-"));
+  const repl = new ReplSession("test", { cwd, invoke: async () => ({ ok: true }) });
+  expect(await repl.run("await Bun.write('notes/today.md', 'héllo')")).toEqual({ output: "6" });
+  expect(readFileSync(join(cwd, "notes", "today.md"), "utf8")).toBe("héllo");
+});
+
+test("imessage.search passes the chat it keeps to the search tool", async () => {
+  const { repl, calls } = session();
+  await repl.run("await imessage.search('lunch', { chat: 'Mom' })");
+  expect(calls.filter(([tool]) => tool === "imessage_search")).toEqual([["imessage_search", { text: "lunch", chat: "Mom" }]]);
+});

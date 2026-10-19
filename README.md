@@ -291,7 +291,7 @@ safari click --help                    # a command's arguments and what they tak
 safari do "find the price of X on example.com"
 safari session list                    # agent runs; resume, steer, queue, stop, delete
 safari repl "const p = await openTab('https://example.com'); console.log((await snapshot(p)).tree)"
-safari repl --session work "console.log(await gmail.search(0, 'from:bank', {limit: 5}))"
+safari repl --session work "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)"
 safari fill address --tab 7            # name, address, email, phone from your Contacts card
 safari fill login --bitwarden --tab 7  # a Bitwarden login, never printed
 safari --host studio tabs              # another Mac's Safari, through ssh

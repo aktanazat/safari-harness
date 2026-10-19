@@ -222,6 +222,25 @@ export class Locator {
   first(): Locator {
     return this;
   }
+  // The match at i, counted from 0, or from the end when negative, in the
+  // page's order (matchesOf in content.js): in the two weeks of logs before
+  // 10-19, three scripts called nth and one last, which locators lacked.
+  nth(i: number): Locator {
+    return new Locator(this.#page, `${this.target} >> nth=${i}`);
+  }
+  last(): Locator {
+    return this.nth(-1);
+  }
+  async all(): Promise<Locator[]> {
+    return Array.from({ length: await this.count() }, (_, i) => this.nth(i));
+  }
+  // Every match's text, in one call to the page.
+  allTextContents(): Promise<string[]> {
+    return this.#fact("texts") as Promise<string[]>;
+  }
+  allInnerTexts(): Promise<string[]> {
+    return this.#fact("innerTexts") as Promise<string[]>;
+  }
   async screenshot(opts: { path?: string } = {}): Promise<Buffer> {
     return this.#page.shot({ ref: this.target, path: opts.path });
   }
@@ -468,6 +487,19 @@ export class Page {
     const matches = (u: string) => (typeof want === "function" ? Boolean(want(new URL(u))) : Object.prototype.toString.call(want) === "[object RegExp]" ? (want as RegExp).test(u) : glob ? glob.test(u) : u === text || u.includes(text));
     while (!matches((await this.info()).url)) {
       if (Date.now() - start > limit) throw new Error(`url did not match within ${Math.round(limit / 1000)} s; it is ${this.#url}`);
+      await Bun.sleep(250);
+    }
+  }
+  // Ends once fn, run in the page as evaluate runs it, returns something
+  // truthy, and returns that: on 10-05 a script waited so for a button to
+  // show, and the page had no waitForFunction.
+  async waitForFunction(fn: unknown, arg?: unknown, opts: { timeout?: number } = {}): Promise<unknown> {
+    const limit = opts.timeout ?? 30_000;
+    const start = Date.now();
+    for (;;) {
+      const value = await this.evaluate(fn, arg);
+      if (value) return value;
+      if (Date.now() - start > limit) throw new Error(`the function returned nothing truthy within ${Math.round(limit / 1000)} s`);
       await Bun.sleep(250);
     }
   }
@@ -1004,6 +1036,19 @@ export class ReplSession {
       pwd: this.cwd,
       fs: rootedFs(this.cwd),
       path: rootedPath(this.cwd),
+      // Bun.write, as scripts reach for it to save a page's text: 5 of the 8
+      // "Bun is not defined" in the two weeks of logs before 10-19. Its path
+      // starts in the session's folder, as fs's do, and its folders are made
+      // as Bun's are; the rest of Bun is not here.
+      Bun: {
+        write: async (file: string, data: string | Blob | ArrayBuffer | Uint8Array | Response) => {
+          const to = nodePath.resolve(this.cwd, String(file));
+          const bytes = new Uint8Array(await (data instanceof Response ? data : new Response(data)).arrayBuffer());
+          await fsp.mkdir(nodePath.dirname(to), { recursive: true });
+          await fsp.writeFile(to, bytes);
+          return bytes.byteLength;
+        },
+      },
       Buffer,
       setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, structuredClone,
       URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, AbortSignal,

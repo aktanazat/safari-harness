@@ -32,6 +32,33 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a target's nth match counts a selector's matches in page order, shown or not, and from the end when negative",
+    page: "nth.html",
+    steps: [
+      { op: "element", args: ["input[type=radio] >> nth=2", "attr", "value"], answer: { value: { value: "5pm" } } },
+      { op: "element", args: [".item >> nth=-1", "text"], answer: { value: { value: "Three" } } },
+      { op: "element", args: [".price", "count"], answer: { value: { value: 4 } } },
+      { op: "element", args: [".item >> nth=3", "text"], answer: { error: "nothing on the page matches .item >> nth=3" } },
+    ],
+  },
+  {
+    name: "a text target's matches are the shown controls of that name, so its count counts them and nth clicks the one in that place",
+    page: "nth.html",
+    steps: [
+      { op: "element", args: ["See price", "count"], answer: { value: { value: 3 } } },
+      { op: "click", args: ["See price >> nth=1"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Pressed price 2") } } },
+    ],
+  },
+  {
+    name: "texts answers every match's textContent and innerTexts every match's shown text, in page order",
+    page: "nth.html",
+    steps: [
+      { op: "element", args: [".item", "texts"], answer: { value: { value: ["One", "Two (sold out)", "Three"] } } },
+      { op: "element", args: [".item", "innerTexts"], answer: { value: { value: ["One", "Two", "Three"] } } },
+    ],
+  },
+  {
     name: "a snapshot that keeps hidden text still leaves out script, style, and noscript source",
     page: "source.html",
     steps: [{ op: "snapshot", args: [{ showHidden: true }], answer: { value: { snapshot: "Shown text. · Collapsed menu text." } } }],

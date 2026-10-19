@@ -15,7 +15,7 @@ safari repl "const p = await openTab('https://example.com')"
 safari repl "console.log(await p.title())"   # your next call still has p
 safari repl --session work "const p = await openTab('https://example.com')"
 safari repl --session work "console.log((await snapshot(p)).tree)"
-echo "console.log(await gmail.search(0, 'from:bank', {limit: 5}))" | safari repl --session work
+echo "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)" | safari repl --session work
 safari repl --session work --file /tmp/work.js   # in the message that writes it
 safari repl --list                  # sessions still running
 safari repl --close work            # end one; its tabs close
@@ -97,10 +97,13 @@ outside the page: read `document`, `window` and the rest through
   --env VAR` (only a CLI call's own environment is read).
 - Locator: `click fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
-  isChecked count boundingBox first screenshot waitFor`.
+  isChecked count boundingBox first nth last all allTextContents
+  allInnerTexts screenshot waitFor`. `nth(i)` counts a selector's matches
+  in page order, shown or not, and a text's among the shown controls of
+  that name; `last()` is `nth(-1)`, and `all()` one locator per match.
 - Page: `goto goBack goForward reload waitForSelector waitForChange
-  waitForTimeout waitForLoadState waitForURL keyboard.press keyboard.type
-  mouse.click setViewportSize bringToFront close`, and Playwright's
+  waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
+  keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
   shorthands `page.click(target)`, `page.fill(target, text)`,
   `page.type(target, text)`. `waitForChange({timeout})` ends once the page
   shows lines it did not have at the last look (results after a click,
@@ -111,7 +114,9 @@ outside the page: read `document`, `window` and the rest through
   `waitForChange`) instead. `waitForURL` takes a function, a
   RegExp, or Playwright's url glob (`**` any text, `*` any text but `/`,
   `{a,b}` either, `?` itself; it covers the whole url); text with no `*` or
-  `{` matches any url containing it.
+  `{` matches any url containing it. `waitForFunction(fn, arg, {timeout})`
+  runs fn in the page every quarter second until it returns something
+  truthy (30 s at most), and returns that.
 - Downloads: `const [d] = await Promise.all([page.waitForEvent('download'),
   page.locator('Export').click()]); await d.saveAs('report.csv')`.
 - New windows: start `page.waitForEvent('popup')` before the click that
@@ -127,13 +132,14 @@ anything return a draft until called with `approved: true`.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
 `googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`. `safari guide <site>`
-lists each one's methods under "In safari repl".
+lists each one's methods under "In safari repl". A list comes with its
+paging: `gmail.search` answers `{results, hasMore, total, nextOffset}`.
 
 ### Messages
 
 The `imessage` global uses Messages on this Mac, not a browser tab.
 `imessage.getHistory(chat, {limit, since})` and
-`imessage.search(text, {from, days, limit})` return messages with a `files`
+`imessage.search(text, {from, chat, days, limit})` return messages with a `files`
 array. Each file has `{id, name, mime, bytes, downloaded, path?}`; `mime` can
 be null, and `path` appears only when the file is present locally.
 
@@ -156,7 +162,8 @@ own folder, `pwd`. Also `Buffer`, `sleep(ms)`, `display(...)` (same as
 `console.log`), the timers, `URL`, `URLSearchParams`, `TextEncoder`,
 `TextDecoder`, `AbortController`, `Blob`, `Response`, `Headers`,
 `FormData`, `atob`, `btoa`, `crypto`, `performance` and `structuredClone`.
-There is no `process` or `Bun`.
+There is no `process`. Of `Bun` there is only `Bun.write(path, data)`,
+which writes a file, making its folders, and returns the bytes written.
 
 ## When a run goes wrong
 

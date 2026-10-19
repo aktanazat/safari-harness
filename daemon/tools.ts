@@ -2472,10 +2472,10 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => relay(await resolveTab(a.tab), "sendButton", [a.ref === undefined ? null : String(a.ref), str(a.mark, "mark")]),
   },
   // One fact about an element (text, inner HTML, value, attribute, box,
-  // count), for the REPL's locators.
+  // count), or every match's text, for the REPL's locators.
   element: {
     desc: "One fact about the element a ref, selector, or text names.",
-    params: { tab: TAB, ref: REF, what: { type: "string", enum: ["text", "innerText", "html", "value", "checked", "attr", "box", "count", "visible"], description: "which fact" }, name: { type: "string", description: "attribute name, for attr" } },
+    params: { tab: TAB, ref: REF, what: { type: "string", enum: ["text", "innerText", "texts", "innerTexts", "html", "value", "checked", "attr", "box", "count", "visible"], description: "which fact" }, name: { type: "string", description: "attribute name, for attr" } },
     required: ["ref", "what"],
     hidden: true,
     run: async (a) => {
