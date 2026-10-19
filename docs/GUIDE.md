@@ -27,7 +27,9 @@ Turns
   when steps hold quotes); `repl` for loops, downloads, and a site's API
   (gmail, slack), with one `--session` name per task.
 - More than three pages of one kind: one `map` call (up to 20 addresses,
-  4 at a time). Never a loop of `goto`, nor a bash loop of `map` or `eval`.
+  4 at a time). A listing and the pages it links to are one call too:
+  `map {urls: [listing], follow: {match: "a.item"}}`. Never a loop of
+  `goto`, nor a bash loop of `map` or `eval`.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "words"` with

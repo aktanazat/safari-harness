@@ -882,6 +882,18 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   load (listings, prices, search results): read at once, they come back
   empty. A page that never shows it is reported with the tab's address
   and title instead of read. Never sleep inside `expression` for this.
+- `follow: {"match": "a.result-title", "max": 20}` reads each of `urls`
+  as a listing (search results, a category, a feed) instead. map takes
+  the links on it to its own site: the link of each element the CSS
+  selector matches (or the first link inside it, for a card), or each
+  address a `"/regex/"` matches. It reads those pages as it reads `urls`,
+  each once and `max` in all (20 at most), so a search and its results
+  are one call. Each listing comes back as `{url, ok, items, unread}`:
+  `items` are its pages, as `pages` are without `follow`, and `unread`
+  counts the matching links past `max`. A selector is waited for, so a
+  list a script draws late is still read; a listing on which nothing
+  matches fails saying so. `wait` holds each item's read, not the
+  listing's. The 50 s cover the listings and their pages together.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
@@ -900,12 +912,14 @@ time (`concurrency`, at most 6). It returns `pages` in the order of
   `value` is then `{saved, bytes, head}`.
 - `fetch` asks for each address again with its page's cookies and returns
   the body as the server sends it.
-- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--save]`.
+- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save]`.
 - More than 3 pages of the same kind (search results, item pages, a
   site's listings) go through `map`, never a `goto` loop, a bash loop of
   `goto` and `eval`, or a bash loop of `map` calls. One call takes 20
-  addresses; for more, call it again with the next 20. Never sleep
-  between pages: give `wait` instead.
+  addresses; for more, call it again with the next 20. A listing's pages
+  take one call with `follow`, not a map of the listing and another of
+  the addresses it showed. Never sleep between pages: give `wait`
+  instead.
 - When every page timed out because the extension stopped answering, the
   call fails with an error starting `extension stuck:`: map again once, a
   minute later.

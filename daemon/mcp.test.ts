@@ -134,8 +134,10 @@ import { TOOLS } from "./tools.ts";
 // repl tool's crib of its main calls (411) brought it to 27,493: in the
 // two weeks before 10-19 agents ran `safari guide repl` or `safari guide
 // reference` 155 times, 21.8 minutes of their time, most for the few
-// calls a script needs.
-const TOOL_LIST_MAX_BYTES = 27_493;
+// calls a script needs. map's follow (173) brought it to 27,666: in the
+// two weeks of logs before 10-19 an agent copied a map's addresses out of
+// the answer before into its next map 165 times, 153 of them a listing's.
+const TOOL_LIST_MAX_BYTES = 27_666;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

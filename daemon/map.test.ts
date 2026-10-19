@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { callTool } from "./tools.ts";
-import { mapPages, type Page } from "./map.ts";
+import { callTool, formatResult } from "./tools.ts";
+import { followPages, mapPages, type Listing, type Page } from "./map.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
@@ -26,6 +26,12 @@ const ERRORED = "https://ebay.com/sch/i.html?_nkw=lamp";
 // 09-30 (01a0f031).
 const SLOW = "https://slow.example/";
 const SLOW_MS = 31_500;
+
+// A listing (a search's results) and its links in its order, as eval reads
+// them: two items, a help page, an item on another site, one on www, and
+// the first two again, one with a #fragment.
+const LISTING = "https://shop.example/search?q=lamp";
+const LISTED = ["https://shop.example/item/1", "https://shop.example/help", "https://shop.example/item/2#reviews", "https://other.example/item/4", "https://www.shop.example/item/3", "https://shop.example/item/2", "https://shop.example/item/1"];
 
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
@@ -51,6 +57,7 @@ function read(tab: number): { value?: unknown; error?: string } {
   asked.push(`read ${url}`);
   if (url === GONE) return { error: "no tab" };
   if (url === EMPTY) return { value: { error: "no content root" } };
+  if (url === LISTING) return { value: { ok: true, result: LISTED } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
 }
 
@@ -91,8 +98,8 @@ connect({
     if (op !== "relay") return reply(answer(op, args));
     if (args[1] === "wait") {
       const url = tabs.get(Number(args[0]))?.url ?? "";
-      const [, want] = args[2] as [unknown, { text?: string }];
-      asked.push(`wait ${url} for ${want.text}`);
+      const [selector, want] = args[2] as [string | null, { text?: string }];
+      asked.push(`wait ${url} for ${want.text ?? selector}`);
       if (url === SILENT) return void unanswered.push(() => reply({ value: { found: true } }));
       return reply({ value: { found: url !== LOST } });
     }
@@ -354,4 +361,41 @@ test("with save, a map past its time writes a file for each page it answers with
   const saved = pages.map(savedPath);
   expect(saved.map((path) => path !== "")).toEqual([true, true, true, false, false, false]);
   expect(readdirSync(dir).map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
+});
+
+// In the two weeks of logs before 10-19 an agent copied a map's addresses
+// out of the answer before into its next map 165 times, 153 of them a
+// listing's: a search, then its results, took two calls.
+test("map with follow reads a listing and the pages it links to in one call: matching links to its own site, each once, up to max", async () => {
+  readUrls.length = 0;
+  const items = ["https://shop.example/item/1", "https://shop.example/item/2", "https://www.shop.example/item/3"];
+  const { pages } = (await callTool("map", { urls: [LISTING], follow: { match: "/\\/item\\/\\d+$/" } }, false)) as { pages: Listing[] };
+  expect(pages).toMatchObject([{ url: LISTING, ok: true, items: items.map((url) => ({ url, ok: true, value: { text: `text of ${url}` } })) }]);
+  expect(pages[0]).not.toHaveProperty("unread");
+  expect(readUrls.toSorted()).toEqual([LISTING, ...items].toSorted());
+  expect(formatResult({ pages })).toContain(`### ${items[2]} (`);
+  readUrls.length = 0;
+  const capped = (await followPages({ urls: [LISTING], follow: { match: "/\\/item\\//", max: 2 } }, callTool)).pages;
+  expect(capped).toMatchObject([{ ok: true, items: items.slice(0, 2).map((url) => ({ url })), unread: 1 }]);
+  expect(readUrls).toHaveLength(3);
+});
+
+test("follow's selector is waited for on each listing, and a listing that never shows it fails saying so and leads to no reads", async () => {
+  asked.length = 0;
+  const [found, lost] = (await followPages({ urls: [LISTING, LOST], follow: { match: "a.item" }, concurrency: 1 }, callTool)).pages;
+  const links = ["https://shop.example/item/1", "https://shop.example/help", "https://shop.example/item/2", "https://www.shop.example/item/3"];
+  expect(asked).toEqual([`wait ${LISTING} for a.item`, `read ${LISTING}`, `wait ${LOST} for a.item`, ...links.map((url) => `read ${url}`)]);
+  expect(found).toMatchObject({ ok: true, items: links.map((url) => ({ url, ok: true })) });
+  expect(lost).toEqual({ url: LOST, title: "Page Not Found", ms: expect.any(Number), ok: false, error: `it did not show a link matching a.item; the tab is at ${LOST} ("Page Not Found")` });
+});
+
+test("map refuses a follow it cannot use before opening a page, and a listing with no matching link fails saying so", async () => {
+  const before = opened.length;
+  await expect(followPages({ urls: [LISTING], follow: "a.item" }, callTool)).rejects.toThrow('follow must be {"match"');
+  await expect(followPages({ urls: [LISTING], follow: { match: "/(/" } }, callTool)).rejects.toThrow("is not a regex");
+  await expect(followPages({ urls: [LISTING], follow: { match: "a.item", max: 21 } }, callTool)).rejects.toThrow('"max": 1 to 20');
+  expect(opened.length).toBe(before);
+  const [none] = (await followPages({ urls: ["https://shop.example/a"], follow: { match: "/\\/item\\//" } }, callTool)).pages;
+  expect(none).toMatchObject({ ok: false, error: "no link on it to its own site matched /\\/item\\//" });
+  expect(opened.length - before).toBe(1);
 });

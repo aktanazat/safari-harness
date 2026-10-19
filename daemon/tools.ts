@@ -20,7 +20,7 @@ import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
-import { mapPages, MAP_MAX_URLS, type Page } from "./map.ts";
+import { followPages, mapPages, MAP_MAX_URLS, type Listing, type Page } from "./map.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, inLane } from "./lanes.ts";
 import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
@@ -2219,7 +2219,7 @@ export const TOOLS: Record<string, Tool> = {
   map: {
     desc: `Read up to ${MAP_MAX_URLS} pages at once, each in a background tab that closes after: extract (default), snapshot, eval, or fetch. A failed page or a bot check is reported in its place; the rest go on.`,
     params: {
-      urls: { type: "array", items: { type: "string" }, description: "addresses" },
+      urls: { type: "array", items: { type: "string" }, description: "addresses, as strings" },
       what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
       wait: { type: "object", description: 'before each read, as wait takes it: {"text":"…"}' },
       expression: { type: "string", description: "JS, for eval (or reader)" },
@@ -2228,11 +2228,12 @@ export const TOOLS: Record<string, Tool> = {
       as: { type: "string", enum: ["text", "table"], description: "for extract" },
       concurrency: { type: "number", description: "default 4, max 6" },
       save: { description: "true, or an absolute folder: a file per page" },
+      follow: { type: "object", description: `{"match": CSS selector or "/regex/" on the address, "max": ${MAP_MAX_URLS}}: read the links on each url that match, under it` },
     },
     required: ["urls"],
     // The model's map call was checked (guard.ts); its opens, waits, reads,
     // and closes are the harness's, and pass each read the options map has.
-    run: (a) => mapPages(a, (tool, args) => callTool(tool, args, false)),
+    run: (a) => (a.follow === undefined ? mapPages : followPages)(a, (tool, args) => callTool(tool, args, false)),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -2622,7 +2623,7 @@ export function formatResult(value: unknown): string {
   const news = value && typeof value === "object" ? splitNews(value) : null;
   if (news) return `${news.line}\n${formatResult(news.rest)}`;
   if (value && typeof value === "object") {
-    const v = value as Partial<Snapshot & Extract & Chat & Steps> & { page?: unknown; pages?: Page[]; tables?: unknown[] };
+    const v = value as Partial<Snapshot & Extract & Chat & Steps> & { page?: unknown; pages?: (Page | Listing)[]; tables?: unknown[] };
     const warn = v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : "";
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
@@ -2646,13 +2647,18 @@ export function formatResult(value: unknown): string {
       return lines.join("\n");
     }
     // map: each page under its title and address, as its read prints alone;
-    // a read that prints its own title (extract, snapshot) is not given it twice
+    // a read that prints its own title (extract, snapshot) is not given it
+    // twice. A listing map followed has the pages it links to under it.
     if (Array.isArray(v.pages)) {
-      return v.pages.map((p) => {
-        const notes = [`${p.ms} ms`, ...(p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []), ...(p.closeError ? [`not closed: ${p.closeError}`] : [])];
-        const titled = p.ok && !!p.value && typeof p.value === "object" && "title" in p.value;
-        return `## ${p.title && !titled ? `${p.title} — ` : ""}${p.url} (${notes.join("; ")})\n${p.ok ? formatResult(p.value) : `error: ${p.error}`}`;
+      const pages = (list: (Page | Listing)[], level: string): string => list.map((p) => {
+        const notes = [`${p.ms} ms`, ...("challenge" in p && p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []), ...(p.closeError ? [`not closed: ${p.closeError}`] : []), ...("unread" in p && p.unread ? [`${p.unread} more matching links past max`] : [])];
+        const titled = "value" in p && !!p.value && typeof p.value === "object" && "title" in p.value;
+        const head = `${level} ${p.title && !titled ? `${p.title} — ` : ""}${p.url} (${notes.join("; ")})`;
+        if (!p.ok) return `${head}\nerror: ${p.error}`;
+        if (!("items" in p)) return `${head}\n${formatResult(p.value)}`;
+        return `${head}\n${p.items.length ? pages(p.items, `${level}#`) : "no page of its own: its links were read above, or are past max"}`;
       }).join("\n\n");
+      return pages(v.pages, "##");
     }
     // extract as table: each table as one line of JSON
     if (Array.isArray(v.tables)) {

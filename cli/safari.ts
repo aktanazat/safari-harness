@@ -135,7 +135,9 @@ const USAGE = `safari — drive Safari from the terminal
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
                                              (--expression js, --as table, --concurrency 4,
-                                             --wait '{"text":"Price"}' before each read)
+                                             --wait '{"text":"Price"}' before each read,
+                                             --follow '{"match":"a.item"}' to read the
+                                             pages a listing links to)
   safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf needs no tab)
