@@ -419,6 +419,19 @@ export class Page {
     await this.info();
     return this.locator(selector);
   }
+  // Ends once the page shows lines it did not have at the last look, as
+  // wait's changed does (tools.ts), and returns them. A script after a
+  // click or a scroll can rarely name the text to come, so it slept: in the
+  // two weeks of logs before 10-19, 1,935 s past the budget in 19 sessions.
+  async waitForChange(opts: { timeout?: number } = {}): Promise<string[]> {
+    const ms = opts.timeout ?? 10_000;
+    const r = (await this.call("wait", { changed: true, ms })) as { found?: boolean; unanswered?: boolean; added?: string[] };
+    if (r.unanswered === true) throw new Error(`the page gave no answer in time (Safari or the page is slow), so whether it changed within ${Math.round(ms / 1000)} s is unknown; wait again`);
+    if (!r.found) throw new Error(`nothing new appeared within ${Math.round(ms / 1000)} s`);
+    // Then reads where the page is, as waitForTimeout does.
+    await this.info();
+    return r.added ?? [];
+  }
   // Ends once the page is quiet, ms at most, as a wait with only ms does
   // (tools.ts): fixed sleeps in scripts held agents over a minute. The wait
   // tool takes 30 s at a time. Each part goes as the model's own wait: a

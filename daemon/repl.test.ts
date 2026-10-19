@@ -151,17 +151,21 @@ test("page.waitForTimeout counts toward the agent's sleep budget, and past it th
   const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
   expect(await runAs(owner, () => callTool("wait", { tab: 7, ms: 30_000 }, true))).not.toHaveProperty("hint");
   expect(await repl.run("await openTab('https://example.com')\nawait page.waitForTimeout(30_000)")).toEqual({ output: "" });
-  expect((await repl.run("await page.waitForTimeout(30_000)")).output).toMatch(/^hint: you slept 90 s\b.*\bwait with text or selector\b/);
+  expect((await repl.run("await page.waitForTimeout(30_000)")).output).toMatch(/^hint: you slept 90 s\b.*\bpage\.waitForChange\(\)/);
 });
 
 // On 10-16 a script that scrolled and slept in a loop printed "you slept
-// 60 s ...", then 61 s, 62 s ... on 80 lines of one result.
-test("a script that sleeps past the budget again and again prints the sleep hint once, with the latest total", async () => {
+// 60 s ...", then 61 s, 62 s ... on 80 lines of one result. The hint now
+// comes again only once the total has doubled; that one takes its place.
+test("a script told of its sleeps twice prints the sleep hint once, with the latest total", async () => {
   jest.useFakeTimers();
+  // A page that never goes quiet, on a Safari slow to answer: its waits
+  // hold 30 s, then 40 s, then 70 s.
+  const holds = [30_000, 40_000, 70_000];
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
-      if (op === "relay" && args[1] === "wait") jest.advanceTimersByTime(30_000);
+      if (op === "relay" && args[1] === "wait") jest.advanceTimersByTime(holds.shift() ?? 30_000);
       queueMicrotask(() => bridge.handleMessage(JSON.stringify(op === "relay" ? { id, value: { found: true } } : { id, error: `no ${op} here` })));
     },
     close() {},
@@ -173,9 +177,9 @@ test("a script that sleeps past the budget again and again prints the sleep hint
     return { ok: true };
   };
   const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
-  // 30 s slept before the script; its three sleeps go past the budget twice.
+  // 30 s slept before the script; its sleeps are told at 70 s, and at 140 s.
   await runAs(owner, () => callTool("wait", { tab: 7, ms: 30_000 }, true));
-  expect(await repl.run("await openTab('https://example.com')\nfor (let i = 0; i < 3; i++) await page.waitForTimeout(30_000)")).toEqual({ output: expect.stringMatching(/^hint: you slept 120 s\b[^\n]*$/) });
+  expect(await repl.run("await openTab('https://example.com')\nfor (let i = 0; i < 2; i++) await page.waitForTimeout(30_000)")).toEqual({ output: expect.stringMatching(/^hint: you slept 140 s\b[^\n]*$/) });
 });
 
 // On 09-30 (01a0f14c) waitForURL('**/apply/frm?<id>') ran out its 30 s on
@@ -272,6 +276,7 @@ test.each([
   ["page.waitForTimeout", "await page.waitForTimeout(10_000)"],
   ["page.waitForSelector", "await page.waitForSelector('h1')"],
   ["locator.waitFor", "await page.locator('h1').waitFor()"],
+  ["page.waitForChange", "await page.waitForChange()"],
 ])("after %s, page.url() is where the page is, though the wait's answer gave no address", async (_, wait) => {
   const repl = answering({
     wait: { ok: true, found: true, waitedMs: 120 },
@@ -301,4 +306,22 @@ test("a waitForSelector the page gave no answer says whether it appeared is unkn
   const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
   const { error } = await repl.run("await openTab('https://example.com')\nawait page.waitForSelector('h1', { timeout: 1000 })");
   expect(error).toContain("the page gave no answer in time (Safari or the page is slow), so whether h1 appeared within 1 s is unknown; wait for it again");
+});
+
+// A script after a click or a scroll can rarely name the text to come, so
+// it slept: in the two weeks of logs before 10-19, 1,935 s past the sleep
+// budget in 19 sessions, whose hint said to wait on text or a selector.
+test("page.waitForChange waits for lines the page did not have, as wait's changed does, and returns them", async () => {
+  const asked: Record<string, unknown>[] = [];
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://example.com/", title: "Example" }] };
+    if (tool !== "wait") return { ok: true };
+    asked.push(args);
+    return args.ms === 1000 ? { ok: false, found: false, waitedMs: 1000 } : { ok: true, found: true, waitedMs: 400, added: ["Result one", "Result two"] };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  expect(await repl.run("await openTab('https://example.com')\nawait page.click('More')\nconst lines = await page.waitForChange()\nlines.join(' | ')")).toEqual({ output: "Result one | Result two" });
+  expect((await repl.run("await page.waitForChange({ timeout: 1000 })")).error).toContain("nothing new appeared within 1 s");
+  expect(asked).toEqual([{ tab: 7, changed: true, ms: 10_000 }, { tab: 7, changed: true, ms: 1000 }]);
 });

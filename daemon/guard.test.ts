@@ -138,11 +138,30 @@ test("waiting on the clock past a minute in 10 minutes gets a hint to wait on th
   const sleep = () => model(106, "wait", { tab: 7, ms: 30_000 });
   expect(await sleep()).not.toHaveProperty("hint");
   expect(await sleep()).not.toHaveProperty("hint");
-  expect(await sleep()).toMatchObject({ ok: true, hint: "you slept 90 s in the last 10 minutes; wait with text or selector instead: it returns as soon as the page shows it" });
+  expect(await sleep()).toMatchObject({ ok: true, hint: "you slept 90 s in the last 10 minutes; wait on the page instead: with text or a selector it returns once the page shows them, with changed: true (a script's page.waitForChange()) once new lines appear" });
   expect(await model(106, "wait", { tab: 7, text: "Saved" })).not.toHaveProperty("hint");
   // Sleeps older than 10 minutes no longer count.
   jest.advanceTimersByTime(10 * 60_000);
   expect(await sleep()).not.toHaveProperty("hint");
+});
+
+// In the two weeks of logs before 10-19 every wait past the budget carried
+// the hint: 125 answers did, and agents cut it from their output with grep
+// 50 times, 44 in one session.
+test("an agent that keeps sleeping is told once, again when its total doubles, and again 10 minutes on", async () => {
+  jest.useFakeTimers();
+  safari((op) => {
+    if (op === "wait") jest.advanceTimersByTime(30_000);
+    return { value: { found: true } };
+  });
+  // 32 sleeps of 30 s in a row; the last 10 minutes hold 20 of them at most.
+  const told: number[] = [];
+  for (let i = 1; i <= 32; i++) {
+    const r = await model(111, "wait", { tab: 7, ms: 30_000 });
+    if (r && typeof r === "object" && "hint" in r) told.push(i);
+  }
+  // at 90 s, 180 s and 360 s, then at 600 s, 10 minutes after the 360 s
+  expect(told).toEqual([3, 6, 12, 32]);
 });
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44

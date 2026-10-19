@@ -237,6 +237,8 @@ type Streak = { outcome: string; times: number[] };
 type Watch = { act: string | undefined; at: number; calls: Map<string, Streak> };
 const watches = new Map<number, Watch>();
 const sleeps = new Map<number, { at: number; ms: number }[]>();
+// The total each owner was last told it slept, and when.
+const toldSleep = new Map<number, { at: number; total: number }>();
 
 // Tools never stopped: wait and handoff are how an agent waits for a page
 // or the user, and a run's steps are watched one by one.
@@ -289,7 +291,12 @@ function repeat(calls: Map<string, Streak>, key: string, outcome: string, now: n
 }
 
 // A wait with only ms names nothing the agent waits for. Its time counts
-// toward the owner's budget; past it, the answer carries the hint.
+// toward the owner's budget; past it, the answer carries the hint once,
+// and again only when the total has doubled or 10 minutes on. In the two
+// weeks of logs before 10-19 it came with every such wait: 125 answers
+// carried it, and agents cut it from their output with grep 50 times. It
+// names changed, which a script after a click or a scroll can wait on
+// where it cannot name the text to come.
 function slept(owner: number, args: Record<string, unknown>, start: number, result: unknown): unknown {
   if (waitsOnPage(args)) return result;
   const now = Date.now();
@@ -297,8 +304,10 @@ function slept(owner: number, args: Record<string, unknown>, start: number, resu
   recent.push({ at: now, ms: now - start });
   sleeps.set(owner, recent);
   const total = recent.reduce((sum, s) => sum + s.ms, 0);
-  if (total <= SLEEP_BUDGET_MS) return result;
-  return beside(result, "hint", `you slept ${Math.round(total / 1000)} s in the last 10 minutes; wait with text or selector instead: it returns as soon as the page shows it`);
+  const told = toldSleep.get(owner);
+  if (total <= SLEEP_BUDGET_MS || (told !== undefined && now - told.at < SLEEP_MS && total < 2 * told.total)) return result;
+  toldSleep.set(owner, { at: now, total });
+  return beside(result, "hint", `you slept ${Math.round(total / 1000)} s in the last 10 minutes; wait on the page instead: with text or a selector it returns once the page shows them, with changed: true (a script's page.waitForChange()) once new lines appear`);
 }
 
 // An action's own snapshot answers with the page after it, so a snapshot
@@ -338,6 +347,7 @@ function sweep(now: number) {
     else for (const [key, s] of seen.calls) if (now - s.times[s.times.length - 1] >= REPEAT_MS) seen.calls.delete(key);
   }
   for (const [owner, list] of sleeps) if (list.every((s) => now - s.at >= SLEEP_MS)) sleeps.delete(owner);
+  for (const [owner, told] of toldSleep) if (now - told.at >= SLEEP_MS) toldSleep.delete(owner);
   for (const [owner, act] of lastActs) if (now - act.at > FOLD_MS) lastActs.delete(owner);
 }
 

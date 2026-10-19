@@ -137,7 +137,10 @@ import { TOOLS } from "./tools.ts";
 // calls a script needs. map's follow (173) brought it to 27,666: in the
 // two weeks of logs before 10-19 an agent copied a map's addresses out of
 // the answer before into its next map 165 times, 153 of them a listing's.
-const TOOL_LIST_MAX_BYTES = 27_666;
+// The crib's page.waitForChange (33) brought it to 27,699: in those two
+// weeks scripts slept 1,935 s past the sleep budget in 19 sessions, where
+// the hint's way out, text or a selector, was one they could not name.
+const TOOL_LIST_MAX_BYTES = 27_699;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

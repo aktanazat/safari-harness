@@ -1252,9 +1252,11 @@ Wait for the page, not the clock.
   page's own site comes back, 3 s at most; one whose `net` still lists a
   `pending` request after that answers with `next` saying to `wait
   --quiet` (or on text), which returns when that request's change lands.
-  Past a minute of such waits in 10 minutes, each answer carries a `hint`
-  to wait on text or a selector instead. A script's `page.waitForTimeout`
-  counts toward the same minute, and its output carries the same hint.
+  Past a minute of such waits in 10 minutes, the answer carries a `hint`
+  to wait on text, a selector, or `changed` instead, once: again only when
+  the total has doubled, or 10 minutes later. A script's
+  `page.waitForTimeout` counts toward the same minute, and its output
+  carries the same hint.
 - The same call again and again with the same answer is a loop. The sixth
   in a row within 3 minutes (the same tool and arguments, and the same page
   or the same error) fails with what to do instead: "you called info on tab

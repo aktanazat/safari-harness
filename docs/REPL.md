@@ -98,13 +98,17 @@ outside the page: read `document`, `window` and the rest through
 - Locator: `click fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
   isChecked count boundingBox first screenshot waitFor`.
-- Page: `goto goBack goForward reload waitForSelector waitForTimeout
-  waitForLoadState waitForURL keyboard.press keyboard.type mouse.click
-  setViewportSize bringToFront close`, and Playwright's shorthands
-  `page.click(target)`, `page.fill(target, text)`, `page.type(target, text)`.
-  `waitForTimeout(ms)` ends as soon as the page is quiet, ms at most; past
-  a minute of such waits in 10 minutes, the output says to wait on text or
-  a selector (`waitForSelector`) instead. `waitForURL` takes a function, a
+- Page: `goto goBack goForward reload waitForSelector waitForChange
+  waitForTimeout waitForLoadState waitForURL keyboard.press keyboard.type
+  mouse.click setViewportSize bringToFront close`, and Playwright's
+  shorthands `page.click(target)`, `page.fill(target, text)`,
+  `page.type(target, text)`. `waitForChange({timeout})` ends once the page
+  shows lines it did not have at the last look (results after a click,
+  more of a feed after a scroll) and returns them; it throws when none
+  come within the timeout (10 s). `waitForTimeout(ms)` ends as soon as the
+  page is quiet, ms at most; past a minute of such waits in 10 minutes,
+  the output says once to wait on the page (`waitForSelector`,
+  `waitForChange`) instead. `waitForURL` takes a function, a
   RegExp, or Playwright's url glob (`**` any text, `*` any text but `/`,
   `{a,b}` either, `?` itself; it covers the whole url); text with no `*` or
   `{` matches any url containing it.
@@ -178,9 +182,10 @@ There is no `process` or `Bun`.
 - Reading a script bundle or a page's source: write it to a file
   (`fs.writeFile`) or let the output spill to one, then grep the file for
   the API path or name you want, instead of printing slices of it.
-- Sleeps: wait on the page instead (`waitForSelector`, `locator.waitFor`).
-  Past a minute of `waitForTimeout` in 10 minutes, one `hint:` line says
-  so, with the latest total.
+- Sleeps: wait on the page instead (`waitForSelector`, `locator.waitFor`,
+  or `waitForChange` when you cannot name what comes). Past a minute of
+  `waitForTimeout` in 10 minutes, one `hint:` line says so, and again only
+  when the total has doubled.
 - When another model judges a page, give it field names and labels, never
   the values the user typed or the site showed.
 - `safari repl --close <name>` and start again under the same name when
