@@ -56,6 +56,15 @@ test("a script that declares a site global's name has its own value, in that scr
   expect(await repl.run("x * 2")).toEqual({ output: "10" });
 });
 
+// On 10-19 a paginated fetch began `let cursor;` and started from the cursor
+// the previous call left, mid-list: the transpiler hoists the declaration to
+// `var cursor`, and a var declared again keeps its value.
+test.each(["let", "var"])("a script that declares a name with %s and no value starts it undefined, whatever an earlier script left in it", async (decl) => {
+  const { repl } = session();
+  await repl.run(`${decl} x = 5`);
+  expect(await repl.run(`${decl} x; x`)).toEqual({ output: "" });
+});
+
 test("page before any tab is opened fails saying to open one", async () => {
   expect((await session().repl.run("page.url()")).error).toContain("no page yet: openTab(url) or attachBrowserTab(id) first");
 });

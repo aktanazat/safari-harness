@@ -4,10 +4,11 @@ A JavaScript session over Safari, shaped like Playwright. Use it when a task
 takes more than a few clicks: a loop over pages, a download, a PDF, reading
 a signed-in site through its own API. Each call runs one script; top-level
 `await` works, and top-level bindings stay for the next call in the same
-session. The script's last expression prints, or what it `return`s; a script
-with both a top-level `return` and `await` runs as one function, so its
-declarations end with it. An error names the script line it came from when
-the stack shows one.
+session. A declaration starts its name over, as in a new script: `let
+cursor;` is undefined whatever the last call left in it. The script's last
+expression prints, or what it `return`s; a script with both a top-level
+`return` and `await` runs as one function, so its declarations end with it.
+An error names the script line it came from when the stack shows one.
 
 ```sh
 safari repl "const p = await openTab('https://example.com')"

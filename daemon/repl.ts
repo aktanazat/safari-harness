@@ -588,6 +588,16 @@ function scriptLines(code: string, js: string, stack: unknown): string | undefin
   return s === e ? `line ${s + 1}` : `lines ${s + 1}-${e + 1}`;
 }
 
+// The transpiler hoists each top-level declaration to a `var` line above
+// the script (`let a, b = 2` to `var a, b;`), and a var declared again keeps
+// the value an earlier call left: on 10-19 `let cursor;` began a paginated
+// fetch from the last call's cursor, mid-list. So each name the script
+// declares starts undefined, as in a new script, on the same line, so the
+// lines an error names stay put. Names it does not declare keep their values.
+function freshDeclarations(js: string): string {
+  return js.replace(/^(?:var [^=;\n]+;\n)+/, (head) => head.replace(/[^\s,;]+(?=[,;])/g, "$& = void 0"));
+}
+
 export class ReplSession {
   readonly tabs: Page[] = [];
   readonly kit: SiteKit;
@@ -702,7 +712,7 @@ export class ReplSession {
     let timer: Timer | undefined;
     try {
       await this.#refresh();
-      const running = Promise.resolve(vm.runInContext(js, this.#ctx, { timeout: timeoutMs, filename: "repl" }) as unknown);
+      const running = Promise.resolve(vm.runInContext(freshDeclarations(js), this.#ctx, { timeout: timeoutMs, filename: "repl" }) as unknown);
       const limit = Promise.withResolvers<never>();
       timer = setTimeout(() => limit.reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)} s; the code may still be running in this session`)), timeoutMs);
       const done = await Promise.race([running, limit.promise]);
