@@ -12,14 +12,14 @@ import { callTool } from "./tools.ts";
 // daemon/receipt.test.ts" markers, which carries site, keepRequest, and
 // urlMatch with the daemon's bodies, and the settle and text rules.
 
-type Span = { min: number; quiet: number; max: number; patience?: number };
+type Span = { min: number; quiet: number; max: number; patience?: number; busy?: number; poll?: number };
 type PageRules = {
   RECEIPT_SPAN: Span;
   QUIET_SPAN: Span;
   site: typeof site;
   keepRequest: typeof keepRequest;
   urlMatch: typeof urlMatch;
-  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null) => number;
+  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null, back?: number | null) => number;
   shows: (page: string, want: string) => boolean;
 };
 
@@ -224,7 +224,7 @@ const ACTION_ENDS: [string, number[], boolean, number][] = [
   ["two early batches settle together", [250, 350], false, 500],
   ["a batch after an early change has settled is too late", [250, 500], false, 400],
   ["an early storm stays bounded", Array.from({ length: 50 }, (_, i) => i * 100), false, 800],
-  ["a pending request still gets the original busy span", [], true, 800],
+  ["a request the action started still out holds the watch 3 s from the action", [], true, 3000],
   ["a first change at the old maximum gets its quiet span", [800], false, 950],
   ["a late storm cannot keep the watch open", Array.from({ length: 50 }, (_, i) => 1200 + i * 100), false, 1700],
   ["a first change just before patience ends still settles", [1999], false, 2149],
@@ -237,8 +237,36 @@ test.each(ACTION_ENDS)("an action's watch: %s", (_name, changes, busy, end) => {
   expect(endsAt(changes, inPage.RECEIPT_SPAN, busy)).toBe(end);
 });
 
-test("a late change whose request is still pending reaches its extended bound", () => {
-  expect(inPage.settleAt(10000, 11200, true, inPage.RECEIPT_SPAN, 11200)).toBe(11700);
+test("a late change whose request is still out is held 3 s from the action, or to its own bound when that is later", () => {
+  expect(inPage.settleAt(10000, 11200, true, inPage.RECEIPT_SPAN, 11200)).toBe(13000);
+  expect(inPage.settleAt(10000, 12800, true, inPage.RECEIPT_SPAN, 12800)).toBe(13300);
+});
+
+// The same clock with a request the action started that the watch sees
+// come back at back: the watch holds while it is out, and the page then
+// settles as after a late reaction. In the two weeks of logs before 10-19,
+// 191 of 955 clicks, keys, and options answered with such a request still
+// out at 800 ms, and 69 were followed by a call to wait for it.
+function endsWithRequest(changes: number[], back: number): number {
+  let last = 0;
+  for (let now = 0; now <= 10000; now++) {
+    if (changes.includes(now)) last = now;
+    const out = now < back;
+    if (now >= inPage.settleAt(0, last, out, inPage.RECEIPT_SPAN, 0, out ? null : back)) return now;
+  }
+  throw new Error("the page watch did not end within the fake clock's 10000 ms");
+}
+
+const REQUEST_ENDS: [string, number[], number, number][] = [
+  ["a request back at 1 s whose answer the page draws at once settles after the drawing", [1005], 1000, 1155],
+  ["a request back at 1 s that changes nothing ends a quiet span after it", [], 1000, 1150],
+  ["a request back before the old bound still gets a quiet span after it", [], 400, 550],
+  ["a storm after the request comes back stays bounded", Array.from({ length: 50 }, (_, i) => 1000 + i * 100), 1000, 1500],
+  ["a request still out at 3 s ends the watch there", [], 5000, 3000],
+];
+
+test.each(REQUEST_ENDS)("an action's watch on its own request: %s", (_name, changes, back, end) => {
+  expect(endsWithRequest(changes, back)).toBe(end);
 });
 
 test("a late change settles relative to the action's start, not the clock's origin", () => {

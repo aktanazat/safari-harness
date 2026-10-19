@@ -38,9 +38,10 @@ Turns
 - Wait on the page, never the clock: `wait {text}` with words only the
   next page shows, `{selector}`, or `{changed: true}` for new lines. No
   `sleep` in bash or `eval`, no made-up words. `open`, `goto`, and `click`
-  already wait for what they cause; a click whose `net` says `pending`
-  wants `wait {quiet: true}`. For a wait of minutes, call `wait` again
-  (110 s each) until it matches: `safari guide wait`.
+  already wait for what they cause, a request a click started included
+  (3 s at most); one still `pending` after that wants `wait {quiet: true}`.
+  For a wait of minutes, call `wait` again (110 s each) until it matches:
+  `safari guide wait`.
 - Read the whole output. Narrow a read with `query` (plain text; `a|b` is
   either) or `root`, never `head` or `sed`. A CLI step whose answer you do
   not need takes `-q`: silent when it works, one line and exit 1 when it

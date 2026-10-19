@@ -2904,7 +2904,12 @@
   // redirect, but its security check was there in the next snapshot 2 s
   // later. A redirect can leave no dialogs.js request log; a lazy script
   // or a timer may also leave no pending request to hold the watch open.
-  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800, patience: 2000 };
+  // A request to its own site the action started holds the watch until it
+  // comes back, 3 s from the action at most, asked after every 100 ms. In
+  // the two weeks of logs before 10-19, 191 of 955 clicks, keys, and options
+  // answered at 800 ms with one still out, and 69 were followed by a call
+  // to wait for it.
+  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800, patience: 2000, busy: 3000, poll: 100 };
   // the most lines new since an action a receipt carries
   const SAID_MAX = 20;
   // wait's quiet: no change for 500 ms, for as long as the wait lasts
@@ -2948,11 +2953,16 @@
   // (including wait's quiet). A late first reaction shifts only the bound:
   // it gets the same max - min settling room as a reaction at the minimum,
   // without paying the minimum again. Further changes cannot move that
-  // bound. A request still out (busy) uses all of that settling room.
-  function settleAt(start, last, busy, span, first = start) {
-    if (first === null && !busy && span.patience !== undefined) return start + span.patience;
-    const max = Math.max(start, (first ?? start) - span.min) + span.max;
-    return busy ? max : Math.min(max, Math.max(start + span.min, last + span.quiet));
+  // bound. A request the action started that is still out (busy) holds the
+  // watch span.busy from the action, and one seen back at back counts as a
+  // late reaction: the page gets that settling room to draw what it
+  // brought.
+  function settleAt(start, last, busy, span, first = start, back = null) {
+    const reacted = back === null ? first : Math.max(first ?? back, back);
+    if (reacted === null && !busy && span.patience !== undefined) return start + span.patience;
+    const max = Math.max(start, (reacted ?? start) - span.min) + span.max;
+    if (busy) return Math.max(max, start + (span.busy ?? 0));
+    return Math.min(max, Math.max(start + span.min, (back === null ? last : Math.max(last, back)) + span.quiet));
   }
 
   // Gmail pads previews with U+034F and U+200C (09-30). The same invisible
@@ -3069,7 +3079,11 @@
     // found no reaction. This keeps focus and native control changes fast,
     // even when they make no mutation for the observer to see.
     let first = start;
+    // whether a request the action started is out, as the page's request
+    // log said when last asked; back, when one the watch held for came back
     let busy = false;
+    let asked = -Infinity;
+    let back = null;
     let wake = () => {};
     // An element counts with all it holds; text put in or taken out
     // changes the element it is in.
@@ -3096,7 +3110,6 @@
         tally(records);
         last = Date.now();
         first ??= last;
-        busy = false;
       }
       wake();
     });
@@ -3123,18 +3136,23 @@
       const spin = document.hidden && !tickPort ? new MessageChannel() : null;
       const check = () => {
         const now = Date.now();
-        if (!busy && now >= settleAt(start, last, false, RECEIPT_SPAN, first)) {
+        if (now >= settleAt(start, last, false, RECEIPT_SPAN, first, back) && !(busy && now < asked + RECEIPT_SPAN.poll)) {
+          asked = now;
           const heard = hear(start);
-          busy = (heard?.pending ?? []).some((e) => keepRequest(e, location.href));
+          const out = (heard?.pending ?? []).some((e) => keepRequest(e, location.href));
+          if (busy && !out) back = now;
+          busy = out;
           if (first === start && !busy && !added && !removed && !changed.size &&
               location.href === url && focusedNow() === focus && dialogLog.length === raised &&
               !targets.some((t) => t.el.isConnected && t.before.join("\n") !== stateOf(t.el).join("\n")) &&
               !(heard?.requests ?? []).some((e) => keepRequest(e, location.href))) first = null;
         }
-        const at = settleAt(start, last, busy, RECEIPT_SPAN, first);
+        const at = settleAt(start, last, busy, RECEIPT_SPAN, first, back);
         if (now >= at) return finish();
         clearTimeout(timer);
-        timer = setTimeout(check, at - now);
+        // A request that comes back without changing the page wakes nothing,
+        // so one still out is asked after again.
+        timer = setTimeout(check, (busy ? Math.min(at, now + RECEIPT_SPAN.poll) : at) - now);
       };
       // Another document is on its way: the extension waits for it and
       // reports where the action led, instead of a receipt.

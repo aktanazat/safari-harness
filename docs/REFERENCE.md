@@ -375,10 +375,12 @@ carrying the page in context.
   A link or form the page's script takes over gets a short wait in case it
   moves.
 - Any other `click`, `press`, or `select` watches the page until it
-  settles (300 ms at least, then 150 ms without a change, 800 ms at most;
-  800 ms while the page waits on its own site). A page that has not
-  reacted by 300 ms gets 2 s for its first change, which then has 0.5 s
-  to settle. It reports its `effect`:
+  settles (300 ms at least, then 150 ms without a change, 800 ms at most).
+  A page that has not reacted by 300 ms gets 2 s for its first change,
+  which then has 0.5 s to settle. A request to the page's own site the
+  action started holds the watch until it comes back, 3 s at most, and the
+  page then gets the same 0.5 s to draw what it brought. It reports its
+  `effect`:
   nodes `added`, `removed`, and `changed`; a new `url`; where `focus` went;
   the `states` of the control and what it controls (`button "Menu": now
   expanded`); a `dialog` that opened; `said`, the lines the action brought
@@ -1246,9 +1248,10 @@ Wait for the page, not the clock.
   "<text>" --tab N` returns once the text is there, and `click`, `goto`, and
   `open` already wait for a page they load. A `click`, `press`, or `select`
   answers once the change it made settles, 800 ms at most once the page
-  reacts and 2 s when it has not; one whose `net` still lists a `pending`
-  request answers with `next` saying to `wait --quiet` (or on text), which
-  returns when that request's change lands.
+  reacts and 2 s when it has not, and once a request it started to the
+  page's own site comes back, 3 s at most; one whose `net` still lists a
+  `pending` request after that answers with `next` saying to `wait
+  --quiet` (or on text), which returns when that request's change lands.
   Past a minute of such waits in 10 minutes, each answer carries a `hint`
   to wait on text or a selector instead. A script's `page.waitForTimeout`
   counts toward the same minute, and its output carries the same hint.
