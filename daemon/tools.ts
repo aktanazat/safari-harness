@@ -216,8 +216,13 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
   return res;
 }
 
-// Only an admitted completion may release disposable pages. Age, tab count
-// and owner exit cannot prove that a task or background work has finished.
+// A turn's end closes every tab its agent opened but the one the user has in
+// front, a page with an unsent form (the extension looks) and a handoff still
+// on. An agent's exit closes all of them but his front tab. A page
+// left unused IDLE_MS closes when its agent's next call can open it again as
+// it was (reopen). From 10-14 to 10-21 only a turn's end closed tabs and it
+// spared every page an action had changed, so the tabs of five exited agents
+// held their windows open for hours and Safari restored them all on restart.
 // Protection flags and URL-only resume points share the existing checkpoint.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
@@ -350,20 +355,11 @@ function remember(tab: number, owner: number | undefined, used = Date.now()) {
   sweeper.unref();
 }
 
-function orphan(owner: number) {
-  for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
-  save();
-  void sweep();
-}
-
 function exited(owner: number) {
   watches.delete(owner);
-  orphan(owner);
+  for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
+  save();
   void endTurn(owner).catch(() => {});
-}
-
-export function closeTabsOf(owner: number): void {
-  orphan(owner);
 }
 
 // How many tabs owner opened that are still open, wherever they are
@@ -452,6 +448,7 @@ function sweep(): Promise<void> {
 // already gone is let go as found closed (lost); a refusal waits for the
 // next turn's end.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const IDLE_MS = 20 * 60_000;
 
 async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
@@ -459,17 +456,35 @@ async function sweepOnce() {
   // sweep lists the tabs, which notes what they show and finds those a
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
-  const listed = await listTabs().catch((): TabInfo[] => []);
+  const listed = await listTabs().catch(() => undefined);
   const now = Date.now();
-  const due = [...harnessTabs].filter(([, t]) => t.done && !t.closing && !t.acted && !t.site && !t.handoff && !t.unsafe && (t.retry === undefined || (t.retry.tries <= CLOSE_RETRY_MS.length && now >= t.retry.at)) && (t.url === undefined || resumeAddress(t.url) !== undefined) && (t.owner === undefined || !activeCalls.get(t.owner)?.pending.size));
+  const due = [...harnessTabs].filter(([tab, t]) => {
+    if (t.closing || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(t.owner)?.pending.size)) return false;
+    if (t.orphan) return true;
+    const handoff = handoffs.get(tab);
+    if (handoff && !handoff.done && handoff.error === undefined) return false;
+    return t.done || (t.used < now - IDLE_MS && !t.acted && resumeAddress(t.url) !== undefined);
+  });
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
-  // what each showed, for a later call that names it (closedTabs)
-  const shown = new Map(listed.map((t) => [t.id, t.url]));
+  const shown = new Map((listed ?? []).map((t) => [t.id, t]));
   await Promise.all(due.map(async ([tab, t]) => {
     try {
       if (harnessTabs.get(tab) !== t) return;
-      const res = (await bridge.request("tabs.close", [tab, "idle"], 20000)) as { ok?: boolean; front?: true; protected?: string } | null;
+      const page = shown.get(tab);
+      let res: { ok?: boolean; front?: true; protected?: string } | null;
+      if (t.orphan) {
+        // No one goes on in an exited agent's page, so the extension's form
+        // and unreadable-page refusals do not apply, and it closes without
+        // them; the daemon checks it is the same page and not in front.
+        if (listed === undefined) return;
+        if (page === undefined || reconnectedSince(t)) {
+          lost(tab, false);
+          return;
+        }
+        if (page.front || page.shown || (page.active && page.partial !== undefined)) return;
+        res = (await bridge.request("tabs.close", [tab], 20000)) as typeof res;
+      } else res = (await bridge.request("tabs.close", [tab, "idle"], 20000)) as typeof res;
       if (res?.front) {
         t.used = Date.now();
       } else if (res?.ok !== true) {
@@ -478,8 +493,8 @@ async function sweepOnce() {
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
-        const why = "as its agent's turn ended";
-        recordClosed(tab, why, resumeAddress(shown.get(tab) ?? t.url), t.owner);
+        const why = t.orphan ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+        recordClosed(tab, why, resumeAddress(page?.url ?? t.url), t.orphan ? undefined : t.owner);
         forget(tab);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }

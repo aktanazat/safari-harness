@@ -180,9 +180,11 @@ tab IDs with a call-generation token; it never closes a page. `turn-end`
 then releases that preparation; an intervening owner call invalidates it,
 and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
-send nothing. When an owner process exits, the daemon releases its
-disposable pages and empty windows by itself. Kept, changed and front
-pages stay either way.
+send nothing. When an owner process exits, the daemon closes all its pages
+and its empty windows by itself, all but the tab the user has in front.
+At a turn's end, kept pages, unsent forms, a handoff still on and
+his front tab stay; a page unused 20 minutes closes when the agent's next
+call can open it again as it was.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),

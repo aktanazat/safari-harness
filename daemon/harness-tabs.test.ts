@@ -63,13 +63,13 @@ const ext = {
 };
 connect(ext);
 
-function closedAs(only: string, tabs: number[]): Promise<void> {
+function closedAs(only: string | undefined, tabs: number[]): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   onClose = () => { if (tabs.every((t) => closes.some(([tab, how]) => tab === t && how === only))) resolve(); };
   onClose();
   return promise;
 }
-const closesAs = (only: string) => closes.filter(([, how]) => how === only).map(([tab]) => Number(tab)).sort((a, b) => a - b);
+const closesAs = (only: string | undefined) => closes.filter(([, how]) => how === only).map(([tab]) => Number(tab)).sort((a, b) => a - b);
 // the answers settle in microtasks, which all run before the next turn
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -98,17 +98,20 @@ afterAll(async () => {
 test("a restarted daemon closes an exited agent's tabs by itself, never another owner's", async () => {
   const exited = Bun.spawnSync(["true"]).pid;
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  showing = [{ id: 11, url: "https://example.com/" }, { id: 12, url: "https://example.com/" }];
   writeFileSync(file, JSON.stringify({ 11: exited, 12: process.pid }));
   loadTabs(file);
-  await closedAs("idle", [11]);
+  await closedAs(undefined, [11]);
   await settled();
-  expect(closesAs("idle")).toEqual([11]);
-  expect(JSON.parse(readFileSync(file, "utf8")).tabs).toEqual({ 12: { owner: process.pid, used: expect.any(Number), seen: expect.any(Number) } });
+  expect(closesAs(undefined)).toEqual([11]);
+  expect(JSON.parse(readFileSync(file, "utf8")).tabs).toEqual({ 12: { owner: process.pid, used: expect.any(Number), seen: expect.any(Number), url: "https://example.com/" } });
+  showing = [];
 });
 
 // An agent that is done need not spend a turn on close. One it asked to
-// keep is the user's.
-test("admitted cleanup after exit releases disposable tabs and popups but preserves kept and changed pages", async () => {
+// keep is the user's. From 10-14 to 10-21 a page an agent had clicked in
+// outlived its exit, and five exited agents' windows stayed up for hours.
+test("an agent's exit closes its tabs and popups, pages it changed too, but not one it kept", async () => {
   const agent = keeper();
   const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   await as("open", { url: "https://example.com/", background: true }); // tab 1
@@ -118,13 +121,13 @@ test("admitted cleanup after exit releases disposable tabs and popups but preser
   await as("run", { steps: [{ tool: "open", args: { url: "https://example.com/", background: true } }] }); // tab 4
   await as("open", { url: "https://example.com/", background: true }); // tab 5
   await as("close", { tab: 5 });
+  showing = [1, 2, 3, 4, 100].map((id) => ({ id, url: "https://example.com/" }));
   agent.kill();
-  await endTurn(agent.pid);
-  await closedAs("idle", [2, 4, 100]);
+  await closedAs(undefined, [1, 2, 4, 100]);
   await settled();
-  expect(closesAs("idle").filter(tab => tab !== 5)).toEqual([2, 4, 100]);
-  expect(gone.has(1)).toBe(false);
-  await as("close", { tab: 1 });
+  expect(closesAs(undefined).filter((tab) => tab !== 5)).toEqual([1, 2, 4, 100]);
+  expect(gone.has(3)).toBe(false);
+  showing = [];
 });
 
 // Tabs an agent left open as it handed the turn back to the user piled up
@@ -339,12 +342,10 @@ test("a model's open loads in its agent's tab on that site, never in a form in p
   await model(agent.pid, "map", { urls: ["https://shop.example/m"] });
   expect(nextTab).toBe(made + 1);
   expect([e, f].map(urlOf).toSorted()).toEqual(["https://shop.example/g", "https://shop.example/h"]);
+  await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
+  await closedAs("idle", [a, his, e, f]);
   agent.kill();
   other.kill();
-  await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
-  await closedAs("idle", [his, e, f]);
-  expect(gone.has(a)).toBe(false);
-  await model(agent.pid, "close", { tab: a });
   showing = [];
 });
 

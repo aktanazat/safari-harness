@@ -202,6 +202,22 @@ test("an exited agent's window that holds only its page closes without a turn en
   expect(s.tabs.has(page.id)).toBe(false);
 }, 15_000);
 
+// Safari started again on 10-21 and restored every agent window unloaded;
+// the extension's idle close refuses a page it cannot read, so each stayed.
+test("an exited agent's window closes when Safari restored its page unloaded", async () => {
+  const s = safari();
+  const x = agent();
+  const t = await runAs(x.pid, () => openTab("https://restored.example/", true));
+  const page = pageIn(s.tabs, t.windowId)!;
+  const close = s.ops["tabs.close"];
+  s.ops["tabs.close"] = (args) => (args[0] === page.id && args[1] === "idle" ? { ok: false, protected: "unreadable" } : close(args));
+  await runAs(x.pid, () => callTool("close", { tab: t.id }));
+  x.kill();
+  await x.exited;
+  await until(() => s.closed.includes(page.id), 8000);
+  expect(s.tabs.has(page.id)).toBe(false);
+}, 15_000);
+
 test("a copied marker URL does not authorize adopting or deleting an unknown group", async () => {
   const s = safari();
   const copied = { id: next++, url: `http://127.0.0.1:37334/space?title=foreign&owner=999999&id=unregistered`, windowId: next++, active: true };

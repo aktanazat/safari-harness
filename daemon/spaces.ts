@@ -37,7 +37,7 @@ import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, watchOwner } from "./owner.ts";
 import type { TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -374,8 +374,13 @@ async function end(space: Space) {
   if (!space.done || inWindow.some(t => !isPage(t, space))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
+    // A page Safari restored with its window has not loaded, and the
+    // extension's idle close refuses a page it cannot read: an exited
+    // agent's page closes without that check, unless the user has it in front.
+    const exited = space.owner !== undefined && !alive(space.owner);
+    if (exited && (page.front || page.shown || (page.active && page.partial !== undefined))) return;
     try {
-      const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
+      const result = await bridge.request("tabs.close", exited ? [page.id] : [page.id, "idle"], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);

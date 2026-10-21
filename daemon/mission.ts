@@ -24,7 +24,7 @@ import { onRaised } from "./front.ts";
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { spaceById, spaceEnded } from "./spaces.ts";
-import { closeTabsOf, tabsOpenedBy, type TabInfo } from "./tools.ts";
+import { tabsOpenedBy, type TabInfo } from "./tools.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -150,10 +150,8 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   agent.running.add(call);
   agent.last = call.t;
   const began = performance.now();
-  let ran = false;
   try {
     if (owner !== undefined) await admit(agent, call);
-    ran = true;
     const value = await run();
     Object.assign(call, outcomeOf(tool, value, withheld));
     return value;
@@ -164,9 +162,6 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
     call.ms = Math.round(performance.now() - began);
     agent.running.delete(call);
     agent.last = Date.now();
-    // A tab a call in flight opened after the user stopped its agent is marked
-    // too: it closes with the others when the agent's turn ends.
-    if (ran && owner !== undefined && agent.stopped !== undefined) closeTabsOf(owner);
   }
 }
 
@@ -476,7 +471,6 @@ async function control(owner: number | undefined, action: unknown, from: string,
     case "stop":
       agent.stopped = Date.now();
       release(agent);
-      closeTabsOf(owner);
       note("agent stopped", { owner, from });
       break;
   }
