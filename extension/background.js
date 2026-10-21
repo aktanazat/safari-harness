@@ -1663,7 +1663,9 @@ async function inFront(tabId) {
 // or at the first request for a tab or window Safari no longer knows: each
 // old id maps to the new id, and the marks become the new ids for the next
 // reload. The maps live in storage.local, which outlives a reload too; an
-// alias goes with its tab.
+// alias goes with its tab. On a Mac nearly out of memory Safari refuses
+// every write there ("Disk I/O error", 10-20 and 10-21) until it is quit:
+// the ids still reach the daemon, and are only not kept for the next reload.
 // The daemon is told each old tab id's new one (sendIds), so what it keeps
 // per tab, and the ids agents hold, follow their tabs. What is kept here in
 // session storage (the tabs the harness owns, and those it drives) does
@@ -1712,7 +1714,7 @@ async function adopt() {
     delete tabs[t.id];
     delete windows[t.windowId];
   }
-  await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }), lists]);
+  await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }).catch(() => {}), lists]);
   if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs, windows }));
   const ids = { tabs, windows };
   sendIds(ids);

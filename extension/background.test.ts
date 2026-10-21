@@ -103,9 +103,11 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
   // Safari stops answering windows.getAll (stallWindows), or the extension's
-  // local storage (stallStorage), or its first reads of one key (unread).
+  // local storage (stallStorage), or its first reads of one key (unread),
+  // or refuses every write to it (refuseWrites).
   let windowsStalled = false;
   let storageStalled = false;
+  let writesRefused = false;
   let unreadLeft = unread?.times ?? 1;
   // Each read of the extension's local storage, by the keys it asked for.
   const localReads: (string | string[] | null)[] = [];
@@ -126,6 +128,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     },
     set: async (items: Record<string, unknown>) => {
       if (stalls && storageStalled) return never();
+      if (stalls && writesRefused) throw new Error("Invalid call to browser.storage.local.set(). Disk I/O error.");
       for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v));
     },
     remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
@@ -438,6 +441,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     },
     stallWindows() { windowsStalled = true; },
     stallStorage() { storageStalled = true; },
+    refuseWrites() { writesRefused = true; },
     // An embedded frame in tab's page, as frameId, showing url; its script
     // reports in, unless reported is false (no copy ever ran there).
     frame(tab: Tab, frameId: number, url: string, reported = true): Doc {
@@ -1021,6 +1025,38 @@ test("a reloaded extension tells the daemon each tab's new id, and again each ti
   await b.clock.advance(0);
   const renumbered = { op: "tab", kind: "renumbered", tabs: { 3: tab.id } };
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([renumbered, renumbered]);
+});
+
+// 10-20 and 10-21: on a Mac nearly out of memory, Safari answered every
+// write to the extension's local storage "Invalid call to
+// browser.storage.local.set(). Disk I/O error." until it was quit. Each
+// agent's first tab failed with it, and a Slack message the owner had
+// approved was not sent.
+test("an agent window opens while Safari refuses writes to the extension's local storage, and stays out of his front tab", async () => {
+  const b = await start();
+  b.refuseWrites();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(agents);
+  await b.clock.advance(0);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+test("a reloaded extension tells the daemon each tab's new id while Safari refuses writes to its local storage", async () => {
+  const b = await start();
+  const tab = b.openFromBefore("https://example.com/", 3);
+  b.refuseWrites();
+  b.reloaded();
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: tab.id } }]);
 });
 
 // 09-29: a closing socket's close event came after the extension had
