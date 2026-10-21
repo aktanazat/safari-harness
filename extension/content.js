@@ -503,27 +503,33 @@
   }
 
   // The page's elements by tag, and each one's place among its lookalikes,
-  // for the request running: a snapshot fingerprints hundreds of elements,
-  // and the page holds still until it returns.
+  // for one read (withCensus): a snapshot fingerprints hundreds of elements
+  // with one. The read holds it, not the microtask queue: in Safari, WebKit
+  // runs that queue each time it calls back into this script during a
+  // request (textAround's filter does, node by node), and a census kept
+  // until the next microtask was taken anew for each ref, 342 times in one
+  // read of Wikipedia's Europa page (10-21).
   let census = null;
-  function censusNow() {
-    if (!census) {
-      census = { roots: [document, ...shadowRoots()], tags: new Map() };
-      queueMicrotask(() => { census = null; });
+  function withCensus(read) {
+    if (census) return read();
+    census = { roots: null, tags: new Map() };
+    try {
+      return read();
+    } finally {
+      census = null;
     }
-    return census;
   }
 
   // Every element of a tag, shadow roots included, in page order.
   function tagged(tag) {
-    return censusNow().roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
+    census.roots ??= [document, ...shadowRoots()];
+    return census.roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
   }
 
   // Each element of the tag, with its place among those that look the same
   // (lookalikeKey) and how many of those there are.
   function placesOf(tag) {
-    const c = censusNow();
-    let places = c.tags.get(tag);
+    let places = census.tags.get(tag);
     if (!places) {
       const counts = new Map();
       places = new Map();
@@ -533,15 +539,17 @@
         counts.set(key, index + 1);
         places.set(el, { key, index, counts });
       }
-      c.tags.set(tag, places);
+      census.tags.set(tag, places);
     }
     return places;
   }
 
   function fingerprintOf(el) {
-    const { role, name, tag, near, path } = candidateOf(el);
-    const at = placesOf(tag).get(el);
-    return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+    return withCensus(() => {
+      const { role, name, tag, near, path } = candidateOf(el);
+      const at = placesOf(tag).get(el);
+      return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+    });
   }
 
   function remember(ref, el) {
@@ -580,13 +588,15 @@
   function heal(ref) {
     const fp = fingerprints.get(ref) ?? carried?.[ref];
     if (!fp) return null;
-    const els = tagged(fp.tag);
-    const m = matchFingerprint(fp, els.map(candidateOf));
-    if (!("index" in m)) return null;
-    const el = els[m.index];
-    healedNow = { ref, now: ensureRef(el) };
-    refMap.set(ref, el);
-    return el;
+    return withCensus(() => {
+      const els = tagged(fp.tag);
+      const m = matchFingerprint(fp, els.map(candidateOf));
+      if (!("index" in m)) return null;
+      const el = els[m.index];
+      healedNow = { ref, now: ensureRef(el) };
+      refMap.set(ref, el);
+      return el;
+    });
   }
 
   // The elements that look like a fingerprint's target (the same role,
@@ -594,12 +604,14 @@
   // matcher (daemon/replay.ts).
   function lookalikes(fp) {
     const want = lookalikeKey(fp);
-    const out = [];
-    for (const el of tagged(fp.tag)) {
-      const c = candidateOf(el);
-      if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
-    }
-    return out;
+    return withCensus(() => {
+      const out = [];
+      for (const el of tagged(fp.tag)) {
+        const c = candidateOf(el);
+        if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
+      }
+      return out;
+    });
   }
 
   // A reply carries the heal its request made beside what the op answered.
@@ -1069,7 +1081,7 @@
         render(c, depth + 1);
       }
     };
-    render(top, 0);
+    withCensus(() => render(top, 0));
     return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
   }
 
@@ -1480,7 +1492,7 @@
   // choice the list is left open, as a miss leaves it, and listed.
   const LIST_WAIT_MS = 3000;
   const comboLists = new WeakMap(); // box -> the list it showed for select
-  async function comboOption(box, choice) {
+  async function comboOption(box, choice, opts) {
     const lists = () => deepQueryAll("[role=listbox]").filter(shown);
     const named = () => {
       const ids = ["aria-controls", "aria-owns"].flatMap((a) => (box.getAttribute(a) ?? "").split(/\s+/));
@@ -1506,21 +1518,21 @@
     if (choice === null) return optionList(options);
     const opt = optionNamed(options, choice);
     if (!opt) return noOption(choice, options);
-    return withReceipt(() => withOutcome(() => {
+    return afterward(() => withOutcome(() => {
       watchTarget(box);
       clickElement(opt.el);
       return { ok: true, value: opt.label };
-    }));
+    }), opts);
   }
 
   // select takes a <select>, a label of one, or a combobox, resolved before
   // the first await (answer). A null choice lists the options.
-  function selectIn(ref, choice) {
+  function selectIn(ref, choice, opts) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
-    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : withReceipt(() => withOutcome(() => selectOption(el, choice)));
-    if (getExplicitRole(el) === "combobox") return comboOption(el, choice);
+    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
+    if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
     return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
   }
 
@@ -2148,10 +2160,10 @@
     }
     if (opts.secret) keepSecret(row.includes(el) ? row : [el], text);
     // Whether the field holds the text once the page has had a moment with
-    // it: a page may reformat it (a phone field adds dashes) or cut it (a
-    // length limit). The text itself never comes back: type once echoed a
-    // one-time code into the transcript.
-    await whenPage(() => false, RECEIPT_SPAN.min);
+    // it (at once, with noWaitAfter): a page may reformat it (a phone field
+    // adds dashes) or cut it (a length limit). The text itself never comes
+    // back: type once echoed a one-time code into the transcript.
+    if (!opts.noWaitAfter) await whenPage(() => false, RECEIPT_SPAN.min);
     const kept = spread ? boxes.map((b) => b.value).join("") === text
       : el.isContentEditable ? (el.textContent ?? "").includes(text)
       : keeps(el.value, (opts.append ? before : "") + text);
@@ -2811,20 +2823,24 @@
 
   // A line of only invisible characters (zero-width ones, a soft hyphen) is
   // a loading skeleton's: HackerOne's and PayPal's pages held lines of
-  // U+200C where their text would come (09-29). A line that only says the
-  // page is loading stands in for text too: USCIS's case pages read "The
-  // page is loading. Please wait and do not refresh the page." between
-  // their real lines while the rest came (09-30). Invisible characters are
-  // read as spaces here, using the matching rules' one list (INVISIBLE).
+  // U+200C where their text would come (09-29). A line of only word joiners
+  // (U+2060) or U+FEFF is not: a loaded Wikipedia article held three lines
+  // of a lone U+2060 (10-20), and every open of it waited 5 s. Such lines
+  // are left out of the text all the same. A line that only says the page
+  // is loading stands in for text too: USCIS's case pages read "The page is
+  // loading. Please wait and do not refresh the page." between their real
+  // lines while the rest came (09-30). Invisible characters are read as
+  // spaces here, using the matching rules' one list (INVISIBLE).
   const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
 
   // An element's text as extract returns it: spaces and blank lines run
   // together, skeleton and loading lines left out, and whether there were any.
   function tidyText(root) {
     const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
-    const skeleton = (l) => FILLER.test(l.replace(INVISIBLE, " "));
-    const text = lines.filter((l) => !skeleton(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, filler: lines.some(skeleton) };
+    const filler = (l) => FILLER.test(l.replace(INVISIBLE, " "));
+    const joinersOnly = (l) => /^[\u2060\uFEFF ]+$/.test(l);
+    const text = lines.filter((l) => !filler(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, filler: lines.some((l) => filler(l) && !joinersOnly(l)) };
   }
 
   // A page that marks its main region or body aria-busy is still filling in.
@@ -3463,6 +3479,10 @@
       wake = check;
       check();
     });
+  }
+
+  function afterward(run, opts) {
+    return opts?.noWaitAfter ? run() : withReceipt(run);
   }
 
   // ---------- wait ----------
@@ -4129,9 +4149,9 @@
 
   const handlers = {
     snapshot,
-    click: (ref) => withReceipt(() => withOutcome(() => click(ref))),
+    click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
     type: (ref, text, opts) => typeText(ref, text, opts),
-    press: (ref, spec) => withReceipt(() => withOutcome(() => pressKey(ref, spec))),
+    press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
     data: pageData,

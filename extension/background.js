@@ -1788,7 +1788,9 @@ async function inFront(tabId) {
 // or at the first request for a tab or window Safari no longer knows: each
 // old id maps to the new id, and the marks become the new ids for the next
 // reload. The maps live in storage.local, which outlives a reload too; an
-// alias goes with its tab.
+// alias goes with its tab. On a Mac nearly out of memory Safari refuses
+// every write there ("Disk I/O error", 10-20 and 10-21) until it is quit:
+// the ids still reach the daemon, and are only not kept for the next reload.
 // The daemon is told each old tab id's new one (sendIds), so what it keeps
 // per tab, and the ids agents hold, follow their tabs. What is kept here in
 // session storage (the tabs the harness owns, and those it drives) does
@@ -1837,7 +1839,7 @@ async function adopt() {
     delete tabs[t.id];
     delete windows[t.windowId];
   }
-  await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }), lists]);
+  await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }).catch(() => {}), lists]);
   if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs, windows }));
   const ids = { tabs, windows };
   sendIds(ids);
@@ -1875,15 +1877,47 @@ function alias(map, was, now) {
 // kept here, and agent windows are left out when it is read. Both lists
 // outlive a reload (adopt maps them to the new ids); a Safari that starts
 // again numbers its windows anew, and they start empty.
-let listQueue = Promise.resolve();
-
-// Read-modify-write of one stored list, one change at a time.
-function updateList(key, change) {
-  const next = listQueue.then(async () => {
-    const list = (await api.storage.local.get(key))[key] || [];
-    await api.storage.local.set({ [key]: change(list) });
+// The lists are read from storage.local once, as this page starts, and
+// kept here, each change written through. On 10-20 Safari left a read of
+// them for each tab list unanswered past 2.5 s, again and again for two
+// minutes, and tab: "front" failed for it. A read it leaves unanswered, or
+// refuses, is asked again, every LIST_MS at first, then less often, up to
+// every 30 s, and noted once: an empty answer in its place would be written
+// back by the next change, forgetting the agent windows.
+const windowLists = { agentWindows: [], focusOrder: [] };
+function readLists() {
+  return new Promise((resolve) => {
+    const began = Date.now();
+    let wait = LIST_MS;
+    let asks = 0;
+    let noted = false;
+    let again = null;
+    const ask = () => {
+      asks += 1;
+      if (asks > 1 && !noted) noted = send({ op: "note", kind: "slow-phase", phase: "window lists", ms: Date.now() - began });
+      if (asks > 3) wait = Math.min(wait * 2, 30_000);
+      again = setTimeout(ask, wait);
+      api.storage.local.get(Object.keys(windowLists)).then((kept) => {
+        clearTimeout(again);
+        resolve(kept);
+      }, () => {});
+    };
+    ask();
   });
-  listQueue = next.catch(() => {});
+}
+let listsChanged = readLists().then((kept) => {
+  for (const key of Object.keys(windowLists)) windowLists[key] = kept[key] || [];
+});
+let listsSaved = Promise.resolve();
+
+// One change to one list, after the read and every change before it.
+function updateList(key, change) {
+  const next = listsChanged.then(() => {
+    const list = change(windowLists[key]);
+    windowLists[key] = list;
+    listsSaved = listsSaved.then(() => api.storage.local.set({ [key]: list })).catch(() => {});
+  });
+  listsChanged = next.catch(() => {});
   return next;
 }
 
@@ -1915,14 +1949,15 @@ api.windows.onRemoved.addListener((id) => {
 async function frontWindow(agents, until = Date.now() + LIST_MS) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
   if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
-  const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
-    bounded(api.storage.local.get(["focusOrder", "agentWindows"]), "storage.local.get", until),
+  const [, open, last] = await Promise.all([
+    bounded(listsChanged, "window lists", until),
     bounded(api.windows.getAll(), "windows.getAll", until),
     bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
       if (e.phase) throw e;
       return undefined;
     }),
   ]);
+  const { focusOrder, agentWindows } = windowLists;
   const ids = new Set(open.map((w) => w.id));
   return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));
 }

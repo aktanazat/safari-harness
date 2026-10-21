@@ -1241,7 +1241,8 @@ await withPage(LISTING, "", async (tab) => {
 // A long page's outline stops reading at its last line. The render used to
 // go on through the rest: on Wikipedia's World War II article it parsed
 // 5,010 link addresses for 600 printed lines, 40% of a warm snapshot.
-const LINKS = Array.from({ length: 2000 }, (_, i) => `<p><a href="https://example.org/${i}">Link ${i}</a></p>`).join("");
+const LINK_COUNT = 2000;
+const LINKS = Array.from({ length: LINK_COUNT }, (_, i) => `<p><a href="https://example.org/${i}">Link ${i}</a></p>`).join("");
 const COUNT_URLS = "const U = URL; window.__urls = 0; window.URL = new Proxy(U, { construct(t, a) { window.__urls++; return new t(...a); } })";
 
 await withPage(LINKS, COUNT_URLS, async (tab) => {
@@ -1249,6 +1250,23 @@ await withPage(LINKS, COUNT_URLS, async (tab) => {
   const urls = (await call("eval", { tab, expression: "window.__urls" })).result;
   check("a snapshot cut at 100 lines parses no link address past them",
     s.truncated === true && s.nodes === 100 && urls <= s.nodes + 1, { urls, nodes: s.nodes, truncated: s.truncated });
+});
+
+// A snapshot reads each element's name once for all the fingerprints it
+// takes (withCensus in content.js). Safari runs the microtask queue each
+// time WebKit calls back into the content script mid-request, and a census
+// kept until the next microtask was taken anew for each ref: on 10-21 a
+// read of Wikipedia's Europa page read link names 1.1 million times for
+// 342 refs, 3.2 s after a pause. The bench's web view runs no microtask
+// there, so only Safari shows this.
+const COUNT_NAMES = `const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText"); window.__names = 0;
+  Object.defineProperty(HTMLElement.prototype, "innerText", { ...d, get() { window.__names++; return d.get.call(this); } })`;
+
+await withPage(LINKS, COUNT_NAMES, async (tab) => {
+  const s = await call("snapshot", { tab, maxNodes: 100 });
+  const names = (await call("eval", { tab, expression: "window.__names" })).result;
+  check("a snapshot reads each link's name once, not once for each ref it prints",
+    s.nodes === 100 && LINK_COUNT <= names && names <= 2 * LINK_COUNT, { names, nodes: s.nodes });
 });
 
 console.log(failed ? `\n${failed} failed` : "\nall passed");

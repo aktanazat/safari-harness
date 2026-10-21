@@ -8,6 +8,15 @@ const SMALL_BODY = "small-" + "s".repeat(5000);
 const LARGE_BODY = "large-" + "l".repeat(100_000);
 const loggedAs = (body: string) => ({ url: `data:text/plain,${body}`.slice(0, 500) + "…", t: 1000 });
 
+// Counts, in content.js's world, the names it reads from here on: it reads
+// a link's name from the link's innerText.
+const COUNT_NAMES = `(() => {
+  const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
+  window.__names = 0;
+  Object.defineProperty(HTMLElement.prototype, "innerText", { ...d, get() { window.__names++; return d.get.call(this); } });
+  return true;
+})()`;
+
 // content.js as it answers in Safari's WebKit, one page per behavior in
 // bench/fixtures. Refs count from 1 in each fresh page; a comment on a
 // setup snapshot names the refs the steps after it use.
@@ -82,6 +91,18 @@ benchRows("content.js in WebKit", [
     name: "a snapshot names an image-only link by its picture's label, past an icon whose label is empty",
     page: "icon-links.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] link "Cart"\n[2] link "Help"' } } }],
+  },
+  // Safari's side of this, a census lost to a microtask in the middle of a
+  // read, is checked live (scripts/check-live.ts): this web view runs none
+  // there.
+  {
+    name: "a snapshot reads each link's name once, not once for each ref it prints",
+    page: "many-links.html",
+    steps: [
+      { op: "eval", args: [COUNT_NAMES], answer: { value: { ok: true, result: true } } },
+      { op: "snapshot", args: [{ maxNodes: 100 }], answer: { value: { nodes: 100 } } },
+      { op: "eval", args: ["Math.round(window.__names / 2000)"], answer: { value: { ok: true, result: 1 } } },
+    ],
   },
   {
     name: "a snapshot gives each field's state, and a password field's value never",
@@ -259,6 +280,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click with noWaitAfter presses the element and answers without watching the page settle",
+    page: "click.html",
+    steps: [
+      { op: "snapshot" }, // [1] Press
+      { op: "click", args: ["1", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Pressed 1 times") } } },
+    ],
+  },
+  {
     name: "a click on a ref whose element left the page says the ref is stale",
     page: "click.html",
     steps: [
@@ -419,6 +449,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "select with noWaitAfter picks the option and answers without watching the page settle",
+    page: "select.html",
+    steps: [
+      { op: "snapshot" }, // [1] Plan
+      { op: "select", args: ["1", "Pro", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw pro") } } },
+    ],
+  },
+  {
     name: "select with an option the list lacks names the options it has",
     page: "select.html",
     steps: [
@@ -441,6 +480,15 @@ benchRows("content.js in WebKit", [
     steps: [
       { op: "snapshot" }, // [3] the nationality box
       { op: "select", args: ["3", "Kyrgyzstan"], answer: { value: { ok: true, value: "KIRGHIZIA (KYRGYZSTAN) (KG)" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw KG") } } },
+    ],
+  },
+  {
+    name: "select with noWaitAfter on a combobox still waits for its list, then answers without watching the page settle",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [3] the nationality box
+      { op: "select", args: ["3", "Kyrgyzstan", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Page saw KG") } } },
     ],
   },
@@ -577,6 +625,15 @@ benchRows("content.js in WebKit", [
     steps: [
       { op: "snapshot" }, // [1] Card number
       { op: "type", args: ["1", "4111"], answer: { value: { ok: true, kept: true, invalid: "Invalid card number" } } },
+    ],
+  },
+  {
+    name: "type with noWaitAfter answers once the field holds the text, before the page checks it",
+    page: "card-field.html",
+    steps: [
+      { op: "snapshot" }, // [1] Card number
+      { op: "type", args: ["1", "4111", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ invalid: expect.anything() }) } },
+      { op: "wait", args: [null, { text: "Invalid card number" }], answer: { value: { found: true } } },
     ],
   },
   {
@@ -816,6 +873,11 @@ benchRows("content.js in WebKit", [
     page: "filler.html",
     // the page puts its text in 800 ms after it loads
     steps: [{ op: "extract", answer: { value: { text: "Reports\n\nReport 1234 was resolved." } } }],
+  },
+  {
+    name: "an open of a page with a few lone invisible lines among its text does not wait on them",
+    page: "word-joiner.html",
+    steps: [{ op: "loaded", args: [3000], timeout: 1000, answer: { value: { loading: false } } }],
   },
   {
     name: "AWS's token script on a page tells no bot check, and its puzzle tells one once drawn",

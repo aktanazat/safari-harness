@@ -1,0 +1,10 @@
+<!doctype html>
+<title>Extraterrestrial life</title>
+<!-- A loaded Wikipedia article (10-20): three lines of a lone U+2060 among
+     its paragraphs, where a template left a word joiner. -->
+<main id="article"></main>
+<script>
+  const main = document.getElementById("article");
+  for (let i = 1; i <= 30; i++) main.insertAdjacentHTML("beforeend", `<p>Paragraph ${i} of the article.</p>`);
+  for (const at of [10, 14, 18]) main.children[at].insertAdjacentHTML("afterend", "<div>&#8288;</div>");
+</script>

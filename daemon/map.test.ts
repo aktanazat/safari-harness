@@ -158,8 +158,8 @@ async function batches(args: Record<string, unknown>): Promise<number[]> {
   }
 }
 
-test("map reads as many pages at once as asked, four when not asked", async () => {
-  expect(await batches({ urls: urls(10) })).toEqual([4, 4, 2]);
+test("map reads as many pages at once as asked, six when not asked", async () => {
+  expect(await batches({ urls: urls(10) })).toEqual([6, 4]);
   expect(await batches({ urls: urls(5), concurrency: 2 })).toEqual([2, 2, 1]);
 });
 

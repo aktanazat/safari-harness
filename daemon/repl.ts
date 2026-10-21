@@ -159,29 +159,29 @@ export class Locator {
     this.#page = page;
     this.target = target;
   }
-  async click(): Promise<void> {
-    await this.#page.clickTarget(this.target);
+  async click(opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    await this.#page.clickTarget(this.target, opts.noWaitAfter === true);
   }
   // opts names where a {{code}} in text comes from: { secret: "page", from:
   // <mail tab> } for an emailed one. Without it, a script's emailed code
   // waited 30 s for a text message (10-02).
-  async fill(text: string, opts?: CodeSource): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts) });
+  async fill(text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts), ...(opts?.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   // Playwright's type() adds keystrokes to what is there.
-  async type(text: string, opts?: CodeSource): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts) });
+  async type(text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts), ...(opts?.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
-  async press(key: string): Promise<void> {
-    await this.#page.act("press", { ref: this.target, key: String(key) });
+  async press(key: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    await this.#page.act("press", { ref: this.target, key: String(key), ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   async hover(): Promise<void> {
     await this.#page.act("hover", { ref: this.target });
   }
-  async selectOption(choice: unknown): Promise<void> {
+  async selectOption(choice: unknown, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
     const one = Array.isArray(choice) ? choice[0] : choice;
     const option = one && typeof one === "object" ? (one as { label?: unknown; value?: unknown }).label ?? (one as { value?: unknown }).value : one;
-    await this.#page.act("select", { ref: this.target, option: String(option) });
+    await this.#page.act("select", { ref: this.target, option: String(option), ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   async setInputFiles(files: string | string[]): Promise<void> {
     const paths = (Array.isArray(files) ? files : [files]).map((f) => nodePath.resolve(this.#page.cwd, String(f)));
@@ -382,14 +382,14 @@ export class Page {
   }
 
   // Playwright's page-level shorthands for a locator's actions.
-  click(target: string): Promise<void> {
-    return this.locator(target).click();
+  click(target: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    return this.locator(target).click(opts);
   }
-  fill(target: string, text: string): Promise<void> {
-    return this.locator(target).fill(text);
+  fill(target: string, text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    return this.locator(target).fill(text, opts);
   }
-  type(target: string, text: string): Promise<void> {
-    return this.locator(target).type(text);
+  type(target: string, text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    return this.locator(target).type(text, opts);
   }
 
   async act(tool: string, args: Record<string, unknown>): Promise<Outcome> {
@@ -406,10 +406,10 @@ export class Page {
 
   // A click that a waitForEvent('download') is waiting on goes through the
   // download tool, which saves what the click downloads.
-  async clickTarget(target: string): Promise<void> {
+  async clickTarget(target: string, noWaitAfter = false): Promise<void> {
     const w = this.downloadWaiter;
     if (!w) {
-      await this.act("click", { ref: target });
+      await this.act("click", noWaitAfter ? { ref: target, noWaitAfter } : { ref: target });
       return;
     }
     this.downloadWaiter = null;

@@ -833,9 +833,9 @@ export function refLines(lines: string[]): string[] {
   return lines.filter((l) => /\[(?:f\d+:)?\d+\]/.test(l)).map((l) => l.trimStart());
 }
 
-export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number }) {
+export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  if (opts.ref !== undefined) return relay(tab, "click", [opts.ref]);
+  if (opts.ref !== undefined) return relay(tab, "click", opts.noWaitAfter === true ? [opts.ref, { noWaitAfter: true }] : [opts.ref]);
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
   throw new HarnessError("invalid_argument", "click needs ref or x+y");
 }
@@ -844,20 +844,21 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
 // an agent's own typing, or a code the caller filled in (secret.ts), stays
 // out of the transcript. An extension Safari has not reloaded since still
 // sends the value, so it is dropped here too.
-export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown }) {
+export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const text = str(opts.text, "text");
   if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new HarnessError("invalid_argument", "a code is filled in by the safari CLI or MCP tools, not over the daemon's port: call type through them");
   // the tab's answers have it cut after the page moves on too (redact.ts)
   if (opts.secret === true) keepSecret(tab, text);
-  const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true }]);
+  const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true, ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) }]);
   if (!answer || typeof answer !== "object" || !("ok" in answer)) return answer;
   return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
 }
 
-export async function press(opts: { tab?: number; ref?: number | string; key: string }) {
+export async function press(opts: { tab?: number; ref?: number | string; key: string; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "press", [opts.ref ?? null, str(opts.key, "key")]);
+  const args = [opts.ref ?? null, str(opts.key, "key")];
+  return relay(tab, "press", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
 }
 
 // A ref scrolls its element to the middle of the view: on 09-29 an agent
@@ -887,9 +888,10 @@ export async function scroll(opts: { tab?: number; ref?: number | string; dx?: n
 // With no option, select lists the options and picks none: on 10-07 an
 // agent asked Robinhood's "From" and "Sell in" boxes for "__list__" and
 // "zz-list-options" three times, to read the list a miss answers with.
-export async function select(opts: { tab?: number; ref: number | string; option?: string }) {
+export async function select(opts: { tab?: number; ref: number | string; option?: string; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "select", [opts.ref, opts.option === undefined ? null : str(opts.option, "option")]);
+  const args = [opts.ref, opts.option === undefined ? null : str(opts.option, "option")];
+  return relay(tab, "select", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
 }
 
 export async function hover(opts: { tab?: number; ref: number | string }) {
@@ -2186,29 +2188,32 @@ export const TOOLS: Record<string, Tool> = {
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
     params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" } },
     required: ["tab"],
-    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
+    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",
     params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: sms, page, or passwords" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
     // MCP client is never offered it: safari type --secret env --env VAR
-    unlisted: { env: SECRET_ENV },
+    unlisted: { env: SECRET_ENV, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
-    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
+    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],
-    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string }))),
+    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean }))),
   },
   select: {
     desc: "Choose a dropdown option by label or value; without option, list the options.",
     params: { tab: TAB, ref: REF, option: { type: "string", description: "option label or value" }, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "with option: answer once it was chosen, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "ref"],
-    run: action((a) => select(a as { tab: number; ref: string; option?: string })),
+    run: action((a) => select(a as { tab: number; ref: string; option?: string; noWaitAfter?: boolean })),
   },
   hover: {
     desc: "Hover a ref, for menus that open on mouse-over (not ones driven only by CSS :hover).",
@@ -2284,7 +2289,7 @@ export const TOOLS: Record<string, Tool> = {
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
       as: { type: "string", enum: ["text", "table"], description: "for extract" },
-      concurrency: { type: "number", description: "default 4, max 6" },
+      concurrency: { type: "number", description: "default 6 (max)" },
       save: { description: "true, or an absolute folder: a file per page" },
       follow: { type: "object", description: `{"match": CSS selector or "/regex/" on the address, "max": ${MAP_MAX_URLS}}: read the links on each url that match, under it` },
     },

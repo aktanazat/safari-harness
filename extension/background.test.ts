@@ -120,7 +120,10 @@ class Doc {
 // documents of its embedded frames, by frame id.
 type Tab = { id: number; doc: Doc; window?: number; frames?: Map<number, Doc> };
 
-async function start() {
+// local: the extension's local storage, which a new background page reads;
+// unread: a key of it whose first reads (times, 1 unless said) Safari
+// leaves unanswered, or refuses.
+async function start(local = new Map<string, unknown>(), unread?: { key: string; refused?: boolean; times?: number }) {
   const clock = new Clock();
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
@@ -137,21 +140,41 @@ async function start() {
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
-  // Safari stops answering windows.getAll (stallWindows).
   let picture: () => string | Promise<string> = () => `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 9))}`;
+  // Safari stops answering windows.getAll (stallWindows), or the extension's
+  // local storage (stallStorage), or its first reads of one key (unread),
+  // or refuses every write to it (refuseWrites).
   let windowsStalled = false;
+  let storageStalled = false;
+  let writesRefused = false;
+  let unreadLeft = unread?.times ?? 1;
+  // Each read of the extension's local storage, by the keys it asked for.
+  const localReads: (string | string[] | null)[] = [];
   const hook = () => new Hook<unknown[]>();
   // Safari's storage areas keep what is put in them: session storage while
   // it runs (a recording lives there between steps), local storage past a
   // reload (the agent windows, and the order he focused windows in).
-  const area = (kept: Map<string, unknown>) => ({
-    get: async (keys: string | string[] | null) => Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)])),
-    set: async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v)); },
+  const area = (kept: Map<string, unknown>, stalls = false) => ({
+    get: async (keys: string | string[] | null) => {
+      if (stalls) localReads.push(keys);
+      if (stalls && storageStalled) return never();
+      if (stalls && unread && unreadLeft > 0 && [keys].flat().includes(unread.key)) {
+        unreadLeft -= 1;
+        if (unread.refused) throw new Error("Safari could not read the extension's storage");
+        return never();
+      }
+      return Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)]));
+    },
+    set: async (items: Record<string, unknown>) => {
+      if (stalls && storageStalled) return never();
+      if (stalls && writesRefused) throw new Error("Invalid call to browser.storage.local.set(). Disk I/O error.");
+      for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v));
+    },
     remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
   });
   const kept = new Map<string, unknown>();
   const session = area(kept);
-  const storage = area(new Map());
+  const storage = area(local, true);
   // Safari's cookie store as its extension API reaches it (WebKit's
   // WebExtensionContextAPICookiesCocoa.mm): getAll's domain takes that
   // domain's cookies and its subdomains', and remove deletes the first
@@ -370,6 +393,7 @@ async function start() {
     clock,
     trips,
     told,
+    localReads,
     jar,
     sockets,
     // Safari takes ms to make each tab or window the harness asks for.
@@ -457,8 +481,11 @@ async function start() {
     close(tab: Tab, withWindow = false) {
       tabs.delete(tab.id);
       onRemoved.fire(tab.id, { windowId: tab.window ?? 1, isWindowClosing: withWindow });
+      if (withWindow) browser.windows.onRemoved.fire(tab.window ?? 1);
     },
     stallWindows() { windowsStalled = true; },
+    stallStorage() { storageStalled = true; },
+    refuseWrites() { writesRefused = true; },
     // An embedded frame in tab's page, as frameId, showing url; its script
     // reports in, unless reported is false (no copy ever ran there).
     frame(tab: Tab, frameId: number, url: string, reported = true): Doc {
@@ -1044,6 +1071,38 @@ test("a reloaded extension tells the daemon each tab's new id, and again each ti
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([renumbered, renumbered]);
 });
 
+// 10-20 and 10-21: on a Mac nearly out of memory, Safari answered every
+// write to the extension's local storage "Invalid call to
+// browser.storage.local.set(). Disk I/O error." until it was quit. Each
+// agent's first tab failed with it, and a Slack message the owner had
+// approved was not sent.
+test("an agent window opens while Safari refuses writes to the extension's local storage, and stays out of his front tab", async () => {
+  const b = await start();
+  b.refuseWrites();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(agents);
+  await b.clock.advance(0);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+test("a reloaded extension tells the daemon each tab's new id while Safari refuses writes to its local storage", async () => {
+  const b = await start();
+  const tab = b.openFromBefore("https://example.com/", 3);
+  b.refuseWrites();
+  b.reloaded();
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: tab.id } }]);
+});
+
 // 09-29: a closing socket's close event came after the extension had
 // opened its replacement; it dropped the replacement and opened a third,
 // and the daemon swapped sockets every 1.5 s, failing every request.
@@ -1349,6 +1408,101 @@ test("a tab list whose front window Safari will not tell answers within its limi
     { value: [{ id: tab.id, url: "https://example.com/", title: "", active: true, windowId: 1, partial: "windows.getAll" }] },
     { value: { ok: false, front: true } },
   ]);
+});
+
+// 10-20: Safari left the extension's local storage unanswered past 2.5 s,
+// again and again for two minutes, and each tab list waited it out naming
+// no front tab, so tab: "front" failed (journal: slow-phase
+// storage.local.get).
+test("a tab list names his front tab, not the agent window Safari shows, while Safari's local storage does not answer", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(agents);
+  b.stallStorage();
+  const listed = b.request("tabs.list", []);
+  await b.clock.advance(2500);
+  const { value } = await listed;
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+// Safari may stop the extension's background page and start it again.
+test("a new background page still leaves the agent windows the last one made out of his front tab", async () => {
+  const local = new Map<string, unknown>();
+  const before = await start(local);
+  const made = before.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await before.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const b = await start(local);
+  const his = b.open("https://example.org/");
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(his);
+  b.focus(agents);
+  await b.clock.advance(0);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+test("a background page whose first read of the agent windows Safari leaves unanswered still leaves them out of his front tab", async () => {
+  const local = new Map<string, unknown>();
+  const before = await start(local);
+  const made = before.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await before.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const b = await start(local, { key: "agentWindows" });
+  const his = b.open("https://example.org/");
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(his);
+  b.focus(agents);
+  await b.clock.advance(2500);
+  const listed = b.request("tabs.list", []);
+  await b.clock.advance(2500);
+  const { value } = await listed;
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+// A read Safari refuses is no answer either: lists taken as empty in its
+// place would be written back by the next change.
+test("a background page whose first read of the agent windows Safari refuses keeps them through its next change", async () => {
+  const local = new Map<string, unknown>();
+  const before = await start(local);
+  const made = before.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await before.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const b = await start(local, { key: "agentWindows", refused: true });
+  b.close(b.open("https://example.net/", true, 2), true);
+  await b.clock.advance(2500);
+  const c = await start(local);
+  const his = c.open("https://example.org/");
+  const agents = c.open("https://example.com/", true, windowId);
+  c.focus(his);
+  c.focus(agents);
+  await c.clock.advance(0);
+  const { value } = await c.request("tabs.list", []);
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+test("a background page Safari never gives the window lists asks for them less and less often, and notes it once", async () => {
+  const b = await start(new Map(), { key: "agentWindows", times: Infinity });
+  await b.clock.advance(600_000);
+  expect(b.localReads.filter((keys) => [keys].flat().includes("agentWindows")).length).toBeLessThanOrEqual(30);
+  expect(b.told.filter((m) => m.kind === "slow-phase")).toEqual([{ op: "note", kind: "slow-phase", phase: "window lists", ms: 2500 }]);
 });
 
 // 10-16: an eval that awaited a video's play() in a hidden tab ran out its

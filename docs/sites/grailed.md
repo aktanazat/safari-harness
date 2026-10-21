@@ -12,4 +12,4 @@ Public listings. Notes from one hunt on 10-16.
 
 ## Listings
 - The site's API (`/api/listings/<id>`) answered 429 to a script: read the listing pages instead.
-- Many listing pages: one `map` call with their addresses (up to 20, 4 at a time), never a `goto` loop with sleeps; a bash loop of goto, eval, and sleep took 2.5 s a listing.
+- Many listing pages: one `map` call with their addresses (up to 20, 6 at a time), never a `goto` loop with sleeps; a bash loop of goto, eval, and sleep took 2.5 s a listing.
