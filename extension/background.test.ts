@@ -82,7 +82,9 @@ class Doc {
 // documents of its embedded frames, by frame id.
 type Tab = { id: number; doc: Doc; window?: number; frames?: Map<number, Doc> };
 
-async function start() {
+// local: the extension's local storage, which a new background page reads;
+// lost: a key of it whose first read Safari leaves unanswered.
+async function start(local = new Map<string, unknown>(), lost?: string) {
   const clock = new Clock();
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
@@ -99,20 +101,33 @@ async function start() {
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
-  // Safari stops answering windows.getAll (stallWindows).
+  // Safari stops answering windows.getAll (stallWindows), or the extension's
+  // local storage (stallStorage), or its first read of one key (lost).
   let windowsStalled = false;
+  let storageStalled = false;
+  let lostKey = lost;
   const hook = () => new Hook<unknown[]>();
   // Safari's storage areas keep what is put in them: session storage while
   // it runs (a recording lives there between steps), local storage past a
   // reload (the agent windows, and the order he focused windows in).
-  const area = (kept: Map<string, unknown>) => ({
-    get: async (keys: string | string[] | null) => Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)])),
-    set: async (items: Record<string, unknown>) => { for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v)); },
+  const area = (kept: Map<string, unknown>, stalls = false) => ({
+    get: async (keys: string | string[] | null) => {
+      if (stalls && storageStalled) return never();
+      if (stalls && lostKey !== undefined && [keys].flat().includes(lostKey)) {
+        lostKey = undefined;
+        return never();
+      }
+      return Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)]));
+    },
+    set: async (items: Record<string, unknown>) => {
+      if (stalls && storageStalled) return never();
+      for (const [k, v] of Object.entries(items)) kept.set(k, structuredClone(v));
+    },
     remove: async (keys: string | string[]) => { for (const k of [keys].flat()) kept.delete(k); },
   });
   const kept = new Map<string, unknown>();
   const session = area(kept);
-  const storage = area(new Map());
+  const storage = area(local, true);
   // Safari's cookie store as its extension API reaches it (WebKit's
   // WebExtensionContextAPICookiesCocoa.mm): getAll's domain takes that
   // domain's cookies and its subdomains', and remove deletes the first
@@ -415,6 +430,7 @@ async function start() {
       onRemoved.fire(tab.id, { windowId: tab.window ?? 1, isWindowClosing: withWindow });
     },
     stallWindows() { windowsStalled = true; },
+    stallStorage() { storageStalled = true; },
     // An embedded frame in tab's page, as frameId, showing url; its script
     // reports in, unless reported is false (no copy ever ran there).
     frame(tab: Tab, frameId: number, url: string, reported = true): Doc {
@@ -1304,6 +1320,70 @@ test("a tab list whose front window Safari will not tell answers within its limi
   expect([await listed, await closed]).toEqual([
     { value: [{ id: tab.id, url: "https://example.com/", title: "", active: true, windowId: 1, partial: "windows.getAll" }] },
     { value: { ok: false, front: true } },
+  ]);
+});
+
+// 10-20: Safari left the extension's local storage unanswered past 2.5 s,
+// again and again for two minutes, and each tab list waited it out naming
+// no front tab, so tab: "front" failed (journal: slow-phase
+// storage.local.get).
+test("a tab list names his front tab, not the agent window Safari shows, while Safari's local storage does not answer", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(agents);
+  b.stallStorage();
+  const listed = b.request("tabs.list", []);
+  await b.clock.advance(2500);
+  const { value } = await listed;
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+// Safari may stop the extension's background page and start it again.
+test("a new background page still leaves the agent windows the last one made out of his front tab", async () => {
+  const local = new Map<string, unknown>();
+  const before = await start(local);
+  const made = before.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await before.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const b = await start(local);
+  const his = b.open("https://example.org/");
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(his);
+  b.focus(agents);
+  await b.clock.advance(0);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
+  ]);
+});
+
+test("a background page whose first read of the agent windows Safari leaves unanswered still leaves them out of his front tab", async () => {
+  const local = new Map<string, unknown>();
+  const before = await start(local);
+  const made = before.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await before.clock.advance(0);
+  const { windowId } = (await made).value as { windowId: number };
+  const b = await start(local, "agentWindows");
+  const his = b.open("https://example.org/");
+  const agents = b.open("https://example.com/", true, windowId);
+  b.focus(his);
+  b.focus(agents);
+  await b.clock.advance(2500);
+  const listed = b.request("tabs.list", []);
+  await b.clock.advance(2500);
+  const { value } = await listed;
+  expect((value as { active: boolean }[]).filter((t) => t.active)).toEqual([
+    { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
+    { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
   ]);
 });
 

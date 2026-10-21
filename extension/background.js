@@ -1750,15 +1750,39 @@ function alias(map, was, now) {
 // kept here, and agent windows are left out when it is read. Both lists
 // outlive a reload (adopt maps them to the new ids); a Safari that starts
 // again numbers its windows anew, and they start empty.
-let listQueue = Promise.resolve();
-
-// Read-modify-write of one stored list, one change at a time.
-function updateList(key, change) {
-  const next = listQueue.then(async () => {
-    const list = (await api.storage.local.get(key))[key] || [];
-    await api.storage.local.set({ [key]: change(list) });
+// The lists are read from storage.local once, as this page starts, and
+// kept here, each change written through. On 10-20 Safari left a read of
+// them for each tab list unanswered past 2.5 s, again and again for two
+// minutes, and tab: "front" failed for it. A read it leaves unanswered is
+// asked again every LIST_MS until one is answered.
+const windowLists = { agentWindows: [], focusOrder: [] };
+function readLists() {
+  return new Promise((resolve) => {
+    let again = null;
+    const answer = (kept) => {
+      clearTimeout(again);
+      resolve(kept);
+    };
+    const ask = () => {
+      again = setTimeout(ask, LIST_MS);
+      api.storage.local.get(Object.keys(windowLists)).then(answer, () => answer({}));
+    };
+    ask();
   });
-  listQueue = next.catch(() => {});
+}
+let listsChanged = readLists().then((kept) => {
+  for (const key of Object.keys(windowLists)) windowLists[key] = kept[key] || [];
+});
+let listsSaved = Promise.resolve();
+
+// One change to one list, after the read and every change before it.
+function updateList(key, change) {
+  const next = listsChanged.then(() => {
+    const list = change(windowLists[key]);
+    windowLists[key] = list;
+    listsSaved = listsSaved.then(() => api.storage.local.set({ [key]: list })).catch(() => {});
+  });
+  listsChanged = next.catch(() => {});
   return next;
 }
 
@@ -1790,14 +1814,15 @@ api.windows.onRemoved.addListener((id) => {
 async function frontWindow(agents, until = Date.now() + LIST_MS) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
   if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
-  const [{ focusOrder = [], agentWindows = [] }, open, last] = await Promise.all([
-    bounded(api.storage.local.get(["focusOrder", "agentWindows"]), "storage.local.get", until),
+  const [, open, last] = await Promise.all([
+    bounded(listsChanged, "storage.local.get", until),
     bounded(api.windows.getAll(), "windows.getAll", until),
     bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
       if (e.phase) throw e;
       return undefined;
     }),
   ]);
+  const { focusOrder, agentWindows } = windowLists;
   const ids = new Set(open.map((w) => w.id));
   return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));
 }
