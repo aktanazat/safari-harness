@@ -6,7 +6,7 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs } from "./owner.ts";
-import { spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { spaceEnded, spaceTool, sweep, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -270,6 +270,33 @@ test("an agent whose window the user closed gets a new one on its next open", as
   expect(next.windowId).not.toBe(first.windowId);
   expect(next.windowId).not.toBe(1);
   d.kill();
+});
+
+// 10-21: the sweep the extension's connect starts listed Safari, then judged
+// every window the daemon knew by that list, one an agent opened while it
+// listed too. Missing from the list, that window ended as one the user had
+// closed, and the agent's next tab opened yet another.
+test("a window an agent opens while a sweep lists Safari's tabs stays its window", async () => {
+  const s = safari();
+  const [early, late] = [agent(), agent()];
+  await runAs(early.pid, () => openTab("https://early.example/", true));
+  const send = s.sock.send.bind(s.sock);
+  let held: (() => void) | undefined;
+  s.sock.send = (data) => {
+    const { id, op } = JSON.parse(data) as { id?: string; op: string };
+    if (held !== undefined || op !== "tabs.list" || id === undefined) return send(data);
+    const listed = [...s.tabs.values()];
+    held = () => bridge.handleMessage(JSON.stringify({ id, value: listed }));
+  };
+  connect(s.sock);
+  await until(() => held !== undefined);
+  const first = await runAs(late.pid, () => openTab("https://late.example/1", true));
+  held!();
+  await sweep();
+  const next = await runAs(late.pid, () => openTab("https://late.example/2", true));
+  expect(next.windowId).toBe(first.windowId);
+  early.kill();
+  late.kill();
 });
 
 // 10-07: an agent sizing its tab for a screenshot split it from its window

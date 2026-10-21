@@ -57,7 +57,11 @@ const making = new Map<string, Promise<Space>>();
 const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
-const SWEEP_MS = 5000;
+// Safari's tabs are listed on this cadence only to notice what the user did
+// to agent windows himself; what the harness does sweeps at once (turnEnded,
+// tabGone, extension connect). Every 5 s, it was 12 lists a minute while
+// an agent ran (10-21 audit).
+const SWEEP_MS = 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -191,6 +195,7 @@ export function loadSpaces(path: string): void {
   for (const s of saved.closing ?? []) { closing.set(s.name, s); watchExit(s.owner); }
   for (const s of saved.ended ?? []) { ended.add(s); watchExit(s.owner); }
   sweepSoon();
+  void sweep().catch(() => {});
 }
 
 const exitWatched = new Set<number>();
@@ -351,7 +356,7 @@ const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
 const LAST_RETRY_MS = 20 * 60_000;
 const unclosed = new Map<Space, { tries: number; at: number }>();
 
-async function end(space: Space) {
+async function end(space: Space, tabs?: TabInfo[]) {
   // once: each sweep ends again a window whose page is still open
   if (spaces.get(space.key) === space) {
     spaces.delete(space.key);
@@ -369,7 +374,7 @@ async function end(space: Space) {
   // due: until then a sweep would list Safari's tabs for nothing.
   const failed = unclosed.get(space);
   if (failed && Date.now() < failed.at) return;
-  const inWindow = await located(space);
+  const inWindow = await located(space, tabs);
   if (!space.done || inWindow.some(t => !isPage(t, space))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
@@ -403,9 +408,21 @@ function sweepSoon() {
 }
 
 let spaceSweeping: Promise<void> | undefined;
+let sweepAgain = false;
 
-function sweep(): Promise<void> {
-  spaceSweeping ??= sweepOnce().finally(() => { spaceSweeping = undefined; });
+// A sweep asked for while one runs runs again after it: the one running may
+// have listed Safari before the change that asked.
+export function sweep(): Promise<void> {
+  if (spaceSweeping) {
+    sweepAgain = true;
+    return spaceSweeping;
+  }
+  spaceSweeping = (async () => {
+    do {
+      sweepAgain = false;
+      await sweepOnce();
+    } while (sweepAgain);
+  })().finally(() => { spaceSweeping = undefined; });
   return spaceSweeping;
 }
 
@@ -419,13 +436,25 @@ async function sweepOnce() {
     sweeping = undefined;
     return;
   }
-  for (const s of [...ended]) if (s.done) await end(s);
-  if (spaces.size === 0) return;
+  const now = Date.now();
+  const due = [...ended].filter((s) => s.done && !((unclosed.get(s)?.at ?? 0) > now));
+  // A window made while Safari lists is not in the list: it would look
+  // empty, and end as one the user closed.
+  const known = [...spaces.values()];
+  if (known.length === 0 && due.length === 0) return;
   const tabs = await listTabs();
-  for (const s of [...spaces.values()]) {
+  for (const s of due) await end(s, tabs);
+  for (const s of known) {
+    if (spaces.get(s.key) !== s) continue;
     const inWindow = await located(s, tabs);
-    if (inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
+    if (inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s, tabs);
   }
+}
+
+// A harness tab of owner's closed: a window its turn's end left waiting on
+// that tab ends now rather than at the next sweep.
+export function tabGone(owner: number | undefined): void {
+  if ([...spaces.values(), ...ended].some((s) => s.owner === owner && s.done)) void sweep().catch(() => {});
 }
 
 // A new call invalidates an earlier completion's empty-window intent; an
@@ -448,7 +477,6 @@ export async function turnEnded(owner: number | undefined): Promise<void> {
   for (const s of mine) s.done = true;
   save();
   if (spaces.size > 0 || ended.size > 0) sweepSoon();
-  if (spaceSweeping) await spaceSweeping;
   await sweep();
 }
 
