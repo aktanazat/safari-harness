@@ -12,7 +12,7 @@ import { site, WAIT_NEEDS, waitsOnPage } from "./receipt.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind, type Target } from "./save.ts";
 
 export const MAP_MAX_URLS = 20;
-const AT_ONCE = 4;
+const AT_ONCE = 6;
 const MAX_AT_ONCE = 6;
 // omp's MCP client ends a call at 60 s, and on 09-30 a map of six pages
 // whose eval ran 31.5 s each, three at once, lost all six there
