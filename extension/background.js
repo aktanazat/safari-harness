@@ -1754,15 +1754,22 @@ function alias(map, was, now) {
 // kept here, each change written through. On 10-20 Safari left a read of
 // them for each tab list unanswered past 2.5 s, again and again for two
 // minutes, and tab: "front" failed for it. A read it leaves unanswered, or
-// refuses, is asked again every LIST_MS until one is answered: an empty
-// answer in its place would be written back by the next change, forgetting
-// the agent windows.
+// refuses, is asked again, every LIST_MS at first, then less often, up to
+// every 30 s, and noted once: an empty answer in its place would be written
+// back by the next change, forgetting the agent windows.
 const windowLists = { agentWindows: [], focusOrder: [] };
 function readLists() {
   return new Promise((resolve) => {
+    const began = Date.now();
+    let wait = LIST_MS;
+    let asks = 0;
+    let noted = false;
     let again = null;
     const ask = () => {
-      again = setTimeout(ask, LIST_MS);
+      asks += 1;
+      if (asks > 1 && !noted) noted = send({ op: "note", kind: "slow-phase", phase: "window lists", ms: Date.now() - began });
+      if (asks > 3) wait = Math.min(wait * 2, 30_000);
+      again = setTimeout(ask, wait);
       api.storage.local.get(Object.keys(windowLists)).then((kept) => {
         clearTimeout(again);
         resolve(kept);

@@ -83,8 +83,9 @@ class Doc {
 type Tab = { id: number; doc: Doc; window?: number; frames?: Map<number, Doc> };
 
 // local: the extension's local storage, which a new background page reads;
-// unread: a key of it whose first read Safari leaves unanswered, or refuses.
-async function start(local = new Map<string, unknown>(), unread?: { key: string; refused?: boolean }) {
+// unread: a key of it whose first reads (times, 1 unless said) Safari
+// leaves unanswered, or refuses.
+async function start(local = new Map<string, unknown>(), unread?: { key: string; refused?: boolean; times?: number }) {
   const clock = new Clock();
   const trips: string[] = [];
   const tabs = new Map<number, Tab>();
@@ -102,20 +103,23 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
   // Safari stops answering windows.getAll (stallWindows), or the extension's
-  // local storage (stallStorage), or its first read of one key (unread).
+  // local storage (stallStorage), or its first reads of one key (unread).
   let windowsStalled = false;
   let storageStalled = false;
-  let unreadKey = unread?.key;
+  let unreadLeft = unread?.times ?? 1;
+  // Each read of the extension's local storage, by the keys it asked for.
+  const localReads: (string | string[] | null)[] = [];
   const hook = () => new Hook<unknown[]>();
   // Safari's storage areas keep what is put in them: session storage while
   // it runs (a recording lives there between steps), local storage past a
   // reload (the agent windows, and the order he focused windows in).
   const area = (kept: Map<string, unknown>, stalls = false) => ({
     get: async (keys: string | string[] | null) => {
+      if (stalls) localReads.push(keys);
       if (stalls && storageStalled) return never();
-      if (stalls && unreadKey !== undefined && [keys].flat().includes(unreadKey)) {
-        unreadKey = undefined;
-        if (unread?.refused) throw new Error("Safari could not read the extension's storage");
+      if (stalls && unread && unreadLeft > 0 && [keys].flat().includes(unread.key)) {
+        unreadLeft -= 1;
+        if (unread.refused) throw new Error("Safari could not read the extension's storage");
         return never();
       }
       return Object.fromEntries([...kept].filter(([k]) => keys === null || [keys].flat().includes(k)).map(([k, v]) => [k, structuredClone(v)]));
@@ -344,6 +348,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     clock,
     trips,
     told,
+    localReads,
     jar,
     sockets,
     // Safari takes ms to make each tab or window the harness asks for.
@@ -1411,6 +1416,13 @@ test("a background page whose first read of the agent windows Safari refuses kee
     { id: his.id, url: "https://example.org/", title: "", active: true, windowId: 1, front: true },
     { id: agents.id, url: "https://example.com/", title: "", active: true, windowId, shown: true },
   ]);
+});
+
+test("a background page Safari never gives the window lists asks for them less and less often, and notes it once", async () => {
+  const b = await start(new Map(), { key: "agentWindows", times: Infinity });
+  await b.clock.advance(600_000);
+  expect(b.localReads.filter((keys) => [keys].flat().includes("agentWindows")).length).toBeLessThanOrEqual(30);
+  expect(b.told.filter((m) => m.kind === "slow-phase")).toEqual([{ op: "note", kind: "slow-phase", phase: "window lists", ms: 2500 }]);
 });
 
 // 10-16: an eval that awaited a video's play() in a hidden tab ran out its
