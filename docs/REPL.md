@@ -104,10 +104,11 @@ outside the page: read `document`, `window` and the rest through
   `click({noWaitAfter: true})`, `press(key, {noWaitAfter: true})` and
   `selectOption(choice, {noWaitAfter: true})` answer once the action ran
   instead of watching the page settle (300 ms at least, 2 s when nothing
-  reacts): for a loop of actions whose effects the script reads itself. A
-  click still waits for a load or a tab that it starts itself (a link, a
-  form, a window.open in its handler), but not for one the page starts
-  later, and none reports its effect.
+  reacts): for a loop of actions whose effects the script reads itself.
+  Each still waits for a load or a tab it starts itself (a link, a form,
+  a window.open in its handler), and Enter 400 ms in case its script
+  moves the page, but not for one the page starts later, and none reports
+  its effect.
 - Page: `goto goBack goForward reload waitForSelector waitForChange
   waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
   keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
