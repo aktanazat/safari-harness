@@ -1513,11 +1513,7 @@ api.tabs.onRemoved.addListener((id) => {
   if (drivenTabs.delete(id)) store.set({ driven: [...drivenTabs] }).catch(() => {});
   harnessTabs.delete(id);
   store.remove(`dialogs:${id}`).catch(() => {});
-  api.storage.local.get("tabAliases").then(({ tabAliases }) => {
-    if (!tabAliases) return;
-    for (const k of Object.keys(tabAliases)) if (tabAliases[k] === id) delete tabAliases[k];
-    return api.storage.local.set({ tabAliases });
-  }).catch(() => {});
+  forgetAlias("tabAliases", id);
 });
 // Embedded frames report too; only the top document makes the tab ready, and
 // a frame that loads while a wait runs (a sign-in frame) joins the wait.
@@ -1713,7 +1709,7 @@ async function adopt() {
     delete windows[t.windowId];
   }
   await Promise.all([api.storage.local.set({ tabAliases: tabs, windowAliases: windows }), lists]);
-  if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs, windows }));
+  if (Object.keys(tabs).length || Object.keys(windows).length) log("ids after the reload", JSON.stringify({ tabs: Object.keys(tabs).length, windows: Object.keys(windows).length }));
   const ids = { tabs, windows };
   sendIds(ids);
   return ids;
@@ -1802,12 +1798,21 @@ api.windows.onRemoved.addListener((id) => {
   updateList("agentWindows", (ids) => ids.filter((w) => w !== id));
   updateList("focusOrder", (ids) => ids.filter((w) => w !== id));
   regrouping.delete(id);
-  api.storage.local.get("windowAliases").then(({ windowAliases }) => {
-    if (!windowAliases) return;
-    for (const k of Object.keys(windowAliases)) if (windowAliases[k] === id) delete windowAliases[k];
-    return api.storage.local.set({ windowAliases });
-  }).catch(() => {});
+  forgetAlias("windowAliases", id);
 });
+
+// Old ids that led to a tab or window now closed. Each close wrote the
+// whole map back even when no id led there.
+function forgetAlias(key, id) {
+  api.storage.local.get(key).then((got) => {
+    const map = got[key];
+    if (!map) return;
+    const old = Object.keys(map).filter((k) => map[k] === id);
+    if (old.length === 0) return;
+    for (const k of old) delete map[k];
+    return api.storage.local.set({ [key]: map });
+  }).catch(() => {});
+}
 
 // The window focused last: with agents, whichever it is; without, the one
 // the user had in front last, leaving agent windows out.
