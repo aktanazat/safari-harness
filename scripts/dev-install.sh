@@ -1,8 +1,12 @@
 #!/bin/bash
 # Deploy a commit of this checkout as the Safari Harness in use.
 #
-#   scripts/dev-install.sh [COMMIT]    deploy COMMIT (default: HEAD)
-#   scripts/dev-install.sh --rollback  go back to the release deployed before
+#   scripts/dev-install.sh [--force] [COMMIT]  deploy COMMIT (default: HEAD)
+#   scripts/dev-install.sh --rollback          go back to the release deployed before
+#
+# A commit that does not contain the release in use is refused without
+# --force: two checkouts deploy here, and on 10-21 a branch made before the
+# tab-cleanup release would have taken it back out.
 #
 # A deploy takes a commit, never the working tree: it copies the commit into
 # ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
@@ -46,9 +50,11 @@ CHECKPOINTS="$ROOT/scripts/deploy-checkpoints.ts"
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
 
+force=""
+[ "${1:-}" != --force ] || { force=1; shift; }
 case "${1:-}" in
   --rollback) what=rollback ;;
-  -*) echo "usage: $0 [COMMIT | --rollback]" >&2; exit 2 ;;
+  -*) echo "usage: $0 [--force] [COMMIT] | --rollback" >&2; exit 2 ;;
   *) what=deploy ;;
 esac
 
@@ -158,6 +164,11 @@ else
   full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
   sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
   git -C "$ROOT" cat-file -e "$full:daemon/codehash.ts" 2>/dev/null || { echo "$sha predates deploys by release; deploy a later commit" >&2; exit 1; }
+  live="${before#releases/}"
+  if [ -z "$force" ] && [ -n "$live" ] && [ "$live" != "$sha" ] && ! git -C "$ROOT" merge-base --is-ancestor "$live" "$full" 2>/dev/null; then
+    echo "$sha does not contain $live, the release in use: merge it first, or pass --force to replace it" >&2
+    exit 1
+  fi
   left="$(git -C "$ROOT" status --porcelain -- daemon cli extension "Safari Harness" scripts passwords-bridge docs omp package.json | wc -l | tr -d ' ')"
   [ "$left" = 0 ] || echo "note: $left uncommitted change(s) in the checkout are not deployed"
   if [ ! -d "$RELEASES/$sha" ]; then
