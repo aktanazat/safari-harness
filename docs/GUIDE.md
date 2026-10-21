@@ -21,6 +21,8 @@ Tabs
   Snapshot before acting there. Do not open another tab or start another
   `repl --session` for it.
 - When a call says he paused or stopped you, do what it says.
+- After Give back, read a fresh whole-page snapshot or extract of that
+  tab before acting. A queued action cannot reuse the old view.
 
 Turns
 - One step per call: `run` for several tools (`safari run --steps-file`
@@ -54,13 +56,23 @@ Turns
 - Screenshots of pages at several widths: one `shots` call
   (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of
   `window` and `shot`.
-- `type` answering `kept: false`, `invalid`, or `next`, or a site error
-  after a click: redo it once with `real_input` before changing account,
-  network, or cookies; if it works, `learn {site, real: true}`.
+- `shot --tiles` keeps the original and overlapping readable pieces.
+  Captures include a private evidence receipt. `safari guide report`
+  explains reports with cited images, numeric differences and unread pages.
+- A field rejecting scripted typing, or a click with no intended result:
+  inspect a fresh snapshot before retrying with `real_input`. Never retry
+  an uncertain send, purchase or submit blindly. If real input works,
+  `learn {site, real: true}` before changing the account, network or cookies.
 - Run `safari` commands in the foreground; never start one in the
   background and poll it.
 
 When a call fails
+- `effect: "possibly_effected"` means the action may already have happened.
+  Do not repeat it blindly. Read a fresh whole-page snapshot or extract,
+  check the result, then decide. Follow the failure's `next` field.
+- `pageState` distinguishes content from sign-in, subscriber, consent and
+  region walls, loading, errors and unread pages. A successful read of a
+  wall is not a successful read of the requested content.
 - A stuck extension (two `timed out` errors in a row) is reloaded inside
   the next call that needs it, and that call's answer says so. An error
   starting `extension stuck:` means reloading did not help: try once more
@@ -74,7 +86,9 @@ Before a site
   about it: `guide: safari guide <name>` when it has a guide (read that
   before working there), and `notes` with what failed before.
 - Found something the hard way, such as how a sign-in goes? Save one
-  sentence of at most 300 characters, never a secret: `learn {site, fact}`.
+  sentence of at most 300 characters, never a secret: `learn {site, fact,
+  source}`. `history: true` lists edits; `undo: "<id>"` reverses the latest
+  applicable edit without overwriting later or manual changes.
 - A public page reads faster with `read` or `web_search`; on a 403, use
   `map`, and if it reports a bot check, `open` the page and let it clear.
   Put files you only read under /tmp with `out`.

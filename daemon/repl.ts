@@ -12,11 +12,13 @@ import * as nodePath from "node:path";
 import { homedir } from "node:os";
 import { inspect } from "node:util";
 import { invoke as defaultInvoke, type Invoke } from "./call.ts";
-import { lineDiff, refLines } from "./tools.ts";
+import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
+import type { CaptureResult } from "./evidence.ts";
+import { stateLine, type PageState } from "./page-state.ts";
 
 export const REPL_TIMEOUT_MS = 120_000;
 
@@ -504,12 +506,23 @@ export class Page {
     }
   }
 
-  async shot(opts: { ref?: string; path?: string; fullPage?: boolean; annotate?: boolean }): Promise<Buffer> {
+  async capture(opts: { ref?: string; path?: string; fullPage?: boolean; annotate?: boolean; tiles?: boolean; tileHeight?: number } = {}): Promise<CaptureResult> {
     const out = opts.path === undefined ? undefined : nodePath.resolve(this.cwd, opts.path);
-    if (out) await fsp.mkdir(nodePath.dirname(out), { recursive: true });
-    const r = (await this.call("shot", { ref: opts.ref, fullPage: !!opts.fullPage, annotate: !!opts.annotate, out })) as { path: string };
-    return Buffer.from(await fsp.readFile(r.path));
+    return await this.call("shot", {
+      ref: opts.ref,
+      fullPage: !!opts.fullPage,
+      annotate: !!opts.annotate,
+      tiles: !!opts.tiles,
+      tileHeight: opts.tileHeight,
+      out,
+    }) as CaptureResult;
   }
+
+  async shot(opts: { ref?: string; path?: string; fullPage?: boolean; annotate?: boolean }): Promise<Buffer> {
+    const capture = await this.capture(opts);
+    return Buffer.from(await fsp.readFile(capture.path));
+  }
+
   screenshot(opts: { path?: string; fullPage?: boolean } = {}): Promise<Buffer> {
     return this.shot(opts);
   }
@@ -902,7 +915,7 @@ export class ReplSession {
     this.#forget(p);
   }
 
-  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<{ tree: string; diff: string }> {
+  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<{ tree: string; diff: string; pageState?: PageState }> {
     if (!(page instanceof Page)) throw new TypeError("snapshot(page, options): pass a page from openTab() or attachBrowserTab()");
     let root = opts.selector;
     if (root === undefined && opts.ref !== undefined) {
@@ -910,27 +923,24 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes ?? 600, showHidden: !!opts.showHidden })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number };
+    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState };
     this.showNotes(snap);
     const lines = snap.snapshot.split("\n");
-    const body = opts.interactive ? refLines(lines) : lines;
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
-    const warn = snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : [];
-    const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...body, ...cut].join("\n");
+    const warn = [stateLine(snap).trimEnd(), ...(snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : [])].filter(Boolean);
+    const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...lines, ...cut].join("\n");
     const key = `${page.id}|${root ?? ""}|${opts.interactive ? 1 : 0}|${opts.showHidden ? 1 : 0}`;
     const before = this.#trees.get(key);
     this.#trees.set(key, tree);
     const diff = before === undefined ? "(first snapshot)" : lineDiff(before.split("\n"), tree.split("\n")) || "(no change)";
-    return { tree, diff };
+    return { tree, diff, ...(snap.pageState ? { pageState: snap.pageState } : {}) };
   }
 
-  // The page with each ref from its latest snapshot drawn on; returns the
-  // PNG's path.
-  async annotatedScreenshot(page: unknown, opts: { path?: string } = {}): Promise<{ path: string }> {
+  async annotatedScreenshot(page: unknown, opts: { path?: string } = {}): Promise<CaptureResult> {
     if (!(page instanceof Page)) throw new TypeError("annotatedScreenshot(page): pass a page from openTab() or attachBrowserTab()");
     if (![...this.#trees.keys()].some((k) => k.startsWith(`${page.id}|`))) await this.snapshot(page);
     const out = opts.path === undefined ? undefined : nodePath.resolve(this.cwd, opts.path);
-    return (await this.call("shot", { tab: page.id, annotate: true, out })) as { path: string };
+    return (await this.call("shot", { tab: page.id, annotate: true, out })) as CaptureResult;
   }
 
   // What a click on target downloads, saved in ~/Downloads. A download the

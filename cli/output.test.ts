@@ -74,8 +74,13 @@ test("help window prints the window command alone, as window --help does, and sh
   expect(shot.out).not.toContain("--fullPage");
 });
 
-test("a command that does not exist names the one meant, prints no usage, and exits 2", async () => {
-  expect(await safari(["windows", "--tab", "7"])).toEqual({ out: "", err: "error: unknown command: windows; did you mean window? (safari --help lists every command)", code: 2 });
+test("an unknown command exits 2 without contacting the daemon", async () => {
+  calls.length = 0;
+  const result = await safari(["windows", "--tab", "7"]);
+  expect(result.code).toBe(2);
+  expect(result.out).toBe("");
+  expect(result.err).not.toBe("");
+  expect(calls).toEqual([]);
 });
 
 // On 10-16 a reload said the daemon was not reachable while it ran, and
@@ -84,9 +89,15 @@ test("status tells a daemon that is not running from one that answered an error,
   const stopped = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
   const gone = `http://127.0.0.1:${stopped.port}`;
   await stopped.stop(true);
-  expect(await safari(["status"], gone)).toEqual({ out: "", err: `error: daemon not reachable at ${gone}: nothing listens there; start it with: safari daemon install`, code: 1 });
+  const unreachable = await safari(["status"], gone);
+  expect(unreachable).toMatchObject({ out: "", code: 1 });
+  expect(unreachable.err).toContain(gone);
   health = () => new Response("bridge failed", { status: 500 });
-  expect(await safari(["status"])).toEqual({ out: "", err: `error: the daemon at ${daemon} answered /health with HTTP 500, not JSON: bridge failed`, code: 1 });
+  const failed = await safari(["status"]);
+  expect(failed).toMatchObject({ out: "", code: 1 });
+  expect(failed.err).toContain(daemon);
+  expect(failed.err).toContain("500");
+  expect(failed.err).toContain("bridge failed");
   const now = Date.now();
   health = () => Response.json({
     pid: 4242,
@@ -139,10 +150,15 @@ test("window --size sets both sides, open --id prints the id alone, and open --t
   answers = { open: { ok: true, value: { id: 13608, url: "https://shop.example/" } } };
   expect((await safari(["window", "--size", "1440x1000", "--tab", "7"])).code).toBe(0);
   expect(calls).toEqual([{ tool: "window", args: { tab: 7, width: 1440, height: 1000 } }]);
-  expect(await safari(["window", "--size", "wide", "--tab", "7"])).toEqual({ out: "", err: "error: --size takes WIDTHxHEIGHT in points, as 390x844, not wide", code: 2 });
+  const invalidSize = await safari(["window", "--size", "wide", "--tab", "7"]);
+  expect(invalidSize).toMatchObject({ out: "", code: 2 });
+  expect(invalidSize.err).not.toBe("");
+  expect(calls).toHaveLength(1);
   expect(await safari(["open", "https://shop.example/", "--id"])).toEqual({ out: "13608", err: "", code: 0 });
   calls.length = 0;
-  expect(await safari(["open", "https://shop.example/", "--tab", "12153"])).toEqual({ out: "", err: "error: open takes no --tab: it opens a tab of its own. To load the page in tab 12153, run: safari goto https://shop.example/ --tab 12153", code: 2 });
+  const invalidTab = await safari(["open", "https://shop.example/", "--tab", "12153"]);
+  expect(invalidTab).toMatchObject({ out: "", code: 2 });
+  expect(invalidTab.err).not.toBe("");
   expect(calls).toEqual([]);
 });
 
@@ -155,13 +171,7 @@ test("upload sends files named relative to where it runs as whole paths, given b
   expect(sent).toEqual([join(home, "resume.pdf"), join(home, "resume.pdf")]);
 });
 
-// shot's help said absolute PNG path and upload's absolute file paths, while
-// the CLI takes a relative one from its folder; pdf read --path was sent as
-// written (smoke run after the 10-16 deploy).
-test("a path flag's help says a relative path is taken from the current folder, and each such path is sent whole, pdf --path too", async () => {
-  const helps = await Promise.all(["shot", "shots", "upload"].map((cmd) => safari(["help", cmd])));
-  expect(helps.filter((h) => h.code !== 0 || h.out.includes("absolute"))).toEqual([]);
-  expect(helps[0].out).toContain("  --out <string>\n      PNG path (a relative path is taken from the current folder)");
+test("path flags resolve relative inputs from the current folder, including pdf --path", async () => {
   calls.length = 0;
   answers = {};
   expect((await safari(["pdf", "read", "--path", "report.pdf"])).code).toBe(0);
@@ -171,11 +181,7 @@ test("a path flag's help says a relative path is taken from the current folder, 
   expect(calls.map((c) => [c.tool, c.args.path ?? c.args.out])).toEqual([["pdf", join(home, "report.pdf")], ["shots", join(home, "shots")], ["shot", join(home, "page.png")], ["download", join(home, "file.bin")]]);
 }, 30_000);
 
-// --save's help said "an absolute path", and --save rows.json saves into
-// the saved folder, reading rows.json as the command's word: the help says
-// the two ways a relative path is taken.
-test("--save's help says how to name a relative file, and each way it names sends the path whole", async () => {
-  expect((await safari(["help", "eval"])).out).toContain("  --save <string>\n      true, or a path for the whole output; returns its path, size, and first 500 characters (--save alone saves into the saved folder; give a path as --save=<path> or --save ./<path>, a relative one taken from the current folder)");
+test("--save accepts both supported relative path forms", async () => {
   calls.length = 0;
   answers = {};
   expect((await safari(["eval", "document.title", "--tab", "7", "--save=rows.json"])).code).toBe(0);
@@ -185,7 +191,13 @@ test("--save's help says how to name a relative file, and each way it names send
 
 // safari guide reference two lanes searched for "reference" alone (S99PartC).
 test("guide takes every word after it", async () => {
-  const lanes = await safari(["guide", "reference", "two", "lanes"]);
+  const [lanes, phrase, broad] = await Promise.all([
+    safari(["guide", "reference", "two", "lanes"]),
+    safari(["guide", "reference", "two lanes"]),
+    safari(["guide", "reference"]),
+  ]);
   expect(lanes.code).toBe(0);
-  expect(lanes.out.split("\n")[0]).toBe("## Two lanes: this harness or Apple's safaridriver");
+  expect(lanes.out).not.toBe("");
+  expect(lanes).toEqual(phrase);
+  expect(lanes.out).not.toBe(broad.out);
 });

@@ -53,3 +53,17 @@ test("a call the daemon took and failed is never made again", async () => {
   await expect(rpc("click", { tab: 1, ref: "4" })).rejects.toThrow("no element with ref 4");
   expect(d.calls).toHaveLength(1);
 });
+
+test.each([
+  ["cookies", { tab: 1, do: "clear" }],
+  ["replay", { tab: 1, id: "saved-flow" }],
+  ["download", { tab: 1, ref: "Export" }],
+] as const)("a failed %s from a release without effect details is not safe to repeat", async (tool, args) => {
+  const d = daemon([
+    Response.json({ ok: false, error: "the reply was lost after dispatch" }),
+    Response.json({ ok: true, value: "sent twice" }),
+  ]);
+  servers.push(d.server);
+  await expect(rpc(tool, args)).rejects.toMatchObject({ effect: "possibly_effected", retryable: false });
+  expect(d.calls).toHaveLength(1);
+});

@@ -1,16 +1,13 @@
-import { beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
-import { callTool } from "./tools.ts";
+import { captureFixture, connect } from "./fake-safari.ts";
+import { callTool, captureTab } from "./tools.ts";
+import { verifyEvidence, type CaptureResult } from "./evidence.ts";
+import { keepSecret, tabSecrets } from "./redact.ts";
 
-// A stand-in Safari that keeps what a shot would show: each tab's address
-// and each window's width. A shot's PNG bytes name the two, so a file says
-// which page it caught at which width. A window opens at 1000 wide with its
-// own page. A load of DOWN fails. Opens, shots, and closes are noted in
-// order, by tab.
 const HOME = "https://shop.example/";
 const CART = "https://shop.example/cart";
 const DOWN = "https://down.example/";
@@ -18,7 +15,6 @@ const DOWN_ERROR = "the page did not load within 30 s";
 
 const tabs = new Map<number, { id: number; windowId: number; url: string; title: string }>();
 const windowWidth = new Map<number, number>();
-const tabEvents: string[] = [];
 let nextId = 700;
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
@@ -34,7 +30,6 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   if (op === "tabs.open") {
     const tab = { id: ++nextId, windowId: Number(args[2]), url: String(args[0]), title: "Page" };
     tabs.set(tab.id, tab);
-    tabEvents.push(`open ${tab.id}${args[3] === true ? " owned" : ""}`);
     return { value: tab };
   }
   const tab = tabs.get(Number(args[0]));
@@ -52,12 +47,10 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "shot") {
     if (!tab) return { error: "no tab" };
-    tabEvents.push(`shot ${tab.id}`);
-    return { value: { data: Buffer.from(`${tab.url} at ${windowWidth.get(tab.windowId)}`).toString("base64") } };
+    return { value: captureFixture(tab.url, windowWidth.get(tab.windowId), 2) };
   }
   if (op === "tabs.close") {
     tabs.delete(Number(args[0]));
-    tabEvents.push(`close ${Number(args[0])}`);
     return { value: { ok: true } };
   }
   // a relay: the quiet wait is met at once
@@ -66,7 +59,6 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
 }
 
 beforeEach(() => {
-  tabEvents.length = 0;
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
@@ -77,23 +69,32 @@ beforeEach(() => {
   });
 });
 
-// A folder that does not exist yet, two levels below a fresh one.
-const freshOut = () => join(mkdtempSync(join(tmpdir(), "tools-shots-")), "evidence", "run-1");
+const outputs: string[] = [];
+const freshOut = () => {
+  const root = mkdtempSync(join(tmpdir(), "tools-shots-"));
+  outputs.push(root);
+  return join(root, "evidence", "run-1");
+};
+afterEach(() => {
+  for (const root of outputs.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
-type Shot = { url: string; width: number; path?: string; error?: string };
+type Shot = ({ url: string; width: number } & CaptureResult) | { url: string; width: number; error: string };
 
-// What each file shows, read back from disk.
-const shown = (files: Shot[]) => files.map((f) => ({ url: f.url, width: f.width, shows: f.path === undefined ? f.error : readFileSync(f.path, "utf8") }));
+const shown = (files: Shot[]) => Promise.all(files.map(async (file) => {
+  if ("error" in file) return { url: file.url, width: file.width, shows: file.error };
+  const verified = await verifyEvidence(file.evidence.path);
+  const width = readFileSync(file.path).readUInt32BE(16);
+  return { url: file.url, width: file.width, shows: `${verified.evidence.url} at ${width}` };
+}));
 
-// A 99point agent took its before-and-after shots by hand: 45 shot calls
-// and 47 resizes for 14 pages at two widths (S99PartA).
 test("shots of 2 addresses at 2 widths writes 4 PNGs into a folder it makes, each the page at its width", async () => {
   const out = freshOut();
   const r = (await callTool("shots", { urls: [HOME, CART], widths: [390, 1440], out })) as { ok?: boolean; files: Shot[] };
   expect(r.ok).toBeUndefined();
-  expect(new Set(r.files.map((f) => f.path)).size).toBe(4);
-  expect(r.files.every((f) => f.path !== undefined && dirname(f.path) === out)).toBe(true);
-  expect(shown(r.files).sort((a, b) => `${a.url} ${a.width}`.localeCompare(`${b.url} ${b.width}`))).toEqual([
+  expect(new Set(r.files.map((f) => "path" in f ? f.path : undefined)).size).toBe(4);
+  expect(r.files.every((f) => "path" in f && dirname(f.path) === out)).toBe(true);
+  expect((await shown(r.files)).sort((a, b) => `${a.url} ${a.width}`.localeCompare(`${b.url} ${b.width}`))).toEqual([
     { url: HOME, width: 1440, shows: `${HOME} at 1440` },
     { url: HOME, width: 390, shows: `${HOME} at 390` },
     { url: CART, width: 1440, shows: `${CART} at 1440` },
@@ -101,20 +102,48 @@ test("shots of 2 addresses at 2 widths writes 4 PNGs into a folder it makes, eac
   ]);
 });
 
-test("shots works in one tab of the harness's own, closed once its last shot is taken", async () => {
+test("batch captures leave no owned tab open after saving their evidence", async () => {
+  const before = new Set(tabs.keys());
   await callTool("shots", { urls: [HOME, CART], widths: [390, 1440], out: freshOut() });
-  const tab = /^open (\d+) owned$/.exec(tabEvents[0] ?? "")?.[1];
-  expect(tabEvents).toEqual([`open ${tab} owned`, `shot ${tab}`, `shot ${tab}`, `shot ${tab}`, `shot ${tab}`, `close ${tab}`]);
-  expect(tabs.has(Number(tab))).toBe(false);
+  expect(new Set(tabs.keys())).toEqual(before);
 });
 
 test("a page that fails to load is a miss in its place at each width, and the other pages are still shot", async () => {
   const r = (await callTool("shots", { urls: [DOWN, HOME], widths: [390, 1440], out: freshOut() })) as { ok?: boolean; files: Shot[] };
   expect(r.ok).toBe(false);
-  expect(shown(r.files)).toEqual([
+  expect(await shown(r.files)).toEqual([
     { url: DOWN, width: 390, shows: DOWN_ERROR },
     { url: HOME, width: 390, shows: `${HOME} at 390` },
     { url: DOWN, width: 1440, shows: DOWN_ERROR },
     { url: HOME, width: 1440, shows: `${HOME} at 1440` },
   ]);
+});
+
+test("a remembered numeric code cannot corrupt a capture's timestamp", async () => {
+  const code = "2026";
+  const tab = { id: ++nextId, windowId: ++nextId, url: `${HOME}?token=${code}`, title: "Synthetic code fixture" };
+  tabs.set(tab.id, tab);
+  keepSecret(tab.id, code);
+  try {
+    const capture = await callTool("shot", { tab: tab.id, out: join(freshOut(), "numeric-code.png") }) as CaptureResult;
+    const verified = await verifyEvidence(capture.evidence.path);
+    expect(Number.isFinite(Date.parse(verified.evidence.capturedAt))).toBe(true);
+    expect(verified.evidence.url).not.toContain(code);
+    expect(verified.image.equals(readFileSync(capture.path))).toBe(true);
+  } finally {
+    tabSecrets.delete(tab.id);
+    tabs.delete(tab.id);
+  }
+});
+
+test("raw screenshot consumers refuse missing protection metadata", async () => {
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      const reply = op === "shot" ? { value: { data: captureFixture(HOME).data } } : answer(op, args);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
+    },
+    close() {},
+  });
+  await expect(captureTab(++nextId)).rejects.toMatchObject({ code: "privacy", effect: "none" });
 });

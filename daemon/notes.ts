@@ -10,14 +10,19 @@
 // tool) and hands them out (firstNotes, readerFor); `safari guide` reads
 // them.
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { markLines } from "./injection.ts";
 import { currentOwner, processName, watchOwner } from "./owner.ts";
+import { redactUrl, tabSecrets, unsecret } from "./redact.ts";
 import { bundled, covers, type Guide } from "./site-guides.ts";
 
 const MAX_CHARS = 300;
 const MAX_NOTES = 50;
+const MAX_HISTORY = 100;
+const MAX_HISTORY_BYTES = 1_048_576;
 // A site's notes come inline while they run to this many characters in
 // all, three notes at their longest; past it, their count. Every site noted
 // by 09-29 had one note of 124 to 289 characters, and a limit of 120 each
@@ -69,13 +74,8 @@ function readNotes(host: string): Note[] {
   });
 }
 
-function writeNotes(host: string, notes: Note[]) {
-  if (notes.length === 0) {
-    rmSync(fileOf(host), { force: true });
-    return;
-  }
-  mkdirSync(notesDir(), { recursive: true });
-  writeFileSync(fileOf(host), `# ${host}\n\n${notes.map((n) => `- ${n.date} [${n.agent}] ${n.fact}`).join("\n")}\n`);
+function notesText(host: string, notes: Note[]): string | null {
+  return notes.length ? `# ${host}\n\n${notes.map((n) => `- ${n.date} [${n.agent}] ${n.fact}`).join("\n")}\n` : null;
 }
 
 // Hosts with notes, readers, or a mark for real input, for `safari guide`.
@@ -102,9 +102,10 @@ export function notesSection(host: string): string | null {
   const notes = readNotes(host);
   const readers = Object.entries(readReaders(host));
   const real = readReal(host);
+  const sources = readHistory(host).sources;
   const sections = [
-    ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent})`).join("\n")}`] : []),
-    ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${r.date}, ${r.agent})`).join("\n")}`] : []),
+    ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent}${sources[noteKey(n)] ? `; source: ${sources[noteKey(n)]}` : ""})`).join("\n")}`] : []),
+    ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${r.date}, ${r.agent}${r.source ? `; source: ${r.source}` : ""})`).join("\n")}`] : []),
     ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); ${markingGuide(host) ? "its guide marks it too, so it stays marked" : `learn {site: "${host}", real: false} undoes it`}.`]),
   ];
   return sections.length ? sections.join("\n\n") : null;
@@ -117,7 +118,7 @@ const READERS = ".readers.json";
 const READER_NAME = /^[a-z][a-z0-9_-]{0,39}$/i;
 const MAX_READER_CHARS = 10_000;
 
-type Reader = { expression: string; page: boolean; date: string; agent: string };
+type Reader = { expression: string; page: boolean; date: string; agent: string; source?: string };
 
 const readersOf = (host: string) => join(notesDir(), `${host}${READERS}`);
 
@@ -135,13 +136,8 @@ function readReaders(host: string): Record<string, Reader> {
   return Object.assign(Object.create(null) as Record<string, Reader>, JSON.parse(text) as Record<string, Reader>);
 }
 
-function writeReaders(host: string, readers: Record<string, Reader>) {
-  if (Object.keys(readers).length === 0) {
-    rmSync(readersOf(host), { force: true });
-    return;
-  }
-  mkdirSync(notesDir(), { recursive: true });
-  writeFileSync(readersOf(host), `${JSON.stringify(readers, null, 2)}\n`);
+function readersText(readers: Record<string, Reader>): string | null {
+  return Object.keys(readers).length ? `${JSON.stringify(readers, null, 2)}\n` : null;
 }
 
 // A host and the sites above it, nearest first: ecams.geico.com, then
@@ -191,10 +187,15 @@ function readReal(host: string): string | null {
   }
 }
 
-function markReal(host: string, agent: string): string {
-  mkdirSync(notesDir(), { recursive: true });
-  writeFileSync(realOf(host), `${new Date().toLocaleDateString("sv")} ${agent.replace(/\s/g, "") || "unknown"}\n`);
-  return `marked ${host} for real input: a model's click and type with a ref there and on its subdomains go as real input (real_input), never scripted first`;
+function markReal(host: string, agent: string, source?: string): string {
+  return change(host, {
+    kind: "real",
+    content: `${new Date().toLocaleDateString("sv")} ${agent}\n`,
+    agent,
+    source,
+    summary: "marked for real input",
+    message: `marked ${host} for real input: a model's click and type with a ref there and on its subdomains go as real input (real_input), never scripted first`,
+  });
 }
 
 // The guide that marks host for real input, if one does: its mark is part
@@ -203,11 +204,16 @@ function markingGuide(host: string): Guide | undefined {
   return bundled().find((g) => g.real && g.hosts.some((entry) => covers(entry.split("/")[0], host)));
 }
 
-function unmarkReal(host: string): string {
-  rmSync(realOf(host), { force: true });
+function unmarkReal(host: string, agent: string, source?: string): string {
   const guide = markingGuide(host);
-  if (guide) return `${host} stays marked for real input: its guide marks it (safari guide ${guide.slug})`;
-  return `unmarked ${host}: click and type there go as scripted input again`;
+  return change(host, {
+    kind: "real",
+    content: null,
+    agent,
+    source,
+    summary: "removed the learned real-input mark",
+    message: guide ? `${host} stays marked for real input: its guide marks it (safari guide ${guide.slug})` : `unmarked ${host}: click and type there go as scripted input again`,
+  });
 }
 
 // The sites marked for real input, by an agent or by their guide.
@@ -285,58 +291,279 @@ const SECRETS: [string, (s: string) => boolean][] = [["password", password], ["c
 
 // ---------- the learn tool ----------
 
-function save(host: string, given: string, agent: string): string {
-  const fact = given.replace(/\s+/g, " ").trim();
-  if (!fact) throw new Error("fact is empty");
-  if (fact.length > MAX_CHARS) throw new Error(`a fact is at most ${MAX_CHARS} characters, and this one is ${fact.length}: keep the one thing the next agent needs, and save a script as a reader (learn {site, reader, expression})`);
-  refuseSecret(fact, "Site notes are plain files every agent reads, so they never hold a password, code, card number, or token; say where it comes from instead (\"the code comes by text\")");
-  const notes = readNotes(host);
-  const same = notes.findIndex((n) => n.fact.toLowerCase() === fact.toLowerCase());
-  if (same >= 0) return `already noted for ${host}, as note ${same + 1}`;
-  notes.push({ date: new Date().toLocaleDateString("sv"), agent: agent.replace(/[\]\s]/g, "") || "unknown", fact });
-  const dropped = notes.splice(0, Math.max(0, notes.length - MAX_NOTES));
-  writeNotes(host, notes);
-  return `saved for ${host} as note ${notes.length}${dropped.length ? `; a site keeps ${MAX_NOTES}, so the oldest went: "${dropped[0].fact}"` : ""}`;
+type LearningFile = "notes" | "readers" | "real";
+type LearningSnapshot = { content: string | null; sources: Record<string, string> };
+type LearningEdit = {
+  id: string;
+  previous: string | null;
+  at: string;
+  agent: string;
+  source?: string;
+  kind: LearningFile;
+  summary: string;
+  before: LearningSnapshot;
+  after: string;
+  undone?: { at: string; agent: string };
+};
+type LearningHistory = { version: 1; head: string | null; sources: Record<string, string>; edits: LearningEdit[] };
+type LearningChange = {
+  kind: LearningFile;
+  content: string | null;
+  agent: string;
+  source?: string;
+  summary: string;
+  message: string;
+  notes?: Note[];
+  added?: Note;
+};
+
+const historyOf = (host: string) => join(notesDir(), `${host}.learning.json`);
+const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const noteKey = (note: Note) => `note:${digest(JSON.stringify(note))}`;
+const snapshotHash = (snapshot: LearningSnapshot) => digest(JSON.stringify(snapshot));
+const learningFile = (host: string, kind: LearningFile) => kind === "notes" ? fileOf(host) : kind === "readers" ? readersOf(host) : realOf(host);
+
+function readText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (e) {
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+function writePrivate(path: string, content: string | null) {
+  if (content === null) {
+    rmSync(path, { force: true });
+    return;
+  }
+  mkdirSync(notesDir(), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.new`;
+  try {
+    writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function readHistory(host: string): LearningHistory {
+  const text = readText(historyOf(host));
+  if (text === null) return { version: 1, head: null, sources: {}, edits: [] };
+  const history = JSON.parse(text) as LearningHistory;
+  if (history.version !== 1 || !Array.isArray(history.edits) || !history.sources || typeof history.sources !== "object"
+    || (history.head !== null && typeof history.head !== "string")) throw new Error("site learning history is unreadable; no changes were made");
+  return history;
+}
+
+function historyText(history: LearningHistory): string {
+  while (history.edits.length > MAX_HISTORY) history.edits.shift();
+  let text = `${JSON.stringify(history, null, 2)}\n`;
+  while (Buffer.byteLength(text) > MAX_HISTORY_BYTES && history.edits.length > 1) {
+    history.edits.shift();
+    text = `${JSON.stringify(history, null, 2)}\n`;
+  }
+  if (Buffer.byteLength(text) > MAX_HISTORY_BYTES) throw new Error("site learning is too large for a private reversible edit");
+  return text;
 }
 
 function refuseSecret(text: string, why: string) {
   const secret = SECRETS.find(([, looks]) => looks(text))?.[0];
-  if (secret) throw new Error(`not saved: this looks like a ${secret}. ${why}`);
+  const known = [...tabSecrets.keys()].some((tab) => unsecret(tab, text) !== text);
+  if (secret || known || redactUrl(text) !== text) throw new Error(`not saved: this looks like a ${secret ?? "secret"}. ${why}`);
 }
 
-function forget(host: string, n: number): string {
+function refuseInstructions(text: string) {
+  if (markLines(text, false).places) throw new Error("not saved: instructions addressed to an AI stay page content, not permanent site notes or readers");
+}
+
+function sourceFor(host: string, given: unknown): string | undefined {
+  if (given === undefined) return undefined;
+  if (typeof given !== "string") throw new Error("source must be a same-site http or https address");
+  const url = URL.parse(given);
+  const sourceHost = url && pageHost(url.href);
+  if (!url || !sourceHost || (sourceHost !== host && !sourceHost.endsWith(`.${host}`))) throw new Error("source must be an http or https address on this site or one of its subdomains");
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  let path: string;
+  try {
+    path = redactUrl(decodeURIComponent(url.pathname));
+  } catch {
+    throw new Error("source has an invalid encoded path");
+  }
+  for (const tab of tabSecrets.keys()) path = String(unsecret(tab, path));
+  path = path.split("/").map((part) => SECRETS.some(([, looks]) => looks(part)) ? "..." : part).join("/");
+  refuseSecret(path, "A source never holds credentials or tokens");
+  refuseInstructions(path);
+  url.pathname = path;
+  const source = redactUrl(url.href);
+  if (source.length > 2048) throw new Error("a sanitized source is at most 2048 characters");
+  return source;
+}
+
+function guardSnapshot(kind: LearningFile, content: string | null) {
+  if (content === null) return;
+  const check = (text: string) => {
+    refuseSecret(text, "Private learning history never holds secrets");
+    refuseInstructions(text);
+  };
+  if (kind === "notes") {
+    for (const line of content.split("\n")) {
+      const note = LINE.exec(line);
+      check(note ? `${note[2]}\n${note[3]}` : line);
+    }
+  } else if (kind === "readers") {
+    const strings = (value: unknown): void => {
+      if (typeof value === "string") check(value);
+      else if (value && typeof value === "object") {
+        for (const [key, child] of Object.entries(value)) {
+          check(key);
+          strings(child);
+        }
+      }
+    };
+    strings(JSON.parse(content));
+  } else check(content);
+}
+
+function change(host: string, edit: LearningChange): string {
+  const history = readHistory(host);
+  const path = learningFile(host, edit.kind);
+  const before: LearningSnapshot = { content: readText(path), sources: history.sources };
+  const sources = { ...history.sources };
+  if (edit.notes) {
+    const kept = new Set(edit.notes.map(noteKey));
+    for (const key of Object.keys(sources)) if (key.startsWith("note:") && !kept.has(key)) delete sources[key];
+    if (edit.added && edit.source) sources[noteKey(edit.added)] = edit.source;
+  }
+  if (edit.kind === "real") {
+    if (edit.content === null || !edit.source) delete sources.real;
+    else sources.real = edit.source;
+  }
+  const after = { content: edit.content, sources };
+  if (snapshotHash(before) === snapshotHash(after)) return edit.message;
+  guardSnapshot(edit.kind, before.content);
+  guardSnapshot(edit.kind, after.content);
+  const entry: LearningEdit = {
+    id: randomUUID(),
+    previous: history.head,
+    at: new Date().toISOString(),
+    agent: edit.agent,
+    ...(edit.source ? { source: edit.source } : {}),
+    kind: edit.kind,
+    summary: edit.summary,
+    before,
+    after: snapshotHash(after),
+  };
+  history.edits.push(entry);
+  history.head = entry.id;
+  history.sources = sources;
+  const text = historyText(history);
+  writePrivate(path, edit.content);
+  try {
+    writePrivate(historyOf(host), text);
+  } catch (error) {
+    writePrivate(path, before.content);
+    throw error;
+  }
+  return edit.message;
+}
+
+function showHistory(host: string): string {
+  const history = readHistory(host);
+  if (!history.edits.length) return `no learning history for ${host}`;
+  return `learning history for ${host}, newest first; undo with learn {site: "${host}", undo: "<id>"}:\n${history.edits.toReversed().map((edit) => `- ${edit.id} ${edit.at} [${edit.agent}] ${edit.summary}${edit.source ? `; source: ${edit.source}` : ""}${edit.undone ? `; undone ${edit.undone.at} [${edit.undone.agent}]` : ""}`).join("\n")}`;
+}
+
+function undo(host: string, id: string, agent: string): string {
+  const history = readHistory(host);
+  const edit = history.edits.find((entry) => entry.id === id);
+  if (!edit) throw new Error(`no such learning edit for ${host}; list it with learn {site, history: true}`);
+  if (edit.undone) throw new Error("that learning edit was already undone");
+  if (history.head !== edit.id) throw new Error("cannot undo: intervening learning edits must be undone first");
+  const path = learningFile(host, edit.kind);
+  const current = { content: readText(path), sources: history.sources };
+  if (snapshotHash(current) !== edit.after) throw new Error("cannot undo: the saved learning changed after this edit");
+  guardSnapshot(edit.kind, edit.before.content);
+  edit.undone = { at: new Date().toISOString(), agent };
+  history.head = edit.previous;
+  history.sources = edit.before.sources;
+  const text = historyText(history);
+  writePrivate(path, edit.before.content);
+  try {
+    writePrivate(historyOf(host), text);
+  } catch (error) {
+    writePrivate(path, current.content);
+    throw error;
+  }
+  return `undid learning edit ${id} for ${host}: ${edit.summary}`;
+}
+
+function save(host: string, given: string, agent: string, source?: string): string {
+  const fact = given.replace(/\s+/g, " ").trim();
+  if (!fact) throw new Error("fact is empty");
+  if (fact.length > MAX_CHARS) throw new Error(`a fact is at most ${MAX_CHARS} characters, and this one is ${fact.length}: keep the one thing the next agent needs, and save a script as a reader (learn {site, reader, expression})`);
+  refuseSecret(fact, "Site notes are plain files every agent reads, so they never hold a password, code, card number, or token; say where it comes from instead (\"the code comes by text\")");
+  refuseInstructions(fact);
+  const notes = readNotes(host);
+  const same = notes.findIndex((n) => n.fact.toLowerCase() === fact.toLowerCase());
+  if (same >= 0) return `already noted for ${host}, as note ${same + 1}`;
+  const added = { date: new Date().toLocaleDateString("sv"), agent, fact };
+  notes.push(added);
+  const dropped = notes.splice(0, Math.max(0, notes.length - MAX_NOTES));
+  return change(host, {
+    kind: "notes", content: notesText(host, notes), notes, added, agent, source,
+    summary: `saved note: "${fact}"`,
+    message: `saved for ${host} as note ${notes.length}${dropped.length ? `; a site keeps ${MAX_NOTES}, so the oldest went: "${dropped[0].fact}"` : ""}`,
+  });
+}
+
+function forget(host: string, n: number, agent: string, source?: string): string {
   const notes = readNotes(host);
   if (notes.length === 0) throw new Error(`no notes for ${host}`);
   if (!Number.isInteger(n) || n < 1 || n > notes.length) throw new Error(`forget takes a note number from 1 to ${notes.length}, or a reader's name; learn with only site lists them`);
   const [gone] = notes.splice(n - 1, 1);
-  writeNotes(host, notes);
-  return `forgot note ${n} for ${host}: "${gone.fact}"; ${notes.length} left`;
+  return change(host, {
+    kind: "notes", content: notesText(host, notes), notes, agent, source,
+    summary: `forgot note: "${gone.fact}"`,
+    message: `forgot note ${n} for ${host}: "${gone.fact}"; ${notes.length} left`,
+  });
 }
 
-function saveReader(host: string, name: string, expression: string, page: boolean, agent: string): string {
+function saveReader(host: string, name: string, expression: string, page: boolean, agent: string, source?: string): string {
   if (!READER_NAME.test(name)) throw new Error("a reader's name is a letter, then up to 39 letters, digits, - or _, like listings or price-history");
   if (!expression.trim()) throw new Error("expression is empty");
   if (expression.length > MAX_READER_CHARS) throw new Error(`a reader is at most ${MAX_READER_CHARS} characters, and this one is ${expression.length}`);
+  refuseSecret(name, "Reader names never hold secrets");
   refuseSecret(expression, "Readers are plain files every agent runs, so they never hold a password, code, card number, or token; read it from the page instead");
+  refuseInstructions(expression);
   const readers = readReaders(host);
   const replaced = Object.hasOwn(readers, name);
-  readers[name] = { expression, page, date: new Date().toLocaleDateString("sv"), agent: agent.replace(/\s/g, "") || "unknown" };
-  writeReaders(host, readers);
-  return `saved reader ${name} for ${host}${replaced ? ", in place of the one saved before" : ""}; run it with eval {tab, reader: "${name}"}, or map with what: "eval"`;
+  readers[name] = { expression, page, date: new Date().toLocaleDateString("sv"), agent, ...(source ? { source } : {}) };
+  return change(host, {
+    kind: "readers", content: readersText(readers), agent, source,
+    summary: `${replaced ? "replaced" : "saved"} reader ${name}`,
+    message: `saved reader ${name} for ${host}${replaced ? ", in place of the one saved before" : ""}; run it with eval {tab, reader: "${name}"}, or map with what: "eval"`,
+  });
 }
 
 function showReader(host: string, name: string): string {
   const reader = readReaders(host)[name];
   if (!reader) throw new Error(`no reader ${name} for ${host}`);
-  return `reader ${name} for ${host} (${reader.page ? "runs in the page's own world; " : ""}${reader.date}, ${reader.agent}):\n${reader.expression}`;
+  return `reader ${name} for ${host} (${reader.page ? "runs in the page's own world; " : ""}${reader.date}, ${reader.agent}${reader.source ? `; source: ${reader.source}` : ""}):\n${reader.expression}`;
 }
 
-function forgetReader(host: string, name: string): string {
+function forgetReader(host: string, name: string, agent: string, source?: string): string {
   const readers = readReaders(host);
   if (!Object.hasOwn(readers, name)) throw new Error(`no reader ${name} for ${host}`);
   delete readers[name];
-  writeReaders(host, readers);
-  return `forgot reader ${name} for ${host}`;
+  return change(host, {
+    kind: "readers", content: readersText(readers), agent, source,
+    summary: `forgot reader ${name}`,
+    message: `forgot reader ${name} for ${host}`,
+  });
 }
 
 // learn {site, fact} saves a fact, {site, forget: n} removes note n, and
@@ -349,30 +576,38 @@ function forgetReader(host: string, name: string): string {
 export async function learn(a: Record<string, unknown>): Promise<string> {
   if (typeof a.site !== "string") throw new Error("site must be a string: a host like cvs.com, or an address");
   const host = siteHost(a.site);
-  const given = ["fact", "reader", "forget", "real"].filter((k) => a[k] !== undefined);
-  if (given.length > 1) throw new Error(`give one of fact, reader, forget, or real, not ${given.join(" and ")}`);
-  if (typeof a.forget === "string" && !/^\s*\d+\s*$/.test(a.forget)) return forgetReader(host, a.forget);
-  if (a.forget !== undefined) return forget(host, Number(a.forget));
+  if (a.history !== undefined && typeof a.history !== "boolean") throw new Error("history is true or false");
+  const given = ["fact", "reader", "forget", "real", "undo"].filter((key) => a[key] !== undefined);
+  if (a.history === true) given.push("history");
+  if (given.length > 1) throw new Error(`give one of fact, reader, forget, real, history, or undo, not ${given.join(" and ")}`);
+  const source = sourceFor(host, a.source);
+  if (a.history === true) return showHistory(host);
+  if (a.undo !== undefined) {
+    if (typeof a.undo !== "string" || !a.undo.trim()) throw new Error("undo must name a learning edit from history");
+    return undo(host, a.undo, await agentName());
+  }
+  if (typeof a.forget === "string" && !/^\s*\d+\s*$/.test(a.forget)) return forgetReader(host, a.forget, await agentName(), source);
+  if (a.forget !== undefined) return forget(host, Number(a.forget), await agentName(), source);
   if (a.real !== undefined) {
-    // The CLI passes --real true as text, as it passes --forget 2.
     const on = String(a.real).trim().toLowerCase();
     if (on !== "true" && on !== "false") throw new Error("real is true or false");
-    return on === "true" ? markReal(host, await agentName()) : unmarkReal(host);
+    const agent = await agentName();
+    return on === "true" ? markReal(host, agent, source) : unmarkReal(host, agent, source);
   }
   if (a.reader !== undefined) {
     if (typeof a.reader !== "string") throw new Error("reader must be a string: the reader's name");
     if (a.expression === undefined) return showReader(host, a.reader);
     if (typeof a.expression !== "string") throw new Error("expression must be a string");
-    return saveReader(host, a.reader, a.expression, a.page === true, await agentName());
+    return saveReader(host, a.reader, a.expression, a.page === true, await agentName(), source);
   }
   if (a.fact === undefined) return notesSection(host) ?? `no notes or readers for ${host}`;
   if (typeof a.fact !== "string") throw new Error("fact must be a string");
-  return save(host, a.fact, await agentName());
+  return save(host, a.fact, await agentName(), source);
 }
 
 async function agentName(): Promise<string> {
   const owner = currentOwner();
-  return (owner === undefined ? undefined : await processName(owner)) ?? "unknown";
+  return ((owner === undefined ? undefined : await processName(owner)) ?? "unknown").replace(/[\]\s]/g, "") || "unknown";
 }
 
 // ---------- notes that come by themselves ----------

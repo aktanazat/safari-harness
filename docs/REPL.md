@@ -79,10 +79,22 @@ outside the page: read `document`, `window` and the rest through
   call; a bare `sleep(ms)` makes none.
 - `page.extract(selector?)`, or `page.extract({selector, query})`, returns
   `{url, title, text, truncated}`: the words are in `.text`.
-- `page.screenshot({path, fullPage})`, `annotatedScreenshot(page, {path})`
-  (ref numbers drawn on the picture), `page.pdf({path})`.
+- `page.capture({path, fullPage, ref, annotate, tiles, tileHeight})` returns
+  `{path, evidence, screens?, cut?}`. `evidence.path` names the immutable
+  receipt with sanitized source details and image SHA256; tiles keep the
+  original and use original raster coordinates.
+- `page.screenshot({path, fullPage})` and `page.shot()` still return PNG
+  bytes. `annotatedScreenshot(page, {path})` returns the capture result,
+  with snapshot refs drawn on the protected image. All use the same
+  privacy gate; none is an unprotected capture option.
+- `page.pdf({path})` saves a PDF, not a screenshot receipt.
 
 ## Acting
+
+After the user gives a tab back, read a fresh whole-page snapshot or
+extract before acting. A queued action, a read started before takeover,
+or a narrowed read does not establish the current page. An uncertain
+action result is not safe to repeat until a fresh read shows what happened.
 
 - `page.locator(target)`: target is a ref (`12`, `[12]`, `e12`, frame refs
   like `f1e3`), a CSS selector, or visible text (`text=15` for text of

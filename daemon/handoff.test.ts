@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
+import { captureFixture, connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
 import * as phone from "./phone.ts";
@@ -23,7 +23,6 @@ import { runAs } from "./owner.ts";
 type Page = { url: string; check?: "box" | "block" | "wall"; text?: string };
 type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; use(tab: number): void };
 const MAIL = "com.apple.mail";
-const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // Mail is in front. Safari's window shows the user's tab 3; the agent's tab
 // sits alone in an agent window behind it, which never holds the front tab,
@@ -58,7 +57,7 @@ function mac(tab: number, page: Page): Mac {
         return answer({ value: [{ frame: 0, url: page.url, title: page.check === "wall" ? "Just a moment..." : "Sign in", text: page.check === "block" ? "Sorry, you have been blocked" : "Sign in", markers: [], answered: [], frames }] });
       }
       if (op === "relay" && args[1] === "wait") return answer({ value: { found: (page.text ?? "").includes(args[2][1].text) } });
-      if (op === "shot") return answer({ value: { data: PNG } });
+      if (op === "shot") return answer({ value: captureFixture(page.url) });
       answer({ error: `no ${op} here` });
     },
     close() {},
@@ -98,7 +97,6 @@ const waits = (why: string) => (a: Args) => a.why === why && Number(a.ms) > 0 &&
 
 const away = process.env.SAFARI_HARNESS_AWAY;
 let dir = "";
-let checkpointDir: string | undefined;
 beforeEach(() => {
   jest.useFakeTimers();
   process.env.SAFARI_HARNESS_AWAY = "0";
@@ -120,7 +118,6 @@ afterEach(() => {
 afterAll(() => {
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
-  if (checkpointDir) rmSync(checkpointDir, { recursive: true, force: true });
 });
 
 const handoff = (tab: number, why: string, ms = 10000) => HANDOFF_TOOLS.handoff.run({ tab, why, ms });
@@ -148,7 +145,8 @@ test("completion preserves a pending human handoff and closes it only after the 
   const m = mac(tab, page);
   const build = join(import.meta.dir, "../.build");
   mkdirSync(build, { recursive: true });
-  checkpointDir = mkdtempSync(join(build, "handoff-state-"));
+  const checkpointDir = mkdtempSync(join(build, "handoff-state-"));
+  process.once("exit", () => rmSync(checkpointDir, { recursive: true, force: true }));
   const checkpoint = join(checkpointDir, "tabs.json");
   writeFileSync(checkpoint, JSON.stringify({ [tab]: { owner: process.pid, used: Date.now() } }));
   loadTabs(checkpoint);

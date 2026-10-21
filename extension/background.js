@@ -1107,57 +1107,182 @@ const FULL_PAGE_MAX = 12; // screens
 // SETTLE_MS.
 const SETTLE_MS = 1000;
 
-async function screenshot(tabId, opts) {
-  const t = await api.tabs.get(tabId);
-  const [front] = await api.tabs.query({ active: true, windowId: t.windowId });
-  const flip = front && front.id !== tabId;
-  const box = opts.ref ? await relayOp(tabId, "locate", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
-  const page = opts.fullPage && !box ? await pageValue(tabId, "eval", ["({ h: document.documentElement.scrollHeight, y: scrollY, ih: innerHeight, iw: innerWidth })"]).then((v) => v.result) : null;
-  const grab = () => api.tabs.captureVisibleTab(t.windowId, { format: "png" });
-  const shots = [];
+const captureWindows = new Map();
+const screenshotPrivacyError = (message) => new Error(`screenshot privacy: ${message}`);
+
+async function protectedCapture(tabId, mark, phase, secrets, frameId = 0) {
+  let value;
   try {
-    if (opts.annotate) await pageValue(tabId, "annotate", [true]);
-    if (flip) await api.tabs.update(tabId, { active: true });
-    try {
-      const settle = async () => {
-        if (opts.live) return;
-        const settled = await toTab(tabId, "settle", [SETTLE_MS], SETTLE_MS + 2000).catch(() => null);
-        if (settled?.value?.finished) await toTab(tabId, "painted", [], 3000).catch(() => {});
-      };
-      await toTab(tabId, "painted", [], 3000).catch(() => {});
-      await settle();
-      if (!page) shots.push({ y: 0, url: await grab() });
-      for (let y = 0; page && y < page.h && shots.length < FULL_PAGE_MAX; y += page.ih) {
-        await pageValue(tabId, "eval", [`(scrollTo(0, ${y}), scrollY)`]);
-        await toTab(tabId, "painted", [], 3000).catch(() => {});
-        await settle();
-        shots.push({ y: (await pageValue(tabId, "eval", ["scrollY"])).result, url: await grab() });
-      }
-    } finally {
-      if (flip) await api.tabs.update(front.id, { active: true });
+    const res = await toTab(tabId, "capturePrivacy", [mark, phase, secrets], 10000, frameId);
+    if (res?.error) throw new Error(res.error);
+    value = res?.value;
+  }
+  catch (error) {
+    if (String(error.message).startsWith("screenshot privacy: ")) throw error;
+    throw screenshotPrivacyError("the page could not confirm protection");
+  }
+  if (value?.ok !== true) throw screenshotPrivacyError("the page did not confirm protection");
+  return value;
+}
+
+async function privateGrab(tabId, windowId, mark, secrets) {
+  let changed = false;
+  const onUpdated = (id, info) => { if (id === tabId && (info.status === "loading" || info.url !== undefined)) changed = true; };
+  api.tabs.onUpdated.addListener(onUpdated);
+  let bitmap;
+  try {
+    const state = await protectedCapture(tabId, mark, "prepare", secrets);
+    const viewport = state.source?.viewport;
+    if (!viewport || ![viewport.width, viewport.height, viewport.devicePixelRatio].every((n) => Number.isFinite(n) && n > 0) ||
+        typeof state.source.url !== "string" || typeof state.source.title !== "string" ||
+        !Array.isArray(state.regions) || state.masked !== state.regions.length ||
+        !state.regions.every((r) => [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.x >= 0 && r.y >= 0 && r.width > 0 && r.height > 0 && r.x + r.width <= viewport.width && r.y + r.height <= viewport.height)) {
+      throw screenshotPrivacyError("the page returned incomplete protection");
     }
+    const painted = await toTab(tabId, "painted", [], 3000).catch(() => null);
+    if (painted?.value?.ok !== true) throw screenshotPrivacyError("the protected page did not paint");
+    const active = async () => (await api.tabs.query({ active: true, windowId })).some((t) => t.id === tabId);
+    if (changed || !(await active())) throw screenshotPrivacyError("the protected tab is no longer visible");
+    const capturedAt = new Date().toISOString();
+    const raw = await api.tabs.captureVisibleTab(windowId, { format: "png" });
+    await protectedCapture(tabId, mark, "check", secrets);
+    if (changed || !(await active())) throw screenshotPrivacyError("the protected tab changed during capture");
+    bitmap = await dataUrlBitmap(raw);
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    ctx.fillStyle = "#000";
+    const sx = bitmap.width / viewport.width, sy = bitmap.height / viewport.height;
+    for (const r of state.regions) {
+      const x = Math.floor(r.x * sx), y = Math.floor(r.y * sy);
+      ctx.fillRect(x, y, Math.ceil((r.x + r.width) * sx) - x, Math.ceil((r.y + r.height) * sy) - y);
+    }
+    return { canvas, state, capturedAt };
   } finally {
-    if (page) await pageValue(tabId, "eval", [`(scrollTo(0, ${page.y}), 1)`]).catch(() => {});
-    if (opts.annotate) await pageValue(tabId, "annotate", [false]).catch(() => {});
+    bitmap?.close();
+    api.tabs.onUpdated.removeListener(onUpdated);
   }
-  if (!box && shots.length === 1) return { data: shots[0].url.replace(/^data:[^,]*,/, "") };
-  const first = await dataUrlBitmap(shots[0].url);
+}
+
+async function captureTiles(canvas, tileHeight) {
+  const tiles = [];
+  for (let y = 0; y < canvas.height;) {
+    const height = Math.min(tileHeight, canvas.height - y);
+    const piece = new OffscreenCanvas(canvas.width, height);
+    piece.getContext("2d").drawImage(canvas, 0, y, canvas.width, height, 0, 0, canvas.width, height);
+    tiles.push({ data: await pngOf(piece), region: { x: 0, y, width: canvas.width, height } });
+    if (y + height === canvas.height) break;
+    y += height - 64;
+  }
+  return tiles;
+}
+
+async function screenshot(tabId, opts) {
+  const { windowId } = await api.tabs.get(tabId);
+  const previous = captureWindows.get(windowId) ?? Promise.resolve();
+  const capture = previous.catch(() => {}).then(() => screenshotInWindow(tabId, windowId, opts));
+  captureWindows.set(windowId, capture);
+  try { return await capture; }
+  finally { if (captureWindows.get(windowId) === capture) captureWindows.delete(windowId); }
+}
+
+async function screenshotInWindow(tabId, windowId, opts) {
+  // Tile height and overlap are original raster pixels, independent of DPR.
+  const tileHeight = opts.tileHeight ?? 1400;
+  if (opts.tiles && (!Number.isInteger(tileHeight) || tileHeight < 256 || tileHeight > 8192)) throw new Error("tileHeight must be an integer from 256 to 8192 raster pixels");
+  const secrets = opts.secrets ?? [];
+  const [front] = await api.tabs.query({ active: true, windowId });
+  const flip = front && front.id !== tabId;
+  const mark = crypto.randomUUID();
+  let started = false;
+  let annotated = false;
+  let selected = false;
+  let failure;
+  let box;
+  let page;
+  const shots = [];
+  const cropFrames = [];
+  try {
+    started = true;
+    const initial = await protectedCapture(tabId, mark, "start", secrets);
+    if (opts.ref) {
+      for (const frameId of (await frameTokens(tabId)).values()) {
+        cropFrames.push(frameId);
+        await protectedCapture(tabId, mark, "start", secrets, frameId);
+      }
+    }
+    box = opts.ref ? await relayOp(tabId, "locate", [opts.ref], 10000).then((r) => { if (r && r.error) throw new Error(r.error); return r.value; }) : null;
+    page = opts.fullPage && !box ? initial : null;
+    if (opts.annotate) { annotated = true; await pageValue(tabId, "annotate", [true]); }
+    if (flip) { selected = true; await api.tabs.update(tabId, { active: true }); }
+    const settle = async () => {
+      await toTab(tabId, "painted", [], 3000).catch(() => {});
+      if (opts.live) return;
+      const settled = await toTab(tabId, "settle", [SETTLE_MS], SETTLE_MS + 2000).catch(() => null);
+      if (settled?.value?.finished) await toTab(tabId, "painted", [], 3000).catch(() => {});
+    };
+    const grab = async () => {
+      await settle();
+      const shot = await privateGrab(tabId, windowId, mark, secrets);
+      shots.push(shot);
+      await protectedCapture(tabId, mark, "clear", secrets);
+      return shot;
+    };
+    if (!page) await grab();
+    else {
+      const viewport = page.source?.viewport;
+      if (!viewport || !Number.isFinite(viewport.height) || viewport.height <= 0 || !Number.isFinite(page.page?.height)) throw screenshotPrivacyError("the page size could not be inspected");
+      let covered = 0;
+      for (let y = 0; y < page.page.height && shots.length < FULL_PAGE_MAX; y += viewport.height) {
+        await pageValue(tabId, "eval", [`(scrollTo({left:0,top:${y},behavior:"instant"}), 1)`]);
+        const shot = await grab();
+        const actualY = shot.state.page?.y;
+        if (!Number.isFinite(actualY) || actualY < 0 || actualY > covered ||
+            shot.state.source.url !== page.source.url || shot.state.source.viewport.width !== viewport.width || shot.state.source.viewport.height !== viewport.height ||
+            (shots.length > 1 && (shot.canvas.width !== shots[0].canvas.width || shot.canvas.height !== shots[0].canvas.height))) throw new Error("the page changed size or left a gap during full-page capture");
+        if (shots.length > 1 && actualY + viewport.height <= covered) { shots.pop(); break; }
+        covered = actualY + viewport.height;
+        if (covered >= page.page.height) break;
+      }
+    }
+  } catch (error) {
+    failure = error;
+  } finally {
+    const clean = async (run) => { try { await run(); } catch (error) { failure ??= error; } };
+    for (const frameId of cropFrames) await clean(() => protectedCapture(tabId, mark, "restore", secrets, frameId));
+    if (started) await clean(() => protectedCapture(tabId, mark, "restore", secrets));
+    if (annotated) await clean(() => pageValue(tabId, "annotate", [false]));
+    if (selected) await clean(() => api.tabs.update(front.id, { active: true }));
+  }
+  if (failure) throw failure;
+  const first = shots[0];
+  let canvas = first.canvas;
+  const source = { ...first.state.source, capturedAt: first.capturedAt, width: canvas.width, height: canvas.height, privacy: { masked: shots.reduce((sum, shot) => sum + shot.state.masked, 0) } };
+  const result = {};
   if (box) {
-    const scale = first.width / box.innerWidth;
-    const x = Math.max(0, Math.floor(box.x * scale));
-    const y = Math.max(0, Math.floor(box.y * scale));
-    const w = Math.max(1, Math.min(first.width - x, Math.ceil(box.width * scale)));
-    const h = Math.max(1, Math.min(first.height - y, Math.ceil(box.height * scale)));
-    const c = new OffscreenCanvas(w, h);
-    c.getContext("2d").drawImage(first, x, y, w, h, 0, 0, w, h);
-    return { data: await pngOf(c) };
+    const sx = canvas.width / source.viewport.width, sy = canvas.height / source.viewport.height;
+    const x = Math.max(0, Math.floor(box.x * sx)), y = Math.max(0, Math.floor(box.y * sy));
+    const right = Math.min(canvas.width, Math.ceil((box.x + box.width) * sx)), bottom = Math.min(canvas.height, Math.ceil((box.y + box.height) * sy));
+    if (right <= x || bottom <= y) throw new Error("the screenshot target is outside the captured viewport");
+    const crop = new OffscreenCanvas(right - x, bottom - y);
+    crop.getContext("2d").drawImage(canvas, x, y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    canvas = crop;
+    source.crop = { x: x / sx, y: y / sy, width: canvas.width / sx, height: canvas.height / sy };
+  } else if (page) {
+    const scale = canvas.height / source.viewport.height;
+    const last = shots[shots.length - 1];
+    const pageHeight = Math.max(page.page.height, ...shots.map((shot) => shot.state.page.height));
+    const height = Math.min(Math.ceil(pageHeight * scale), Math.round(last.state.page.y * scale) + last.canvas.height);
+    const stitched = new OffscreenCanvas(canvas.width, height);
+    const ctx = stitched.getContext("2d");
+    for (const shot of shots) ctx.drawImage(shot.canvas, 0, Math.round(shot.state.page.y * scale));
+    canvas = stitched;
+    result.screens = shots.length;
+    result.cut = height < Math.ceil(pageHeight * scale);
   }
-  const scale = first.width / page.iw;
-  const height = Math.min(Math.ceil(page.h * scale), Math.ceil((shots[shots.length - 1].y + page.ih) * scale));
-  const c = new OffscreenCanvas(first.width, height);
-  const ctx = c.getContext("2d");
-  for (const s of shots) ctx.drawImage(s === shots[0] ? first : await dataUrlBitmap(s.url), 0, Math.round(s.y * scale));
-  return { data: await pngOf(c), screens: shots.length, cut: shots.length === FULL_PAGE_MAX && page.h > FULL_PAGE_MAX * page.ih };
+  source.width = canvas.width;
+  source.height = canvas.height;
+  return { data: await pngOf(canvas), ...result, source, ...(opts.tiles ? { tiles: await captureTiles(canvas, tileHeight) } : {}) };
 }
 
 // Runs in the page: empties what its origin keeps, and says the origin

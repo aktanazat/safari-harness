@@ -10,6 +10,7 @@
 // through Safari's accessibility tree instead, and nothing comes forward.
 
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
+import { HarnessError } from "./failures.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
 import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
@@ -56,6 +57,30 @@ async function pageState(tab: number, want: { focus: boolean; after: number; ms:
   }
 }
 
+async function deliver(tab: number, args: string[], timeout?: number, stdin?: string): Promise<unknown> {
+  const admitted = await rpc("action_admit", { tab }) as { ok?: boolean; tab?: number; permit?: string };
+  if (admitted?.ok !== true || admitted.tab !== tab || typeof admitted.permit !== "string") throw new HarnessError("unavailable", "native input was not admitted", { effect: "none", retryable: true });
+  const picture = args[0] !== "key" || args[1] !== "cmd+a";
+  let result: unknown;
+  try {
+    result = await input(args, timeout, stdin);
+  } catch (e) {
+    try {
+      await rpc("action_finish", { tab, permit: admitted.permit, uncertain: true, picture });
+    } catch {
+      throw new HarnessError("effect_unknown", "native input may have happened and its result could not be recorded; read this tab before acting again");
+    }
+    throw new HarnessError("effect_unknown", e instanceof Error ? e.message : "native input may have happened", { next: "snapshot or extract this tab and check the result before repeating input" });
+  }
+  try {
+    const declined = result !== null && typeof result === "object" && ("pressed" in result && result.pressed === false || "set" in result && result.set === false);
+    await rpc("action_finish", { tab, permit: admitted.permit, uncertain: false, picture: picture && !declined });
+  } catch {
+    throw new HarnessError("effect_unknown", "native input finished but its result could not be recorded; read this tab before acting again");
+  }
+  return result;
+}
+
 // Posts real input to the tab with a helper click, type, or key command.
 // Safari hands an event to whichever tab is in front when it gets to it, not
 // when it was posted, so both ends are guarded. Keys go only to a page that
@@ -67,7 +92,7 @@ async function pageState(tab: number, want: { focus: boolean; after: number; ms:
 async function post(tab: number, args: string[], keys: boolean, timeout?: number, stdin?: string): Promise<void> {
   const before = await pageState(tab, { focus: keys, after: -1, ms: keys ? 1000 : 0 });
   if (keys && !before.focus) throw new Error("the page does not have keyboard focus, so no keys were sent; click a field with real_input first");
-  await input(args, timeout, stdin);
+  await deliver(tab, args, timeout, stdin);
   await pageState(tab, { focus: false, after: before.marks, ms: 500 }).catch(() => {});
 }
 
@@ -157,7 +182,7 @@ async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> 
     let pressed = false;
     let errors: unknown;
     try {
-      const r = await input(["press", marked.mark, String(marked.width), String(marked.height)]);
+      const r = await deliver(tab, ["press", marked.mark, String(marked.width), String(marked.height)]);
       pressed = !!r && typeof r === "object" && "pressed" in r && r.pressed === true;
     } finally {
       errors = await rpc("press_done", { tab, ref, mark: marked.mark, ms: pressed ? 500 : 0 }).catch(() => []);
@@ -200,7 +225,7 @@ async function held(tab: number, ref: unknown, field: Field, text: string): Prom
 // nothing, where the tree cannot reach the field.
 async function setBehind(tab: number, ref: unknown, field: Field, text: string, append = false): Promise<Held | null> {
   const set = await inTree(tab, await VIA_RPC.tabs(), async () => {
-    const r = await input(["setvalue", ...(append ? ["--append"] : []), field.mark, String(field.width), String(field.height)], 10000, text);
+    const r = await deliver(tab, ["setvalue", ...(append ? ["--append"] : []), field.mark, String(field.width), String(field.height)], 10000, text);
     return !!r && typeof r === "object" && "set" in r && r.set === true;
   });
   return set ? held(tab, ref, field, text) : null;

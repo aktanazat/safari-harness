@@ -10,6 +10,8 @@
 import type { Challenge } from "./challenge.ts";
 import { site, WAIT_NEEDS, waitsOnPage } from "./receipt.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind, type Target } from "./save.ts";
+import { failureOf, HarnessError, readFailure, type Failure } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
 
 export const MAP_MAX_URLS = 20;
 const AT_ONCE = 4;
@@ -29,7 +31,7 @@ const CHECKED: Record<"page" | "block", string> = {
   block: "the site turns the browser away; the user cannot clear that either",
 };
 
-type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string }) & { challenge?: Challenge };
+type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string; failure?: Failure }) & { challenge?: Challenge };
 // title: the page's as it opened, which an eval or fetch read does not
 // carry, where the address may have led to a sign-in or a page not found
 export type Page = Outcome & { url: string; title?: string; ms: number; closeError?: string };
@@ -109,7 +111,7 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number): P
   await Promise.race([Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker)), late]);
   clearTimeout(timer);
   await Promise.all(writing);
-  const answered = urls.map((url, i) => pages[i] ?? unfinished(url, began[i]));
+  const answered = urls.map((url, i) => pages[i] ?? unfinished(url, began[i], began[i] !== undefined && affectsPage(job.read, job.args)));
   // An extension that answers nothing fails each page alike, and a list of
   // failed pages read as a map that worked: on 10-13 two maps took 30 s
   // each and answered every page "extension request tabs.list timed out".
@@ -199,9 +201,10 @@ function hrefsOf(value: unknown): string[] {
 }
 
 // A page map answered without: still being read, or not begun.
-function unfinished(url: string, began: number | undefined): Page {
+function unfinished(url: string, began: number | undefined, effectful: boolean): Page {
   const ms = began === undefined ? 0 : Math.round(performance.now() - began);
-  return { ok: false, error: `unfinished when map's ${BUDGET_MS / 1000} s ran out; map it again, in a call with fewer pages`, url, ms };
+  const error = `unfinished when map's ${BUDGET_MS / 1000} s ran out; ${effectful ? "the action result is unknown; read the page before deciding whether to repeat it" : "map it again, in a call with fewer pages"}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("timeout", error, { effect: effectful ? "possibly_effected" : "none" })), url, ms };
 }
 
 // One page, start to end; it answers for every failure, its tab's close
@@ -217,7 +220,7 @@ async function visit(url: string, job: Job): Promise<Page | (() => Promise<Page>
     opened = (await job.call("open", { url, background: true })) as Opened;
     outcome = await readTab(opened, url, job);
   } catch (e) {
-    outcome = { ok: false, error: messageOf(e) };
+    outcome = { ok: false, error: messageOf(e), failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
   }
   const ms = Math.round(performance.now() - started);
   const tab = opened?.id;
@@ -229,17 +232,17 @@ async function visit(url: string, job: Job): Promise<Page | (() => Promise<Page>
   const at = opened?.url ?? url;
   return () => saveOutput(read, done.value, target, async () => at).then(
     (saved): Page => ({ ...done, value: saved, ...about }),
-    (e: unknown): Page => ({ ok: false, error: messageOf(e), ...about }),
+    (e: unknown): Page => ({ ok: false, error: messageOf(e), failure: failureOf(e, { effectful: false }), ...about }),
   );
 }
 
 async function readTab(opened: Opened, url: string, { wait, waited, read, args, target, call }: Job): Promise<Outcome> {
   const check = opened.challenge;
-  if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], challenge: check };
+  if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], failure: failureOf(new HarnessError("blocked", CHECKED[check.where], { next: CHECKED[check.where] })), challenge: check };
   // open answers a site's error page (its guide's error-titles) as not ok,
   // with a warning: the page holds nothing to read. On 10-16 a hunt's eBay
   // searches answered "Error Page | eBay", read as no listings (HuntsUsage).
-  if (opened.ok === false && opened.warning) return { ok: false, error: opened.warning };
+  if (opened.ok === false && opened.warning) return { ok: false, error: opened.warning, failure: failureOf(new HarnessError("not_content", opened.warning)) };
   if (wait) {
     const missed = missOf(await call("wait", { ...wait, tab: opened.id }), waited);
     if (missed) return check ? { ...missed, challenge: check } : missed;
@@ -249,22 +252,26 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   const value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
   // A page can answer with an error instead of output (extract's selector
   // matches nothing): it read nothing, so it failed like a page that threw.
-  const outcome: Outcome = pageError(value) ?? { ok: true, value };
+  const outcome: Outcome = pageError(value, affectsPage(read, args)) ?? { ok: true, value };
   return check ? { ...outcome, challenge: check } : outcome;
 }
 
-function pageError(value: unknown): { ok: false; error: string } | undefined {
-  return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { ok: false, error: value.error } : undefined;
+function pageError(value: unknown, effectful: boolean): { ok: false; error: string; failure: Failure } | undefined {
+  if (!value || typeof value !== "object" || !("error" in value) || typeof value.error !== "string") return undefined;
+  const known = "failure" in value ? readFailure(value.failure) : undefined;
+  return { ok: false, error: value.error, failure: known ?? failureOf(new Error(value.error), { effectful }) };
 }
 
 // A page that never showed what the wait asked for is most often another
 // page (a redirect, a page not found): the address and title say which. A
 // page that gave the wait no answer in time (unanswered, a loaded Safari)
 // may show it all the same.
-function missOf(seen: unknown, waited = "what wait asked for"): { ok: false; error: string } | undefined {
+function missOf(seen: unknown, waited = "what wait asked for"): { ok: false; error: string; failure: Failure } | undefined {
   if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
-  if ("unanswered" in seen && seen.unanswered === true) return { ok: false, error: `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again` };
   const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
   const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
-  return { ok: false, error: `it did not show ${waited}; the tab is at ${at}${title}` };
+  const error = "unanswered" in seen && seen.unanswered === true
+    ? `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`
+    : `it did not show ${waited}; the tab is at ${at}${title}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
 }

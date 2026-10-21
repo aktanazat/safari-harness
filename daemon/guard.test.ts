@@ -52,7 +52,7 @@ test("a read whose answer changes is never stopped, and neither is an action tha
   safari((op) => ({ value: op === "tabInfo" ? { title: `Results, page ${++n}` } : { ok: true } }));
   for (let i = 1; i <= 8; i++) {
     expect(await model(104, "click", { tab: 7, ref: "Next" })).toMatchObject({ ok: true });
-    expect(await model(104, "info", { tab: 7 })).toEqual({ title: `Results, page ${i}` });
+    expect(await model(104, "info", { tab: 7 })).toMatchObject({ title: `Results, page ${i}` });
   }
 });
 

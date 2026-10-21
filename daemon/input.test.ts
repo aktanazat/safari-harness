@@ -6,9 +6,11 @@ import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
 import { queuePopup } from "./continuity.ts";
 import { connect } from "./fake-safari.ts";
+import { HarnessError } from "./failures.ts";
 import * as front from "./front.ts";
 import { INPUT_TOOLS } from "./input.ts";
-import { runAs } from "./owner.ts";
+import { watched } from "./mission.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import * as daemonRpc from "./rpc.ts";
 import * as spaces from "./spaces.ts";
 import { callTool } from "./tools.ts";
@@ -33,6 +35,7 @@ const GHOSTTY = "com.mitchellh.ghostty";
 // kind of field typed into (a one-line input unless said), the row of code
 // boxes it begins, and the name of the Send button the page shows by it.
 type Page = {
+  owner?: number;
   picker?: boolean;
   press?: { pressed: boolean; why?: string };
   set?: { set: boolean; why?: string };
@@ -47,6 +50,7 @@ type Page = {
   kind?: "input" | "textarea" | "editable";
   boxes?: number;
   sendButton?: string;
+  nativeFailure?: string;
 };
 type Mac = {
   app: string;
@@ -116,6 +120,7 @@ function mac(page: Page = {}): Mac {
       if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
       if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
+      if (dom === "snapshot") return answer({ url: "https://example.com/", title: "Page", snapshot: "[1] button Continue", truncated: false });
       if (dom === "eval") return answer({ result: { marks, focus: true } });
       if (dom === "click") return answer({ ok: true, receipt: { ...QUIET, ...page.clicked?.shift() } });
       if (dom === "type") return answer({ ok: true, kept: true });
@@ -125,6 +130,7 @@ function mac(page: Page = {}): Mac {
   });
   spyOn(front, "input").mockImplementation(async (args, _timeout, stdin) => {
     m.helper.push(args);
+    if (page.nativeFailure && ["press", "setvalue", "click", "key", "type"].includes(args[0])) throw new Error(page.nativeFailure);
     if (args[0] === "idle") return { idle: !page.busy, waitedMs: 0 };
     if (args[0] === "setvalue") {
       if (page.set) return page.set;
@@ -161,12 +167,12 @@ function mac(page: Page = {}): Mac {
       // the helper's closing F20, which the page counts
       marks++;
       selected = false;
-      if (page.popup) queuePopup(process.pid, page.popup);
+      if (page.popup && page.owner !== undefined) queuePopup(page.owner, page.popup);
     }
     return {};
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map([[2, 7]]));
-  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => callTool(tool, args, undefined, daemonRpc.takesNews()));
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => watched(page.owner, tool, args, () => runAs(page.owner, () => callTool(tool, args, undefined, daemonRpc.takesNews()))));
   return m;
 }
 
@@ -466,6 +472,49 @@ test("a caller run checks later arguments before sending any real input", async 
 // the daemon calls real_input made after the click took that news and
 // dropped it, so the agent never heard of the window.
 test("a real click's answer carries the tab its action opened", async () => {
-  mac({ popup: { tab: 22, url: "https://accounts.example/" } });
-  expect(await runAs(process.pid, () => invoke("real_input", { tab: 21, do: "click", ref: "#go", count: 2 }, true))).toEqual({ ok: true, at: { x: 140, y: 160 }, popup: { tab: 22, url: "https://accounts.example/" } });
+  const owner = Bun.spawn(["sleep", "60"]);
+  try {
+    mac({ owner: owner.pid, popup: { tab: 22, url: "https://accounts.example/" } });
+    expect(await runAs(owner.pid, () => invoke("real_input", { tab: 21, do: "click", ref: "#go", count: 2 }, true))).toEqual({ ok: true, at: { x: 140, y: 160 }, popup: { tab: 22, url: "https://accounts.example/" } });
+  } finally {
+    owner.kill();
+    await owner.exited;
+    const ended = Promise.withResolvers<void>();
+    watchOwner(owner.pid, ended.resolve);
+    await ended.promise;
+  }
+});
+
+test.each([
+  { do: "click", ref: "#submit" },
+  { do: "type", ref: "#name", text: "Ada" },
+  { do: "key", key: "Enter" },
+])("native $do checks its final permit after locating or focusing, before any helper input", async (args) => {
+  const m = mac();
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, values = {}) => {
+    if (tool === "action_admit") throw new HarnessError("stale_view", "the tab needs a fresh observation");
+    return callTool(tool, values, undefined, daemonRpc.takesNews());
+  });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, ...args })).rejects.toMatchObject({ code: "stale_view", effect: "none" });
+  expect(m.asked.some((op) => /^(pressMark|typeMark|eval) 21$/.test(op))).toBe(true);
+  expect(m.helper.filter((command) => ["press", "setvalue", "click", "key", "type"].includes(command[0]))).toEqual([]);
+});
+
+test("an unknown native helper result never falls back or retries, and another attempt needs a fresh observation", async () => {
+  const page: Page = { nativeFailure: "helper connection ended after input was sent" };
+  const m = mac(page);
+  try {
+    await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "click", ref: "#submit" })).rejects.toMatchObject({ code: "effect_unknown", effect: "possibly_effected" });
+    expect(run(m, "press")).toHaveLength(1);
+    page.nativeFailure = undefined;
+    await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "click", ref: "#submit" })).rejects.toMatchObject({ code: "effect_unknown" });
+    expect(run(m, "press")).toHaveLength(1);
+    expect(run(m, "click")).toEqual([]);
+    await daemonRpc.rpc("snapshot", { tab: 21 });
+    expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "click", ref: "#submit" })).toMatchObject({ ok: true, background: true });
+    expect(run(m, "press")).toHaveLength(2);
+  } finally {
+    page.nativeFailure = undefined;
+    await daemonRpc.rpc("snapshot", { tab: 21 });
+  }
 });

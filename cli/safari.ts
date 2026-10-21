@@ -28,6 +28,7 @@ import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
 import type { Overview } from "../daemon/mission.ts";
+import { failureOf } from "../daemon/failures.ts";
 
 // Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
@@ -120,12 +121,14 @@ const USAGE = `safari — drive Safari from the terminal
   safari cookies --tab N                     cookies for the page
   safari cookies clear --tab N|--url U       forget the site (cookies, storage);
                                              closes your tabs on it
-  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live]
-                                             screenshot what the tab shows (--live leaves
-                                             its animations running; else they end first)
-  safari shots <url>... --widths 390,1440 --out folder [--full]
-                                             shoot each page at each width into the folder,
-                                             each file named for its address and width
+  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles]
+                                             protected screenshot and source receipt;
+                                             --tiles adds readable overlapping pieces
+  safari shots <url>... --widths 390,1440 --out folder [--full] [--tiles]
+                                             capture each page and width with its receipt
+
+  safari report --out folder --answer text --findings '[{"claim":"…","evidence":"/absolute/receipt.json"}]'
+                                             write an evidence-backed report with local images
   safari download <ref|url> [--out file] [--tab N]
                                              save a file into ~/Downloads; a url needs
                                              no tab, a tab alone saves the file it shows
@@ -389,7 +392,7 @@ const FLAG_FOR: Record<string, Record<string, string>> = { tabs: { host: "site" 
 // folder of its own, so it refuses a relative out and found no relative
 // upload (S99PartB). Their help said absolute, as the tools' do (smoke run
 // after the 10-16 deploy).
-const PATH_PARAMS: Record<string, string[]> = { shot: ["out"], shots: ["out"], download: ["out"], pdf: ["out", "path"], upload: ["paths"] };
+const PATH_PARAMS: Record<string, string[]> = { shot: ["out"], shots: ["out"], report: ["out"], download: ["out"], pdf: ["out", "path"], upload: ["paths"] };
 
 // A tool's parameters given as --name value, however the name is written
 // (--max-bytes, or --note for learn's fact, as a model's call may name
@@ -1058,7 +1061,7 @@ async function main() {
 // Flags that take no value; the word after them is positional, unless it is
 // true or false: on 10-04 `eval --page true "const ..."` ran "true const
 // ..." and failed at its second word.
-const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, live: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true };
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, live: true, tiles: true, history: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
@@ -1078,5 +1081,11 @@ function jsonObject(word: string | undefined): boolean {
 main().then(
   // A tunnel to another Mac keeps the event loop alive; the command is done.
   () => process.exit(0),
-  (e: unknown) => fail(e instanceof Error ? e.message : String(e)),
+  (e: unknown) => {
+    if (json) {
+      say(JSON.stringify(failureOf(e)));
+      process.exit(1);
+    }
+    fail(e instanceof Error ? e.message : String(e));
+  },
 );

@@ -11,7 +11,7 @@
 // at once: its agent goes on with other steps and checks back with the id
 // the first one returned.
 
-import { rm } from "node:fs/promises";
+import { removeCapture } from "./evidence.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Challenge } from "./challenge.ts";
@@ -73,7 +73,7 @@ async function alertUser(tab: number, h: Handed, end: number, shown: Record<stri
     await alert(line, shot ? undefined : picture, () => akyl("/handoff", shown));
     return shot ? `sent, without the picture: ${shot}` : "sent";
   } finally {
-    await rm(picture, { force: true });
+    await removeCapture(picture);
   }
 }
 

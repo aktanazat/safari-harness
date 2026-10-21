@@ -1,4 +1,4 @@
-import { afterAll, expect, setSystemTime, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import { callTool, endTurn, openTab } from "./tools.ts";
 // make every window plain).
 const dir = mkdtempSync(join(tmpdir(), "spaces-test-"));
 Object.assign(files, { queue: join(dir, "groups.json"), off: join(dir, "groups-off.json"), keeper: join(dir, "keeper.pid"), log: join(dir, "keeper.log") });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
 
 type Tab = { id: number; url: string; windowId: number; active: boolean };
 

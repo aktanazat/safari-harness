@@ -14,8 +14,6 @@ const WAIT_MS = 10_000;
 
 const always = () => true;
 
-// The tools that change a page, and the steps of three that sometimes do
-// (upload's find only lists files).
 const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   click: always,
   type: always,
@@ -34,12 +32,18 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   login_fill: always,
   card_fill: always,
   autofill: always,
-  passwords: (a) => a.do === "fill" || a.do === "code",
+  passwords: (a) => a.do === "fill" || a.do === "code" || a.do === "change" || a.do === "change-type",
   dialog: (a) => a.do === "accept" || a.do === "dismiss",
 };
 
 // Whether a call changes its tab's page.
 export const acts = (tool: string, args: Record<string, unknown>) => Object.hasOwn(ACTING, tool) && ACTING[tool](args);
+
+const EXTRA_EFFECTS: Record<string, true> = { real_input: true, close: true, window: true, activate: true, select_tab: true, type_mark: true, press_mark: true, replay: true, download: true };
+
+export function affectsPage(tool: string, args: Record<string, unknown>): boolean {
+  return acts(tool, args) || Object.hasOwn(EXTRA_EFFECTS, tool) || tool === "cookies" && (args.do === "set" || args.do === "clear");
+}
 
 type Holder = { tool: string; owner: number | undefined; since: number };
 type Turn = { tool: string; owner: number | undefined; go: () => void };

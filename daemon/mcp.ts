@@ -6,6 +6,8 @@ import { appendFileSync } from "node:fs";
 import { closeAll, fresh, tools } from "./fresh.ts";
 import { connectHost } from "./host.ts";
 import { redactUrl } from "./redact.ts";
+import { failureOf } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
 
 const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
 
@@ -83,8 +85,10 @@ async function handle(msg: RpcMsg) {
         return reply(msg.id, { content: [{ type: "text", text }] });
       } catch (e) {
         logCall(name, args, "error", performance.now() - began);
+        const failure = failureOf(e, { effectful: affectsPage(name, args) });
         return reply(msg.id, {
-          content: [{ type: "text", text: `error: ${String(e instanceof Error ? e.message : e)}` }],
+          content: [{ type: "text", text: JSON.stringify(failure, null, 2) }],
+          structuredContent: failure,
           isError: true,
         });
       }

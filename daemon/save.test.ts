@@ -42,9 +42,12 @@ test("a saved read holds the whole output, past the limit a reply is cut at", as
   expect(readFileSync(path, "utf8")).toBe(TEXT);
 });
 
-test("a saved read answers with only the file's path, the page's address, its size in bytes, and its first 500 characters", async () => {
+test("a saved read summarizes the file's path, page address, byte size, and first 500 characters without returning the full content", async () => {
   const path = join(dir, "reply.txt");
-  expect(await callTool("extract", { tab: 1, save: path })).toEqual({ saved: path, url: "https://shop.example/items", bytes: Buffer.byteLength(TEXT), head: TEXT.slice(0, 500) });
+  const reply = await callTool("extract", { tab: 1, save: path });
+  expect(reply).toMatchObject({ saved: path, url: "https://shop.example/items", bytes: Buffer.byteLength(TEXT), head: TEXT.slice(0, 500) });
+  expect(reply).not.toHaveProperty("text");
+  expect(reply).not.toHaveProperty("result");
 });
 
 test("an expression's string value is saved as its text, any other value as JSON", async () => {
@@ -57,9 +60,11 @@ test("an expression's string value is saved as its text, any other value as JSON
   expect(JSON.parse(readFileSync(none, "utf8"))).toBeNull();
 });
 
-test("an error the page answers with comes back as it is, and no file is written", async () => {
+test("a page's error is preserved without reporting or writing a saved file", async () => {
   const path = join(dir, "none.txt");
-  expect(await callTool("extract", { tab: 1, selector: "#none", save: path })).toEqual({ error: "no content root" });
+  const reply = await callTool("extract", { tab: 1, selector: "#none", save: path });
+  expect(reply).toMatchObject({ error: "no content root" });
+  expect(reply).not.toHaveProperty("saved");
   expect(existsSync(path)).toBe(false);
 });
 

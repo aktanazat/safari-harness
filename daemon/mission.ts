@@ -17,14 +17,21 @@
 // also needs the secret its page was served with, sent as JSON, which a
 // page of another origin cannot send without asking first.
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { basename } from "node:path";
 import { bridge } from "./bridge.ts";
+import { followTab } from "./continuity.ts";
 import { onRaised } from "./front.ts";
+import { removeCapture, verifyEvidence } from "./evidence.ts";
+import { failureOf, HarnessError } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
+import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { spaceById, spaceEnded } from "./spaces.ts";
-import { closeTabsOf, tabsOpenedBy, type TabInfo } from "./tools.ts";
+import { closeTabsOf, resolveTab, screenshot, tabsOpenedBy, TOOLS, type TabInfo } from "./tools.ts";
+import { localRequest } from "./requests.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -50,13 +57,23 @@ type Call = {
   error?: string;
   url?: string;
   title?: string;
+  code?: string;
+  evidence?: CaptureSummary[];
+  picture?: HistoryPicture;
+  pendingNative?: boolean;
 };
 
 type Hold = "paused" | "driving";
 type Status = "working" | "waiting on the user" | "paused" | "user is driving" | "stopped" | "ended";
+type View = { revision: number; stale: boolean; retries: Set<string>; native?: Map<string, Call>; all?: true };
 
 // raised: the times it brought Safari to the front (front.ts)
 type Agent = {
+  id: string;
+  revision: number;
+  views: Map<number, View>;
+  pictures: boolean;
+  takeovers: Set<Promise<number | undefined>>;
   owner?: number;
   process?: string;
   first: number;
@@ -73,11 +90,50 @@ type Agent = {
 
 function fresh(owner?: number): Agent {
   const now = Date.now();
-  return { owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set() };
+  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set() };
 }
 
 const agents = new Map<number, Agent>();
 const nobody = fresh();
+let history = new MissionHistory();
+let historyError: string | undefined;
+const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean }>();
+const spaceAgents = new Map<string, string>();
+
+export function openMissionHistory(path: string): void {
+  try {
+    history = new MissionHistory(path);
+    historyError = undefined;
+    for (const record of history.list()) for (const id of record.spaces) spaceAgents.set(id, record.id);
+    void history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
+  } catch {
+    historyError = "History could not be opened.";
+    console.error("[safari-harness] mission history could not be opened");
+  }
+}
+
+function remember(agent: Agent): void {
+  try {
+    history.save({
+      id: agent.id, owner: agent.owner ?? null, process: agent.process ?? null,
+      since: agent.first, active: agent.last, raised: agent.raised, status: statusOf(agent),
+      ...(agent.ended === undefined ? {} : { ended: agent.ended }),
+      spaces: [...spaceAgents].filter(([, id]) => id === agent.id).map(([id]) => id),
+      pictures: agent.pictures,
+      calls: agent.calls.map((c) => ({
+        t: c.t, tool: c.tool, tab: c.tab, ms: c.ms, code: c.code, evidence: c.evidence, picture: c.picture,
+        outcome: c.pendingNative ? agent.ended === undefined ? "running" : "interrupted" : c.ms === undefined ? "running" : c.error ? "failed" : "done",
+      })),
+    });
+    const retained = new Map(history.list(agent.id)[0]?.calls.flatMap((c) => c.picture ? [[c.picture.id, c.picture] as const] : []) ?? []);
+    for (const call of agent.calls) if (call.picture) call.picture = retained.get(call.picture.id) ?? { id: call.picture.id, missing: "picture expired" };
+    historyError = undefined;
+    void history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
+  } catch {
+    historyError = "History could not be saved.";
+    console.error("[safari-harness] mission history could not be saved");
+  }
+}
 
 // The record a new call of owner goes in: a pid the system has given to
 // another process since its agent ended starts a new one.
@@ -89,7 +145,11 @@ function recordOf(owner: number | undefined): Agent {
 
 onRaised(() => {
   const owner = currentOwner();
-  recordOf(owner).raised += 1;
+  const agent = owner === undefined ? nobody : agents.get(owner);
+  if (agent) {
+    agent.raised += 1;
+    remember(agent);
+  }
   note("safari to front", { owner: owner ?? null });
 });
 
@@ -99,6 +159,8 @@ function track(owner: number): Agent {
   agents.set(owner, agent);
   agent.unwatch = watchOwner(owner, () => {
     agent.ended = Date.now();
+    release(agent);
+    remember(agent);
     agent.unwatch = undefined;
   });
   named(agent).catch((e) => console.error(`[safari-harness] no program name for agent ${owner}:`, e instanceof Error ? e.message : e));
@@ -111,6 +173,7 @@ async function named(agent: Agent): Promise<void> {
   const ps = Bun.spawn(["ps", "-o", "comm=", "-p", String(agent.owner)], { stdout: "pipe", stderr: "ignore" });
   const path = (await new Response(ps.stdout).text()).trim();
   if (path) agent.process = basename(path);
+  remember(agent);
 }
 
 // On /agents: an agent seen within the hour, or one the user holds while
@@ -142,6 +205,8 @@ function statusOf(a: Agent): Status {
 
 // Runs one call of owner's through the user's hold on it, and records it.
 export async function watched<T>(owner: number | undefined, tool: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+  const parent = scope.getStore();
+  if (parent) parent.nested = true;
   const agent = recordOf(owner);
   const withheld: string[] = [];
   const call: Call = { t: Date.now(), tool: cut(tool, 40), args: cut(argsOf(args, withheld), 300), ...tabOf(args.tab) };
@@ -151,29 +216,238 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   agent.last = call.t;
   const began = performance.now();
   let ran = false;
+  const context = { agent, call, delegated: false, nested: false };
+  remember(agent);
   try {
-    if (owner !== undefined) await admit(agent, call);
-    ran = true;
-    const value = await run();
-    Object.assign(call, outcomeOf(tool, value, withheld));
-    return value;
+    return await scope.run(context, async () => {
+      if (owner !== undefined && tool !== "action_finish") await admit(agent, call);
+      ran = true;
+      const value = await execute(agent, tool, args, () => run(), false, () => context.delegated);
+      Object.assign(call, outcomeOf(tool, value, withheld));
+      const evidence = captureSummaries(value);
+      if (evidence.length) call.evidence = evidence;
+      return value;
+    });
   } catch (e) {
+    call.code = failureOf(e).code;
     call.error = cut(redact(e instanceof Error ? e.message : String(e), withheld), 300);
     throw e;
   } finally {
     call.ms = Math.round(performance.now() - began);
     agent.running.delete(call);
     agent.last = Date.now();
+    remember(agent);
     // A tab a call in flight opened after the user stopped its agent is marked
     // too: it closes with the others when the agent's turn ends.
-    if (ran && owner !== undefined && agent.stopped !== undefined) closeTabsOf(owner);
+    if (ran && owner !== undefined && agent.stopped !== undefined && agents.get(owner) === agent) closeTabsOf(owner);
+  }
+}
+
+export async function missionCall<T>(tool: string, args: Record<string, unknown>, run: (pinned: Record<string, unknown>) => Promise<T>): Promise<T> {
+  const context = scope.getStore();
+  // Only the public watched boundary creates a mission. Internal resource
+  // calls may use runAs without representing another live agent task.
+  if (!context) return run(args);
+  if (context.call.tool !== tool || context.delegated) {
+    context.nested = true;
+    return watched(currentOwner(), tool, args, () => missionCall(tool, args, run));
+  }
+  context.delegated = true;
+  if (context.agent.owner !== undefined && tool !== "action_finish") await admit(context.agent, context.call);
+  const needsTab = affectsPage(tool, args) || wholeView(tool, args);
+  const tab = needsTab && args.tab !== undefined && args.tab !== null ? await resolveTab(args.tab) : undefined;
+  const pinned = tab === undefined ? args : { ...args, tab };
+  if (context.agent.owner !== undefined && tool !== "action_finish") await admit(context.agent, context.call);
+  return execute(context.agent, tool, pinned, () => run(pinned), true, () => context.nested);
+}
+
+export async function admitNativeAction(args: Record<string, unknown>): Promise<{ ok: true; tab: number; permit: string }> {
+  return missionCall("real_input", args, async (pinned) => {
+    const context = scope.getStore();
+    if (!context) throw new HarnessError("unavailable", "native input needs an active request", { effect: "none" });
+    const { agent, call } = context;
+    const tab = tabOf(pinned.tab).tab;
+    if (tab === undefined) throw new HarnessError("invalid_argument", "native input needs an exact tab");
+    const permit = randomUUID();
+    const view: View = agent.views.get(tab) ?? { revision: 0, stale: false, retries: new Set<string>() };
+    view.revision = ++agent.revision;
+    call.pendingNative = true;
+    if (agent.pictures) call.picture = { id: randomUUID(), missing: "action result is unknown" };
+    (view.native ??= new Map()).set(permit, call);
+    agent.views.set(tab, view);
+    return { ok: true, tab, permit };
+  });
+}
+
+export async function finishNativeAction(tab: number, permit: string, uncertain: boolean, picture = true): Promise<void> {
+  const owner = currentOwner();
+  const context = scope.getStore();
+  const agent = context && context.agent.owner === owner ? context.agent : owner === undefined ? nobody : agents.get(owner);
+  if (!agent) throw new HarnessError("invalid_argument", "native input permit is not current");
+  syncViews(agent);
+  tab = followTab(tab);
+  const view = agent.views.get(tab);
+  const call = view?.native?.get(permit);
+  if (!view || !call || !view.native?.delete(permit)) throw new HarnessError("invalid_argument", "native input permit is not current");
+  call.pendingNative = false;
+  if (uncertain) {
+    view.revision = ++agent.revision;
+    view.all = true;
+    call.code = "effect_unknown";
+    call.error = "native input result is unknown";
+  }
+  call.ms = Math.max(0, Date.now() - call.t);
+  if (!view.stale && !view.all && !view.retries.size && !view.native.size) agent.views.delete(tab);
+  if (picture) await pictureAfter(agent, call, tab, uncertain);
+  else delete call.picture;
+  remember(agent);
+}
+
+async function pictureAfter(agent: Agent, call: Call, tab: number, uncertain = false): Promise<void> {
+  if (!agent.calls.includes(call)) return;
+  const id = call.picture?.id ?? randomUUID();
+  if (!agent.pictures) {
+    if (call.picture) call.picture = { id, missing: "picture saving stopped" };
+    return;
+  }
+  if (uncertain || agent.hold !== undefined || agent.stopped !== undefined || agent.ended !== undefined) {
+    call.picture = { id, missing: uncertain ? "action result is unknown" : "task is paused or ended" };
+    return;
+  }
+  let receipt: string | undefined;
+  try {
+    await history.cleanup();
+    if (!agent.pictures) return;
+    if (agent.hold !== undefined || agent.stopped !== undefined || agent.ended !== undefined) {
+      call.picture = { id, missing: "task is paused or ended" };
+      return;
+    }
+    const saved = await screenshot({ tab, out: history.pictureOutput(agent.id, id) });
+    receipt = saved.evidence.path;
+    const verified = await verifyEvidence(receipt);
+    if (verified.image.byteLength > 16 * 1024 * 1024) {
+      call.picture = { id, missing: "picture exceeded size limit" };
+      await removeCapture(receipt);
+      return;
+    }
+    const summary = captureSummaries(saved)[0];
+    if (!summary || summary.sha256 !== verified.evidence.sha256) throw new Error("capture could not be verified");
+    if (!agent.pictures || !agent.calls.includes(call)) {
+      if (agent.calls.includes(call)) call.picture = { id, missing: "picture saving stopped" };
+      await removeCapture(receipt);
+      return;
+    }
+    call.picture = { id, capture: summary, receipt, bytes: verified.image.byteLength };
+    remember(agent);
+  } catch (e) {
+    call.picture = { id, missing: failureOf(e, { effectful: false }).code === "privacy" ? "privacy guard refused capture" : "capture unavailable" };
+    if (receipt) await removeCapture(receipt).catch(() => { historyError = "An unused picture could not be removed."; });
+  }
+}
+
+const OBSERVATIONS: Record<string, true> = { snapshot: true, extract: true, shot: true };
+const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, passwords: true };
+const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true };
+
+function syncViews(agent: Agent): void {
+  for (const [old, view] of agent.views) {
+    const tab = followTab(old);
+    if (tab === old) continue;
+    const current = agent.views.get(tab) ?? view;
+    current.revision = ++agent.revision;
+    current.stale ||= view.stale;
+    current.all = true;
+    if (current !== view && view.native) {
+      current.native ??= new Map();
+      for (const [permit, call] of view.native) current.native.set(permit, call);
+    }
+    agent.views.delete(old);
+    agent.views.set(tab, current);
+  }
+}
+
+function fingerprint(tool: string, args: Record<string, unknown>): string {
+  const definition = TOOLS[tool];
+  const effect = Object.fromEntries(Object.entries(args).filter(([key]) => !Object.hasOwn(OUTPUT_OPTIONS, key) && (!definition || Object.hasOwn(definition.params, key) || definition.unlisted && Object.hasOwn(definition.unlisted, key))));
+  if (tool === "press" && effect.ref === null) delete effect.ref;
+  if (effect.ref !== undefined) effect.ref = String(effect.ref);
+  if (tool === "click" && effect.ref !== undefined) { delete effect.x; delete effect.y; }
+  if (tool === "type") { effect.append = !!effect.append; delete effect.secret; }
+  if (tool === "fetch" && typeof effect.method === "string") effect.method = effect.method.toUpperCase();
+  const stable = JSON.stringify(effect, (_key, value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+  return createHmac("sha256", KEY).update(tool).update(stable).digest("hex");
+}
+
+function invalidate(agent: Agent, tab: number, retry?: string): void {
+  tab = followTab(tab);
+  const view: View = agent.views.get(tab) ?? { revision: 0, stale: false, retries: new Set<string>() };
+  view.revision = ++agent.revision;
+  if (retry === undefined) view.stale = true;
+  else if (view.retries.size < KEPT) view.retries.add(retry);
+  else view.all = true;
+  agent.views.set(tab, view);
+}
+
+function wholeView(tool: string, args: Record<string, unknown>): boolean {
+  return Object.hasOwn(OBSERVATIONS, tool) && args.query === undefined && args.root === undefined && args.selector === undefined && args.pick === undefined && args.ref === undefined && args.as === undefined && args.maxNodes === undefined && args.maxBytes === undefined && args.diff !== true && args.interactive !== true;
+}
+
+function observed(tool: string, args: Record<string, unknown>, value: unknown): boolean {
+  if (!wholeView(tool, args) || value === null || value === undefined) return false;
+  if (typeof value !== "object") return tool === "extract" && typeof value === "string";
+  if ("ok" in value && value.ok === false || "isError" in value && value.isError === true || "error" in value) return false;
+  if ("truncated" in value && value.truncated === true || "cut" in value && !!value.cut) return false;
+  if (tool === "shot") return captureSummaries(value).length > 0;
+  if (tool === "snapshot") return "snapshot" in value && typeof value.snapshot === "string";
+  return tool === "extract" && "text" in value && typeof value.text === "string";
+}
+
+async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
+  syncViews(agent);
+  const rawTab = tabOf(args.tab).tab;
+  const tab = rawTab === undefined ? undefined : followTab(rawTab);
+  const effectful = affectsPage(tool, args);
+  const guarded = effectful && tool !== "run" && tool !== "replay";
+  const key = guarded ? fingerprint(tool, args) : undefined;
+  const view = tab === undefined ? undefined : agent.views.get(tab);
+  if (guarded && view?.stale) throw new HarnessError("stale_view", "the user changed this tab; snapshot or read it before acting", { next: "snapshot or extract this tab, then decide what to do" });
+  if (effectful && key !== undefined && (view?.all || view?.native?.size || view?.retries.has(key))) {
+    throw new HarnessError("effect_unknown", "that action may already have happened; snapshot or read this tab before repeating it", { effect: "none", retryable: true, next: "snapshot or extract this tab and check whether the action already happened" });
+  }
+  const revision = agent.revision;
+  try {
+    const value = await run();
+    // A tab may have been replaced while this result was in flight. Move
+    // its hold forward before an old observation can acknowledge it.
+    syncViews(agent);
+    if (!delegated() && tab !== undefined && observed(tool, args, value) && agent.hold !== "driving") {
+      const pending = agent.views.get(tab);
+      if (pending && pending.revision <= revision && !pending.native?.size) agent.views.delete(tab);
+    }
+    if (!delegated() && dispatched && effectful && tab !== undefined && key !== undefined && value && typeof value === "object" && "ok" in value && value.ok === false) {
+      const failure = failureOf(value, { effectful: true });
+      if (failure.effect === "possibly_effected") invalidate(agent, tab, key);
+    }
+    const pictureTab = tab ?? (tool === "open" && value && typeof value === "object" && "id" in value ? tabOf(value.id).tab : undefined);
+    if (!delegated() && dispatched && (effectful || tool === "open") && pictureTab !== undefined && Object.hasOwn(PICTURE_ACTIONS, tool)) {
+      const call = scope.getStore()?.call;
+      if (call) await pictureAfter(agent, call, pictureTab, !!(value && typeof value === "object" && "ok" in value && value.ok === false && failureOf(value, { effectful: true }).effect === "possibly_effected"));
+    }
+    return value;
+  } catch (e) {
+    if (!delegated() && effectful && tab !== undefined && key !== undefined && failureOf(e, { effectful: dispatched }).effect === "possibly_effected") {
+      invalidate(agent, tab, key);
+      const call = scope.getStore()?.call;
+      if (dispatched && call && Object.hasOwn(PICTURE_ACTIONS, tool)) await pictureAfter(agent, call, tab, true);
+    }
+    throw e;
   }
 }
 
 // A paused agent's call waits for the user, up to HOLD_MS; a stopped
 // agent's fails. Calls already in flight when he pressed finish.
 async function admit(agent: Agent, call: Call): Promise<void> {
-  if (agent.stopped !== undefined) throw new Error(STOPPED);
+  if (agent.stopped !== undefined || agent.ended !== undefined) throw new HarnessError("stopped", STOPPED);
   if (agent.hold === undefined) return;
   call.held = true;
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -183,8 +457,8 @@ async function admit(agent: Agent, call: Call): Promise<void> {
   clearTimeout(timer);
   agent.waiting.delete(resolve);
   delete call.held;
-  if (agent.stopped !== undefined) throw new Error(STOPPED);
-  if (agent.hold !== undefined) throw new Error(PAUSED);
+  if (agent.stopped !== undefined || agent.ended !== undefined) throw new HarnessError("stopped", STOPPED);
+  if (agent.hold !== undefined) throw new HarnessError("waiting_for_human", PAUSED);
 }
 
 function release(agent: Agent) {
@@ -321,7 +595,7 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 
 // ---------- what the pages read ----------
 
-type Summary = { owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean };
+type Summary = { id: string; owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; controlSecret?: string };
 // /agents.json, and what safari agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
 export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[] };
@@ -329,13 +603,17 @@ export type Overview = { now: number; agents: (Summary & { last: Call | null; ta
 function summaryOf(a: Agent): Summary {
   const status = statusOf(a);
   return {
+    id: a.id,
     owner: a.owner ?? null,
     process: a.process ?? null,
     status,
     since: a.first,
     active: a.last,
     raised: a.raised,
+    pictures: a.pictures,
     controls: a.owner !== undefined && status !== "stopped" && status !== "ended",
+    needsObservation: [...a.views].filter(([, view]) => view.stale || view.all || view.native?.size || view.retries.size > 0).map(([tab]) => tab),
+    ...(a.owner === undefined || status === "stopped" || status === "ended" ? {} : { controlSecret: secretOf(`agent:${a.id}`) }),
   };
 }
 
@@ -372,13 +650,45 @@ async function spaceState(url: URL): Promise<Response> {
   const id = url.searchParams.get("id") ?? "";
   const space = spaceById(id);
   if (!space) return json({ now, agent: null, tabs: null, ended: spaceEnded(id) });
-  const agent = space.owner === undefined ? nobody : (agents.get(space.owner) ?? track(space.owner));
+  const agent = space.owner === undefined ? nobody : agents.get(space.owner);
+  if (!agent || spaceAgents.has(id) && spaceAgents.get(id) !== agent.id) return json({ now, agent: null, tabs: null, ended: true });
+  if (!spaceAgents.has(id)) {
+    spaceAgents.set(id, agent.id);
+    remember(agent);
+  }
   const tabs = await tabList();
   return json({
     now,
-    agent: { ...summaryOf(agent), calls: agent.calls.slice(-SHOWN_CALLS).reverse() },
+    agent: { ...summaryOf(agent), calls: agent.calls.slice(-SHOWN_CALLS).reverse().map((c) => publicCall(c, agent.id)) },
+    history: agent.id,
     tabs: tabs ? inWindows(tabs, new Set([space.window])).map((t) => ({ id: t.id, title: cut(t.title ?? "", 120), url: t.url ? place(t.url, []) : "", active: t.active === true })) : null,
   });
+}
+
+function publicCall<T extends { picture?: HistoryPicture }>(call: T, mission: string) {
+  const { picture, ...rest } = call;
+  return { ...rest, ...(picture ? { picture: "missing" in picture ? picture : { id: picture.id, capture: picture.capture }, mission } : {}) };
+}
+
+async function historyRows(url: URL): Promise<Response> {
+  const missions = history.list(url.searchParams.get("id") ?? undefined);
+  await history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
+  return json({ now: Date.now(), missions: missions.map((m) => ({ ...m, calls: m.calls.map((c) => publicCall(c, m.id)) })), ...(historyError ? { error: historyError } : {}) });
+}
+
+async function historyPicture(url: URL): Promise<Response> {
+  const mission = url.searchParams.get("id");
+  const id = url.searchParams.get("picture");
+  const picture = mission ? history.list(mission)[0]?.calls.find((c) => c.picture?.id === id)?.picture : undefined;
+  if (!picture || !("receipt" in picture)) return problem(404, "picture is not in retained history");
+  try {
+    await history.cleanup();
+    const saved = await verifyEvidence(picture.receipt);
+    if (saved.evidence.sha256 !== picture.capture.sha256) return problem(409, "picture could not be verified");
+    return new Response(saved.image, { headers: { "content-type": "image/png", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'", "referrer-policy": "no-referrer" } });
+  } catch {
+    return problem(410, "picture is unavailable");
+  }
 }
 
 async function overview(): Promise<Overview> {
@@ -388,9 +698,10 @@ async function overview(): Promise<Overview> {
   const windows = tabs ? windowsIn(tabs) : [];
   const rows = [...agents.values(), nobody].filter((a) => listed(a, now)).map((a) => {
     const mine = windows.filter((w) => w.owner === a.owner);
+    const last = a.calls.at(-1);
     return {
       ...summaryOf(a),
-      last: a.calls.at(-1) ?? null,
+      last: last ? { ...last, picture: undefined } : null,
       tasks: mine.map((w) => ({ id: w.id, name: w.name })),
       // On 10-07 an agent showed 0 tabs while one it opened sat in a window
       // apart from its own.
@@ -408,7 +719,7 @@ const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-
 
 // ---------- the controls ----------
 
-const ACTIONS = ["pause", "resume", "stop", "drive", "giveback"] as const;
+const ACTIONS = ["pause", "resume", "stop", "drive", "giveback", "pictures_on", "pictures_off"] as const;
 type Action = (typeof ACTIONS)[number];
 const isAction = (a: unknown): a is Action => typeof a === "string" && (ACTIONS as readonly string[]).includes(a);
 
@@ -433,43 +744,61 @@ async function spaceControl(req: Request): Promise<Response> {
   const body = await bodyOf(req);
   if (!body) return problem(400, "send JSON: {id, secret, action}");
   const id = typeof body.id === "string" ? body.id : "";
-  if (!matches(body.secret, `space:${id}`)) return problem(403, "not this window's page");
   const space = spaceById(id);
   if (!space) return problem(409, "the harness restarted after this window opened, so it no longer knows its agent");
+  const agent = space.owner === undefined ? nobody : agents.get(space.owner);
+  if (!agent || spaceAgents.get(id) !== agent.id) return problem(409, "this task has ended");
+  if (!matches(body.secret, `space:${id}:${agent.id}`)) return problem(403, "not this window's page");
   return control(space.owner, body.action, "its window", space.window);
 }
 
 async function agentsControl(req: Request): Promise<Response> {
   const body = await bodyOf(req);
   if (!body) return problem(400, "send JSON: {owner, secret, action}");
-  if (!matches(body.secret, "agents")) return problem(403, "not the agents page");
   const owner = typeof body.owner === "number" && agents.has(body.owner) ? body.owner : undefined;
   if (owner === undefined) return problem(404, "no such agent");
+  const agent = agents.get(owner)!;
+  const legacy = typeof body.secret === "string" ? agentPages.get(body.secret) : undefined;
+  if (!matches(body.secret, `agent:${agent.id}`) && legacy?.get(owner) !== agent.id) return problem(403, "reload the agents page");
+  if (body.mission !== undefined && body.mission !== agents.get(owner)?.id) return problem(409, "this task has ended");
   return control(owner, body.action, "the agents page");
 }
 
 async function control(owner: number | undefined, action: unknown, from: string, window?: number): Promise<Response> {
   if (!isAction(action)) return problem(400, `action is one of ${ACTIONS.join(", ")}`);
   if (owner === undefined) return problem(409, "calls with no agent behind them cannot be paused or stopped");
-  const agent = agents.get(owner) ?? track(owner);
-  if (agent.ended !== undefined) return problem(409, "this agent has ended");
+  const agent = agents.get(owner);
+  if (!agent || agent.ended !== undefined) return problem(409, "this agent has ended");
   if (agent.stopped !== undefined) return problem(409, "this agent is stopped");
   switch (action) {
+    case "pictures_on":
+    case "pictures_off":
+      agent.pictures = action === "pictures_on";
+      break;
     case "pause":
       agent.hold = "paused";
       note("agent paused", { owner, from });
       break;
     case "drive": {
       agent.hold = "driving";
-      const tab = await raise(agent, window);
-      note("user drives", { owner, from, ...(tab === undefined ? {} : { tab }) });
-      return Response.json({ ok: true, status: statusOf(agent), tab: tab ?? null });
+      const taking = raise(agent, window);
+      agent.takeovers.add(taking);
+      try {
+        const tab = await taking;
+        remember(agent);
+        note("user drives", { owner, from, ...(tab === undefined ? {} : { tab }) });
+        return Response.json({ ok: true, status: statusOf(agent), tab: tab ?? null });
+      } finally {
+        agent.takeovers.delete(taking);
+      }
     }
     case "resume":
     case "giveback": {
+      while (agent.takeovers.size) await Promise.allSettled(agent.takeovers);
       const was = agent.hold;
       if (was === undefined) break;
       release(agent);
+      for (const [tab, view] of agent.views) if (view.stale) invalidate(agent, tab);
       note(was === "driving" ? "user gave back" : "agent resumed", { owner, from });
       break;
     }
@@ -480,6 +809,7 @@ async function control(owner: number | undefined, action: unknown, from: string,
       note("agent stopped", { owner, from });
       break;
   }
+  remember(agent);
   return Response.json({ ok: true, status: statusOf(agent) });
 }
 
@@ -488,11 +818,12 @@ async function control(owner: number | undefined, action: unknown, from: string,
 // one there. Safari brings it to the front of its window.
 async function raise(agent: Agent, window: number | undefined): Promise<number | undefined> {
   const tabs = await tabList();
-  if (!tabs) return undefined;
+  if (!tabs || agent.stopped !== undefined || agent.ended !== undefined) return undefined;
   const windows = new Set(window === undefined ? windowsIn(tabs).filter((w) => w.owner === agent.owner).map((w) => w.window) : [window]);
   const mine = inWindows(tabs, windows);
   const tab = agent.calls.findLast((c) => c.tab !== undefined && mine.some((t) => t.id === c.tab))?.tab ?? mine.at(-1)?.id;
   if (tab === undefined) return undefined;
+  invalidate(agent, tab);
   try {
     await bridge.request("tabs.activate", [tab], 10_000);
     return tab;
@@ -585,6 +916,10 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .agents .controls { margin-top: 0.8rem; }
 [hidden] { display: none !important; }
 a { color: var(--hold); text-underline-offset: 0.15em; }
+header p a, .tasks a { display: inline-flex; min-height: 44px; min-width: 44px; align-items: center; }
+.picture { grid-column: 2; margin: 0.4rem 0; min-width: 0; }
+.picture img { display: block; max-width: 100%; max-height: 32rem; height: auto; object-fit: contain; border: 1px solid var(--line); }
+.picture figcaption { color: var(--muted); font-size: 0.85rem; }
 `;
 
 // Static, so the page's CSP names it by hash; what it shows comes from the
@@ -595,17 +930,19 @@ const SCRIPT = String.raw`
   const data = document.body.dataset;
   const overview = data.kind === "agents";
   const byId = (id) => document.getElementById(id);
-  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop" };
+  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures" };
   const SAY = { working: "Working", "waiting on the user": "Waiting on you", paused: "Paused", "user is driving": "You are driving", stopped: "Stopped", ended: "Ended" };
   const TONE = { working: "go", "waiting on the user": "ask", paused: "hold", "user is driving": "hold", stopped: "end", ended: "end" };
   const DONE = {
-    pause: () => "Paused. Its next call waits for you; after a minute and a half it is told to try again later.",
+    pause: () => "Paused.",
     resume: () => "Resumed.",
-    drive: (out) => out.tab === null ? "Paused. It has no tab open to hand you." : "Paused, with its tab in front. Give it back when you are done.",
-    giveback: () => "Given back. It carries on.",
-    stop: () => "Stopped. Its calls fail from now on, and its tabs close when it ends its turn.",
+    drive: (out) => out.tab === null ? "Paused. No tab is open." : "You are driving.",
+    giveback: () => "Given back. It checks the tab before acting.",
+    stop: () => "Stopped.",
+    pictures_on: () => "Saving action pictures.",
+    pictures_off: () => "Not saving new pictures.",
   };
-  const ARMING = "Press again to stop it. Its calls fail from now on, and its tabs close when it ends its turn.";
+  const ARMING = "Press again to stop.";
   let timer = 0;
   let loading = false;
   let again = false;
@@ -640,6 +977,7 @@ const SCRIPT = String.raw`
   }
 
   function who(a) {
+    if (data.kind === "history") return a.owner === null ? "No agent" : "Agent " + a.owner;
     if (a.owner === null) return "Calls with no agent behind them";
     return "Agent " + a.owner + (a.process ? " (" + a.process + ")" : "");
   }
@@ -650,9 +988,10 @@ const SCRIPT = String.raw`
 
   function actionsOf(a) {
     if (!a.controls) return [];
-    if (a.status === "paused") return ["resume", "drive", "stop"];
-    if (a.status === "user is driving") return ["giveback", "stop"];
-    return ["pause", "drive", "stop"];
+    const pictures = a.pictures ? "pictures_off" : "pictures_on";
+    if (a.status === "paused") return ["resume", "drive", "stop", pictures];
+    if (a.status === "user is driving") return ["giveback", "stop", pictures];
+    return ["pause", "drive", "stop", pictures];
   }
 
   function buttons(a, target, prefix) {
@@ -725,16 +1064,32 @@ const SCRIPT = String.raw`
   }
 
   function callRow(c) {
-    const state = c.held ? "held" : c.ms === undefined ? "running" : c.error ? "failed" : "done";
+    const state = c.held ? "held" : c.pendingNative || c.ms === undefined ? "running" : c.error ? "failed" : "done";
     const li = make("li", "call " + state);
     const when = make("time", "when", clock(c.t));
     when.dateTime = new Date(c.t).toISOString();
     const what = make("div", "what");
     what.append(make("span", "tool", c.tool), " ", make("span", "args", c.args));
-    const result = c.held ? "Waiting for you to resume it" : c.ms === undefined ? "Running" : c.error || c.outcome || "done";
+    const result = c.held ? "Waiting for you to resume it" : c.pendingNative || c.ms === undefined ? "Running" : c.error || c.outcome || "done";
     li.append(when, what, make("div", "out", result));
     if (c.title || c.url) li.append(make("div", "where", [c.title, c.url].filter(Boolean).join(" · ")));
     if (c.ms !== undefined) li.append(make("span", "took", c.ms < 1000 ? c.ms + " ms" : (c.ms / 1000).toFixed(1) + " s"));
+    if (c.evidence) for (const e of c.evidence) li.append(make("div", "where", "Saved capture · " + e.width + " × " + e.height + (e.url ? " · " + e.url : "") + " · " + e.sha256.slice(0, 12)));
+    if (c.picture) {
+      const figure = make("figure", "picture");
+      if (c.picture.missing) figure.append(make("figcaption", "", "No picture · " + c.picture.missing));
+      else {
+        const image = make("img");
+        image.alt = "After " + c.tool;
+        image.loading = "lazy";
+        image.width = c.picture.capture.width;
+        image.height = c.picture.capture.height;
+        image.src = "/agents/picture?id=" + encodeURIComponent(c.mission) + "&picture=" + encodeURIComponent(c.picture.id);
+        image.addEventListener("error", () => figure.replaceChildren(make("figcaption", "", "Picture unavailable.")));
+        figure.append(image, make("figcaption", "", new Date(c.picture.capture.capturedAt).toLocaleString()));
+      }
+      li.append(figure);
+    }
     return li;
   }
 
@@ -756,6 +1111,7 @@ const SCRIPT = String.raw`
       setText(status, s.ended ? "Ended" : "Not tracked");
       setText(byId("who"), s.ended ? "This task has ended. Its window closes on its own." : "The harness restarted after this window opened, so it no longer knows its agent.");
       draw(byId("controls"), "", () => []);
+      setText(byId("picture-note"), "");
       const gone = s.ended ? "Not shown once the task has ended." : "Unknown.";
       draw(byId("tabs"), gone, () => [make("li", "empty", gone)]);
       draw(byId("calls"), gone, () => [make("li", "empty", gone)]);
@@ -766,6 +1122,7 @@ const SCRIPT = String.raw`
     const over = a.status === "stopped" || a.status === "ended";
     setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : ""));
     draw(byId("controls"), actionsOf(a).join(), () => buttons(a, { id: data.id }, ""));
+    setText(byId("picture-note"), a.controls ? "Pictures save locally and may briefly select the tab." : "");
     draw(byId("tabs"), JSON.stringify(s.tabs), () => (!s.tabs ? [make("li", "empty", "Safari is not connected.")] : s.tabs.length ? s.tabs.map(tabRow) : [make("li", "empty", "None besides this page.")]));
     draw(byId("calls"), JSON.stringify(a.calls), () => (a.calls.length ? a.calls.map(callRow) : [make("li", "empty", "No calls yet.")]));
   }
@@ -776,14 +1133,20 @@ const SCRIPT = String.raw`
   const none = make("li", "empty", "No agent has used Safari in the last hour.");
 
   function agentRow(a, now) {
-    const key = String(a.owner);
+    const key = a.id || String(a.owner);
     let row = rows.get(key);
     if (!row) {
-      row = { li: make("li", "agent"), head: make("div", "head"), facts: make("p", "facts"), tasks: make("p", "tasks"), last: make("p", "last"), controls: make("div", "controls") };
-      row.li.append(row.head, row.facts, row.tasks, row.last, row.controls);
+      row = { li: make("li", "agent"), head: make("div", "head"), facts: make("p", "facts"), tasks: make("p", "tasks"), last: make("p", "last"), controls: make("div", "controls"), pictureNote: make("p", "where") };
+      row.controls.setAttribute("role", "group");
+      row.controls.setAttribute("aria-labelledby", "agent-" + key);
+      row.li.append(row.head, row.facts, row.tasks, row.last, row.controls, row.pictureNote);
       rows.set(key, row);
     }
-    draw(row.head, who(a) + "|" + a.status, () => [make("h2", "", who(a)), make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status)]);
+    draw(row.head, who(a) + "|" + a.status, () => {
+      const heading = make("h2", "", who(a));
+      heading.id = "agent-" + key;
+      return [heading, make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status)];
+    });
     setText(row.facts, (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + (raised(a) ? raised(a) + " · " : "") + "last seen " + span(now - a.active) + " ago");
     row.tasks.hidden = !a.tasks.length;
     draw(row.tasks, JSON.stringify(a.tasks), () => a.tasks.flatMap((t, i) => {
@@ -795,17 +1158,36 @@ const SCRIPT = String.raw`
     row.last.hidden = !c;
     setText(row.last, c ? clock(c.t) + "  " + c.tool + " " + c.args + "  " + (c.held ? "waiting for you" : c.ms === undefined ? "running" : c.error || c.outcome || "done") : "");
     row.controls.hidden = !a.controls;
-    draw(row.controls, actionsOf(a).join(), () => buttons(a, { owner: a.owner }, key + ":"));
+    draw(row.controls, a.id + "|" + actionsOf(a).join(), () => buttons(a, { owner: a.owner, mission: a.id, secret: a.controlSecret }, key + ":"));
+    setText(row.pictureNote, a.controls ? "Pictures save locally and may briefly select the tab." : "");
     return row.li;
   }
 
   function renderAgents(o) {
     const list = byId("agents");
-    const shown = new Set(o.agents.map((a) => String(a.owner)));
+    const shown = new Set(o.agents.map((a) => a.id || String(a.owner)));
     for (const key of rows.keys()) if (!shown.has(key)) rows.delete(key);
     const next = o.agents.length ? o.agents.map((a) => agentRow(a, o.now)) : [none];
     // Moves rows only when the list itself changed.
     if (next.length !== list.children.length || next.some((li, i) => list.children[i] !== li)) list.replaceChildren(...next);
+  }
+
+  function renderHistory(o) {
+    const list = byId("history");
+    draw(list, JSON.stringify(o.missions) + (o.error || ""), () => {
+      if (o.error) return [make("li", "empty", o.error)];
+      if (!o.missions.length) return [make("li", "empty", "No history yet.")];
+      return o.missions.map((a) => {
+        const li = make("li");
+        const title = make("h2", "", who(a));
+        const state = a.interrupted ? "Ended after restart" : SAY[a.status] || a.status;
+        li.append(title, make("p", "facts", new Date(a.since).toLocaleString() + " · " + state));
+        const calls = make("ol", "rows");
+        calls.append(...a.calls.toReversed().map((c) => callRow(Object.assign({}, c, { ms: c.ms === undefined ? 0 : c.ms, error: c.outcome === "failed" ? c.code || "Failed" : undefined, outcome: c.outcome === "interrupted" ? "Interrupted" : c.outcome === "running" ? "Running" : c.outcome }))));
+        li.append(calls);
+        return li;
+      });
+    });
   }
 
   // Polls only while the page shows: a window behind his asks nothing.
@@ -818,11 +1200,12 @@ const SCRIPT = String.raw`
     }
     loading = true;
     try {
-      const res = await fetch(overview ? "/agents.json" : "/space/state?id=" + encodeURIComponent(data.id || ""), { cache: "no-store" });
+      const res = await fetch(data.kind === "history" ? "/agents/history.json" + (data.id ? "?id=" + encodeURIComponent(data.id) : "") : overview ? "/agents.json" : "/space/state?id=" + encodeURIComponent(data.id || ""), { cache: "no-store" });
       if (!res.ok) throw new Error("status " + res.status);
       const state = await res.json();
       const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.key : undefined;
-      if (overview) renderAgents(state);
+      if (data.kind === "history") renderHistory(state);
+      else if (overview) renderAgents(state);
       else renderSpace(state);
       const back = focused ? document.querySelector('[data-key="' + CSS.escape(focused) + '"]') : null;
       if (back) back.focus();
@@ -847,7 +1230,7 @@ const hash = (s: string) => `'sha256-${createHash("sha256").update(s).digest("ba
 
 const HEADERS = {
   "content-type": "text/html; charset=utf-8",
-  "content-security-policy": `default-src 'none'; script-src ${hash(SCRIPT)}; style-src ${hash(STYLE)}; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  "content-security-policy": `default-src 'none'; script-src ${hash(SCRIPT)}; style-src ${hash(STYLE)}; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
@@ -865,28 +1248,39 @@ function page(title: string, attrs: string, body: string): Response {
 function spacePage(url: URL): Response {
   const id = url.searchParams.get("id") ?? "";
   const name = html(url.searchParams.get("name") ?? "agent");
-  return page(name, `data-kind="space" data-id="${html(id)}" data-secret="${secretOf(`space:${id}`)}"`, [
-    `<header><h1>${name}</h1><p id="who"></p></header>`,
-    `<div class="bar"><p id="status" class="status" aria-live="polite">Loading</p><div id="controls" class="controls"></div></div>`,
+  const space = spaceById(id);
+  const agent = space?.owner === undefined ? space ? nobody : undefined : agents.get(space.owner);
+  if (agent && !spaceAgents.has(id)) {
+    spaceAgents.set(id, agent.id);
+    remember(agent);
+  }
+  const secret = agent && spaceAgents.get(id) === agent.id ? secretOf(`space:${id}:${agent.id}`) : "";
+  return page(name, `data-kind="space" data-id="${html(id)}" data-secret="${secret}"`, [
+    `<header><h1 id="task-name">${name}</h1><p id="who"></p></header>`,
+    `<div class="bar"><p id="status" class="status" aria-live="polite">Loading</p><div id="controls" class="controls" role="group" aria-labelledby="task-name"></div></div>`,
+    `<p id="picture-note" class="where"></p>`,
     `<p id="note" class="note" aria-live="polite"></p>`,
     `<h2>Tabs in this window</h2><ul id="tabs" class="rows"></ul>`,
     `<h2>What it did</h2><ol id="calls" class="rows"></ol>`,
-    `<p class="foot">This window holds the tabs of this task. It closes when the task ends.</p>`,
+    `<p class="foot"><a href="/agents/history${spaceAgents.has(id) ? `?id=${spaceAgents.get(id)}` : ""}">History</a></p>`,
+  ].join(""));
+}
+
+const agentPages = new Map<string, Map<number, string>>();
+
+function agentsPage(): Response {
+  const secret = secretOf(`agents:${randomUUID()}`);
+  agentPages.set(secret, new Map([...agents].map(([owner, agent]) => [owner, agent.id])));
+  if (agentPages.size > 32) agentPages.delete(agentPages.keys().next().value!);
+  return page("Agents in Safari", `data-kind="agents" data-secret="${secret}"`, [
+    `<header><h1>Agents in Safari</h1><p><a href="/agents/history">History</a></p></header>`,
+    `<p id="note" class="note" aria-live="polite"></p>`,
+    `<ul id="agents" class="agents"></ul>`,
   ].join(""));
 }
 
 // ---------- routes ----------
 
-// Web pages can reach localhost too. These routes answer local programs
-// (no Origin, like /rpc) and this server's own pages: same origin, under a
-// loopback name, which a DNS name rebound to 127.0.0.1 is not.
-function admitted(req: Request, url: URL): boolean {
-  if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") return false;
-  const origin = req.headers.get("origin");
-  if (origin !== null && origin !== url.origin) return false;
-  const site = req.headers.get("sec-fetch-site");
-  return site === null || site === "same-origin" || (site === "none" && req.method === "GET");
-}
 
 function refused(req: Request, url: URL): Response {
   console.log(`[safari-harness] refused ${req.method} ${url.pathname} for ${url.host}, origin ${req.headers.get("origin") ?? "(none)"}, site ${req.headers.get("sec-fetch-site") ?? "(none)"}`);
@@ -897,12 +1291,15 @@ const ROUTES: Record<string, (req: Request, url: URL) => Response | Promise<Resp
   "GET /space": (_req, url) => spacePage(url),
   "GET /space/state": (_req, url) => spaceState(url),
   "POST /space/control": (req) => spaceControl(req),
-  "GET /agents": () => page("Agents in Safari", `data-kind="agents" data-secret="${secretOf("agents")}"`, [
-    `<header><h1>Agents in Safari</h1><p>Every agent that used Safari in the last hour.</p></header>`,
-    `<p id="note" class="note" aria-live="polite"></p>`,
-    `<ul id="agents" class="agents"></ul>`,
-  ].join("")),
+  "GET /agents": () => agentsPage(),
   "GET /agents.json": async () => json(await overview()),
+  "GET /agents/picture": (_req, url) => historyPicture(url),
+  "GET /agents/history": (_req, url) => page("Safari history", `data-kind="history" data-id="${html(url.searchParams.get("id") ?? "")}"`, [
+    `<header><h1>Safari history</h1><p><a href="/agents">Active tasks</a></p></header>`,
+    `<p id="note" class="note" aria-live="polite"></p>`,
+    `<ul id="history" class="agents"></ul>`,
+  ].join("")),
+  "GET /agents/history.json": (_req, url) => historyRows(url),
   "POST /agents/control": (req) => agentsControl(req),
 };
 
@@ -910,6 +1307,6 @@ const ROUTES: Record<string, (req: Request, url: URL) => Response | Promise<Resp
 export async function missionRoute(req: Request, url: URL): Promise<Response | undefined> {
   const route = ROUTES[`${req.method} ${url.pathname}`];
   if (!route) return undefined;
-  if (!admitted(req, url)) return refused(req, url);
+  if (!localRequest(req, url)) return refused(req, url);
   return route(req, url);
 }

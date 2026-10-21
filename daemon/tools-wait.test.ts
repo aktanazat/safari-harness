@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
+import { watched } from "./mission.ts";
 import { callTool } from "./tools.ts";
 
 // A page that went quiet showing nothing: its quiet wait is met at once,
@@ -130,10 +131,12 @@ test("a wait the page answers found in the second after its limit is found", asy
 // On 10-16 wait --tab front listed Safari's tabs before its time began, and
 // a list Safari was slow to give held a 3 s wait 5 s more (smoke run after
 // the deploy).
-test("a wait on the front tab counts finding it in its ms, and says the page gave no answer while Safari lists no tabs", async () => {
+test.each([false, true])("a wait on the front tab counts finding it in its ms, and says the page gave no answer while Safari lists no tabs (watched: %s)", async (tracked) => {
   const lists = answersWhenStopped({ found: true }, false);
   const start = Date.now();
-  const got = await callTool("wait", { tab: "front", text: "Example Domain", ms: 100 });
+  const args = { tab: "front", text: "Example Domain", ms: 100 };
+  const run = () => callTool("wait", args);
+  const got = await (tracked ? watched(undefined, "wait", args, run) : run());
   // tabs.list's own limit is 5 s (LIST_MS in bridge.ts)
   expect(Date.now() - start).toBeLessThan(1000);
   expect(got).toMatchObject({ ok: false, found: false, unanswered: true, hint: expect.stringContaining("says nothing of what it shows") });

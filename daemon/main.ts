@@ -32,6 +32,10 @@ import { notify } from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
 import { loadsFile, openLoads } from "./loads.ts";
 import { fromAutomation } from "./automation.ts";
+import { failureOf, HarnessError } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
+import { openMissionHistory } from "./mission.ts";
+import { localRequest } from "./requests.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -56,6 +60,7 @@ note("start", {
 // The current owning runtime must admit release (tools.ts, spaces.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
 loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`));
+openMissionHistory(join(homedir(), ".local/share/safari-harness", `history-${httpPort}.json`));
 // The extension reports every load in its owned tabs (bridge.ts), including
 // loads no tool caused, so browsing_history can leave those visits out.
 openLoads(loadsFile(httpPort));
@@ -95,11 +100,11 @@ function safeParse(s: string): Record<string, unknown> | null {
 // extension socket, because attaching drops the current one. The password
 // bridge sends the one extension origin Apple's helper answers.
 type Caller = "extension" | "passwords" | "local";
-function allowed(req: Request, caller: Caller): boolean {
+function allowed(req: Request, url: URL, caller: Caller): boolean {
   const origin = req.headers.get("origin");
   if (caller === "extension") return origin?.startsWith("safari-web-extension://") ?? false;
   if (caller === "passwords") return origin === BRIDGE_ORIGIN;
-  return origin === null;
+  return origin === null && localRequest(req, url);
 }
 
 function callerOf(path: string): Caller {
@@ -119,7 +124,7 @@ const server = Bun.serve<SocketScope>({
   port: wsPort,
   async fetch(req, srv) {
     const url = new URL(req.url);
-    if (!allowed(req, callerOf(url.pathname))) return refuse(req, url);
+    if (!allowed(req, url, callerOf(url.pathname))) return refuse(req, url);
     if (url.pathname.startsWith("/devtools/")) {
       const pageMatch = url.pathname.match(/^\/devtools\/page\/(\d+)/);
       const connId = ++connSeq;
@@ -190,7 +195,7 @@ const rpcServer = Bun.serve({
     // check below refuses: mission.ts checks its routes itself.
     const page = await missionRoute(req, url);
     if (page) return page;
-    if (!allowed(req, "local")) return refuse(req, url);
+    if (!allowed(req, url, "local")) return refuse(req, url);
     if (url.pathname === "/health") {
       return Response.json({
         ok: true,
@@ -208,11 +213,20 @@ const rpcServer = Bun.serve({
       });
     }
     if (url.pathname === "/rpc" && req.method === "POST") {
-      if (stopping) return Response.json({ ok: false, restarting: true, error: `the safari daemon is restarting (${stopping}); try again in a moment` }, { status: 503 });
+      if (stopping) {
+        const error = `the safari daemon is restarting (${stopping}); try again in a moment`;
+        return Response.json({ ok: false, restarting: true, error, failure: failureOf(new HarnessError("unavailable", error, { retryable: true, effect: "none", next: "wait for the daemon to finish restarting" })) }, { status: 503 });
+      }
       let body: unknown;
-      try { body = await req.json(); } catch { return Response.json({ ok: false, error: "bad json" }, { status: 400 }); }
+      try { body = await req.json(); } catch {
+        const failure = failureOf(new HarnessError("invalid_argument", "bad json"));
+        return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
+      }
       const { tool, args, caller, own, model, news } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown };
-      if (!tool) return Response.json({ ok: false, error: "missing tool" }, { status: 400 });
+      if (!tool) {
+        const failure = failureOf(new HarnessError("invalid_argument", "missing tool"));
+        return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
+      }
       inFlight++;
       try {
         // A call works for the agent above its caller, or for the caller
@@ -223,7 +237,8 @@ const rpcServer = Bun.serve({
         const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false)));
         return Response.json({ ok: true, value });
       } catch (e) {
-        return Response.json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+        const failure = failureOf(e, { effectful: affectsPage(tool, args ?? {}) });
+        return Response.json({ ok: false, error: failure.message, failure });
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
       }

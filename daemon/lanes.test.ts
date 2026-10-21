@@ -104,7 +104,7 @@ test("reads go ahead on a busy tab, and a wait holds no lane", async () => {
   const page = safari();
   const click = as(agent.pid, "click", { tab: 7, ref: "1" });
   await settled();
-  expect(await as(other, "info", { tab: 7 })).toEqual({ ok: true });
+  expect(await as(other, "info", { tab: 7 })).toMatchObject({ ok: true });
   const waiting = as(other, "wait", { tab: 8, text: "Saved" });
   await settled();
   expect(await as(agent.pid, "type", { tab: 8, ref: "4", text: "hi" })).toMatchObject({ ok: true });

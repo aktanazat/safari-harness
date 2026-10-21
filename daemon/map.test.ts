@@ -386,7 +386,15 @@ test("follow's selector is waited for on each listing, and a listing that never 
   const links = ["https://shop.example/item/1", "https://shop.example/help", "https://shop.example/item/2", "https://www.shop.example/item/3"];
   expect(asked).toEqual([`wait ${LISTING} for a.item`, `read ${LISTING}`, `wait ${LOST} for a.item`, ...links.map((url) => `read ${url}`)]);
   expect(found).toMatchObject({ ok: true, items: links.map((url) => ({ url, ok: true })) });
-  expect(lost).toEqual({ url: LOST, title: "Page Not Found", ms: expect.any(Number), ok: false, error: `it did not show a link matching a.item; the tab is at ${LOST} ("Page Not Found")` });
+  expect(lost).toMatchObject({
+    url: LOST,
+    title: "Page Not Found",
+    ms: expect.any(Number),
+    ok: false,
+    error: expect.stringContaining("a.item"),
+    failure: { ok: false, code: "not_content", effect: "none", retryable: false, message: expect.stringContaining("a.item") },
+  });
+  expect(lost).not.toHaveProperty("items");
 });
 
 test("map refuses a follow it cannot use before opening a page, and a listing with no matching link fails saying so", async () => {

@@ -1788,6 +1788,224 @@
     return { ok: true, shown, dpr: devicePixelRatio, innerWidth, innerHeight };
   }
 
+  let privateCapture = null;
+  const capturePrivacyError = (message) => new Error(`screenshot privacy: ${message}`);
+
+  function privatePage(secrets, layer = null) {
+    const viewport = { width: innerWidth, height: innerHeight, devicePixelRatio };
+    if (!document.documentElement || !document.body || !viewport.width || !viewport.height) throw capturePrivacyError("the page cannot be inspected");
+    if (window.visualViewport && (Math.abs(visualViewport.width - innerWidth) > 1 || Math.abs(visualViewport.height - innerHeight) > 1 || visualViewport.offsetLeft || visualViewport.offsetTop)) throw capturePrivacyError("reset page magnification before capturing");
+    const roots = [];
+    const fields = [];
+    const regions = new Map();
+    const scrolls = [];
+    const texts = new Set([...secretTexts, ...secrets].filter(Boolean));
+    const clip = (a, b) => {
+      const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+      const right = Math.min(a.x + a.width, b.x + b.width), bottom = Math.min(a.y + a.height, b.y + b.height);
+      return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+    };
+    const add = (rect, context, el = null) => {
+      if (!context.clip.width || !context.clip.height || !(rect.right > rect.left && rect.bottom > rect.top)) return;
+      for (let p = el; p; p = p.parentElement ?? p.getRootNode().host) {
+        const style = p.ownerDocument.defaultView.getComputedStyle(p);
+        const reflection = style.getPropertyValue("-webkit-box-reflect");
+        if (style.filter !== "none" || style.textShadow !== "none" || (reflection && reflection !== "none")) {
+          regions.set(JSON.stringify(context.clip), context.clip);
+          return;
+        }
+      }
+      const x = Math.floor(context.x + rect.left - 2), y = Math.floor(context.y + rect.top - 2);
+      const r = clip({ x, y, width: Math.ceil(context.x + rect.right + 2) - x, height: Math.ceil(context.y + rect.bottom + 2) - y }, context.clip);
+      if (r) regions.set(JSON.stringify(r), r);
+    };
+    const shown = (el) => {
+      const style = el.ownerDocument.defaultView.getComputedStyle(el);
+      return style.display !== "none" && style.visibility === "visible" && Number(style.opacity) !== 0;
+    };
+    const inspect = (root, context) => {
+      roots.push({ root, context });
+      for (const el of root.querySelectorAll("*")) {
+        if (el === layer || layer?.contains(el)) continue;
+        if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) scrolls.push({ el, x: el.scrollLeft, y: el.scrollTop });
+        if (el.shadowRoot) inspect(el.shadowRoot, context);
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+          const token = cardToken(el);
+          const sensitive = secretField(el) || holdsCode(el, el.value) || (token.token?.startsWith("cc-") && !token.weak) || /\b(password|passphrase)\b/i.test(accessibleName(el)) ||
+            (el.tagName === "INPUT" && /\d/.test(el.value) && (el.maxLength === 1 || /\b\d+\s*of\s*[4-8]\b/i.test(accessibleName(el))));
+          fields.push({ el, context, sensitive });
+          if (sensitive && el.value) texts.add(el.value);
+        }
+        if (!shown(el)) continue;
+        if (/^(IFRAME|FRAME)$/.test(el.tagName)) {
+          const r = el.getBoundingClientRect();
+          const visible = clip({ x: context.x + r.left, y: context.y + r.top, width: r.width, height: r.height }, context.clip);
+          let child;
+          try { child = el.contentDocument; } catch {}
+          if (!visible) {
+            if (child?.body) inspectDocument(child, { x: 0, y: 0, clip: { x: 0, y: 0, width: 0, height: 0 } });
+            continue;
+          }
+          let transformed = false;
+          for (let p = el; p; p = p.parentElement ?? p.getRootNode().host) {
+            const style = p.ownerDocument.defaultView.getComputedStyle(p);
+            if (style.transform !== "none" || style.filter !== "none" || (style.zoom && style.zoom !== "1" && style.zoom !== "normal")) { transformed = true; break; }
+          }
+          if (!child?.body || transformed || Math.abs(r.width - el.offsetWidth) > 1 || Math.abs(r.height - el.offsetHeight) > 1) {
+            add(r, context, el);
+            if (child?.body) inspectDocument(child, { x: 0, y: 0, clip: { x: 0, y: 0, width: 0, height: 0 } });
+          } else {
+            const x = context.x + r.left + el.clientLeft, y = context.y + r.top + el.clientTop;
+            const inside = clip({ x, y, width: el.clientWidth, height: el.clientHeight }, visible);
+            if (inside) inspectDocument(child, { x, y, clip: inside });
+          }
+        } else if (/^(OBJECT|EMBED)$/.test(el.tagName)) {
+          add(el.getBoundingClientRect(), context, el);
+        }
+      }
+    };
+    const inspectDocument = (doc, context) => {
+      scrolls.push({ view: doc.defaultView, doc, x: doc.defaultView.scrollX, y: doc.defaultView.scrollY });
+      inspect(doc, context);
+    };
+    inspectDocument(document, { x: 0, y: 0, clip: { x: 0, y: 0, width: innerWidth, height: innerHeight } });
+    const known = [...texts].sort((a, b) => b.length - a.length);
+    const contains = (text) => typeof text === "string" && known.some((secret) => text.includes(secret) || (/^\d{3,}$/.test(secret) && text.replace(/[\s\u00a0-]/g, "").includes(secret)));
+    for (const { el, context, sensitive } of fields) {
+      if (shown(el) && (sensitive || contains(el.value) || contains(el.placeholder))) add(el.getBoundingClientRect(), context, el);
+    }
+    for (const { root, context } of roots) {
+      const doc = root.ownerDocument ?? root;
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let text = "";
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const el = node.parentElement;
+        if (!el || el === layer || layer?.contains(el) || el.closest("script,style,noscript") || !shown(el)) continue;
+        nodes.push({ node, start: text.length, end: text.length + node.data.length });
+        text += node.data;
+      }
+      for (const secret of known) {
+        const pattern = /^\d{3,}$/.test(secret) ? secret.split("").join("[\\s\\u00a0-]*") : secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        for (const match of text.matchAll(new RegExp(pattern, "g"))) {
+          const at = match.index, end = at + match[0].length;
+          const first = nodes.find((n) => n.end > at), last = nodes.find((n) => n.end >= end);
+          if (!first || !last) throw capturePrivacyError("protected text could not be placed");
+          const range = doc.createRange();
+          range.setStart(first.node, at - first.start);
+          range.setEnd(last.node, end - last.start);
+          const rects = range.getClientRects();
+          for (const node of nodes) if (node.end > at && node.start < end) for (const r of rects) add(r, context, node.node.parentElement);
+        }
+      }
+      for (const el of root.querySelectorAll("*")) {
+        if (el === layer || layer?.contains(el) || !shown(el)) continue;
+        if (contains(el.getAttribute("alt"))) add(el.getBoundingClientRect(), context, el);
+        const view = el.ownerDocument.defaultView;
+        for (const pseudo of ["::before", "::after"]) {
+          const style = view.getComputedStyle(el, pseudo);
+          if (contains(style.content)) {
+            const bounds = el.getBoundingClientRect();
+            if (style.position === "absolute" || style.position === "fixed" || style.textShadow !== "none" || style.filter !== "none") {
+              if (context.clip.width && context.clip.height) regions.set(JSON.stringify(context.clip), context.clip);
+            } else add(bounds, context, el);
+          }
+        }
+      }
+    }
+    const sourcePattern = known.length ? new RegExp(known.map((secret) => {
+      if (/^\d{3,}$/.test(secret)) return secret.split("").join("(?:[\\s\\u00a0+-]|%20|%[cC]2%[aA]0)*");
+      const literal = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const encoded = encodeURIComponent(secret).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/%[0-9A-F]{2}/g, (part) => part.replace(/[A-F]/g, (letter) => `[${letter}${letter.toLowerCase()}]`))
+        .replace(/%20/g, "(?:%20|\\+)");
+      return literal === encoded ? literal : `(?:${literal}|${encoded})`;
+    }).join("|"), "g") : null;
+    const sourceText = (text) => sourcePattern ? text.replace(sourcePattern, "...") : text;
+    return {
+      regions: [...regions.values()].sort((a, b) => a.y - b.y || a.x - b.x || a.width - b.width || a.height - b.height),
+      roots, scrolls,
+      source: { url: sourceText(location.href), title: sourceText(document.title), viewport },
+      page: { x: scrollX, y: scrollY, height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, innerHeight) },
+    };
+  }
+
+  function clearPrivateMask(session) {
+    clearTimeout(session.timer);
+    for (const observer of session.observers) observer.disconnect();
+    session.observers = [];
+    session.layer?.remove();
+    session.layer = null;
+  }
+
+  function restorePrivateCapture(mark) {
+    const session = privateCapture;
+    if (!session || session.mark !== mark) return { ok: true };
+    privateCapture = null;
+    clearPrivateMask(session);
+    let failed = false;
+    for (const saved of session.scrolls) {
+      try {
+        if (saved.view) {
+          if (saved.view.document === saved.doc) saved.view.scrollTo({ left: saved.x, top: saved.y, behavior: "instant" });
+        } else if (saved.el.isConnected) saved.el.scrollTo({ left: saved.x, top: saved.y, behavior: "instant" });
+      } catch { failed = true; }
+    }
+    if (failed) throw capturePrivacyError("the page could not restore every scroll position");
+    return { ok: true };
+  }
+
+  function capturePrivacy(mark, phase, secrets = []) {
+    if (phase === "restore") return restorePrivateCapture(mark);
+    if (typeof mark !== "string" || !mark || !Array.isArray(secrets) || secrets.some((s) => typeof s !== "string")) throw capturePrivacyError("invalid protection request");
+    if (phase === "start") {
+      if (privateCapture) throw capturePrivacyError("another capture is still protecting this page");
+      const state = privatePage(secrets);
+      privateCapture = { mark, scrolls: state.scrolls, observers: [], layer: null, timer: null };
+      privateCapture.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+      return { ok: true, source: state.source, page: state.page };
+    }
+    const session = privateCapture;
+    if (!session || session.mark !== mark) throw capturePrivacyError("the protected page is no longer available");
+    if (phase === "clear") {
+      clearPrivateMask(session);
+      session.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+      return { ok: true };
+    }
+    if (phase === "check") {
+      const state = privatePage(secrets, session.layer);
+      const signature = JSON.stringify({ regions: state.regions, source: state.source, page: state.page });
+      if (!session.layer?.isConnected || session.dirty || session.observers.some((o) => o.takeRecords().length) || signature !== session.signature) throw capturePrivacyError("the page changed during capture; read it again");
+      return { ok: true };
+    }
+    if (phase !== "prepare") throw capturePrivacyError("unknown protection request");
+    clearPrivateMask(session);
+    const state = privatePage(secrets);
+    const layer = document.createElement("div");
+    session.layer = layer;
+    layer.setAttribute("aria-hidden", "true");
+    layer.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;pointer-events:none!important;z-index:2147483647!important;contain:strict!important;overflow:hidden!important";
+    const shadow = layer.attachShadow({ mode: "closed" });
+    for (const r of state.regions) {
+      const mask = document.createElement("div");
+      mask.style.cssText = `position:absolute;left:${r.x}px;top:${r.y}px;width:${r.width}px;height:${r.height}px;background:#000`;
+      shadow.append(mask);
+    }
+    document.documentElement.append(layer);
+    session.dirty = false;
+    session.signature = JSON.stringify({ regions: state.regions, source: state.source, page: state.page });
+    for (const { root } of state.roots) {
+      const observer = new MutationObserver(() => { session.dirty = true; });
+      observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+      session.observers.push(observer);
+    }
+    session.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+    if (privateCapture !== session || !layer.isConnected) throw capturePrivacyError("protection was removed before capture");
+    return { ok: true, regions: state.regions, source: state.source, page: state.page, masked: state.regions.length };
+  }
+
+  addEventListener("pagehide", () => { if (privateCapture) restorePrivateCapture(privateCapture.mark); }, { signal: life.signal });
+
   // The native setter, so framework value trackers (React) see a real edit,
   // and a keyup last, as a person's typing ends: jQuery-era forms validate
   // on keyup (USC's date of birth stayed "Please check this again!" and its
@@ -2707,11 +2925,21 @@
     }
     const limit = opts.maxBytes || 20000;
     const frames = opts.strict_selector === true ? [] : framesIn(at.root);
+    const controls = [];
+    if (waits && !loading && text.length <= limit) {
+      for (const el of deepQueryAll('button,input,textarea,[role="button"],[role="textbox"]', at.root)) {
+        const role = getExplicitRole(el);
+        if ((role !== "button" && role !== "textbox") || !shown(el)) continue;
+        const label = accessibleName(el);
+        if (label) controls.push({ role, label });
+      }
+    }
     return {
       url: location.href,
       title: document.title,
       text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
       truncated: text.length > limit,
+      ...(controls.length ? { controls } : {}),
       ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
       ...(loading ? { loading: true } : {}),
       ...(opts.query && !text ? regexHint(opts.query) : {}),
@@ -3970,6 +4198,7 @@
     typeField,
     sendButton,
     annotate,
+    capturePrivacy,
     dialogs: setDialogs,
     fetch: pageFetch,
     fetchFile,
@@ -4037,7 +4266,7 @@
     // Neither carries a secret the harness typed on this page (unsecret).
     const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
       ? { id: msg.id, error: unsecret(value.error) }
-      : { id: msg.id, value: unsecret(safeClone(withHeal(value, healed))) };
+      : { id: msg.id, value: msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed))) };
     let out;
     healedNow = null;
     adopt(msg.kept);
@@ -4067,6 +4296,7 @@
   // ending the sleep early would run the rest of the old eval sooner. A
   // copy from before this hook stays.
   window.__safariHarnessRetire = () => {
+    if (privateCapture) restorePrivateCapture(privateCapture.mark);
     life.abort();
     pendingWait?.done(false);
     pendingDownload?.(null);

@@ -15,6 +15,44 @@ type Sender = { tab: { id: number; windowId: number }; frameId: number };
 type Inject = { target: { tabId: number; frameIds?: number[]; allFrames?: boolean }; func?: (...args: unknown[]) => unknown; args?: unknown[]; files?: string[] };
 type Cookie = { name: string; value: string; domain: string; path: string; secure: boolean };
 
+type Raster = { width: number; height: number; pixels: number[] | Uint8Array };
+const rasterData = (image: Raster) => Buffer.from(JSON.stringify({ ...image, pixels: Array.from(image.pixels) })).toString("base64");
+const readRaster = (data: string): Raster => JSON.parse(Buffer.from(data, "base64").toString());
+const rasterImage = (width: number, height: number, pixel: (x: number, y: number) => number): Raster => ({
+  width, height, pixels: Array.from({ length: width * height }, (_, i) => pixel(i % width, Math.floor(i / width))),
+});
+
+class RasterCanvas {
+  readonly pixels: Uint8Array;
+  constructor(readonly width: number, readonly height: number) { this.pixels = new Uint8Array(width * height); }
+  getContext(_kind: string) {
+    return {
+      fillStyle: "#000",
+      drawImage: (image: Raster, ...args: number[]) => {
+        const [sx, sy, sw, sh, dx, dy, dw, dh] = args.length === 2 ? [0, 0, image.width, image.height, args[0], args[1], image.width, image.height] : args;
+        for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+          const targetX = dx + x, targetY = dy + y;
+          if (targetX >= 0 && targetY >= 0 && targetX < this.width && targetY < this.height) this.pixels[targetY * this.width + targetX] = image.pixels[Math.floor(sy + y * sh / dh) * image.width + Math.floor(sx + x * sw / dw)];
+        }
+      },
+      fillRect: (left: number, top: number, width: number, height: number) => {
+        for (let y = top; y < Math.min(this.height, top + height); y++) this.pixels.fill(0, y * this.width + left, y * this.width + Math.min(this.width, left + width));
+      },
+    };
+  }
+  async convertToBlob() { return new Blob([Buffer.from(rasterData(this), "base64")]); }
+}
+
+class RasterReader {
+  result: string | null = null;
+  error: Error | null = null;
+  onload = () => {};
+  onerror = () => {};
+  readAsDataURL(blob: Blob) {
+    blob.text().then((text) => { this.result = `data:image/png;base64,${Buffer.from(text).toString("base64")}`; this.onload(); }, (error: Error) => { this.error = error; this.onerror(); });
+  }
+}
+
 // Every promise chain the fakes start runs out before an immediate callback.
 function settle(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -100,6 +138,7 @@ async function start() {
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
   // Safari stops answering windows.getAll (stallWindows).
+  let picture: () => string | Promise<string> = () => `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 9))}`;
   let windowsStalled = false;
   const hook = () => new Hook<unknown[]>();
   // Safari's storage areas keep what is put in them: session storage while
@@ -182,9 +221,10 @@ async function start() {
         return row(tab);
       },
       // goto: Safari loads the address in the tab.
-      update: async (id: number, { url }: { url?: string }) => {
+      update: async (id: number, { url, active }: { url?: string; active?: boolean }) => {
         const tab = tabOf(id);
         if (url !== undefined) load(tab, pages.get(url) ?? new Doc(url));
+        if (active) actives.set(tab.window ?? 1, id);
         return row(tab);
       },
       remove: async (id: number) => {
@@ -208,7 +248,7 @@ async function start() {
       // The picture of what the tab's window shows.
       captureVisibleTab: async () => {
         trips.push("capture");
-        return "data:image/png;base64,AAAA";
+        return picture();
       },
     },
     scripting: {
@@ -302,8 +342,10 @@ async function start() {
     close() {}
   }
 
-  new Function("browser", "WebSocket", "setTimeout", "clearTimeout", "setInterval", "Date", "console", SOURCE)(
-    browser, Socket, clock.setTimeout, clock.clearTimeout, () => 0, { now: () => clock.now }, { log: () => {} },
+  new Function("browser", "WebSocket", "setTimeout", "clearTimeout", "setInterval", "Date", "console", "OffscreenCanvas", "FileReader", "fetch", "createImageBitmap", SOURCE)(
+    browser, Socket, clock.setTimeout, clock.clearTimeout, () => 0, class extends Date { constructor() { super(clock.now); } static now() { return clock.now; } }, { log: () => {} },
+    RasterCanvas, RasterReader, async (url: string) => ({ blob: async () => new Blob([Buffer.from(url.split(",")[1], "base64")]) }),
+    async (blob: Blob) => ({ ...JSON.parse(await blob.text()), close() {} }),
   );
   await settle();
   const [open] = sockets;
@@ -381,6 +423,8 @@ async function start() {
       return request("relay", [tab.id, op, args, 30000, 0]);
     },
     request,
+    captureWith(next: () => string | Promise<string>) { picture = next; },
+    active(window = 1) { return actives.get(window); },
     // He clicks the toolbar button with tab in front.
     toolbar(tab: Tab) {
       onClicked.fire({ id: tab.id, url: tab.doc.url, title: "Example" });
@@ -1363,19 +1407,15 @@ test("an embedded frame that took no copy gets none again until its script repor
 
 // S99PartA: a page's animations stalled in a tab behind another, and the
 // agent worked around them by hand before its shots.
-test("a shot finishes the page's animations and lets it paint before the picture, and a live one leaves them running", async () => {
+test("ordinary screenshots finish finite animations and live screenshots leave them running", async () => {
   const b = await start();
   const tab = b.open("https://example.com/");
-  tab.doc.does = (op) => (op === "settle" ? { finished: 2 } : { ok: true });
-  await b.ask(tab, "tabInfo");
-  const from = b.trips.length;
+  const page = shotPage(tab);
+  b.focus(tab);
   await b.request("shot", [tab.id, {}]);
-  const between = b.trips.length;
+  const settled = page.finished;
   await b.request("shot", [tab.id, { live: true }]);
-  expect([b.trips.slice(from, between), b.trips.slice(between)]).toEqual([
-    ["message painted", "message settle", "message painted", "capture"],
-    ["message painted", "capture"],
-  ]);
+  expect([settled, page.finished]).toEqual([2, 2]);
 });
 
 // On 10-19 SheerID's verification form sat in a frame of its own over
@@ -1418,4 +1458,237 @@ test("extract reads an embedded frame shown in what it read, which the page cann
   expect(await b.ask(tab, "extract", [{ query: "documents" }])).toEqual({
     value: { url: tab.doc.url, title: "Adorama", text: 'iframe "SheerID Verification Form":\nAdd documents', truncated: false },
   });
+});
+
+type ShotResult = {
+  data: string;
+  screens?: number;
+  cut?: boolean;
+  source: { url: string; title: string; capturedAt: string; width: number; height: number; viewport: { width: number; height: number; devicePixelRatio: number }; crop?: { x: number; y: number; width: number; height: number }; privacy: { masked: number } };
+  tiles?: { data: string; region: { x: number; y: number; width: number; height: number } }[];
+};
+
+function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 1 }, height = 10) {
+  let y = 0, savedY = 0;
+  const page = { protected: false, finished: 0, refusePrepare: false, changeDuringCapture: false, get y() { return y; } };
+  tab.doc.title = "Private page";
+  const state = () => ({
+    ok: true,
+    source: { url: tab.doc.url, title: tab.doc.title, viewport },
+    page: { x: 0, y, height },
+    regions: [{ x: 2, y: 1, width: 2, height: 2 }],
+    masked: 1,
+  });
+  tab.doc.does = (op, msg) => {
+    if (op === "capturePrivacy") {
+      const phase = msg.args?.[1];
+      if (phase === "start") savedY = y;
+      if (phase === "prepare") {
+        page.protected = true;
+        if (page.refusePrepare) return { error: "screenshot privacy: protected inspection unavailable" };
+      }
+      if (phase === "check" && page.changeDuringCapture) return { error: "screenshot privacy: the page changed during capture" };
+      if (phase === "clear" || phase === "restore") page.protected = false;
+      if (phase === "restore") y = savedY;
+      return state();
+    }
+    if (op === "eval") {
+      const top = /top:(\d+)/.exec(String(msg.args?.[0]));
+      if (top) y = Math.min(Number(top[1]), Math.max(0, height - viewport.height));
+      return { ok: true, result: y };
+    }
+    if (op === "locate") return { x: 1, y: 1, width: 4, height: 3, innerWidth: viewport.width, innerHeight: viewport.height };
+    if (op === "settle") { page.finished += 2; return { finished: 2 }; }
+    return { ok: true };
+  };
+  return page;
+}
+
+test.each([
+  ["viewport", {}],
+  ["live", { live: true }],
+  ["crop", { ref: "#secret" }],
+  ["annotated", { annotate: true }],
+  ["full page", { fullPage: true }],
+  ["live full page", { fullPage: true, live: true }],
+] as const)("%s screenshots remove protected pixels before returning image bytes", async (_name, options) => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  b.focus(tab);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(8, 6, (x, y) => x >= 2 && x < 4 && y >= 1 && y < 3 ? 249 : 9))}`);
+  const answer = await b.request("shot", [tab.id, { ...options, secrets: ["sentinel"] }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  const image = readRaster(result.data);
+  expect(Array.from(image.pixels)).not.toContain(249);
+  expect(Array.from(image.pixels)).toContain(9);
+  expect(result.source).toMatchObject({ url: tab.doc.url, title: "Private page", width: image.width, height: image.height, privacy: { masked: "fullPage" in options ? 2 : 1 } });
+  expect(page.protected).toBe(false);
+  expect(page.y).toBe(0);
+});
+
+test("a failed privacy inspection returns no picture and restores the selected tab", async () => {
+  const b = await start();
+  const front = b.open("https://example.com/owner");
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  page.refusePrepare = true;
+  b.focus(front);
+  const answer = await b.request("shot", [tab.id, {}]);
+  expect(answer).toEqual({ error: "screenshot privacy: protected inspection unavailable" });
+  expect(b.trips).not.toContain("capture");
+  expect(page.protected).toBe(false);
+  expect(b.active()).toBe(front.id);
+});
+
+test("a raw capture exception restores protection and selection without disguising the capture error", async () => {
+  const b = await start();
+  const front = b.open("https://example.com/owner");
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  b.focus(front);
+  b.captureWith(() => { throw new Error("capture refused"); });
+  expect(await b.request("shot", [tab.id, { fullPage: true, annotate: true }])).toEqual({ error: "capture refused" });
+  expect(page.protected).toBe(false);
+  expect(page.y).toBe(0);
+  expect(b.active()).toBe(front.id);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 9))}`);
+  expect((await b.request("shot", [tab.id, {}])).error).toBeUndefined();
+  expect(page.protected).toBe(false);
+  expect(b.active()).toBe(front.id);
+});
+
+test("a page that changes while Safari captures returns no image bytes", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  b.focus(tab);
+  page.changeDuringCapture = true;
+  const answer = await b.request("shot", [tab.id, { live: true }]);
+  expect(answer.value).toBeUndefined();
+  expect(answer.error).toStartWith("screenshot privacy: ");
+  expect(page.protected).toBe(false);
+});
+
+test("overlapping tiles preserve the original image and identify every retained raster row", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  shotPage(tab, { width: 4, height: 300, devicePixelRatio: 2 }, 300);
+  b.focus(tab);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(8, 600, (_x, y) => y % 180 + 1))}`);
+  const answer = await b.request("shot", [tab.id, { live: true, tiles: true, tileHeight: 256 }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  const original = readRaster(result.data);
+  expect(result.source).toMatchObject({ width: 8, height: 600, viewport: { width: 4, height: 300, devicePixelRatio: 2 } });
+  expect(result.tiles?.map((tile) => tile.region)).toEqual([
+    { x: 0, y: 0, width: 8, height: 256 },
+    { x: 0, y: 192, width: 8, height: 256 },
+    { x: 0, y: 384, width: 8, height: 216 },
+  ]);
+  expect(result.tiles?.map((tile) => {
+    const image = readRaster(tile.data);
+    return { width: image.width, height: image.height, pixels: Array.from(image.pixels) };
+  })).toEqual(result.tiles?.map(({ region }) => ({
+    width: region.width, height: region.height,
+    pixels: Array.from(original.pixels).slice(region.y * original.width, (region.y + region.height) * original.width),
+  })));
+});
+
+test("full-page captures retain overlapping viewport coverage without claiming extra rows", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  b.focus(tab);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(8, 6, (_x, y) => page.y + y + 10))}`);
+  const answer = await b.request("shot", [tab.id, { fullPage: true }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  const image = readRaster(result.data);
+  expect({ screens: result.screens, cut: result.cut, width: result.source.width, height: result.source.height }).toEqual({ screens: 2, cut: false, width: 8, height: 10 });
+  expect(Array.from({ length: image.height }, (_, y) => image.pixels[y * image.width])).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+  expect(page.y).toBe(0);
+});
+
+test("a crop reports retained CSS coordinates and raster dimensions at the captured pixel scale", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  shotPage(tab, { width: 8, height: 6, devicePixelRatio: 2 }, 6);
+  const does = tab.doc.does;
+  tab.doc.does = (op, msg) => op === "locate" ? { x: -1, y: 2, width: 5, height: 8, innerWidth: 8, innerHeight: 6 } : does(op, msg);
+  b.focus(tab);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(16, 12, () => 9))}`);
+  const answer = await b.request("shot", [tab.id, { ref: "#part", tiles: true }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  expect(result.source).toMatchObject({ width: 8, height: 8, crop: { x: 0, y: 2, width: 4, height: 4 }, viewport: { width: 8, height: 6, devicePixelRatio: 2 } });
+  expect(result.tiles?.map((tile) => tile.region)).toEqual([{ x: 0, y: 0, width: 8, height: 8 }]);
+  expect(readRaster(result.data)).toMatchObject({ width: 8, height: 8 });
+});
+
+test("a bounded full-page screenshot marks missing rows rather than claiming the entire page", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  shotPage(tab, { width: 8, height: 6, devicePixelRatio: 1 }, 100);
+  b.focus(tab);
+  const answer = await b.request("shot", [tab.id, { fullPage: true, live: true }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  expect({ screens: result.screens, cut: result.cut, height: result.source.height }).toEqual({ screens: 12, cut: true, height: 72 });
+  expect(readRaster(result.data).height).toBe(72);
+});
+
+test("a failed frame crop restores the child frame's scroll position as well as the selected tab", async () => {
+  const b = await start();
+  const front = b.open("https://example.com/owner");
+  const tab = b.open("https://example.com/private");
+  shotPage(tab);
+  const frame = b.frame(tab, 5, "https://frame.example/private");
+  frame.world.__safariHarnessFrame = "capture-frame";
+  const page = shotPage({ id: tab.id, doc: frame });
+  const does = frame.does;
+  frame.does = (op, msg) => {
+    if (op === "locate") {
+      does("eval", { id: "scroll", op: "eval", args: ["scrollTo({top:4})"] });
+      return { x: 1, y: 1, width: 4, height: 3, innerWidth: 8, innerHeight: 6 };
+    }
+    return does(op, msg);
+  };
+  b.focus(front);
+  b.captureWith(() => { throw new Error("capture refused"); });
+  expect(await b.request("shot", [tab.id, { ref: "f5:1" }])).toEqual({ error: "capture refused" });
+  expect(page.y).toBe(0);
+  expect(b.active()).toBe(front.id);
+});
+
+test("a screenshot without confirmed protected paint returns no image and restores page selection", async () => {
+  const b = await start();
+  const front = b.open("https://example.com/owner");
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  const does = tab.doc.does;
+  tab.doc.does = (op, msg) => op === "painted" ? { ok: false } : does(op, msg);
+  b.focus(front);
+  const answer = await b.request("shot", [tab.id, { live: true }]);
+  expect(answer).toEqual({ error: "screenshot privacy: the protected page did not paint" });
+  expect(b.trips).not.toContain("capture");
+  expect(page.protected).toBe(false);
+  expect(b.active()).toBe(front.id);
+});
+
+test("a protected page that never paints fails closed at the paint deadline and removes its overlay", async () => {
+  const b = await start();
+  const front = b.open("https://example.com/owner");
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  const does = tab.doc.does;
+  tab.doc.does = (op, msg) => op === "painted" ? never() : does(op, msg);
+  b.focus(front);
+  const pending = b.request("shot", [tab.id, { live: true }]);
+  await b.clock.advance(7000);
+  expect(await pending).toEqual({ error: "screenshot privacy: the protected page did not paint" });
+  expect(b.trips).not.toContain("capture");
+  expect(page.protected).toBe(false);
+  expect(b.active()).toBe(front.id);
 });
