@@ -4,12 +4,15 @@
 // of its whole text, and it is read past the limit a reply is cut at; the
 // agent reads the parts it needs from the file.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
 export const SAVED_DIR = join(homedir(), ".local/share/safari-harness/saved");
 const HEAD_CHARS = 500;
+// Saved reads hold page text, signed-in sites' too: the saved folder keeps
+// a week of them.
+const KEPT_MS = 7 * 24 * 60 * 60_000;
 
 export type SaveKind = "extract" | "snapshot" | "eval" | "fetch";
 
@@ -84,11 +87,26 @@ async function write(target: Target, url: string, file: File): Promise<string> {
     const path = join(target.dir, `${stem}${n === 1 ? "" : `-${n}`}.${file.ext}`);
     try {
       await writeFile(path, file.body, { flag: "wx" });
-      return path;
     } catch (e) {
       if (!(e instanceof Error && "code" in e && e.code === "EEXIST")) throw e;
+      continue;
     }
+    if (target.dir === SAVED_DIR) await pruneSaved();
+    return path;
   }
+}
+
+// Deletes the reads saved to the saved folder over a week ago, as another
+// is saved and as the daemon starts. A folder the caller named is his own.
+export async function pruneSaved(): Promise<void> {
+  const names = await readdir(SAVED_DIR).catch(() => []);
+  const before = Date.now() - KEPT_MS;
+  await Promise.all(names.map(async (name) => {
+    const path = join(SAVED_DIR, name);
+    // another save's prune can take a file first
+    const s = await stat(path).catch(() => undefined);
+    if (s && s.mtimeMs < before) await unlink(path).catch(() => {});
+  }));
 }
 
 // An answer longer than a reply keeps (mcp-tools.ts), whole, in the saved

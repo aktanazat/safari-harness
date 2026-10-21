@@ -46,6 +46,10 @@ DAEMON=at.aktan.safari-harness.daemon
 MCP="$HOME/.omp/agent/mcp.json"
 EXTENSIONS="$HOME/.omp/agent/extensions"
 CHECKPOINTS="$ROOT/scripts/deploy-checkpoints.ts"
+# Xcode's build folder for the app, kept from one build to the next. Until
+# 10-21 each build made a new one in /private/var/tmp and moved it to the
+# Trash: six of 217 MB in 3.5 hours.
+BUILD="$HOME/Library/Caches/safari-harness/DerivedData"
 # releases kept besides the current one, however old
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
@@ -60,8 +64,46 @@ esac
 
 # health FIELD: that field of the daemon's /health, or "" when it does not answer
 health() { curl -s --max-time 2 "$BASE/health" | jq -r "$1 // empty" 2>/dev/null || true; }
-# trash PATH: moves it to the Trash under a name of its own
-trash() { mv "$1" "$HOME/.Trash/safari-harness-$(basename "$1")-$(date +%s)"; }
+# in_use: each release a live process runs. One started from a release's
+# own path names it (the keeper, a repl session). One started through
+# current or the CLI's link (an agent session's MCP server, a routine)
+# runs the release bun found there as it started: the one the first switch
+# after its start replaced (deploys.log), or current if none has since.
+in_use() {
+  local up cmd d h m s now
+  now="$(date +%s)"
+  ps -axww -o etime=,command= | while read -r up cmd; do
+    case "$cmd" in
+      *"$RELEASES/"*) cmd="${cmd#*"$RELEASES/"}"; echo "${cmd%%/*}" ;;
+      *"$CURRENT/"* | *"$HOME/.bun/bin/safari"*)
+        # how long it has run: [[days-]hours:]minutes:seconds
+        d=0 h=0
+        [[ "$up" != *-* ]] || { d="${up%%-*}"; up="${up#*-}"; }
+        [[ "$up" != *:*:* ]] || { h="${up%%:*}"; up="${up#*:}"; }
+        m="${up%:*}" s="${up#*:}"
+        up="$(date -u -r "$((now - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s))" +%FT%TZ)"
+        awk -v start="$up" '$1 > start { print $3; exit }' "$DATA/deploys.log" 2>/dev/null || true ;;
+    esac
+  done
+}
+# prune: deletes each release but current, the newest KEEP others, the one
+# the daemon runs and those in use, then each app zip no kept release is
+# built from. A deleted one is made again from its commit when deployed.
+prune() {
+  local cur running live r zip n=0
+  cur="$(readlink "$CURRENT" || true)"
+  running="$(health .root)"
+  live="$(in_use)"
+  for r in $(ls -t "$RELEASES"); do
+    [ "releases/$r" != "$cur" ] || continue
+    n=$((n + 1))
+    [ "$n" -le "$KEEP" ] || [ "$RELEASES/$r" = "$running" ] || grep -qxF "$r" <<<"$live" || rm -rf "${RELEASES:?}/$r"
+  done
+  for zip in "$DATA"/apps/*.zip; do
+    [ -f "$zip" ] || continue
+    grep -qxs "$(basename "$zip" .zip)" "$RELEASES"/*/.extension || rm -f "$zip"
+  done
+}
 # job LABEL: the program its launchd job runs
 job() { plutil -extract ProgramArguments.1 raw "$JOBS/$1.plist" 2>/dev/null || true; }
 # strays: each registered copy of the app, its extension, or an app inside
@@ -151,7 +193,7 @@ restart() {
 until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 tmp=""
 checkpoint=""
-trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rmdir "$LOCK"' EXIT
+trap '[ -z "$tmp" ] || rm -rf "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained until the next deploy finishes: $checkpoint" >&2; rmdir "$LOCK"' EXIT
 mkdir -p "$RELEASES"
 before="$(readlink "$CURRENT" 2>/dev/null || true)"
 
@@ -197,7 +239,10 @@ app=""
 if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -z "$(health .extension.connectedAt)" ]; then
   app="$DATA/apps/$key.zip"
   if [ ! -f "$app" ]; then
-    tmp="$(mktemp -d /private/var/tmp/sh-build.XXXXXX)"
+    # Products is made anew, so the app holds only this release's files,
+    # none an earlier build left; Xcode reuses the rest.
+    rm -rf "$BUILD/Build/Products"
+    mkdir -p "$BUILD"
     if [ -z "${DEVELOPER_DIR:-}" ] && [[ "$(xcode-select -p)" != *.app/* ]] && [ -d /Applications/Xcode.app ]; then
       export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
     fi
@@ -210,18 +255,16 @@ if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -
       read -r ascId ascIssuer < "$HOME/.appstoreconnect/safari-harness-signing"
       signing=(-authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_$ascId.p8" -authenticationKeyID "$ascId" -authenticationKeyIssuerID "$ascIssuer")
     fi
-    if ! (cd "$REL/Safari Harness" && xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$tmp" -allowProvisioningUpdates ${signing[@]+"${signing[@]}"} build) >"$tmp/build.log" 2>&1; then
-      grep -E "error:|errSec|failed with" "$tmp/build.log" | head -20 || true
+    if ! (cd "$REL/Safari Harness" && xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$BUILD" -allowProvisioningUpdates ${signing[@]+"${signing[@]}"} build) >"$BUILD/build.log" 2>&1; then
+      grep -E "error:|errSec|failed with" "$BUILD/build.log" | head -20 || true
       echo "the app did not build" >&2
       exit 1
     fi
-    built="$tmp/Build/Products/Debug/Safari Harness.app"
+    built="$BUILD/Build/Products/Debug/Safari Harness.app"
     # kept as a zip (which Safari never finds) for a rollback to install
     mkdir -p "$DATA/apps"
     ditto -c -k --keepParent "$built" "$app.part"
     mv "$app.part" "$app"
-    trash "$tmp"
-    tmp=""
   fi
 fi
 
@@ -243,6 +286,8 @@ if [ -n "$found" ]; then
 fi
 
 checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
+# when current switched, which deploys.log records for in_use
+at="$(date -u +%FT%TZ)"
 point "$sha"
 echo "current: release $sha"
 [ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
@@ -288,7 +333,7 @@ if [ -n "$app" ]; then
   tmp="$(mktemp -d /private/var/tmp/sh-app.XXXXXX)"
   ditto -x -k "$app" "$tmp"
   rsync -a --delete "$tmp/Safari Harness.app/" "$APP/"
-  trash "$tmp"
+  rm -rf "$tmp"
   tmp=""
   codesign --verify --deep "$APP"
   lsregister -f "$APP"
@@ -307,20 +352,11 @@ else
   echo "extension: unchanged"
 fi
 
-[ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what" >>"$DATA/deploys.log"
+[ "$before" = "releases/$sha" ] || echo "$at $sha ${before#releases/} $what" >>"$DATA/deploys.log"
 bun "$CHECKPOINTS" discard "$DATA" "$BASE" "$checkpoint"
 checkpoint=""
-
-# Kept: the current release, the newest KEEP others, any current in the
-# last week (an agent session's MCP server may still run it), and the one
-# the daemon runs. App zips no kept release is built from go too.
-running="$(health .root)"
-n=0
-for r in $(ls -t "$RELEASES"); do
-  n=$((n + 1))
-  if [ "$n" -gt $((KEEP + 1)) ] && [ "$RELEASES/$r" != "$running" ] && [ -z "$(find "$RELEASES/$r" -maxdepth 0 -mtime -7)" ]; then trash "$RELEASES/$r"; fi
-done
-for zip in "$DATA"/apps/*.zip; do
-  [ -f "$zip" ] || continue
-  grep -qxs "$(basename "$zip" .zip)" "$RELEASES"/*/.extension || trash "$zip"
-done
+# A deploy that stopped partway left its rollback backup, a copy of the
+# tab and space files with their pages' addresses. This one finished, so
+# any such copy is out of date.
+rm -rf "$DATA"/.checkpoint-rollback-*
+prune
