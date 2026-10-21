@@ -2143,7 +2143,7 @@ export const TOOLS: Record<string, Tool> = {
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
     params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
-    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed" } },
+    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" } },
     required: ["tab"],
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
   },

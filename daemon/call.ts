@@ -44,7 +44,7 @@ type Routed = { args: Record<string, unknown>; page: PageRead | undefined; why: 
 async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<Routed | undefined> {
   const name = nameIn(DAEMON_NAMES, tool);
   if (name !== "click" && name !== "type") return undefined;
-  const { snapshot, ...a } = checkCall(TOOLS, tool, args, true).args;
+  const { snapshot, noWaitAfter: _, ...a } = checkCall(TOOLS, tool, args, true).args;
   if (a.ref === undefined) return undefined;
   const page = pageRead(snapshot);
   const site = real ? undefined : await rpc("real_site", { tab: a.tab });

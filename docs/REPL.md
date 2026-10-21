@@ -103,8 +103,9 @@ outside the page: read `document`, `window` and the rest through
   that name; `last()` is `nth(-1)`, and `all()` one locator per match.
   `click({noWaitAfter: true})` answers once the click ran instead of
   watching the page settle (300 ms at least): for a loop of clicks whose
-  effects the script reads itself. It still waits for a load or a tab the
-  click starts, and reports no effect.
+  effects the script reads itself. It still waits for a load or a tab
+  that the click itself starts (a link, a form, a window.open in its
+  handler), but not for one the page starts later, and reports no effect.
 - Page: `goto goBack goForward reload waitForSelector waitForChange
   waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
   keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
