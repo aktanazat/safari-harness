@@ -195,12 +195,13 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
    `xcrun safari-web-extension-converter`), set the development team to
    your own, and keep the bundle ids as they are, since the converter's
    default casing breaks embedding. The app is signed by the account in
-   Xcode's settings or, with none there, by an App Store Connect API key
-   (App Manager): its `AuthKey_<id>.p8` in
-   `~/.appstoreconnect/private_keys/` and the team's issuer id in
-   `~/.appstoreconnect/issuer_id`. A Mac whose `xcode-select` still
-   points at the Command Line Tools builds with `/Applications/Xcode.app`,
-   whose first launch the installer runs itself.
+   Xcode's settings, or by an App Store Connect API key (App Manager) when
+   `~/.appstoreconnect/safari-harness-signing` holds its key id and the
+   team's issuer id on one line, with the key at
+   `~/.appstoreconnect/private_keys/AuthKey_<id>.p8`. A Mac whose
+   `xcode-select` still points at the Command Line Tools builds with
+   `/Applications/Xcode.app`, and the installer runs Xcode's first launch
+   itself (`xcodebuild -runFirstLaunch` needs no admin password).
 2. Run `scripts/dev-install.sh`. It deploys HEAD (see Deploys): it builds
    the Swift helpers and the app, installs the app over `/Applications`,
    and starts the daemon as a launchd agent that stays on (`safari serve`

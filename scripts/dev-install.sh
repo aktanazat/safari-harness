@@ -191,14 +191,13 @@ if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -
       export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
     fi
     xcodebuild -checkFirstLaunchStatus || xcodebuild -runFirstLaunch
-    # An App Store Connect key signs without an account in Xcode's settings:
-    # the newest ~/.appstoreconnect/private_keys/AuthKey_<id>.p8, with its
-    # team's issuer id in ~/.appstoreconnect/issuer_id.
+    # An App Store Connect key signs without an account in Xcode's settings
+    # when ~/.appstoreconnect/safari-harness-signing names it: its key id,
+    # then its team's issuer id; the key is private_keys/AuthKey_<id>.p8.
     signing=()
-    ascKey="$(ls -t "$HOME"/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null | head -1 || true)"
-    if [ -n "$ascKey" ] && [ -s "$HOME/.appstoreconnect/issuer_id" ]; then
-      ascId="$(basename "$ascKey" .p8)"
-      signing=(-authenticationKeyPath "$ascKey" -authenticationKeyID "${ascId#AuthKey_}" -authenticationKeyIssuerID "$(cat "$HOME/.appstoreconnect/issuer_id")")
+    if [ -s "$HOME/.appstoreconnect/safari-harness-signing" ]; then
+      read -r ascId ascIssuer < "$HOME/.appstoreconnect/safari-harness-signing"
+      signing=(-authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_$ascId.p8" -authenticationKeyID "$ascId" -authenticationKeyIssuerID "$ascIssuer")
     fi
     if ! (cd "$REL/Safari Harness" && xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$tmp" -allowProvisioningUpdates ${signing[@]+"${signing[@]}"} build) >"$tmp/build.log" 2>&1; then
       grep -E "error:|errSec|failed with" "$tmp/build.log" | head -20 || true
