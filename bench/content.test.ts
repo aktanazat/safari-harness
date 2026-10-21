@@ -449,6 +449,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "select with noWaitAfter picks the option and answers without watching the page settle",
+    page: "select.html",
+    steps: [
+      { op: "snapshot" }, // [1] Plan
+      { op: "select", args: ["1", "Pro", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw pro") } } },
+    ],
+  },
+  {
     name: "select with an option the list lacks names the options it has",
     page: "select.html",
     steps: [
@@ -471,6 +480,15 @@ benchRows("content.js in WebKit", [
     steps: [
       { op: "snapshot" }, // [3] the nationality box
       { op: "select", args: ["3", "Kyrgyzstan"], answer: { value: { ok: true, value: "KIRGHIZIA (KYRGYZSTAN) (KG)" } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw KG") } } },
+    ],
+  },
+  {
+    name: "select with noWaitAfter on a combobox still waits for its list, then answers without watching the page settle",
+    page: "combobox.html",
+    steps: [
+      { op: "snapshot" }, // [3] the nationality box
+      { op: "select", args: ["3", "Kyrgyzstan", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
       { op: "extract", answer: { value: { text: expect.stringContaining("Page saw KG") } } },
     ],
   },
