@@ -3,7 +3,7 @@
 // themselves come from mcp-tools.ts of the newest release (fresh.ts).
 
 import { appendFileSync } from "node:fs";
-import { closeAll, fresh, tools } from "./fresh.ts";
+import { closeAll, fresh, listTools } from "./fresh.ts";
 import { connectHost } from "./host.ts";
 import { redactUrl } from "./redact.ts";
 
@@ -70,7 +70,7 @@ async function handle(msg: RpcMsg) {
     case "ping":
       return reply(msg.id, {});
     case "tools/list":
-      return reply(msg.id, { tools: tools().listTools() });
+      return reply(msg.id, { tools: await listTools() });
     case "tools/call": {
       const name = String((msg.params as { name?: string })?.name ?? "");
       const args = ((msg.params as { arguments?: Record<string, unknown> })?.arguments ?? {});

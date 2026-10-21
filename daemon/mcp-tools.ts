@@ -76,3 +76,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
 export async function closeSession(): Promise<void> {
   await repl?.close();
 }
+
+// A server lists its own release's tools by running this file, until a
+// call loads them (fresh.ts).
+if (import.meta.main) console.log(JSON.stringify(listTools()));
