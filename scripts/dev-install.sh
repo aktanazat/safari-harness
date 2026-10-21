@@ -67,12 +67,13 @@ health() { curl -s --max-time 2 "$BASE/health" | jq -r "$1 // empty" 2>/dev/null
 # in_use: each release a live process runs. One started from a release's
 # own path names it (the keeper, a repl session). One started through
 # current or the CLI's link (an agent session's MCP server, a routine)
-# runs the release bun found there as it started: the one the first switch
-# after its start replaced (deploys.log), or current if none has since.
+# runs the release bun found there as it started, so each release current
+# since the oldest of those started stays: point touches a release as it
+# stops being current, which every switch does, a failed deploy's too.
 in_use() {
-  local up cmd d h m s now
+  local up cmd d h m s now oldest="" r
   now="$(date +%s)"
-  ps -axww -o etime=,command= | while read -r up cmd; do
+  while read -r up cmd; do
     case "$cmd" in
       *"$RELEASES/"*) cmd="${cmd#*"$RELEASES/"}"; echo "${cmd%%/*}" ;;
       *"$CURRENT/"* | *"$HOME/.bun/bin/safari"*)
@@ -81,9 +82,14 @@ in_use() {
         [[ "$up" != *-* ]] || { d="${up%%-*}"; up="${up#*-}"; }
         [[ "$up" != *:*:* ]] || { h="${up%%:*}"; up="${up#*:}"; }
         m="${up%:*}" s="${up#*:}"
-        up="$(date -u -r "$((now - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s))" +%FT%TZ)"
-        awk -v start="$up" '$1 > start { print $3; exit }' "$DATA/deploys.log" 2>/dev/null || true ;;
+        up=$((now - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s))
+        [ -n "$oldest" ] && [ "$oldest" -le "$up" ] || oldest="$up" ;;
     esac
+  done < <(ps -axww -o etime=,command=)
+  [ -n "$oldest" ] || return 0
+  for r in "$RELEASES"/*/; do
+    r="${r%/}"
+    [ "$(stat -f %m "$r")" -lt "$oldest" ] || basename "$r"
   done
 }
 # prune: deletes each release but current, the newest KEEP others, the one
@@ -286,7 +292,7 @@ if [ -n "$found" ]; then
 fi
 
 checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
-# when current switched, which deploys.log records for in_use
+# when current switched, for deploys.log
 at="$(date -u +%FT%TZ)"
 point "$sha"
 echo "current: release $sha"
