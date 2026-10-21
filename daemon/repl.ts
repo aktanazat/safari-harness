@@ -170,16 +170,16 @@ export class Locator {
   async type(text: string, opts?: CodeSource): Promise<void> {
     await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts) });
   }
-  async press(key: string): Promise<void> {
-    await this.#page.act("press", { ref: this.target, key: String(key) });
+  async press(key: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    await this.#page.act("press", { ref: this.target, key: String(key), ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   async hover(): Promise<void> {
     await this.#page.act("hover", { ref: this.target });
   }
-  async selectOption(choice: unknown): Promise<void> {
+  async selectOption(choice: unknown, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
     const one = Array.isArray(choice) ? choice[0] : choice;
     const option = one && typeof one === "object" ? (one as { label?: unknown; value?: unknown }).label ?? (one as { value?: unknown }).value : one;
-    await this.#page.act("select", { ref: this.target, option: String(option) });
+    await this.#page.act("select", { ref: this.target, option: String(option), ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   async setInputFiles(files: string | string[]): Promise<void> {
     const paths = (Array.isArray(files) ? files : [files]).map((f) => nodePath.resolve(this.#page.cwd, String(f)));

@@ -1492,7 +1492,7 @@
   // choice the list is left open, as a miss leaves it, and listed.
   const LIST_WAIT_MS = 3000;
   const comboLists = new WeakMap(); // box -> the list it showed for select
-  async function comboOption(box, choice) {
+  async function comboOption(box, choice, opts) {
     const lists = () => deepQueryAll("[role=listbox]").filter(shown);
     const named = () => {
       const ids = ["aria-controls", "aria-owns"].flatMap((a) => (box.getAttribute(a) ?? "").split(/\s+/));
@@ -1518,21 +1518,21 @@
     if (choice === null) return optionList(options);
     const opt = optionNamed(options, choice);
     if (!opt) return noOption(choice, options);
-    return withReceipt(() => withOutcome(() => {
+    return afterward(() => withOutcome(() => {
       watchTarget(box);
       clickElement(opt.el);
       return { ok: true, value: opt.label };
-    }));
+    }), opts);
   }
 
   // select takes a <select>, a label of one, or a combobox, resolved before
   // the first await (answer). A null choice lists the options.
-  function selectIn(ref, choice) {
+  function selectIn(ref, choice, opts) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
-    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : withReceipt(() => withOutcome(() => selectOption(el, choice)));
-    if (getExplicitRole(el) === "combobox") return comboOption(el, choice);
+    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
+    if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
     return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
   }
 
@@ -3253,6 +3253,10 @@
     });
   }
 
+  function afterward(run, opts) {
+    return opts?.noWaitAfter ? run() : withReceipt(run);
+  }
+
   // ---------- wait ----------
   // Resolves once the page shows what the wait asks for. It listens for DOM
   // changes instead of polling: Safari stops a content script's timers in a
@@ -3917,9 +3921,9 @@
 
   const handlers = {
     snapshot,
-    click: (ref, opts) => (opts?.noWaitAfter ? withOutcome(() => click(ref)) : withReceipt(() => withOutcome(() => click(ref)))),
+    click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
     type: (ref, text, opts) => typeText(ref, text, opts),
-    press: (ref, spec) => withReceipt(() => withOutcome(() => pressKey(ref, spec))),
+    press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract,
     data: pageData,

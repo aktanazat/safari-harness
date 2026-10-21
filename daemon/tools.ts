@@ -850,9 +850,10 @@ export async function type(opts: { tab?: number; ref: number | string; text: str
   return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
 }
 
-export async function press(opts: { tab?: number; ref?: number | string; key: string }) {
+export async function press(opts: { tab?: number; ref?: number | string; key: string; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "press", [opts.ref ?? null, str(opts.key, "key")]);
+  const args = [opts.ref ?? null, str(opts.key, "key")];
+  return relay(tab, "press", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
 }
 
 // A ref scrolls its element to the middle of the view: on 09-29 an agent
@@ -882,9 +883,10 @@ export async function scroll(opts: { tab?: number; ref?: number | string; dx?: n
 // With no option, select lists the options and picks none: on 10-07 an
 // agent asked Robinhood's "From" and "Sell in" boxes for "__list__" and
 // "zz-list-options" three times, to read the list a miss answers with.
-export async function select(opts: { tab?: number; ref: number | string; option?: string }) {
+export async function select(opts: { tab?: number; ref: number | string; option?: string; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  return relay(tab, "select", [opts.ref, opts.option === undefined ? null : str(opts.option, "option")]);
+  const args = [opts.ref, opts.option === undefined ? null : str(opts.option, "option")];
+  return relay(tab, "select", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
 }
 
 export async function hover(opts: { tab?: number; ref: number | string }) {
@@ -2159,14 +2161,16 @@ export const TOOLS: Record<string, Tool> = {
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],
-    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string }))),
+    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean }))),
   },
   select: {
     desc: "Choose a dropdown option by label or value; without option, list the options.",
     params: { tab: TAB, ref: REF, option: { type: "string", description: "option label or value" }, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "with option: answer once it was chosen, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "ref"],
-    run: action((a) => select(a as { tab: number; ref: string; option?: string })),
+    run: action((a) => select(a as { tab: number; ref: string; option?: string; noWaitAfter?: boolean })),
   },
   hover: {
     desc: "Hover a ref, for menus that open on mouse-over (not ones driven only by CSS :hover).",
