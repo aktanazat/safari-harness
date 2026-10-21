@@ -2593,20 +2593,25 @@
 
   // A line of only invisible characters (zero-width ones, a soft hyphen) is
   // a loading skeleton's: HackerOne's and PayPal's pages held lines of
-  // U+200C where their text would come (09-29). A line that only says the
-  // page is loading stands in for text too: USCIS's case pages read "The
-  // page is loading. Please wait and do not refresh the page." between
-  // their real lines while the rest came (09-30). Invisible characters are
-  // read as spaces here, using the matching rules' one list (INVISIBLE).
-  const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
+  // U+200C where their text would come (09-29). A few such lines among real
+  // text are not: a Wikipedia article held three lines of a lone U+2060
+  // among 534 (10-20), and every open of it waited 5 s. So they count only
+  // as a tenth of the lines or more. A line that only says the page is
+  // loading stands in for text too: USCIS's case pages read "The page is
+  // loading. Please wait and do not refresh the page." between their real
+  // lines while the rest came (09-30). Invisible characters are read as
+  // spaces here, using the matching rules' one list (INVISIBLE).
+  const FILLER = /^(?:(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
 
   // An element's text as extract returns it: spaces and blank lines run
   // together, skeleton and loading lines left out, and whether there were any.
   function tidyText(root) {
     const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
-    const skeleton = (l) => FILLER.test(l.replace(INVISIBLE, " "));
-    const text = lines.filter((l) => !skeleton(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, filler: lines.some(skeleton) };
+    const invisible = (l) => /^ +$/.test(l.replace(INVISIBLE, " "));
+    const loadingLine = (l) => FILLER.test(l.replace(INVISIBLE, " "));
+    const text = lines.filter((l) => !invisible(l) && !loadingLine(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    const skeleton = lines.filter(invisible).length;
+    return { text, filler: lines.some(loadingLine) || (skeleton > 0 && skeleton * 10 >= lines.filter((l) => l !== "").length) };
   }
 
   // A page that marks its main region or body aria-busy is still filling in.

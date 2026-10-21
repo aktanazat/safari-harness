@@ -827,6 +827,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: "Reports\n\nReport 1234 was resolved." } } }],
   },
   {
+    name: "an open of a page with a few lone invisible lines among its text does not wait on them",
+    page: "word-joiner.html",
+    steps: [{ op: "loaded", args: [3000], timeout: 1000, answer: { value: { loading: false } } }],
+  },
+  {
     name: "AWS's token script on a page tells no bot check, and its puzzle tells one once drawn",
     page: "aws-waf.html",
     // the page draws AWS's puzzle 500 ms after it loads
