@@ -503,27 +503,33 @@
   }
 
   // The page's elements by tag, and each one's place among its lookalikes,
-  // for the request running: a snapshot fingerprints hundreds of elements,
-  // and the page holds still until it returns.
+  // for one read (withCensus): a snapshot fingerprints hundreds of elements
+  // with one. The read holds it, not the microtask queue: in Safari, WebKit
+  // runs that queue each time it calls back into this script during a
+  // request (textAround's filter does, node by node), and a census kept
+  // until the next microtask was taken anew for each ref, 342 times in one
+  // read of Wikipedia's Europa page (10-21).
   let census = null;
-  function censusNow() {
-    if (!census) {
-      census = { roots: [document, ...shadowRoots()], tags: new Map() };
-      queueMicrotask(() => { census = null; });
+  function withCensus(read) {
+    if (census) return read();
+    census = { roots: null, tags: new Map() };
+    try {
+      return read();
+    } finally {
+      census = null;
     }
-    return census;
   }
 
   // Every element of a tag, shadow roots included, in page order.
   function tagged(tag) {
-    return censusNow().roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
+    census.roots ??= [document, ...shadowRoots()];
+    return census.roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
   }
 
   // Each element of the tag, with its place among those that look the same
   // (lookalikeKey) and how many of those there are.
   function placesOf(tag) {
-    const c = censusNow();
-    let places = c.tags.get(tag);
+    let places = census.tags.get(tag);
     if (!places) {
       const counts = new Map();
       places = new Map();
@@ -533,15 +539,17 @@
         counts.set(key, index + 1);
         places.set(el, { key, index, counts });
       }
-      c.tags.set(tag, places);
+      census.tags.set(tag, places);
     }
     return places;
   }
 
   function fingerprintOf(el) {
-    const { role, name, tag, near, path } = candidateOf(el);
-    const at = placesOf(tag).get(el);
-    return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+    return withCensus(() => {
+      const { role, name, tag, near, path } = candidateOf(el);
+      const at = placesOf(tag).get(el);
+      return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+    });
   }
 
   function remember(ref, el) {
@@ -580,13 +588,15 @@
   function heal(ref) {
     const fp = fingerprints.get(ref) ?? carried?.[ref];
     if (!fp) return null;
-    const els = tagged(fp.tag);
-    const m = matchFingerprint(fp, els.map(candidateOf));
-    if (!("index" in m)) return null;
-    const el = els[m.index];
-    healedNow = { ref, now: ensureRef(el) };
-    refMap.set(ref, el);
-    return el;
+    return withCensus(() => {
+      const els = tagged(fp.tag);
+      const m = matchFingerprint(fp, els.map(candidateOf));
+      if (!("index" in m)) return null;
+      const el = els[m.index];
+      healedNow = { ref, now: ensureRef(el) };
+      refMap.set(ref, el);
+      return el;
+    });
   }
 
   // The elements that look like a fingerprint's target (the same role,
@@ -594,12 +604,14 @@
   // matcher (daemon/replay.ts).
   function lookalikes(fp) {
     const want = lookalikeKey(fp);
-    const out = [];
-    for (const el of tagged(fp.tag)) {
-      const c = candidateOf(el);
-      if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
-    }
-    return out;
+    return withCensus(() => {
+      const out = [];
+      for (const el of tagged(fp.tag)) {
+        const c = candidateOf(el);
+        if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
+      }
+      return out;
+    });
   }
 
   // A reply carries the heal its request made beside what the op answered.
@@ -1069,7 +1081,7 @@
         render(c, depth + 1);
       }
     };
-    render(top, 0);
+    withCensus(() => render(top, 0));
     return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
   }
 

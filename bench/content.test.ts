@@ -8,6 +8,15 @@ const SMALL_BODY = "small-" + "s".repeat(5000);
 const LARGE_BODY = "large-" + "l".repeat(100_000);
 const loggedAs = (body: string) => ({ url: `data:text/plain,${body}`.slice(0, 500) + "…", t: 1000 });
 
+// Counts, in content.js's world, the names it reads from here on: it reads
+// a link's name from the link's innerText.
+const COUNT_NAMES = `(() => {
+  const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
+  window.__names = 0;
+  Object.defineProperty(HTMLElement.prototype, "innerText", { ...d, get() { window.__names++; return d.get.call(this); } });
+  return true;
+})()`;
+
 // content.js as it answers in Safari's WebKit, one page per behavior in
 // bench/fixtures. Refs count from 1 in each fresh page; a comment on a
 // setup snapshot names the refs the steps after it use.
@@ -82,6 +91,18 @@ benchRows("content.js in WebKit", [
     name: "a snapshot names an image-only link by its picture's label, past an icon whose label is empty",
     page: "icon-links.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] link "Cart"\n[2] link "Help"' } } }],
+  },
+  // Safari's side of this, a census lost to a microtask in the middle of a
+  // read, is checked live (scripts/check-live.ts): this web view runs none
+  // there.
+  {
+    name: "a snapshot reads each link's name once, not once for each ref it prints",
+    page: "many-links.html",
+    steps: [
+      { op: "eval", args: [COUNT_NAMES], answer: { value: { ok: true, result: true } } },
+      { op: "snapshot", args: [{ maxNodes: 100 }], answer: { value: { nodes: 100 } } },
+      { op: "eval", args: ["Math.round(window.__names / 2000)"], answer: { value: { ok: true, result: 1 } } },
+    ],
   },
   {
     name: "a snapshot gives each field's state, and a password field's value never",
