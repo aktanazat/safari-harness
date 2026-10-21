@@ -1266,7 +1266,7 @@ await withPage(LINKS, COUNT_NAMES, async (tab) => {
   const s = await call("snapshot", { tab, maxNodes: 100 });
   const names = (await call("eval", { tab, expression: "window.__names" })).result;
   check("a snapshot reads each link's name once, not once for each ref it prints",
-    s.nodes === 100 && names <= 2 * LINK_COUNT, { names, nodes: s.nodes });
+    s.nodes === 100 && LINK_COUNT <= names && names <= 2 * LINK_COUNT, { names, nodes: s.nodes });
 });
 
 console.log(failed ? `\n${failed} failed` : "\nall passed");
