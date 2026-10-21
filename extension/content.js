@@ -3901,7 +3901,7 @@
 
   const handlers = {
     snapshot,
-    click: (ref) => withReceipt(() => withOutcome(() => click(ref))),
+    click: (ref, opts) => (opts?.noWaitAfter ? withOutcome(() => click(ref)) : withReceipt(() => withOutcome(() => click(ref)))),
     type: (ref, text, opts) => typeText(ref, text, opts),
     press: (ref, spec) => withReceipt(() => withOutcome(() => pressKey(ref, spec))),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
