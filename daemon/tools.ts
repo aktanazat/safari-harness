@@ -2242,7 +2242,7 @@ export const TOOLS: Record<string, Tool> = {
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
       as: { type: "string", enum: ["text", "table"], description: "for extract" },
-      concurrency: { type: "number", description: "default 4, max 6" },
+      concurrency: { type: "number", description: "default 6 (max)" },
       save: { description: "true, or an absolute folder: a file per page" },
       follow: { type: "object", description: `{"match": CSS selector or "/regex/" on the address, "max": ${MAP_MAX_URLS}}: read the links on each url that match, under it` },
     },

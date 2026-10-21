@@ -869,8 +869,8 @@ or one after a read, can still match text already shown.
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
 each with: `extract` (the default), `snapshot`, `eval` with `expression`,
 or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
-page opens in a background tab in your window, is read, and closes, 4 at a
-time (`concurrency`, at most 6). It returns `pages` in the order of
+page opens in a background tab in your window, is read, and closes, 6 at a
+time (`concurrency`, fewer if you ask). It returns `pages` in the order of
 `urls`, each `{url, ok, value or error, ms}`.
 
 - `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":

@@ -2593,20 +2593,24 @@
 
   // A line of only invisible characters (zero-width ones, a soft hyphen) is
   // a loading skeleton's: HackerOne's and PayPal's pages held lines of
-  // U+200C where their text would come (09-29). A line that only says the
-  // page is loading stands in for text too: USCIS's case pages read "The
-  // page is loading. Please wait and do not refresh the page." between
-  // their real lines while the rest came (09-30). Invisible characters are
-  // read as spaces here, using the matching rules' one list (INVISIBLE).
+  // U+200C where their text would come (09-29). A line of only word joiners
+  // (U+2060) or U+FEFF is not: a loaded Wikipedia article held three lines
+  // of a lone U+2060 (10-20), and every open of it waited 5 s. Such lines
+  // are left out of the text all the same. A line that only says the page
+  // is loading stands in for text too: USCIS's case pages read "The page is
+  // loading. Please wait and do not refresh the page." between their real
+  // lines while the rest came (09-30). Invisible characters are read as
+  // spaces here, using the matching rules' one list (INVISIBLE).
   const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
 
   // An element's text as extract returns it: spaces and blank lines run
   // together, skeleton and loading lines left out, and whether there were any.
   function tidyText(root) {
     const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
-    const skeleton = (l) => FILLER.test(l.replace(INVISIBLE, " "));
-    const text = lines.filter((l) => !skeleton(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, filler: lines.some(skeleton) };
+    const filler = (l) => FILLER.test(l.replace(INVISIBLE, " "));
+    const joinersOnly = (l) => /^[\u2060\uFEFF ]+$/.test(l);
+    const text = lines.filter((l) => !filler(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, filler: lines.some((l) => filler(l) && !joinersOnly(l)) };
   }
 
   // A page that marks its main region or body aria-busy is still filling in.
