@@ -184,11 +184,15 @@ and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
 send nothing. When an owner process exits, the daemon closes all its pages
 and its empty windows by itself, all but the tab the user has in front.
-At a turn's end, kept pages, unsent forms, a handoff still on and
-his front tab stay, and close once they can until the agent's next call.
-Any page unused 20 minutes closes too, unsent forms and handoffs aside;
-the agent's next call that names it opens it again. A window ends with
-its last tab.
+At a turn's end, kept pages, unsent forms, a handoff page and his front
+tab stay; forms and his front tab close once they can until the agent's
+next call, and a handoff page waits for the idle limit below.
+Any page unused 20 minutes closes too, unsent forms and live
+handoffs aside, and the agent's next call that names it opens it again;
+one that could not open again (an action changed it, or its address has
+a fragment, a login, or a secret) waits 2 hours. An agent with no call
+for 20 minutes counts as its turn ended, so a window left on its own page
+closes; a window ends with its last tab.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),
@@ -281,7 +285,8 @@ and any a failed one left behind.
 
 `~/.local/share/safari-harness/deploys.log` lists every deploy. The five
 latest releases stay besides the current one, and so does any release the
-daemon or another live process (an agent session's MCP server) still runs.
+daemon or another live process (an agent session's MCP server) may still
+run: each one current since the oldest such process started.
 The app builds in `~/Library/Caches/safari-harness/DerivedData`, one folder
 reused by every build.
 

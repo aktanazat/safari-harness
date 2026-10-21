@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
 import { pageHost } from "./notes.ts";
-import { ownerOf, watchOwner } from "./owner.ts";
+import { alive, ownerOf, watchOwner } from "./owner.ts";
 import { callFor, ownCalls } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
@@ -157,11 +157,15 @@ async function tidy(id: string): Promise<void> {
 // What sessions that are gone left, as a session starts: one killed, or
 // one ended before its folder was tidied (10-21: 11 folders and 15 logs,
 // all empty). One whose folder changed in the last minute may be starting.
+// An MCP server's own session (mcp-tools.ts) runs in that server, with no
+// socket, and is gone only once the server is.
 async function sweep(self: string): Promise<void> {
   const names = await readdir(REPL_DIR).catch(() => []);
   const ids = new Set(names.filter((n) => !n.endsWith(".sock")).map((n) => n.replace(/\.log$/, "")));
   ids.delete(self);
   for (const id of ids) {
+    const server = /^mcp-(\d+)$/.exec(id)?.[1];
+    if (server !== undefined && alive(Number(server))) continue;
     const s = await stat(join(REPL_DIR, id)).catch(() => stat(join(REPL_DIR, `${id}.log`)).catch(() => undefined));
     if (!s || Date.now() - s.mtimeMs < STARTING_MS || (await info(id))) continue;
     await tidy(id);

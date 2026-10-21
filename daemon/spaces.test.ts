@@ -232,6 +232,30 @@ test("a window no agent owns ends once its tabs have gone and none of its calls 
   expect(s.tabs.has(page.id)).toBe(false);
 }, 15_000);
 
+// 10-21 review: a claude session or his terminal never ends a turn, so its
+// window stayed on its page alone once its tabs had closed unused.
+test("a window left holding only its page closes once its agent has made no call for 20 minutes", async () => {
+  const s = safari();
+  const q = agent();
+  const t = (await runAs(q.pid, () => callTool("open", { url: "https://quiet.example/", background: true }))) as { id: number; windowId: number };
+  const page = pageIn(s.tabs, t.windowId)!;
+  await runAs(q.pid, () => callTool("close", { tab: t.id }));
+  const start = Date.now();
+  try {
+    setSystemTime(new Date(start + 19 * 60_000));
+    await sweep();
+    expect(s.tabs.has(page.id)).toBe(true);
+    setSystemTime(new Date(start + 20 * 60_000));
+    await sweep();
+  } finally {
+    setSystemTime();
+  }
+  await until(() => s.closed.includes(page.id), 8000);
+  expect(s.tabs.has(page.id)).toBe(false);
+  q.kill();
+  await q.exited;
+}, 15_000);
+
 test("a copied marker URL does not authorize adopting or deleting an unknown group", async () => {
   const s = safari();
   const copied = { id: next++, url: `http://127.0.0.1:37334/space?title=foreign&owner=999999&id=unregistered`, windowId: next++, active: true };

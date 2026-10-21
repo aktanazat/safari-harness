@@ -232,15 +232,17 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 }
 
 // A turn's end closes every tab its agent opened but the one the user has in
-// front, a page with an unsent form (the extension looks) and a handoff still
-// on; those it spared close once they can, until the agent's next call. An
-// agent's exit closes all of them but his front tab. A page left unused
-// IDLE_MS closes too, an unsent form and a live handoff excepted, so an
-// agent that neither ends its turn nor exits does not keep its windows; its
-// next call opens the page again (reopen). From 10-14 to 10-21 only a turn's
-// end closed tabs and it spared every page an action had changed, so the
-// tabs of five exited agents held their windows open for hours and Safari
-// restored them all on restart.
+// front, a page with an unsent form (the extension looks) and a handoff page
+// (one the user has yet to finish in); those it spared close once they can,
+// until the agent's next call. An agent's exit closes all of them but his
+// front tab. A page left unused IDLE_MS closes too, and its next call opens
+// it again (reopen); one that cannot open again (an action changed it, or
+// resumeAddress keeps no address) waits LONG_IDLE_MS, as its agent may come
+// back after a long wait. An unsent form stays. So an agent that neither
+// ends its turn nor exits does not keep its windows. From 10-14 to 10-21
+// only a turn's end closed tabs and it spared every page an action had
+// changed, so the tabs of five exited agents held their windows open for
+// hours and Safari restored them all on restart.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
@@ -470,6 +472,9 @@ function sweep(): Promise<void> {
 // once it can, and its window with it.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
 const IDLE_MS = 20 * 60_000;
+const LONG_IDLE_MS = 2 * 60 * 60_000;
+
+const idleAfter = (t: HarnessTab) => (!t.acted && resumeAddress(t.url) !== undefined ? IDLE_MS : LONG_IDLE_MS);
 
 function retryLater(t: HarnessTab): number {
   const tries = (t.retry?.tries ?? 0) + 1;
@@ -491,7 +496,7 @@ async function sweepOnce() {
     if (t.orphan) return true;
     const handoff = handoffs.get(tab);
     if (handoff && !handoff.done && handoff.error === undefined) return false;
-    return t.done || t.used < now - IDLE_MS;
+    return (t.done && !t.handoff) || t.used < now - idleAfter(t);
   });
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
@@ -522,7 +527,7 @@ async function sweepOnce() {
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
-        const why = t.orphan ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+        const why = t.orphan ? "once its agent exited" : t.done && !t.handoff ? "as its agent's turn ended" : idleAfter(t) === IDLE_MS ? "after 20 minutes unused" : "after 2 hours unused";
         recordClosed(tab, why, resumeAddress(page?.url ?? t.url), t.orphan ? undefined : t.owner);
         forget(tab);
         note("tab closed", { tab, owner: t.owner ?? null, why });

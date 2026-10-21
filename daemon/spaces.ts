@@ -205,6 +205,7 @@ function watchExit(owner: number | undefined) {
   exitWatched.add(owner);
   watchOwner(owner, () => {
     exitWatched.delete(owner);
+    lastCall.delete(owner);
     void turnEnded(owner).catch(() => {});
   });
 }
@@ -426,17 +427,38 @@ export function sweep(): Promise<void> {
   return spaceSweeping;
 }
 
+// The last call, by owner, of agents with windows. One that neither ends
+// its turns nor exits (a claude session, his terminal's own calls) kept its
+// window on its page alone after its tabs closed unused (10-21 review):
+// idle IDLE_MS, it counts as its turn's end.
+const lastCall = new Map<number, number>();
+const IDLE_MS = 20 * 60_000;
+
+function idled(now: number) {
+  let changed = false;
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
+    if (s.done || s.owner === undefined) continue;
+    const last = lastCall.get(s.owner);
+    if (last === undefined) lastCall.set(s.owner, now);
+    else if (now - last >= IDLE_MS) {
+      s.done = true;
+      changed = true;
+    }
+  }
+  if (changed) save();
+}
+
 async function sweepOnce() {
   if (!bridge.connected) return;
-  // A pass with no window to locate, and no ended one whose agent's turn has
-  // ended, is the last, and asks Safari nothing: a window that ended before
-  // its agent's turn did waits for turnEnded, which sweeps by itself.
-  if (spaces.size === 0 && ![...ended].some((s) => s.done)) {
+  // A pass with no window to locate or end is the last, and asks Safari
+  // nothing; one with ended windows only lists once one may close.
+  if (spaces.size === 0 && ended.size === 0) {
     clearInterval(sweeping);
     sweeping = undefined;
     return;
   }
   const now = Date.now();
+  idled(now);
   const due = [...ended].filter((s) => s.done && !((unclosed.get(s)?.at ?? 0) > now));
   // A window made while Safari lists is not in the list: it would look
   // empty, and end as one the user closed.
@@ -462,7 +484,9 @@ export function tabGone(owner: number | undefined): void {
 export function turnResumed(owner: number | undefined): void {
   let resumed = false;
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
-    if (s.owner !== owner || !s.done) continue;
+    if (s.owner !== owner) continue;
+    if (owner !== undefined) lastCall.set(owner, Date.now());
+    if (!s.done) continue;
     delete s.done;
     resumed = true;
   }
