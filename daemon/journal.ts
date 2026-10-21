@@ -97,3 +97,18 @@ export function note(kind: string, fields: Record<string, unknown> = {}): void {
 export function recent(n = 20): JournalEvent[] {
   return events.slice(-n);
 }
+
+// Keeps a log's last max lines. It is rewritten in place: launchd holds the
+// daemon's log open for appending, so the daemon's next line lands after
+// them, where a copy renamed over it would leave the daemon writing to a
+// file no longer there.
+export function trimLog(path: string, max: number): void {
+  let lines: string[];
+  try {
+    lines = readFileSync(path, "utf8").split("\n");
+  } catch {
+    return; // no log yet
+  }
+  // the last is what follows the final newline
+  if (lines.length - 1 > max) writeFileSync(path, lines.slice(-max - 1).join("\n"));
+}
