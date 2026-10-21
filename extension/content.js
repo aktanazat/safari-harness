@@ -1942,10 +1942,10 @@
     }
     if (opts.secret) keepSecret(row.includes(el) ? row : [el], text);
     // Whether the field holds the text once the page has had a moment with
-    // it: a page may reformat it (a phone field adds dashes) or cut it (a
-    // length limit). The text itself never comes back: type once echoed a
-    // one-time code into the transcript.
-    await whenPage(() => false, RECEIPT_SPAN.min);
+    // it (at once, with noWaitAfter): a page may reformat it (a phone field
+    // adds dashes) or cut it (a length limit). The text itself never comes
+    // back: type once echoed a one-time code into the transcript.
+    if (!opts.noWaitAfter) await whenPage(() => false, RECEIPT_SPAN.min);
     const kept = spread ? boxes.map((b) => b.value).join("") === text
       : el.isContentEditable ? (el.textContent ?? "").includes(text)
       : keeps(el.value, (opts.append ? before : "") + text);

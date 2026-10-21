@@ -163,12 +163,12 @@ export class Locator {
   // opts names where a {{code}} in text comes from: { secret: "page", from:
   // <mail tab> } for an emailed one. Without it, a script's emailed code
   // waited 30 s for a text message (10-02).
-  async fill(text: string, opts?: CodeSource): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts) });
+  async fill(text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts), ...(opts?.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   // Playwright's type() adds keystrokes to what is there.
-  async type(text: string, opts?: CodeSource): Promise<void> {
-    await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts) });
+  async type(text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    await this.#page.act("type", { ref: this.target, text: String(text), append: true, ...codeSource(opts), ...(opts?.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }
   async press(key: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
     await this.#page.act("press", { ref: this.target, key: String(key), ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) });
@@ -383,11 +383,11 @@ export class Page {
   click(target: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
     return this.locator(target).click(opts);
   }
-  fill(target: string, text: string): Promise<void> {
-    return this.locator(target).fill(text);
+  fill(target: string, text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    return this.locator(target).fill(text, opts);
   }
-  type(target: string, text: string): Promise<void> {
-    return this.locator(target).type(text);
+  type(target: string, text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
+    return this.locator(target).type(text, opts);
   }
 
   async act(tool: string, args: Record<string, unknown>): Promise<Outcome> {
