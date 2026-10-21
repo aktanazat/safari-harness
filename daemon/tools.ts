@@ -839,13 +839,13 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
 // an agent's own typing, or a code the caller filled in (secret.ts), stays
 // out of the transcript. An extension Safari has not reloaded since still
 // sends the value, so it is dropped here too.
-export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown }) {
+export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const text = str(opts.text, "text");
   if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new Error("a code is filled in by the safari CLI or MCP tools, not over the daemon's port: call type through them");
   // the tab's answers have it cut after the page moves on too (redact.ts)
   if (opts.secret === true) keepSecret(tab, text);
-  const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true }]);
+  const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true, ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) }]);
   if (!answer || typeof answer !== "object" || !("ok" in answer)) return answer;
   return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
 }
@@ -2154,9 +2154,9 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: sms, page, or passwords" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
     // MCP client is never offered it: safari type --secret env --env VAR
-    unlisted: { env: SECRET_ENV },
+    unlisted: { env: SECRET_ENV, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
-    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown })),
+    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",

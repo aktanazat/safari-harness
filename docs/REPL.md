@@ -108,12 +108,14 @@ outside the page: read `document`, `window` and the rest through
   Each still waits for a load or a tab it starts itself (a link, a form,
   a window.open in its handler), and Enter 400 ms in case its script
   moves the page, but not for one the page starts later, and none reports
-  its effect.
+  its effect. `fill(text, {noWaitAfter: true})` and `type` likewise answer
+  once the field holds the text instead of 300 ms after, so a reformat or
+  a complaint the page makes later is not seen.
 - Page: `goto goBack goForward reload waitForSelector waitForChange
   waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
   keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
-  shorthands `page.click(target, opts)`, `page.fill(target, text)`,
-  `page.type(target, text)`. `waitForChange({timeout})` ends once the page
+  shorthands `page.click(target, opts)`, `page.fill(target, text, opts)`,
+  `page.type(target, text, opts)`. `waitForChange({timeout})` ends once the page
   shows lines it did not have at the last look (results after a click,
   more of a feed after a scroll) and returns them; it throws when none
   come within the timeout (10 s). `waitForTimeout(ms)` ends as soon as the

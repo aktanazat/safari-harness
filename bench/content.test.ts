@@ -628,6 +628,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "type with noWaitAfter answers once the field holds the text, before the page checks it",
+    page: "card-field.html",
+    steps: [
+      { op: "snapshot" }, // [1] Card number
+      { op: "type", args: ["1", "4111", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ invalid: expect.anything() }) } },
+      { op: "wait", args: [null, { text: "Invalid card number" }], answer: { value: { found: true } } },
+    ],
+  },
+  {
     name: "a selector matching a field behind an open dialog and one in it types into the dialog's",
     page: "dialog-field.html",
     steps: [
