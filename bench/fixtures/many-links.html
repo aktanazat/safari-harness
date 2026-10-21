@@ -1,0 +1,7 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Many links</title>
+<body>
+<script>
+  document.body.insertAdjacentHTML("beforeend", Array.from({ length: 2000 }, (_, i) => `<p><a href="https://example.org/${i}">Link ${i}</a></p>`).join(""));
+</script>
