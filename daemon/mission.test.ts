@@ -48,7 +48,9 @@ function safari() {
       return { ok: true, value: text };
     },
   };
+  let lists = 0;
   const answer = (op: string, args: unknown[]) => {
+    if (op === "tabs.list") lists++;
     const run = ops[op];
     if (!run) return { error: `this fake has no ${op}` };
     try {
@@ -73,7 +75,7 @@ function safari() {
     closing.set(tab, resolve);
     return promise;
   };
-  return { tabs, closed };
+  return { tabs, closed, lists: () => lists };
 }
 
 // One Safari for the whole file: every agent's tabs close as this file
@@ -168,6 +170,22 @@ test("a paused agent's next call waits until the user resumes it, while another 
 
   expect((await press(page, "resume")).status).toBe(200);
   expect(await held).toMatchObject({ url: "https://a.example/" });
+});
+
+// 10-21: each agent window's page asked Safari for every tab each time it
+// polled, every 2 s it showed: 30 lists a minute for one page left open.
+test("the pages of two agent windows polling together ask Safari for its tabs at most once between them, and show each window's tab", async () => {
+  const [a, b] = [agent(), agent()];
+  const tabs = [await open(a.pid, "https://a.example/"), await open(b.pid, "https://b.example/")];
+  const before = s.lists();
+  for (let i = 0; i < 5; i++) {
+    for (const tab of tabs) {
+      const page = pageOf(tab);
+      const state = (await (await ask(`${page.origin}/space/state?id=${page.searchParams.get("id")}`)).json()) as { tabs: { id: number }[] };
+      expect(state.tabs.map((t) => t.id)).toContain(tab);
+    }
+  }
+  expect(s.lists() - before).toBeLessThanOrEqual(1);
 });
 
 test("a call held for a minute and a half fails with the pause message", async () => {

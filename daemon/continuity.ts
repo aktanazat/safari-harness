@@ -25,11 +25,17 @@ const moved = new Map<number, { to: number; connectedAt: number | undefined }>()
 // Popups not yet reported, by the agent that owns them.
 const popups = new Map<number, Popup[]>();
 
+// Ids reported on an earlier connection lead nowhere now (followTab).
+function dropEarlier(connectedAt: number | undefined): void {
+  for (const [old, m] of moved) if (m.connectedAt !== connectedAt) moved.delete(old);
+}
+
 // A tab swapped twice is reached by its first id too: every id that led to
 // the old one leads to the new one.
 export function recordReplaced(from: number, to: number): void {
   const connectedAt = bridge.extensionInfo?.connectedAt;
-  for (const [old, m] of moved) if (m.to === from && m.connectedAt === connectedAt) moved.set(old, { to, connectedAt });
+  dropEarlier(connectedAt);
+  for (const [old, m] of moved) if (m.to === from) moved.set(old, { to, connectedAt });
   moved.set(from, { to, connectedAt });
 }
 
@@ -37,6 +43,7 @@ export function recordReplaced(from: number, to: number): void {
 // extension has followed the swaps between already.
 export function recordRenumbered(tabs: Map<number, number>): void {
   const connectedAt = bridge.extensionInfo?.connectedAt;
+  dropEarlier(connectedAt);
   for (const [from, to] of tabs) moved.set(from, { to, connectedAt });
 }
 
@@ -48,6 +55,10 @@ export function followTab(id: number): number {
 
 export function queuePopup(owner: number, popup: Popup): void {
   popups.set(owner, [...(popups.get(owner) ?? []), popup]);
+}
+
+export function forgetPopups(owner: number): void {
+  popups.delete(owner);
 }
 
 // Runs a tool call and adds its news to the result: replaced when the call

@@ -95,8 +95,10 @@ daemon/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
                     tools itself); lasts the agent's session across deploys
-  mcp-tools.ts      the tools one release offers over MCP; after a deploy the
-                    server loads the daemon's release's copy (fresh.ts)
+  mcp-tools.ts      the tools one release offers over MCP, loaded at a
+                    session's first call (until then the server lists them by
+                    running this file); after a deploy the server loads the
+                    daemon's release's copy (fresh.ts)
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
                     attachment retrieval, and draft-then-approve sending
                     (chat.db read-only, AddressBook, osascript)
@@ -182,11 +184,15 @@ and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
 send nothing. When an owner process exits, the daemon closes all its pages
 and its empty windows by itself, all but the tab the user has in front.
-At a turn's end, kept pages, unsent forms, a handoff still on and
-his front tab stay, and close once they can until the agent's next call.
-Any page unused 20 minutes closes too, unsent forms and handoffs aside;
-the agent's next call that names it opens it again. A window ends with
-its last tab.
+At a turn's end, kept pages, unsent forms, a handoff page and his front
+tab stay; forms and his front tab close once they can until the agent's
+next call, and a handoff page waits for the idle limit below.
+Any page unused 20 minutes closes too, unsent forms and live
+handoffs aside, and the agent's next call that names it opens it again;
+one that could not open again (an action changed it, or its address has
+a fragment, a login, or a secret) waits 2 hours. An agent with no call
+for 20 minutes counts as its turn ended, so a window left on its own page
+closes; a window ends with its last tab.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),
@@ -274,10 +280,15 @@ the snapshot; it restores those exact bytes and permissions before starting
 the old release. New files or changed metadata block fallback, retain the
 backup and current state, and leave the current release selected. No
 automatic downgrade or stale-state overwrite is attempted. Failed
-installations print the retained backup path; successful ones delete it.
+installations print the retained backup path; successful ones delete it,
+and any a failed one left behind.
 
 `~/.local/share/safari-harness/deploys.log` lists every deploy. The five
-latest releases stay, and any that was in use in the past week.
+latest releases stay besides the current one, and so does any release the
+daemon or another live process (an agent session's MCP server) may still
+run: each one current since the oldest such process started.
+The app builds in `~/Library/Caches/safari-harness/DerivedData`, one folder
+reused by every build.
 
 ## Use
 

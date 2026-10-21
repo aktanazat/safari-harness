@@ -23,8 +23,8 @@ import { bridge } from "./bridge.ts";
 import { onRaised } from "./front.ts";
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
-import { spaceById, spaceEnded } from "./spaces.ts";
-import { tabsOpenedBy, type TabInfo } from "./tools.ts";
+import { spaceById, spaceEnded, windowOwners } from "./spaces.ts";
+import { recentTabs, tabsOpenedBy, type TabInfo } from "./tools.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -121,9 +121,12 @@ function listed(a: Agent, now: number): boolean {
   return a.calls.length > 0 && a.last >= now - HOUR;
 }
 
+// An agent with a window stays: its page asks for its record every 2 s,
+// and a record made again each time ran ps for it each time.
 function prune(now: number) {
+  const owning = new Set(windowOwners().values());
   for (const [owner, a] of agents) {
-    if (listed(a, now)) continue;
+    if (listed(a, now) || owning.has(owner)) continue;
     a.unwatch?.();
     agents.delete(owner);
   }
@@ -335,10 +338,13 @@ function summaryOf(a: Agent): Summary {
 }
 
 // Safari's tabs, only while the extension is there: a page's poll must
-// never start a Safari the user quit (socket in bridge.ts).
+// never start a Safari the user quit (socket in bridge.ts). The pages poll
+// every 2 s for calls; the tabs they show may be 10 s old.
+const PAGE_LIST_MS = 10_000;
+
 async function tabList(): Promise<TabInfo[] | undefined> {
   if (!bridge.connected) return undefined;
-  return (await bridge.request("tabs.list", [], 5000).catch(() => undefined)) as TabInfo[] | undefined;
+  return recentTabs(PAGE_LIST_MS, 5000).catch(() => undefined);
 }
 
 // An agent window's page, by its address (spaceWindow in spaces.ts).

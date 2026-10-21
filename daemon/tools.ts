@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
-import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { followTab, forgetPopups, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, raiseSafari, SAFARI, show } from "./front.ts";
@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, tabGone, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -56,10 +56,21 @@ function str(v: unknown, name: string): string {
   return v;
 }
 
-export async function listTabs(): Promise<TabInfo[]> {
-  const tabs = (await bridge.request("tabs.list")) as TabInfo[];
+let lastListed: { at: number; tabs: TabInfo[] } | undefined;
+
+export async function listTabs(timeoutMs?: number): Promise<TabInfo[]> {
+  const tabs = (await bridge.request("tabs.list", [], timeoutMs)) as TabInfo[];
   sighted(tabs);
+  lastListed = { at: Date.now(), tabs };
   return tabs;
+}
+
+// A list no older than maxAgeMs, for what only shows the tabs (mission.ts):
+// each agent window's page asked Safari for every tab every 2 s it showed.
+// A call to a harness tab, and a tab the harness opens or closes, makes the
+// next one fresh, so only what the user did himself shows late.
+export function recentTabs(maxAgeMs: number, timeoutMs?: number): Promise<TabInfo[]> {
+  return lastListed && Date.now() - lastListed.at < maxAgeMs ? Promise.resolve(lastListed.tabs) : listTabs(timeoutMs);
 }
 
 // A page tool's tab: the id open returned, or "front", the tab the user has
@@ -82,8 +93,12 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   const now = followTab(id);
   const mine = harnessTabs.get(now);
   if (mine) {
+    // used counts in minutes (IDLE_MS): writing the file for each call
+    // rewrote every tab several times a call
+    const stale = Date.now() - mine.used >= 60_000;
     mine.used = Date.now();
-    save();
+    lastListed = undefined;
+    if (stale) save();
   }
   return now;
 }
@@ -217,15 +232,17 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 }
 
 // A turn's end closes every tab its agent opened but the one the user has in
-// front, a page with an unsent form (the extension looks) and a handoff still
-// on; those it spared close once they can, until the agent's next call. An
-// agent's exit closes all of them but his front tab. A page left unused
-// IDLE_MS closes too, an unsent form and a live handoff excepted, so an
-// agent that neither ends its turn nor exits does not keep its windows; its
-// next call opens the page again (reopen). From 10-14 to 10-21 only a turn's
-// end closed tabs and it spared every page an action had changed, so the
-// tabs of five exited agents held their windows open for hours and Safari
-// restored them all on restart.
+// front, a page with an unsent form (the extension looks) and a handoff page
+// (one the user has yet to finish in); those it spared close once they can,
+// until the agent's next call. An agent's exit closes all of them but his
+// front tab. A page left unused IDLE_MS closes too, and its next call opens
+// it again (reopen); one that cannot open again (an action changed it, or
+// resumeAddress keeps no address) waits LONG_IDLE_MS, as its agent may come
+// back after a long wait. An unsent form stays. So an agent that neither
+// ends its turn nor exits does not keep its windows. From 10-14 to 10-21
+// only a turn's end closed tabs and it spared every page an action had
+// changed, so the tabs of five exited agents held their windows open for
+// hours and Safari restored them all on restart.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
@@ -346,6 +363,7 @@ export function loadTabs(path: string): void {
 
 function own(tab: number, owner: number | undefined) {
   remember(tab, owner);
+  lastListed = undefined;
   save();
 }
 
@@ -359,6 +377,7 @@ function remember(tab: number, owner: number | undefined, used = Date.now()) {
 
 function exited(owner: number) {
   watches.delete(owner);
+  forgetPopups(owner);
   for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
   save();
   void endTurn(owner).catch(() => {});
@@ -453,6 +472,9 @@ function sweep(): Promise<void> {
 // once it can, and its window with it.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
 const IDLE_MS = 20 * 60_000;
+const LONG_IDLE_MS = 2 * 60 * 60_000;
+
+const idleAfter = (t: HarnessTab) => (!t.acted && resumeAddress(t.url) !== undefined ? IDLE_MS : LONG_IDLE_MS);
 
 function retryLater(t: HarnessTab): number {
   const tries = (t.retry?.tries ?? 0) + 1;
@@ -474,7 +496,7 @@ async function sweepOnce() {
     if (t.orphan) return true;
     const handoff = handoffs.get(tab);
     if (handoff && !handoff.done && handoff.error === undefined) return false;
-    return t.done || t.used < now - IDLE_MS;
+    return (t.done && !t.handoff) || t.used < now - idleAfter(t);
   });
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
@@ -505,7 +527,7 @@ async function sweepOnce() {
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
-        const why = t.orphan ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+        const why = t.orphan ? "once its agent exited" : t.done && !t.handoff ? "as its agent's turn ended" : idleAfter(t) === IDLE_MS ? "after 20 minutes unused" : "after 2 hours unused";
         recordClosed(tab, why, resumeAddress(page?.url ?? t.url), t.orphan ? undefined : t.owner);
         forget(tab);
         note("tab closed", { tab, owner: t.owner ?? null, why });
@@ -532,6 +554,7 @@ function forget(tab: number) {
   const t = harnessTabs.get(tab);
   if (!t) return;
   harnessTabs.delete(tab);
+  lastListed = undefined;
   if (t.owner !== undefined && ![...harnessTabs.values()].some((o) => o.owner === t.owner)) {
     watches.get(t.owner)?.();
     watches.delete(t.owner);
@@ -542,6 +565,7 @@ function forget(tab: number) {
     sweeper = undefined;
   }
   save();
+  tabGone(t.owner);
 }
 
 function save() {
@@ -594,6 +618,7 @@ bridge.onTab = (e) => {
 // Durable ownership records, not an owner's exit, identify those resources.
 bridge.onConnect = () => {
   if (harnessTabs.size > 0) void sweep();
+  void sweepSpaces().catch(() => {});
 };
 
 // Old tab ids and their tabs' ids now: what the daemon keeps per tab, and
@@ -614,7 +639,7 @@ function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): v
     void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
   }
   if (owned) save();
-  note(kind, { tabs: Object.fromEntries(tabs) });
+  note(kind, { tabs: tabs.size, ...(owned ? { owned: Object.fromEntries([...tabs].filter(([, to]) => harnessTabs.has(to) || keepers.has(to))) } : {}) });
 }
 
 // What each harness tab shows, from a list of Safari's tabs. A tab the
@@ -1302,11 +1327,20 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (mine) delete mine.handoff;
       save();
     }
-    // one that ran out of callers leaves nothing to answer
+    // one that ran out of callers leaves nothing to answer; a finished one
+    // answers its callers until it has gone unasked as long as it waited
     if (handoffs.get(tab) === h && !h.done && h.error === undefined) handoffs.delete(tab);
+    else dropWhenIdle(tab, h);
     h.begun.resolve();
     h.over.resolve();
   }
+}
+
+function dropWhenIdle(tab: number, h: Handoff): void {
+  if (handoffs.get(tab) !== h) return;
+  const left = h.calledAt + h.idleMs - Date.now();
+  if (left <= 0 && h.waiting === 0) handoffs.delete(tab);
+  else setTimeout(() => dropWhenIdle(tab, h), Math.max(left, 1000)).unref();
 }
 
 // Starts or joins the tab's handoff and waits up to ms for it to end. The
@@ -1320,7 +1354,6 @@ async function handoffWait(tab: number, why: string | undefined, o: { ms: number
   const joined = h !== undefined;
   if (!h) {
     if (why === undefined) throw new Error(o.id === undefined ? "why must say what the user is to do" : `handoff ${o.id} on this tab is over: start a new one with why`);
-    for (const [t, x] of handoffs) if (Date.now() - x.calledAt > x.idleMs && x.waiting === 0 && (x.done || x.error !== undefined)) handoffs.delete(t);
     h = { id: ++handoffCount, why, start: Date.now(), begun: Promise.withResolvers(), over: Promise.withResolvers(), now: {}, done: false, waiting: 0, calledAt: Date.now(), idleMs: o.background ? BACKGROUND_IDLE_MS : HANDOFF_IDLE_MS };
     const mine = harnessTabs.get(tab);
     if (mine) mine.handoff = true;

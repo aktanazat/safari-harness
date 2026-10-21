@@ -405,14 +405,36 @@ test("a sweep asks nothing of Safari while its extension is gone", async () => {
 // On 10-07 four deploys in three hours each gave a research agent's 13
 // tabs a fresh 20 minutes, and they stayed open in his Safari. An agent
 // that neither ends its turn nor exits kept its windows for good from 10-14.
-test("after a restart a page its agent left unused 20 minutes closes, and one used since stays", async () => {
+// A page its next call cannot open again (10-21 review) is given 2 hours,
+// as an agent waiting on a long job comes back to it.
+test("after a restart a page left unused 20 minutes closes, one used since stays, and one that cannot open again waits 2 hours", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
-  writeFileSync(file, JSON.stringify({ version: 2, tabs: { 9021: { owner: process.pid, used: Date.now() - 21 * 60_000, acted: true }, 9022: { owner: process.pid, used: Date.now() - 19 * 60_000 } } }));
+  const ago = (minutes: number) => Date.now() - minutes * 60_000;
+  const tabs = {
+    9021: { owner: process.pid, used: ago(21), url: "https://plain.example/a" },
+    9022: { owner: process.pid, used: ago(19), url: "https://plain.example/b" },
+    9023: { owner: process.pid, used: ago(21), url: "https://clicked.example/", acted: true },
+    9024: { owner: process.pid, used: ago(21), url: "https://app.example/#/orders/42" },
+    9025: { owner: process.pid, used: ago(121), url: "https://clicked.example/", acted: true },
+  };
+  writeFileSync(file, JSON.stringify({ version: 2, tabs }));
   loadTabs(file);
   await endTurn(Bun.spawnSync(["true"]).pid);
-  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([9021]);
-  const saved = JSON.parse(readFileSync(file, "utf8"));
-  expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022")).toEqual(["9022"]);
+  const ours = (ids: Iterable<string | number>) => [...ids].map(Number).filter((tab) => tab in tabs).sort((a, b) => a - b);
+  expect(ours(closesAs("idle"))).toEqual([9021, 9025]);
+  expect(ours(Object.keys(JSON.parse(readFileSync(file, "utf8")).tabs))).toEqual([9022, 9023, 9024]);
+});
+
+// A handoff page waits for the user to sign in after his agent's turn
+// ended; the turn's end mark now outlives a restart, which closed it.
+test("after a restart a handoff page its agent's turn ended on stays, and its other page closes", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  const used = Date.now() - 60_000;
+  writeFileSync(file, JSON.stringify({ version: 2, tabs: { 9041: { owner: process.pid, used, url: "https://login.example/", done: true, handoff: true }, 9042: { owner: process.pid, used, url: "https://done.example/", done: true } } }));
+  loadTabs(file);
+  await endTurn(Bun.spawnSync(["true"]).pid);
+  expect(closesAs("idle").filter((tab) => tab === 9041 || tab === 9042)).toEqual([9042]);
+  expect(Object.keys(JSON.parse(readFileSync(file, "utf8")).tabs).filter((tab) => tab === "9041" || tab === "9042")).toEqual(["9041"]);
 });
 
 // On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.

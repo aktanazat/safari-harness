@@ -6,7 +6,7 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs } from "./owner.ts";
-import { spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { spaceEnded, spaceTool, sweep, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -232,6 +232,30 @@ test("a window no agent owns ends once its tabs have gone and none of its calls 
   expect(s.tabs.has(page.id)).toBe(false);
 }, 15_000);
 
+// 10-21 review: a claude session or his terminal never ends a turn, so its
+// window stayed on its page alone once its tabs had closed unused.
+test("a window left holding only its page closes once its agent has made no call for 20 minutes", async () => {
+  const s = safari();
+  const q = agent();
+  const t = (await runAs(q.pid, () => callTool("open", { url: "https://quiet.example/", background: true }))) as { id: number; windowId: number };
+  const page = pageIn(s.tabs, t.windowId)!;
+  await runAs(q.pid, () => callTool("close", { tab: t.id }));
+  const start = Date.now();
+  try {
+    setSystemTime(new Date(start + 19 * 60_000));
+    await sweep();
+    expect(s.tabs.has(page.id)).toBe(true);
+    setSystemTime(new Date(start + 20 * 60_000));
+    await sweep();
+  } finally {
+    setSystemTime();
+  }
+  await until(() => s.closed.includes(page.id), 8000);
+  expect(s.tabs.has(page.id)).toBe(false);
+  q.kill();
+  await q.exited;
+}, 15_000);
+
 test("a copied marker URL does not authorize adopting or deleting an unknown group", async () => {
   const s = safari();
   const copied = { id: next++, url: `http://127.0.0.1:37334/space?title=foreign&owner=999999&id=unregistered`, windowId: next++, active: true };
@@ -270,6 +294,33 @@ test("an agent whose window the user closed gets a new one on its next open", as
   expect(next.windowId).not.toBe(first.windowId);
   expect(next.windowId).not.toBe(1);
   d.kill();
+});
+
+// 10-21: the sweep the extension's connect starts listed Safari, then judged
+// every window the daemon knew by that list, one an agent opened while it
+// listed too. Missing from the list, that window ended as one the user had
+// closed, and the agent's next tab opened yet another.
+test("a window an agent opens while a sweep lists Safari's tabs stays its window", async () => {
+  const s = safari();
+  const [early, late] = [agent(), agent()];
+  await runAs(early.pid, () => openTab("https://early.example/", true));
+  const send = s.sock.send.bind(s.sock);
+  let held: (() => void) | undefined;
+  s.sock.send = (data) => {
+    const { id, op } = JSON.parse(data) as { id?: string; op: string };
+    if (held !== undefined || op !== "tabs.list" || id === undefined) return send(data);
+    const listed = [...s.tabs.values()];
+    held = () => bridge.handleMessage(JSON.stringify({ id, value: listed }));
+  };
+  connect(s.sock);
+  await until(() => held !== undefined);
+  const first = await runAs(late.pid, () => openTab("https://late.example/1", true));
+  held!();
+  await sweep();
+  const next = await runAs(late.pid, () => openTab("https://late.example/2", true));
+  expect(next.windowId).toBe(first.windowId);
+  early.kill();
+  late.kill();
 });
 
 // 10-07: an agent sizing its tab for a screenshot split it from its window

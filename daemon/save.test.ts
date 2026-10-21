@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
@@ -70,4 +70,39 @@ test("a save path that is not absolute is refused before the page gets any reque
   const post = callTool("fetch", { tab: 1, url: "https://shop.example/api/order", method: "POST", body: "{}", save: "order.json" });
   await expect(post).rejects.toThrow("save must be true or an absolute file path");
   expect(asked).toEqual([]);
+});
+
+// Saved reads hold signed-in pages' text, so the saved folder keeps a week
+// of them. save.ts takes that folder from HOME as it loads, so a process of
+// its own with a scratch HOME does each save. Two files there, saved 8 and
+// 6 days ago; the save's own path is printed.
+async function saveWithOldFiles(call: string): Promise<{ saved: string; folder: string; path: string }> {
+  const home = mkdtempSync(join(tmpdir(), "save-home-"));
+  const saved = join(home, ".local/share/safari-harness/saved");
+  const folder = join(home, "chosen");
+  const day = 24 * 60 * 60;
+  const now = Date.now() / 1000;
+  for (const dir of [saved, folder]) {
+    mkdirSync(dir, { recursive: true });
+    for (const [name, days] of [["old.txt", 8], ["recent.txt", 6]] as const) {
+      writeFileSync(join(dir, name), "page text");
+      utimesSync(join(dir, name), now - days * day, now - days * day);
+    }
+  }
+  const script = `const save = await import(${JSON.stringify(join(import.meta.dir, "save.ts"))});
+const folder = ${JSON.stringify(folder)};
+console.log(${call});`;
+  const proc = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "inherit" });
+  const path = (await new Response(proc.stdout).text()).trim();
+  return { saved, folder, path };
+}
+
+test("a read saved to the saved folder deletes the reads saved there over a week ago, and keeps the rest", async () => {
+  const { saved, path } = await saveWithOldFiles(`await save.saveAnswer("new")`);
+  expect(readdirSync(saved).sort()).toEqual([basename(path), "recent.txt"].sort());
+});
+
+test("a read saved to a folder the caller named leaves that folder's old files alone", async () => {
+  const { folder, path } = await saveWithOldFiles(`(await save.saveOutput("extract", { text: "new", url: "https://shop.example/" }, { dir: folder }, async () => "")).saved`);
+  expect(readdirSync(folder).sort()).toEqual([basename(path), "old.txt", "recent.txt"].sort());
 });
