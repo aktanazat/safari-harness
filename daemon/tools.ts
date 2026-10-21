@@ -218,20 +218,22 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 
 // A turn's end closes every tab its agent opened but the one the user has in
 // front, a page with an unsent form (the extension looks) and a handoff still
-// on. An agent's exit closes all of them but his front tab. A page
-// left unused IDLE_MS closes when its agent's next call can open it again as
-// it was (reopen). From 10-14 to 10-21 only a turn's end closed tabs and it
-// spared every page an action had changed, so the tabs of five exited agents
-// held their windows open for hours and Safari restored them all on restart.
-// Protection flags and URL-only resume points share the existing checkpoint.
+// on; those it spared close once they can, until the agent's next call. An
+// agent's exit closes all of them but his front tab. A page left unused
+// IDLE_MS closes too, an unsent form and a live handoff excepted, so an
+// agent that neither ends its turn nor exits does not keep its windows; its
+// next call opens the page again (reopen). From 10-14 to 10-21 only a turn's
+// end closed tabs and it spared every page an action had changed, so the
+// tabs of five exited agents held their windows open for hours and Safari
+// restored them all on restart.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
 // daemon last listed, opened, or loaded it; seen: the extension connection
 // it was last listed or made on (bridge.extensionInfo), for a Safari that
-// started again (restored). done: cleanup was explicitly admitted for it.
-// failed: its last close at a turn's end did not close it; retry: how many
-// of those closes threw, and when the next may go (sweepOnce).
+// started again (restored). done: its agent's turn ended, until its next
+// call. failed: a close did not close it; retry: how many closes in a row
+// threw or were refused, and when the next may go (sweepOnce).
 type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
@@ -323,7 +325,7 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed" | "retry"> & { owner?: number | null };
+  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "failed" | "retry"> & { owner?: number | null };
   type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
   let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
@@ -336,7 +338,7 @@ export function loadTabs(path: string): void {
   for (const [tab, kept] of Object.entries(rows)) {
     const t: SavedTab = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
     remember(Number(tab), typeof t.owner === "number" ? t.owner : undefined, t.used);
-    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
+    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
   }
   for (const [tab, closed] of Object.entries(state?.closed ?? {})) closedTabs.set(Number(tab), { ...closed, url: resumeAddress(closed.url) });
   for (const [tab, keeper] of Object.entries(state?.keepers ?? {})) keptBy(Number(tab), keeper);
@@ -391,13 +393,15 @@ export function endTurn(owner: number, prepared?: TurnPreparation): Promise<Turn
   const ending = Promise.resolve().then(async () => {
     await Promise.all(activeCalls.get(owner)?.pending ?? []);
     const before = tabsOpenedBy(owner);
-    for (const t of harnessTabs.values()) if (t.owner === owner) t.done = true;
+    for (const t of harnessTabs.values()) {
+      if (t.owner !== owner) continue;
+      t.done = true;
+      delete t.retry;
+    }
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
     await turnEnded(owner);
-    for (const t of harnessTabs.values()) if (t.owner === owner) delete t.done;
-    save();
     const retained = tabsOpenedBy(owner);
     const failed = [...harnessTabs.values()].filter((t) => t.owner === owner && t.failed).length;
     return { ok: true as const, closed: before - retained, retained, failed, deferred: !bridge.connected };
@@ -440,15 +444,22 @@ function sweep(): Promise<void> {
   return sweepingTabs;
 }
 
-// A close at a turn's end that threw (the extension did not answer, or a
-// native sheet held the tab past its 15 s) goes again 1, 2, then 4 minutes
-// on, then not again this turn, as a window's page does (spaces.ts): on
-// 10-13 the daemon logged 69 failed closes in 5.7 minutes, every sweep
-// asking again, about 55 of them of tabs already gone (DaemonLogs). A tab
-// already gone is let go as found closed (lost); a refusal waits for the
-// next turn's end.
+// A close that threw or was refused goes again 1, 2, then 4 minutes on,
+// then every IDLE_MS, as a window's page does (spaces.ts): on 10-13 the
+// daemon logged 69 failed closes in 5.7 minutes, every sweep asking again,
+// about 55 of them of tabs already gone (DaemonLogs). A tab already gone is
+// let go as found closed (lost). A turn's end stays marked until its
+// agent's next call, so a tab kept for his front or a failed close closes
+// once it can, and its window with it.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
 const IDLE_MS = 20 * 60_000;
+
+function retryLater(t: HarnessTab): number {
+  const tries = (t.retry?.tries ?? 0) + 1;
+  const wait = CLOSE_RETRY_MS[tries - 1] ?? IDLE_MS;
+  t.retry = { tries, at: Date.now() + wait };
+  return wait;
+}
 
 async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
@@ -459,11 +470,11 @@ async function sweepOnce() {
   const listed = await listTabs().catch(() => undefined);
   const now = Date.now();
   const due = [...harnessTabs].filter(([tab, t]) => {
-    if (t.closing || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(t.owner)?.pending.size)) return false;
+    if (t.closing || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(t.owner)?.pending.size)) return false;
     if (t.orphan) return true;
     const handoff = handoffs.get(tab);
     if (handoff && !handoff.done && handoff.error === undefined) return false;
-    return t.done || (t.used < now - IDLE_MS && !t.acted && resumeAddress(t.url) !== undefined);
+    return t.done || t.used < now - IDLE_MS;
   });
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
@@ -490,6 +501,7 @@ async function sweepOnce() {
       } else if (res?.ok !== true) {
         if (res?.protected === "form") t.acted = true;
         else t.failed = true;
+        retryLater(t);
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
@@ -506,11 +518,9 @@ async function sweepOnce() {
         lost(tab, reconnectedSince(t));
         return;
       }
-      const tries = (t.retry?.tries ?? 0) + 1;
-      const wait = CLOSE_RETRY_MS[tries - 1];
-      t.retry = { tries, at: Date.now() + (wait ?? 0) };
       t.failed = true;
-      console.error(`[safari-harness] closing tab ${tab} failed: ${message}; ${wait === undefined ? "not tried again this turn" : `trying again in ${wait / 1000} s`}`);
+      const wait = retryLater(t);
+      console.error(`[safari-harness] closing tab ${tab} failed: ${message}; trying again in ${wait / 1000} s`);
     } finally {
       delete t.closing;
       save();
@@ -539,7 +549,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -2715,9 +2725,22 @@ export function formatResult(value: unknown): string {
 // answer has the secrets in its addresses cut (redact.ts). A call with news
 // false leaves its caller's news (continuity.ts) to a later call, as
 // real_input's steps do (input.ts).
+let ownerlessCalls = 0;
+
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const owner = currentOwner();
-  if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news);
+  if (calling.getStore()) return invokeTool(name, args, model, news);
+  if (owner === undefined) {
+    // No process owns it, so no exit or turn's end closes its window: its
+    // last call in flight ending stands for both, and its tabs go idle.
+    ownerlessCalls++;
+    turnResumed(undefined);
+    try {
+      return await calling.run(true, () => invokeTool(name, args, model, news));
+    } finally {
+      if (--ownerlessCalls === 0) void turnEnded(undefined).catch(() => {});
+    }
+  }
   const ending = endingTurns.get(owner);
   if (ending) await ending;
   if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
@@ -2726,14 +2749,15 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   active.epoch = randomUUID();
   active.pending.add(settled.promise);
   activeCalls.set(owner, active);
+  let resumed = false;
   for (const t of harnessTabs.values()) {
     if (t.owner !== owner) continue;
+    resumed ||= t.done === true;
     delete t.done;
-    // the turn's end tries a close that failed afresh (sweepOnce)
     delete t.retry;
   }
   turnResumed(owner);
-  save();
+  if (resumed) save();
   try {
     return await calling.run(true, () => invokeTool(name, args, model, news));
   } finally {

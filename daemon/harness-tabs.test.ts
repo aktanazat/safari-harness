@@ -132,8 +132,8 @@ test("an agent's exit closes its tabs and popups, pages it changed too, but not 
 
 // Tabs an agent left open as it handed the turn back to the user piled up
 // in his Safari until it exited. One it kept waits on his answer; one he is
-// looking at stays until he leaves it.
-test("when an agent's turn ends its tabs close, except one it kept, one the user has in front, and another agent's", async () => {
+// looking at stays until he leaves it, then closes with no turn end again.
+test("when an agent's turn ends its tabs close, except one it kept, one the user has in front until he leaves it, and another agent's", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
   loadTabs(file);
   const [agent, other] = [keeper(), Bun.spawn(["sleep", "60"])];
@@ -155,10 +155,15 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
   const owners = Object.fromEntries(Object.entries(saved).map(([tab, t]) => [tab, t.owner]));
   expect(owners).toMatchObject({ [hisFront]: agent.pid, [others]: other.pid });
   expect(owners).not.toContainAnyKeys([...done, kept].map(String));
+  const front = hisFront;
+  hisFront = undefined;
+  // a sweep, which another agent's turn end runs at once
+  await endTurn(Bun.spawnSync(["true"]).pid);
+  const after = JSON.parse(readFileSync(file, "utf8")).tabs as Record<string, unknown>;
+  expect(Object.keys(after)).not.toContain(String(front));
   agent.kill();
   other.kill();
-  hisFront = undefined;
-  await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
+  await endTurn(other.pid);
   await closedAs("idle", [others]);
 });
 
@@ -398,15 +403,16 @@ test("a sweep asks nothing of Safari while its extension is gone", async () => {
 });
 
 // On 10-07 four deploys in three hours each gave a research agent's 13
-// tabs a fresh 20 minutes, and they stayed open in his Safari.
-test("old and recently used pages both survive a restart without current completion authority", async () => {
+// tabs a fresh 20 minutes, and they stayed open in his Safari. An agent
+// that neither ends its turn nor exits kept its windows for good from 10-14.
+test("after a restart a page its agent left unused 20 minutes closes, and one used since stays", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
-  writeFileSync(file, JSON.stringify({ 9021: { owner: process.pid, used: Date.now() - 21 * 60_000 }, 9022: { owner: process.pid, used: Date.now() } }));
+  writeFileSync(file, JSON.stringify({ version: 2, tabs: { 9021: { owner: process.pid, used: Date.now() - 21 * 60_000, acted: true }, 9022: { owner: process.pid, used: Date.now() - 19 * 60_000 } } }));
   loadTabs(file);
   await endTurn(Bun.spawnSync(["true"]).pid);
-  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([]);
+  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([9021]);
   const saved = JSON.parse(readFileSync(file, "utf8"));
-  expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9021", "9022"]);
+  expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022")).toEqual(["9022"]);
 });
 
 // On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.

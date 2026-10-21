@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { alive, changeQueue, check, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
-import { rpc } from "./rpc.ts";
+import { ownCalls, rpc } from "./rpc.ts";
 
 // A window as the space tool's state lists it; tabs, the extension's count
 // of them in it, only while Safari runs.
@@ -174,6 +174,9 @@ if (import.meta.main) {
     mkdirSync(dirname(files.log), { recursive: true });
     appendFileSync(files.log, `${new Date().toISOString()} ${line}\n`);
   };
+  // Started detached, it has no agent above it: its calls are its own, so
+  // a scratch window it opens ends with it rather than with no one.
+  ownCalls();
   const daemon: Daemon = (op, args = {}) => rpc("space", { ...args, op });
   const given = new Map<string, number>();
   const locked = await helper("lock", { ms: 0 });

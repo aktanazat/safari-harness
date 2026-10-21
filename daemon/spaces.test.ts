@@ -204,7 +204,7 @@ test("an exited agent's window that holds only its page closes without a turn en
 
 // Safari started again on 10-21 and restored every agent window unloaded;
 // the extension's idle close refuses a page it cannot read, so each stayed.
-test("an exited agent's window closes when Safari restored its page unloaded", async () => {
+test.each(["turn end", "exit"] as const)("a window whose page Safari restored unloaded closes at its agent's %s", async (how) => {
   const s = safari();
   const x = agent();
   const t = await runAs(x.pid, () => openTab("https://restored.example/", true));
@@ -212,8 +212,22 @@ test("an exited agent's window closes when Safari restored its page unloaded", a
   const close = s.ops["tabs.close"];
   s.ops["tabs.close"] = (args) => (args[0] === page.id && args[1] === "idle" ? { ok: false, protected: "unreadable" } : close(args));
   await runAs(x.pid, () => callTool("close", { tab: t.id }));
+  if (how === "turn end") await endTurn(x.pid);
+  else x.kill();
+  await until(() => s.closed.includes(page.id), 8000);
+  expect(s.tabs.has(page.id)).toBe(false);
   x.kill();
   await x.exited;
+}, 15_000);
+
+// 10-21: a window no agent owned stayed open three hours after its tabs had
+// gone, as only an agent's turn end or exit ended a window.
+test("a window no agent owns ends once its tabs have gone and none of its calls runs", async () => {
+  const s = safari();
+  const opened = (await callTool("open", { url: "https://ownerless.example/", background: true })) as { id: number };
+  const page = pageIn(s.tabs, s.tabs.get(opened.id)!.windowId)!;
+  expect(s.tabs.has(page.id)).toBe(true);
+  await callTool("close", { tab: opened.id });
   await until(() => s.closed.includes(page.id), 8000);
   expect(s.tabs.has(page.id)).toBe(false);
 }, 15_000);
@@ -500,7 +514,10 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   await until(() => !pageIn(s.tabs, before.window));
 });
 
-test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent retains ownership but requires fresh runtime admission", async phase => {
+// Deploys restart the daemon often: a window whose agent's turn had ended
+// and that waited on its tabs stayed open until that agent's next turn
+// end, hours later for an agent that idles between asks.
+test.each(["spaces", "closing", "ended"] as const)("a saved %s window whose agent's turn had ended still ends after a restart", async phase => {
   const s = safari();
   const q = agent();
   const path = join(dir, `admission-${phase}.json`);
@@ -514,28 +531,19 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent re
     const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
     writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
     restarted.loadSpaces(path);
-    await restarted.turnEnded(q.pid + 1);
-    expect(s.tabs.has(page.id)).toBe(true);
-    expect(s.closed).not.toContain(page.id);
-    expect(await restarted.spaceTool({ op: "release", name: owned.name })).toEqual({ ok: false });
-    const retained = JSON.parse(readFileSync(path, "utf8")) as Record<typeof phase, Spaces.Space[]>;
-    const expected: Spaces.Space = { ...record };
-    delete expected.done;
-    expect(retained[phase]).toStrictEqual([expected]);
-    await restarted.turnEnded(q.pid);
     if (phase === "closing") {
       expect(await restarted.spaceTool({ op: "release", name: owned.name })).toMatchObject({ ok: true, left: 0 });
       restarted.turnResumed(q.pid);
       expect(await restarted.spaceTool({ op: "release", name: owned.name })).toEqual({ ok: false });
       expect(s.tabs.has(page.id)).toBe(true);
     } else {
-      expect(s.tabs.has(page.id)).toBe(false);
+      await until(() => !s.tabs.has(page.id), 8000);
     }
   } finally {
     q.kill();
     await q.exited;
   }
-});
+}, 15_000);
 
 // A page address is not ownership evidence: a user can copy the same link.
 test("a restarted daemon leaves a window page it has no durable ownership record for", async () => {
@@ -691,7 +699,7 @@ test("an ended window whose page Safari says is already gone is closed, and not 
 });
 
 // One lost window's close failed 69 times in 5.7 min, a try each sweep.
-test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then left", async () => {
+test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then every 20", async () => {
   let now = Date.now();
   const tries: number[] = [];
   const start = now;
@@ -700,7 +708,7 @@ test("an ended window whose page Safari will not close is asked again after one,
     throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
   });
   try {
-    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 1_619_000, 1_620_000]) {
       now = start + at;
       setSystemTime(new Date(now));
       await turnEnded(w.pid);
@@ -708,7 +716,7 @@ test("an ended window whose page Safari will not close is asked again after one,
   } finally {
     setSystemTime();
   }
-  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000], ended: true });
+  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000, 1_620_000], ended: true });
 });
 
 // Between the tries of a close that failed, every 5 s sweep asked Safari for

@@ -16,7 +16,8 @@ Tabs
   second). Your tabs close when your turn ends, pages you changed too, so a
   task's last call is never `close`. Kept pages, pending handoffs, unsent
   forms, and his front tab stay; when you exit, all but his front tab close.
-  `keep` a page meant for him.
+  Any other page you leave unused 20 minutes closes too. `keep` a page
+  meant for him.
 - A tab id you hold keeps working after its tab closed idle or at a turn's
   end: the next call opens the page again, fresh, and names the new id.
   Snapshot before acting there. Do not open another tab or start another
