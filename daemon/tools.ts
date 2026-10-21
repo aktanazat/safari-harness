@@ -828,9 +828,9 @@ export function refLines(lines: string[]): string[] {
   return lines.filter((l) => /\[(?:f\d+:)?\d+\]/.test(l)).map((l) => l.trimStart());
 }
 
-export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number }) {
+export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  if (opts.ref !== undefined) return relay(tab, "click", [opts.ref]);
+  if (opts.ref !== undefined) return relay(tab, "click", opts.noWaitAfter === true ? [opts.ref, { noWaitAfter: true }] : [opts.ref]);
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
   throw new Error("click needs ref or x+y");
 }
@@ -2143,8 +2143,9 @@ export const TOOLS: Record<string, Tool> = {
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
     params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
+    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed" } },
     required: ["tab"],
-    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number }))),
+    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",

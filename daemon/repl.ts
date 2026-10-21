@@ -157,8 +157,8 @@ export class Locator {
     this.#page = page;
     this.target = target;
   }
-  async click(): Promise<void> {
-    await this.#page.clickTarget(this.target);
+  async click(opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    await this.#page.clickTarget(this.target, opts.noWaitAfter === true);
   }
   // opts names where a {{code}} in text comes from: { secret: "page", from:
   // <mail tab> } for an emailed one. Without it, a script's emailed code
@@ -380,8 +380,8 @@ export class Page {
   }
 
   // Playwright's page-level shorthands for a locator's actions.
-  click(target: string): Promise<void> {
-    return this.locator(target).click();
+  click(target: string, opts: { noWaitAfter?: boolean } = {}): Promise<void> {
+    return this.locator(target).click(opts);
   }
   fill(target: string, text: string): Promise<void> {
     return this.locator(target).fill(text);
@@ -404,10 +404,10 @@ export class Page {
 
   // A click that a waitForEvent('download') is waiting on goes through the
   // download tool, which saves what the click downloads.
-  async clickTarget(target: string): Promise<void> {
+  async clickTarget(target: string, noWaitAfter = false): Promise<void> {
     const w = this.downloadWaiter;
     if (!w) {
-      await this.act("click", { ref: target });
+      await this.act("click", noWaitAfter ? { ref: target, noWaitAfter } : { ref: target });
       return;
     }
     this.downloadWaiter = null;

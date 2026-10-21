@@ -259,6 +259,15 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a click with noWaitAfter presses the element and answers without watching the page settle",
+    page: "click.html",
+    steps: [
+      { op: "snapshot" }, // [1] Press
+      { op: "click", args: ["1", { noWaitAfter: true }], answer: { value: expect.not.objectContaining({ receipt: expect.anything() }) } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Pressed 1 times") } } },
+    ],
+  },
+  {
     name: "a click on a ref whose element left the page says the ref is stale",
     page: "click.html",
     steps: [

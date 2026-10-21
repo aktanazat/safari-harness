@@ -101,10 +101,14 @@ outside the page: read `document`, `window` and the rest through
   allInnerTexts screenshot waitFor`. `nth(i)` counts a selector's matches
   in page order, shown or not, and a text's among the shown controls of
   that name; `last()` is `nth(-1)`, and `all()` one locator per match.
+  `click({noWaitAfter: true})` answers once the click ran instead of
+  watching the page settle (300 ms at least): for a loop of clicks whose
+  effects the script reads itself. It still waits for a load or a tab the
+  click starts, and reports no effect.
 - Page: `goto goBack goForward reload waitForSelector waitForChange
   waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
   keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
-  shorthands `page.click(target)`, `page.fill(target, text)`,
+  shorthands `page.click(target, opts)`, `page.fill(target, text)`,
   `page.type(target, text)`. `waitForChange({timeout})` ends once the page
   shows lines it did not have at the last look (results after a click,
   more of a feed after a scroll) and returns them; it throws when none
