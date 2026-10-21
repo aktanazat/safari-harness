@@ -274,10 +274,14 @@ the snapshot; it restores those exact bytes and permissions before starting
 the old release. New files or changed metadata block fallback, retain the
 backup and current state, and leave the current release selected. No
 automatic downgrade or stale-state overwrite is attempted. Failed
-installations print the retained backup path; successful ones delete it.
+installations print the retained backup path; successful ones delete it,
+and any a failed one left behind.
 
 `~/.local/share/safari-harness/deploys.log` lists every deploy. The five
-latest releases stay, and any that was in use in the past week.
+latest releases stay besides the current one, and so does any release the
+daemon or another live process (an agent session's MCP server) still runs.
+The app builds in `~/Library/Caches/safari-harness/DerivedData`, one folder
+reused by every build.
 
 ## Use
 
