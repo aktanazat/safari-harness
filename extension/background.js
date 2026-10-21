@@ -1823,7 +1823,7 @@ async function frontWindow(agents, until = Date.now() + LIST_MS) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
   if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
   const [, open, last] = await Promise.all([
-    bounded(listsChanged, "storage.local.get", until),
+    bounded(listsChanged, "window lists", until),
     bounded(api.windows.getAll(), "windows.getAll", until),
     bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
       if (e.phase) throw e;
