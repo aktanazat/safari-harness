@@ -1753,19 +1753,20 @@ function alias(map, was, now) {
 // The lists are read from storage.local once, as this page starts, and
 // kept here, each change written through. On 10-20 Safari left a read of
 // them for each tab list unanswered past 2.5 s, again and again for two
-// minutes, and tab: "front" failed for it. A read it leaves unanswered is
-// asked again every LIST_MS until one is answered.
+// minutes, and tab: "front" failed for it. A read it leaves unanswered, or
+// refuses, is asked again every LIST_MS until one is answered: an empty
+// answer in its place would be written back by the next change, forgetting
+// the agent windows.
 const windowLists = { agentWindows: [], focusOrder: [] };
 function readLists() {
   return new Promise((resolve) => {
     let again = null;
-    const answer = (kept) => {
-      clearTimeout(again);
-      resolve(kept);
-    };
     const ask = () => {
       again = setTimeout(ask, LIST_MS);
-      api.storage.local.get(Object.keys(windowLists)).then(answer, () => answer({}));
+      api.storage.local.get(Object.keys(windowLists)).then((kept) => {
+        clearTimeout(again);
+        resolve(kept);
+      }, () => {});
     };
     ask();
   });
