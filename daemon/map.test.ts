@@ -204,14 +204,14 @@ test("a page that opened as its site's error page fails with open's warning, and
   expect(readUrls).toEqual(["https://shop.example/a"]);
 });
 
-test("every tab map opens is closed, a failed page's and a bot check's included", async () => {
+test("every tab map opens is closed, a failed page's and a bot check's included, and then its window", async () => {
   jest.useFakeTimers();
   const before = opened.length;
   await waited(map({ urls: ["https://shop.example/a", GONE, EMPTY, WALLED] }));
   const mine = opened.slice(before);
   expect(mine.length).toBe(4);
   expect(closed.filter((t) => mine.includes(t)).sort()).toEqual(mine.sort());
-  expect([...tabs.keys()]).toEqual([900]);
+  expect([...tabs.keys()]).toEqual([]);
 });
 
 // Nobody watches these tabs, so a check still up once open has waited on it

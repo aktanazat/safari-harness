@@ -38,29 +38,30 @@ function holds(tab: number, owner: number, url?: string) {
 }
 
 // On 10-13 the daemon logged 69 failed closes in 5.7 minutes, every sweep
-// asking again (DaemonLogs).
-test("a turn-end close that threw is tried again 1, 2, then 4 minutes on, then not again until its agent calls again", async () => {
+// asking again (DaemonLogs). Another agent's turn end stands in for the
+// minute sweep.
+test("a turn-end close that threw is tried again 1, 2, then 4 minutes on, then every 20, and at once at its agent's next turn end", async () => {
   safari();
   closing = "fails";
   closes.length = 0;
   listed = [];
-  const agent = Bun.spawn(["sleep", "60"]);
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
   holds(4401, agent.pid);
   const start = Date.now();
-  const closesAt = async (minutes: number) => {
+  const closesAt = async (minutes: number, ending = other.pid) => {
     setSystemTime(new Date(start + minutes * 60_000));
-    await endTurn(agent.pid);
+    await endTurn(ending);
     return closes.length;
   };
-  const tries = [];
-  for (const minutes of [0, 0.9, 1, 2.9, 3, 6.9, 7, 60]) tries.push(await closesAt(minutes));
-  expect(tries).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
-  await runAs(agent.pid, () => callTool("tabs", {}));
+  const tries = [await closesAt(0, agent.pid)];
+  for (const minutes of [0.9, 1, 2.9, 3, 6.9, 7, 26.9, 27]) tries.push(await closesAt(minutes));
+  expect(tries).toEqual([1, 1, 2, 2, 3, 3, 4, 4, 5]);
   closing = "closes";
-  expect(await closesAt(60)).toBe(5);
+  expect(await closesAt(27.5, agent.pid)).toBe(6);
   expect(closes.every((tab) => tab === 4401)).toBe(true);
   expect(await endTurn(agent.pid)).toMatchObject({ closed: 0, retained: 0 });
   agent.kill();
+  other.kill();
 });
 
 // On 10-16 no eBay, Depop, or Grailed search could open again after Safari

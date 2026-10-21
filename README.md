@@ -180,9 +180,13 @@ tab IDs with a call-generation token; it never closes a page. `turn-end`
 then releases that preparation; an intervening owner call invalidates it,
 and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
-send nothing. When an owner process exits, the daemon releases its
-disposable pages and empty windows by itself. Kept, changed and front
-pages stay either way.
+send nothing. When an owner process exits, the daemon closes all its pages
+and its empty windows by itself, all but the tab the user has in front.
+At a turn's end, kept pages, unsent forms, a handoff still on and
+his front tab stay, and close once they can until the agent's next call.
+Any page unused 20 minutes closes too, unsent forms and handoffs aside;
+the agent's next call that names it opens it again. A window ends with
+its last tab.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),
@@ -238,7 +242,9 @@ in one step. The daemon's launchd job, `~/.bun/bin/safari`, omp's safari
 MCP server (`mcpServers.safari.args` in `~/.omp/agent/mcp.json`), and its
 extension (`~/.omp/agent/extensions/safari-harness`, linked by the deploy)
 all run from `current`, so an edit in the checkout reaches no one until it
-is committed and deployed.
+is committed and deployed. A commit that does not contain the release in
+use is refused, so a branch from another checkout cannot take back what
+was deployed; merge the release in, or pass `--force` to replace it.
 
 A deploy restarts only what changed. When the daemon's code differs from
 the running daemon's (`code` in `safari status --json`), the daemon stops

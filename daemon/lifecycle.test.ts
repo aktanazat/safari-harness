@@ -35,18 +35,14 @@ test("a refused automatic close remains tracked and closes on the next completio
   expect(await fixture("refusal")).toMatchObject({ receipt: { closed: 0, retained: 1, failed: 1 }, retry: { closed: 1, retained: 0, failed: 0 }, remaining: false });
 });
 
-test("cancellation closes disposable pages but preserves a form in progress", async () => {
-  expect(await fixture("cancel")).toEqual({ plain: false, form: true });
-});
-
 test("an automatic script-session close preserves a form in progress", async () => {
   expect(await fixture("session")).toEqual({ retainedForm: true });
 });
 
-test("a fresh daemon opens a closed result once for concurrent reads and preserves protected pages", async () => {
+test("a fresh daemon opens a closed result once for concurrent reads and keeps an unsent form", async () => {
   const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
-  expect(await fixture("seed", directory)).toMatchObject({ savedText: false, savedCredential: false });
-  expect(await fixture("restart", directory)).toMatchObject({ opened: 1, results: [{ text: "fixture result" }, { text: "fixture result" }], protected: [true, true, true], savedText: false, savedCredential: false });
+  expect(await fixture("seed", directory)).toMatchObject({ protected: [true, false, false], savedText: false, savedCredential: false });
+  expect(await fixture("restart", directory)).toMatchObject({ opened: 1, results: [{ text: "fixture result" }, { text: "fixture result" }], protected: [true, false, false], savedText: false, savedCredential: false });
 });
 
 test("an action on a resumed page asks for a fresh look without submitting anything", async () => {
@@ -61,12 +57,16 @@ test("a foreign owner cannot lazily reopen another owner's closed result", async
   expect(await fixture("foreign", directory)).toMatchObject({ opened: 0, error: expect.stringContaining("open it again") });
 });
 
-test("a script action's non-recreatable state stays open after admitted cleanup", async () => {
-  expect(await fixture("eval-state")).toEqual({ retained: true, evaluations: 1 });
+test("a page a script changed closes as its agent's turn ends", async () => {
+  expect(await fixture("eval-state")).toEqual({ retained: false, evaluations: 1 });
 });
 
-test.each(["aged", "cap", "stopped"])("%s is not authority to close another unfinished task's pages", async mode => {
-  expect(await fixture(mode)).toEqual({ retained: true, residentPages: mode === "cap" ? 9 : 1 });
+test("a page left unused 20 minutes closes, as its agent's next call opens it again", async () => {
+  expect(await fixture("aged")).toEqual({ retained: false, residentPages: 0 });
+});
+
+test("another agent's turn end leaves a working agent's many pages open", async () => {
+  expect(await fixture("cap")).toEqual({ retained: true, residentPages: 9 });
 });
 
 test("a script action on a lazily reopened result never runs before a fresh look", async () => {

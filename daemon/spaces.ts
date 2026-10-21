@@ -170,8 +170,8 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
 }
 
 
-// A restart preserves every ownership record, but never a previous process's
-// transient release permission. The current runtime must admit cleanup again.
+// A restart keeps every window and whether its agent's turn has ended, so a
+// window that was waiting to end still ends.
 type Kept = Space;
 let spacesFile: string | undefined;
 
@@ -184,13 +184,12 @@ export function loadSpaces(path: string): void {
     // none kept yet
   }
   for (const s of saved.spaces ?? []) {
-    delete s.done;
     spaces.set(s.key, s);
     watchExit(s.owner);
     sweepSoon();
   }
-  for (const s of saved.closing ?? []) { delete s.done; closing.set(s.name, s); watchExit(s.owner); }
-  for (const s of saved.ended ?? []) { delete s.done; ended.add(s); watchExit(s.owner); }
+  for (const s of saved.closing ?? []) { closing.set(s.name, s); watchExit(s.owner); }
+  for (const s of saved.ended ?? []) { ended.add(s); watchExit(s.owner); }
   sweepSoon();
 }
 
@@ -345,11 +344,11 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 
 // A window page Safari would not close (a native sheet holds it, or the
 // extension does not answer) is asked again after one, two, then four
-// minutes, and then left until the daemon starts again: in the daemon log
-// of 09-30 to 10-16 one lost window's close failed 69 times in 5.7 min,
-// one try each sweep, each a wait in the extension's queue. A page
-// already gone is closed.
+// minutes, then every 20: in the daemon log of 09-30 to 10-16 one lost
+// window's close failed 69 times in 5.7 min, one try each sweep, each a
+// wait in the extension's queue. A page already gone is closed.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const LAST_RETRY_MS = 20 * 60_000;
 const unclosed = new Map<Space, { tries: number; at: number }>();
 
 async function end(space: Space) {
@@ -369,21 +368,24 @@ async function end(space: Space) {
   // A page whose close failed is looked for again only once its next try is
   // due: until then a sweep would list Safari's tabs for nothing.
   const failed = unclosed.get(space);
-  if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
+  if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
   if (!space.done || inWindow.some(t => !isPage(t, space))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
+    // The page is the daemon's own and holds nothing to lose, so it closes
+    // without the extension's idle checks, which refuse a page Safari
+    // restored unloaded; only the user looking at it keeps it.
+    if (page.front || page.shown || (page.active && page.partial !== undefined)) return;
     try {
-      const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
-      if (result.ok !== true) return;
+      await bridge.request("tabs.close", [page.id], 10000);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (!why.startsWith("that tab is gone")) {
         const tries = (failed?.tries ?? 0) + 1;
-        const wait = CLOSE_RETRY_MS[tries - 1];
-        unclosed.set(space, { tries, at: Date.now() + (wait ?? 0) });
-        note("window not closed", { name: space.name, error: why, retryS: wait === undefined ? null : wait / 1000 });
+        const wait = CLOSE_RETRY_MS[tries - 1] ?? LAST_RETRY_MS;
+        unclosed.set(space, { tries, at: Date.now() + wait });
+        note("window not closed", { name: space.name, error: why, retryS: wait / 1000 });
         return;
       }
     }
@@ -426,16 +428,24 @@ async function sweepOnce() {
   }
 }
 
-// A new owned call invalidates an earlier completion's empty-window intent.
-export function turnResumed(owner: number): void {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) delete s.done;
-  save();
+// A new call invalidates an earlier completion's empty-window intent; an
+// owner of undefined is the calls no process owns (callTool, tools.ts).
+export function turnResumed(owner: number | undefined): void {
+  let resumed = false;
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
+    if (s.owner !== owner || !s.done) continue;
+    delete s.done;
+    resumed = true;
+  }
+  if (resumed) save();
 }
 
 // The runtime admitted cleanup of this owner's disposable tabs (endTurn,
 // tools.ts). Its windows can end only when nothing but their marker remains.
-export async function turnEnded(owner: number): Promise<void> {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) s.done = true;
+export async function turnEnded(owner: number | undefined): Promise<void> {
+  const mine = [...spaces.values(), ...closing.values(), ...ended].filter((s) => s.owner === owner);
+  if (mine.length === 0) return;
+  for (const s of mine) s.done = true;
   save();
   if (spaces.size > 0 || ended.size > 0) sweepSoon();
   if (spaceSweeping) await spaceSweeping;
