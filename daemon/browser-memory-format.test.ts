@@ -23,3 +23,11 @@ test("empty browser status still exposes collection settings and a service error
   expect(result.pages).toEqual([]);
   expect(result.total).toBe(0);
 });
+
+test.each(["extract", "snapshot"] as const)("formatted %s reads expose the harness receipt without changing its provenance", (kind) => {
+  const memoryReceipt = { id: "trusted-read", url: page.url, readAt: page.visitedAt, expiresAt: page.visitedAt + 600000, partial: true, scope: "public" };
+  const value = kind === "extract" ? { text: "The observatory used a spectrometer." } : { snapshot: '- text "The observatory used a spectrometer."', nodes: 1, truncated: false };
+  const formatted = formatResult({ title: page.title, url: page.url, ...value, memoryReceipt });
+  expect(formatted).toContain("The observatory used a spectrometer.");
+  expect(formatted).toContain(`memoryReceipt: ${JSON.stringify(memoryReceipt)}`);
+});

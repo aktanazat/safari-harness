@@ -217,22 +217,24 @@ const SCRIPT = String.raw`
     if (excluded.value !== config.excludedSites.join("\n")) excluded.value = config.excludedSites.join("\n");
     if (retention.value !== String(config.retentionDays)) retention.value = String(config.retentionDays);
     byId("summarize").checked = config.summarize;
+    byId("research").checked = config.researchEnabled;
   }
 
   function applyStatus(next) {
     const first = status === null;
     status = next;
     const config = status.config;
-    setText(byId("capture-state"), config.enabled ? "capture is on" : "capture is off");
+    setText(byId("capture-state"), config.enabled ? "personal browsing capture is on" : "personal browsing capture is off");
     byId("capture-state").classList.toggle("on", config.enabled);
     setText(byId("capture"), config.enabled ? "pause capture" : "start capture");
-    setText(byId("capture-policy"), config.sites.length ? "" : "no hosts selected");
+    setText(byId("research-state"), config.researchEnabled ? "agent research saving is on" : "agent research saving is off");
+    setText(byId("capture-policy"), config.sites.length ? "" : "no sites selected");
     byId("capture-policy").hidden = !!config.sites.length;
     setText(byId("pending"), status.pending ? status.pending + (status.pending === 1 ? " summary pending" : " summaries pending") : "");
     byId("pending").hidden = !status.pending;
     setText(byId("store-error"), status.error || "");
     byId("store-error").hidden = !status.error;
-    if (first && !config.sites.length) byId("settings").open = true;
+    if (first && !config.sites.length && !config.researchEnabled && status.total === 0) byId("settings").open = true;
     fillSettings();
     updateControls();
   }
@@ -322,6 +324,7 @@ const SCRIPT = String.raw`
     detailContent.hidden = true;
     const source = make("a", "source");
     const time = make("time", "meta");
+    const research = make("p", "meta copy");
     const pageError = make("p", "error message");
     const reading = make("div");
     const summary = make("p", "copy");
@@ -374,10 +377,10 @@ const SCRIPT = String.raw`
     const forgetSite = make("button", "danger", "forget site");
     for (const button of [edit, forgetPage, forgetSite]) button.type = "button";
     actions.append(edit, forgetPage, forgetSite);
-    detailContent.append(source, time, pageError, reading, editor, body, actions);
+    detailContent.append(source, time, research, pageError, reading, editor, body, actions);
     detail.append(detailLoading, detailContent);
     li.append(head, preview, detail);
-    const row = { li, open, title, meta, state, preview, detail, detailLoading, detailContent, source, time, pageError, reading, summary, summaryMeta, note, noteMeta, editor, editFields, summaryInput, noteInput, originalSummary: "", originalNote: "", save, cancel, editMessage, bodyText, edit, forgetPage, forgetSite, page };
+    const row = { li, open, title, meta, state, preview, detail, detailLoading, detailContent, source, time, research, pageError, reading, summary, summaryMeta, note, noteMeta, editor, editFields, summaryInput, noteInput, originalSummary: "", originalNote: "", save, cancel, editMessage, bodyText, edit, forgetPage, forgetSite, page };
     open.addEventListener("click", () => setSelection(row.page.id));
     edit.addEventListener("click", () => editPage(row));
     editor.addEventListener("input", () => {
@@ -431,7 +434,9 @@ const SCRIPT = String.raw`
     if (!row || page.id !== selectedId) return;
     safeSource(row.source, page.url);
     row.time.dateTime = new Date(page.visitedAt).toISOString();
-    setText(row.time, "viewed " + pageTime(page));
+    setText(row.time, (page.observation === "agent_research" ? "read by an agent " : "viewed ") + pageTime(page));
+    setText(row.research, page.observation === "agent_research" ? [page.task, page.reason, page.partial ? "partial page" : ""].filter(Boolean).join(" · ") : "");
+    row.research.hidden = !row.research.textContent;
     setText(row.pageError, page.error || (page.state === "failed" ? "summary failed; saved page text is available." : ""));
     row.pageError.hidden = !row.pageError.textContent;
     setText(row.summary, page.summary || (page.state === "pending" ? "summary pending" : "no summary"));
@@ -469,7 +474,7 @@ const SCRIPT = String.raw`
       }
       row.page = page;
       setText(row.title, page.title || page.url);
-      setText(row.meta, page.site + " · " + pageTime(page));
+      setText(row.meta, [page.observation === "agent_research" ? "agent research" : "personal browsing", page.site, pageTime(page), page.partial ? "partial page" : ""].filter(Boolean).join(" · "));
       setText(row.state, page.state === "pending" ? "summary pending" : page.state === "failed" ? "summary failed" : "");
       row.state.classList.toggle("error", page.state === "failed");
       row.state.hidden = !row.state.textContent;
@@ -621,7 +626,7 @@ const SCRIPT = String.raw`
     if (!configDirty || writing) return;
     let config;
     try {
-      config = { sites: hosts(byId("sites").value), excludedSites: hosts(byId("excluded-sites").value), retentionDays: Number(byId("retention").value), summarize: byId("summarize").checked };
+      config = { sites: hosts(byId("sites").value), excludedSites: hosts(byId("excluded-sites").value), retentionDays: Number(byId("retention").value), summarize: byId("summarize").checked, researchEnabled: byId("research").checked };
     } catch (error) {
       setText(byId("settings-error"), error.message);
       return;
@@ -630,7 +635,8 @@ const SCRIPT = String.raw`
     const exclusions = config.excludedSites.filter((host) => !status.config.excludedSites.includes(host));
     const effects = [];
     if (config.retentionDays < status.config.retentionDays) effects.push("forget pages older than " + config.retentionDays + " days");
-    if (removals.length || exclusions.length) effects.push("forget saved pages from " + [...new Set([...removals, ...exclusions])].join(", "));
+    if (removals.length) effects.push("forget personal browsing pages from " + removals.join(", "));
+    if (exclusions.length) effects.push("forget all saved pages from " + exclusions.join(", "));
     if (effects.length && !confirm("save settings and " + effects.join("; ") + "? summaries and notes are removed too. this cannot be undone.")) return;
     mutate({ action: "configure", config }, () => { configDirty = false; }, byId("settings-error"), "settings saved");
   });
@@ -727,6 +733,7 @@ export function browserMemoryPage(token: string): Response {
 <span id="capture-policy" class="meta" hidden></span>
 <span id="pending" class="meta" role="status" hidden></span>
 </div>
+<p id="research-state" class="meta message" role="status"></p>
 <p id="store-error" class="error message" role="alert" hidden></p>
 <p id="operation" class="message muted" role="status"></p>
 <div id="request-problem" class="problem" hidden>
@@ -734,14 +741,15 @@ export function browserMemoryPage(token: string): Response {
 <button id="retry" type="button">retry</button>
 </div>
 <details id="settings" class="settings">
-<summary>capture settings</summary>
+<summary>memory settings</summary>
 <form id="settings-form" autocomplete="off">
 <fieldset id="settings-fields" disabled>
+<label class="check" for="research"><input id="research" type="checkbox">remember public sources agents use</label>
 <div class="settings-grid">
-<div class="field"><label for="sites">sites to remember · one per line</label><textarea id="sites" rows="4" placeholder="example.com" spellcheck="false" autocapitalize="none" aria-describedby="host-policy settings-error"></textarea></div>
+<div class="field"><label for="sites">personal browsing sites · one per line</label><textarea id="sites" rows="4" placeholder="example.com" spellcheck="false" autocapitalize="none" aria-describedby="host-policy settings-error"></textarea></div>
 <div class="field"><label for="excluded-sites">sites to exclude · one per line</label><textarea id="excluded-sites" rows="4" placeholder="example.com" spellcheck="false" autocapitalize="none" aria-describedby="host-policy settings-error"></textarea></div>
 </div>
-<p id="host-policy" class="help message">example.com does not include mail.example.com. removing or excluding a site erases its saved pages. pause capture to keep them. forms and filled editors are skipped.</p>
+<p id="host-policy" class="help message">example.com does not include mail.example.com. removing a browsing site forgets its personal pages. excluding a site forgets both kinds. pausing keeps saved pages. forms and filled editors are skipped.</p>
 <div class="setting-bottom">
 <div class="field"><label for="retention">keep pages for</label><select id="retention"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></div>
 <div><label class="check" for="summarize"><input id="summarize" type="checkbox" aria-describedby="provider-permission">allow ai-provider summaries</label><p id="provider-permission" class="help">this sends selected page text to your ai provider for summaries. saved pages and search stay on this mac. relevant saved text may also be included in ai tasks.</p></div>

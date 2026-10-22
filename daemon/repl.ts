@@ -19,6 +19,7 @@ import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
 import type { CaptureResult } from "./evidence.ts";
 import { stateLine, type PageState } from "./page-state.ts";
+import type { ResearchReceipt } from "./browser-memory.ts";
 
 export const REPL_TIMEOUT_MS = 120_000;
 
@@ -926,7 +927,7 @@ export class ReplSession {
     this.#forget(p);
   }
 
-  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<{ tree: string; diff: string; pageState?: PageState }> {
+  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<{ tree: string; diff: string; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string }> {
     if (!(page instanceof Page)) throw new TypeError("snapshot(page, options): pass a page from openTab() or attachBrowserTab()");
     let root = opts.selector;
     if (root === undefined && opts.ref !== undefined) {
@@ -934,17 +935,17 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState };
+    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
     this.showNotes(snap);
     const lines = snap.snapshot.split("\n");
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
-    const warn = [stateLine(snap).trimEnd(), ...(snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : [])].filter(Boolean);
+    const warn = [stateLine(snap).trimEnd(), ...(snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : []), ...(snap.memoryWarning ? [`memoryWarning: ${snap.memoryWarning}`] : [])].filter(Boolean);
     const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...lines, ...cut].join("\n");
     const key = `${page.id}|${root ?? ""}|${opts.interactive ? 1 : 0}|${opts.showHidden ? 1 : 0}`;
     const before = this.#trees.get(key);
     this.#trees.set(key, tree);
     const diff = before === undefined ? "(first snapshot)" : lineDiff(before.split("\n"), tree.split("\n")) || "(no change)";
-    return { tree, diff, ...(snap.pageState ? { pageState: snap.pageState } : {}) };
+    return { tree, diff, ...(snap.pageState ? { pageState: snap.pageState } : {}), ...(snap.memoryReceipt ? { memoryReceipt: snap.memoryReceipt } : {}), ...(snap.memoryWarning ? { memoryWarning: snap.memoryWarning } : {}) };
   }
 
   async annotatedScreenshot(page: unknown, opts: { path?: string } = {}): Promise<CaptureResult> {
@@ -1049,6 +1050,7 @@ export class ReplSession {
       openTab: (url: string, opts?: { background?: boolean; new?: boolean }) => this.openTab(url, opts),
       closeTab: (p?: unknown) => this.closeTab(p),
       snapshot: (p: unknown, o?: SnapshotOptions) => this.snapshot(p, o),
+      saveSource: (receipt: string, reason: string) => this.call("save_source", { receipt, reason }),
       annotatedScreenshot: (p: unknown, o?: { path?: string }) => this.annotatedScreenshot(p, o),
       fetch: (input: unknown, init?: FetchInit) => this.fetchFrom(undefined, input, init),
       display: log,

@@ -303,8 +303,8 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       await regrouping(s, false);
       s.group = a.op;
       s.why = a.op === "plain" ? String(a.why ?? "") : undefined;
-      if (s === held && a.op !== "grouped") {
-        closing.delete(name);
+      if (s === held) {
+        if (a.op !== "grouped") closing.delete(name);
         await end(s);
       }
       save();
@@ -371,7 +371,7 @@ async function end(space: Space) {
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
-    return;
+    if (space.group === "making") return;
   }
   ended.add(space);
   save();
@@ -387,7 +387,7 @@ async function end(space: Space) {
     try {
       await bridge.request("dialogs", [page.id, { accept: false, text: null }]);
       if (!space.done) return;
-      const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
+      const result = await bridge.request("tabs.close", [page.id], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);

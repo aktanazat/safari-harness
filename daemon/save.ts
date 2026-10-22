@@ -118,5 +118,7 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
     head: text.slice(0, HEAD_CHARS),
     ...(r.truncated === true ? { truncated: true } : {}),
     ...(r.challenge ? { challenge: r.challenge } : {}),
+    ...(r.memoryReceipt ? { memoryReceipt: r.memoryReceipt } : {}),
+    ...(typeof r.memoryWarning === "string" ? { memoryWarning: r.memoryWarning } : {}),
   };
 }

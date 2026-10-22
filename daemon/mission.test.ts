@@ -1,6 +1,6 @@
 import { afterAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { recordReplaced } from "./continuity.ts";
@@ -13,14 +13,13 @@ import { runAs, watchOwner } from "./owner.ts";
 import { passwords } from "./passwords.ts";
 import { callTool, endTurn } from "./tools.ts";
 import * as tools from "./tools.ts";
+import type * as Mission from "./mission.ts";
 
 type Tab = { id: number; url: string; title: string; windowId: number; active: boolean };
+const USER_WINDOW = 1_000_001;
 
-// Safari as the extension reports it, with the user's window 1 open. Its
-// pages answer as content.js does: type says what it typed, and a field
-// that is gone makes the error repeat the text.
 function safari() {
-  const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", title: "His page", windowId: 1, active: true }]]);
+  const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", title: "His page", windowId: USER_WINDOW, active: true }]]);
   const closing = new Map<number, () => void>();
   const effects: { tab: number; ref: unknown }[] = [];
   const changed = new Set<number>();
@@ -28,7 +27,7 @@ function safari() {
   const ops: Record<string, (args: unknown[]) => unknown> = {
     "tabs.list": () => [...tabs.values()],
     "tabs.open": ([url, background, windowId]) => {
-      const t = { id: next++, url: String(url), title: "A page", windowId: typeof windowId === "number" ? windowId : 1, active: !background };
+      const t = { id: next++, url: String(url), title: "A page", windowId: typeof windowId === "number" ? windowId : USER_WINDOW, active: !background };
       tabs.set(t.id, t);
       return t;
     },
@@ -111,7 +110,7 @@ afterAll(async () => {
   await Promise.all(spawned.map((p) => p.exited));
   for (const tab of fixtureTabs) if (s.tabs.has(tab)) await tools.closeTab(tab, "the test explicitly closed its own retained page");
   for (const p of spawned) await endTurn(p.pid);
-  await Promise.all([...s.tabs.values()].filter((t) => t.windowId !== 1).map((t) => s.closed(t.id)));
+  await Promise.all([...s.tabs.values()].filter((t) => t.windowId !== USER_WINDOW).map((t) => s.closed(t.id)));
   await Promise.all(spawned.map((p) => new Promise<void>((resolve) => watchOwner(p.pid, resolve))));
 });
 
@@ -339,7 +338,7 @@ test("a click queued in the tab's real dispatch lane cannot act after giveback u
   const a = agent();
   const tab = await open(a.pid, "https://queued.example/");
   const other = await open(a.pid, "https://other.example/");
-  s.tabs.get(other)!.windowId = 1;
+  s.tabs.get(other)!.windowId = USER_WINDOW;
   const page = pageOf(tab);
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<{ ok: true }>();
@@ -881,6 +880,12 @@ test("registered windows remain listed with their page titles and redacted addre
   });
   expect(window.tabs).toHaveLength(1);
   expect(JSON.stringify(window)).not.toContain("not-for-the-list");
+  const state = await (await ask(`${page.origin}/space/state?id=${page.searchParams.get("id")}`)).json();
+  expect(state).toMatchObject({ agent: null, ended: false });
+  const control = await press(page, "stop");
+  expect(control.status).toBe(409);
+  expect(await control.json()).toMatchObject({ error: "No live task record. Wait for the agent's next call." });
+  expect(s.tabs.has(tab)).toBe(true);
 });
 
 test("a mission restart keeps registered windows visible but refuses an earlier page's close token", async () => {
@@ -903,6 +908,16 @@ test("a mission restart keeps registered windows visible but refuses an earlier 
   });
   expect((await closeRegisteredWindow(before, {}, route)).status).toBe(403);
   expect(s.tabs.has(tab)).toBe(true);
+  const page = pageOf(tab);
+  const state = await (await ask(`${page.origin}/space/state?id=${before.id}`, undefined, route)).json();
+  expect(state).toMatchObject({ agent: null, ended: false });
+  const control = await ask(`${page.origin}/space/control`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: page.origin },
+    body: JSON.stringify({ id: before.id, secret: "the earlier daemon's secret", action: "stop" }),
+  }, route);
+  expect(control.status).toBe(409);
+  expect(await control.json()).toMatchObject({ error: "No live task record. Wait for the agent's next call." });
 });
 
 test("an authorized close removes only the selected registered window and its kept pages without needing an agent record", async () => {
@@ -941,7 +956,7 @@ test.each(["guess", "another window", "another origin", "cross-site"] as const)(
 test("a window page without a registration cannot authorize closing a user's window", async () => {
   const id = randomUUID();
   const marker = 1_004_000;
-  s.tabs.set(marker, { id: marker, title: "Copied page", url: `http://127.0.0.1:37334/space?id=${id}&name=copied&size=1100x800`, windowId: 1, active: false });
+  s.tabs.set(marker, { id: marker, title: "Copied page", url: `http://127.0.0.1:37334/space?id=${id}&name=copied&size=1100x800`, windowId: USER_WINDOW, active: false });
   try {
     const before = [...s.tabs.values()];
     const response = await closeRegisteredWindow({ id, closeSecret: "a-guess" });
@@ -1089,4 +1104,176 @@ test("native completion reads can settle during a user hold but cannot authorize
     await call(a.pid, "click", { tab, ref: "after-resume" });
     expect(s.effects.at(-1)).toEqual({ tab, ref: "after-resume" });
   } finally { await press(page, "resume"); }
+});
+
+async function recentPage(tab: number): Promise<Overview["recentTabs"][number]> {
+  const overview = await (await ask("http://127.0.0.1:37334/agents.json")).json() as Overview;
+  const page = overview.recentTabs.find((page) => page.tab === tab);
+  if (!page) throw new Error(`no recently closed page for tab ${tab}`);
+  return page;
+}
+
+async function reopenPage(page: { tab: number; reopenSecret: string }, change: { origin?: string; site?: string; host?: string; contentType?: string; fields?: Record<string, unknown> } = {}): Promise<Response> {
+  const url = new URL("http://127.0.0.1:37334/agents/tabs/reopen");
+  if (change.host) url.hostname = change.host;
+  return ask(url.href, {
+    method: "POST",
+    headers: { "content-type": change.contentType ?? "application/json", origin: change.origin ?? url.origin, "sec-fetch-site": change.site ?? "same-origin" },
+    body: JSON.stringify({ tab: page.tab, secret: page.reopenSecret, ...change.fields }),
+  });
+}
+
+test("the agents route lists only safe recently closed pages, newest first, for five minutes", async () => {
+  const [a, b] = [agent(), agent()];
+  const first = await open(a.pid, "https://recovery.example/first");
+  const privateTab = await open(a.pid, "https://recovery.example/private?token=not-for-recovery#form");
+  const latest = await open(b.pid, "https://recovery.example/latest");
+  s.tabs.get(first)!.title = "First page";
+  s.tabs.get(latest)!.title = "<img src=x onerror=alert(1)>";
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    await endTurn(a.pid);
+    clock.mockReturnValue(now + 1);
+    await endTurn(b.pid);
+    const response = await ask("http://127.0.0.1:37334/agents.json");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const overview = await response.json() as Overview;
+    const entries = overview.recentTabs.filter((page) => [first, privateTab, latest].includes(page.tab));
+    expect(entries).toEqual([
+      { tab: latest, title: "<img src=x onerror=alert(1)>", url: "https://recovery.example/latest", closedAt: now + 1, expiresAt: now + 300_001, reopenSecret: expect.any(String) },
+      { tab: first, title: "First page", url: "https://recovery.example/first", closedAt: now, expiresAt: now + 300_000, reopenSecret: expect.any(String) },
+    ]);
+    expect(entries[0].reopenSecret).not.toBe(entries[1].reopenSecret);
+    expect(JSON.stringify(overview.recentTabs)).not.toContain("not-for-recovery");
+    const page = await (await ask("http://127.0.0.1:37334/agents")).text();
+    const windows = page.indexOf('<ul id="windows"');
+    const recent = page.indexOf('<ul id="recent-tabs"');
+    const agents = page.indexOf('<ul id="agents"');
+    expect(windows).toBeGreaterThan(-1);
+    expect(recent).toBeGreaterThan(windows);
+    expect(agents).toBeGreaterThan(recent);
+    expect(page).not.toContain("<img src=x onerror=alert(1)>");
+    expect(s.tabs.has(first)).toBe(false);
+    expect(s.tabs.has(privateTab)).toBe(false);
+    expect(s.tabs.has(latest)).toBe(false);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("reopening a signed recent page opens an active user tab without reviving its task", async () => {
+  const a = agent();
+  const old = await open(a.pid, "https://recovery.example/reopen");
+  await endTurn(a.pid);
+  const page = await recentPage(old);
+  const response = await reopenPage(page);
+  expect(response.status).toBe(200);
+  const out = await response.json() as { ok: boolean; tab: number };
+  expect(out.ok).toBe(true);
+  fixtureTabs.add(out.tab);
+  expect(out.tab).not.toBe(old);
+  expect(s.tabs.get(out.tab)).toMatchObject({ url: "https://recovery.example/reopen", active: true });
+  expect(tools.tabsOwnedBy(a.pid)).not.toContain(out.tab);
+  const overview = await (await ask("http://127.0.0.1:37334/agents.json")).json() as Overview;
+  expect(overview.recentTabs.find((entry) => entry.tab === old)).toBeUndefined();
+  expect(overview.windows?.some((window) => window.tabs.some((tab) => tab.id === out.tab))).toBe(false);
+  await endTurn(a.pid);
+  expect(s.tabs.has(out.tab)).toBe(true);
+  expect((await reopenPage(page)).status).toBe(404);
+});
+
+test.each([
+  { authority: "a guessed secret", expected: 403 },
+  { authority: "another page's secret", expected: 403 },
+  { authority: "an altered signed expiry", expected: 403 },
+  { authority: "another origin", expected: 403 },
+  { authority: "cross-site", expected: 403 },
+  { authority: "a rebound host", expected: 403 },
+  { authority: "non-JSON", expected: 400 },
+  { authority: "an arbitrary URL", expected: 400 },
+  { authority: "an unknown tab", expected: 404 },
+])("reopening with $authority is refused without opening any tab", async ({ authority, expected }) => {
+  const a = agent();
+  const first = await open(a.pid, "https://recovery.example/protected");
+  const second = await open(a.pid, "https://recovery.example/elsewhere");
+  await endTurn(a.pid);
+  const page = await recentPage(first);
+  const other = await recentPage(second);
+  const before = [...s.tabs.values()];
+  const secret = page.reopenSecret.split(".");
+  secret[1] = String(page.expiresAt + 1);
+  const response = await reopenPage({
+    tab: authority === "an unknown tab" ? 9_999_999 : page.tab,
+    reopenSecret: authority === "a guessed secret" ? "a-guess" : authority === "another page's secret" ? other.reopenSecret : authority === "an altered signed expiry" ? secret.join(".") : page.reopenSecret,
+  }, {
+    ...(authority === "another origin" ? { origin: "https://evil.example" } : {}),
+    ...(authority === "cross-site" ? { site: "cross-site" } : {}),
+    ...(authority === "a rebound host" ? { host: "rebound.example" } : {}),
+    ...(authority === "non-JSON" ? { contentType: "text/plain" } : {}),
+    ...(authority === "an arbitrary URL" ? { fields: { url: "https://evil.example/" } } : {}),
+  });
+  expect(response.status).toBe(expected);
+  expect([...s.tabs.values()]).toEqual(before);
+});
+
+test("a signed recovery entry disappears and cannot reopen at its exact expiry", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://recovery.example/expiry");
+  await endTurn(a.pid);
+  const page = await recentPage(tab);
+  const clock = spyOn(Date, "now").mockReturnValue(page.expiresAt - 1);
+  try {
+    expect((await recentPage(tab)).tab).toBe(tab);
+    clock.mockReturnValue(page.expiresAt);
+    const before = [...s.tabs.values()];
+    const response = await reopenPage(page);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ ok: false, error: "This page's five-minute recovery period has ended." });
+    const overview = await (await ask("http://127.0.0.1:37334/agents.json")).json() as Overview;
+    expect(overview.recentTabs.find((entry) => entry.tab === tab)).toBeUndefined();
+    expect([...s.tabs.values()]).toEqual(before);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("a live owner keeps its window controls after the first call following a mission history restart", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://restart-first-call.example/");
+  const page = pageOf(tab);
+  const id = page.searchParams.get("id")!;
+  const directory = mkdtempSync("/private/var/tmp/safari-mission-restart-");
+  const path = `${directory}/history.json`;
+  const now = Date.now();
+  writeFileSync(path, JSON.stringify({ version: 1, missions: [{ id: randomUUID(), owner: a.pid, since: now, active: now, status: "working", spaces: [id], calls: [] }] }));
+  const listener = spyOn(front, "onRaised").mockImplementation(() => {});
+  let restarted: typeof Mission;
+  try {
+    // A static import would keep the previous daemon's mission map.
+    restarted = await import(`./mission.ts?first-call-restart-${randomUUID()}`);
+  } finally {
+    listener.mockRestore();
+  }
+  try {
+    restarted.openMissionHistory(path);
+    await restarted.watched(a.pid, "info", { tab }, () => runAs(a.pid, () => callTool("info", { tab })));
+    const state = await (await ask(`${page.origin}/space/state?id=${id}`, undefined, restarted.missionRoute)).json();
+    expect(state.agent).toMatchObject({ owner: a.pid, status: "working" });
+    expect(state.ended).not.toBe(true);
+    const response = await ask(`${page.origin}/space/control`, {
+      method: "POST", headers: { "content-type": "application/json", origin: page.origin },
+      body: JSON.stringify({ id, secret: state.agent.controlSecret, action: "pause" }),
+    }, restarted.missionRoute);
+    expect(response.status).toBe(200);
+    const paused = await (await ask(`${page.origin}/space/state?id=${id}`, undefined, restarted.missionRoute)).json();
+    expect(paused.agent.status).toBe("paused");
+  } finally {
+    a.kill();
+    await a.exited;
+    const ended = Promise.withResolvers<void>();
+    watchOwner(a.pid, ended.resolve);
+    await ended.promise;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

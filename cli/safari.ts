@@ -51,9 +51,11 @@ const USAGE = `safari — drive Safari from the terminal
   safari memory status                       inspect collection and saved pages
   safari memory search <words>               find remembered page text and summaries
   safari memory show --id ID                 inspect a saved page
-  safari memory configure --config '<json>'  choose sites, pause, or change retention
+  safari memory configure --config '<json>'  set research saving, browsing sites, or retention
   safari memory edit --id ID --note <text>    correct a summary or add a note
   safari memory forget --id ID --approved    delete a page and its summary
+  safari save_source --receipt ID --reason <text>
+                                             remember a useful public source already read
   safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
                                              --site lists his on one site, --all every tab
   safari open <url> [--bg] [--keep] [--new] [--id]

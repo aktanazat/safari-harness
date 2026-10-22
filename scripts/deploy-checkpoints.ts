@@ -12,12 +12,15 @@ function json(path: string): unknown {
   try { return JSON.parse(readFileSync(path, "utf8")); }
   catch { throw new Error(`cannot read valid JSON from ${basename(path)}; checkpoint left intact`); }
 }
-function releaseFormat(release: string): Format {
+function releaseFormat(release: string, kind: "checkpoint" | "browser memory" = "checkpoint"): Format {
   const value = json(join(release, "package.json"));
   if (!object(value)) throw new Error("invalid release package metadata");
-  const format = value.safariHarnessCheckpointFormat ?? 1;
-  if (format !== 1 && format !== 2) throw new Error("unsupported release checkpoint format");
+  const format = value[kind === "checkpoint" ? "safariHarnessCheckpointFormat" : "safariHarnessBrowserMemoryFormat"] ?? 1;
+  if (format !== 1 && format !== 2) throw new Error(`unsupported release ${kind} format`);
   return format;
+}
+function memoryCompatible(source: string, target: string): void {
+  if (releaseFormat(target, "browser memory") < releaseFormat(source, "browser memory")) throw new Error("browser memory requires a newer reader; rollback is blocked");
 }
 function names(port: number): string[] { return [`tabs-${port}.json`, `spaces-${port}.json`]; }
 function entry(data: string, name: string): Entry {
@@ -73,6 +76,7 @@ function snapshot(data: string, port: number, release: string): string {
   return directory;
 }
 function restore(path: string, data: string, port: number, target: string, current: string): void {
+  memoryCompatible(current, target);
   const saved = loadSnapshot(path, data, port);
   const format = releaseFormat(target);
   if (format >= releaseFormat(current)) {
@@ -113,6 +117,7 @@ try {
   const url = new URL(base);
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   if (action === "check" && args.length === 2) {
+    memoryCompatible(args[0], args[1]);
     const source = releaseFormat(args[0]);
     const target = releaseFormat(args[1]);
     if (target < source) throw new Error("manual rollback across checkpoint formats is blocked; no release or checkpoint changed");

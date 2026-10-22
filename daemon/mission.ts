@@ -28,9 +28,9 @@ import { failureOf, HarnessError } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
-import { currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, resolveTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type TabInfo } from "./tools.ts";
+import { closeTabsOf, recentlyClosedTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 
 // What a held call answers: each tells the agent what to do next.
@@ -161,6 +161,9 @@ function track(owner: number): Agent {
   const agent = fresh(owner);
   const previous = history.list().find((record) => record.owner === owner);
   agent.inspectionOnly = previous?.interrupted === true && previous.inspectionOnly === true;
+  if (!agents.has(owner)) {
+    for (const id of spaceAgents.keys()) if (spaceById(id)?.owner === owner) spaceAgents.set(id, agent.id);
+  }
   agents.set(owner, agent);
   agent.unwatch = watchOwner(owner, () => {
     agent.ended = Date.now();
@@ -676,7 +679,8 @@ type Summary = { id: string; owner: number | null; process: string | null; statu
 // /agents.json, and what safari agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
 type WindowSummary = ManagedWindow & { closeSecret: string };
-export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[]; windows: WindowSummary[] | null };
+type RecentTabSummary = RecentTab & { reopenSecret: string };
+export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[]; windows: WindowSummary[] | null; recentTabs: RecentTabSummary[] };
 
 function summaryOf(a: Agent): Summary {
   const status = statusOf(a);
@@ -730,7 +734,8 @@ async function spaceState(url: URL): Promise<Response> {
   const space = spaceById(id);
   if (!space) return json({ now, agent: null, tabs: null, ended: spaceEnded(id) });
   const agent = space.owner === undefined ? nobody : agents.get(space.owner);
-  if (!agent || spaceAgents.has(id) && spaceAgents.get(id) !== agent.id) return json({ now, agent: null, tabs: null, ended: true });
+  if (!agent) return json({ now, agent: null, tabs: null, ended: space.owner !== undefined && !alive(space.owner) });
+  if (spaceAgents.has(id) && spaceAgents.get(id) !== agent.id) return json({ now, agent: null, tabs: null, ended: true });
   if (!spaceAgents.has(id)) {
     spaceAgents.set(id, agent.id);
     remember(agent);
@@ -738,7 +743,7 @@ async function spaceState(url: URL): Promise<Response> {
   const tabs = await tabList();
   return json({
     now,
-    agent: { ...summaryOf(agent), calls: agent.calls.slice(-SHOWN_CALLS).reverse().map((c) => publicCall(c, agent.id)) },
+    agent: { ...summaryOf(agent), controlSecret: secretOf(`space:${id}:${agent.id}`), calls: agent.calls.slice(-SHOWN_CALLS).reverse().map((c) => publicCall(c, agent.id)) },
     history: agent.id,
     tabs: tabs ? inWindows(tabs, new Set([space.window])).map((t) => ({ id: t.id, title: cut(t.title ?? "", 120), url: t.url ? place(t.url, []) : "", active: t.active === true })) : null,
   });
@@ -749,6 +754,15 @@ function publicWindow(window: ManagedWindow): WindowSummary {
     ...window,
     tabs: window.tabs.map((tab) => ({ id: tab.id, title: cut(tab.title, 120), url: tab.url ? place(tab.url, []) : "" })),
     closeSecret: secretOf(`window:${window.id}`),
+  };
+}
+
+function publicRecentTab(tab: RecentTab): RecentTabSummary {
+  return {
+    ...tab,
+    title: cut(tab.title.trim(), 120),
+    url: place(tab.url, []),
+    reopenSecret: `${tab.closedAt}.${tab.expiresAt}.${secretOf(`closed-tab:${tab.tab}:${tab.closedAt}:${tab.expiresAt}`)}`,
   };
 }
 
@@ -799,7 +813,12 @@ async function overview(): Promise<Overview> {
   // a row stays put while its agent works, so its buttons never move under
   // the user's pointer.
   const over = (s: Status) => s === "stopped" || s === "ended";
-  return { now, agents: rows.sort((x, y) => Number(over(x.status)) - Number(over(y.status)) || y.since - x.since), windows: tabs === undefined ? null : (await managedWindows(tabs)).map(publicWindow) };
+  return {
+    now,
+    agents: rows.sort((x, y) => Number(over(x.status)) - Number(over(y.status)) || y.since - x.since),
+    windows: tabs === undefined ? null : (await managedWindows(tabs)).map(publicWindow),
+    recentTabs: recentlyClosedTabs().map(publicRecentTab),
+  };
 }
 
 const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-store" } });
@@ -834,7 +853,8 @@ async function spaceControl(req: Request): Promise<Response> {
   const space = spaceById(id);
   if (!space) return problem(409, "the harness restarted after this window opened, so it no longer knows its agent");
   const agent = space.owner === undefined ? nobody : agents.get(space.owner);
-  if (!agent || spaceAgents.get(id) !== agent.id) return problem(409, "this task has ended");
+  if (!agent) return problem(409, space.owner !== undefined && !alive(space.owner) ? "this task has ended" : "No live task record. Wait for the agent's next call.");
+  if (spaceAgents.get(id) !== agent.id) return problem(409, "this task has ended");
   if (!matches(body.secret, `space:${id}:${agent.id}`)) return problem(403, "not this window's page");
   return control(space.owner, body.action, "its window", space.window);
 }
@@ -861,6 +881,26 @@ async function windowClose(req: Request): Promise<Response> {
     return json(await closeManagedWindow(id));
   } catch {
     return problem(409, "this window could not be closed; reload the agents page");
+  }
+}
+
+async function tabReopen(req: Request): Promise<Response> {
+  const body = await bodyOf(req);
+  if (!body || Object.keys(body).some((key) => key !== "tab" && key !== "secret") || typeof body.tab !== "number" || !Number.isSafeInteger(body.tab) || body.tab <= 0) return problem(400, "send JSON: {tab, secret}");
+  const token = typeof body.secret === "string" ? /^(\d+)\.(\d+)\.([A-Za-z0-9_-]+)$/.exec(body.secret) : null;
+  const closedAt = Number(token?.[1]);
+  const expiresAt = Number(token?.[2]);
+  const signed = token !== null && Number.isSafeInteger(closedAt) && Number.isSafeInteger(expiresAt) && matches(token[3], `closed-tab:${body.tab}:${closedAt}:${expiresAt}`);
+  const closed = recentlyClosedTabs().find((tab) => tab.tab === body.tab);
+  if (!closed) return signed && expiresAt <= Date.now() ? problem(410, "This page's five-minute recovery period has ended.") : problem(404, "This page is no longer available to reopen.");
+  if (!signed || closedAt !== closed.closedAt || expiresAt !== closed.expiresAt) return problem(403, "Reload the agents page before reopening this page.");
+  if (expiresAt <= Date.now()) return problem(410, "This page's five-minute recovery period has ended.");
+  try {
+    const tab = await restoreClosedTab(body.tab);
+    return json({ ok: true, tab: tab.id });
+  } catch (error) {
+    if (error instanceof HarnessError && error.code === "stale_view") return problem(409, error.message);
+    return expiresAt <= Date.now() ? problem(410, "This page's five-minute recovery period has ended.") : problem(503, "Safari could not reopen this page. Try again.");
   }
 }
 
@@ -993,7 +1033,7 @@ button { min-height: 2.1rem; padding: 0.3rem 0.95rem; border: 1px solid var(--li
 button:hover { background: var(--hover); border-color: var(--muted); }
 button:active { background: var(--line); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--hold); outline-offset: 2px; }
-button:disabled { opacity: 0.55; cursor: default; }
+button:disabled, button[aria-disabled="true"] { opacity: 0.55; cursor: default; }
 button.primary { background: var(--text); border-color: var(--text); color: var(--bg); }
 button.primary:hover { background: var(--muted); border-color: var(--muted); }
 button.stop:hover, button.stop[data-armed="1"] { border-color: var(--stop); color: var(--stop); }
@@ -1006,6 +1046,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .tab { display: grid; }
 .tab .title { overflow: hidden; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .url, .where { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.recent > li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.recent .tab { flex: 1; min-width: min(14rem, 100%); }
 .call { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) auto; gap: 0.15rem 1rem; align-items: baseline; }
 .when, .took { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .when { grid-row: 1; grid-column: 1; }
@@ -1195,6 +1237,31 @@ const SCRIPT = String.raw`
     poll();
   }
 
+  async function reopenTab(row) {
+    if (row.busy || row.reopened) return;
+    row.busy = true;
+    row.button.setAttribute("aria-disabled", "true");
+    setText(row.button, "Reopening…");
+    row.button.setAttribute("aria-label", "Reopening " + (row.current.title || row.current.url));
+    try {
+      const res = await fetch("/agents/tabs/reopen", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tab: row.current.tab, secret: row.current.reopenSecret }),
+      });
+      const out = await res.json().catch(() => ({}));
+      row.reopened = res.ok && out.ok === true;
+      if (!row.reopened) say(out.error || "Safari could not reopen this page. Try again.");
+    } catch {
+      say("The harness is not answering.");
+    }
+    row.busy = false;
+    row.button.setAttribute("aria-disabled", String(row.reopened));
+    setText(row.button, row.reopened ? "Reopened" : "Reopen");
+    row.button.setAttribute("aria-label", (row.reopened ? "Reopened " : "Reopen ") + (row.current.title || row.current.url));
+    poll();
+  }
+
   function tabRow(t) {
     const li = make("li", "tab");
     li.append(make("span", "title", t.title || "Untitled"), make("span", "url", t.url));
@@ -1259,7 +1326,7 @@ const SCRIPT = String.raw`
     setText(status, SAY[a.status] || a.status);
     const over = a.status === "stopped" || a.status === "ended";
     setText(byId("who"), (a.inspectionOnly ? "Inspect only · " : "") + (a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : "")));
-    draw(byId("controls"), actionsOf(a).join(), () => buttons(a, { id: data.id }, ""));
+    draw(byId("controls"), a.id + "|" + actionsOf(a).join(), () => buttons(a, { id: data.id, secret: a.controlSecret }, ""));
     setText(byId("picture-note"), a.controls ? "Pictures save locally and may briefly select the tab." : "");
     draw(byId("tabs"), JSON.stringify(s.tabs), () => (!s.tabs ? [make("li", "empty", "Safari is not connected.")] : s.tabs.length ? s.tabs.map(tabRow) : [make("li", "empty", "None besides this page.")]));
     draw(byId("calls"), JSON.stringify(a.calls), () => (a.calls.length ? a.calls.map(callRow) : [make("li", "empty", "No calls yet.")]));
@@ -1350,8 +1417,50 @@ const SCRIPT = String.raw`
     if (next.length !== list.children.length || next.some((li, i) => list.children[i] !== li)) list.replaceChildren(...next);
   }
 
+  const recentRows = new Map();
+  const noRecentTabs = make("li", "empty", "No recently closed pages.");
+
+  function recentTabRow(tab, now) {
+    let row = recentRows.get(tab.tab);
+    if (!row) {
+      const button = make("button", "", "Reopen");
+      button.type = "button";
+      button.dataset.key = "closed-tab:" + tab.tab + ":reopen";
+      const title = make("span", "title");
+      const left = make("span", "url");
+      const page = make("div", "tab");
+      page.append(title, left);
+      row = { li: make("li"), title, left, button, current: tab, busy: false, reopened: false };
+      row.li.append(page, button);
+      button.addEventListener("click", () => reopenTab(row));
+      recentRows.set(tab.tab, row);
+    }
+    row.current = tab;
+    const title = tab.title || tab.url;
+    setText(row.title, title);
+    row.button.setAttribute("aria-label", (row.reopened ? "Reopened " : "Reopen ") + title);
+    const seconds = Math.max(1, Math.ceil((tab.expiresAt - now) / 1000));
+    setText(row.left, Math.floor(seconds / 60) + " min " + (seconds % 60) + " s left");
+    return row.li;
+  }
+
+  function renderRecentTabs(tabs, now) {
+    const list = byId("recent-tabs");
+    const focused = document.activeElement;
+    const focusIndex = Array.from(list.children).findIndex((li) => li.contains(focused));
+    const shown = new Set(tabs.map((tab) => tab.tab));
+    for (const key of recentRows.keys()) if (!shown.has(key)) recentRows.delete(key);
+    const next = tabs.length ? tabs.map((tab) => recentTabRow(tab, now)) : [noRecentTabs];
+    if (next.length === list.children.length && next.every((li, i) => list.children[i] === li)) return;
+    list.replaceChildren(...next);
+    if (focusIndex < 0) return;
+    const back = list.contains(focused) ? focused : next[Math.min(focusIndex, next.length - 1)].querySelector("button") || byId("recent-title");
+    back.focus();
+  }
+
   function renderAgents(o) {
     renderWindows(o.windows);
+    renderRecentTabs(o.recentTabs, o.now);
     const list = byId("agents");
     const shown = new Set(o.agents.map((a) => a.id || String(a.owner)));
     for (const key of rows.keys()) if (!shown.has(key)) rows.delete(key);
@@ -1464,6 +1573,7 @@ function agentsPage(): Response {
     `<header><h1>Agents in Safari</h1><p><a href="/memory">Memory</a> · <a href="/agents/history">History</a></p></header>`,
     `<p id="note" class="note" aria-live="polite"></p>`,
     `<section aria-labelledby="windows-title"><h2 id="windows-title">Windows</h2><ul id="windows" class="agents windows"></ul></section>`,
+    `<section aria-labelledby="recent-title"><h2 id="recent-title" tabindex="-1">Recently closed</h2><ul id="recent-tabs" class="rows recent"></ul></section>`,
     `<ul id="agents" class="agents"></ul>`,
   ].join(""));
 }
@@ -1491,6 +1601,7 @@ const ROUTES: Record<string, (req: Request, url: URL) => Response | Promise<Resp
   "GET /agents/history.json": (_req, url) => historyRows(url),
   "POST /agents/control": (req) => agentsControl(req),
   "POST /agents/windows/close": (req) => windowClose(req),
+  "POST /agents/tabs/reopen": (req) => tabReopen(req),
 };
 
 // The answer to one of this file's routes; undefined for any other request.

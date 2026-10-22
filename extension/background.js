@@ -1473,9 +1473,16 @@ async function handle(msg) {
     case "relay": {
       const [tabId, domOp, domArgs, timeoutMs, frameId] = args;
       if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);
-      const res = await relayOp(tabId, domOp, domArgs, timeoutMs, frameId);
+      const version = memoryRevision;
+      const reading = (domOp === "extract" || domOp === "snapshot") && !frameId && memoryPolicy.researchEnabled === true;
+      const readArgs = (domOp === "extract" || domOp === "snapshot") ? [{ ...(domArgs?.[0] ?? {}), memoryResearch: reading }, ...(domArgs?.slice(1) ?? [])] : domArgs;
+      const res = await relayOp(tabId, domOp, readArgs, timeoutMs, frameId);
       if (res && res.error) throw new Error(res.error);
-      return res && res.value;
+      const value = res && res.value;
+      if (!value || typeof value !== "object" || !Object.hasOwn(value, "memorySource")) return value;
+      const { memorySource, ...result } = value;
+      if (!reading || !await publicMemorySource(tabId, memorySource, version)) return result;
+      return { ...result, memorySource };
     }
     case "probe":
       return probeFrames(args[0], args[1], args[2]);
@@ -2392,6 +2399,21 @@ api.tabs.onRemoved.addListener((tabId) => {
 let memoryPolicy = { enabled: false, sites: [], excludedSites: [] };
 let memoryRevision = -1;
 let memoryTimer;
+
+async function publicMemorySource(tabId, source, version) {
+  if (!source || typeof source.url !== "string" || typeof source.body !== "string" || source.body.length < 40 || source.body.length > 24000) return false;
+  if (version !== memoryRevision || memoryPolicy.researchEnabled !== true) return false;
+  let url;
+  try { url = new URL(source.url); } catch { return false; }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || !host.includes(".") || host.includes(":") ||
+      /^(?:\d+\.){3}\d+$/.test(host) || /\.(?:local|localhost|internal|lan|home)$/.test(host) ||
+      memoryPolicy.excludedSites.includes(host) ||
+      /(?:^|\/)(?:login|signin|sign-in|account|accounts|inbox|messages|settings|billing|checkout|admin|dashboard)(?:\/|$)/i.test(url.pathname)) return false;
+  const tab = await api.tabs.get(tabId);
+  if (tab.incognito !== false || tab.status !== "complete" || tab.url !== source.url) return false;
+  return version === memoryRevision && memoryPolicy.researchEnabled === true && !memoryPolicy.excludedSites.includes(host);
+}
 
 async function memoryAllowed(tabId, expectedUrl) {
   if (!memoryPolicy.enabled) return false;

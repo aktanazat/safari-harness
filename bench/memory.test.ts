@@ -85,4 +85,36 @@ benchRows("browser memory in WebKit", [
     page: "memory.html",
     steps: [{ op: "memoryPage", args: ["https://example.com/before"], answer: { value: { skipped: true } } }],
   },
+  {
+    name: "research extract carries only safe text from that actual read",
+    page: "memory.html",
+    steps: [{ op: "extract", args: [{ memoryResearch: true }], answer: { value: {
+      memorySource: {
+        url,
+        title: "Aurora field report",
+        body: expect.stringMatching(/^(?=[\s\S]*oxygen emissions at 557\.7 nanometers)(?=[\s\S]*used a spectrometer)(?![\s\S]*SENTINEL)[\s\S]+$/),
+        partial: false,
+      },
+    } } }],
+  },
+  {
+    name: "a query holds only its successfully read safe lines and marks the source partial",
+    page: "memory.html",
+    steps: [{ op: "extract", args: [{ memoryResearch: true, query: "oxygen emissions" }], answer: { value: {
+      memorySource: { url, body: "The aurora survey found oxygen emissions at 557.7 nanometers.", partial: true },
+    } } }],
+  },
+  {
+    name: "a draft and its echoed preview never become a savable research source",
+    page: "memory.html",
+    steps: [
+      { op: "type", args: ["#draft", "UNSENT-RESEARCH-DRAFT-SENTINEL"] },
+      { op: "extract", args: [{ memoryResearch: true }], answer: { value: expect.not.objectContaining({ memorySource: expect.anything() }) } },
+    ],
+  },
+  {
+    name: "hidden-text snapshots never receive a research source",
+    page: "memory.html",
+    steps: [{ op: "snapshot", args: [{ memoryResearch: true, showHidden: true }], answer: { value: expect.not.objectContaining({ memorySource: expect.anything() }) } }],
+  },
 ]);

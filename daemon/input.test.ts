@@ -402,7 +402,7 @@ test.each([" Zoë 李𐐷\ne\u0301\tline two\r\n", ""])("the native input transp
   mkdirSync(join(notes, "scripts"));
   copyFileSync(join(import.meta.dir, "front.ts"), join(notes, "daemon", "front.ts"));
   writeFileSync(join(notes, "scripts", "input"), `#!${process.execPath}\nconst args = process.argv.slice(2);\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify({ args, text }));\n`, { mode: 0o700 });
-  writeFileSync(join(notes, "transport.ts"), 'import { input } from "./daemon/front.ts";\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify(await input(["type"], 1000, text)));\n');
+  writeFileSync(join(notes, "transport.ts"), 'import { input } from "./daemon/front.ts";\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify(await input(["type"], undefined, text)));\n');
   const proc = Bun.spawn([process.execPath, join(notes, "transport.ts")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   try {
     proc.stdin.write(text);

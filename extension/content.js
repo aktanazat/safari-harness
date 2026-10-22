@@ -4414,13 +4414,29 @@
     walk(root);
     const body = parts.join("").replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     if (!body) return { skipped: true };
-    return { url: location.href, title: document.title.slice(0, 500), body, visible: document.visibilityState === "visible" };
+    return { url: location.href, title: document.title.slice(0, 500), body, partial: length >= 24000 || visited > 5000, visible: document.visibilityState === "visible" };
+  }
+
+  async function memoryRead(read, opts = {}) {
+    const value = await read(opts);
+    if (!opts.memoryResearch || !value || value.error || value.loading || opts.showHidden || (opts.as && opts.as !== "text") || opts.strict_selector || value.frames?.length) return value;
+    const safe = memoryPage(value.url);
+    if (safe.skipped) return value;
+    const output = typeof value.text === "string" ? value.text : typeof value.snapshot === "string" ? value.snapshot : "";
+    const normalize = (text) => text.replace(/\s+/g, " ").trim();
+    const seen = normalize(output);
+    const lines = safe.body.split("\n").filter((line) => line.trim());
+    const kept = lines.filter((line) => seen.includes(normalize(line)));
+    const body = kept.join("\n");
+    if (body.length < 40) return value;
+    return { ...value, memorySource: { url: safe.url, title: safe.title, body,
+      partial: safe.partial || value.truncated === true || kept.length !== lines.length || !!(opts.selector || opts.root || opts.query || opts.diff || opts.interactive) } };
   }
 
   // ---------- message dispatch ----------
 
   const handlers = {
-    snapshot,
+    snapshot: (opts) => memoryRead(snapshot, opts),
     memoryPage,
     click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
     clickProbe,
@@ -4429,7 +4445,7 @@
     type: (ref, text, opts) => typeText(ref, text, opts),
     press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
-    extract,
+    extract: (opts) => memoryRead(extract, opts),
     data: pageData,
     tabInfo,
     eval: (src) => {
