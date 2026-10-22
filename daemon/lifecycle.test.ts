@@ -35,18 +35,18 @@ test("a refused automatic close remains tracked and closes on the next completio
   expect(await fixture("refusal")).toMatchObject({ receipt: { closed: 0, retained: 1, failed: 1 }, retry: { closed: 1, retained: 0, failed: 0 }, remaining: false });
 });
 
-test("cancellation closes disposable pages but preserves a form in progress", async () => {
-  expect(await fixture("cancel")).toEqual({ plain: false, form: true });
+test("cancellation closes its disposable pages even when a field is filled in", async () => {
+  expect(await fixture("cancel")).toEqual({ plain: false, form: false });
 });
 
 test("an automatic script-session close preserves a form in progress", async () => {
   expect(await fixture("session")).toEqual({ retainedForm: true });
 });
 
-test("a fresh daemon opens a closed result once for concurrent reads and preserves protected pages", async () => {
+test("a fresh daemon opens a closed result once for concurrent reads without reviving other completed pages", async () => {
   const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
   expect(await fixture("seed", directory)).toMatchObject({ savedText: false, savedCredential: false });
-  expect(await fixture("restart", directory)).toMatchObject({ opened: 1, results: [{ text: "fixture result" }, { text: "fixture result" }], protected: [true, true, true], savedText: false, savedCredential: false });
+  expect(await fixture("restart", directory)).toMatchObject({ opened: 1, results: [{ text: "fixture result" }, { text: "fixture result" }], protected: [false, false, false], savedText: false, savedCredential: false });
 });
 
 test("an action on a resumed page asks for a fresh look without submitting anything", async () => {
@@ -65,8 +65,8 @@ test("unused changed pages close after twenty minutes without closing forms, kep
   expect(await fixture("idle-cleanup")).toEqual({ plain: false, form: true, kept: true, front: true, recent: true });
 });
 
-test("an exited task releases its changed pages while preserving forms, kept pages, and the front page", async () => {
-  expect(await fixture("exit-cleanup")).toEqual({ plain: false, form: true, kept: true, front: true, recent: false });
+test("an exited task immediately closes its changed pages, filled fields, and front page while preserving a kept page", async () => {
+  expect(await fixture("exit-cleanup")).toEqual({ plain: false, form: false, kept: true, front: false, recent: false });
 });
 
 test.each(["cap", "stopped"])("%s is not authority to close another unfinished task's pages", async mode => {
@@ -95,4 +95,33 @@ test("a current exact-resource preparation closes only after release is admitted
 
 test.each(["stale-prepare", "foreign-prepare"])("%s cannot release resources after its preparation loses authority", async mode => {
   expect(await fixture(mode)).toMatchObject({ remaining: true, receipt: { invalidated: true, closed: 0 } });
+});
+
+test("five-minute recovery opens a single user page without reviving the ended task or exposing secret addresses", async () => {
+  expect(await fixture("recover")).toEqual({
+    listed: true,
+    unsafeListed: false,
+    samePage: true,
+    reopened: "https://fixture.example/recover",
+    userPageRemains: true,
+    userPageOwned: false,
+    listedAfterReopen: false,
+    ownerAccessRefused: true,
+  });
+});
+
+test("recovery expires at five minutes and removes its durable address", async () => {
+  expect(await fixture("recovery-expiry")).toEqual({ beforeExpiry: true, afterExpiry: false, refused: true, persisted: false });
+});
+
+test("recovery removes its durable records automatically after the last task window closes", async () => {
+  expect(await fixture("recovery-timer")).toEqual({ expiredAutomatically: true, residentPages: 0 });
+});
+
+test("recovery records redact verification codes and known secrets from titles before saving", async () => {
+  expect(await fixture("recovery-title")).toEqual({ savedCode: false, savedKnownSecret: false, listedCode: false, listedKnownSecret: false });
+});
+
+test.each(["recovery-user-first", "recovery-agent-first"])("%s lets only the first claimant reopen the page", async mode => {
+  expect(await fixture(mode)).toEqual({ pagesOpened: 1, firstSucceeded: true, secondSucceeded: false });
 });

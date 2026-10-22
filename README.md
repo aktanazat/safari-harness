@@ -188,17 +188,31 @@ tab IDs with a call-generation token; it never closes a page. `turn-end`
 then releases that preparation; an intervening owner call invalidates it,
 and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
-send nothing. When an owner process exits, the daemon releases its pages
-and empty windows by itself, including pages it clicked. Active calls and
-pending handoffs are not interrupted.
+send nothing. An admitted completed turn or the owning process's exit
+immediately closes disposable agent tabs and their empty windows. This
+includes clicked pages, filled fields, site-global tabs and an agent page
+in front. Pages explicitly kept for the user and pending handoffs stay
+protected; the user's own tabs are never part of this cleanup. Active
+calls finish before cleanup.
 
-ordinary unused pages close after 20 minutes. unfinished forms, pages deliberately left for you, and your front page stay open. the windows page lets you close them yourself.
+Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
+with the existing form, front-page, kept-page and handoff protections.
+Those form and front-page protections do not keep disposable agent tabs
+open after completion or owner exit.
 
-`/agents#windows` lists every durably registered window, even after its
-agent record has gone. Close window confirms before closing that window's
-tabs, including kept pages. A copied or unknown window page grants no
-close authority. Automatic cleanup keeps form and front-page protection
-after Safari restarts, and restores only proven ownership.
+For five minutes after a recoverable tab closes, its safe address is
+available through Recently closed on `/agents` or the original agent tab
+id. Then the recovery metadata expires, even with no harness window open.
+Recovery loads a fresh page with Safari's normal site session. It does
+not save form contents or exact in-page state, or promise to restore a
+draft. Website cookies, logins and session credentials are untouched.
+
+`/agents#windows` lists every durably registered window that remains,
+including windows holding pages left for the user after a task ends.
+Close window confirms before closing that window's tabs, including kept
+pages. A copied or unknown window page grants no close authority.
+Restarts restore only proven ownership and preserve the protections
+appropriate to idle cleanup or completed-task cleanup.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),

@@ -191,8 +191,10 @@ own folder, `pwd`. Also `Buffer`, `sleep(ms)`, `display(...)` (same as
 `console.log`), the timers, `URL`, `URLSearchParams`, `TextEncoder`,
 `TextDecoder`, `AbortController`, `Blob`, `Response`, `Headers`,
 `FormData`, `atob`, `btoa`, `crypto`, `performance` and `structuredClone`.
-There is no `process`. Of `Bun` there is only `Bun.write(path, data)`,
-which writes a file, making its folders, and returns the bytes written.
+There is no `process`. Of `Bun` there are only `Bun.write(path, data)`,
+which writes a file, making its folders, and returns the bytes written,
+and `Bun.file(path)`, whose `text()`, `json()` and `bytes()` read one back
+and whose `exists()` says whether it is there.
 
 ## When a run goes wrong
 

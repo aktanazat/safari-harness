@@ -1049,9 +1049,10 @@ export class ReplSession {
       fs: rootedFs(this.cwd),
       path: rootedPath(this.cwd),
       // Bun.write, as scripts reach for it to save a page's text: 5 of the 8
-      // "Bun is not defined" in the two weeks of logs before 10-19. Its path
-      // starts in the session's folder, as fs's do, and its folders are made
-      // as Bun's are; the rest of Bun is not here.
+      // "Bun is not defined" in the two weeks of logs before 10-19. Bun.file
+      // reads back what an earlier run saved (10-22). Their paths start in
+      // the session's folder, as fs's do, and write makes folders as Bun's
+      // does; the rest of Bun is not here.
       Bun: {
         write: async (file: string, data: string | Blob | ArrayBuffer | Uint8Array | Response) => {
           const to = nodePath.resolve(this.cwd, String(file));
@@ -1059,6 +1060,16 @@ export class ReplSession {
           await fsp.mkdir(nodePath.dirname(to), { recursive: true });
           await fsp.writeFile(to, bytes);
           return bytes.byteLength;
+        },
+        file: (file: string) => {
+          const at = nodePath.resolve(this.cwd, String(file));
+          return {
+            name: at,
+            text: () => fsp.readFile(at, "utf8"),
+            json: async () => JSON.parse(await fsp.readFile(at, "utf8")),
+            bytes: async () => new Uint8Array(await fsp.readFile(at)),
+            exists: () => fsp.access(at).then(() => true, () => false),
+          };
         },
       },
       Buffer,
