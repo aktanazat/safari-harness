@@ -445,6 +445,10 @@ With research saving enabled, an agent selects useful public sources through
 `save_source`, using short-lived receipts from actual safe page reads.
 Receipts survive tab closure and retain the original text, URL, read time
 and partial-read status. Arbitrary agent-supplied source text is not accepted.
+Research reads must match anonymous public HTML at an HTTPS URL without a
+query string. Signed links and query-dependent pages are skipped rather than
+replaying an access grant. Receipts are short-lived bearer capabilities;
+local process ids limit cleanup and accidental sharing, not authorization.
 Private/project research is refused without trusted permission context.
 Research is labelled separately from personal browsing and cannot overwrite
 it simply because both use the same URL.

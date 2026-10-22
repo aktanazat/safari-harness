@@ -104,7 +104,7 @@ export async function researchRead<T extends object>(tab: number, read: () => Pr
 export async function saveResearchSource(args: Record<string, unknown>): Promise<unknown> {
   if (Object.keys(args).some((key) => key !== "receipt" && key !== "reason")) throw new Error("save_source accepts only a read receipt and a short source-use reason; private/project scope is unavailable");
   const owner = currentOwner();
-  if (owner === undefined) throw new Error("this caller has no trustworthy process ownership; local MCP or CLI caller context is required");
+  if (owner === undefined) throw new Error("this request has no live process owner; use local MCP or CLI caller context");
   const page = browserMemory.saveResearch(text(args.receipt, "receipt"), owner, text(args.reason, "reason"));
   return { page, trust: BROWSER_MEMORY_TRUST };
 }

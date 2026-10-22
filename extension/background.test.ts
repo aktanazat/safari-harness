@@ -2052,9 +2052,9 @@ test("research reads do not enable personal capture and strip candidates when in
   expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
 });
 
-test.each(["private", "excluded", "account"] as const)("research rejects a %s source before it can reach daemon receipts", async (kind) => {
+test.each(["private", "excluded", "account", "signed"] as const)("research rejects a %s source before it can reach daemon receipts", async (kind) => {
   const b = await start();
-  const tab = b.open(kind === "account" ? "https://example.com/account" : "https://example.com/research");
+  const tab = b.open(kind === "account" ? "https://example.com/account" : kind === "signed" ? "https://example.com/research?X-Amz-Signature=fixture-grant" : "https://example.com/research");
   tab.incognito = kind === "private";
   const memorySource = { url: tab.doc.url, title: "Research", body: "A source that must not become a saved public research observation.", partial: false };
   tab.doc.does = () => ({ url: tab.doc.url, text: memorySource.body, memorySource });

@@ -3,8 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// A fresh process gives the real singleton an isolated home, without replacing
-// the store or the read dispatcher. Only Safari's wire boundary is a fixture.
 const SCRIPT = `
 import { mkdirSync, writeFileSync, rmSync, readFileSync, lstatSync } from "node:fs";
 import { join } from "node:path";

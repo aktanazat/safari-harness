@@ -405,6 +405,16 @@ test("research permission is independent of ambient browsing and receipts dedupl
   expect(memory.eligible(input.url)).toBe(false);
 });
 
+test("research refuses address-carried access grants before retaining or saving text", () => {
+  const directory = folder();
+  const memory = store({ directory });
+  memory.configure({ researchEnabled: true });
+  const source = { ...input, url: `${input.url}?X-Amz-Signature=fixture-grant`, body: "Private report text reached through an address-carried access grant.", partial: false };
+  expect(memory.holdResearch(source, 123)).toBeNull();
+  expect(memory.list()).toEqual({ pages: [], total: 0 });
+  expect(bytes(directory).toString("utf8")).not.toContain(source.body);
+});
+
 test("research saves cannot replace viewed text at the same URL and ambient site removal retains research", async () => {
   const memory = store();
   memory.configure({ enabled: true, researchEnabled: true, sites: ["example.com"] });

@@ -2381,9 +2381,9 @@ async function publicMemorySource(tabId, source, version) {
   let url;
   try { url = new URL(source.url); } catch { return false; }
   const host = url.hostname.toLowerCase();
-  if (url.protocol !== "https:" || url.username || url.password || url.port || !host.includes(".") || host.includes(":") ||
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || !host.includes(".") || host.includes(":") ||
       /^(?:\d+\.){3}\d+$/.test(host) || /\.(?:local|localhost|internal|lan|home)$/.test(host) ||
-      memoryPolicy.excludedSites.includes(host) || /[?&](?:token|auth|key|code|session|signature|password|secret)=/i.test(url.href) ||
+      memoryPolicy.excludedSites.includes(host) ||
       /(?:^|\/)(?:login|signin|sign-in|account|accounts|inbox|messages|settings|billing|checkout|admin|dashboard)(?:\/|$)/i.test(url.pathname)) return false;
   const tab = await api.tabs.get(tabId);
   if (tab.incognito !== false || tab.status !== "complete" || tab.url !== source.url) return false;

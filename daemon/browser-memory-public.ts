@@ -13,7 +13,7 @@ const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"'
 
 export async function verifyPublicMemorySource(source: { url: string; title: string; body: string }): Promise<boolean> {
   const url = URL.parse(source.url);
-  if (!url || url.protocol !== "https:" || url.username || url.password || url.port || isIP(url.hostname) || !url.hostname.includes(".") || /\.(?:local|localhost|internal|lan|home)$/.test(url.hostname) || source.body.length > 24000) return false;
+  if (!url || url.protocol !== "https:" || url.username || url.password || url.port || url.search || isIP(url.hostname) || !url.hostname.includes(".") || /\.(?:local|localhost|internal|lan|home)$/.test(url.hostname) || source.body.length > 24000) return false;
   try {
     const until = Date.now() + 5000;
     const resolver = new Resolver({ timeout: 2000, tries: 1 });

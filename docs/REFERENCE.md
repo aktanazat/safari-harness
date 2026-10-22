@@ -773,10 +773,16 @@ text, URL and read time, including whether the read was partial. It remains
 usable after its tab closes, but not after its caller ends or it expires.
 The agent supplies only its reason, not replacement source text or scope.
 Save sources actually used or useful to the task, not every opened page.
+Receipts are short-lived bearer capabilities; do not share their ids. Process
+ownership limits their lifetime and accidental cross-caller use. Local RPC
+process ids are not authenticated user or project authority.
 
-Only public research is eligible. Private account pages, drafts, credentials,
-access walls and unknown privacy contexts cannot become research memory.
-Project-private saving is not supported without trusted project authority.
+Eligible reads use HTTPS URLs without query strings, and their source text
+must independently match anonymous public HTML. Signed links and
+query-dependent public pages are skipped rather than replaying an address's
+access grant. Private account pages, drafts, credentials and access walls are
+excluded. Project-private saving is not supported without trusted project
+authority.
 Saved research is marked `agent_research`, not the user's browsing, beliefs,
 decisions or actions. Its original source text stays separate from summaries.
 

@@ -427,7 +427,7 @@ export class BrowserMemory {
     const parsed = URL.parse(url);
     if (!parsed || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || !normalized.site.includes(".") || normalized.site.includes(":") ||
         /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(normalized.site)) return false;
-    return !/[?&](?:token|auth|key|code|session|signature|password|secret)=/i.test(url);
+    return parsed.search === "";
   }
 
   researchGeneration(): number {
