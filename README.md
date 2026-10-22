@@ -375,6 +375,9 @@ and use the same screenshot protection as CLI, MCP and REPL captures.
 The user can choose Inspect only for a task: reads of its current pages
 continue, while navigation, input, arbitrary scripts and session requests
 refuse until the user allows actions again.
+Automatic recovery cannot reopen a closed page or reload an unresponsive page
+for an inspect-only task. Dropdown listing is refused too, because a custom
+dropdown may need a click to reveal its choices.
 A failed or uncertain action is not permission to retry it blindly.
 
 Get attachment ids from history/search messages' `files` array, then use
@@ -405,6 +408,9 @@ structure on explicitly enabled development hosts; `site_actions` adds
 optional experimental WebMCP compatibility for cooperating sites.
 React and site-action startup hooks are off by default and require explicit
 host-wide consent because Safari match patterns cover every port.
+Permission changes from different tabs are applied in order without losing
+another tab's settings. React component ids are numbers: use the returned id
+with `safari react --do inspect --tab N --id <number>` to select that component.
 `video` observes selected decoded moments with protected image receipts and
 guarded playback restoration. See `safari guide <tool>` for each contract.
 
@@ -412,6 +418,10 @@ guarded playback restoration. See `safari guide <tool>` for each contract.
 text, HTML and TSV representations. Targets must be visible and uncovered.
 Paste restores the old clipboard only if the user has not copied something
 else. It refuses secret fields and reports delivery, not editor acceptance.
+Safari's [post-drag pointer-event defect](https://bugs.webkit.org/show_bug.cgi?id=202287)
+can omit the next `pointerdown` after an HTML drag-and-drop. Native input
+does not send an extra click or invent a successful page result to hide it.
+
 
 Routines support durable pause/resume, cross-process overlap prevention and
 `--session <id>` continuation of saved Safari work. They never silently

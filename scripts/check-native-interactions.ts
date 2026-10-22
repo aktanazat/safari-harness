@@ -28,6 +28,7 @@ try {
   assert.equal(dragged.error, undefined, dragged.error);
   assert.deepEqual(await evaluate("({dropped:document.body.dataset.dropped,drag:document.body.dataset.dragTrusted,drop:document.body.dataset.dropTrusted,parent:document.querySelector('#card').parentElement.id})"), { dropped: "true", drag: "true", drop: "true", parent: "drop" });
   checked("the REPL sends a trusted native drag that moves an HTML draggable into its drop target");
+  await rpc("history", { tab, do: "reload" });
 
   await rpc("snapshot", { tab });
   const points = await evaluate<{ x: number; y: number; targetX: number; targetY: number }>("(()=>{const r=document.querySelector('#drawing').getBoundingClientRect();return {x:r.left+30,y:r.top+30,targetX:r.left+400,targetY:r.top+60}})()");

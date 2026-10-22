@@ -407,7 +407,6 @@ const INSPECTION_READS = new Set("tabs info snapshot extract shot report data wa
 function inspectionAllowed(tool: string, args: Record<string, unknown>): boolean {
   if (INSPECTION_READS.has(tool)) return true;
   if (tool === "eval") return scope.getStore()?.trustedInspection === true && args.page !== true;
-  if (tool === "select") return args.option === undefined;
   if (tool === "dialog") return args.do === undefined || args.do === "read";
   if (tool === "react") return args.do === undefined || args.do === "status" || args.do === "inspect";
   if (tool === "video") return args.do === undefined || args.do === "inspect";

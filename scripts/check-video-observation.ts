@@ -43,16 +43,21 @@ try {
     return new Response(request.method === "HEAD" ? null : media.slice(start, end + 1), { status: 206, headers });
   } });
   tab = (await call<{ id: number }>("open", { url: `http://127.0.0.1:${server.port}/video-observation.html`, background: true, new: true })).id;
-  try {
-    await call("wait", { tab, any: ["video decoded", "video failed"], ms: 6000 });
-    const state = await call<{ result: { state: string; readyState: number; networkState: number; error: number | null } }>("eval", { tab, expression: "({state:document.querySelector('#state').textContent,readyState:document.querySelector('#movie').readyState,networkState:document.querySelector('#movie').networkState,error:document.querySelector('#movie').error?.code??null})" });
-    assert.equal(state.result.state, "video decoded", JSON.stringify(state.result));
-    assert.ok(state.result.readyState >= 2, "the checked-in media has no decoded frame");
-    assert.equal(state.result.error, null);
-  } catch (error) {
-    const diagnostic = await call("eval", { tab, expression: "({state:document.querySelector('#state')?.textContent,readyState:document.querySelector('#movie')?.readyState,networkState:document.querySelector('#movie')?.networkState,error:document.querySelector('#movie')?.error?.code??null})" }).catch((inspectionError: unknown) => inspectionError instanceof Error ? inspectionError.message : String(inspectionError));
-    throw new Error(`checked-in video did not decode: ${JSON.stringify(diagnostic)}`, { cause: error });
-  }
+  await inFront(tab, {
+    tabs: async () => (await call<{ tabs: { id: number; windowId?: number; active?: boolean; front?: boolean }[] }>("tabs")).tabs,
+    activate: (id) => call("activate", { tab: id }),
+  }, async () => {
+    try {
+      await call("wait", { tab, any: ["video decoded", "video failed"], ms: 6000 });
+      const state = await call<{ result: { state: string; readyState: number; networkState: number; error: number | null } }>("eval", { tab, expression: "({state:document.querySelector('#state').textContent,readyState:document.querySelector('#movie').readyState,networkState:document.querySelector('#movie').networkState,error:document.querySelector('#movie').error?.code??null})" });
+      assert.equal(state.result.state, "video decoded", JSON.stringify(state.result));
+      assert.ok(state.result.readyState >= 2, "the checked-in media has no decoded frame");
+      assert.equal(state.result.error, null);
+    } catch (error) {
+      const diagnostic = await call("eval", { tab, expression: "({state:document.querySelector('#state')?.textContent,readyState:document.querySelector('#movie')?.readyState,networkState:document.querySelector('#movie')?.networkState,error:document.querySelector('#movie')?.error?.code??null})" }).catch((inspectionError: unknown) => inspectionError instanceof Error ? inspectionError.message : String(inspectionError));
+      throw new Error(`checked-in video did not decode: ${JSON.stringify(diagnostic)}`, { cause: error });
+    }
+  });
   const before = await call<{ status: string; source: VideoSource }>("video", { tab, ref: "#movie", do: "inspect" });
   assert.equal(before.status, "inspected");
   assert.equal(before.source.width, 160);

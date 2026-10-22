@@ -2276,7 +2276,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   react: {
     desc: "Inspect real React components in a development tab you opened. Off by default. Enable explicitly, then reload; the startup hook covers the enabled scheme and hostname on all ports. Values stay hidden unless requested. No performance score.",
-    params: { tab: OWN_TAB, do: { type: "string", enum: ["status", "enable", "disable", "inspect"] }, startupScope: { type: "string", enum: ["host"], description: "required for enable: explicit consent to activate the startup hook on this scheme and hostname on every port" }, name: { type: "string", description: "component name filter" }, id: { type: "string", description: "component id" }, includeValues: { type: "boolean", description: "include bounded non-secret state and props; development sites only" }, maxComponents: { type: "number", description: "maximum components returned" }, maxFibers: { type: "number", description: "maximum fibers inspected" } },
+    params: { tab: OWN_TAB, do: { type: "string", enum: ["status", "enable", "disable", "inspect"] }, startupScope: { type: "string", enum: ["host"], description: "required for enable: explicit consent to activate the startup hook on this scheme and hostname on every port" }, name: { type: "string", description: "component name filter" }, id: { type: "number", description: "numeric component id returned by inspection" }, includeValues: { type: "boolean", description: "include bounded non-secret state and props; development sites only" }, maxComponents: { type: "number", description: "maximum components returned" }, maxFibers: { type: "number", description: "maximum fibers inspected" } },
     required: ["tab"],
     hidden: true,
     run: (a) => developmentTool("react", a),
@@ -3121,7 +3121,7 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
   let opening = recovery?.opened;
   if (!opening) {
     opening = (async () => {
-      const t = await openIn(undefined, await spaceWindow(), closed.url!, true, true);
+      const t = await missionCall("open", { url: closed.url }, async () => openIn(undefined, await spaceWindow(), closed.url!, true, true));
       own(t.id, agent);
       const held = harnessTabs.get(t.id);
       if (held) held.url = t.url ?? closed.url;
@@ -3181,7 +3181,7 @@ async function revived(tool: string, args: Record<string, unknown>): Promise<unk
     if (!Object.hasOwn(ASKED_AGAIN, tool) || !mine || mine.acted || !(e instanceof Error) || !HELD.test(e.message)) throw e;
     const url = (await listTabs()).find((t) => t.id === tab)?.url;
     if (!url?.startsWith("http")) throw e;
-    await navigate(tab, url);
+    await missionCall("goto", { tab, url }, () => navigate(tab, url));
     return beside(await TOOLS[tool].run(args), "note", "the page did not answer, so it was loaded again first");
   }
 }
