@@ -1,4 +1,5 @@
 const UPGRADE_STORAGE = "agent-upgrade-origins";
+let upgradeConfigurationTail = Promise.resolve();
 
 function upgradeOrigin(value) {
   const url = new URL(value);
@@ -36,40 +37,48 @@ async function upgradeContext(tabId) {
 
 async function upgradeConfigure(tabId, feature, enabled) {
   if (!["react", "siteActions"].includes(feature) || typeof enabled !== "boolean") throw new Error("choose react or siteActions and enabled true or false");
-  const context = await upgradeContext(tabId);
-  const url = upgradeOrigin(context.origin);
-  const settings = await upgradeSettings();
-  const scope = `${url.protocol}//${url.hostname}`;
-  const bytes = new TextEncoder().encode(`${scope}:${feature}`);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const id = `sh-${feature}-${Array.from(new Uint8Array(digest).subarray(0, 12), (value) => value.toString(16).padStart(2, "0")).join("")}`;
-  const next = { ...settings, [url.origin]: { ...settings[url.origin], [feature]: enabled } };
-  if (Object.keys(next).length > 128) throw new Error("too many development origins are enabled; disable one first");
-  const registered = await api.scripting.getRegisteredContentScripts({ ids: [id] });
-  const wanted = Object.entries(next).some(([origin, policy]) => {
-    const candidate = new URL(origin);
-    return `${candidate.protocol}//${candidate.hostname}` === scope && policy[feature] === true;
-  });
-  if (wanted && !registered.length) {
-    const files = feature === "react" ? ["vendor/react-hook-18.3.1.js", "app-checks.js", "app-checks-start.js"] : ["site-actions.js", "site-actions-start.js"];
-    await api.scripting.registerContentScripts([{ id, matches: [`${scope}/*`], js: files, runAt: "document_start", allFrames: false, world: "MAIN", persistAcrossSessions: true }]);
-  } else if (!wanted && registered.length) {
-    await api.scripting.unregisterContentScripts({ ids: [id] });
-  }
+  const previous = upgradeConfigurationTail;
+  const turn = Promise.withResolvers();
+  upgradeConfigurationTail = turn.promise;
+  await previous;
   try {
-    await api.storage.local.set({ [UPGRADE_STORAGE]: next });
-  } catch (error) {
-    if (wanted && !registered.length) await api.scripting.unregisterContentScripts({ ids: [id] });
-    throw error;
+    const context = await upgradeContext(tabId);
+    const url = upgradeOrigin(context.origin);
+    const settings = await upgradeSettings();
+    const scope = `${url.protocol}//${url.hostname}`;
+    const bytes = new TextEncoder().encode(`${scope}:${feature}`);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const id = `sh-${feature}-${Array.from(new Uint8Array(digest).subarray(0, 12), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+    const next = { ...settings, [url.origin]: { ...settings[url.origin], [feature]: enabled } };
+    if (Object.keys(next).length > 128) throw new Error("too many development origins are enabled; disable one first");
+    const registered = await api.scripting.getRegisteredContentScripts({ ids: [id] });
+    const wanted = Object.entries(next).some(([origin, policy]) => {
+      const candidate = new URL(origin);
+      return `${candidate.protocol}//${candidate.hostname}` === scope && policy[feature] === true;
+    });
+    if (wanted && !registered.length) {
+      const files = feature === "react" ? ["vendor/react-hook-18.3.1.js", "app-checks.js", "app-checks-start.js"] : ["site-actions.js", "site-actions-start.js"];
+      await api.scripting.registerContentScripts([{ id, matches: [`${scope}/*`], js: files, runAt: "document_start", allFrames: false, world: "MAIN", persistAcrossSessions: true }]);
+    } else if (!wanted && registered.length) {
+      await api.scripting.unregisterContentScripts({ ids: [id] });
+    }
+    try {
+      await api.storage.local.set({ [UPGRADE_STORAGE]: next });
+    } catch (error) {
+      if (wanted && !registered.length) await api.scripting.unregisterContentScripts({ ids: [id] });
+      throw error;
+    }
+    if (!enabled) {
+      await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func: (which) => {
+        if (which === "react") return window.__safariHarnessAppChecks?.react.disable();
+        window.__safariHarnessSiteActions?.dispose();
+        return null;
+      }, args: [feature] });
+    }
+    return { origin: context.origin, feature, enabled, reloadRequired: true, injectionScope: `${scope} (all ports)`, note: "only enable this for a development site you want to inspect; reload the page to apply or fully remove its startup hook" };
+  } finally {
+    turn.resolve();
   }
-  if (!enabled) {
-    await api.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func: (which) => {
-      if (which === "react") return window.__safariHarnessAppChecks?.react.disable();
-      window.__safariHarnessSiteActions?.dispose();
-      return null;
-    }, args: [feature] });
-  }
-  return { origin: context.origin, feature, enabled, reloadRequired: true, injectionScope: `${scope} (all ports)`, note: "only enable this for a development site you want to inspect; reload the page to apply or fully remove its startup hook" };
 }
 
 async function upgradeAudit(tabId, options) {

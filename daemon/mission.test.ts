@@ -1058,6 +1058,63 @@ test("inspect-only is checked again at nested batch boundaries and cannot be dis
   expect(s.effects.length).toBe(before);
 });
 
+test("inspect-only refuses dropdown listing because a custom combobox can dispatch input", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://inspect-dropdown.example/");
+  await press(pageOf(tab), "inspect_on");
+  await expect(call(a.pid, "select", { tab, ref: "#choices" })).rejects.toMatchObject({ code: "blocked", effect: "none" });
+});
+
+test.each([true, false])("closed-tab recovery respects inspect-only=%s without losing ordinary recovery", async (restricted) => {
+  const a = agent();
+  const url = `https://inspect-recovery.example/${restricted}`;
+  const tab = await open(a.pid, url);
+  if (restricted) await press(pageOf(tab), "inspect_on");
+  await endTurn(a.pid);
+  expect(s.tabs.has(tab)).toBe(false);
+  const before = [...s.tabs.values()];
+  if (restricted) {
+    await expect(call(a.pid, "extract", { tab })).rejects.toMatchObject({ code: "blocked", effect: "none" });
+    expect([...s.tabs.values()]).toEqual(before);
+  } else {
+    expect(await call(a.pid, "extract", { tab })).toMatchObject({ text: "Continue to the next page", note: expect.stringContaining("open again") });
+    expect([...s.tabs.values()].filter((page) => page.url === url)).toHaveLength(1);
+  }
+});
+
+test.each([true, false])("unresponsive-page recovery respects inspect-only=%s without losing ordinary recovery", async (restricted) => {
+  const a = agent();
+  const tab = await open(a.pid, `https://inspect-reload.example/${restricted}`);
+  if (restricted) await press(pageOf(tab), "inspect_on");
+  const relay = s.ops.relay;
+  const navigate = s.ops["tabs.navigate"];
+  let reads = 0;
+  let navigations = 0;
+  s.ops.relay = (args) => {
+    if (args[0] === tab && args[1] === "extract" && reads++ === 0) throw new Error("the page did not answer; reload it with goto and retry");
+    return relay!(args);
+  };
+  s.ops["tabs.navigate"] = ([id]) => {
+    navigations++;
+    return s.tabs.get(Number(id));
+  };
+  try {
+    if (restricted) {
+      await expect(call(a.pid, "extract", { tab })).rejects.toMatchObject({ code: "blocked", effect: "none" });
+      expect(navigations).toBe(0);
+      expect(reads).toBe(1);
+    } else {
+      expect(await call(a.pid, "extract", { tab })).toMatchObject({ text: "Continue to the next page", note: expect.stringContaining("loaded again") });
+      expect(navigations).toBe(1);
+      expect(reads).toBe(2);
+    }
+  } finally {
+    s.ops.relay = relay!;
+    if (navigate) s.ops["tabs.navigate"] = navigate;
+    else delete s.ops["tabs.navigate"];
+  }
+});
+
 test("an admitted site action cannot use an earlier permission after the user restricts the task", async () => {
   const a = agent();
   const tab = await open(a.pid, "https://inspect-admission.example/");

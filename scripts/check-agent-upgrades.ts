@@ -15,13 +15,18 @@ async function call<T>(tool: string, args: Record<string, unknown> = {}): Promis
 type Update = { kind: "full" | "delta" | "unchanged"; revision: string; baseRevision: string | null; edits?: { start: number; deleteCount: number; lines: string[] }[] };
 type Snapshot = { snapshot: string; update: Update };
 type Audit = { ok: boolean; complete: boolean; audited: { result: { violations: { id: string }[] } }[]; skipped: unknown[] };
-type Inspection = { ok: boolean; status: string; components: { name: string; hooks: { slots: { value: unknown }[] } }[] };
+type Inspection = { ok: boolean; status: string; components: { id: number; name: string; hooks: { slots: { value: unknown }[] } }[] };
 const fixtures = join(import.meta.dir, "..", "bench", "fixtures");
 const files = new Map<string, Uint8Array>();
 for (const name of ["app-checks-react.html", "site-actions-cooperator.html", "app-checks-vendor/react-18.3.1.development.js", "app-checks-vendor/react-dom-18.3.1.development.js"]) files.set(`/${name}`, await readFile(join(fixtures, name)));
 const html = '<!doctype html><html lang="en"><head><title>Safari upgrade check</title><style>body{font:18px system-ui;padding:30px}button{padding:15px}#cover{position:fixed;inset:0;background:#fff9;z-index:100;display:grid;place-items:center}#visual{width:180px;height:80px;background:navy;color:white}</style></head><body><button id="target" onclick="document.body.dataset.clicks=String(Number(document.body.dataset.clicks||0)+1)">approve invoice</button><div id="cover">please review this dialog first</div><div id="visual">protected picture</div><input id="missing-label" value="private-form-fixture"><main>' + Array.from({ length: 160 }, (_, index) => `<p id="row-${index}">item ${index}: awaiting review</p>`).join("") + '</main></body></html>';
-const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
   const path = new URL(request.url).pathname;
+  if (path === "/rpc" && request.method === "POST") {
+    const { tool, args } = await request.json() as { tool: string; args: Record<string, unknown> };
+    try { return Response.json({ ok: true, value: await call(tool, args) }); }
+    catch (error) { return Response.json({ ok: false, error: String(error) }); }
+  }
   const file = files.get(path);
   if (file) return new Response(file, { headers: { "content-type": path.endsWith(".js") ? "text/javascript" : "text/html" } });
   return new Response(html, { headers: { "content-type": "text/html" } });
@@ -39,11 +44,13 @@ function checked(scenario: string, measurement: Record<string, unknown> = {}) {
 try {
   tab = (await call<{ id: number }>("open", { url: origin, background: true, new: true })).id;
   for (let run = 0; run < 3; run++) {
+    await call("snapshot", { tab });
     await assert.rejects(call("click", { tab, ref: "#target" }), /covered|visible/);
     assert.equal((await call<{ result: number }>("eval", { tab, expression: "Number(document.body.dataset.clicks||0)" })).result, 0);
   }
   checked("covered buttons cannot be clicked", { attempts: 3, unintendedClicks: 0 });
   await call("eval", { tab, expression: "document.querySelector('#cover').remove()" });
+  await call("snapshot", { tab });
   await call("click", { tab, ref: "#target" });
   assert.equal((await call<{ result: number }>("eval", { tab, expression: "Number(document.body.dataset.clicks)" })).result, 1);
   checked("an uncovered button still works");
@@ -102,7 +109,8 @@ try {
   checked("identical protected pictures return one image and its original receipt", { captureRequests: 3, returnedImages: captures.length, evidenceBundles: 1 });
 
   await call("goto", { tab, url: `${origin}/app-checks-react.html` });
-  assert.equal((await call<{ result: string }>("eval", { tab, page: true, expression: "typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__" })).result, "undefined");
+  assert.equal((await call<{ enabled: boolean }>("react", { tab, do: "status" })).enabled, false);
+  await assert.rejects(call("react", { tab, do: "inspect" }), /enable react inspection/);
   await assert.rejects(call("react", { tab, do: "enable" }), /startupScope/);
   await call("react", { tab, do: "enable", startupScope: "host" });
   reactEnabled = true;
@@ -115,10 +123,22 @@ try {
   const after = await call<Inspection>("react", { tab, do: "inspect", name: "Counter", includeValues: true });
   assert.equal(after.components[0].hooks.slots[0].value, 2);
   assert.ok(!JSON.stringify(after).includes("private-react-token-never-output"));
+  const selected = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "safari.ts"), "react", "--do=inspect", `--tab=${tab}`, `--id=${after.components[0].id}`, "--includeValues", "--json"], {
+    env: { ...process.env, SAFARI_HARNESS_HTTP: origin }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  });
+  const [selectedOut, selectedError, selectedCode] = await Promise.all([new Response(selected.stdout).text(), new Response(selected.stderr).text(), selected.exited]);
+  assert.equal(selectedCode, 0, selectedError);
+  const selectedComponent = JSON.parse(selectedOut) as Inspection;
+  assert.equal(selectedComponent.components.length, 1);
+  assert.equal(selectedComponent.components[0].id, after.components[0].id);
+  assert.equal(selectedComponent.components[0].name, "Counter");
+  assert.equal(selectedComponent.components[0].hooks.slots[0].value, 2);
+  checked("the command line selects the real updated component by its returned id");
   await call("react", { tab, do: "disable" });
   reactEnabled = false;
   await call("history", { tab, do: "reload" });
-  assert.equal((await call<{ result: string }>("eval", { tab, page: true, expression: "typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__" })).result, "undefined");
+  assert.equal((await call<{ enabled: boolean }>("react", { tab, do: "status" })).enabled, false);
+  await assert.rejects(call("react", { tab, do: "inspect" }), /enable react inspection/);
   checked("React inspection reads actual updated state and fully revokes on reload");
 
   await call("goto", { tab, url: `${origin}/site-actions-cooperator.html` });
