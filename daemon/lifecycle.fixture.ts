@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { files } from "./groups.ts";
+import { tracksOwner } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { loadSpaces } from "./spaces.ts";
 import { ReplSession } from "./repl.ts";
@@ -67,7 +68,42 @@ const invoke = (tool: string, args: Record<string, unknown> = {}) => runAs(owner
 const open = async (path: string, more: Record<string, unknown> = {}) => (await invoke("open", { url: `https://fixture.example/${path}`, background: true, ...more })) as Tab;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode === "fresh-post" || mode === "foreign") {
+if (mode === "live-seed") {
+  loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
+  const plain = await open("live-result");
+  const form = await open("live-form");
+  await invoke("type", { tab: form.id, ref: "input", text: "unsent fixture text" });
+  const front = await open("live-front");
+  tabs.get(front.id)!.front = true;
+  const kept = await open("live-kept", { keep: true });
+  const handoff = await open("live-handoff");
+  const recent = await open("live-recent");
+  const personal = ++next;
+  tabs.set(personal, { id: personal, url: "https://personal.example/", windowId: 1 });
+  // A pending handoff is durable even though its wait belonged to the old daemon.
+  const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { tabs: Record<string, { handoff?: true }> };
+  checkpoint.tabs[handoff.id].handoff = true;
+  writeFileSync(state, JSON.stringify(checkpoint));
+  writeFileSync(browser, JSON.stringify({ tabs: [...tabs.values()], plain: plain.id, form: form.id, front: front.id, kept: kept.id, handoff: handoff.id, recent: recent.id, personal }));
+  console.log(JSON.stringify({ seeded: true }));
+} else if (mode === "live-restart" || mode === "live-restart-idle" || mode === "live-restart-completed") {
+  const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; plain: number; form: number; front: number; kept: number; handoff: number; recent: number; personal: number };
+  for (const tab of saved.tabs) tabs.set(tab.id, tab);
+  if (mode === "live-restart-idle") {
+    const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { tabs: Record<string, { used: number }> };
+    for (const id of [saved.plain, saved.form, saved.front, saved.handoff]) checkpoint.tabs[id].used = Date.now() - 21 * 60_000;
+    writeFileSync(state, JSON.stringify(checkpoint));
+  }
+  loadTabs(state); loadSpaces(join(directory, "spaces.json"), tracksOwner);
+  // No call has rebuilt this owner's in-memory mission record.
+  await endTurn(mode === "live-restart-completed" ? owner : owner + 1);
+  await flush();
+  console.log(JSON.stringify({
+    plain: tabs.has(saved.plain), form: tabs.has(saved.form), front: tabs.has(saved.front),
+    kept: tabs.has(saved.kept), handoff: tabs.has(saved.handoff), recent: tabs.has(saved.recent),
+    personal: tabs.has(saved.personal), marker: [...tabs.values()].some(tab => tab.url.includes("/space?")),
+  }));
+} else if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode === "fresh-post" || mode === "foreign") {
   const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; reading: number; form: number; site: number; unsafe: number };
   for (const tab of saved.tabs) tabs.set(tab.id, tab);
   next = 200;

@@ -61,6 +61,16 @@ test("a foreign owner cannot lazily reopen another owner's closed result", async
   expect(await fixture("foreign", directory)).toMatchObject({ opened: 0, error: expect.stringContaining("open it again") });
 });
 
+test.each([
+  ["live-restart", { plain: true, form: true, front: true, recent: true }],
+  ["live-restart-idle", { plain: false, form: true, front: true, recent: true }],
+  ["live-restart-completed", { plain: false, form: false, front: false, recent: false }],
+] as const)("%s preserves a living owner's pages until idle cleanup or explicit completion admits their close", async (mode, expected) => {
+  const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
+  expect(await fixture("live-seed", directory)).toEqual({ seeded: true });
+  expect(await fixture(mode, directory)).toEqual({ ...expected, kept: true, handoff: true, personal: true, marker: true });
+});
+
 test("unused changed pages close after twenty minutes without closing forms, kept pages, the front page, or recently used pages", async () => {
   expect(await fixture("idle-cleanup")).toEqual({ plain: false, form: true, kept: true, front: true, recent: true });
 });

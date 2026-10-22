@@ -105,10 +105,113 @@ describe.skipIf(!runner)("opt-in site action compatibility in WebKit", () => {
     ]);
   });
 
-  test("ending a document cancels pending work as unknown and cannot invoke an old callback", async () => {
+  test("cached suspension preserves both APIs and registrations but requires a fresh selection after restore", async () => {
     expect(await page([
-      { pageEval: "await siteActionsReady; await siteActionsFixture.registerPending(); const revision = __safariHarnessSiteActions.catalog().revision; const pending = __safariHarnessSiteActions.invoke({revision,name:'pending_item',input:{},callId:'ended-action'}); await Promise.resolve(); __safariHarnessSiteActions.dispose(); const result = await pending; const old = await __safariHarnessSiteActions.invoke({revision,name:'add_item',input:{amount:1},callId:'old-document'}); siteActionsFixture.finish('late'); return {result,old,calls:siteActionsFixture.calls,aborted:siteActionsFixture.aborted}" },
-    ])).toMatchObject([{ value: { result: { status: "unknown", retry: false }, old: { status: "refused", reason: "document_ended" }, calls: 1, aborted: true } }]);
+      { pageEval: `
+        await siteActionsReady;
+        const actions = __safariHarnessSiteActions;
+        const documentAPI = document.modelContext;
+        const navigatorAPI = navigator.modelContext;
+        navigatorAPI.registerTool({name:'legacy_cached',description:'A cached legacy registration',execute:()=>true});
+        const before = actions.catalog().revision;
+        window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));
+        const during = await actions.invoke({revision:before,name:'add_item',input:{amount:2},callId:'while-cached'});
+        let suspendedAPI = 'available';
+        try { await documentAPI.getTools(); } catch (error) { suspendedAPI = error.name; }
+        window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+        let restored;
+        try {
+          const catalog = actions.catalog();
+          const stale = await actions.invoke({revision:before,name:'add_item',input:{amount:2},callId:'before-cache'});
+          const id = '00000000-0000-0000-0000-000000000001';
+          const {promise,resolve} = Promise.withResolvers();
+          document.addEventListener('__sh_site_action_reply_'+id,event=>resolve(JSON.parse(event.detail)),{once:true});
+          document.dispatchEvent(new CustomEvent('__sh_site_action_request',{detail:JSON.stringify({
+            id,method:'invoke',args:[{revision:catalog.revision,name:'add_item',input:{amount:2},callId:'after-cache'}]
+          })}));
+          const result = await promise;
+          siteActionsFixture.registration.abort();
+          const remaining = actions.catalog();
+          window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));
+          const secondDuring = await actions.invoke({revision:remaining.revision,name:'legacy_cached',input:{},callId:'cached-again'});
+          window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+          const second = actions.catalog();
+          restored = {
+            changed:catalog.revision!==before,names:catalog.tools.map(tool=>tool.name),stale,result,
+            remaining:remaining.tools.map(tool=>tool.name),secondDuring,secondChanged:second.revision!==remaining.revision
+          };
+        } catch (error) { restored = {error:error.name}; }
+        return {
+          documentPreserved:document.modelContext===documentAPI,navigatorPreserved:navigator.modelContext===navigatorAPI,
+          during,suspendedAPI,restored,total:siteActionsFixture.total,calls:siteActionsFixture.calls
+        };
+      ` },
+    ])).toMatchObject([{ value: {
+      documentPreserved: true, navigatorPreserved: true,
+      during: { status: "refused", reason: "document_suspended", retry: false }, suspendedAPI: "InvalidStateError",
+      restored: {
+        changed: true, names: ["add_item", "legacy_cached"], stale: { status: "refused", reason: "stale_catalog" },
+        result: { status: "completed", result: { total: 2, calls: 1 } }, remaining: ["legacy_cached"],
+        secondDuring: { status: "refused", reason: "document_suspended" }, secondChanged: true,
+      },
+      total: 2, calls: 1,
+    } }]);
+  });
+
+  test("cached suspension aborts pending work as unknown and restoration never clears that uncertainty", async () => {
+    expect(await page([
+      { pageEval: `
+        await siteActionsReady;
+        await siteActionsFixture.registerPending();
+        const actions = __safariHarnessSiteActions;
+        const documentAPI = document.modelContext;
+        const revision = actions.catalog().revision;
+        const pending = actions.invoke({revision,name:'pending_item',input:{},callId:'pending-before-cache'});
+        window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));
+        const result = await pending;
+        siteActionsFixture.finish('late completion');
+        await Promise.resolve();
+        window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+        let restoredRevision = revision;
+        let restoreError = null;
+        try { restoredRevision = actions.catalog().revision; } catch (error) { restoreError = error.name; }
+        const next = await actions.invoke({revision:restoredRevision,name:'add_item',input:{amount:1},callId:'after-pending-cache'});
+        return {result,next,restoreError,preserved:document.modelContext===documentAPI,aborted:siteActionsFixture.aborted,calls:siteActionsFixture.calls,total:siteActionsFixture.total};
+      ` },
+    ])).toMatchObject([{ value: {
+      result: { status: "unknown", reason: "cancelled_after_dispatch", retry: false },
+      next: { status: "refused", reason: "previous_action_outcome_unknown_reload_required", retry: false },
+      restoreError: null, preserved: true, aborted: true, calls: 1, total: 0,
+    } }]);
+  });
+
+  test("suspension during input conversion cannot dispatch an action or reuse its old selection after restore", async () => {
+    expect(await page([
+      { pageEval: `
+        await siteActionsReady;
+        const actions = __safariHarnessSiteActions;
+        const revision = actions.catalog().revision;
+        const result = await actions.invoke({
+          revision,name:'add_item',callId:'suspend-during-input',
+          input:{toJSON(){window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));return {amount:1}}}
+        });
+        window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+        const stale = await actions.invoke({revision,name:'add_item',input:{amount:1},callId:'stale-after-conversion'});
+        return {result,stale,calls:siteActionsFixture.calls,total:siteActionsFixture.total};
+      ` },
+    ])).toMatchObject([{ value: {
+      result: { status: "refused", reason: "document_suspended", retry: false },
+      stale: { status: "refused", reason: "stale_catalog", retry: false }, calls: 0, total: 0,
+    } }]);
+  });
+
+  test.each(["explicit disposal", "non-persisted pagehide"])("%s cancels pending work and permanently removes the APIs", async (ending) => {
+    const end = ending === "explicit disposal"
+      ? "__safariHarnessSiteActions.dispose()"
+      : "window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false}))";
+    expect(await page([
+      { pageEval: `await siteActionsReady; await siteActionsFixture.registerPending(); const revision = __safariHarnessSiteActions.catalog().revision; const pending = __safariHarnessSiteActions.invoke({revision,name:'pending_item',input:{},callId:'ended-action'}); await Promise.resolve(); ${end}; const result = await pending; window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})); const old = await __safariHarnessSiteActions.invoke({revision,name:'add_item',input:{amount:1},callId:'old-document'}); siteActionsFixture.finish('late'); return {result,old,calls:siteActionsFixture.calls,aborted:siteActionsFixture.aborted,documentAPI:typeof document.modelContext,navigatorAPI:typeof navigator.modelContext}` },
+    ])).toMatchObject([{ value: { result: { status: "unknown", retry: false }, old: { status: "refused", reason: "document_ended" }, calls: 1, aborted: true, documentAPI: "undefined", navigatorAPI: "undefined" } }]);
   });
 
   test("the current document API exposes copied schemas and executes a discovered local tool", async () => {

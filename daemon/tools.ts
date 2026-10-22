@@ -496,12 +496,14 @@ export function endTurn(owner: number, prepared?: TurnPreparation): Promise<Turn
   return ending;
 }
 
-export function endUntrackedTurns(tracked: (owner: number) => boolean): void {
+// An absent runtime task is unknown, not proof that its durable tabs can
+// close without the extension's idle protections.
+export function endUntrackedTurns(tracked: (owner: number) => boolean | undefined): void {
   const owners = new Set<number>();
   for (const { owner } of harnessTabs.values()) {
     if (owner === undefined || owners.has(owner)) continue;
     owners.add(owner);
-    if (!tracked(owner)) void endTurn(owner).catch(e => {
+    if (tracked(owner) === false) void endTurn(owner).catch(e => {
       note("untracked agent cleanup failed", { owner, error: e instanceof Error ? e.message : String(e) });
     });
   }

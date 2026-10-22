@@ -102,10 +102,14 @@ let historyError: string | undefined;
 const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean; trustedInspection: boolean }>();
 const spaceAgents = new Map<string, string>();
 
-export function tracksOwner(owner: number | undefined): boolean {
+// A living owner without a runtime record is unknown after a restart or
+// pruning, not completed. Only a recorded end or an exited process admits
+// completion cleanup.
+export function tracksOwner(owner: number | undefined): boolean | undefined {
   if (owner === undefined) return true;
   const agent = agents.get(owner);
-  return agent !== undefined && agent.ended === undefined;
+  if (agent) return agent.ended === undefined;
+  return alive(owner) ? undefined : false;
 }
 
 export function openMissionHistory(path: string): void {

@@ -183,10 +183,10 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
 // transient release permission. The current runtime must admit cleanup again.
 type Kept = Space;
 let spacesFile: string | undefined;
-let taskTracked: ((owner: number | undefined) => boolean) | undefined;
+let taskTracked: ((owner: number | undefined) => boolean | undefined) | undefined;
 let inspectUntracked = false;
 
-export function loadSpaces(path: string, tracked: (owner: number | undefined) => boolean): void {
+export function loadSpaces(path: string, tracked: (owner: number | undefined) => boolean | undefined): void {
   spacesFile = path;
   taskTracked = tracked;
   inspectUntracked = true;

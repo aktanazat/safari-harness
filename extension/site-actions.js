@@ -22,6 +22,7 @@ globalThis.__safariHarnessInstallSiteActions = function installSiteActions(optio
   const MAX_RESULT = 65536;
   let revision = 0;
   let ended = false;
+  let suspended = false;
   let uncertain = false;
   const context = new EventTarget();
   let changeHandler = null;
@@ -39,7 +40,7 @@ globalThis.__safariHarnessInstallSiteActions = function installSiteActions(optio
     enumerable: true,
   });
   const active = () => {
-    if (ended || location.origin !== origin) throw new DOMException("document is no longer active", "InvalidStateError");
+    if (ended || suspended || location.origin !== origin) throw new DOMException("document is no longer active", "InvalidStateError");
   };
   const json = (value, limit) => {
     const text = stringify(value);
@@ -149,11 +150,27 @@ globalThis.__safariHarnessInstallSiteActions = function installSiteActions(optio
     for (const tool of tools.values()) tool.detach?.();
     tools.clear();
     revision++;
-    window.removeEventListener("pagehide", dispose);
+    window.removeEventListener("pagehide", pagehide);
+    window.removeEventListener("pageshow", pageshow);
     if (document.modelContext === context) delete document.modelContext;
     if (legacy && navigator.modelContext === legacy) delete navigator.modelContext;
   };
-  window.addEventListener("pagehide", dispose, { once: true });
+  const pagehide = (event) => {
+    if (!event.persisted) {
+      dispose();
+      return;
+    }
+    // A cached document keeps its APIs and registrations, but no old selection
+    // or pending callback is safe to resume automatically.
+    suspended = true;
+    revision++;
+    for (const callId of [...executions.keys()]) cancel(callId);
+  };
+  const pageshow = (event) => {
+    if (event.persisted && !ended) suspended = false;
+  };
+  window.addEventListener("pagehide", pagehide);
+  window.addEventListener("pageshow", pageshow);
   const transport = Object.freeze({
     status: "available",
     catalog() {
@@ -169,6 +186,7 @@ globalThis.__safariHarnessInstallSiteActions = function installSiteActions(optio
     },
     invoke(request) {
       if (ended || location.origin !== origin) return Promise.resolve(refused("document_ended"));
+      if (suspended) return Promise.resolve(refused("document_suspended"));
       if (!request || request.revision !== String(revision)) return Promise.resolve(refused("stale_catalog"));
       if (uncertain) return Promise.resolve(refused("previous_action_outcome_unknown_reload_required"));
       const tool = tools.get(request.name);
@@ -181,7 +199,9 @@ globalThis.__safariHarnessInstallSiteActions = function installSiteActions(optio
         if (!input || typeof input !== "object" || Array.isArray(input)) return Promise.resolve(refused("input_must_be_object"));
       } catch { return Promise.resolve(refused("input_not_json")); }
       // JSON conversion can run site code; recheck at the actual call boundary.
-      if (ended || request.revision !== String(revision) || tools.get(request.name) !== tool) return Promise.resolve(refused("stale_catalog"));
+      if (ended || location.origin !== origin) return Promise.resolve(refused("document_ended"));
+      if (suspended) return Promise.resolve(refused("document_suspended"));
+      if (request.revision !== String(revision) || tools.get(request.name) !== tool) return Promise.resolve(refused("stale_catalog"));
       const timeoutMs = Number.isFinite(request.timeoutMs) ? Math.max(1, Math.min(60000, request.timeoutMs)) : 15000;
       used.add(request.callId);
       const { promise, resolve } = Promise.withResolvers();

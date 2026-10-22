@@ -214,9 +214,10 @@ pages. A copied or unknown window page grants no close authority.
 Restarts restore only proven ownership and preserve the protections
 appropriate to idle cleanup or completed-task cleanup.
 
-If an agent window no longer has a live task record, its disposable tabs
-and status page close automatically. Kept pages, handoffs and personal tabs
-remain protected. After a restart, status pages whose window record is
+When a task has positively ended, its disposable tabs and status page close
+automatically. A living process without a restored task record remains unknown;
+its forms and front pages keep idle-cleanup protection. Kept pages, handoffs and
+personal tabs remain protected. After a restart, status pages whose window record is
 missing close without claiming ownership of any other tabs in that window.
 Copied or reopened status pages also close when they cannot be tracked.
 Their addresses never grant permission to close other tabs in the window.
@@ -418,6 +419,8 @@ host-wide consent because Safari match patterns cover every port.
 Permission changes from different tabs are applied in order without losing
 another tab's settings. React component ids are numbers: use the returned id
 with `safari react --do inspect --tab N --id <number>` to select that component.
+Cached back/forward navigation preserves registered site actions, but requires a
+fresh selection. Work interrupted by caching stays uncertain and is not retried.
 `video` observes selected decoded moments with protected image receipts and
 guarded playback restoration. See `safari guide <tool>` for each contract.
 

@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, readQueue, turnOff } from "./groups.ts";
+import { tracksOwner } from "./mission.ts";
 import { runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
@@ -601,7 +602,7 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   await until(() => !pageIn(s.tabs, before.window));
 });
 
-test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent retains ownership but requires fresh runtime admission", async phase => {
+test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent for a living owner without a runtime task requires fresh admission", async phase => {
   const s = safari();
   const q = agent();
   const path = join(dir, `admission-${phase}.json`);
@@ -614,7 +615,7 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent re
     const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
     const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
     writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
-    restarted.loadSpaces(path, () => true);
+    restarted.loadSpaces(path, tracksOwner);
     await restarted.turnEnded(q.pid + 1);
     expect(s.tabs.has(page.id)).toBe(true);
     expect(s.closed).not.toContain(page.id);
