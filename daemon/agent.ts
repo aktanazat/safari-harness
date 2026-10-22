@@ -188,7 +188,7 @@ async function withBrowserContext(messages: ChatMsg[]): Promise<ChatMsg[]> {
   for (const page of result.pages) {
     const row = {
       id: page.id, title: page.title?.slice(0, 160), url: page.url, visitedAt: page.visitedAt,
-      observation: page.observation, task: page.task, reason: page.reason?.slice(0, 300), partial: page.partial, scope: page.scope,
+      observation: page.observation, reason: page.reason?.slice(0, 300), partial: page.partial, scope: page.scope,
       summary: page.summary?.slice(0, 300), excerpt: page.excerpt?.slice(0, 300), note: page.note?.slice(0, 150),
     };
     if (JSON.stringify([...pages, row]).length <= 3000) pages.push(row);

@@ -71,7 +71,7 @@ if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode ===
   const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; reading: number; form: number; site: number; unsafe: number };
   for (const tab of saved.tabs) tabs.set(tab.id, tab);
   next = 200;
-  loadTabs(state); loadSpaces(join(directory, "spaces.json"));
+  loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
   if (mode === "action" || mode === "fresh-eval" || mode === "fresh-post") {
     let error = "";
     const tool = mode === "action" ? "click" : mode === "fresh-eval" ? "eval" : "fetch";
@@ -87,7 +87,7 @@ if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode ===
     console.log(JSON.stringify({ opened, results, protected: [saved.form, saved.site, saved.unsafe].map(tab => tabs.has(tab)), savedText: readFileSync(state, "utf8").includes("unsent fixture text"), savedCredential: readFileSync(state, "utf8").includes("credential-fixture") }));
   }
 } else {
-  loadTabs(state); loadSpaces(join(directory, "spaces.json"));
+  loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
   if (mode === "recovery-title") {
     const tab = await open("mail");
     tabs.get(tab.id)!.title = "123456 is your password reset code — private-value-fixture";

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { changeQueue, files, turnOff } from "./groups.ts";
+import { changeQueue, files, readQueue, turnOff } from "./groups.ts";
 import { runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
@@ -140,16 +140,60 @@ function safari() {
   return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized, silent };
 }
 
+test("an untracked living agent loses its disposable tabs and status page but not kept or personal pages", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47354, "untracked");
+  const owner = agent();
+  let tracked = true;
+  daemon.loadSpaces(join(dir, "untracked.json"), () => tracked);
+  try {
+    const space = await runAs(owner.pid, () => daemon.spaceWindow());
+    const marker = pageIn(s.tabs, space.window)!;
+    const disposable = await runAs(owner.pid, () => callTool("open", { url: "https://research.example/", background: true })) as { id: number };
+    const kept = { id: next++, url: "https://kept.example/", windowId: space.window, active: false };
+    s.tabs.set(kept.id, kept);
+    tracked = false;
+    await daemon.turnEnded(owner.pid + 1);
+    await until(() => !s.tabs.has(disposable.id));
+    expect(s.tabs.has(marker.id)).toBe(false);
+    expect(s.tabs.has(kept.id)).toBe(true);
+    expect(s.tabs.has(1)).toBe(true);
+    expect(owner.exitCode).toBeNull();
+  } finally {
+    owner.kill();
+    await owner.exited;
+  }
+});
+
+test("untracked owned tabs close even when their window record is missing", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47355, "missing-window");
+  const owner = agent();
+  try {
+    const disposable = await runAs(owner.pid, () => callTool("open", { url: "https://research.example/", background: true })) as { id: number };
+    const kept = await runAs(owner.pid, () => callTool("open", { url: "https://kept.example/", background: true, keep: true })) as { id: number };
+    daemon.loadSpaces(join(dir, "missing-window.json"), () => false);
+    await daemon.turnEnded(owner.pid + 1);
+    await until(() => !s.tabs.has(disposable.id));
+    expect(s.tabs.has(kept.id)).toBe(true);
+    expect(s.tabs.has(1)).toBe(true);
+    expect(owner.exitCode).toBeNull();
+  } finally {
+    owner.kill();
+    await owner.exited;
+  }
+});
+
 test("window management finds a restored registered window without an agent record and closes only that window", async () => {
   const s = safari();
   const path = join(dir, "managed-restart.json");
   const before = await daemonOn(47350, "managed-before");
   const after = await daemonOn(47350, "managed-after");
-  before.loadSpaces(path);
+  before.loadSpaces(path, () => true);
   const window = await runAs(process.pid, () => before.spaceWindow("receipt"));
   const content = { id: next++, url: "https://receipt.example/success", windowId: window.window, active: false };
   s.tabs.set(content.id, content);
-  after.loadSpaces(path);
+  after.loadSpaces(path, () => true);
   s.relaunch();
   const listed = await after.managedWindows();
   expect(listed).toHaveLength(1);
@@ -546,9 +590,9 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   // The daemon before the restart and the one after.
   const first = await daemonOn(47340, "first");
   const restarted = await daemonOn(47340, "restarted");
-  first.loadSpaces(saved);
+  first.loadSpaces(saved, () => true);
   const before = await runAs(q.pid, () => first.spaceWindow());
-  restarted.loadSpaces(saved);
+  restarted.loadSpaces(saved, () => true);
   const after = await runAs(q.pid, () => restarted.spaceWindow());
   expect(after.window).toBe(before.window);
   q.kill();
@@ -564,13 +608,13 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent re
   const first = await daemonOn(47343, `before-${phase}`);
   const restarted = await daemonOn(47343, `after-${phase}`);
   try {
-    first.loadSpaces(path);
+    first.loadSpaces(path, () => true);
     const owned = await runAs(q.pid, () => first.spaceWindow());
     const page = pageIn(s.tabs, owned.window)!;
     const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
     const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
     writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
-    restarted.loadSpaces(path);
+    restarted.loadSpaces(path, () => true);
     await restarted.turnEnded(q.pid + 1);
     expect(s.tabs.has(page.id)).toBe(true);
     expect(s.closed).not.toContain(page.id);
@@ -594,17 +638,19 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent re
   }
 });
 
-// A page address is not ownership evidence: a user can copy the same link.
-test("a restarted daemon leaves a window page it has no durable ownership record for", async () => {
+test("a restarted daemon closes an untracked status page without closing other pages in its window", async () => {
   const s = safari();
   const daemon = await daemonOn(47341, "lost");
   s.tabs.set(900, { id: 900, url: "http://127.0.0.1:47341/space?id=gone&name=agent%2050573&size=1100x800", windowId: 901, active: true });
-  daemon.loadSpaces(join(dir, "lost.json"));
+  s.tabs.set(902, { id: 902, url: "https://kept.example/", windowId: 901, active: false });
+  daemon.loadSpaces(join(dir, "lost.json"), () => false);
   await daemon.turnEnded(process.pid);
-  expect({ retained: s.tabs.has(900), closed: s.closed }).toEqual({ retained: true, closed: [] });
+  expect(s.tabs.has(900)).toBe(false);
+  expect([1, 902].map(id => s.tabs.has(id))).toEqual([true, true]);
+  expect(s.closed).toEqual([900]);
 });
 
-test("a restarted daemon leaves a page the user opened from the agents list, and a group's window still queued for the keeper", async () => {
+test("untracked status cleanup closes copied and queued status pages without claiming their other tabs", async () => {
   const s = safari();
   const daemon = await daemonOn(47342, "kept");
   const page = (id: number, query: string, windowId: number) => s.tabs.set(id, { id, url: `http://127.0.0.1:47342/space?${query}`, windowId, active: true });
@@ -612,12 +658,14 @@ test("a restarted daemon leaves a page the user opened from the agents list, and
   try {
     page(910, "id=his&name=agent%204241", 1);
     page(911, "id=queued&name=trip%20(agent%204242)&size=1100x800", 912);
-    // A lost window's, last: once it closes, the pass has looked at the others.
     page(913, "id=lost&name=agent%204243&size=1101x800", 914);
-    daemon.loadSpaces(join(dir, "kept.json"));
+    s.tabs.set(915, { id: 915, url: "https://example.com/kept", windowId: 912, active: false });
+    daemon.loadSpaces(join(dir, "kept.json"), () => false);
     await daemon.turnEnded(process.pid);
-    expect(s.closed).toEqual([]);
-    expect([910, 911, 913].map(id => s.tabs.has(id))).toEqual([true, true, true]);
+    expect(s.closed).toEqual([910, 911, 913]);
+    expect([1, 915].map(id => s.tabs.has(id))).toEqual([true, true]);
+    expect([910, 911, 913].map(id => s.tabs.has(id))).toEqual([false, false, false]);
+    expect(readQueue()["trip (agent 4242)"]).toBeDefined();
   } finally {
     changeQueue((q) => delete q["trip (agent 4242)"]);
   }

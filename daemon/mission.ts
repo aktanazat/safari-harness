@@ -29,7 +29,7 @@ import { affectsPage } from "./lanes.ts";
 import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
-import { closeManagedWindow, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
+import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
 import { closeTabsOf, recentlyClosedTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 
@@ -99,6 +99,12 @@ let history = new MissionHistory();
 let historyError: string | undefined;
 const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean }>();
 const spaceAgents = new Map<string, string>();
+
+export function tracksOwner(owner: number | undefined): boolean {
+  if (owner === undefined) return true;
+  const agent = agents.get(owner);
+  return agent !== undefined && agent.ended === undefined;
+}
 
 export function openMissionHistory(path: string): void {
   try {
@@ -657,9 +663,15 @@ async function spaceState(url: URL): Promise<Response> {
   const now = Date.now();
   const id = url.searchParams.get("id") ?? "";
   const space = spaceById(id);
-  if (!space) return json({ now, agent: null, tabs: null, ended: spaceEnded(id) });
+  if (!space) {
+    inspectUntrackedWindows();
+    return json({ now, agent: null, tabs: null, ended: spaceEnded(id) });
+  }
   const agent = space.owner === undefined ? nobody : agents.get(space.owner);
-  if (!agent) return json({ now, agent: null, tabs: null, ended: space.owner !== undefined && !alive(space.owner) });
+  if (!agent) {
+    inspectUntrackedWindows();
+    return json({ now, agent: null, tabs: null, ended: space.owner !== undefined && !alive(space.owner) });
+  }
   if (spaceAgents.has(id) && spaceAgents.get(id) !== agent.id) return json({ now, agent: null, tabs: null, ended: true });
   if (!spaceAgents.has(id)) {
     spaceAgents.set(id, agent.id);

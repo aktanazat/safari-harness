@@ -214,6 +214,13 @@ pages. A copied or unknown window page grants no close authority.
 Restarts restore only proven ownership and preserve the protections
 appropriate to idle cleanup or completed-task cleanup.
 
+If an agent window no longer has a live task record, its disposable tabs
+and status page close automatically. Kept pages, handoffs and personal tabs
+remain protected. After a restart, status pages whose window record is
+missing close without claiming ownership of any other tabs in that window.
+Copied or reopened status pages also close when they cannot be tracked.
+Their addresses never grant permission to close other tabs in the window.
+
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),
 `SAFARI_HARNESS_HTTP` (CLI/MCP). The extension reads `daemonPort` from
