@@ -520,6 +520,8 @@ tabs and server and prints the retained proof files.
 passwords, card numbers and sign-in codes in capture titles and addresses are
 hidden, including values you typed yourself.
 
+the privacy fixes now cover disguised addresses and secret text drawn outside its field. saved picture limits now count both stored copies.
+
 password changes need a fresh page read after you give control back.
 
 the bounded local attack scenarios use disposable homes and synthetic data:

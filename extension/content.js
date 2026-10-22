@@ -1917,21 +1917,24 @@
         for (const pseudo of ["::before", "::after"]) {
           const style = view.getComputedStyle(el, pseudo);
           if (contains(style.content)) {
-            const bounds = el.getBoundingClientRect();
-            if (style.position === "absolute" || style.position === "fixed" || style.textShadow !== "none" || style.filter !== "none") {
-              if (context.clip.width && context.clip.height) regions.set(JSON.stringify(context.clip), context.clip);
-            } else add(bounds, context, el);
+            // Generated content has no range, and can paint outside its host
+            // even without absolute positioning (offsets, transforms, overflow).
+            if (context.clip.width && context.clip.height) regions.set(JSON.stringify(context.clip), context.clip);
           }
         }
       }
     }
     const sourcePattern = known.length ? new RegExp(known.map((secret) => {
-      if (/^\d{3,}$/.test(secret)) return secret.split("").join("(?:[\\s\\u00a0+-]|%20|%[cC]2%[aA]0)*");
-      const literal = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const encoded = encodeURIComponent(secret).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        .replace(/%[0-9A-F]{2}/g, (part) => part.replace(/[A-F]/g, (letter) => `[${letter}${letter.toLowerCase()}]`))
-        .replace(/%20/g, "(?:%20|\\+)");
-      return literal === encoded ? literal : `(?:${literal}|${encoded})`;
+      // Each character may be literal or percent-encoded independently.
+      // encodeURIComponent leaves unreserved ASCII literal, but URLs need not.
+      const characters = [...secret].map((character) => {
+        const literal = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        let encoded = encodeURIComponent(character);
+        if (encoded === character) encoded = `%${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
+        encoded = encoded.replace(/%[0-9a-f]{2}/gi, (part) => part.replace(/[a-f]/gi, (letter) => `[${letter.toUpperCase()}${letter.toLowerCase()}]`));
+        return `(?:${literal}|${encoded}${character === " " ? "|\\+" : ""})`;
+      });
+      return characters.join(/^\d{3,}$/.test(secret) ? "(?:[\\s\\u00a0+-]|%20|%[cC]2%[aA]0)*" : "");
     }).join("|"), "g") : null;
     const sourceText = (text) => sourcePattern ? text.replace(sourcePattern, "...") : text;
     return {

@@ -22,6 +22,8 @@ const sourceReceipts = new Map<string, EvidenceModule.Evidence>();
 let driving = false;
 let pictures = false;
 const sentinels = ["FictionalMint36_XyZ", "731692", "4111111111111111", "928374", "583241"];
+const encodedCode = [...sentinels[1]].map((digit) => `%${digit.charCodeAt(0).toString(16)}`).join("");
+const exposesCode = (text: string) => text.includes(sentinels[1]) || text.includes(encodedCode);
 function check(name: string, pass: boolean, detail?: unknown) {
   checks++;
   console.log(`${pass ? "PASS" : "FAIL"} ${name}${!pass && detail !== undefined ? `: ${JSON.stringify(detail)}` : ""}`);
@@ -37,7 +39,7 @@ const walls: Record<string, string> = {
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
   const path = new URL(request.url).pathname;
   if (path === "/plain") return new Response(plain, { headers: { "content-type": "text/html" } });
-  if (path === "/inner") return new Response(`<label>Code<input autocomplete="one-time-code" value="${sentinels[4]}"></label>`, { headers: { "content-type": "text/html" } });
+  if (path === "/inner") return new Response(`<style>#offset-secret{width:1px;white-space:nowrap;font:24px system-ui}#offset-secret::before{content:"${sentinels[4]}";position:relative;left:180px}</style><label>Code<input autocomplete="one-time-code" value="${sentinels[4]}"></label><div id="offset-secret"></div>`, { headers: { "content-type": "text/html" } });
   if (walls[path]) return new Response(`<!doctype html><title>${path.slice(1)}</title>${walls[path]}`, { headers: { "content-type": "text/html" } });
   return new Response("not found", { status: 404 });
 } });
@@ -73,7 +75,8 @@ async function until(ready: () => Promise<boolean>) {
   throw new Error("the requested test state did not arrive");
 }
 try {
-  const tab = await open(`/plain?token=FictionalSignedTokenValue&review=${sentinels[1]}`);
+  const tab = await open(`/plain?token=FictionalSignedTokenValue&review=${encodedCode}`);
+  await invoke("activate", { tab });
   await invoke("wait", { tab, selector: "#opaque", ms: 3000 });
   await invoke("keep_secret", { tab, texts: [sentinels[0], "2026"] });
   const beforeCapture = await state(tab, "JSON.stringify({children:[...document.documentElement.children].map(e=>e.tagName),x:scrollX,y:scrollY,focus:document.activeElement.tagName})");
@@ -140,7 +143,7 @@ try {
     }) as { path: string; html: string; findings: number; unchecked: number; mismatches: number };
     check("the report retains evidence, the mismatch and the unread page", report.findings === 1 && report.unchecked === 1 && report.mismatches === 1, report);
     const reportFiles = await Promise.all([report.path, report.html].map((path) => readFile(path, "utf8")));
-    check("both report formats protect the user-filled code in source metadata", reportFiles.every((text) => !text.includes(sentinels[1])));
+    check("both report formats protect the user-filled code in source metadata", reportFiles.every((text) => !exposesCode(text)));
     console.log(`report_html=${report.html}`);
     console.log(`report_markdown=${report.path}`);
     const learningSite = `safari-research-${crypto.randomUUID()}.invalid`;
@@ -164,13 +167,14 @@ try {
       check(`${name} capture has verifiable protected pixels`, verified.evidence.privacy.masked > 0 && (name !== "cropped" || !!verified.evidence.crop));
       ocrPaths.add(verified.path);
     }
-    const batch = await invoke("shots", { urls: [`${base}/plain`], widths: [390, 1000], out: join(dir, "batch") }) as { files: EvidenceModule.CaptureResult[] };
+    const batch = await invoke("shots", { urls: [`${base}/plain`], widths: [390, 1000], out: join(dir, "batch") }) as { files: (EvidenceModule.CaptureResult | { error: string })[] };
+    check("batch captures retain protected evidence at both requested widths", batch.files.length === 2 && batch.files.every((capture) => "evidence" in capture && capture.evidence.privacy.masked > 0), batch);
     for (const capture of batch.files) {
+      if ("error" in capture) continue;
       sourceReceipts.set(capture.path, capture.evidence);
       const verified = await verifyEvidence(capture.evidence.path);
       ocrPaths.add(verified.path);
     }
-    check("batch captures retain protected evidence at both requested widths", batch.files.length === 2 && batch.files.every((capture) => capture.evidence.privacy.masked > 0));
     const { ReplSession } = await import(join(root, "daemon/repl.ts")) as typeof ReplModule;
     const session = new ReplSession("research-capture-check", { cwd: dir, invoke });
     try {
@@ -225,7 +229,7 @@ try {
     const exposed: string[] = [];
     for (const [name, evidence] of sourceReceipts) {
       const manifest = JSON.parse(await readFile(evidence.path, "utf8")) as { source: EvidenceModule.CaptureSource };
-      if ([evidence.url, evidence.title, manifest.source.url, manifest.source.title].some((text) => text.includes(sentinels[1]))) exposed.push(name);
+      if ([evidence.url, evidence.title, manifest.source.url, manifest.source.title].some(exposesCode)) exposed.push(name);
     }
     check("all capture responses and saved receipts protect an unremembered field value", exposed.length === 0, { checked: sourceReceipts.size, exposed });
     console.log(`protected_source_metadata_captures=${sourceReceipts.size}`);

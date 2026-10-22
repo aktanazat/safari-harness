@@ -199,8 +199,9 @@ export class MissionHistory {
     for (let r = this.records.length - 1; r >= 0; r--) for (let c = this.records[r].calls.length - 1; c >= 0; c--) {
       const call = this.records[r].calls[c];
       if (!call.picture || !("receipt" in call.picture)) continue;
-      if (pictures >= PICTURES || bytes + call.picture.bytes > PICTURE_BYTES) call.picture = { id: call.picture.id, missing: "picture expired" };
-      else { pictures++; bytes += call.picture.bytes; }
+      const storedBytes = call.picture.bytes * 2;
+      if (pictures >= PICTURES || bytes + storedBytes > PICTURE_BYTES) call.picture = { id: call.picture.id, missing: "picture expired" };
+      else { pictures++; bytes += storedBytes; }
     }
     while (this.records.length && Buffer.byteLength(JSON.stringify({ version: 1, missions: this.records })) > BYTES) this.records.shift();
     const kept = this.receipts();

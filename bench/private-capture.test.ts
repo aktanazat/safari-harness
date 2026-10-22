@@ -181,10 +181,55 @@ benchRows("private captures in WebKit", [
     }],
   },
   ...[
+    { name: "relatively positioned before-content", pseudo: "::before", positioning: "position:relative;left:400px" },
+    { name: "transformed after-content", pseudo: "::after", positioning: "transform:translateX(400px)" },
+  ].map(({ name, pseudo, positioning }) => ({
+    name: `protection covers secret ${name} outside its host without changing the page`,
+    page: "private-capture.html",
+    steps: [{
+      op: "eval",
+      args: [`(async () => {
+        ${request}
+        const style = document.createElement("style");
+        style.textContent = "#generated { position:absolute;left:10px;top:300px;width:100px;height:20px;font:16px/20px monospace } #generated${pseudo} { content:'field-password';display:inline-block;width:140px;height:20px;vertical-align:top;${positioning} }";
+        document.head.append(style);
+        const host = document.createElement("div");
+        host.id = "generated";
+        document.body.append(host);
+        const before = host.getBoundingClientRect().toJSON();
+        const children = document.documentElement.children.length;
+        const generated = { left: before.left + 400, top: before.top, right: before.left + 540, bottom: before.top + 20 };
+        const content = getComputedStyle(host, ${JSON.stringify(pseudo)}).content;
+        await request("start");
+        const result = await request("prepare");
+        ${coverage}
+        const protectedContent = covers(generated);
+        const valid = (await request("check")).value?.ok === true;
+        await request("restore");
+        return {
+          outsideHost: generated.left > before.right,
+          hasSecretContent: content.includes("field-password"),
+          protectedContent,
+          valid,
+          sameBounds: JSON.stringify(host.getBoundingClientRect().toJSON()) === JSON.stringify(before),
+          sameContent: getComputedStyle(host, ${JSON.stringify(pseudo)}).content === content,
+          sameChildren: document.documentElement.children.length === children,
+          focus: document.activeElement.id,
+          events: document.documentElement.dataset.fieldEvents,
+        };
+      })()`],
+      answer: { value: { result: { outsideHost: true, hasSecretContent: true, protectedContent: true, valid: true, sameBounds: true, sameContent: true, sameChildren: true, focus: "ordinary", events: "0" } } },
+    }],
+  })),
+  ...[
     { name: "a user-filled code", field: "#otp", secret: "639275", echo: "639275", encoded: "639275" },
     { name: "an encoded user-filled password", field: "#password", secret: "fresh+pass/[7]?", echo: "fresh+pass/[7]?", encoded: "fresh%2Bpass%2F%5B7%5D%3F" },
     { name: "a grouped user-filled card number", field: "#card", secret: "5555555555554444", echo: "5555 5555-5555 4444", encoded: "5555%205555-5555%204444" },
     { name: "a user-filled code equal to numeric geometry", field: "#otp", secret: "2026", echo: "2026", encoded: "2026" },
+    { name: "a fully percent-encoded user-filled code", field: "#otp", secret: "731692", echo: "731692", encoded: "%37%33%31%36%39%32" },
+    { name: "a partially percent-encoded user-filled code", field: "#otp", secret: "731692", echo: "731692", encoded: "7%331%3692" },
+    { name: "a fully percent-encoded user-filled password with mixed-case escapes", field: "#password", secret: "fresh+pass/[7]?", echo: "fresh+pass/[7]?", encoded: "%66%72%65%73%68%2b%70%61%73%73%2F%5b%37%5D%3f" },
+    { name: "a partially percent-encoded user-filled password with mixed-case escapes", field: "#password", secret: "fresh+pass/[7]?", echo: "fresh+pass/[7]?", encoded: "%66resh%2bpa%73s%2F%5b7%5D%3f" },
   ].map(({ name, field, secret, echo, encoded }) => ({
     name: `source metadata hides ${name} without changing protection or geometry`,
     page: `private-capture.html?view=summary&credential=${encoded}#review`,

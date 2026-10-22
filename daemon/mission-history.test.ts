@@ -3,8 +3,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { crc32, deflateSync, inflateSync } from "node:zlib";
 import { saveCapture, verifyEvidence, type CaptureResult } from "./evidence.ts";
 import { captureSummaries, MissionHistory } from "./mission-history.ts";
+import { captureFixture } from "./fake-safari.ts";
 
 const directories: string[] = [];
 const folder = () => {
@@ -143,4 +145,42 @@ test("age retention deletes generated images and restart cleanup removes an orph
   expect(restarted.list()).toEqual([]);
   await restarted.cleanup();
   expect(existsSync(saved.evidence.path)).toBe(false);
+});
+
+test("retained PNG storage stays within its byte budget after cleanup and restart", async () => {
+  const path = join(folder(), "history.json");
+  const history = new MissionHistory(path, () => now);
+  const entry = mission();
+  const fixture = captureFixture("https://example.com/public-image", 1536, 1536);
+  const original = Buffer.from(fixture.data, "base64");
+  const headerBytes = 8 + 12 + 13;
+  const packedLength = original.readUInt32BE(headerBytes);
+  const packed = deflateSync(inflateSync(original.subarray(headerBytes + 8, headerBytes + 8 + packedLength)), { level: 0 });
+  const block = Buffer.alloc(packed.length + 12);
+  block.writeUInt32BE(packed.length);
+  block.write("IDAT", 4, "ascii");
+  packed.copy(block, 8);
+  block.writeUInt32BE(crc32(block.subarray(4, block.length - 4)), block.length - 4);
+  const image = Buffer.concat([original.subarray(0, headerBytes), block, original.subarray(headerBytes + packedLength + 12)]);
+  const data = image.toString("base64");
+  const calls = [];
+  const paths = new Set<string>();
+  for (let i = 0; i < 8; i++) {
+    const id = randomUUID();
+    const saved = await saveCapture({ ...fixture, data }, history.pictureOutput(entry.id, id));
+    const verified = await verifyEvidence(saved.evidence.path);
+    paths.add(saved.path);
+    paths.add(verified.path);
+    calls.push({ t: now + i, tool: "click", outcome: "done", picture: { ...picture(id, saved), bytes: image.byteLength } });
+  }
+  history.save({ ...entry, calls });
+  const restarted = new MissionHistory(path, () => now);
+  await restarted.cleanup();
+  const storedBytes = [...paths].reduce((sum, file) => sum + (existsSync(file) ? statSync(file).size : 0), 0);
+  expect(storedBytes).toBeLessThanOrEqual(128 * 1024 * 1024);
+  const retained = restarted.list()[0].calls;
+  expect(retained[0].picture).toMatchObject({ missing: "picture expired" });
+  const newest = retained.at(-1)?.picture;
+  if (!newest || !("receipt" in newest)) throw new Error("newest picture missing");
+  expect((await verifyEvidence(newest.receipt)).image.equals(image)).toBe(true);
 });
