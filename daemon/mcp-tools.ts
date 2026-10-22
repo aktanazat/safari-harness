@@ -16,7 +16,7 @@ import type { ReplResult, ReplSession } from "./repl.ts";
 let repl: ReplSession | undefined;
 
 const REPL_TOOL: Tool = {
-  desc: "Run JS in Safari; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. const p=await openTab(url); p.goto(url); (await snapshot(p)).tree has refs; (await p.extract({selector,query})).text; p.evaluate(fn,arg). p.locator(ref|css|text) or p.getByRole(role,{name}): click/fill/press/selectOption/textContent/count/waitFor. p.waitForSelector(css); p.waitForChange() for new lines. fetch(url) uses site cookies. fs,path; gmail,slack,notion,googleDocs,googleSheets,x,linkedin,imessage. More: safari guide <site|repl>.",
+  desc: "Run JS in Safari; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. p.waitForChange() for new lines. API, examples and site kits: safari guide <site|repl>.",
   params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
   required: ["code"],
   run: async (a) => {
