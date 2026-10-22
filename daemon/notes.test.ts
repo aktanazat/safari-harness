@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
+import { connect, historyFixture } from "./fake-safari.ts";
 import { guide } from "./guides.ts";
 import { runAs } from "./owner.ts";
 import { learn as learnSite, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -84,6 +84,7 @@ test.each([
 const urls = new Map<number, string>();
 let nextTab = 0;
 let world = "";
+const evaluate = historyFixture();
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
@@ -98,7 +99,7 @@ connect({
     else if ((op === "relay" && args[1] === "eval") || op === "evalPage") {
       world = op === "evalPage" ? "page" : "content";
       const code = op === "evalPage" ? String(args[1]) : (args[2] as string[])[0];
-      value = Promise.resolve().then(() => new Function(`return (${code})`)()).then((result) => ({ ok: true, result }));
+      value = Promise.resolve().then(() => evaluate(Number(args[0]), code)).then((result) => ({ ok: true, result }));
     }
     void Promise.resolve(value).then((v) => bridge.handleMessage(JSON.stringify({ id, value: v })));
   },

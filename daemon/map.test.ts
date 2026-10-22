@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
+import { connect, historyFixture } from "./fake-safari.ts";
 import { callTool, formatResult } from "./tools.ts";
 import { followPages, mapPages, type Listing, type Page } from "./map.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
@@ -51,6 +51,7 @@ let stuck: string | undefined;
 let nextTab = 0;
 const probes = new Map<number, number>();
 
+const evaluate = historyFixture();
 function read(tab: number): { value?: unknown; error?: string } {
   const url = tabs.get(tab)?.url ?? "";
   readUrls.push(url);
@@ -96,6 +97,10 @@ connect({
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     const reply = (r: { value?: unknown; error?: string }) => bridge.handleMessage(JSON.stringify({ id, ...r }));
     if (op !== "relay") return reply(answer(op, args));
+    if (Number(args[0]) === 900 && args[1] === "eval") {
+      const result = evaluate(900, (args[2] as string[])[0]);
+      return reply({ value: { ok: true, result } });
+    }
     if (args[1] === "wait") {
       const url = tabs.get(Number(args[0]))?.url ?? "";
       const [selector, want] = args[2] as [string | null, { text?: string }];

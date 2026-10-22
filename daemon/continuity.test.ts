@@ -2,8 +2,8 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
+import { bridge, type TabEvent } from "./bridge.ts";
+import { connect, historyFixture } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { callTool, endTurn, formatResult, loadTabs } from "./tools.ts";
 
@@ -11,25 +11,48 @@ import { callTool, endTurn, formatResult, loadTabs } from "./tools.ts";
 // answers from the tab it reached, which is noted, as is each close.
 const reached: number[] = [];
 const closed: number[] = [];
-let onClose = () => {};
+const tabs = new Map<number, { id: number; url: string; windowId: number }>();
+const history = historyFixture();
+let nextWindow = 0;
+let nextMarker = 900;
 let nextTab = 200;
 function answer(op: string, args: unknown[]): unknown {
-  if (op === "windows.open") return { windowId: 1, tabId: 900 };
-  if (op === "tabs.open") return { id: ++nextTab, windowId: args[2] };
-  if (op === "tabs.list" || op === "probe") return [];
+  if (op === "windows.open") {
+    const tab = { id: ++nextMarker, url: String(args[0]), windowId: ++nextWindow };
+    tabs.set(tab.id, tab);
+    return { windowId: tab.windowId, tabId: tab.id };
+  }
+  if (op === "windows.resolve") return [...tabs.values()].some((tab) => tab.windowId === args[0]) ? args[0] : null;
+  if (op === "tabs.open") {
+    const tab = { id: ++nextTab, url: String(args[0]), windowId: Number(args[2]) };
+    tabs.set(tab.id, tab);
+    return tab;
+  }
+  if (op === "tabs.list") return [...tabs.values()];
+  if (op === "probe") return [];
   if (op === "tabs.close") {
-    closed.push(Number(args[0]));
-    onClose();
+    const tab = Number(args[0]);
+    if (!tabs.delete(tab)) throw new Error("that tab is gone");
+    closed.push(tab);
   }
   if (op !== "relay") return { ok: true };
-  reached.push(Number(args[0]));
-  if (args[1] === "snapshot") return { url: "https://a.example/", title: "A", nodes: 1, truncated: false, snapshot: "- heading \"A\"" };
-  return { ok: true, url: "https://a.example/" };
+  const tab = tabs.get(Number(args[0]));
+  if (!tab) throw new Error("that tab is gone");
+  if (args[1] === "eval" && new URL(tab.url).pathname === "/space") {
+    return { ok: true, result: history(tab.id, String((args[2] as unknown[])[0])) };
+  }
+  reached.push(tab.id);
+  if (args[1] === "snapshot") return { url: tab.url, title: "A", nodes: 1, truncated: false, snapshot: "- heading \"A\"" };
+  return { ok: true, url: tab.url };
 }
 const ext = {
   send(raw: string) {
     const { id, op, args } = JSON.parse(raw) as { id: string; op: string; args: unknown[] };
-    bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) }));
+    try {
+      bridge.handleMessage(JSON.stringify({ id, value: answer(op, args) }));
+    } catch (error) {
+      bridge.handleMessage(JSON.stringify({ id, error: error instanceof Error ? error.message : String(error) }));
+    }
   },
   close() {},
 };
@@ -38,16 +61,29 @@ const file = join(mkdtempSync(join(tmpdir(), "continuity-")), "tabs.json");
 loadTabs(file);
 const owners = () => Object.fromEntries(Object.entries(JSON.parse(readFileSync(file, "utf8")).tabs as Record<string, { owner: number | null }>).map(([tab, t]) => [tab, t.owner]));
 // what background.js sends when Safari swaps a tab, or a page opens one
-const fromExtension = (event: Record<string, unknown>) => bridge.handleMessage(JSON.stringify({ op: "tab", ...event }));
+const fromExtension = (event: Exclude<TabEvent, { kind: "renumbered" }>) => {
+  if (event.kind === "replaced") {
+    const tab = tabs.get(event.from)!;
+    tabs.delete(event.from);
+    tabs.set(event.to, { ...tab, id: event.to });
+  } else {
+    const opener = tabs.get(event.opener)!;
+    tabs.set(event.tab, { id: event.tab, url: event.url, windowId: opener.windowId });
+  }
+  bridge.handleMessage(JSON.stringify({ op: "tab", ...event }));
+};
 
 const agent = Bun.spawn(["sleep", "60"]);
 // Exit alone is not task authority. The fixture explicitly admits cleanup
 // before it releases its owned resources.
 afterAll(async () => {
-  agent.kill();
-  await agent.exited;
-  const receipt = await endTurn(agent.pid);
-  expect(receipt.failed).toBe(0);
+  try {
+    const receipt = await endTurn(agent.pid);
+    expect(receipt.failed).toBe(0);
+  } finally {
+    agent.kill();
+    await agent.exited;
+  }
 });
 const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
 // the tab the stand-in handed out last is the one just opened
@@ -92,6 +128,7 @@ test("once the extension connects again, an old id is the tab Safari gives it no
   // Its socket closes and it connects again; connections are told apart by
   // the millisecond they began.
   bridge.detach(ext);
+  tabs.set(old, { id: old, url: "https://a.example/", windowId: ++nextWindow });
   for (const began = Date.now(); Date.now() === began; );
   connect(ext);
   expect(await as("info", { tab: old })).not.toHaveProperty("replaced");
@@ -120,11 +157,10 @@ test("popups from a tab an agent kept, and theirs, reach that agent's next resul
   const news = async () => formatResult(await as("info", { tab: kept })).split("\n")[0];
   const lines = [await news(), await news(), await news()];
   const mine = Object.entries(owners()).filter(([, owner]) => owner === agent.pid).map(([tab]) => Number(tab));
-  const { promise, resolve } = Promise.withResolvers<void>();
-  onClose = () => { if (mine.every((tab) => closed.includes(tab))) resolve(); };
-  onClose();
-  endTurn(agent.pid);
-  await promise;
+  const receipt = await endTurn(agent.pid);
+  expect(receipt).toMatchObject({ closed: mine.length, retained: 0, failed: 0 });
+  expect(closed).toEqual(expect.arrayContaining(mine));
+  expect([...tabs.keys()]).toEqual(expect.arrayContaining([kept, keptAtOpen, 270, 271, 272]));
   expect({ lines, closed: closed.filter((tab) => tab >= 270 && tab <= 272) }).toEqual({
     lines: [270, 271, 272].map((tab) => expect.stringMatching(new RegExp(`\\b${tab}\\b.*\\bstays open for the user\\b`))),
     closed: [],

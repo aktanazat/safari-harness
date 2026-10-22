@@ -17,7 +17,11 @@ function safari() {
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
-      if (op === "tabs.close") closes.push(Number(args[0]));
+      if (op === "tabs.close") {
+        const tab = Number(args[0]);
+        closes.push(tab);
+        if (closing === "closes") listed = listed.filter((page) => page.id !== tab);
+      }
       const reply = op === "tabs.close" && closing === "fails" ? { error: "Safari did not answer in 20 s" }
         : op === "tabs.list" ? { value: listed }
         : op === "relay" ? { error: "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user" }
@@ -43,24 +47,28 @@ test("a turn-end close that threw is tried again 1, 2, then 4 minutes on, then n
   safari();
   closing = "fails";
   closes.length = 0;
-  listed = [];
+  listed = [{ id: 4401, url: "https://a.example/", windowId: 1 }];
   const agent = Bun.spawn(["sleep", "60"]);
-  holds(4401, agent.pid);
-  const start = Date.now();
-  const closesAt = async (minutes: number) => {
-    setSystemTime(new Date(start + minutes * 60_000));
-    await endTurn(agent.pid);
-    return closes.length;
-  };
-  const tries = [];
-  for (const minutes of [0, 0.9, 1, 2.9, 3, 6.9, 7, 60]) tries.push(await closesAt(minutes));
-  expect(tries).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
-  await runAs(agent.pid, () => callTool("tabs", {}));
-  closing = "closes";
-  expect(await closesAt(60)).toBe(5);
-  expect(closes.every((tab) => tab === 4401)).toBe(true);
-  expect(await endTurn(agent.pid)).toMatchObject({ closed: 0, retained: 0 });
-  agent.kill();
+  try {
+    holds(4401, agent.pid);
+    const start = Date.now();
+    const closesAt = async (minutes: number) => {
+      setSystemTime(new Date(start + minutes * 60_000));
+      await endTurn(agent.pid);
+      return closes.length;
+    };
+    const tries = [];
+    for (const minutes of [0, 0.9, 1, 2.9, 3, 6.9, 7, 60]) tries.push(await closesAt(minutes));
+    expect(tries).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
+    await runAs(agent.pid, () => callTool("tabs", {}));
+    closing = "closes";
+    expect(await closesAt(60)).toBe(5);
+    expect(closes.every((tab) => tab === 4401)).toBe(true);
+    expect(await endTurn(agent.pid)).toMatchObject({ closed: 0, retained: 0 });
+  } finally {
+    agent.kill();
+    await agent.exited;
+  }
 });
 
 // On 10-16 no eBay, Depop, or Grailed search could open again after Safari
@@ -69,12 +77,15 @@ test("a tab closed as its turn ended keeps its search, query and all, as what it
   safari();
   closing = "closes";
   const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
-  const search = "https://www.ebay.com/sch/i.html?_nkw=arcteryx+beta&_sop=15";
-  holds(4501, agent.pid, search);
-  listed = [{ id: 4501, url: search, windowId: 1 }];
-  expect(await endTurn(agent.pid)).toMatchObject({ closed: 1 });
-  listed = [];
-  await expect(runAs(other.pid, () => callTool("extract", { tab: 4501 }))).rejects.toThrow(`(it showed ${search})`);
-  agent.kill();
-  other.kill();
+  try {
+    const search = "https://www.ebay.com/sch/i.html?_nkw=arcteryx+beta&_sop=15";
+    holds(4501, agent.pid, search);
+    listed = [{ id: 4501, url: search, windowId: 1 }];
+    expect(await endTurn(agent.pid)).toMatchObject({ closed: 1 });
+    await expect(runAs(other.pid, () => callTool("extract", { tab: 4501 }))).rejects.toThrow(`(it showed ${search})`);
+  } finally {
+    agent.kill();
+    other.kill();
+    await Promise.all([agent.exited, other.exited]);
+  }
 });

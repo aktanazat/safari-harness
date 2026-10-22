@@ -16,6 +16,23 @@ export function connect(sock: ExtSocket) {
   bridge.attach(sock);
 }
 
+export function historyFixture(): (tab: number, expression: string) => unknown {
+  const histories = new Map<number, { state: unknown; replaceState(state: unknown): void }>();
+  return (tab, expression) => {
+    let history = histories.get(tab);
+    if (!history) {
+      history = {
+        state: null,
+        replaceState(state: unknown) {
+          this.state = structuredClone(state);
+        },
+      };
+      histories.set(tab, history);
+    }
+    return new Function("history", `return (${expression})`)(history);
+  };
+}
+
 export function captureFixture(url: string, width = 1, height = 1): Capture {
   const chunk = (name: string, body: Buffer) => {
     const label = Buffer.from(name);
