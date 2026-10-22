@@ -79,6 +79,13 @@ outside the page: read `document`, `window` and the rest through
   call; a bare `sleep(ms)` makes none.
 - `page.extract(selector?)`, or `page.extract({selector, query})`, returns
   `{url, title, text, truncated}`: the words are in `.text`.
+- With agent research saving enabled, eligible `snapshot` and `extract`
+  results also contain `memoryReceipt`. Select useful sources with
+  `await saveSource(read.memoryReceipt.id, "why this source matters")`.
+  This works after `closeTab(page)`, until the receipt expires or its
+  caller ends. Only the original safe read is saved; arbitrary evaluated
+  text is not accepted. Research stays separate from personal browsing.
+  See `safari guide memory` for permissions and public-source limits.
 - `page.capture({path, fullPage, ref, annotate, tiles, tileHeight})` returns
   `{path, evidence, screens?, cut?}`. `evidence.path` names the immutable
   receipt with sanitized source details and image SHA256; tiles keep the

@@ -99,3 +99,13 @@ test("malformed current state blocks release without echoing page data", () => {
   expect(result.stderr.toString()).not.toContain(broken);
   expect(readFileSync(join(data, files[0]), "utf8")).toBe(broken);
 });
+
+test.each(["check", "restore"])("a %s cannot start an older browser-memory reader", action => {
+  writeFileSync(join(legacy, "package.json"), JSON.stringify({ safariHarnessCheckpointFormat: 2 }));
+  writeFileSync(join(current, "package.json"), JSON.stringify({ safariHarnessCheckpointFormat: 2, safariHarnessBrowserMemoryFormat: 2 }));
+  const saved = takeSnapshot(legacy);
+  const result = action === "check" ? invoke("check", current, legacy) : invoke("restore", saved, legacy, current);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("browser memory requires a newer reader");
+  expect(files.map(name => readFileSync(join(data, name), "utf8"))).toEqual(original);
+});

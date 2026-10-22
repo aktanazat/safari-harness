@@ -2038,3 +2038,41 @@ test("forget during the foreground eligibility check cannot send a stale memory 
   await b.clock.advance(1500);
   expect(b.told.filter((event) => event.op === "memory")).toEqual([{ op: "memory", tab: tab.id, url: tab.doc.url, revision: 2 }]);
 });
+
+test("research reads do not enable personal capture and strip candidates when independent permission is off", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/research");
+  const memorySource = { url: tab.doc.url, title: "Research", body: "A public research article contains useful scientific findings.", partial: false };
+  tab.doc.does = () => ({ url: tab.doc.url, title: "Research", text: memorySource.body, memorySource });
+  await b.request("memory.configure", [{ enabled: false, researchEnabled: false, sites: [], excludedSites: [] }, 1]);
+  expect((await b.ask(tab, "extract", [{ memoryResearch: true }])).value).not.toHaveProperty("memorySource");
+  await b.request("memory.configure", [{ enabled: false, researchEnabled: true, sites: [], excludedSites: [] }, 2]);
+  expect((await b.ask(tab, "extract", [{}])).value).toHaveProperty("memorySource", memorySource);
+  await b.clock.advance(2000);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
+});
+
+test.each(["private", "excluded", "account"] as const)("research rejects a %s source before it can reach daemon receipts", async (kind) => {
+  const b = await start();
+  const tab = b.open(kind === "account" ? "https://example.com/account" : "https://example.com/research");
+  tab.incognito = kind === "private";
+  const memorySource = { url: tab.doc.url, title: "Research", body: "A source that must not become a saved public research observation.", partial: false };
+  tab.doc.does = () => ({ url: tab.doc.url, text: memorySource.body, memorySource });
+  await b.request("memory.configure", [{ enabled: false, researchEnabled: true, sites: [], excludedSites: kind === "excluded" ? ["example.com"] : [] }, 1]);
+  expect((await b.ask(tab, "extract", [{}])).value).not.toHaveProperty("memorySource");
+});
+
+test("forgetting while a research read is pending prevents the old source from reaching receipts", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/research");
+  const held = Promise.withResolvers<unknown>();
+  tab.doc.does = () => held.promise;
+  await b.request("memory.configure", [{ enabled: false, researchEnabled: true, sites: [], excludedSites: [] }, 1]);
+  const reading = b.ask(tab, "extract", [{}]);
+  await settle();
+  await b.request("memory.configure", [{ enabled: false, researchEnabled: true, sites: [], excludedSites: [] }, 2, false]);
+  held.resolve({ url: tab.doc.url, text: "A previously read public source must not survive forgetting.", memorySource: {
+    url: tab.doc.url, title: "Research", body: "A previously read public source must not survive forgetting.", partial: false,
+  } });
+  expect((await reading).value).not.toHaveProperty("memorySource");
+});

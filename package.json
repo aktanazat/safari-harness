@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "safariHarnessCheckpointFormat": 2,
+  "safariHarnessBrowserMemoryFormat": 2,
   "license": "MIT",
   "type": "module",
   "bin": {

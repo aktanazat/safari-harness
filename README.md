@@ -274,11 +274,12 @@ before a release is built or selected. Use the current installer; an old
 script without this check cannot enforce it.
 
 `scripts/dev-install.sh --rollback` selects the previous release only when
-its reader supports the current writer's checkpoint format. Version-2
-checkpoints preserve dirty, held, foreign and resume metadata; the legacy
-flat-map reader cannot consume them. A downgrade to that reader is refused
-before changing the app, release link or daemon. Do not invoke an older
-release's unguarded installer to bypass this boundary.
+its reader supports the current writer's checkpoint and browser-memory
+formats. Version-2 checkpoints preserve dirty, held, foreign and resume
+metadata. Browser-memory format 2 distinguishes research from personal
+browsing. Older readers cannot preserve those boundaries, so an incompatible
+downgrade is refused before changing the app, release link or daemon.
+Do not invoke an older release's unguarded installer to bypass this boundary.
 
 Before switching releases the installer snapshots the two existing
 checkpoints for its HTTP port, byte-for-byte, in a private temporary backup.
@@ -418,11 +419,21 @@ Output goes to `~/Library/Logs/safari-harness/routines/`.
 
 ### Opt-in browser memory
 
-`http://127.0.0.1:37334/memory` provides site selection, pause, search,
-source links, corrected summaries, notes, retention and deletion. Capture
-starts off with no selected sites. Only the foreground non-private user
-page on an explicitly selected host is eligible; agent tabs and filled
-editors are excluded. This does not record the desktop or unsent drafts.
+`http://127.0.0.1:37334/memory` provides separate opt-in controls for personal
+browsing and agent research, plus search, source links, corrected summaries,
+notes, retention and deletion. Both permissions start off.
+
+Personal capture requires exact selected hosts and only observes the
+foreground non-private user page. Agent tabs and filled editors are excluded.
+This does not record the desktop or unsent drafts.
+
+With research saving enabled, an agent selects useful public sources through
+`save_source`, using short-lived receipts from actual safe page reads.
+Receipts survive tab closure and retain the original text, URL, read time
+and partial-read status. Arbitrary agent-supplied source text is not accepted.
+Private/project research is refused without trusted permission context.
+Research is labelled separately from personal browsing and cannot overwrite
+it simply because both use the same URL.
 
 Page text and search stay local. Optional AI summaries send selected text
 to OMP; relevant saved text can also accompany AI tasks. Every observation
@@ -431,9 +442,11 @@ Engram federates browser recall read-only without copying it into records.
 
 `safari memory search "oxygen spectrometer"` searches saved text;
 `safari guide memory` explains configuration, provider consent and deletion.
-Pause preserves pages; removing a site, expiry or confirmed forget removes
-its local text, summary and note. Prior chats, provider copies and OS backups
-are outside that local deletion boundary.
+Pausing keeps saved pages. Removing a personal browsing site erases its
+personal observations; excluding a site erases both kinds. Expiry or confirmed
+forget removes local text, summaries and notes. Forget invalidates unfinished
+saves and summaries. Prior chats, provider copies and OS backups are outside
+that local deletion boundary.
 
 ### Verified agent playbooks
 

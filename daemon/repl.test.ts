@@ -7,6 +7,7 @@ import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { ReplSession } from "./repl.ts";
 import { callTool } from "./tools.ts";
+import { BrowserMemory } from "./browser-memory.ts";
 
 const BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
 const WEBKIT = "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\".";
@@ -386,4 +387,29 @@ test("imessage.search passes the chat it keeps to the search tool", async () => 
   const { repl, calls } = session();
   await repl.run("await imessage.search('lunch', { chat: 'Mom' })");
   expect(calls.filter(([tool]) => tool === "imessage_search")).toEqual([["imessage_search", { text: "lunch", chat: "Mom" }]]);
+});
+
+test("a REPL snapshot preserves its read receipt so the same caller can save after closing the source tab", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "repl-research-"));
+  const memory = new BrowserMemory({ directory: join(directory, "memory") });
+  memory.configure({ researchEnabled: true });
+  const source = { url: "https://example.com/research", title: "Public report", body: "The public report describes lithium battery recycling.", partial: true };
+  const receipt = memory.holdResearch(source, 123);
+  if (!receipt) throw new Error("expected a held source read");
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: source.url, title: source.title };
+    if (tool === "snapshot") return { ...source, snapshot: '- text "The public report describes lithium battery recycling."', memoryReceipt: receipt };
+    if (tool === "save_source") return { page: memory.saveResearch(String(args.receipt), 123, String(args.reason)) };
+    return { ok: true };
+  };
+  const repl = new ReplSession("research", { cwd: directory, invoke });
+  try {
+    const result = await repl.run("const sourceTab=await openTab('https://example.com/research'); const read=await snapshot(sourceTab); await closeTab(sourceTab); await saveSource(read.memoryReceipt.id,'Used the public report.');");
+    expect(result.error).toBeUndefined();
+    expect(memory.list().pages).toMatchObject([{ observation: "agent_research", url: source.url, partial: true, scope: "public" }]);
+  } finally {
+    await repl.close();
+    memory.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

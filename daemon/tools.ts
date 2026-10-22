@@ -31,7 +31,7 @@ import { replay } from "./replay.ts";
 import { CARD_PHONE } from "./passkey.ts";
 import { saveCapture, type Capture, type CaptureResult } from "./evidence.ts";
 import { createResearchReport } from "./research.ts";
-import { browserMemoryTool, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
+import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, finishNativeAction, missionCall } from "./mission.ts";
@@ -791,7 +791,7 @@ export async function snapshot(opts: { tab?: number; root?: string; query?: stri
   // drawing is read once: its own snapshot waits for it (snapshot in
   // content.js), and a second wait here doubled the time a blank page took
   // to answer.
-  const read = (root: string | undefined) => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab);
+  const read = (root: string | undefined) => researchRead(tab, () => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden }]) as Promise<Snapshot>, tab), !!(opts.diff || opts.interactive));
   const { page, missed } = await narrowed("root", opts.root, read);
   const shielded = shieldSnapshot(page);
   // interactive keeps the lines with refs, a view of the page as a root or
@@ -1010,7 +1010,7 @@ async function runReader(tab: number | undefined, name: string, timeoutMs?: numb
 export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
   const tab = await resolveTab(opts.tab);
   const strict = "strict_selector" in opts && opts.strict_selector === true;
-  const read = (selector: string | undefined) => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>;
+  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>);
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // as: "table" answers rows, not text
@@ -2089,13 +2089,20 @@ export const TOOLS: Record<string, Tool> = {
       limit: { type: "number", description: "maximum results, up to 100" },
       offset: { type: "number", description: "skip this many matching pages" },
       id: { type: "string", description: "saved page to show, correct, or forget" },
-      config: { type: "object", description: "partial settings: enabled, sites, excludedSites, retentionDays (7,30,90), summarize" },
+      config: { type: "object", description: "partial settings: enabled, researchEnabled, sites, excludedSites, retentionDays (7,30,90), summarize" },
       summary: { type: "string", description: "corrected summary for edit" },
       note: { type: "string", description: "your note for edit; a note is not proof of an action" },
       all: { type: "boolean", description: "forget every saved page" },
       approved: { type: "boolean", description: "true only after the user confirms what to forget" },
     },
     run: browserMemoryTool,
+    hidden: true,
+  },
+  save_source: {
+    desc: "Save a useful public source already read through extract or snapshot, using its memoryReceipt.id. Select sources used in the answer or useful to the task, not every page. Works after your tab closes; receipts expire. No private/project saving or memory settings changes. Keep reason free of private task details.",
+    params: { receipt: { type: "string", description: "memoryReceipt.id from a successful source read" }, reason: { type: "string", description: "why this source is useful, max 1000 characters; no private task details" } },
+    required: ["receipt", "reason"],
+    run: saveResearchSource,
     hidden: true,
   },
   action_admit: {
@@ -2725,11 +2732,11 @@ type Chat = Shielded & { url: string; title: string; messages: { from: string; t
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings.
 export function formatResult(value: unknown): string {
-  // A note or hint beside a result (guard.ts) goes on a line of its own after it.
-  if (value && typeof value === "object" && !Array.isArray(value) && ("note" in value || "hint" in value)) {
-    const { note, hint, ...rest }: { note?: unknown; hint?: unknown } = value;
+  // Notes, hints, and optional-memory warnings stay visible beside every read shape.
+  if (value && typeof value === "object" && !Array.isArray(value) && ("note" in value || "hint" in value || "memoryWarning" in value)) {
+    const { note, hint, memoryWarning, ...rest }: { note?: unknown; hint?: unknown; memoryWarning?: unknown } = value;
     const body = Object.keys(rest).length === 1 && "value" in rest ? formatResult(rest.value) : formatResult(rest);
-    return [body, ...(note === undefined ? [] : [`note: ${String(note)}`]), ...(hint === undefined ? [] : [`hint: ${String(hint)}`])].join("\n");
+    return [body, ...(note === undefined ? [] : [`note: ${String(note)}`]), ...(hint === undefined ? [] : [`hint: ${String(hint)}`]), ...(memoryWarning === undefined ? [] : [`memoryWarning: ${String(memoryWarning)}`])].join("\n");
   }
   if (typeof value === "string") return value;
   const news = value && typeof value === "object" ? splitNews(value) : null;
@@ -2742,10 +2749,10 @@ export function formatResult(value: unknown): string {
       const note = v.truncated ? "; truncated: narrow with query or root" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
       const notes = `${v.guide ? `guide: ${v.guide}\n` : ""}${v.notes ? `${v.notes}\n` : ""}`;
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${notes}${v.snapshot}`;
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${check}${warn}${notes}${v.snapshot}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${text}`;

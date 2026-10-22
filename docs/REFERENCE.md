@@ -748,17 +748,40 @@ parameter is a flag (`select --ref 3 --option Large`), and `safari help
 
 ## memory
 
-Browser memory is off until the user selects exact sites and starts capture.
-Open `http://127.0.0.1:37334/memory`, also linked from `/agents`, to review
-settings and saved pages. `example.com` does not include `mail.example.com`.
-Only the foreground, non-private user page is eligible after a short dwell.
-Agent tabs, forms, filled editors, hidden text and embedded frames are skipped.
-This is browser-page memory, not desktop recording or unsent-draft capture.
+Personal browsing capture and agent research saving have separate opt-in
+permissions at `http://127.0.0.1:37334/memory`, also linked from `/agents`.
+Both start off. Personal capture requires exact selected sites:
+`example.com` does not include `mail.example.com`. Only the foreground,
+non-private user page is eligible after a short dwell. Agent tabs, forms,
+filled editors, hidden text and embedded frames are excluded from personal
+capture. This does not record the desktop or unsent drafts.
+
+Research saving does not enable personal capture or require a site list.
+Eligible reads return a short-lived `memoryReceipt`. Save a useful source
+before completing the task:
+
+```json
+{"steps":[{"tool":"save_source","args":{"receipt":"RECEIPT_ID","reason":"the source supports the task's conclusion"}}]}
+```
+
+Pass this to MCP `run`, or use `safari save_source --receipt RECEIPT_ID
+--reason "why this source matters"`. The receipt holds the original safe
+text, URL and read time, including whether the read was partial. It remains
+usable after its tab closes, but not after its caller ends or it expires.
+The agent supplies only its reason, not replacement source text or scope.
+Save sources actually used or useful to the task, not every opened page.
+
+Only public research is eligible. Private account pages, drafts, credentials,
+access walls and unknown privacy contexts cannot become research memory.
+Project-private saving is not supported without trusted project authority.
+Saved research is marked `agent_research`, not the user's browsing, beliefs,
+decisions or actions. Its original source text stays separate from summaries.
 
 ```sh
 safari memory status
 safari memory search "oxygen spectrometer" --site example.com
 safari memory show --id PAGE_ID
+safari memory configure --config '{"researchEnabled":true}'
 safari memory configure --config '{"enabled":true,"sites":["example.com"],"retentionDays":30,"summarize":true}'
 safari memory edit --id PAGE_ID --summary "Corrected account of the page." --note "My note."
 safari memory forget --id PAGE_ID --approved
@@ -771,9 +794,10 @@ always-loaded tool list:
 `run {steps:[{tool:"memory",args:{do:"search",query:"oxygen"}}]}`.
 Actions are `status`, `search`, `recall`, `show`, `configure`, `edit` and
 `forget`. Search accepts `site`, `limit` (1–100) and `offset`. Detail accepts
-`id`. Configure accepts a partial `config` with `enabled`, `sites`,
-`excludedSites`, `retentionDays` (7, 30 or 90) and `summarize`. A new store
-has no selected sites, 30-day retention and provider summaries off.
+`id`. Configure accepts a partial `config` with `enabled`, `researchEnabled`,
+`sites`, `excludedSites`, `retentionDays` (7, 30 or 90) and `summarize`.
+A new store has both collection permissions off, no selected sites,
+30-day retention and provider summaries off.
 
 Search matches words in saved text, summaries and notes, with source URL,
 visit time and a relevant excerpt. It supports `today`, `yesterday` and
@@ -788,11 +812,14 @@ replaced with an invented summary. The user may correct a summary or add a
 note. Relevant text may also be included in AI task context independently of
 whether provider summaries are enabled.
 
-Pause stops collection and keeps saved pages. Removing or excluding a site
-erases its saved pages. Retention expiry and `forget` remove local bodies,
-summaries and notes and cancel pending work. Forget requires the user's
-confirmed scope and `approved: true`. It does not recapture the current page.
-Local deletion cannot erase prior chats, provider-retained data or OS backups.
+Pausing personal capture or research saving keeps saved pages. Removing a
+personal browsing site erases its personal observations; exclusions apply to
+both kinds. Retention expiry and `forget` remove local bodies, summaries and
+notes and cancel pending work. Forget and privacy changes invalidate held
+research receipts so old work cannot restore deleted content. Forget requires
+the user's confirmed scope and `approved: true`. It does not recapture the
+current page. Local deletion cannot erase prior chats, provider-retained
+data or OS backups.
 
 Safari tasks fetch bounded relevant context fresh before each model request;
 the temporary context is not appended to their saved conversation. Engram
@@ -800,6 +827,18 @@ reads the same observations through its loopback-only `/memory/recall` adapter.
 It does not ingest them as canonical records or maintain a second index.
 `mem-find "what did i read about oxygen" --sources memory,browser` searches
 both sources. A disconnected Safari or failed summary is disclosed.
+
+## save_source
+
+`save_source {receipt, reason}` remembers a useful public source from an
+eligible earlier read. `receipt` is the `memoryReceipt.id` returned by the
+harness, not a page URL or source text. `reason` says why the source matters
+to the task. This action cannot change collection settings or permissions.
+
+Use through MCP `run` or `safari save_source --receipt ID --reason "reason"`.
+See `safari guide memory` for eligibility, expiry, source provenance and
+forget. A rejected save must not be reported as successful.
+
 
 ## open
 

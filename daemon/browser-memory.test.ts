@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,8 @@ const input = { url: "https://example.com/research", title: "Research", body: "L
 test("new memory refuses collection and provider use until an exact host is explicitly enabled", async () => {
   let providerRequests = 0;
   const memory = store({ summarize: async () => { providerRequests++; return "unexpected summary"; } });
-  expect(memory.status().config).toEqual({ enabled: false, sites: [], excludedSites: [], retentionDays: 30, summarize: false });
+  expect(memory.status().config.enabled).toBe(false);
+  expect(memory.status().config.researchEnabled).toBe(false);
   expect(await memory.capture(input)).toBeNull();
   memory.configure({ enabled: true });
   expect(await memory.capture(input)).toBeNull();
@@ -56,7 +58,7 @@ test("configuration and captured text survive reopening with private file permis
   const page = required(await first.capture(input));
   first.close();
   const second = store({ directory });
-  expect(second.status().config).toEqual({ enabled: true, sites: ["example.com"], excludedSites: ["private.example.com"], retentionDays: 90, summarize: false });
+  expect(second.status().config).toMatchObject({ enabled: true, sites: ["example.com"], excludedSites: ["private.example.com"], retentionDays: 90, summarize: false });
   expect(second.detail(page.id)?.body).toBe(input.body);
   expect(statSync(directory).mode & 0o777).toBe(0o700);
   expect(statSync(join(directory, "observations.sqlite")).mode & 0o777).toBe(0o600);
@@ -386,4 +388,132 @@ test("stored page text is bounded and known secrets and URL credentials are remo
   expect(page.url).not.toContain("private-url-token");
   expect(page.url).not.toContain("fixture-password");
   expect(page.url).not.toContain("draft");
+});
+
+test("research permission is independent of ambient browsing and receipts deduplicate without persisting unselected reads", () => {
+  const memory = store();
+  expect(memory.holdResearch({ ...input, partial: false }, 123)).toBeNull();
+  memory.configure({ researchEnabled: true });
+  const receipt = memory.holdResearch({ ...input, partial: true }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  expect(memory.status()).toMatchObject({ total: 0, config: { enabled: false, sites: [], researchEnabled: true } });
+  const page = memory.saveResearch(receipt.id, 123, "Used the study's recycling costs.");
+  expect(page).toMatchObject({ url: input.url, observation: "agent_research", scope: "public", partial: true, visitedAt: NOW, reason: "Used the study's recycling costs." });
+  expect(memory.detail(page.id)?.body).toBe(input.body);
+  expect(memory.saveResearch(receipt.id, 123, "Useful study.").id).toBe(page.id);
+  expect(memory.status().total).toBe(1);
+  expect(memory.eligible(input.url)).toBe(false);
+});
+
+test("research saves cannot replace viewed text at the same URL and ambient site removal retains research", async () => {
+  const memory = store();
+  memory.configure({ enabled: true, researchEnabled: true, sites: ["example.com"] });
+  const viewed = required(await memory.capture(input));
+  const receipt = memory.holdResearch({ ...input, body: "Research-only sodium battery report.", partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  const research = memory.saveResearch(receipt.id, 123, "Used the public report.");
+  expect(research.id).not.toBe(viewed.id);
+  expect(memory.detail(viewed.id)?.body).toBe(input.body);
+  expect(memory.configure({ enabled: false, sites: [] }).total).toBe(1);
+  expect(memory.detail(research.id)?.body).toBe("Research-only sodium battery report.");
+  expect(memory.detail(viewed.id)).toBeNull();
+});
+
+test("a foreign caller cannot save a receipt but the original caller still can", () => {
+  const memory = store();
+  memory.configure({ researchEnabled: true });
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  expect(() => memory.saveResearch(receipt.id, 456, "Foreign read.")).toThrow("belongs to another caller");
+  expect(memory.saveResearch(receipt.id, 123, "Used this source.").observation).toBe("agent_research");
+});
+
+test.each(["forget", "exclude", "pause", "owner-end", "expiry"] as const)("research %s invalidates held and in-flight reads", (change) => {
+  let now = NOW;
+  const memory = store({ now: () => now });
+  memory.configure({ researchEnabled: true });
+  const generation = memory.researchGeneration();
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  if (change === "forget") memory.forget({ all: true });
+  if (change === "exclude") memory.configure({ excludedSites: ["example.com"] });
+  if (change === "pause") memory.configure({ researchEnabled: false });
+  if (change === "owner-end") memory.releaseResearch(123);
+  if (change === "expiry") now += 10 * 60_000;
+  expect(() => memory.saveResearch(receipt.id, 123, "Stale read.")).toThrow("expired, forgotten, or belongs to another caller");
+  if (change === "forget") expect(memory.holdResearch({ ...input, partial: false }, 123, generation)).toBeNull();
+  expect(memory.status().total).toBe(0);
+});
+
+test("source-only retrieval excludes private annotations before matching and preserves the verified original text", () => {
+  const memory = store();
+  memory.configure({ researchEnabled: true });
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  const page = memory.saveResearch(receipt.id, 123, "confidentialreasonmarker");
+  memory.edit(page.id, { summary: "confidentialsummarymarker", note: "confidentialnotemarker" });
+  expect(memory.list({ query: "confidentialnotemarker", scope: "public" })).toEqual({ pages: [], total: 0 });
+  expect(memory.list({ query: "confidentialsummarymarker", scope: "public" })).toEqual({ pages: [], total: 0 });
+  expect(memory.list({ query: "lithium", scope: "public" }).pages[0]).toMatchObject({ id: page.id, summary: "", note: "", summarySource: "none", observation: "agent_research", scope: "public" });
+  expect(JSON.stringify(memory.list({ scope: "public" }))).not.toContain("confidential");
+  expect(memory.detail(page.id)?.reason).toBe("confidentialreasonmarker");
+});
+
+test("research summaries use independent research consent while ambient collection stays off", async () => {
+  const result = Promise.withResolvers<string>();
+  const memory = store({ summarize: () => result.promise });
+  memory.configure({ researchEnabled: true, summarize: true });
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  const page = memory.saveResearch(receipt.id, 123, "Used the study.");
+  result.resolve("The study reports lower battery recycling costs.");
+  await result.promise;
+  expect(memory.detail(page.id)).toMatchObject({ summary: "The study reports lower battery recycling costs.", summarySource: "provider" });
+  memory.forget({ id: page.id });
+  expect(memory.detail(page.id)).toBeNull();
+});
+
+test("legacy SQLite migration preserves viewed ids, notes and text while removing URL-only uniqueness", async () => {
+  const directory = folder();
+  const db = new Database(join(directory, "observations.sqlite"));
+  db.exec(`CREATE TABLE pages (id TEXT PRIMARY KEY,url TEXT NOT NULL UNIQUE,site TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,
+    visitedAt INTEGER NOT NULL,hash TEXT NOT NULL,revision TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL,error TEXT,summarySource TEXT NOT NULL DEFAULT 'none',summaryEditedAt INTEGER,noteEditedAt INTEGER);
+    CREATE TABLE settings(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`);
+  db.query("INSERT INTO settings VALUES(1,?)").run(JSON.stringify({ enabled: true, sites: ["example.com"], excludedSites: [], retentionDays: 30, summarize: false }));
+  db.query("INSERT INTO pages(id,url,site,title,body,visitedAt,hash,revision,summary,note,state,summarySource) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run("legacy-page", input.url, "example.com", input.title, input.body, NOW, "legacy-hash", "legacy-revision", "Original summary.", "Original note.", "ready", "user");
+  db.close();
+  const memory = store({ directory });
+  expect(memory.detail("legacy-page")).toMatchObject({ observation: "viewed", body: input.body, summary: "Original summary.", note: "Original note." });
+  memory.configure({ researchEnabled: true });
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  const research = memory.saveResearch(receipt.id, 123, "Used the public source.");
+  expect(research.id).not.toBe("legacy-page");
+  expect(memory.status().total).toBe(2);
+});
+
+test("forgetting research cancels a pending provider summary and a late result cannot resurrect its text", async () => {
+  const result = Promise.withResolvers<string>();
+  const memory = store({ summarize: () => result.promise });
+  memory.configure({ researchEnabled: true, summarize: true });
+  const receipt = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!receipt) throw new Error("expected a held research read");
+  const page = memory.saveResearch(receipt.id, 123, "Used the study.");
+  memory.forget({ id: page.id });
+  result.resolve("A forgotten research summary must not return.");
+  await result.promise;
+  expect(memory.detail(page.id)).toBeNull();
+  expect(memory.status().total).toBe(0);
+});
+
+test("research candidate bytes are bounded even before the candidate-count limit is reached", () => {
+  const memory = store();
+  memory.configure({ researchEnabled: true });
+  const first = memory.holdResearch({ ...input, body: "漢".repeat(16000), partial: false }, 1000);
+  if (!first) throw new Error("expected a held research read");
+  for (let owner = 1001; owner < 1032; owner++) memory.holdResearch({ ...input, body: "漢".repeat(16000), partial: false }, owner);
+  expect(() => memory.saveResearch(first.id, 1000, "Oldest candidate.")).toThrow("expired, forgotten, or belongs to another caller");
+  expect(memory.status().total).toBe(0);
 });
