@@ -4,6 +4,9 @@
 #   scripts/dev-install.sh [COMMIT]    deploy COMMIT (default: HEAD)
 #   scripts/dev-install.sh --rollback  go back to the release deployed before
 #
+# Normal deploys must contain both the selected and running releases.
+# Merge their commits first; only --rollback deliberately goes backwards.
+#
 # A deploy takes a commit, never the working tree: it copies the commit into
 # ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
 # and points ~/.local/share/safari-harness/current at it in one step. The
@@ -158,6 +161,30 @@ else
   full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
   sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
   git -C "$ROOT" cat-file -e "$full:daemon/codehash.ts" 2>/dev/null || { echo "$sha predates deploys by release; deploy a later commit" >&2; exit 1; }
+  # Check both sources: current may have switched while the old daemon
+  # still runs. Resolve abbreviated ids before comparing, and fail closed
+  # when this checkout cannot establish the installed release's ancestry.
+  running="$(health .root)"
+  if [ -z "$before$running" ] && { [ -e "$CURRENT" ] || [ -L "$CURRENT" ] || [ -s "$DATA/deploys.log" ]; }; then
+    echo "cannot identify the release in use; no release changed" >&2
+    exit 1
+  fi
+  for release in "$before" "$running"; do
+    [ -n "$release" ] || continue
+    case "$release" in
+      releases/*) live="${release#releases/}" ;;
+      "$RELEASES"/*) live="${release#"$RELEASES/"}" ;;
+      *) echo "cannot identify the release in use: $release; no release changed" >&2; exit 1 ;;
+    esac
+    if ! [[ "$live" =~ ^[0-9a-fA-F]{4,64}$ ]] || ! live_full="$(git -C "$ROOT" rev-parse --verify --quiet "$live^{commit}")"; then
+      echo "cannot resolve release $live in this checkout; fetch or merge its history first; no release changed" >&2
+      exit 1
+    fi
+    if ! git -C "$ROOT" merge-base --is-ancestor "$live_full" "$full" 2>/dev/null; then
+      echo "$sha does not contain $live, a release in use; merge it first, or use --rollback for an intentional rollback; no release changed" >&2
+      exit 1
+    fi
+  done
   left="$(git -C "$ROOT" status --porcelain -- daemon cli extension "Safari Harness" scripts passwords-bridge docs omp package.json | wc -l | tr -d ' ')"
   [ "$left" = 0 ] || echo "note: $left uncommitted change(s) in the checkout are not deployed"
   if [ ! -d "$RELEASES/$sha" ]; then
