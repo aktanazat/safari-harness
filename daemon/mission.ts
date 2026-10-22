@@ -30,7 +30,7 @@ import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPict
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { spaceById, spaceEnded } from "./spaces.ts";
-import { closeTabsOf, resolveTab, screenshot, tabsOpenedBy, TOOLS, type TabInfo } from "./tools.ts";
+import { closeTabsOf, resolveTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 
 // What a held call answers: each tells the agent what to do next.
@@ -411,7 +411,10 @@ async function execute<T>(agent: Agent, tool: string, args: Record<string, unkno
   const key = guarded ? fingerprint(tool, args) : undefined;
   const view = tab === undefined ? undefined : agent.views.get(tab);
   if (guarded && view?.stale) throw new HarnessError("stale_view", "the user changed this tab; snapshot or read it before acting", { next: "snapshot or extract this tab, then decide what to do" });
-  if (effectful && key !== undefined && (view?.all || view?.native?.size || view?.retries.has(key))) {
+  if (effectful && view?.native?.size) {
+    throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { effect: "none", retryable: false, next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
+  }
+  if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
     throw new HarnessError("effect_unknown", "that action may already have happened; snapshot or read this tab before repeating it", { effect: "none", retryable: true, next: "snapshot or extract this tab and check whether the action already happened" });
   }
   const revision = agent.revision;
@@ -797,8 +800,9 @@ async function control(owner: number | undefined, action: unknown, from: string,
       while (agent.takeovers.size) await Promise.allSettled(agent.takeovers);
       const was = agent.hold;
       if (was === undefined) break;
-      release(agent);
       for (const [tab, view] of agent.views) if (view.stale) invalidate(agent, tab);
+      if (was === "driving") for (const tab of tabsOwnedBy(agent.owner)) if (!agent.views.get(tab)?.stale) invalidate(agent, tab);
+      release(agent);
       note(was === "driving" ? "user gave back" : "agent resumed", { owner, from });
       break;
     }
@@ -823,7 +827,8 @@ async function raise(agent: Agent, window: number | undefined): Promise<number |
   const mine = inWindows(tabs, windows);
   const tab = agent.calls.findLast((c) => c.tab !== undefined && mine.some((t) => t.id === c.tab))?.tab ?? mine.at(-1)?.id;
   if (tab === undefined) return undefined;
-  invalidate(agent, tab);
+  for (const affected of mine) invalidate(agent, affected.id);
+  for (const owned of tabsOwnedBy(agent.owner)) if (!agent.views.get(owned)?.stale) invalidate(agent, owned);
   try {
     await bridge.request("tabs.activate", [tab], 10_000);
     return tab;

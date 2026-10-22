@@ -198,9 +198,9 @@ window's page, and the same buttons.
 - Let me drive: he takes over the tab you used last, brought to the front
   of its window, and you are paused until he presses Give back. A queued
   action does not continue blindly: read a fresh whole-page `snapshot`,
-  `extract`, or uncropped `shot` of that tab before acting again. A read
-  started before takeover, a narrowed read, or a truncated read does not
-  count.
+  `extract`, or uncropped `shot` of each task tab before acting on it again.
+  This also applies to a task tab moved to another window. A read started
+  before takeover, a narrowed read, or a truncated read does not count.
 - Stop: every later call fails with "the user stopped this task from its
   window; stop and tell the user what you had done". Your tabs close; the
   window keeps its page, marked stopped, and goes two minutes later or
@@ -242,6 +242,11 @@ blindly: follow `next`. A fresh whole-page read is required before
 repeating an uncertain action. `stale_view` means the user changed the
 tab; `effect_unknown` means an earlier action's result is not known.
 Privacy refusals do not authorize an unprotected screenshot.
+
+unfinished native input is not retryable, and a page read cannot release
+its permit. if a tool dies before confirming a click or typing, do not
+repeat it. stop the agent and make sure its input has stopped before
+starting a new task.
 
 Page reads add `pageState: {kind, next}` without replacing the original
 output. `kind` is `content`, `login_wall`, `paywall`, `region_block`,
@@ -632,6 +637,8 @@ things unless its saved task explicitly says to.
   permission and wait for the user to leave the keys alone.
 - Screenshots need the tab's window on screen (not minimized).
 - No reach inside closed shadow DOM.
+  automatic hiding cannot catch private text inside every image or part of
+  a page. check saved pictures before sharing them.
 - One extension connection. The daemon owns it, and every client shares it.
 
 ## Troubleshooting

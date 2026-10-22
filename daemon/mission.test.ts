@@ -350,6 +350,7 @@ test("a click queued in the tab's real dispatch lane cannot act after giveback u
   const a = agent();
   const tab = await open(a.pid, "https://queued.example/");
   const other = await open(a.pid, "https://other.example/");
+  s.tabs.get(other)!.windowId = 1;
   const page = pageOf(tab);
   const entered = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<{ ok: true }>();
@@ -374,6 +375,8 @@ test("a click queued in the tab's real dispatch lane cannot act after giveback u
     await first;
     expect(await queued).toBe("stale_view");
     expect(sent).toBe(1);
+    await expect(call(a.pid, "click", { tab: other, ref: "other" })).rejects.toMatchObject({ code: "stale_view" });
+    await call(a.pid, "snapshot", { tab: other });
     await call(a.pid, "click", { tab: other, ref: "other" });
     expect(await call(a.pid, "info", { tab })).toMatchObject({ url: "https://queued.example/" });
     await expect(call(a.pid, "click", { tab, ref: "queued" })).rejects.toMatchObject({ code: "stale_view" });
@@ -470,6 +473,7 @@ test("each nested run step is checked separately after giveback", async () => {
   await press(pageOf(tab), "drive");
   await press(pageOf(tab), "giveback");
   const before = s.effects.length;
+  await call(a.pid, "snapshot", { tab: other });
   const result = await call(a.pid, "run", { steps: [
     { tool: "click", args: { tab: other, ref: "allowed" } },
     { tool: "click", args: { tab, ref: "stale" } },
@@ -486,7 +490,7 @@ test("native input permits pin the owner and remain uncertain until completion; 
   const pending = await (await ask(`http://127.0.0.1:37334/agents/history.json?id=${(await listed(a.pid))!.id}`)).json();
   expect(pending.missions[0].calls.at(-1)).toMatchObject({ tool: "real_input", outcome: "running" });
   await call(a.pid, "snapshot", { tab });
-  await expect(native(a.pid, { tab })).rejects.toMatchObject({ code: "effect_unknown" });
+  await expect(native(a.pid, { tab })).rejects.toMatchObject({ code: "effect_unknown", retryable: false });
   await expect(runAs(b.pid, () => finishNativeAction(tab, permit.permit, false))).rejects.toMatchObject({ code: "invalid_argument" });
   await runAs(a.pid, () => finishNativeAction(tab, permit.permit, true));
   await expect(native(a.pid, { tab })).rejects.toMatchObject({ code: "effect_unknown" });
@@ -812,4 +816,37 @@ test("a nested mission call resolves its owner inside runAs instead of borrowing
   await call(b.pid, "snapshot", { tab });
   await expect(nested()).resolves.toMatchObject({ ok: true });
   expect(sent).toBe(1);
+});
+
+test("giveback protects a task tab whose already-running open finishes during takeover", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://takeover.example/first");
+  const page = pageOf(tab);
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const request = bridge.request.bind(bridge);
+  const relay = spyOn(bridge, "request").mockImplementation(async (...args) => {
+    if (args[0] === "tabs.open" && args[1]?.[0] === "https://takeover.example/late") {
+      entered.resolve();
+      await finish.promise;
+    }
+    return request(...args);
+  });
+  const opening = open(a.pid, "https://takeover.example/late");
+  try {
+    await entered.promise;
+    await press(page, "drive");
+    finish.resolve();
+    const late = await opening;
+    await press(page, "giveback");
+    await expect(call(a.pid, "click", { tab: late, ref: "submit" })).rejects.toMatchObject({ code: "stale_view" });
+    await call(a.pid, "snapshot", { tab: late });
+    await call(a.pid, "click", { tab: late, ref: "submit" });
+    expect(s.effects.at(-1)).toEqual({ tab: late, ref: "submit" });
+  } finally {
+    finish.resolve();
+    relay.mockRestore();
+    await press(page, "giveback");
+    await opening;
+  }
 });

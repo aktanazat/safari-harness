@@ -379,6 +379,10 @@ export function tabsOpenedBy(owner: number | undefined): number {
   return n;
 }
 
+export function* tabsOwnedBy(owner: number | undefined): Generator<number, void, unknown> {
+  for (const [tab, recorded] of harnessTabs) if (recorded.owner === owner) yield tab;
+}
+
 // Drain only. The runtime rechecks its canonical completion authority after
 // this returns, then commits a release carrying these exact resources.
 export async function prepareTurnEnd(owner: number): Promise<TurnPreparation> {

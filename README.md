@@ -526,6 +526,12 @@ captures stop if another tab appears mid-capture. field labels hide sign-in code
 
 password changes need a fresh page read after you give control back.
 
+after you give control back, each task tab needs its own fresh read before another action.
+
+automatic hiding cannot catch private text inside every image or part of a page. check saved pictures before sharing them.
+
+if a tool dies before confirming a click or typing, do not repeat it. stop the agent and make sure its input has stopped before starting a new task.
+
 the bounded local attack scenarios use disposable homes and synthetic data:
 `bun qa/attacks/identity.ts`, `bun qa/attacks/limits.ts`, and
 `bun qa/attacks/outside-input.ts`. add `--browser` to the last command after

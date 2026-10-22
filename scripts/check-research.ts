@@ -113,6 +113,8 @@ try {
   const afterCapture = await state(tab, "JSON.stringify({children:[...document.documentElement.children].map(e=>e.tagName),x:scrollX,y:scrollY,focus:document.activeElement.tagName})");
   const unchanged = await state(tab, `(() => { const inputs=[...document.querySelectorAll('input')];return inputs.map(x=>x.value).join('|')===${JSON.stringify(sentinels.slice(0, 3).join("|"))} && document.querySelector('#shadow').shadowRoot.querySelector('input').value===${JSON.stringify(sentinels[3])};})()`);
   check("capturing restores focus, scroll, field values and temporary layers", unchanged === true && beforeCapture === afterCapture);
+  const otherTakeoverTab = await open("/plain");
+  await invoke("info", { tab });
   await control("drive");
   driving = true;
   const queued = invoke("click", { tab, ref: "#increment" }).then(() => ({ code: "ran" }), (error: unknown) => ({ code: error && typeof error === "object" && "code" in error ? error.code : "error" }));
@@ -128,6 +130,12 @@ try {
   const before = await state(tab, "window.count");
   await invoke("click", { tab, ref: "#increment" });
   check("the action works after a fresh view", typeof before === "number" && await state(tab, "window.count") === before + 1);
+  const otherAttempt = await invoke("click", { tab: otherTakeoverTab, ref: "#increment" }).then(() => ({ code: "ran" }), (error: unknown) => ({ code: error && typeof error === "object" && "code" in error ? error.code : "error" }));
+  check("takeover protects the other task tab too", otherAttempt.code === "stale_view", otherAttempt);
+  await invoke("snapshot", { tab: otherTakeoverTab });
+  const otherBefore = await state(otherTakeoverTab, "window.count");
+  await invoke("click", { tab: otherTakeoverTab, ref: "#increment" });
+  check("only its own fresh view releases the other tab", otherBefore === 0 && await state(otherTakeoverTab, "window.count") === 1);
   if (!baseline && evidence) {
     const expected: Record<string, string> = { "/paywall": "paywall", "/login": "login_wall", "/consent": "consent", "/region": "region_block" };
     for (const [path, kind] of Object.entries(expected)) {
