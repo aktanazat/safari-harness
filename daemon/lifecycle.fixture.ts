@@ -1,5 +1,6 @@
 // An isolated extension boundary for lifecycle contracts. No server or Safari
 // is launched; separate processes exercise the actual durable tab checkpoint.
+import { jest, setSystemTime } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -8,7 +9,8 @@ import { files } from "./groups.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { loadSpaces } from "./spaces.ts";
 import { ReplSession } from "./repl.ts";
-import { callTool, closeTabsOf, endTurn, prepareTurnEnd, loadTabs } from "./tools.ts";
+import { callTool, closeTabsOf, endTurn, prepareTurnEnd, loadTabs, recentlyClosedTabs, restoreClosedTab } from "./tools.ts";
+import { keepSecret } from "./redact.ts";
 
 const [directory, mode, who] = process.argv.slice(2);
 const owner = Number(who);
@@ -16,7 +18,7 @@ const state = join(directory, "tabs.json");
 const browser = join(directory, "browser.json");
 Object.assign(files, { queue: join(directory, "groups.json"), off: join(directory, "off.json"), keeper: join(directory, "keeper.pid"), log: join(directory, "keeper.log") });
 writeFileSync(files.off, JSON.stringify({ why: "isolated lifecycle fixture" }));
-type Tab = { id: number; url: string; windowId: number; typed?: true; front?: true };
+type Tab = { id: number; url: string; title?: string; windowId: number; typed?: true; front?: true };
 const tabs = new Map<number, Tab>();
 let next = 100;
 let gate: { op: string; entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
@@ -86,7 +88,34 @@ if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode ===
   }
 } else {
   loadTabs(state); loadSpaces(join(directory, "spaces.json"));
-  if (mode === "seed") {
+  if (mode === "recovery-title") {
+    const tab = await open("mail");
+    tabs.get(tab.id)!.title = "123456 is your password reset code — private-value-fixture";
+    keepSecret(tab.id, "private-value-fixture");
+    await endTurn(owner);
+    const saved = readFileSync(state, "utf8");
+    const listed = JSON.stringify(recentlyClosedTabs());
+    console.log(JSON.stringify({
+      savedCode: saved.includes("123456"),
+      savedKnownSecret: saved.includes("private-value-fixture"),
+      listedCode: listed.includes("123456"),
+      listedKnownSecret: listed.includes("private-value-fixture"),
+    }));
+  } else if (mode === "recovery-user-first" || mode === "recovery-agent-first") {
+    const tab = await open("race");
+    await endTurn(owner);
+    opened = 0;
+    gate = { op: "tabs.open", entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    const user = () => restoreClosedTab(tab.id).then(() => true, () => false);
+    const agent = () => invoke("extract", { tab: tab.id }).then(() => true, () => false);
+    const first = mode === "recovery-user-first" ? user() : agent();
+    await gate.entered.promise;
+    const second = mode === "recovery-user-first" ? agent() : user();
+    await flush();
+    gate.release.resolve();
+    const [firstSucceeded, secondSucceeded] = await Promise.all([first, second]);
+    console.log(JSON.stringify({ pagesOpened: opened, firstSucceeded, secondSucceeded }));
+  } else if (mode === "seed") {
     const reading = await open("result");
     const form = await open("form");
     await invoke("type", { tab: form.id, ref: "input", text: "unsent fixture text" });
@@ -96,6 +125,52 @@ if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode ===
     writeFileSync(browser, JSON.stringify({ tabs: [...tabs.values()], reading: reading.id, form: form.id, site: site.id, unsafe: unsafe.id }));
     const checkpoint = readFileSync(state, "utf8");
     console.log(JSON.stringify({ receipt, protected: [form.id, site.id, unsafe.id].map(tab => tabs.has(tab)), savedText: checkpoint.includes("unsent fixture text"), savedCredential: checkpoint.includes("credential-fixture") }));
+  } else if (mode === "recover" || mode === "recovery-expiry" || mode === "recovery-timer") {
+    const start = Date.now();
+    setSystemTime(new Date(start));
+    const result = await open("recover");
+    const unsafe = await open("callback?token=credential-fixture");
+    await endTurn(owner);
+    const before = recentlyClosedTabs();
+    if (mode === "recover") {
+      const recovered = await Promise.all([restoreClosedTab(result.id), restoreClosedTab(result.id)]);
+      await endTurn(owner);
+      let ownerAccessRefused = false;
+      try { await invoke("extract", { tab: result.id }); } catch { ownerAccessRefused = true; }
+      const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { tabs: Record<string, unknown> };
+      console.log(JSON.stringify({
+        listed: before.some(tab => tab.tab === result.id),
+        unsafeListed: before.some(tab => tab.tab === unsafe.id),
+        samePage: recovered[0].id === recovered[1].id,
+        reopened: recovered[0].url,
+        userPageRemains: tabs.has(recovered[0].id),
+        userPageOwned: Object.hasOwn(checkpoint.tabs, recovered[0].id),
+        listedAfterReopen: recentlyClosedTabs().some(tab => tab.tab === result.id),
+        ownerAccessRefused,
+      }));
+    } else if (mode === "recovery-timer") {
+      jest.useFakeTimers();
+      try {
+        setSystemTime(new Date(start + 5 * 60_000 - 1));
+        loadTabs(state);
+        setSystemTime(new Date(start + 5 * 60_000));
+        jest.advanceTimersByTime(1);
+        const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { closed: Record<string, unknown> };
+        console.log(JSON.stringify({ expiredAutomatically: !Object.hasOwn(checkpoint.closed, result.id), residentPages: tabs.size }));
+      } finally {
+        jest.useRealTimers();
+      }
+    } else {
+      setSystemTime(new Date(start + 5 * 60_000 - 1));
+      const beforeExpiry = recentlyClosedTabs().some(tab => tab.tab === result.id);
+      setSystemTime(new Date(start + 5 * 60_000));
+      const afterExpiry = recentlyClosedTabs().some(tab => tab.tab === result.id);
+      let refused = false;
+      try { await restoreClosedTab(result.id); } catch { refused = true; }
+      const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { closed: Record<string, unknown> };
+      console.log(JSON.stringify({ beforeExpiry, afterExpiry, refused, persisted: Object.hasOwn(checkpoint.closed, result.id) }));
+    }
+    setSystemTime();
   } else if (mode === "refusal") {
     const tab = await open("refused"); refused = true;
     const receipt = await endTurn(owner);

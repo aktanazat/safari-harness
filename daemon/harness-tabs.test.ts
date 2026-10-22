@@ -78,13 +78,12 @@ const ext = {
 };
 connect(ext);
 
-function closedAs(only: string, tabs: number[]): Promise<void> {
+function closedAs(tabs: number[]): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
-  onClose = () => { if (tabs.every((t) => closes.some(([tab, how]) => tab === t && how === only))) resolve(); };
+  onClose = () => { if (tabs.every(tab => gone.has(tab))) resolve(); };
   onClose();
   return promise;
 }
-const closesAs = (only: string) => closes.filter(([, how]) => how === only).map(([tab]) => Number(tab)).sort((a, b) => a - b);
 // the answers settle in microtasks, which all run before the next turn
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -116,9 +115,9 @@ test("a restarted daemon closes an exited agent's tabs by itself, never another 
   showing = [{ id: 11, url: "https://exited.example/" }, { id: 12, url: "https://working.example/" }];
   writeFileSync(file, JSON.stringify({ 11: exited, 12: process.pid }));
   loadTabs(file);
-  await closedAs("idle", [11]);
+  await closedAs([11]);
   await settled();
-  expect(closesAs("idle")).toEqual([11]);
+  expect([gone.has(11), gone.has(12)]).toEqual([true, false]);
   expect(JSON.parse(readFileSync(file, "utf8")).tabs).toMatchObject({ 12: { owner: process.pid } });
   expect(JSON.parse(readFileSync(file, "utf8")).tabs).not.toHaveProperty("11");
 });
@@ -137,16 +136,13 @@ test("admitted cleanup after exit releases clicked pages and popups but preserve
   await as("close", { tab: 5 });
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [1, 2, 4, 100]);
+  await closedAs([1, 2, 4, 100]);
   await settled();
-  expect(closesAs("idle").filter(tab => tab !== 5)).toEqual([1, 2, 4, 100]);
+  expect([1, 2, 4, 100].map(tab => gone.has(tab))).toEqual([true, true, true, true]);
   expect(gone.has(3)).toBe(false);
 });
 
-// Tabs an agent left open as it handed the turn back to the user piled up
-// in his Safari until it exited. One it kept waits on his answer; one he is
-// looking at stays until he leaves it.
-test("when an agent's turn ends its tabs close, except one it kept, one the user has in front, and another agent's", async () => {
+test("when an agent's turn ends its front page closes too, but kept pages and another agent's stay", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
   loadTabs(file);
   const [agent, other] = [keeper(), Bun.spawn(["sleep", "60"])];
@@ -161,18 +157,18 @@ test("when an agent's turn ends its tabs close, except one it kept, one the user
   hisFront = await open(agent.pid, { background: true });
   const others = await open(other.pid, { background: true });
   endTurn(agent.pid);
-  await closedAs("idle", [...done, hisFront]);
+  await closedAs([...done, hisFront]);
   await settled();
-  expect(closesAs("idle")).toEqual([...done, hisFront].sort((a, b) => a - b));
+  expect([...done, hisFront, kept, others].map(tab => gone.has(tab))).toEqual([true, true, true, false, false]);
   const saved = JSON.parse(readFileSync(file, "utf8")).tabs as Record<string, { owner: number | null }>;
   const owners = Object.fromEntries(Object.entries(saved).map(([tab, t]) => [tab, t.owner]));
-  expect(owners).toMatchObject({ [hisFront]: agent.pid, [others]: other.pid });
-  expect(owners).not.toContainAnyKeys([...done, kept].map(String));
+  expect(owners).toMatchObject({ [others]: other.pid });
+  expect(owners).not.toContainAnyKeys([...done, hisFront, kept].map(String));
   agent.kill();
   other.kill();
   hisFront = undefined;
   await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
-  await closedAs("idle", [others]);
+  await closedAs([others]);
 });
 
 // 10-02: a repl session that ended after 30 minutes unused closed the
@@ -184,9 +180,8 @@ test("a repl session's end closes the tabs it opened, but not one kept for the u
   await repl.run("await openTab('https://example.com/')\nawait openTab('https://example.com/')");
   const [done, kept] = repl.tabs.map((p) => p.id);
   await invoke("keep", { tab: kept });
-  const before = closes.length;
   await repl.close();
-  expect(closes.slice(before).filter(([tab]) => tab === done || tab === kept)).toEqual([[done, "idle"]]);
+  expect([gone.has(done), gone.has(kept)]).toEqual([true, false]);
   agent.kill();
 });
 
@@ -199,7 +194,7 @@ test("another agent's call to a tab the harness closed says why and when, and wh
   const tab = nextTab;
   showing = [{ id: tab, url: "https://chat.example/c/1" }];
   endTurn(agent.pid);
-  await closedAs("idle", [tab]);
+  await closedAs([tab]);
   await settled();
   showing = [];
   const later = runAs(other.pid, () => callTool("extract", { tab }));
@@ -218,7 +213,7 @@ test("an agent's read of its tab closed as its turn ended opens the page again i
   const tab = nextTab;
   showing = [{ id: tab, url: "https://app.example/board/42" }];
   endTurn(agent.pid);
-  await closedAs("idle", [tab]);
+  await closedAs([tab]);
   await settled();
   showing = [];
   const read = (await as("extract", { tab })) as { note?: string; replaced?: { to: number } };
@@ -231,7 +226,7 @@ test("an agent's read of its tab closed as its turn ended opens the page again i
   expect(nextTab).toBe(again);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [again]);
+  await closedAs([again]);
 });
 
 // A fresh page has lost what earlier actions entered (a form in progress):
@@ -243,7 +238,7 @@ test("an agent's action on its tab closed after its turn opens the page again bu
   const tab = nextTab;
   showing = [{ id: tab, url: "https://shop.example/checkout" }];
   endTurn(agent.pid);
-  await closedAs("idle", [tab]);
+  await closedAs([tab]);
   await settled();
   showing = [];
   await expect(as("click", { tab, ref: "Place order" })).rejects.toThrow(/; it is open again on https:\/\/shop\.example\/checkout, loaded fresh as tab \d+, so its refs and anything typed there are gone: snapshot it, then act$/);
@@ -255,7 +250,7 @@ test("an agent's action on its tab closed after its turn opens the page again bu
   expect(relays.at(-1)?.slice(0, 2)).toEqual([again, "extract"]);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [nextTab]);
+  await closedAs([nextTab]);
 });
 
 // 10-07: a Slack image fetched with no tab came back as Slack's sign-in
@@ -281,7 +276,7 @@ test("a download of a url with no tab comes through the agent's own tab on that 
   agent.kill();
   other.kill();
   await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
-  await closedAs("idle", [tab, theirs]);
+  await closedAs([tab, theirs]);
   showing = [];
 });
 
@@ -296,7 +291,7 @@ test("a download of a url with no tab from a site the user is signed out of fail
   expect(existsSync(join(dir, "files"))).toBe(false);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [nextTab]);
+  await closedAs([nextTab]);
 });
 
 // From 09-26 to 10-05, 194 of 729 opens went to a site the same agent had
@@ -318,7 +313,7 @@ test("an open on a site where the agent already has a tab names that tab, and ne
   agent.kill();
   other.kill();
   await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
-  await closedAs("idle", opened);
+  await closedAs(opened);
   showing = [];
 });
 
@@ -359,9 +354,8 @@ test("a model's open loads in its agent's tab on that site, never in a form in p
   agent.kill();
   other.kill();
   await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
-  await closedAs("idle", [his, e, f]);
-  expect(gone.has(a)).toBe(false);
-  await model(agent.pid, "close", { tab: a });
+  await closedAs([a, his, e, f]);
+  expect([gone.has(a), gone.has(c)]).toEqual([true, false]);
   showing = [];
 });
 
@@ -386,7 +380,7 @@ test("a session's openTab of an address it opened in an earlier call loads that 
   expect([again, second === first, fresh === first || fresh === second]).toEqual([first, false, false]);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [first, second, fresh]);
+  await closedAs([first, second, fresh]);
   showing = [];
 });
 
@@ -421,7 +415,7 @@ test("a restart preserves the idle deadline while a recently used page remains o
   writeFileSync(file, JSON.stringify({ 9021: { owner: process.pid, used: Date.now() - 21 * 60_000 }, 9022: { owner: process.pid, used: Date.now() } }));
   loadTabs(file);
   await endTurn(Bun.spawnSync(["true"]).pid);
-  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([9021]);
+  expect([gone.has(9021), gone.has(9022)]).toEqual([true, false]);
   const saved = JSON.parse(readFileSync(file, "utf8"));
   expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9022"]);
 });
@@ -440,10 +434,10 @@ test("opening a ninth tab preserves unfinished work until admitted cleanup", asy
   await as("info", { tab: tabs[0] });
   await as("open", { url: "https://shop8.example/", background: true });
   await endTurn(agent.pid + 1);
-  expect(closesAs("idle").filter(tab => tabs.includes(tab))).toEqual([]);
+  expect(tabs.map(tab => gone.has(tab))).toEqual(Array(8).fill(false));
   expect(await as("info", { tab: tabs[1] })).not.toHaveProperty("note");
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [tabs[0]]);
+  await closedAs([tabs[0]]);
   showing = [];
 });

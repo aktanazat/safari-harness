@@ -463,10 +463,7 @@ test("a grouped window containing a kept page remains intact and cannot be adopt
   expect(s.tabs.get(page.id)!.windowId).toBe(his.windowId!);
 });
 
-// 10-07: agent 1431's two groups stood in windows it had sized to 390
-// points, where Safari hides the tab bar the keeper counts a window's tabs
-// in: the keeper waited on them for good.
-test("an ended group's window its agent sized as narrow as a phone goes back to a size of the daemon's for the keeper", async () => {
+test("an ended narrow grouped window closes before the keeper removes its tab group", async () => {
   const s = safari();
   const g = agent();
   const t = await runAs(g.pid, () => openTab("https://m.example/", true, "phone"));
@@ -478,9 +475,8 @@ test("an ended group's window its agent sized as narrow as a phone goes back to 
   await g.exited;
   await callTool("close", { tab: t.id });
   await turnEnded(g.pid);
-  const released = (await spaceTool({ op: "release", name })) as { width: number };
-  expect(released.width).toBeGreaterThanOrEqual(1000);
-  expect(s.sized.at(-1)).toEqual({ tab: page.id, whole: true });
+  expect(s.tabs.has(page.id)).toBe(false);
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 0, left: 0 });
   await spaceTool({ op: "gone", name });
 });
 
@@ -503,8 +499,7 @@ test("an admitted empty cleanup during group creation waits for the keeper's res
   expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false]);
   await spaceTool({ op: "grouped", name: made.space.name });
   await spaceTool({ op: "plain", name: failed.space.name, why: "the new group took no name" });
-  // the group goes the ended group's way; the window that is none closes
-  expect(pages.map((id) => s.closed.includes(id))).toEqual([false, true]);
+  expect(pages.map((id) => s.closed.includes(id))).toEqual([true, true]);
   const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; ended: boolean }[] };
   expect(spaces.filter((x) => x.name === made.space.name || x.name === failed.space.name)).toMatchObject([{ name: made.space.name, ended: true }]);
   await spaceTool({ op: "gone", name: made.space.name });

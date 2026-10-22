@@ -96,39 +96,18 @@ Safari is the user's everyday browser, so treat his tabs as his.
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
   `bun run helpers` has not built scripts/spaces, or groups are off); a
-  window says each `why` on one open, not on every open after. A
-  window whose task ends while it is `making` stays until the keeper is
-  done. Your terminal makes and deletes the groups, through a keeper process
-  `open` starts: each step waits until he is idle, the screen unlocked and
-  Safari behind, and stops if his front app changes. A menu that will not
+  window says each `why` on one open, not on every open after. Your terminal
+  makes and deletes the groups, through a keeper process `open` starts:
+  each step waits until he is idle, the screen unlocked and Safari behind,
+  and stops if his front app changes. A menu that will not
   close turns groups off for a day; `~/.local/share/safari-harness/groups-off.json`
   says why, and removing it turns them on sooner. `safari doctor` warns
   while it is there, and each agent is told why once, not on every open.
-- When your turn ends or your process exits and the window holds only its
-  page, the task ends. A plain window's page closes: the window goes with
-  your last tab, and a tab you kept stays there for him. A tab group's tabs
-  left for him (kept) move to windows of their own, then the group is
-  deleted with its page, again only while he is away from the keys. A
-  group that cannot go yet waits in
-  `~/.local/share/safari-harness/groups.json`; the keeper tries it again
-  ten minutes later, or the next keeper does. Until then its page says
-  the task has ended.
-- Your tabs close when your turn ends: as omp's main session hands the turn
-  back to the user, it tells the daemon (`omp/index.ts`), which closes every
-  tab you opened, and tabs they opened, whether you called it through MCP,
-  the CLI, or a `repl --session`, and then your window. A subagent's end
-  closes nothing, since it shares the process. A finished task needs no
-  `close` call. One the user has in front stays. Outside omp, and for any
-  tab a turn end left, they close within a few seconds after your agent
-  process exits (claude, codex, omp, a bun or python script); the daemon
-  keeps that list across its own restarts.
-  Your next call on a tab of
-  yours closed at your turn's end opens its page again in your
-  window, loaded fresh under a new id; the answer carries a `note` and
-  `replaced: {from, to}`, and the old id still reaches it. An action there
-  (a click, typing) does not run, since its refs and anything typed are
-  gone: snapshot it, then act. `goto`, `eval`, and `scroll` run. Keep using the id you hold: it keeps
-  working, and the next answer names the new one.
+- A finished task needs no `close` call. The [cleanup and recovery
+  rules](#cleanup-authority) apply to agent tabs opened through MCP, the
+  CLI, a `repl --session`, or site globals. Empty agent windows close at
+  completion; later tab-group bookkeeping does not keep an ended window
+  open. A protected or user-owned tab keeps its window.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -154,22 +133,43 @@ Safari is the user's everyday browser, so treat his tabs as his.
 
 ### Cleanup authority
 
-- The main session's final turn end and the owning process's exit release
-  disposable pages. A subagent's end, cancellation mid-turn, page age or
-  tab count release nothing.
+- An admitted completed turn from the main session immediately closes
+  disposable agent tabs and their empty windows. The owning process's
+  exit does the same. Clicked pages, script-changed pages, filled fields,
+  site-global tabs and an agent page in front are included. A subagent's
+  end, cancellation mid-turn or tab count is not completed-turn cleanup
+  authority.
 - Cleanup first drains active calls without closing anything. Safari then
-  checks the exact prepared tab ids and call generation before closing. New
-  work invalidates the preparation.
-- Kept pages, changed pages (including script actions), site sessions,
-  pending handoffs, unsent forms and his front tab stay open. `close` a
-  changed page only when its work is safe to discard; `keep` a page
-  intended for the user. A protected or foreign tab also keeps its window
-  intact; cleanup does not move it to make a group deletable.
-- An ordinary HTTP(S) address can open again on your next read, even after
-  the daemon restarts; concurrent reads open it once. Addresses with a
-  query, fragment, userinfo or known secret path stay live. The checkpoint
-  saves addresses and protection flags, never form values or credentials.
-  An unknown or uninspectable page is not cleanup's to close.
+  checks the exact prepared tab ids and call generation before closing.
+  New work invalidates the preparation. Ownership must be proven; the
+  user's own tabs are never part of this cleanup.
+- Pages explicitly kept for the user and pending handoffs stay protected.
+  A protected or foreign tab keeps its window intact; cleanup does not
+  move it to make a group deletable. Use `keep` for a page he still needs,
+  not to preserve an agent's finished work.
+- Ordinary idle cleanup is unchanged: eligible unused pages close after
+  20 minutes. Existing protections for changed pages, unsent forms,
+  site-global tabs, kept pages, pending handoffs and the front tab still
+  apply to idle cleanup. A change, filled field, site-global tab or front
+  position alone does not protect a disposable agent tab at completion
+  or owner exit.
+- A recoverable tab's safe HTTP(S) address is retained for five minutes
+  after closure, including across daemon restarts. Addresses with a
+  fragment, userinfo or a known secret in the path or query are not saved;
+  this does not keep those disposable tabs open. Recovery metadata expires
+  after five minutes even when no harness window is open.
+- Recently closed on `/agents` lets the user reopen a retained safe
+  address in a regular user tab. It does not revive the ended task.
+  During the same five-minute period, an agent's next call on its original
+  tab id can reopen the page fresh under a new id; concurrent calls open
+  it once. The answer carries a `note` and `replaced: {from, to}`. Old
+  refs cannot be reused: a click or typing does not run until you take a
+  fresh snapshot. `goto`, `eval` and `scroll` can run on the fresh page.
+  After expiry, the old id cannot recover it.
+- Recovery saves no form contents, credentials or exact in-page state.
+  It loads a fresh page with Safari's normal site session, not a saved
+  draft. Website cookies, logins and session credentials are untouched
+  by closing tabs or expiring recovery metadata.
 - A disconnected or refused cleanup leaves ownership recorded for the next
   admitted attempt. A cancelled or failed task can release disposable
   resources only through the same gate, without being reported as
@@ -189,6 +189,8 @@ last hour, those at work first, each with the tabs it opened that are
 still open, how many times it brought Safari to the front, a link to its
 window's page, and the same buttons.
 `safari agents` prints that list (`--json` for the whole answer).
+Recently closed on that page follows the [five-minute recovery
+rules](#cleanup-authority); it is not a list of windows kept alive.
 
 - Pause: calls already running finish. Your next call waits up to 90 s for
   him to resume you, then fails with "the user paused this task from its
@@ -204,7 +206,7 @@ window's page, and the same buttons.
 - Stop: every later call fails with "the user stopped this task from its
   window; stop and tell the user what you had done". Your tabs close; the
   window keeps its page, marked stopped, and goes two minutes later or
-  when your process exits. It lasts until your process exits.
+  when your process exits.
   Stop there: tell him what you finished and what you did not.
 - Calls with no agent process behind them show under "no agent" and
   cannot be paused or stopped.
@@ -666,10 +668,11 @@ things unless its saved task explicitly says to.
   on its own stays the user's until the page reloads.
 - "that tab is gone: tab N was closed <why> at <time> (it showed <url>);
   open it again": the harness closed it itself (a close call, the end of
-  your turn, 20 minutes unused, or its agent exited). A tab of yours closed
-  at your turn's end or unused still answers your next call, which opens it
-  again (`safari guide reference lifecycle`); keep a tab you need past your
-  turn, or past a long step, with `keep`.
+  your turn, 20 minutes unused, or its agent exited). If a safe address was
+  retained for recovery, the original tab id can reopen it for five
+  minutes after closure ([cleanup and recovery](#cleanup-authority)).
+  After expiry, open the needed address as new work. Use `keep` only for a
+  page the user still needs left open.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
   - "the harness closed it <t> ago (at the end of a turn, or after 20
@@ -847,8 +850,9 @@ have, use `safari goto <url> --tab N`.
 `goto {tab, url}` (CLI `safari goto <url> --tab N`) loads an address in
 your tab and answers once the new page is readable, as `open` does
 (`safari guide open`): a whole `http` or `https` address, `title` once the
-page has one, and up to 5 s more while the page says it is loading. It runs
-on a tab of yours closed at your turn's end or unused, opening it again.
+page has one, and up to 5 s more while the page says it is loading. It can
+use an original agent tab id while its safe-address recovery record is
+still within the five-minute limit ([cleanup and recovery](#cleanup-authority)).
 A page that fills in after loading still needs a `wait` for the text you
 expect.
 
@@ -878,11 +882,12 @@ list is still right, but which tab he is looking at is unknown.
 ## close
 
 `close {tab}` (CLI `safari close <tab>`) closes a tab of yours. A finished
-task needs no `close`: your tabs close when your turn ends. Close a tab
-mid-task only when you need it gone (a second tab you are done with, a
-popup a click opened), never one the user has or one you kept for him
-unless he is done with it. `close` on a tab already closed does not fail:
-it answers `{ok: true, already: "tab N was closed by … at <time>"}`.
+task needs no `close`: [completed-task cleanup](#cleanup-authority) closes
+its disposable tabs and empty windows immediately. Close a tab mid-task
+only when you need it gone (a second tab you are done with, a popup a
+click opened), never one the user has or one you kept for him unless he
+is done with it. `close` on a tab already closed does not fail: it answers
+`{ok: true, already: "tab N was closed by … at <time>"}`.
 
 - A native sheet (a sign-in or permission prompt) can keep Safari from
   closing a tab. A tab the harness opened still closes, within about 15 s;
@@ -1042,11 +1047,13 @@ a session of its own. `--session <name>` keeps a task's bindings apart; it
 ends with `--close` or after 30 minutes unused. Keep one name for a task: a
 session you start names, on a `hint:` line, the others your agent runs, so
 you go on in one of those instead. A session's relative paths begin in its
-own folder (`pwd`), not your shell's. The tabs its code
-opens are yours, as if you had opened them: they open in your window and
-close when your turn ends or sit 20 minutes unused. A session's page whose
-tab has closed drops out of `tabs`; open it again in the same session. A site global whose tab is gone opens a
-new one once and runs the call again. A call waits at most 120 s; MCP
+own folder (`pwd`), not your shell's. The tabs its code opens are yours,
+including site-global tabs, and follow the [cleanup and recovery
+rules](#cleanup-authority). A session's page whose tab has closed drops
+out of `tabs`; open it again in the same session. A site global whose tab
+is gone opens a new one once and runs the call again: that is fresh work,
+not restoration of the ended task or its in-page state. A call waits at
+most 120 s; MCP
 clients may cut one at 60 s, so split long waits across calls. `safari
 guide repl` has the whole API and what to do when a run goes wrong.
 

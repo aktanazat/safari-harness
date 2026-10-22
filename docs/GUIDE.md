@@ -13,18 +13,28 @@ Tabs
   is his front tab, only when he asks about his page. Never navigate,
   type in, or close his tabs.
 - `open` on a site where you have a tab loads in it (`new: true` for a
-  second). Your tabs close when your turn ends or your agent exits, so a
-  task's last call is never `close`. Ordinary unused pages close after 20
-  minutes, even if you clicked them. Kept pages, pending handoffs, unsent
-  forms, and his front tab stay. `keep` only a page he still needs; do not
-  keep a finished result unless he asked to leave it open.
-- A tab id you hold keeps working after its tab closed idle or at a turn's
-  end: the next call opens the page again, fresh, and names the new id.
-  Snapshot before acting there. Do not open another tab or start another
-  `repl --session` for it.
+  second). An admitted completed turn or your agent's exit immediately
+  closes disposable agent tabs and their empty windows, including clicked
+  pages, filled fields, site-global tabs and an agent page in front. A
+  task's last call is never `close`. Pages explicitly kept for him and
+  pending handoffs stay protected. `keep` only a page he still needs; do
+  not keep a finished result unless he asked to leave it open.
+- Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
+  even if you clicked them. Unsent forms and his front tab stay during idle
+  cleanup. At completion or owner exit, only pages explicitly kept for him
+  and pending handoffs keep those agent tabs protected.
+- For five minutes after a recoverable tab closes, its safe address is
+  available in Recently closed on `/agents` or through the original agent
+  tab id. The next call on that id opens a fresh page and names the new
+  id. Snapshot before acting; do not open another tab or start another
+  `repl --session` for it. Recovery metadata then expires, even with no
+  harness window open. Cookies, logins and session credentials are
+  untouched. Form contents and exact in-page state are not saved:
+  recovery uses the normal site session, not a saved draft.
 - Every window page links to Windows (`/agents#windows`), which lists all
-  registered windows, including finished tasks. Close window asks before
-  closing that window and its kept pages. Never use it to close his windows.
+  registered windows that remain, including pages left for him after a
+  task ends. Close window asks before closing that window and its kept
+  pages. Never use it to close his windows.
 - When a call says he paused or stopped you, do what it says.
 - After Give back, read a fresh whole-page snapshot or extract of that
   tab before acting. A queued action cannot reuse the old view.

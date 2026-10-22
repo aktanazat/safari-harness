@@ -19,11 +19,8 @@ const owned = new Set<number>();
 const tabNow = new Map<number, number>(); // an old tab id, and that tab's id now
 const windowNow = new Map<number, number>();
 const reached: number[] = [];
-const closes: [number, unknown][] = [];
-const asked: number[] = []; // each tab Safari was asked to close
 let nextTab = 300;
 let nextWindow = 30;
-let onAsk = () => {};
 
 function answer(op: string, args: unknown[]): { value: unknown } | { error: string } {
   if (op === "windows.open") {
@@ -44,11 +41,8 @@ function answer(op: string, args: unknown[]): { value: unknown } | { error: stri
   const row = id === undefined ? undefined : tabs.get(id);
   if (!row) return { error: `Tab '${String(args[0])}' was not found` };
   if (op === "tabs.close") {
-    asked.push(row.id);
-    onAsk();
     if (args[1] !== undefined && !owned.has(row.id)) return { value: { ok: false } };
     tabs.delete(row.id);
-    closes.push([row.id, args[1]]);
     return { value: { ok: true } };
   }
   if (op === "dialogs") {
@@ -100,13 +94,6 @@ function now(old: number): number {
   return id;
 }
 
-// Settles once Safari has been asked to close the tab.
-function askedToClose(id: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  onAsk = () => { if (asked.includes(id)) resolve(); };
-  onAsk();
-  return promise;
-}
 
 connect(extension());
 loadTabs(join(mkdtempSync(join(tmpdir(), "renumber-")), "tabs.json"));
@@ -118,7 +105,6 @@ const open = async () => {
   return t.id;
 };
 
-// Exit alone is not task authority, and a kept page retains its window.
 afterAll(async () => {
   agent.kill();
   await agent.exited;
@@ -140,8 +126,7 @@ test("after a deploy gives every tab a new id, an agent's calls on its old ids r
   expect(await as("tabs", {})).toEqual({ tabs: [expect.objectContaining({ id: now(first) }), expect.objectContaining({ id: now(second) })] });
   // one kept by its old id outlasts the turn; the other closes as it ends
   await as("keep", { tab: second });
-  endTurn(agent.pid);
-  await askedToClose(now(first));
-  expect(closes).toEqual([[now(first), "idle"]]);
+  await endTurn(agent.pid);
+  expect(tabs.has(now(first))).toBe(false);
   expect(tabs.has(now(second))).toBe(true);
 });
