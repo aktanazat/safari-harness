@@ -136,6 +136,7 @@ type WireMessage = {
   url?: unknown;
   tabs?: unknown;
   recording?: unknown;
+  revision?: unknown;
 };
 
 function asWire(raw: string): WireMessage | null {
@@ -242,6 +243,7 @@ export class Bridge {
   public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
+  public onMemory: (tab: number, url: string, revision: number) => void = () => {};
   public onConnect: () => void = () => {};
 
   constructor(private readonly aliveMs = ALIVE_MS) {}
@@ -341,6 +343,10 @@ export class Bridge {
       if (from !== this.sock) return;
       if (msg.op === "hello") this.extensionInfo = { ...this.extensionInfo, ua: msg.ua };
       else this.ticks(said.ticks);
+      return;
+    }
+    if (msg.op === "memory") {
+      if (from === this.sock && typeof msg.tab === "number" && Number.isSafeInteger(msg.tab) && typeof msg.url === "string" && msg.url.length <= 4096 && typeof msg.revision === "number" && Number.isSafeInteger(msg.revision) && msg.revision >= 0) this.onMemory(msg.tab, msg.url, msg.revision);
       return;
     }
     if (msg.op === "note" && typeof msg.kind === "string") {

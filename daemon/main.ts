@@ -36,6 +36,7 @@ import { failureOf, HarnessError } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { openMissionHistory } from "./mission.ts";
 import { localRequest } from "./requests.ts";
+import { browserMemoryRoute, startBrowserMemory, stopBrowserMemory } from "./browser-memory-runtime.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -75,6 +76,7 @@ bridge.onRecording = (recording) => {
     notify(`The recording was not saved: ${why}`);
   }
 };
+startBrowserMemory();
 
 type SocketScope =
   | { kind: "extension"; automation: boolean }
@@ -195,6 +197,8 @@ const rpcServer = Bun.serve({
     // check below refuses: mission.ts checks its routes itself.
     const page = await missionRoute(req, url);
     if (page) return page;
+    const memory = await browserMemoryRoute(req, url);
+    if (memory) return memory;
     if (!allowed(req, url, "local")) return refuse(req, url);
     if (url.pathname === "/health") {
       return Response.json({
@@ -295,6 +299,7 @@ async function stop(reason: string, drainMs: number) {
   note("stop", { reason, ...(busy ? { finished: busy - inFlight, cut: inFlight } : {}) });
   stopAllPumps();
   passwords.shutdown();
+  await stopBrowserMemory();
   server.stop();
   // A drained call is done before its answer is written: exit once the rpc
   // connections have closed (a call the drain's timeout cut is cut here).

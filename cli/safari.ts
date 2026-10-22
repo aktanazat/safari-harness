@@ -48,6 +48,12 @@ const USAGE = `safari — drive Safari from the terminal
                                              that pauses or stops them
   safari doctor                              check every part the harness needs on this
                                              Mac, with the fix for each that fails
+  safari memory status                       inspect collection and saved pages
+  safari memory search <words>               find remembered page text and summaries
+  safari memory show --id ID                 inspect a saved page
+  safari memory configure --config '<json>'  choose sites, pause, or change retention
+  safari memory edit --id ID --note <text>    correct a summary or add a note
+  safari memory forget --id ID --approved    delete a page and its summary
   safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
                                              --site lists his on one site, --all every tab
   safari open <url> [--bg] [--keep] [--new] [--id]
@@ -856,6 +862,11 @@ async function main() {
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...snapshotArg(rest) };
 
   switch (cmd) {
+    case "memory": {
+      args.do = positional[0] ?? "status";
+      if (args.do === "search" || args.do === "recall") args.query = positional.slice(1).join(" ") || undefined;
+      break;
+    }
     case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? null; break;
     case "open": {
       // open opens a tab of its own: `open <url> --tab 12153` opened tab

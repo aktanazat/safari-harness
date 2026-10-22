@@ -416,6 +416,25 @@ what it prints goes to the user's phone; `run --dry` gives it `DRY = true`
 and sends nothing. `--on YYYY-MM-DD` runs any routine once, on that day.
 Output goes to `~/Library/Logs/safari-harness/routines/`.
 
+### Opt-in browser memory
+
+`http://127.0.0.1:37334/memory` provides site selection, pause, search,
+source links, corrected summaries, notes, retention and deletion. Capture
+starts off with no selected sites. Only the foreground non-private user
+page on an explicitly selected host is eligible; agent tabs and filled
+editors are excluded. This does not record the desktop or unsent drafts.
+
+Page text and search stay local. Optional AI summaries send selected text
+to OMP; relevant saved text can also accompany AI tasks. Every observation
+keeps its source and visit time and is never treated as a confirmed action.
+Engram federates browser recall read-only without copying it into records.
+
+`safari memory search "oxygen spectrometer"` searches saved text;
+`safari guide memory` explains configuration, provider consent and deletion.
+Pause preserves pages; removing a site, expiry or confirmed forget removes
+its local text, summary and note. Prior chats, provider copies and OS backups
+are outside that local deletion boundary.
+
 ### Verified agent playbooks
 
 An agent can opt in before a task on its own background tab. It declares a

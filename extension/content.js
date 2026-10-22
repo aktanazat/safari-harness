@@ -4151,10 +4151,56 @@
       addEventListener(type, fn, { capture: true, signal: life.signal });
     }
   }
+  function memoryPage(expectedUrl) {
+    if (window !== window.top || location.href !== expectedUrl) return { skipped: true };
+    const fields = deepQueryAll('input,textarea,[contenteditable],[role="textbox"],[role="searchbox"],[role="combobox"]');
+    if (fields.some((field) => {
+      if (field.matches('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"]')) return true;
+      if (field.matches('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea')) return !!field.value?.trim();
+      return (field.isContentEditable || field.matches('[role="textbox"],[role="searchbox"],[role="combobox"]')) && !!field.textContent?.trim();
+    })) return { skipped: true };
+    const parts = [];
+    let length = 0;
+    let visited = 0;
+    const skip = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|INPUT|TEXTAREA|SELECT|OPTION|DATALIST|FORM|IFRAME|FRAME|OBJECT|EMBED|CANVAS|VIDEO|AUDIO)$/;
+    const eligibleStyle = (element) => {
+      if (skip.test(element.tagName) || element.isContentEditable || element.matches('[role="textbox"],[role="searchbox"],[role="combobox"],[role="form"],[data-private],[data-sensitive]')) return null;
+      const style = getComputedStyle(element);
+      return style.display === "none" || style.visibility !== "visible" || transparent(element, style) || unseenBox(element, style) ? null : style;
+    };
+    const walk = (element) => {
+      if (++visited > 5000 || length >= 24000) return;
+      const style = eligibleStyle(element);
+      if (!style) return;
+      const block = !style.display.startsWith("inline") && style.display !== "contents";
+      if (block) parts.push("\n");
+      for (const child of drawnChildren(element)) {
+        if (length >= 24000 || visited > 5000) break;
+        if (child.nodeType === Node.ELEMENT_NODE) walk(child);
+        else if (child.nodeType === Node.TEXT_NODE && !unseenWords(child)) {
+          const value = String(child.nodeValue || "").slice(0, 24000 - length);
+          parts.push(value);
+          length += value.length;
+        }
+      }
+      if (block) parts.push("\n");
+    };
+    const root = document.querySelector("main,article") || document.body;
+    if (!root) return { skipped: true };
+    for (let ancestor = root.assignedSlot ?? parentOf(root); ancestor; ancestor = ancestor.assignedSlot ?? parentOf(ancestor)) {
+      if (!eligibleStyle(ancestor)) return { skipped: true };
+    }
+    walk(root);
+    const body = parts.join("").replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (!body) return { skipped: true };
+    return { url: location.href, title: document.title.slice(0, 500), body, visible: document.visibilityState === "visible" };
+  }
+
   // ---------- message dispatch ----------
 
   const handlers = {
     snapshot,
+    memoryPage,
     click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
     type: (ref, text, opts) => typeText(ref, text, opts),
     press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),

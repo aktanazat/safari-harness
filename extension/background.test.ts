@@ -118,7 +118,7 @@ class Doc {
 
 // window: the window it is in, 1 unless a test says otherwise; frames: the
 // documents of its embedded frames, by frame id.
-type Tab = { id: number; doc: Doc; window?: number; frames?: Map<number, Doc> };
+type Tab = { id: number; doc: Doc; window?: number; frames?: Map<number, Doc>; incognito?: boolean };
 
 // local: the extension's local storage, which a new background page reads;
 // unread: a key of it whose first reads (times, 1 unless said) Safari
@@ -130,6 +130,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   // The tab in front of each window, and the window focused last.
   const actives = new Map<number, number>();
   let focused = 1;
+  let focusRead: { entered: () => void; wait: Promise<void> } | undefined;
   // Each window's size, once one is set.
   const sizes = new Map<number, { width: number; height: number }>();
   // What Safari shows at each address the harness opens a tab on or loads
@@ -188,7 +189,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   };
   // A tab as Safari describes it; one is in front of its window only once a
   // test puts it there (focus).
-  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: tab.doc.title, status: "complete", active: actives.get(tab.window ?? 1) === tab.id });
+  const row = (tab: Tab) => ({ id: tab.id, windowId: tab.window ?? 1, url: tab.doc.url, title: tab.doc.title, status: "complete", active: actives.get(tab.window ?? 1) === tab.id, incognito: tab.incognito ?? false });
 
   // What content.js does as it starts: take the page's claim unless another
   // copy holds it, answer through __safariHarnessRun, and, where its world's
@@ -345,7 +346,12 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       },
       get: async (id: number) => ({ id }),
       getAll: async () => (windowsStalled ? never() : [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) }))),
-      getLastFocused: async () => ({ id: focused }),
+      getLastFocused: async () => {
+        const held = focusRead;
+        focusRead = undefined;
+        if (held) { held.entered(); await held.wait; }
+        return { id: focused, focused: focused >= 0 };
+      },
     },
   };
 
@@ -360,7 +366,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     readyState = Socket.CONNECTING;
     onopen = () => {};
     onmessage = (_ev: { data: string }) => {};
-    onclose = () => {};
+    onclose = (_ev: { code: number }) => {};
     constructor() { sockets.push(this); }
     send(data: string) {
       const m = JSON.parse(data) as { id?: string; op: string; value?: unknown; error?: string };
@@ -490,6 +496,12 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       if (withWindow) browser.windows.onRemoved.fire(tab.window ?? 1);
     },
     stallWindows() { windowsStalled = true; },
+    holdFocusRead() {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      focusRead = { entered: entered.resolve, wait: release.promise };
+      return { entered: entered.promise, release: release.resolve };
+    },
     stallStorage() { storageStalled = true; },
     refuseWrites() { writesRefused = true; },
     // An embedded frame in tab's page, as frameId, showing url; its script
@@ -518,6 +530,14 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       }
       focused = window;
       browser.windows.onFocusChanged.fire(window);
+    },
+    unfocus() {
+      focused = -1;
+      browser.windows.onFocusChanged.fire(-1);
+    },
+    disconnect() {
+      open.readyState = 3;
+      open.onclose({ code: 1006 });
     },
     // The daemon goes away, and comes back.
     drop() { open.readyState = 3; },
@@ -1904,4 +1924,117 @@ test("a protected page that never paints fails closed at the paint deadline and 
   expect(b.trips).not.toContain("capture");
   expect(page.protected).toBe(false);
   expect(b.active()).toBe(front.id);
+});
+
+const memoryConfig = { enabled: true, sites: ["example.com"], excludedSites: [] };
+
+test("memory waits for an opted-in foreground page and does not let hidden-tab updates cancel it", async () => {
+  const b = await start();
+  const page = b.open("https://example.com/article");
+  const hidden = b.open("https://example.com/background");
+  b.focus(page);
+  await b.clock.advance(2000);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  await b.clock.advance(1000);
+  b.update(hidden, { status: "complete" });
+  await b.clock.advance(500);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([{ op: "memory", tab: page.id, url: page.doc.url, revision: 1 }]);
+  page.doc.does = (op) => op === "memoryPage" ? { url: page.doc.url, title: "Article", body: "The aurora research was published on Tuesday.", visible: true } : { url: page.doc.url };
+  expect(await b.request("memory.capture", [page.id, page.doc.url, 1])).toEqual({ value: { url: page.doc.url, title: "Article", body: "The aurora research was published on Tuesday.", visible: true }, error: undefined });
+});
+
+test("memory never reads private, excluded, inactive, agent-owned, or agent-driven pages", async () => {
+  const b = await start();
+  const selected = b.open("https://example.com/article");
+  const hidden = b.open("https://example.com/background");
+  const privateTab = b.open("https://example.com/private");
+  privateTab.incognito = true;
+  const owned = b.open("https://example.com/agent");
+  await b.own(owned);
+  const driven = b.open("https://example.com/driven");
+  await b.ask(driven, "tabInfo");
+  await b.request("memory.configure", [memoryConfig, 1]);
+  for (const tab of [privateTab, owned, driven]) {
+    b.focus(tab);
+    expect(await b.request("memory.capture", [tab.id, tab.doc.url, 1])).toEqual({ value: { skipped: true }, error: undefined });
+    expect(tab.doc.ran).not.toContain("memoryPage");
+  }
+  b.focus(selected);
+  expect(await b.request("memory.capture", [hidden.id, hidden.doc.url, 1])).toEqual({ value: { skipped: true }, error: undefined });
+  await b.request("memory.configure", [{ ...memoryConfig, excludedSites: ["example.com"] }, 2]);
+  expect(await b.request("memory.capture", [selected.id, selected.doc.url, 2])).toEqual({ value: { skipped: true }, error: undefined });
+  expect(selected.doc.ran).not.toContain("memoryPage");
+  expect(hidden.doc.ran).not.toContain("memoryPage");
+});
+
+test("memory refuses background Safari and changed URLs without reading the page", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/article");
+  b.focus(tab);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  b.unfocus();
+  expect(await b.request("memory.capture", [tab.id, tab.doc.url, 1])).toEqual({ value: { skipped: true }, error: undefined });
+  b.focus(tab);
+  expect(await b.request("memory.capture", [tab.id, "https://example.com/before", 1])).toEqual({ value: { skipped: true }, error: undefined });
+  expect(tab.doc.ran).not.toContain("memoryPage");
+});
+
+test("a pause while the page is being read discards its content and cancels collection", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/article");
+  b.focus(tab);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  const held = Promise.withResolvers<{ url: string; title: string; body: string; visible: boolean }>();
+  tab.doc.does = (op) => op === "memoryPage" ? held.promise : { url: tab.doc.url };
+  const reading = b.request("memory.capture", [tab.id, tab.doc.url, 1]);
+  await settle();
+  await b.request("memory.configure", [{ ...memoryConfig, enabled: false }, 2]);
+  held.resolve({ url: tab.doc.url, title: "Article", body: "Discard this captured text.", visible: true });
+  expect(await reading).toEqual({ value: { skipped: true }, error: undefined });
+  await b.clock.advance(2000);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
+});
+
+test("forget resynchronization does not immediately recapture the page and disconnection clears consent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/article");
+  b.focus(tab);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  await b.request("memory.configure", [memoryConfig, 2, false]);
+  await b.clock.advance(2000);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
+  b.disconnect();
+  b.reconnect();
+  b.focus(tab);
+  b.update(tab, { status: "complete" });
+  await b.clock.advance(2000);
+  expect(await b.request("memory.capture", [tab.id, tab.doc.url, 2])).toEqual({ value: { skipped: true }, error: undefined });
+  expect(tab.doc.ran).not.toContain("memoryPage");
+});
+
+test("memory does not collect a document that Safari reports as hidden", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/article");
+  b.focus(tab);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  tab.doc.does = (op) => op === "memoryPage" ? { url: tab.doc.url, title: "Article", body: "Hidden page content.", visible: false } : { url: tab.doc.url };
+  expect(await b.request("memory.capture", [tab.id, tab.doc.url, 1])).toEqual({ value: { skipped: true }, error: undefined });
+});
+
+test("forget during the foreground eligibility check cannot send a stale memory notification", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/article");
+  b.focus(tab);
+  await b.request("memory.configure", [memoryConfig, 1]);
+  const held = b.holdFocusRead();
+  await b.clock.advance(1500);
+  await held.entered;
+  await b.request("memory.configure", [memoryConfig, 2, false]);
+  held.release();
+  await settle();
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([]);
+  b.update(tab, { status: "complete" });
+  await b.clock.advance(1500);
+  expect(b.told.filter((event) => event.op === "memory")).toEqual([{ op: "memory", tab: tab.id, url: tab.doc.url, revision: 2 }]);
 });

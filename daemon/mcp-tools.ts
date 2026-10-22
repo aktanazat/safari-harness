@@ -51,8 +51,8 @@ function published(t: Tool) {
 // the terminal's permissions (see caller.ts).
 export function listTools(): unknown[] {
   return [
-    ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[Safari] ${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: published(t) })),
-    { name: "repl", description: `[Safari] ${REPL_TOOL.desc}`, inputSchema: published(REPL_TOOL) },
+    ...Object.entries(TOOLS).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `${t.desc}${SESSION_NOTES[name] ?? ""}`, inputSchema: published(t) })),
+    { name: "repl", description: REPL_TOOL.desc, inputSchema: published(REPL_TOOL) },
     ...CALLER_GROUPS.flatMap((g) => Object.entries(g.tools).filter(([, t]) => !t.hidden).map(([name, t]) => ({ name, description: `[${g.label}] ${t.desc}`, inputSchema: published(t) }))),
   ];
 }

@@ -1374,7 +1374,7 @@ function agentsPage(): Response {
   agentPages.set(secret, new Map([...agents].map(([owner, agent]) => [owner, agent.id])));
   if (agentPages.size > 32) agentPages.delete(agentPages.keys().next().value!);
   return page("Agents in Safari", `data-kind="agents" data-secret="${secret}"`, [
-    `<header><h1>Agents in Safari</h1><p><a href="/agents/history">History</a></p></header>`,
+    `<header><h1>Agents in Safari</h1><p><a href="/memory">Memory</a> · <a href="/agents/history">History</a></p></header>`,
     `<p id="note" class="note" aria-live="polite"></p>`,
     `<section aria-labelledby="windows-title"><h2 id="windows-title">Windows</h2><ul id="windows" class="agents windows"></ul></section>`,
     `<ul id="agents" class="agents"></ul>`,

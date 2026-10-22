@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Aurora field report</title>
+<main>
+  <h1>Aurora field report</h1>
+  <p>The aurora survey found oxygen emissions at 557.7 nanometers.</p>
+  <p hidden>HIDDEN-SENTINEL</p>
+  <p style="opacity:0">TRANSPARENT-SENTINEL</p>
+  <p style="position:absolute;left:-10000px">OFFSCREEN-SENTINEL</p>
+  <p data-private>PRIVATE-SENTINEL</p>
+  <form><label>Draft<input id="draft"></label><p>FORM-SENTINEL</p></form>
+  <div id="editor" contenteditable="true"></div>
+  <div id="preview"></div>
+  <div id="shadow"></div>
+</main>
+<script>
+const input = document.querySelector('#draft');
+input.addEventListener('input', () => { document.querySelector('#preview').textContent = input.value; });
+const shadow = document.querySelector('#shadow').attachShadow({mode:'open'});
+shadow.innerHTML = '<p>The observation used a spectrometer.</p><div contenteditable="true" id="shadow-editor"></div>';
+</script>

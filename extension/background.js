@@ -82,6 +82,9 @@ function connect() {
     sock.onclose = (ev) => {
       if (ws !== sock) return;
       ws = null;
+      clearTimeout(memoryTimer);
+      memoryPolicy = { enabled: false, sites: [], excludedSites: [] };
+      memoryRevision = -1;
       if (ev.code === 4002) automationCopy = true;
       else scheduleReconnect();
     };
@@ -125,7 +128,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody", "memoryPage"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -185,7 +188,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
   const left = () => Math.max(deadline - Date.now(), 500);
   const msg = { __safariHarness: 1, id: nextId(), op, args, ...(kept && { kept }) };
   let refused = false;
-  keepAwake(tabId);
+  if (op !== "memoryPage") keepAwake(tabId);
   for (;;) {
     await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
     let sent = false;
@@ -1323,6 +1326,23 @@ async function handle(msg) {
   // Every op with a number first takes a tab id, but these four.
   if (typeof args[0] === "number" && op !== "daemonPort" && op !== "windows.focus" && op !== "windows.resolve" && op !== "windows.regrouping") args[0] = await resolveTab(args[0]);
   switch (op) {
+    case "memory.configure": {
+      const [config, revision, captureCurrent = true] = args;
+      clearTimeout(memoryTimer);
+      memoryPolicy = config;
+      memoryRevision = revision;
+      if (captureCurrent) void considerMemoryFront();
+      return { ok: true };
+    }
+    case "memory.capture": {
+      const [tabId, url, revision] = args;
+      if (revision !== memoryRevision || !await memoryAllowed(tabId, url) || revision !== memoryRevision) return { skipped: true };
+      const result = await toTab(tabId, "memoryPage", [url], 5000);
+      if (revision !== memoryRevision || !await memoryAllowed(tabId, url) || revision !== memoryRevision) return { skipped: true };
+      if (result?.error) throw new Error("the page could not be read for memory");
+      if (result?.value?.visible !== true) return { skipped: true };
+      return result.value;
+    }
     case "tabs.list": {
       const tabs = await bounded(api.tabs.query({}), "tabs.query", Date.now() + 2 * LIST_MS);
       // Every window has an active tab; front is the one in the window the
@@ -2343,6 +2363,54 @@ api.alarms.onAlarm.addListener((a) => {
 api.tabs.onRemoved.addListener((tabId) => {
   recRead.then(() => stopRecording(tabId, "closed"));
 });
+
+let memoryPolicy = { enabled: false, sites: [], excludedSites: [] };
+let memoryRevision = -1;
+let memoryTimer;
+
+async function memoryAllowed(tabId, expectedUrl) {
+  if (!memoryPolicy.enabled) return false;
+  await Promise.all([drivenRead, adopted, listsChanged]);
+  const tab = await api.tabs.get(tabId);
+  if (tab.incognito !== false || !tab.active || tab.status !== "complete" || tab.url !== expectedUrl) return false;
+  if (drivenTabs.has(tabId) || harnessTabs.has(tabId) || windowLists.agentWindows.includes(tab.windowId) || await ownsTab(tabId)) return false;
+  const window = await api.windows.getLastFocused();
+  if (!window.focused || window.id !== tab.windowId || window.incognito === true) return false;
+  let url;
+  try { url = new URL(tab.url); } catch { return false; }
+  return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && memoryPolicy.sites.includes(url.hostname) && !memoryPolicy.excludedSites.includes(url.hostname);
+}
+
+function considerMemory(tabId) {
+  clearTimeout(memoryTimer);
+  if (!memoryPolicy.enabled) return;
+  const revision = memoryRevision;
+  memoryTimer = setTimeout(async () => {
+    try {
+      const tab = await api.tabs.get(tabId);
+      if (revision === memoryRevision && await memoryAllowed(tabId, tab.url) && revision === memoryRevision) send({ op: "memory", tab: tabId, url: tab.url, revision });
+    } catch {
+      return;
+    }
+  }, 1500);
+}
+
+async function considerMemoryFront() {
+  if (!memoryPolicy.enabled) return;
+  try {
+    const window = await api.windows.getLastFocused();
+    const [tab] = await api.tabs.query({ active: true, windowId: window.id });
+    if (tab) considerMemory(tab.id);
+  } catch {
+    return;
+  }
+}
+
+api.tabs.onActivated.addListener(({ tabId }) => considerMemory(tabId));
+api.tabs.onUpdated.addListener((id, info, tab) => {
+  if (tab.active && (info.status === "complete" || info.url)) considerMemory(id);
+});
+api.windows.onFocusChanged.addListener(() => { void considerMemoryFront(); });
 
 connect();
 pingLoop();
