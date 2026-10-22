@@ -452,6 +452,9 @@ Add to an MCP client config. `timeout` (milliseconds, where the client reads
 one) lets a long call finish: `repl` runs for up to 120 s, and omp otherwise
 ends every call at 30 s.
 
+the tool list keeps the repl help short. full examples stay in
+`safari guide repl` and the site guides.
+
 ```json
 { "mcpServers": { "safari": { "command": "bun", "args": ["/path/to/safari-harness/daemon/mcp.ts"], "timeout": 130000 } } }
 ```
