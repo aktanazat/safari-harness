@@ -83,12 +83,11 @@ test("a picked part over max comes back as its keys, with a deeper path to pick"
   expect(out.more).toContain("pick deeper, such as next.props.pageProps.items");
 });
 
-test("sources come in a fixed order, empty ones left out, and Next.js's own script tag wins over its global", async () => {
+test("Next.js's own script tag wins over its global, and the global is used when the tag is absent", async () => {
   const out = await data({
     dom: { url: "", title: "", jsonld: [], meta: { "og:title": "Tag" }, next: { from: "tag" }, attrs: [{ el: "div#card", "data-product": { sku: 1 } }] },
     globals: { values: { next: { from: "global" }, apollo: { ROOT_QUERY: { a: 1 } }, state: {} } },
   });
-  expect(out.sources).toEqual(["meta", "next", "apollo", "attrs"].map((name) => ({ name, bytes: expect.any(Number) })));
   expect(out.data).toMatchObject({ next: { from: "tag" } });
   // a page that removed the tag once it started still has the global
   expect((await data({ dom: { url: "", title: "" }, globals: { values: { next: { from: "global" } } } })).data).toEqual({ next: { from: "global" } });

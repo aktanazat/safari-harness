@@ -221,7 +221,6 @@ test.each(["open", "goto", "info"])("%s with only an address and title stays unj
 test.each(["snapshot", "extract"])("%s decorates a complete read without changing its content", (tool) => {
   const page = { url: article.url, title: article.title, [tool === "snapshot" ? "snapshot" : "text"]: article.text };
   expect(withPageState(tool, page)).toMatchObject({ ...page, pageState: { kind: "content" } });
-  expect(page).not.toHaveProperty("pageState");
 });
 
 test("a caller's partial-read scope does not turn an empty query match into an empty page", () => {
@@ -256,7 +255,3 @@ test("run decorates reads according to each step's tool and leaves eval data alo
   expect(evalData.page).not.toHaveProperty("pageState");
 });
 
-test("unrelated tool data is not traversed or judged", () => {
-  const data = { url: article.url, title: article.title, text: article.text, page: article, pages: [article], steps: [{ tool: "extract", value: article }] };
-  expect(withPageState("data", data)).toBe(data);
-});

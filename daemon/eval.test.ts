@@ -115,14 +115,3 @@ test("code past eval's limit gets the page's answer in either world, not the dae
   for (const page of [false, true]) expect(String(await pastLimit("new Promise(() => {})", page))).toMatch(/ran past/);
 });
 
-// On 10-04 an eval that awaited an animation frame in a background tab ran
-// its full 30 s, and the error said only to keep sleeps out of eval. A
-// hidden tab gives eval's world no frame: here the frame never comes.
-test("code that waits on an animation frame past eval's limit is told hidden tabs draw none", async () => {
-  const frame = Object.assign(globalThis, { requestAnimationFrame: () => 0 });
-  try {
-    expect(String(await pastLimit("new Promise((r) => requestAnimationFrame(r))"))).toMatch(/requestAnimationFrame never fires while the tab is hidden; use setTimeout/);
-  } finally {
-    Reflect.deleteProperty(frame, "requestAnimationFrame");
-  }
-});

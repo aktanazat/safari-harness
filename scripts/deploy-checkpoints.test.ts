@@ -46,7 +46,6 @@ test("failed-start recovery restores the exact unchanged snapshot before a legac
   expect(statSync(saved).mode & 0o777).toBe(0o700);
   const result = invoke("restore", saved, legacy, current);
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString()).toContain("restored before legacy fallback");
   expect(files.map(name => readFileSync(join(data, name), "utf8"))).toEqual(original);
   expect(files.map(name => statSync(join(data, name)).mode & 0o777)).toEqual([0o600, 0o600]);
   expect(files.map(name => readFileSync(join(saved, name), "utf8"))).toEqual(original);

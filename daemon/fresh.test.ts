@@ -104,13 +104,12 @@ test("after a deploy, the server runs every call with the new release's code, an
   expect(listChanged(mcp.seen)).toHaveLength(1);
 });
 
-test("a server on the daemon's release lists its own tools and adds nothing to answers", async () => {
+test("a server on the daemon's release lists its own tools without a release-change notification", async () => {
   const fake = daemon(codeHash(REPO));
   const mcp = session(fake.url);
   await mcp.request("initialize");
   const text = (await mcp.request("tools/call", { name: "tabs", arguments: {} })).result?.content?.[0]?.text;
   expect(text).toContain("https://example.com/");
-  expect(text).not.toContain("note:");
   expect((await mcp.request("tools/list")).result?.tools?.map((t) => t.name)).toContain("click");
   await mcp.end();
   fake.stop();

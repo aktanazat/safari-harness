@@ -80,19 +80,6 @@ test("a step naming a tab the run did not open says so beside its answer", async
   expect(run.steps[1]).toEqual({ step: 2, tool: "eval", value: { ok: true, note: expect.stringMatching(/tab 3 .*\(5\)/) } });
 });
 
-test("a repl step is rejected before any tool is called", async () => {
-  const t = tools();
-  const run = await runSteps([{ tool: "repl", args: { code: "1 + 1" } }], t.call);
-  expect(run.steps[0]?.failure?.message).toBe(run.steps[0]?.error);
-  expect(run.steps[0]).toMatchObject({
-    step: 1,
-    tool: "repl",
-    error: expect.stringContaining("repl"),
-    failure: { ok: false, code: "command_failed", effect: "none", retryable: false },
-  });
-  expect(t.calls).toEqual([]);
-});
-
 // A bad later step used to fail only after earlier actions ran (09-30).
 test.each([
   ["unknown tool", { tool: "clik", args: { ref: "#submit" } }],

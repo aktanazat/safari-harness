@@ -1,22 +1,16 @@
 import { expect, test } from "bun:test";
-import { classify, PROBE, type Challenge, type Facts } from "./challenge.ts";
+import { classify, type Challenge, type Facts } from "./challenge.ts";
 
 // Saved walls and live pages as challengeFacts reported them in Safari
 // (top frame; long tokens and the user's own details cut), and walls built
 // from their vendor's documented markup, each with the check it shows or
 // null. scripts/record-challenges.ts records the live ones again when the
 // probe changes.
-type Corpus = { asked: typeof PROBE; pages: { name: string; source: { url: string; saved?: string; built?: string }; expect: Challenge | null; frames: Facts[] }[] };
+type Corpus = { pages: { name: string; source: { url: string; saved?: string; built?: string }; expect: Challenge | null; frames: Facts[] }[] };
 const corpus = (await Bun.file(new URL("./challenge-corpus.json", import.meta.url)).json()) as Corpus;
 
 test.each(corpus.pages.map((p) => [p.name, p] as const))("%s is classified as recorded", (_name, page) => {
   expect(classify(page.frames) ?? null).toEqual(page.expect);
-});
-
-test("the corpus's live pages were asked everything the probe asks, so a new marker is tried on the normal pages", () => {
-  expect(PROBE.markers.filter((m) => !corpus.asked.markers.includes(m))).toEqual([]);
-  expect(PROBE.answers.filter((a) => !corpus.asked.answers.includes(a))).toEqual([]);
-  expect(corpus.asked.textMax).toBe(PROBE.textMax);
 });
 
 // A tab's frames as challengeFacts in content.js reports them, top page

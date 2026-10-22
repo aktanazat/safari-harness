@@ -624,15 +624,18 @@ unlisted, answer `-32000 not supported` — never a fake result.
 
 ## Tests
 
+keep tests for observable behavior, data integrity, privacy, public contracts and measured resource limits. remove tests that only pin wording, code layout, private bookkeeping or an answer supplied by the test itself. a meaningful failing test stays.
+
 `bun scripts/fake-extension.ts` (with the daemon up) exercises CLI, CDP shim,
 MCP, and the agent loop without Safari; with `SAFARI_HARNESS_WS` set it joins
-a second daemon on other ports and leaves the real one alone. `bun test`
-covers sign-in code detection, the Apple Passwords pairing, fill, and
-hand-over across a daemon restart against a fake helper, the pairing code
-read off a stand-in window,
-which tab a call acts on, and keeps the MCP tool list under
-its size ceiling; `bun run check`
-runs the live checks in real Safari.
+a second daemon on other ports and leaves the real one alone. Run each
+`.test.ts` file in a fresh Bun process, for example
+`bun test daemon/lifecycle.test.ts`, to isolate process-global browser mocks
+and session state. The suites cover sign-in code detection, pairing and fill
+against synthetic helpers, tab ownership and cleanup, and the actual MCP
+tool-list byte ceiling. Native conditional cases are unverified when skipped.
+`bun run check` runs live checks in real Safari; it is separate from isolated
+suite verification and may restart the installed service.
 
 `bun run check:research` exercises the research features against real Safari
 with local synthetic pages and fictional secrets. It verifies protected pixels

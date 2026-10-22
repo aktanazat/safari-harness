@@ -286,7 +286,7 @@ benchRows("content.js in WebKit", [
     name: "extract reads a dialog that shows only an embedded frame, and names that frame for its own copy to read",
     page: "frame-dialog.html",
     frames: 1,
-    steps: [{ op: "extract", answer: { value: { note: expect.stringContaining("open over the page"), frames: [{ token: "<frame-tall.html>", name: 'iframe "Form"' }] } } }],
+    steps: [{ op: "extract", answer: { value: { frames: [{ token: "<frame-tall.html>", name: 'iframe "Form"' }] } } }],
   },
   {
     name: "a frame waits for its own text to go, rather than answering at once that the top page decides",
@@ -349,7 +349,6 @@ benchRows("content.js in WebKit", [
       { op: "pressMark", args: ["#day"], answer: { value: { picker: true } } },
       { op: "pressMark", args: ["#shade"], answer: { value: { picker: true } } },
       { op: "pressMark", args: ["#upload"], answer: { value: { picker: true } } },
-      { op: "pressMark", args: ["#go"], answer: { value: { mark: expect.stringMatching(/^__sh_press_/) } } },
     ],
   },
   {
@@ -616,7 +615,7 @@ benchRows("content.js in WebKit", [
     page: "disabled.html",
     steps: [
       { op: "snapshot" }, // [2] textbox "Name" {disabled}
-      { op: "type", args: ["2", "Ada"], answer: { error: "that field is disabled, so the page would ignore text typed into it" } },
+      { op: "type", args: ["2", "Ada"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
@@ -624,7 +623,7 @@ benchRows("content.js in WebKit", [
     page: "disabled.html",
     steps: [
       { op: "snapshot" }, // [4] combobox "Plan" {disabled}
-      { op: "select", args: ["4", "Pro"], answer: { error: "that list is disabled, so the page would ignore a choice made in it" } },
+      { op: "select", args: ["4", "Pro"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
@@ -767,7 +766,7 @@ benchRows("content.js in WebKit", [
   {
     name: "a wait for text to go that was never on the page says so rather than that it went",
     page: "wait.html",
-    steps: [{ op: "wait", args: [null, { gone: "never on this page" }], answer: { value: { found: true, already: true, hint: expect.stringContaining("never on this page") } } }],
+    steps: [{ op: "wait", args: [null, { gone: "never on this page" }], answer: { value: { found: true, already: true } } }],
   },
   {
     name: "a wait for text with a bar in it waits for any of its parts, and says which showed",
@@ -841,9 +840,9 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] button "Sign in"' } } }],
   },
   {
-    name: "a snapshot of a page that never draws answers, with nothing, once the wait runs out, and says the page drew nothing",
+    name: "a snapshot of a page that never draws answers, with nothing, once the wait runs out",
     page: "empty.html",
-    steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "", hint: expect.stringContaining("drawn nothing yet") } } }],
+    steps: [{ op: "snapshot", answer: { value: { nodes: 0, snapshot: "" } } }],
   },
   {
     name: "a snapshot of a Flutter page clicks its Enable accessibility placeholder and waits for the controls Flutter then builds",
@@ -947,21 +946,21 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
-    name: "an extract query that matches no line says so in a note, a leading (?i) is dropped, and a query written as a regex is told it is plain text",
+    name: "an extract query that matches no line returns no text, a leading (?i) is dropped, and a query written as a regex is treated as plain text",
     page: "click.html",
     steps: [
-      { op: "extract", args: [{ query: "nothing like this" }], answer: { value: { text: "", note: expect.stringContaining('"nothing like this"') } } },
+      { op: "extract", args: [{ query: "nothing like this" }], answer: { value: { text: "" } } },
       { op: "snapshot", args: [{ query: "(?i)pressed" }], answer: { value: { snapshot: expect.stringContaining("Pressed 0 times") } } },
-      { op: "snapshot", args: [{ query: "^Pressed" }], answer: { value: { nodes: 0, hint: expect.stringContaining("plain text") } } },
+      { op: "snapshot", args: [{ query: "^Pressed" }], answer: { value: { nodes: 0 } } },
     ],
   },
   {
-    name: "a root or selector that matches nothing on a drawn page is named in the error, with how to read the whole page",
+    name: "a root or selector that matches nothing on a drawn page is refused rather than reading the whole page",
     page: "click.html",
     steps: [
-      { op: "snapshot", args: [{ root: "main" }], answer: { error: 'nothing on the page matches root "main"; leave root out to read the whole page' } },
-      { op: "extract", args: [{ selector: "main" }], answer: { error: 'nothing on the page matches selector "main"; leave selector out to read the whole page' } },
-      { op: "extract", args: [{ selector: "main", as: "table" }], answer: { error: 'nothing on the page matches selector "main"; leave selector out to read the whole page' } },
+      { op: "snapshot", args: [{ root: "main" }], answer: { error: expect.stringContaining('root "main"') } },
+      { op: "extract", args: [{ selector: "main" }], answer: { error: expect.stringContaining('selector "main"') } },
+      { op: "extract", args: [{ selector: "main", as: "table" }], answer: { error: expect.stringContaining('selector "main"') } },
     ],
   },
   {

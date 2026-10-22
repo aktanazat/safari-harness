@@ -72,9 +72,8 @@ for (const [where, rules] of copies) {
 
 const QUIET: RawReceipt = { added: 0, removed: 0, changed: 0, url: null, focus: null, states: [], dialog: null, page: "https://shop.example.com/cart", requests: [], pending: [], errors: [] };
 
-test("a page that did nothing gets none and what to try, word for word", () => {
+test("a page that did nothing gets none and what to try", () => {
   expect(effectOf(QUIET)).toEqual({ effect: "none", next: NO_EFFECT });
-  expect(NO_EFFECT).toBe("the page did not react; the control may need a real click (real_input), a different target (a child or parent), or the page may be busy");
   // a tab that keeps no request log is judged on the rest
   expect(effectOf({ ...QUIET, requests: null, pending: null })).toEqual({ effect: "none", next: NO_EFFECT });
   // beacons and other sites are no reaction

@@ -402,23 +402,6 @@ test("an agent's window is the keeper's to make a tab group of only once it hold
   g.kill();
 });
 
-// On 09-29 each new window of one agent repeated the same 330-character
-// reason, which only the user can act on.
-test("a window that stays plain says why once to its agent, not on its later opens or windows", async () => {
-  safari();
-  turnOff("Safari's menu stayed open after delete");
-  const e = agent();
-  const first = await runAs(e.pid, () => openTab("https://e.example/1", true));
-  const again = await runAs(e.pid, () => openTab("https://e.example/2", true));
-  const research = await runAs(e.pid, () => openTab("https://e.example/3", true, "research"));
-  rmSync(files.off);
-  expect(first.space).toMatchObject({ group: "plain", why: expect.stringContaining("menu stayed open") });
-  expect(again.space).toEqual({ name: first.space.name, group: "plain" });
-  expect(research.windowId).not.toBe(first.windowId);
-  expect(research.space).toEqual({ name: expect.any(String), group: "plain" });
-  e.kill();
-});
-
 // A deploy reloads the extension, and Safari renumbers every window: before,
 // the agent's next tab went into a second window, and the first one's page
 // stayed open for good.

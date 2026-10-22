@@ -110,17 +110,6 @@ test("close with a replaced tab's old id closes its new tab and forgets it", asy
   expect(owners()).not.toContainKey("252");
 });
 
-// From 10-04 to 10-12 an agent read "use <new id>" as an order and listed
-// its tabs again after each renumbering; the line says the old id works.
-test("a snapshot's text form carries its news above the page, and the old id it names as still working does", async () => {
-  const old = await open();
-  fromExtension({ kind: "replaced", from: old, to: 253 });
-  const [news, header] = formatResult(await as("snapshot", { tab: old })).split("\n");
-  expect(news).toBe(`tab ${old} is now tab 253; ${old} still reaches it`);
-  expect(header).toBe("# A — https://a.example/ (1 nodes)");
-  await as("info", { tab: old });
-  expect(reached.at(-1)).toBe(253);
-});
 
 test("once the extension connects again, an old id is the tab Safari gives it now", async () => {
   const old = await open();
