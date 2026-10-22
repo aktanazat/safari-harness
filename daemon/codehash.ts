@@ -9,9 +9,6 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-// Its code but the tests, docs/ (the guide tool reads it), the extension it
-// loads into the hidden Helium, and the sources of the helpers in scripts/
-// it runs (each built from its .swift).
 const PARTS: Record<string, (file: string) => boolean> = {
   daemon: (f) => !f.endsWith(".test.ts"),
   docs: () => true,
@@ -21,6 +18,10 @@ const PARTS: Record<string, (file: string) => boolean> = {
 
 export function codeHash(root = join(import.meta.dir, "..")): string {
   const hash = createHash("sha256");
+  for (const file of ["package.json", "bun.lock"]) {
+    const path = join(root, file);
+    if (existsSync(path)) hash.update(`${file}\0`).update(readFileSync(path)).update("\0");
+  }
   for (const [part, wanted] of Object.entries(PARTS)) {
     const dir = join(root, part);
     if (!existsSync(dir)) continue;

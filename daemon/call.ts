@@ -108,6 +108,11 @@ async function runHere(tool: string, args: Record<string, unknown>, model: boole
   // real_input takes a code's source as type does, and its own parameters
   // go to it (secret.ts).
   const call = checkCall(CALLER_TOOLS, tool, args, model);
+  if (call.tool === "real_input" && call.args.do === "paste"
+    && (["secret", "from", "from_selector", "env"].some((key) => call.args[key] !== undefined)
+      || ["text", "html", "tsv"].some((key) => typeof call.args[key] === "string" && call.args[key].includes("{{code}}")))) {
+    throw new Error("paste cannot fill secrets or codes; use the existing secret type tools");
+  }
   const { secret: _secret, from: _from, from_selector: _fromSelector, env: _env, ...rest } = call.args;
   const remote = process.env.SAFARI_HARNESS_REMOTE;
   const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));

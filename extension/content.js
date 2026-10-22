@@ -396,8 +396,8 @@
   }
 
   // The innermost element at a point: elementFromPoint stops at a host.
-  function deepPoint(x, y) {
-    let hit = document.elementFromPoint(x, y);
+  function deepPoint(x, y, doc = document) {
+    let hit = doc.elementFromPoint(x, y);
     while (hit?.shadowRoot) {
       const inner = hit.shadowRoot.elementFromPoint(x, y);
       if (!inner || inner === hit) break;
@@ -410,6 +410,7 @@
 
   function ensureRef(el) {
     let ref = el.getAttribute(REF_ATTR);
+    if (ref && (refMap.has(ref) ? refMap.get(ref) !== el : fingerprints.has(ref) || carried?.[ref])) ref = null;
     if (!ref) {
       refSeq += 1;
       ref = String(refSeq);
@@ -448,7 +449,7 @@
   const STABLE_ID = /^[A-Za-z][A-Za-z_-]*$/;
 
   function parentOf(el) {
-    return el.parentElement ?? (el.parentNode instanceof ShadowRoot ? el.parentNode.host : null);
+    return el.parentElement ?? el.parentNode?.host ?? null;
   }
 
   // The opening text in box outside el, read from its text nodes: reading
@@ -467,11 +468,11 @@
     return norm(t).slice(0, NEAR_MAX);
   }
 
-  // The text of the nearest box around the element with text of its own
-  // beside it: a row's, a list item's, a field's label.
+  // Nearby text belongs to the control's box, not the whole document:
+  // unrelated page messages must not become a row's business identity.
   function nearText(el) {
     let up = 0;
-    for (let box = parentOf(el); box && up < 6; box = parentOf(box), up++) {
+    for (let box = parentOf(el); box && box !== el.ownerDocument.body && box !== el.ownerDocument.documentElement && up < 6; box = parentOf(box), up++) {
       const t = textAround(box, el);
       if (t) return t;
     }
@@ -573,16 +574,14 @@
     const want = lookalikeKey(fp);
     const same = [];
     for (let i = 0; i < candidates.length; i++) if (lookalikeKey(candidates[i]) === want) same.push(i);
-    if (same.length === 1 && fp.count === 1) return { index: same[0] };
-    // One of several lookalikes, then or now: the one whose surroundings read
-    // the same; among several of those, the one on the same path, or the one
-    // at the same place among as many lookalikes as before.
-    const kin = same.filter((i) => candidates[i].near === fp.near);
-    if (kin.length === 1) return { index: kin[0] };
-    const onPath = kin.filter((i) => candidates[i].path === fp.path);
-    if (onPath.length === 1) return { index: onPath[0] };
-    const placed = same[fp.index];
-    if (same.length === fp.count && kin.includes(placed)) return { index: placed };
+    // Position and CSS paths survive a reorder without preserving identity.
+    // Repeated controls need unique, nonempty matching nearby text.
+    if (fp.near) {
+      const kin = same.filter((i) => candidates[i].near === fp.near);
+      if (kin.length === 1) return { index: kin[0] };
+    } else if (same.length === 1 && fp.count === 1 && !candidates[same[0]].near) {
+      return { index: same[0] };
+    }
     return { count: same.length };
   }
   // ---- shared with daemon/fingerprint.ts: end ----
@@ -682,10 +681,10 @@
   // Scrolls each box that holds el, nearest first, then the window, until
   // rect (in this viewport) shows, centered on an axis where it did not.
   function reveal(el, rect) {
+    const view = el.ownerDocument.defaultView || window;
     const center = (at, size, from, span) => (at >= from && at + size <= from + span ? 0 : at + size / 2 - (from + span / 2));
     let { x, y } = rect;
-    const outer = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
-    for (let box = outer(el); box && box !== document.body && box !== document.documentElement; box = outer(box)) {
+    for (let box = parentOf(el); box && box !== el.ownerDocument.body && box !== el.ownerDocument.documentElement; box = parentOf(box)) {
       if (box.scrollHeight <= box.clientHeight && box.scrollWidth <= box.clientWidth) continue;
       const b = box.getBoundingClientRect();
       const [left, top] = [box.scrollLeft, box.scrollTop];
@@ -693,7 +692,7 @@
       x -= box.scrollLeft - left;
       y -= box.scrollTop - top;
     }
-    window.scrollBy({ left: center(x, rect.width, 0, innerWidth), top: center(y, rect.height, 0, innerHeight), behavior: "instant" });
+    view.scrollBy({ left: center(x, rect.width, 0, view.innerWidth), top: center(y, rect.height, 0, view.innerHeight), behavior: "instant" });
   }
 
   addEventListener("message", (e) => {
@@ -1188,18 +1187,17 @@
   // target's match at i in matchesOf's order, counted from the end when i
   // is negative.
   const NTH = /^(.*\S)\s*>>\s*nth=(-?\d+)$/s;
-  function resolve(target) {
+  function resolve(target, keepLabel = false) {
     const key = String(target).trim();
-    if (NTH.test(key)) return matchesOf(key)[0] ?? null;
-    if (key.startsWith("text=")) return byText(key.slice(5));
+    if (NTH.test(key)) return matchesOf(key, keepLabel)[0] ?? null;
+    if (key.startsWith("text=")) return byText(key.slice(5), keepLabel);
     if (/^\d+$/.test(key)) {
       const el = refMap.get(key);
-      if (el && el.isConnected) return el;
-      const dom = deepQuery(`[${REF_ATTR}="${key}"]`);
-      if (dom) refMap.set(key, dom);
-      return dom ?? heal(key);
+      if (el?.isConnected) return el;
+      if (el || fingerprints.has(key) || carried?.[key]) return heal(key);
+      return null;
     }
-    return CSS_HINT.test(key) ? bySelector(key) ?? byText(key) : byText(key) ?? bySelector(key);
+    return CSS_HINT.test(key) ? bySelector(key) ?? byText(key, keepLabel) : byText(key, keepLabel) ?? bySelector(key);
   }
 
   // Every element a target names, in page order, for a locator's count,
@@ -1208,10 +1206,10 @@
   // element resolve finds. In the two weeks of logs before 10-19, scripts
   // took the fourth "See out-the-door price" button, the third radio
   // button, and a gallery's nth thumbnail so, and locators had no nth.
-  function matchesOf(key) {
+  function matchesOf(key, keepLabel = false) {
     const nth = NTH.exec(key);
     if (nth) {
-      const el = matchesOf(nth[1]).at(Number(nth[2]));
+      const el = matchesOf(nth[1], keepLabel).at(Number(nth[2]));
       return el ? [el] : [];
     }
     const ref = /^\d+$/.test(key);
@@ -1221,8 +1219,8 @@
     }
     const want = ref ? "" : (text ? key.slice(5) : key).replace(/\s+/g, " ").trim().toLowerCase();
     const named = want ? [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]).filter((el) => isInteractive(el) && shown(el) && accessibleName(el).replace(/\s+/g, " ").toLowerCase() === want) : [];
-    if (named.length) return named.map(fieldOf);
-    const one = resolve(key);
+    if (named.length) return keepLabel ? named : named.map(fieldOf);
+    const one = resolve(key, keepLabel);
     return one ? [one] : [];
   }
 
@@ -1305,7 +1303,7 @@
   // innermost element whose text holds it, as Playwright's getByText finds
   // one: on 10-02 a wait for a sentence that began a longer paragraph ran
   // out its 30 s. A label stands for its field.
-  function byText(text) {
+  function byText(text, keepLabel = false) {
     const want = text.replace(/\s+/g, " ").trim().toLowerCase();
     if (!want) return null;
     const all = [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]);
@@ -1325,7 +1323,7 @@
       else if (!found && own.includes(want) && (!holding || holding.contains(el)) && shown(el)) holding = el;
     }
     found ??= partial ?? holding;
-    return fieldOf(found);
+    return keepLabel ? found : fieldOf(found);
   }
 
   function missing(target) {
@@ -1339,13 +1337,19 @@
 
   function fireMouse(el, type, x, y) {
     el.dispatchEvent(new MouseEvent(type, {
-      bubbles: true, cancelable: true, view: window,
+      bubbles: true, cancelable: true, composed: true, view: el.ownerDocument.defaultView,
       clientX: x, clientY: y, button: 0,
     }));
   }
 
-  function fireClick(el, x, y) {
-    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) fireMouse(el, type, x, y);
+  function fireClick(el, x, y, beforeEvent = null, stopAfterEvent = null) {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      const blocked = beforeEvent?.();
+      if (blocked) return blocked;
+      fireMouse(el, type, x, y);
+      if (stopAfterEvent?.()) return { ok: true };
+    }
+    return { ok: true };
   }
 
   // What an action set in motion, read right after it ran, so the extension
@@ -1360,10 +1364,15 @@
     let nav = null;
     let submit = null;
     let clicked = null;
+    let clickedLink = null;
     let popped = false;
     const onNav = (e) => { nav ??= e; };
     const onSubmit = (e) => { submit ??= e; };
-    const onClick = (e) => { clicked ??= e; };
+    const onClick = (e) => {
+      if (clicked) return;
+      clicked = e;
+      clickedLink = e.composedPath().find((el) => el instanceof Element && el.matches("a[href], area[href]"));
+    };
     const onPopup = () => { popped = true; };
     navigation.addEventListener("navigate", onNav);
     addEventListener("submit", onSubmit, true);
@@ -1382,7 +1391,7 @@
     const expect = popped ? "tab"
       : nav ? (nav.destination.sameDocument ? null : "load")
       : submit ? submitOutcome(submit)
-      : clicked ? linkOutcome(clicked)
+      : clicked ? linkOutcome(clicked, clickedLink)
       : null;
     // the window.open said so already
     if (expect === "tab" && !popped) announceTab();
@@ -1399,8 +1408,7 @@
     return opensTab(target) ? "tab" : "load";
   }
 
-  function linkOutcome(e) {
-    const a = e.target instanceof Element ? e.target.closest("a[href], area[href]") : null;
+  function linkOutcome(e, a) {
     if (!a || a.hasAttribute("download")) return null;
     if (e.defaultPrevented) return "script";
     const to = new URL(a.href, location.href);
@@ -1423,29 +1431,226 @@
   }
 
   function click(ref) {
-    const el = resolve(ref);
+    const el = resolve(ref, true);
     if (!el) return missing(ref);
-    // A disabled control ignores the click; saying ok sent an agent hunting
-    // for a cause for 23 turns on GitHub's Authorize, which is enabled only
-    // while its window is in front.
-    if (el.matches(":disabled")) return { error: typedForm(el) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call activate)" };
-    watchTarget(el);
-    clickElement(el);
-    return { ok: true };
+    return clickElement(el);
   }
 
-  // A click at the middle of el, where a person clicks. Reading the
-  // position forces layout, so no frame wait is needed; background tabs
-  // never run requestAnimationFrame, so waiting on one hangs. The topmost
-  // element at that point gets the click only when it is part of el (an
-  // overlay inside a link); anything else is a cover that would swallow
-  // the click, so el itself gets it.
-  function clickElement(el) {
-    el.scrollIntoView({ block: "center", behavior: "instant" });
-    const { x, y } = centerOf(el);
-    const hit = deepPoint(x, y);
-    fireClick(hit && el.contains(hit) ? hit : el, x, y);
+  function clickBlocked(el) {
+    if (!el.isConnected) return "that target left the page; re-run snapshot";
+    const control = el.tagName === "LABEL" ? el.control : el;
+    if (control?.matches(":disabled")) return typedForm(control) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call activate)";
+    if ((el.ownerDocument.defaultView || window).getComputedStyle(el).visibility !== "visible") return "that target is not visible; re-run snapshot to choose a visible control";
+    for (let node = el; node; node = node.assignedSlot ?? parentOf(node)) {
+      if (node.inert || node.getAttribute("aria-disabled") === "true" || node.matches(":disabled")) return "that control is disabled or inert; the page must enable it before it can be used";
+      const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (style.display === "none" || Number(style.opacity) === 0 || style.contentVisibility === "hidden") return "that target is not visible; re-run snapshot to choose a visible control";
+    }
+    return null;
+  }
+
+  function insideTarget(el, hit) {
+    for (let node = hit; node; node = node.assignedSlot ?? parentOf(node)) if (node === el) return true;
+    return false;
+  }
+
+  function framePoint(frame, point) {
+    const style = (frame.ownerDocument.defaultView || window).getComputedStyle(frame);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0, paddingTop = parseFloat(style.paddingTop) || 0;
+    const width = frame.clientWidth - paddingLeft - (parseFloat(style.paddingRight) || 0);
+    const height = frame.clientHeight - paddingTop - (parseFloat(style.paddingBottom) || 0);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x >= width || point.y >= height) return { error: "that frame's target point is outside its viewport; read the target again" };
+    for (let node = frame; node; node = node.assignedSlot ?? parentOf(node)) {
+      const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (style.perspective !== "none" || (style.rotate && !["none", "0deg"].includes(style.rotate))) return { error: "that frame is rotated or projected, so its click position cannot be checked safely" };
+      if (style.transform !== "none") {
+        const matrix = new DOMMatrixReadOnly(style.transform);
+        if (!matrix.is2D || matrix.b !== 0 || matrix.c !== 0 || matrix.a <= 0 || matrix.d <= 0) return { error: "that frame is rotated or skewed, so its click position cannot be checked safely" };
+      }
+    }
+    const rect = frame.getBoundingClientRect();
+    const sx = frame.offsetWidth ? rect.width / frame.offsetWidth : 1;
+    const sy = frame.offsetHeight ? rect.height / frame.offsetHeight : 1;
+    return { x: rect.left + (frame.clientLeft + paddingLeft + point.x) * sx, y: rect.top + (frame.clientTop + paddingTop + point.y) * sy };
+  }
+
+  function frameCover(doc, x, y, scroll = true) {
+    for (let view = doc.defaultView; view && view !== view.top;) {
+      let frame;
+      try { frame = view.frameElement; } catch { return null; }
+      if (!frame) return null;
+      const blocked = clickBlocked(frame);
+      if (blocked) return { error: blocked };
+      let point = framePoint(frame, { x, y });
+      if (point.error) return point;
+      if (scroll) {
+        reveal(frame, { ...point, width: 1, height: 1 });
+        point = framePoint(frame, { x, y });
+        if (point.error) return point;
+      }
+      ({ x, y } = point);
+      const hit = deepPoint(x, y, frame.ownerDocument);
+      if (!hit || !insideTarget(frame, hit)) return { error: hit ? `that frame is covered by ${named(hit)}; dismiss the cover before clicking` : "that frame is outside the visible page; scroll it into view before clicking" };
+      view = frame.ownerDocument.defaultView;
+    }
+    return null;
+  }
+
+  // Hit-test the visible part of each box, including wrapped links and
+  // controls clipped by a scroll pane. Never send events through a cover.
+  function clickPoint(el, scroll = true) {
+    const blocked = clickBlocked(el);
+    if (blocked) return { error: blocked };
+    if (scroll) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    const view = el.ownerDocument.defaultView || window;
+    let cover = null;
+    let boxes = 0;
+    for (const rect of el.getClientRects()) {
+      if (++boxes > 32) break;
+      let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+      let right = Math.min(view.innerWidth, rect.right), bottom = Math.min(view.innerHeight, rect.bottom);
+      for (let node = el.assignedSlot ?? parentOf(el); node; node = node.assignedSlot ?? parentOf(node)) {
+        const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+        if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+        const clip = node.getBoundingClientRect();
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left + node.clientLeft);
+          right = Math.min(right, clip.left + node.clientLeft + node.clientWidth);
+        }
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top + node.clientTop);
+          bottom = Math.min(bottom, clip.top + node.clientTop + node.clientHeight);
+        }
+      }
+      if (right <= left || bottom <= top) continue;
+      for (const [fx, fy] of [[0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]]) {
+        const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+        const hit = deepPoint(x, y, el.ownerDocument);
+        if (hit && insideTarget(el, hit)) {
+          const stopped = clickBlocked(hit);
+          if (!stopped) {
+            const coveredFrame = frameCover(el.ownerDocument, x, y, scroll);
+            if (coveredFrame) return coveredFrame;
+            return { hit, x, y };
+          }
+          return { error: stopped };
+        }
+        cover ??= hit;
+      }
+    }
+    return { error: cover ? `that target is covered by ${named(cover)}; dismiss the cover or re-run snapshot before clicking` : "that target has no visible clickable area; scroll it into view or re-run snapshot" };
+  }
+
+  function clickElement(el, stopAfterEvent = null) {
+    const point = clickPoint(el);
+    if (point.error) return point;
+    watchTarget(el);
+    const clicked = fireClick(point.hit, point.x, point.y, () => {
+      const blocked = clickBlocked(el) || clickBlocked(point.hit);
+      if (blocked) return { error: blocked };
+      const hit = deepPoint(point.x, point.y, el.ownerDocument);
+      if (!hit || !insideTarget(el, hit)) return { error: `that target became covered${hit ? ` by ${named(hit)}` : ""}; re-run snapshot before clicking` };
+      return frameCover(el.ownerDocument, point.x, point.y);
+    }, stopAfterEvent);
+    if (clicked.error) return clicked;
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
+    return { ok: true };
+  }
+  function clickProbe(ref, kind = "click") {
+    const target = resolve(ref, kind === "click");
+    const el = kind === "select" ? fieldOf(target) : target;
+    if (!el) return missing(ref);
+    const point = clickPoint(el);
+    if (point.error) return point;
+    let { x, y } = point;
+    for (let doc = el.ownerDocument; doc !== document;) {
+      const frame = doc.defaultView?.frameElement;
+      if (!frame) return { error: "the target's frame changed; re-run snapshot" };
+      const parentPoint = framePoint(frame, { x, y });
+      if (parentPoint.error) return parentPoint;
+      ({ x, y } = parentPoint);
+      doc = frame.ownerDocument;
+    }
+    return { x, y, frame: frameToken };
+  }
+
+  function assertFrameClickable(token, point, opts = {}) {
+    const frame = deepQueryAll("iframe, frame").find((el) => childToken.get(el) === token);
+    if (!frame) return { found: false };
+    const blocked = clickBlocked(frame);
+    if (blocked) return { found: true, blocker: blocked };
+    let mapped = framePoint(frame, point);
+    if (mapped.error) return { found: true, blocker: mapped.error };
+    if (opts.scroll !== false) {
+      reveal(frame, { ...mapped, width: 1, height: 1 });
+      mapped = framePoint(frame, point);
+      if (mapped.error) return { found: true, blocker: mapped.error };
+    }
+    const hit = deepPoint(mapped.x, mapped.y);
+    if (!hit || !insideTarget(frame, hit)) return { found: true, blocker: hit ? `that frame is covered by ${named(hit)}; dismiss the cover before clicking` : "that frame has no visible target point; re-run snapshot" };
+    return { found: true, ...mapped, frame: frameToken };
+  }
+
+  function nativeEndpoint(ref, x, y) {
+    if (ref !== undefined && ref !== null) {
+      if (x !== undefined || y !== undefined) return { error: "use a target ref or coordinates, not both" };
+      const el = resolve(ref, true);
+      if (!el) return missing(ref);
+      if (el.ownerDocument !== document) return { error: "native drag targets must be in the same frame; choose that frame explicitly" };
+      const point = clickPoint(el, false);
+      return point.error ? point : { x: point.x, y: point.y };
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return { error: "native drag coordinates must be inside the current viewport" };
+    const hit = deepPoint(x, y);
+    if (!hit) return { error: "no visible target at those native drag coordinates" };
+    const blocked = clickBlocked(hit);
+    if (blocked) return { error: blocked };
+    const covered = frameCover(document, x, y, false);
+    return covered || { x, y };
+  }
+
+  function nativePasteBlocked(el) {
+    if (!el) return "there is no focused editable field for native paste";
+    if (el.type === "password" || /\b(current-password|new-password)\b/.test(el.getAttribute("autocomplete") ?? "")) return "native paste refuses password fields";
+    if (!(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return "native paste needs a text field or editable region";
+    if (el.readOnly || el.getAttribute("aria-readonly") === "true") return "that field is read-only, so it cannot receive native paste";
+    return null;
+  }
+
+  function nativeProbe(request = {}) {
+    if (!request || typeof request !== "object" || !["drag", "paste"].includes(request.kind)) return { error: "native probe needs drag or paste" };
+    const state = { document: frameToken, innerWidth, innerHeight };
+    const expected = request.expected;
+    if (expected && (expected.document !== state.document || expected.innerWidth !== innerWidth || expected.innerHeight !== innerHeight)) return { error: "the native target document or viewport changed; read it again before dispatch" };
+    if (request.kind === "drag") {
+      const from = nativeEndpoint(request.ref, request.x, request.y);
+      if (from.error) return from;
+      const to = nativeEndpoint(request.target, request.targetX, request.targetY);
+      if (to.error) return to;
+      if (expected && (expected.from?.x !== from.x || expected.from?.y !== from.y || expected.to?.x !== to.x || expected.to?.y !== to.y)) return { error: "a native drag target moved; read it again before dispatch" };
+      if (innerWidth !== state.innerWidth || innerHeight !== state.innerHeight) return { error: "the native viewport changed while checking the drag; read it again before dispatch" };
+      return { ...state, from, to };
+    }
+    const explicit = request.ref !== undefined && request.ref !== null;
+    const el = explicit ? fieldOf(resolve(request.ref)) : focusedNow();
+    if (explicit && !el) return missing(request.ref);
+    const blocked = nativePasteBlocked(el);
+    if (blocked) return { error: blocked };
+    if (el.ownerDocument !== document) return { error: "native paste needs an editable field in this frame; choose that frame explicitly" };
+    const before = clickPoint(el, false);
+    if (before.error) return before;
+    if (!expected && explicit && focusedNow() !== el) el.focus({ preventScroll: true });
+    if (focusedNow() !== el) return { error: expected ? "the focused field changed; native paste was not dispatched" : "the page did not focus that editable field; native paste was not dispatched" };
+    const changed = nativePasteBlocked(el);
+    if (changed) return { error: changed };
+    const after = clickPoint(el, false);
+    if (after.error) return after;
+    const focus = ensureRef(el);
+    const from = { x: after.x, y: after.y };
+    if (expected && expected.focus !== focus) return { error: "the focused editable field was replaced; read it again before native paste" };
+    if (expected && (expected.from?.x !== from.x || expected.from?.y !== from.y)) return { error: "the native paste target moved; read it again before dispatch" };
+    if (innerWidth !== state.innerWidth || innerHeight !== state.innerHeight) return { error: "the native viewport changed while focusing the field; read it again before dispatch" };
+    return { ...state, focus, from };
   }
 
   function hover(ref) {
@@ -1508,7 +1713,11 @@
     } else {
       const before = new Set(lists());
       const listOf = () => named() ?? lists().find((l) => !before.has(l));
-      clickElement(box);
+      // A list can open on pointerdown or mousedown and cover the old point
+      // or move its trigger. Opening is complete then: send no later events
+      // through that list. The chosen option gets its own guarded click.
+      const opened = clickElement(box, listOf);
+      if (opened.error) return opened;
       list = listOf();
       if (!list) await whenPage(() => (list = listOf()) !== undefined, LIST_WAIT_MS);
     }
@@ -1523,7 +1732,8 @@
     if (!opt) return noOption(choice, options);
     return afterward(() => withOutcome(() => {
       watchTarget(box);
-      clickElement(opt.el);
+      const selected = clickElement(opt.el);
+      if (selected.error) return selected;
       return { ok: true, value: opt.label };
     }), opts);
   }
@@ -1534,6 +1744,10 @@
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (choice !== null) {
+      const point = clickPoint(el);
+      if (point.error) return point;
+    }
     if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
     return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
@@ -2714,12 +2928,18 @@
   }
 
   function pressKey(ref, spec) {
-    let el = ref === null || ref === undefined ? null : resolve(ref);
+    const explicit = ref !== null && ref !== undefined;
+    let el = explicit ? fieldOf(resolve(ref)) : null;
+    if (explicit && !el) return missing(ref);
     if (!el) {
       el = document.activeElement;
       while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
     }
     el ??= document.body;
+    if (el !== document.body && el !== document.documentElement) {
+      const blocked = clickBlocked(el);
+      if (blocked) return { error: blocked };
+    }
     watchTarget(el);
     const { key, flags } = parseKey(spec);
     const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
@@ -3895,6 +4115,7 @@
   const SH = Object.freeze({
     q: deepQuery,
     qa: deepQueryAll,
+    resolve,
     text: (target = document.body) => {
       const root = typeof target === "string" ? deepQuery(target) : target;
       return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
@@ -4202,6 +4423,9 @@
     snapshot,
     memoryPage,
     click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
+    clickProbe,
+    assertFrameClickable,
+    nativeProbe,
     type: (ref, text, opts) => typeText(ref, text, opts),
     press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),

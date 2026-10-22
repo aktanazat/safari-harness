@@ -12,7 +12,7 @@ const PICTURES = 100;
 const PICTURE_BYTES = 128 * 1024 * 1024;
 const AGE_MS = 30 * 24 * 60 * 60_000;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const TOOLS: Record<string, true> = Object.fromEntries("run tabs open close keep goto activate snapshot click type press select hover upload history scroll eval fetch download dialog extract map follow info wait data handoff_wait net console cookies shot shots pdf window locate resolve_tab real_site select_tab press_mark press_done type_mark type_field type_send element autofill login_form login_fill card_form card_fill card_phone passwords learn replay recordings lookalikes keep_secret report real_input action_admit action_finish unknown".split(" ").map((name) => [name, true as const]));
+const TOOLS: Record<string, true> = Object.fromEntries("run tabs open close keep goto activate snapshot click type press select hover upload history scroll eval fetch download dialog extract map follow info wait data handoff_wait net console cookies shot shots pdf window locate resolve_tab real_site select_tab press_mark press_done type_mark type_field type_send element autofill login_form login_fill card_form card_fill card_phone passwords learn replay recordings lookalikes keep_secret report real_input action_admit action_finish input_state audit react site_actions video native_preflight unknown".split(" ").map((name) => [name, true as const]));
 const PROCESSES: Record<string, true> = { omp: true, claude: true, codex: true, bun: true, node: true, python: true, python3: true, sleep: true };
 const CODES: Record<string, true> = Object.fromEntries("stale_view effect_unknown privacy blocked not_content timeout unavailable aborted invalid_argument command_failed stopped waiting_for_human".split(" ").map((name) => [name, true as const]));
 const STATUSES: Record<string, true> = { working: true, "waiting on the user": true, paused: true, "user is driving": true, stopped: true, ended: true };
@@ -21,7 +21,7 @@ const GAPS: Record<string, true> = { "capture unavailable": true, "privacy guard
 export type CaptureSummary = { sha256: string; capturedAt: string; width: number; height: number; masked: number; url?: string; tiles?: number };
 export type HistoryPicture = { id: string; missing: string } | { id: string; capture: CaptureSummary; receipt: string; bytes: number };
 export type HistoryCall = { t: number; tool: string; args: string; tab?: number; ms?: number; outcome: "running" | "done" | "failed" | "interrupted"; code?: string; evidence?: CaptureSummary[]; picture?: HistoryPicture };
-export type MissionRecord = { id: string; owner: number | null; process: string | null; since: number; active: number; raised: number; status: string; ended?: number; interrupted?: true; controls: false; spaces: string[]; pictures: boolean; calls: HistoryCall[] };
+export type MissionRecord = { id: string; owner: number | null; process: string | null; since: number; active: number; raised: number; status: string; ended?: number; interrupted?: true; controls: false; spaces: string[]; pictures: boolean; inspectionOnly?: true; calls: HistoryCall[] };
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -54,7 +54,7 @@ export function captureSummaries(value: unknown): CaptureSummary[] {
     if (!o) return;
     const saved = capture(o.evidence);
     if (saved && !summaries.some((s) => s.sha256 === saved.sha256)) summaries.push(saved);
-    for (const key of ["value", "page", "pages", "results", "files", "shots", "captures", "steps"]) if (o[key] !== undefined) visit(o[key], depth + 1);
+    for (const key of ["value", "page", "pages", "results", "files", "shots", "captures", "capture", "frames", "steps"]) if (o[key] !== undefined) visit(o[key], depth + 1);
   };
   visit(value, 0);
   return summaries;
@@ -94,7 +94,7 @@ function record(value: unknown, root: string, restarted = false): MissionRecord 
   return { id, owner: count(o.owner) && o.owner > 1 ? o.owner : null, process: typeof o.process === "string" && Object.hasOwn(PROCESSES, o.process) ? o.process : null,
     since: o.since, active: o.active, raised: count(o.raised) ? o.raised : 0,
     status: restarted ? o.status === "stopped" ? "stopped" : "ended" : typeof o.status === "string" && Object.hasOwn(STATUSES, o.status) ? o.status : "ended",
-    ...(ended === undefined ? {} : { ended }), ...(interrupted ? { interrupted: true } : {}), controls: false, spaces, pictures: o.pictures === true, calls };
+    ...(ended === undefined ? {} : { ended }), ...(interrupted ? { interrupted: true } : {}), controls: false, spaces, pictures: o.pictures === true, ...(o.inspectionOnly === true ? { inspectionOnly: true } : {}), calls };
 }
 
 export class MissionHistory {

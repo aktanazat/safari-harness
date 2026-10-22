@@ -200,7 +200,7 @@ type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
 // its dialogs, and its frames (probe). Each answer has what the harness
 // typed there as a secret cut (redact.ts): a request log, a console, and
 // the page's own script answer here without passing content.js's cut.
-const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true };
+const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true, "upgrade.audit": true, "upgrade.react": true, "upgrade.site": true, "upgrade.context": true, "upgrade.configure": true, "upgrade.native": true };
 
 // The requests whose time is a page's or a site's, not the extension's: a
 // tab's (FROM_TAB, and shot, window, storage.clear, which reach into its

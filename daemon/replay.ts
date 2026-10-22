@@ -9,7 +9,7 @@
 
 import type { Challenge } from "./challenge.ts";
 import type { Clock } from "./downloads.ts";
-import { isFingerprint, matchFingerprint, unmatched, type Candidate } from "./fingerprint.ts";
+import { isFingerprint, lookalikeKey, matchFingerprint, unmatched, type Candidate } from "./fingerprint.ts";
 import { assertAgentRecording, gateOfStep, loadRecording, playbookUrl } from "./recordings.ts";
 import type { AgentRecording, AgentStep } from "./recordings.ts";
 
@@ -91,8 +91,10 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
     for (;;) {
       const seen = await call("lookalikes", { tab, target: fp });
       const found = (Array.isArray(seen) ? seen : []).filter((c): c is Candidate & { ref: unknown } => ["role", "name", "tag", "near", "path"].every((k) => typeof fields(c)[k] === "string"));
-      const m = matchFingerprint(fp, found);
-      if ("index" in m && (!learned || found.length === 1)) return found[m.index].ref;
+      const m = learned
+        ? found.length === 1 && lookalikeKey(found[0]) === lookalikeKey(fp) ? { index: 0 } : { count: found.length }
+        : matchFingerprint(fp, found);
+      if ("index" in m) return found[m.index].ref;
       if (clock.now() >= deadline) throw new Error(unmatched(fp, m.count));
       await clock.sleep(POLL_MS);
     }

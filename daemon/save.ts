@@ -50,6 +50,7 @@ type File = { body: string | Uint8Array; ext: string };
 // outline, fetch the body as sent, eval its value (a string as it is; an
 // expression with no value, such as a statement, as null).
 function fileOf(kind: SaveKind, r: Record<string, unknown>): File {
+  if (kind === "snapshot" && r.update !== undefined) return { body: JSON.stringify(r, null, 1), ext: "json" };
   if (kind === "snapshot" && typeof r.snapshot === "string") return { body: r.snapshot, ext: "txt" };
   if (kind === "extract" && typeof r.text === "string") return { body: r.text, ext: "txt" };
   if (kind === "fetch" && typeof r.text === "string") return { body: r.text, ext: extOf(r.type) };

@@ -28,6 +28,8 @@ Tabs
 - When a call says he paused or stopped you, do what it says.
 - After Give back, read a fresh whole-page snapshot or extract of that
   tab before acting. A queued action cannot reuse the old view.
+- Inspect only in the task controls permits reads of current pages, not
+  navigation, input or arbitrary scripts. Only the user can allow actions.
 
 Turns
 - One step per call: `run` for several tools (`safari run --steps-file`
@@ -64,6 +66,13 @@ Turns
 - `shot --tiles` keeps the original and overlapping readable pieces.
   Captures include a private evidence receipt. `safari guide report`
   explains reports with cited images, numeric differences and unread pages.
+- `snapshot {updates: true}` returns a revision; keep it and pass `since`
+  for recoverable changes. `shot {ifChanged: true}` can return an old
+  verified receipt with `unchanged: true`, never a fresh image.
+- Extra tools: `audit`, `react`, `site_actions`, and `video`.
+  Read `safari guide <tool>` first; call through `run`, CLI or REPL.
+- `real_input` also supports guarded `drag` and formatted `paste`.
+  It never solves bot checks or fills secrets through the clipboard.
 - A field rejecting scripted typing, or a click with no intended result:
   inspect a fresh snapshot before retrying with `real_input`. Never retry
   an uncertain send, purchase or submit blindly. If real input works,

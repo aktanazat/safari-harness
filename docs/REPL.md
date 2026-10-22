@@ -107,7 +107,7 @@ action result is not safe to repeat until a fresh read shows what happened.
   A value from the owner's vault is typed from the shell instead:
   `mem-secret run VAR -- safari type <ref> '{{code}}' --tab N --secret env
   --env VAR` (only a CLI call's own environment is read).
-- Locator: `click fill type press hover selectOption setInputFiles check
+- Locator: `click dragTo paste fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
   isChecked count boundingBox first nth last all allTextContents
   allInnerTexts screenshot waitFor`. `nth(i)` counts a selector's matches
@@ -123,9 +123,36 @@ action result is not safe to repeat until a fresh read shows what happened.
   its effect. `fill(text, {noWaitAfter: true})` and `type` likewise answer
   once the field holds the text instead of 300 ms after, so a reformat or
   a complaint the page makes later is not seen.
+- `source.dragTo(destination)` sends one real mouse drag between locators in
+  the same page. Both endpoints must already be visible and uncovered in the
+  same viewport. It does not scroll either endpoint into view. The page,
+  endpoints, frame covers, and Safari window are checked again before input.
+  A failed or interrupted drag releases the mouse button. Read the result
+  before another drag; a delivered gesture does not prove the page kept it.
+- `locator.paste(text, {html?, tsv?})` pastes at that editable target's current
+  selection. `page.keyboard.paste(text, {html?, tsv?})` uses the page's actual
+  focused editable target. Plain `text` is required as a fallback; HTML and
+  tab-separated values are optional clipboard representations, not extra
+  keystrokes. Paste does not clear the editor or press Return for trailing
+  line breaks. Password, hidden, covered, disabled, and read-only fields are
+  refused. Use the existing secret-filling tools for passwords and codes.
+  Clipboard bytes stay in the native helper. Its previous items and formats
+  are restored after the page acknowledges the input, but only if the
+  clipboard still belongs to that paste. A user's later copy is left alone.
+  A missing acknowledgment reports an unknown outcome, not a retry.
+  Delivery does not prove the editor accepted rich content; inspect the
+  editor's resulting text or table.
+
+  ```js
+  await page.locator('#card').dragTo(page.locator('#drop'));
+  await page.locator('#editor').paste('name\tamount\nada\t42', {
+    html: '<table><tr><th>name</th><th>amount</th></tr><tr><td>ada</td><td>42</td></tr></table>',
+    tsv: 'name\tamount\nada\t42'
+  });
+  ```
 - Page: `goto goBack goForward reload waitForSelector waitForChange
   waitForTimeout waitForLoadState waitForURL waitForFunction keyboard.press
-  keyboard.type mouse.click setViewportSize bringToFront close`, and Playwright's
+  keyboard.type keyboard.paste mouse.click setViewportSize bringToFront close`, and Playwright's
   shorthands `page.click(target, opts)`, `page.fill(target, text, opts)`,
   `page.type(target, text, opts)`. `waitForChange({timeout})` ends once the page
   shows lines it did not have at the last look (results after a click,

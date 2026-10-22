@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>React app inspection</title>
+<script>
+  if (location.search === '?existing') {
+    window.appExistingHook = window.__safariHarnessCreateReactHook();
+    Object.defineProperty(window, '__REACT_DEVTOOLS_GLOBAL_HOOK__', { configurable: true, value: window.appExistingHook.hook });
+  }
+  if (location.search === '?unsupported') Object.defineProperty(window, '__REACT_DEVTOOLS_GLOBAL_HOOK__', { configurable: true, value: { supportsFiber: false } });
+  window.appHookBeforeMount = !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+  window.appGetterReads = 0;
+</script>
+<script src="app-checks-vendor/react-18.3.1.development.js"></script>
+<script src="app-checks-vendor/react-dom-18.3.1.development.js"></script>
+</head><body><main><h1>Shopping list</h1><div id="app"></div></main>
+<script>
+  const metadata = {};
+  Object.defineProperty(metadata, 'unreadable', { enumerable: true, get() { window.appGetterReads++; throw new Error('component getter must not execute'); } });
+  function Counter(props) {
+    const [count, setCount] = React.useState(1);
+    const [draft] = React.useState({ apiToken: 'private-react-token-never-output', note: 'draft note' });
+    return React.createElement('section', null,
+      React.createElement('p', { id: 'count' }, props.label + ': ' + count),
+      React.createElement('button', { type: 'button', onClick: () => setCount((value) => value + 1) }, 'add one'),
+      React.createElement('span', null, draft.note));
+  }
+  class Details extends React.Component {
+    state = { expanded: false };
+    render() {
+      return React.createElement('button', { type: 'button', onClick: () => this.setState({ expanded: !this.state.expanded }) }, this.state.expanded ? 'hide details' : 'show details');
+    }
+  }
+  function Dashboard() {
+    return React.createElement(React.Fragment, null,
+      React.createElement(Counter, { label: 'items', password: 'private-react-password-never-output', metadata, __source: { fileName: 'app-checks-react.html', lineNumber: 26, columnNumber: 12 } }),
+      React.createElement(Details));
+  }
+  ReactDOM.flushSync(() => ReactDOM.createRoot(document.querySelector('#app')).render(React.createElement(Dashboard)));
+</script></body></html>

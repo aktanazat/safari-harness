@@ -231,3 +231,19 @@ test("a text an agent types as a secret itself, or a password filled from Bitwar
   await callTool("login_fill", { tab: 6005, site: "my.example", password: CODE });
   expect([await callTool("net", { tab: 6004 }), await callTool("net", { tab: 6005 })]).toEqual([CUT_NET, CUT_NET]);
 });
+
+test.each([
+  { text: "{{code}}" },
+  { text: "normal", html: "<p>{{code}}</p>" },
+  { text: "normal", tsv: "{{code}}\trow" },
+  { text: "normal", secret: "page", from: 6002 },
+  { text: "normal", secret: "env", env: VAR },
+  { text: "normal", from_selector: "#current-email" },
+])("rich paste cannot turn a secret source into ordinary clipboard text: %j", async (payload) => {
+  const codes = spyOn(imessage, "waitCode");
+  const pasted = spyOn(CALLER_TOOLS.real_input, "run");
+  await expect(invoke("real_input", { tab: 6001, ref: "1", do: "paste", ...payload }, false)).rejects.toThrow("paste cannot fill secrets or codes");
+  expect(codes).not.toHaveBeenCalled();
+  expect(pasted).not.toHaveBeenCalled();
+  expect(fields).toEqual([]);
+});

@@ -6,7 +6,7 @@
 
 import { expect, test } from "bun:test";
 
-const SOURCE = await Bun.file(new URL("./background.js", import.meta.url)).text();
+const SOURCE = `${await Bun.file(new URL("./upgrades.js", import.meta.url)).text()}\n${await Bun.file(new URL("./background.js", import.meta.url)).text()}`;
 
 type Msg = { __safariHarness?: number; id: string; op: string; args?: unknown[]; kept?: unknown };
 type Reply = { id: string; value?: unknown; error?: string };
@@ -104,7 +104,7 @@ class Clock {
 // copy of content.js ran, and does answers each; a held document (a dialog
 // open on it) answers nothing.
 class Doc {
-  readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] } };
+  readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] }, __safariHarnessFrame: crypto.randomUUID().replaceAll("-", ""), innerWidth: 800, innerHeight: 600 };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
@@ -304,7 +304,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
             trips.push(`script ${m.op}`);
             if (doc.held) return never();
           }
-          const result = await new Function("window", `return (${func})`)(doc.world)(...args);
+          const result = await new Function("window", "location", "innerWidth", "innerHeight", `return (${func})`)(doc.world, new URL(doc.url), doc.world.innerWidth, doc.world.innerHeight)(...args);
           // Safari may fail a script whose document went away while it ran.
           if (frameOf(frameId) !== doc) throw new Error("the frame's document went away");
           results.push({ frameId, result: result ?? null });
@@ -782,7 +782,9 @@ test("a stale ref or a heal in an embedded frame names the ref as the agent sent
   const b = await start();
   const tab = b.open("https://example.com/");
   const frame = b.frame(tab, 5, "https://example.com/embedded");
-  frame.does = () => ({ ok: true, healed: { ref: "3", now: "9" } });
+  const healed = { ref: "3", now: "9" };
+  frame.does = (op) => op === "clickProbe" ? { frame: frame.world.__safariHarnessFrame, x: 10, y: 20, healed } : { ok: true, healed };
+  tab.doc.does = (op) => op === "assertFrameClickable" ? { found: true, frame: tab.doc.world.__safariHarnessFrame, x: 10, y: 20 } : { url: tab.doc.url };
   expect((await b.ask(tab, "click", ["f5:3"])).value).toEqual({ ok: true, healed: { ref: "f5:3", now: "f5:9" } });
   frame.does = () => ({ error: "stale ref 3; re-run snapshot" });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
@@ -2037,4 +2039,51 @@ test("forget during the foreground eligibility check cannot send a stale memory 
   b.update(tab, { status: "complete" });
   await b.clock.advance(1500);
   expect(b.told.filter((event) => event.op === "memory")).toEqual([{ op: "memory", tab: tab.id, url: tab.doc.url, revision: 2 }]);
+});
+
+test("native preparation binds both points to the current document and refuses a moved target before delivery", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/editor");
+  let destination = 80;
+  tab.doc.does = (op) => op === "nativeProbe" ? {
+    document: tab.doc.world.__safariHarnessFrame, innerWidth: 800, innerHeight: 600,
+    from: { x: 20, y: 30 }, to: { x: destination, y: 90 },
+  } : { url: tab.doc.url };
+  const initial = await b.request("upgrade.native", [tab.id, { do: "drag", ref: "#source", target: "#destination" }]);
+  expect(initial.error).toBeUndefined();
+  expect(initial.value).toMatchObject({ from: { x: 20, y: 30 }, to: { x: 80, y: 90 }, inputFrame: 0 });
+  destination = 100;
+  const moved = await b.request("upgrade.native", [tab.id, { do: "drag", ref: "#source", target: "#destination", expected: initial.value }]);
+  expect(moved.value).toBeUndefined();
+  expect(moved.error).toContain("changed before input");
+  expect(tab.doc.ran).toEqual(["nativeProbe", "nativeProbe"]);
+});
+
+test("native embedded-frame preparation does not scroll its containing page and rejects a covering parent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/editor");
+  const child = b.frame(tab, 5, "https://frame.example/editor");
+  let covered = false;
+  let scroll = 0;
+  child.does = (op) => op === "nativeProbe" ? {
+    document: child.world.__safariHarnessFrame, innerWidth: 200, innerHeight: 100,
+    from: { x: 20, y: 30 }, to: { x: 80, y: 70 },
+  } : { url: child.url };
+  tab.doc.does = (op, message) => {
+    if (op !== "assertFrameClickable") return { url: tab.doc.url };
+    const [token, point, options] = message.args as [string, { x: number; y: number }, { scroll?: boolean }];
+    if (token !== child.world.__safariHarnessFrame) return { found: false };
+    if (options.scroll !== false) scroll += 100;
+    return covered ? { found: true, blocker: "the frame is covered by another element" }
+      : { found: true, frame: tab.doc.world.__safariHarnessFrame, x: point.x + 100, y: point.y + 150 };
+  };
+  const initial = await b.request("upgrade.native", [tab.id, { do: "drag", ref: "f5:#source", target: "f5:#destination" }]);
+  expect(initial.error).toBeUndefined();
+  expect(initial.value).toMatchObject({ from: { x: 120, y: 180 }, to: { x: 180, y: 220 }, inputFrame: 5 });
+  expect(scroll).toBe(0);
+  covered = true;
+  const blocked = await b.request("upgrade.native", [tab.id, { do: "drag", ref: "f5:#source", target: "f5:#destination", expected: initial.value }]);
+  expect(blocked.value).toBeUndefined();
+  expect(blocked.error).toContain("covered");
+  expect(scroll).toBe(0);
 });

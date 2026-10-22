@@ -22,6 +22,12 @@
 		8854B8B830666DB500E7A747 /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B530666DB500E7A747 /* content.js */; };
 		8854B8C230666DB500E7A747 /* dialogs.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8C130666DB500E7A747 /* dialogs.js */; };
 		8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B930666DB500E7A747 /* toolbar-icon.svg */; };
+		A11CE00130666DB500E7A747 /* upgrades.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01130666DB500E7A747 /* upgrades.js */; };
+		A11CE00230666DB500E7A747 /* app-checks.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01230666DB500E7A747 /* app-checks.js */; };
+		A11CE00330666DB500E7A747 /* app-checks-start.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01330666DB500E7A747 /* app-checks-start.js */; };
+		A11CE00430666DB500E7A747 /* site-actions.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01430666DB500E7A747 /* site-actions.js */; };
+		A11CE00530666DB500E7A747 /* site-actions-start.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01530666DB500E7A747 /* site-actions-start.js */; };
+		A11CE00630666DB500E7A747 /* vendor in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01630666DB500E7A747 /* vendor */; };
 		8854B8C630666DB500E7A747 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8854B8C330666DB500E7A747 /* main.swift */; };
 		8854B8C730666DB500E7A747 /* Safari Harness Cards.app in Embed Helpers */ = {isa = PBXBuildFile; fileRef = 8854B8C530666DB500E7A747 /* Safari Harness Cards.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -83,6 +89,12 @@
 		8854B8B530666DB500E7A747 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = content.js; path = ../../extension/content.js; sourceTree = "<group>"; };
 		8854B8C130666DB500E7A747 /* dialogs.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = dialogs.js; path = ../../extension/dialogs.js; sourceTree = "<group>"; };
 		8854B8B930666DB500E7A747 /* toolbar-icon.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = "toolbar-icon.svg"; path = "../../extension/toolbar-icon.svg"; sourceTree = "<group>"; };
+		A11CE01130666DB500E7A747 /* upgrades.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = upgrades.js; path = ../../extension/upgrades.js; sourceTree = "<group>"; };
+		A11CE01230666DB500E7A747 /* app-checks.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = app-checks.js; path = ../../extension/app-checks.js; sourceTree = "<group>"; };
+		A11CE01330666DB500E7A747 /* app-checks-start.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = app-checks-start.js; path = ../../extension/app-checks-start.js; sourceTree = "<group>"; };
+		A11CE01430666DB500E7A747 /* site-actions.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = site-actions.js; path = ../../extension/site-actions.js; sourceTree = "<group>"; };
+		A11CE01530666DB500E7A747 /* site-actions-start.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = site-actions-start.js; path = ../../extension/site-actions-start.js; sourceTree = "<group>"; };
+		A11CE01630666DB500E7A747 /* vendor */ = {isa = PBXFileReference; lastKnownFileType = folder; name = vendor; path = ../../extension/vendor; sourceTree = "<group>"; };
 		8854B8C330666DB500E7A747 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		8854B8C430666DB500E7A747 /* Safari Harness Cards.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Safari Harness Cards.entitlements"; sourceTree = "<group>"; };
 		8854B8C530666DB500E7A747 /* Safari Harness Cards.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Safari Harness Cards.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -169,6 +181,12 @@
 				8854B8B530666DB500E7A747 /* content.js */,
 				8854B8C130666DB500E7A747 /* dialogs.js */,
 				8854B8B930666DB500E7A747 /* toolbar-icon.svg */,
+				A11CE01130666DB500E7A747 /* upgrades.js */,
+				A11CE01230666DB500E7A747 /* app-checks.js */,
+				A11CE01330666DB500E7A747 /* app-checks-start.js */,
+				A11CE01430666DB500E7A747 /* site-actions.js */,
+				A11CE01530666DB500E7A747 /* site-actions-start.js */,
+				A11CE01630666DB500E7A747 /* vendor */,
 			);
 			name = Resources;
 			path = "Safari Harness Extension";
@@ -298,6 +316,12 @@
 				8854B8B730666DB500E7A747 /* manifest.json in Resources */,
 				8854B8B630666DB500E7A747 /* background.js in Resources */,
 				8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */,
+				A11CE00130666DB500E7A747 /* upgrades.js in Resources */,
+				A11CE00230666DB500E7A747 /* app-checks.js in Resources */,
+				A11CE00330666DB500E7A747 /* app-checks-start.js in Resources */,
+				A11CE00430666DB500E7A747 /* site-actions.js in Resources */,
+				A11CE00530666DB500E7A747 /* site-actions-start.js in Resources */,
+				A11CE00630666DB500E7A747 /* vendor in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */

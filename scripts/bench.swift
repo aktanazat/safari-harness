@@ -80,6 +80,7 @@ let runtimeShim = #"""
     const listeners = [];
     window.browser = {
       runtime: {
+        getURL: (path) => "safari-web-extension://bench/" + path,
         onMessage: event(listeners),
         sendMessage: (msg) => {
           sent.push({ load, message: msg });
@@ -111,7 +112,10 @@ let runtimeShim = #"""
 final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let world = WKContentWorld.world(name: "Safari Harness")
     let content: String
+    let dialogs: String
+    let optional: [String: String]
     let web: WKWebView
+    let window: NSWindow
     var waiting: [String] = []
     var busy = false
     var inputEnded = false
@@ -129,22 +133,57 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // answered for background.js to keep, which keeps it across a load.
     var kept: [String: [String: Any]] = [:]
 
-    init(content: String, dialogs: String) {
+    init(content: String, dialogs: String, optional: [String: String]) {
         self.content = content
+        self.dialogs = dialogs
+        self.optional = optional
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        // A web view in no window is inactive, and WebKit would slow its
-        // timers; a page's timers then fire late by varying amounts.
+        // The bench stays inactive; keep page timers from being throttled.
         config.preferences.inactiveSchedulingPolicy = .none
         let scripts = config.userContentController
-        scripts.addUserScript(WKUserScript(source: extensionScript("dialogs.js", dialogs), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
-        scripts.addUserScript(WKUserScript(source: extensionScript("bench shim", runtimeShim), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
-        scripts.addUserScript(WKUserScript(source: extensionScript("content.js", content), injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: world))
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: config)
+        // WebKit needs a window for media selection and an ordered host for rendering.
+        let host = NSPanel(contentRect: web.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        host.isFloatingPanel = false
+        host.becomesKeyOnlyIfNeeded = true
+        host.hidesOnDeactivate = false
+        window = host
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.contentView = web
+        window.orderBack(nil)
         super.init()
         scripts.add(self, contentWorld: world, name: "bench")
         scripts.add(self, contentWorld: .page, name: "bench")
         web.navigationDelegate = self
+        configureScripts([:])
+    }
+
+    func configureScripts(_ request: [String: Any]) {
+        let scripts = web.configuration.userContentController
+        scripts.removeAllUserScripts()
+        func add(_ name: String, _ source: String, _ time: WKUserScriptInjectionTime, _ target: WKContentWorld, _ top: Bool = false) {
+            scripts.addUserScript(WKUserScript(source: extensionScript(name, source), injectionTime: time, forMainFrameOnly: top, in: target))
+        }
+        add("dialogs.js", dialogs, .atDocumentStart, .page)
+        add("bench shim", runtimeShim, .atDocumentStart, world)
+        add("content.js", content, .atDocumentEnd, world)
+        if request["appChecks"] as? Bool == true {
+            add("axe", optional["vendor/axe-4.10.3.min.js"]!, .atDocumentStart, world)
+            add("app-checks", optional["app-checks.js"]!, .atDocumentStart, world)
+            add("react-hook", optional["vendor/react-hook-18.3.1.js"]!, .atDocumentStart, .page, true)
+            add("app-checks", optional["app-checks.js"]!, .atDocumentStart, .page, true)
+            if request["reactHook"] as? Bool == true {
+                add("react-enable", "window.__safariHarnessAppChecks.react.enable();", .atDocumentStart, .page, true)
+            }
+        }
+        if request["siteActions"] as? Bool == true {
+            add("site-actions", optional["site-actions.js"]!, .atDocumentStart, .page, true)
+            add("site-actions-start", optional["site-actions-start.js"]!, .atDocumentStart, .page, true)
+        }
     }
 
     func take(_ request: String) {
@@ -163,7 +202,16 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     func next() {
         guard !busy else { return }
         guard !waiting.isEmpty else {
-            if inputEnded { exit(0) }
+            if inputEnded {
+                web.stopLoading()
+                web.navigationDelegate = nil
+                let scripts = web.configuration.userContentController
+                scripts.removeScriptMessageHandler(forName: "bench", contentWorld: world)
+                scripts.removeScriptMessageHandler(forName: "bench", contentWorld: .page)
+                window.contentView = nil
+                window.close()
+                exit(0)
+            }
             return
         }
         busy = true
@@ -188,11 +236,16 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             let want = (request["frames"] as? NSNumber)?.intValue ?? 0
             let limit = ms ?? 10000
             after(limit) { [self] in reply(problem("\(target) did not load within \(limit) ms: \(loadState(want))")) }
+            configureScripts(request)
             load(target, frames: want, reply: reply)
         } else if let op = request["op"] as? String {
             let limit = ms ?? 5000
             after(limit) { reply(problem("\(op) did not answer within \(limit) ms")) }
             send(op, request, reply: reply)
+        } else if request["appChecks"] is [String: Any] || request["siteActions"] is [String: Any] || request["pageEval"] is String {
+            let limit = ms ?? 15000
+            after(limit) { reply(problem("development inspection did not answer within \(limit) ms")) }
+            development(request, reply: reply)
         } else if request["takeover"] as? Bool == true {
             let limit = ms ?? 5000
             after(limit) { reply(problem("the fresh copy of content.js did not report in within \(limit) ms")) }
@@ -209,6 +262,43 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             reply(problem("a request has load, op, takeover, or sent: \(text)"))
         }
     }
+
+    func development(_ request: [String: Any], reply: @escaping (Data) -> Void) {
+        let operation = request["appChecks"] as? [String: Any] ?? request["siteActions"] as? [String: Any] ?? [:]
+        let method = operation["method"] as? String ?? ""
+        let arguments: [String: Any] = [
+            "method": method,
+            "params": operation["args"] as? [Any] ?? [],
+            "source": request["pageEval"] as? String ?? "",
+            "mode": request["pageEval"] is String ? "eval" : request["appChecks"] is [String: Any] ? "checks" : "actions",
+        ]
+        let script = """
+        let value;
+        if (mode === "eval") {
+            const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+            let run;
+            try { run = new AsyncFunction("return (" + source + "\\n)"); }
+            catch { run = new AsyncFunction(source); }
+            value = await run();
+        }
+        else if (mode === "actions") value = await window.__safariHarnessSiteActions[method](...params);
+        else {
+            const parts = method.split(".");
+            const bridge = window.__safariHarnessAppChecks;
+            value = parts.length === 1 ? await bridge[parts[0]](...params) : await bridge[parts[0]][parts[1]](...params);
+        }
+        return JSON.stringify({ value: value ?? null });
+        """
+        let target = request["appChecks"] is [String: Any] && method == "audit" ? world : WKContentWorld.page
+        web.callAsyncJavaScript(script, arguments: arguments, in: nil, in: target) { result in
+            switch result {
+            case .success(let answer as String): reply(Data(answer.utf8))
+            case .success: reply(problem("development inspection returned no answer"))
+            case .failure(let error): reply(problem("development inspection failed: \(error.localizedDescription)"))
+            }
+        }
+    }
+
 
     func after(_ ms: Int, _ run: @escaping () -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms), execute: run)
@@ -345,7 +435,9 @@ func source(_ name: String) -> String {
 }
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
-let bench = Bench(content: source("content.js"), dialogs: source("dialogs.js"))
+let optionalNames = ["vendor/axe-4.10.3.min.js", "vendor/react-hook-18.3.1.js", "app-checks.js", "site-actions.js", "site-actions-start.js"]
+let optional = Dictionary(uniqueKeysWithValues: optionalNames.map { ($0, source($0)) })
+let bench = Bench(content: source("content.js"), dialogs: source("dialogs.js"), optional: optional)
 Thread.detachNewThread {
     while let request = readLine() {
         DispatchQueue.main.async { bench.take(request) }

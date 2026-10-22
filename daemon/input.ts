@@ -11,6 +11,7 @@
 
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { HarnessError } from "./failures.ts";
+import type { InputState } from "./input-state.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
 import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
@@ -23,47 +24,39 @@ type Point = { x: number; y: number };
 // back his own front tab, so it lists his tabs too (tabs-view.ts).
 const VIA_RPC: TabOps = { tabs: async () => rowsOf(await rpc("tabs", { all: true })), activate: (tab) => rpc("activate", { tab }) };
 
-type PageState = { marks: number; focus: boolean };
-
-// The page's count of the helper's closing F20 presses (mark in
-// scripts/input.swift), kept in the content script's own world and set up
-// on first use in each page.
-const MARKS = `(window.__realInputMarks ??= (() => { const s = { n: 0 }; addEventListener("keyup", (e) => { if (e.code === "F20") s.n++; }, true); return s; })())`;
 
 // Waits in the page, up to ms, until it has seen more than `after` marks and,
 // when focus is asked for, has keyboard focus. Returns the count and the
 // focus either way. Safari stops a hidden tab's timers, which would stall
 // the wait in the page, so it has a limit here as well.
-async function pageState(tab: number, want: { focus: boolean; after: number; ms: number }): Promise<PageState> {
-  const expression = `(() => {
-    const s = ${MARKS};
-    const end = Date.now() + ${want.ms};
-    const { promise, resolve } = Promise.withResolvers();
-    const check = () => {
-      if ((s.n > ${want.after} && (${!want.focus} || document.hasFocus())) || Date.now() >= end) resolve({ marks: s.n, focus: document.hasFocus() });
-      else setTimeout(check, 10);
-    };
-    check();
-    return promise;
-  })()`;
+async function pageState(tab: number, want: { focus: boolean; after: number; ms: number }, frame = 0): Promise<InputState> {
   const { promise: late, reject } = Promise.withResolvers<never>();
   const timer = setTimeout(() => reject(new Error(`tab ${tab} stopped answering`)), want.ms + 3000);
   try {
-    const { result } = (await Promise.race([rpc("eval", { tab, expression }), late])) as { result?: PageState };
-    if (typeof result?.marks !== "number") throw new Error(`tab ${tab} did not report its input state`);
-    return result;
+    const state = await Promise.race([rpc("input_state", { tab, frame, ...want }), late]);
+    if (!state || typeof state !== "object" || !("marks" in state) || typeof state.marks !== "number" || !Number.isSafeInteger(state.marks) || state.marks < 0
+      || !("focus" in state) || typeof state.focus !== "boolean") throw new Error(`tab ${tab} did not report its input state`);
+    return { marks: state.marks, focus: state.focus };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function deliver(tab: number, args: string[], timeout?: number, stdin?: string): Promise<unknown> {
+async function deliver(tab: number, args: string[], timeout?: number, stdin?: string, preflight?: () => Promise<void>, completion?: () => Promise<boolean>): Promise<unknown> {
   const admitted = await rpc("action_admit", { tab }) as { ok?: boolean; tab?: number; permit?: string };
   if (admitted?.ok !== true || admitted.tab !== tab || typeof admitted.permit !== "string") throw new HarnessError("unavailable", "native input was not admitted", { effect: "none", retryable: true });
   const picture = args[0] !== "key" || args[1] !== "cmd+a";
   let result: unknown;
+  if (preflight) {
+    try {
+      await preflight();
+    } catch (e) {
+      await rpc("action_finish", { tab, permit: admitted.permit, uncertain: false, picture: false });
+      throw e;
+    }
+  }
   try {
-    result = await input(args, timeout, stdin);
+    result = await input(args, timeout, stdin, completion);
   } catch (e) {
     try {
       await rpc("action_finish", { tab, permit: admitted.permit, uncertain: true, picture });
@@ -89,11 +82,16 @@ async function deliver(tab: number, args: string[], timeout?: number, stdin?: st
 // tab can come back. A page does not see keys that go into an embedded
 // frame, so that wait ends after half a second. Its failure is ignored: the
 // input is already sent, and an error would invite a retry that repeats it.
-async function post(tab: number, args: string[], keys: boolean, timeout?: number, stdin?: string): Promise<void> {
-  const before = await pageState(tab, { focus: keys, after: -1, ms: keys ? 1000 : 0 });
+async function post(tab: number, args: string[], keys: boolean, timeout?: number, stdin?: string, preflight?: () => Promise<void>, frame = 0): Promise<unknown> {
+  const before = await pageState(tab, { focus: keys, after: -1, ms: keys ? 1000 : 0 }, frame);
   if (keys && !before.focus) throw new Error("the page does not have keyboard focus, so no keys were sent; click a field with real_input first");
-  await deliver(tab, args, timeout, stdin);
-  await pageState(tab, { focus: false, after: before.marks, ms: 500 }).catch(() => {});
+  const completion = args[0] === "paste" ? async () => {
+    const after = await pageState(tab, { focus: false, after: before.marks, ms: 3000 }, frame);
+    return after.marks > before.marks;
+  } : undefined;
+  const result = await deliver(tab, args, timeout, stdin, preflight, completion);
+  if (!completion) await pageState(tab, { focus: false, after: before.marks, ms: 500 }).catch(() => {});
+  return result;
 }
 
 // Clicks the middle of ref, or the point x, y, with the real mouse; the tab
@@ -135,6 +133,88 @@ async function clickAt(tab: number, a: Record<string, unknown>, count: number, b
   const at = { x: Math.round(area.x + cx * scale), y: Math.round(area.y + cy * scale) };
   await post(tab, ["click", String(at.x), String(at.y), "--count", String(count), "--button", button], false);
   return at;
+}
+
+type NativeProbe = { document: string; innerWidth: number; innerHeight: number; from?: Point; to?: Point; focus?: string; inputFrame?: number };
+
+function isPoint(value: unknown): value is Point {
+  return !!value && typeof value === "object" && "x" in value && typeof value.x === "number" && Number.isFinite(value.x)
+    && "y" in value && typeof value.y === "number" && Number.isFinite(value.y);
+}
+
+async function nativeProbe(tab: number, a: Record<string, unknown>, expected?: NativeProbe): Promise<NativeProbe> {
+  const value = await rpc("native_preflight", {
+    tab, do: a.do,
+    ...(a.ref === undefined ? {} : { ref: a.ref }),
+    ...(a.x === undefined ? {} : { x: a.x, y: a.y }),
+    ...(a.target === undefined ? {} : { target: a.target }),
+    ...(a.targetX === undefined ? {} : { targetX: a.targetX, targetY: a.targetY }),
+    ...(expected === undefined ? {} : { expected }),
+  });
+  if (!value || typeof value !== "object" || !("document" in value) || typeof value.document !== "string"
+    || !("innerWidth" in value) || typeof value.innerWidth !== "number" || !Number.isFinite(value.innerWidth) || value.innerWidth <= 0
+    || !("innerHeight" in value) || typeof value.innerHeight !== "number" || !Number.isFinite(value.innerHeight) || value.innerHeight <= 0) {
+    throw new Error("the page did not confirm a safe native input target");
+  }
+  const probe: NativeProbe = {
+    ...value, document: value.document, innerWidth: value.innerWidth, innerHeight: value.innerHeight,
+    from: "from" in value && isPoint(value.from) ? value.from : undefined,
+    to: "to" in value && isPoint(value.to) ? value.to : undefined,
+    focus: "focus" in value && typeof value.focus === "string" ? value.focus : undefined,
+    inputFrame: "inputFrame" in value && typeof value.inputFrame === "number" && Number.isInteger(value.inputFrame) && value.inputFrame >= 0 ? value.inputFrame : undefined,
+  };
+  if (expected && (probe.document !== expected.document || probe.innerWidth !== expected.innerWidth || probe.innerHeight !== expected.innerHeight || probe.focus !== expected.focus || probe.inputFrame !== expected.inputFrame)) {
+    throw new HarnessError("stale_view", "the page changed before native input; read it again", { effect: "none" });
+  }
+  return probe;
+}
+
+async function dragAt(tab: number, a: Record<string, unknown>): Promise<object> {
+  const probe = await nativeProbe(tab, a);
+  const source = probe.from;
+  const destination = probe.to;
+  const visible = (point: Point | undefined): point is Point => !!point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= 0 && point.y >= 0 && point.x < probe.innerWidth && point.y < probe.innerHeight;
+  if (!visible(source) || !visible(destination)) throw new Error("both drag endpoints must be visible in the same page viewport");
+  const area = await input(["webarea"]) as Rect;
+  const scale = area.width / probe.innerWidth;
+  if (![area.x, area.y, area.width, area.height, scale].every(Number.isFinite) || scale <= 0 || Math.abs(area.height / scale - probe.innerHeight) > 2) {
+    throw new Error("Safari's front window no longer shows this page viewport, so no drag was sent");
+  }
+  const screen = (point: Point): Point => ({ x: Math.round(area.x + point.x * scale), y: Math.round(area.y + point.y * scale) });
+  const from = screen(source);
+  const to = screen(destination);
+  await post(tab, ["drag", String(from.x), String(from.y), String(to.x), String(to.y)], false, 10000, undefined, async () => {
+    const checked = await nativeProbe(tab, a, probe);
+    if (checked.from?.x !== probe.from?.x || checked.from?.y !== probe.from?.y || checked.to?.x !== probe.to?.x || checked.to?.y !== probe.to?.y) {
+      throw new HarnessError("stale_view", "a drag endpoint moved before input; read the page again", { effect: "none" });
+    }
+    const current = await input(["webarea"]) as Rect;
+    if (current.x !== area.x || current.y !== area.y || current.width !== area.width || current.height !== area.height) {
+      throw new HarnessError("stale_view", "Safari's viewport moved before the drag, so nothing was dragged", { effect: "none" });
+    }
+  });
+  return { ok: true, from, to, hint: "drag input was delivered; read the page to check its result before repeating it" };
+}
+
+async function pasteAt(tab: number, a: Record<string, unknown>): Promise<object> {
+  if (typeof a.text !== "string") throw new Error("paste needs plain text, with optional html and tsv representations");
+  if (a.html !== undefined && typeof a.html !== "string" || a.tsv !== undefined && typeof a.tsv !== "string") throw new Error("html and tsv must be strings");
+  if (a.secret !== undefined || a.from !== undefined || a.from_selector !== undefined || a.env !== undefined || [a.text, a.html, a.tsv].some((value) => typeof value === "string" && value.includes("{{code}}"))) {
+    throw new Error("paste does not fill secrets; use type or passwords for secret fields");
+  }
+  const payload = JSON.stringify({ text: a.text, ...(a.html === undefined ? {} : { html: a.html }), ...(a.tsv === undefined ? {} : { tsv: a.tsv }) });
+  if (Buffer.byteLength(payload, "utf8") > 4 * 1024 * 1024) throw new Error("paste representations exceed 4 MiB");
+  const probe = await nativeProbe(tab, a);
+  if (typeof probe.focus !== "string" || !probe.focus) throw new Error("the page did not confirm a focused editable paste target");
+  const result = await post(tab, ["paste"], true, 10000, payload, async () => { await nativeProbe(tab, a, probe); }, probe.inputFrame ?? 0);
+  if (!result || typeof result !== "object" || !("pasted" in result) || result.pasted !== true) {
+    throw new HarnessError("effect_unknown", "paste input was sent without a confirmed helper result; read the editor before repeating it");
+  }
+  return {
+    ok: true, delivered: true,
+    clipboardRestored: "clipboardRestored" in result && result.clipboardRestored === true,
+    hint: "paste input was delivered, not proof the editor accepted the text or rich formats; read the editor before repeating it",
+  };
 }
 
 // press_mark's answer once it has marked the element (pressMark in
@@ -297,8 +377,7 @@ async function replyTo(tab: number, ms: number, start: number): Promise<object> 
 // Return does in a chat.
 const SENDS = /\r?\n$/;
 
-// One tool for the three kinds of input: agents reach for it rarely, and
-// every tool listed costs its description on every turn.
+// Keep native actions on one guarded path without listing another tool.
 const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<object>> = {
   click: async (tab, a) => {
     const count = a.count ?? 1;
@@ -316,6 +395,8 @@ const REAL: Record<string, (tab: number, a: Record<string, unknown>) => Promise<
     const at = await inFront(tab, VIA_RPC, () => clickAt(tab, a, count, button));
     return { ok: true, at };
   },
+  drag: (tab, a) => inFront(tab, VIA_RPC, () => dragAt(tab, a)),
+  paste: (tab, a) => inFront(tab, VIA_RPC, () => pasteAt(tab, a)),
   // Text at a field's ref is set through Safari's accessibility tree
   // (setBehind, setBoxes) and checked; elsewhere, or where the field did
   // not take it, real keys type it in front. send, a ref of the page's
@@ -408,17 +489,28 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       count: { type: "number", description: "2 or 3: double or triple click" },
       button: { type: "string", enum: ["left", "right"], description: "default left" },
     },
-    // click's x and y, which its listing describes, type's append, and
-    // type's CLI-only env (secret.ts)
-    unlisted: { x: X, y: Y, append: { type: "boolean", description: "keep the field's text" }, env: SECRET_ENV },
+    unlisted: {
+      do: { type: "string", enum: ["click", "type", "key", "drag", "paste"], description: "native input action" },
+      x: X, y: Y, target: { description: "drag destination ref or selector" },
+      targetX: X, targetY: Y,
+      html: { type: "string", description: "HTML paste representation; text is the plain fallback" },
+      tsv: { type: "string", description: "tab-separated paste representation" },
+      append: { type: "boolean", description: "keep the field's text" }, env: SECRET_ENV,
+    },
     required: ["tab", "do"],
     run: async (a) => {
       const act = typeof a.do === "string" ? REAL[a.do] : undefined;
-      if (!act) throw new Error("do must be click, type, or key");
+      if (!act) throw new Error("do must be click, type, key, drag, or paste");
       const point = a.x !== undefined || a.y !== undefined;
-      if (point && (a.do !== "click" || a.ref !== undefined)) throw new Error("x and y are for a click without ref");
-      if (point && !(Number.isFinite(a.x) && Number.isFinite(a.y))) throw new Error("a click at a point needs x and y, both numbers");
-      if (a.do === "click" && !point && a.ref === undefined) throw new Error("click needs ref, or x and y");
+      if (point && (!["click", "drag"].includes(String(a.do)) || a.ref !== undefined)) throw new Error("x and y need click or drag without ref");
+      if (point && !(Number.isFinite(a.x) && Number.isFinite(a.y))) throw new Error("a point needs x and y, both finite numbers");
+      if ((a.do === "click" || a.do === "drag") && !point && a.ref === undefined) throw new Error(`${a.do} needs ref, or x and y`);
+      const targetPoint = a.targetX !== undefined || a.targetY !== undefined;
+      if (a.do === "drag") {
+        if (targetPoint && a.target !== undefined) throw new Error("drag needs either target or targetX/targetY, not both");
+        if (targetPoint && !(Number.isFinite(a.targetX) && Number.isFinite(a.targetY))) throw new Error("a drag destination needs finite targetX and targetY");
+        if (!targetPoint && a.target === undefined) throw new Error("drag needs target, or targetX and targetY");
+      } else if (targetPoint || a.target !== undefined) throw new Error("target and targetX/targetY are only for drag");
       // The daemon names the tab: it alone hears the new id a deploy gave a
       // tab the agent calls by its old one, and says so in replaced.
       const { tab, ...news } = (await rpc("resolve_tab", { tab: a.tab })) as { tab: number };

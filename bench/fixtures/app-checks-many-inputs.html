@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Bounded app audit</title></head>
+<body><main><h1>Contact fields</h1><div id="fields"></div></main>
+<script>
+  for (let index = 0; index < 30; index++) {
+    const field = document.createElement('input');
+    field.value = 'private-form-value-never-output';
+    document.querySelector('#fields').append(field);
+  }
+</script></body></html>

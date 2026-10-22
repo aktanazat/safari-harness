@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Local automation bridge: lets the safari CLI and daemon drive Safari with aside-style tools.",
   "background": {
-    "scripts": ["background.js"],
+    "scripts": ["upgrades.js", "background.js"],
     "persistent": false
   },
   "content_scripts": [

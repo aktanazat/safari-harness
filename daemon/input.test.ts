@@ -51,6 +51,9 @@ type Page = {
   boxes?: number;
   sendButton?: string;
   nativeFailure?: string;
+  probes?: Record<string, unknown>[];
+  probeError?: string;
+  clipboardRestored?: boolean;
 };
 type Mac = {
   app: string;
@@ -128,9 +131,9 @@ function mac(page: Page = {}): Mac {
     },
     close() {},
   });
-  spyOn(front, "input").mockImplementation(async (args, _timeout, stdin) => {
+  spyOn(front, "input").mockImplementation(async (args, _timeout, stdin, completion) => {
     m.helper.push(args);
-    if (page.nativeFailure && ["press", "setvalue", "click", "key", "type"].includes(args[0])) throw new Error(page.nativeFailure);
+    if (page.nativeFailure && ["press", "setvalue", "click", "key", "type", "drag", "paste"].includes(args[0])) throw new Error(page.nativeFailure);
     if (args[0] === "idle") return { idle: !page.busy, waitedMs: 0 };
     if (args[0] === "setvalue") {
       if (page.set) return page.set;
@@ -153,6 +156,13 @@ function mac(page: Page = {}): Mac {
       m.field = selected ? text : m.field + text;
       selected = false;
     }
+    if (args[0] === "drag") marks++;
+    if (args[0] === "paste") {
+      m.typed.push(stdin);
+      marks++;
+      if (!completion || !(await completion())) throw new Error("paste completion was not acknowledged");
+      return { pasted: true, clipboardRestored: page.clipboardRestored ?? true };
+    }
     if (args[0] === "front") return { bundleId: m.app };
     if (args[0] === "activate") m.app = args[1];
     if (args[0] === "press") {
@@ -172,7 +182,19 @@ function mac(page: Page = {}): Mac {
     return {};
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map([[2, 7]]));
-  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => watched(page.owner, tool, args, () => runAs(page.owner, () => callTool(tool, args, undefined, daemonRpc.takesNews()))));
+  spyOn(daemonRpc, "rpc").mockImplementation(async (tool, args = {}) => {
+    if (tool === "native_preflight") {
+      m.asked.push(`nativePreflight ${String(args.tab)}`);
+      if (page.probeError) throw new Error(page.probeError);
+      return page.probes?.shift() ?? {
+        document: "native-test-document", innerWidth: 1200, innerHeight: 800,
+        ...(args.do === "drag"
+          ? { from: { x: args.x ?? 140, y: args.y ?? 60 }, to: { x: args.targetX ?? 500, y: args.targetY ?? 300 } }
+          : { focus: "native-editable" }),
+      };
+    }
+    return watched(page.owner, tool, args, () => runAs(page.owner, () => callTool(tool, args, undefined, daemonRpc.takesNews())));
+  });
   return m;
 }
 
@@ -517,4 +539,66 @@ test("an unknown native helper result never falls back or retries, and another a
     page.nativeFailure = undefined;
     await daemonRpc.rpc("snapshot", { tab: 21 });
   }
+});
+
+test("a drag maps both visible endpoints through the same zoom and delivers one atomic native gesture", async () => {
+  const m = mac({ area: { x: 20, y: 100, width: 1800, height: 1200 } });
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "drag", ref: "#card", target: "#drop" })).toMatchObject({
+    ok: true, from: { x: 230, y: 190 }, to: { x: 770, y: 550 },
+  });
+  expect(run(m, "drag")).toEqual([["drag", "230", "190", "770", "550"]]);
+  expect(run(m, "click")).toEqual([]);
+});
+
+test("a coordinate drag keeps viewport coordinates distinct from native screen points", async () => {
+  const m = mac();
+  await INPUT_TOOLS.real_input.run({ tab: 21, do: "drag", x: 100, y: 120, targetX: 600, targetY: 400 });
+  expect(run(m, "drag")).toEqual([["drag", "100", "220", "600", "500"]]);
+});
+
+test.each([
+  { name: "document replacement", changed: { document: "replacement", innerWidth: 1200, innerHeight: 800, from: { x: 140, y: 60 }, to: { x: 500, y: 300 } } },
+  { name: "endpoint movement", changed: { document: "original", innerWidth: 1200, innerHeight: 800, from: { x: 141, y: 60 }, to: { x: 500, y: 300 } } },
+])("a drag refuses $name discovered at final admission without pressing the mouse", async ({ changed }) => {
+  const m = mac({ probes: [
+    { document: "original", innerWidth: 1200, innerHeight: 800, from: { x: 140, y: 60 }, to: { x: 500, y: 300 } },
+    changed,
+  ] });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "drag", ref: "#card", target: "#drop" })).rejects.toMatchObject({ code: "stale_view", effect: "none" });
+  expect(run(m, "drag")).toEqual([]);
+});
+
+test("covered native drag endpoints refuse before any gesture is delivered", async () => {
+  const m = mac({ probeError: "that target is covered by a dialog" });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "drag", ref: "#card", target: "#drop" })).rejects.toThrow("covered");
+  expect(run(m, "drag")).toEqual([]);
+});
+
+test("rich paste sends its three supplied representations only on stdin and does not claim editor acceptance", async () => {
+  const m = mac({ clipboardRestored: false });
+  const text = "name\tamount\nZoë\t42\n";
+  const html = "<table><tr><td>Zoë</td><td>42</td></tr></table>";
+  const result = await INPUT_TOOLS.real_input.run({ tab: 21, do: "paste", ref: "#editor", text, html, tsv: text });
+  expect(result).toMatchObject({ ok: true, delivered: true, clipboardRestored: false });
+  expect(run(m, "paste")).toEqual([["paste"]]);
+  expect(m.typed).toEqual([JSON.stringify({ text, html, tsv: text })]);
+  expect(run(m, "type")).toEqual([]);
+  expect(run(m, "key")).toEqual([]);
+  expect(result).not.toHaveProperty("kept");
+});
+
+test("paste refuses a password target without sending native input or touching the clipboard", async () => {
+  const m = mac({ probeError: "paste does not accept password fields" });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "paste", ref: "#password", text: "not-a-secret" })).rejects.toThrow("password");
+  expect(run(m, "paste")).toEqual([]);
+});
+
+test.each([
+  { do: "drag", ref: "#card", target: "#drop" },
+  { do: "paste", ref: "#editor", text: "note" },
+])("an uncertain native $do result is reported without a second helper attempt", async (args) => {
+  const m = mac({ nativeFailure: "helper ended after input might have been delivered" });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, ...args })).rejects.toMatchObject({ code: "effect_unknown" });
+  expect(run(m, args.do)).toHaveLength(1);
+  await daemonRpc.rpc("snapshot", { tab: 21 });
 });

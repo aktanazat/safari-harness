@@ -43,6 +43,34 @@ test("a fresh process reads durable calls as read-only interrupted history, neve
   }
 });
 
+test.each([false, true])("restart restores inspection-only restrictions only for interrupted work, ended=%s", async (ended) => {
+  const path = join(folder(), "history.json");
+  const missionUrl = new URL("./mission.ts", import.meta.url).href;
+  const historyUrl = new URL("./mission-history.ts", import.meta.url).href;
+  const script = `
+    import { randomUUID } from "node:crypto";
+    import { MissionHistory } from ${JSON.stringify(historyUrl)};
+    import { openMissionHistory, watched } from ${JSON.stringify(missionUrl)};
+    const now = Date.now();
+    const history = new MissionHistory(${JSON.stringify(path)});
+    history.save({id:randomUUID(),owner:process.pid,process:"bun",since:now,active:now,raised:0,status:${JSON.stringify(ended ? "ended" : "working")},${ended ? "ended:now," : ""}inspectionOnly:true,calls:[]});
+    openMissionHistory(${JSON.stringify(path)});
+    let dispatched = 0;
+    let code = null;
+    try { await watched(process.pid, "eval", {}, async () => { dispatched++; }); }
+    catch (error) { code = error.code; }
+    console.log(JSON.stringify({dispatched,code}));
+  `;
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, error }).toEqual({ code: 0, error: "" });
+    expect(JSON.parse(text)).toEqual(ended ? { dispatched: 1, code: null } : { dispatched: 0, code: "blocked" });
+  } finally {
+    if (child.exitCode === null) { child.kill(); await child.exited; }
+  }
+});
+
 test("durable history defaults to structural fields and drops typed values, page text, query tokens, titles, paths, and capabilities", () => {
   const path = join(folder(), "history.json");
   const history = new MissionHistory(path, () => now);

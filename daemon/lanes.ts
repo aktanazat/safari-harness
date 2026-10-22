@@ -6,6 +6,7 @@
 // do wait and handoff, which only watch the page. A run takes no lane of
 // its own, so its steps take theirs one at a time.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { currentOwner, processName } from "./owner.ts";
 
 // Longer than an action takes, shorter than a page load: a caller behind a
@@ -34,6 +35,10 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   autofill: always,
   passwords: (a) => a.do === "fill" || a.do === "code" || a.do === "change" || a.do === "change-type",
   dialog: (a) => a.do === "accept" || a.do === "dismiss",
+  react: (a) => a.do === "enable" || a.do === "disable",
+  site_actions: (a) => a.do === "enable" || a.do === "disable" || a.do === "call",
+  video: always,
+  native_preflight: always,
 };
 
 // Whether a call changes its tab's page.
@@ -42,6 +47,7 @@ export const acts = (tool: string, args: Record<string, unknown>) => Object.hasO
 const EXTRA_EFFECTS: Record<string, true> = { real_input: true, close: true, window: true, activate: true, select_tab: true, type_mark: true, press_mark: true, replay: true, download: true };
 
 export function affectsPage(tool: string, args: Record<string, unknown>): boolean {
+  if (tool === "native_preflight" && args.expected !== undefined || tool === "video" && (args.do === undefined || args.do === "inspect")) return false;
   return acts(tool, args) || Object.hasOwn(EXTRA_EFFECTS, tool) || tool === "cookies" && (args.do === "set" || args.do === "clear");
 }
 
@@ -50,6 +56,7 @@ type Turn = { tool: string; owner: number | undefined; go: () => void };
 type Lane = { holder: Holder; waiting: Turn[] };
 
 const lanes = new Map<number, Lane>();
+const heldLanes = new AsyncLocalStorage<{ tab: number; lane: Lane; active: boolean; owner: number | undefined }[]>();
 
 // Runs a call, in its tab's lane when it acts, after the acting calls
 // already queued on that tab. A tab that does not resolve gets no lane:
@@ -58,10 +65,15 @@ export async function inLane<T>(tool: string, args: Record<string, unknown>, res
   if (!acts(tool, args)) return run();
   const tab = await resolve(args.tab).catch(() => undefined);
   if (tab === undefined) return run();
+  const inherited = heldLanes.getStore() ?? [];
+  const held = inherited.find((held) => held.active && held.tab === tab && held.lane === lanes.get(tab) && held.owner === currentOwner());
+  if (held) return run();
   const lane = await enter(tab, tool, currentOwner());
+  const scope = { tab, lane, active: true, owner: currentOwner() };
   try {
-    return await run();
+    return await heldLanes.run([...inherited, scope], run);
   } finally {
+    scope.active = false;
     leave(tab, lane);
   }
 }

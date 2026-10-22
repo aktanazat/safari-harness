@@ -4,7 +4,7 @@
 // messages from its inbox folder between steps; each message is a file of
 // its own, written whole and then renamed in, so none is lost or half read.
 
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { firstMessages, runAgent, type AgentEvent, type AgentStatus, type ChatMsg, type Control } from "./agent.ts";
@@ -109,48 +109,90 @@ async function takeControl(id: string): Promise<Control[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  const rec = await loadSession(id);
-  if (isRunning(rec)) throw new Error(`session ${id} is running; stop it first: safari session stop ${id}`);
-  await rm(recordPath(id), { force: true });
-  await rm(inboxOf(id), { recursive: true, force: true });
+  const lock = await lockSession(id);
+  try {
+    const rec = await loadSession(id);
+    if (isRunning(rec)) throw new Error(`session ${id} is running; stop it first: safari session stop ${id}`);
+    await rm(recordPath(id), { force: true });
+    await rm(inboxOf(id), { recursive: true, force: true });
+  } finally {
+    await lock.close();
+  }
+}
+
+let sessionFlock: Promise<(fd: number, operation: number) => number> | undefined;
+// bun:ffi is platform-specific; libSystem is loaded only for macOS execution.
+
+async function lockSession(id: string): Promise<FileHandle> {
+  sessionFlock ??= import("bun:ffi").then(({ dlopen, FFIType }) => dlopen("/usr/lib/libSystem.B.dylib", {
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  }).symbols.flock);
+  const flock = await sessionFlock;
+  const dir = join(SESSIONS_DIR, ".locks");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const lock = await open(join(dir, checkId(id)), "a", 0o600);
+  if (flock(lock.fd, 6) === 0) return lock;
+  await lock.close();
+  throw new Error(`session ${id} is already running`);
 }
 
 // Runs the session's conversation on in this process, saving it after
 // every step. Ctrl-C leaves it stopped, ready to resume.
-export async function runSession(rec: SessionRecord, opts: { apiKey?: string; maxSteps: number; onEvent: (ev: AgentEvent) => void }): Promise<SessionRecord> {
-  rec.status = "running";
-  rec.pid = process.pid;
-  await save(rec);
-  const onSignal = () => {
-    rec.status = "stopped";
-    delete rec.pid;
-    save(rec).finally(() => process.exit(130));
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+export async function runSession(rec: SessionRecord, opts: {
+  apiKey?: string;
+  maxSteps: number;
+  onEvent: (ev: AgentEvent) => void;
+  prompt?: string;
+  shouldStop?: () => Promise<boolean>;
+  maxTimeMs?: number;
+}): Promise<SessionRecord> {
+  const lock = await lockSession(rec.id);
   try {
-    const result = await runAgent(rec.messages, {
-      baseUrl: rec.baseUrl,
-      model: rec.model,
-      apiKey: opts.apiKey,
-      maxSteps: opts.maxSteps,
-      onEvent: opts.onEvent,
-      inbox: () => takeControl(rec.id),
-      save: () => save(rec),
-    });
-    rec.status = result.status;
-    rec.answer = result.answer;
-  } catch (e) {
-    rec.status = "failed";
-    rec.answer = `error: ${e instanceof Error ? e.message : String(e)}`;
-  } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    delete rec.pid;
+    const current = await loadSession(rec.id);
+    if (current.created !== rec.created || current.updated !== rec.updated) throw new Error(`session ${rec.id} changed; load it again before resuming`);
+    if (await opts.shouldStop?.()) throw new Error(`session ${rec.id} continuation was paused or removed before starting`);
+    if (opts.prompt) rec.messages.push({ role: "user", content: opts.prompt });
+    rec.status = "running";
+    rec.pid = process.pid;
     await save(rec);
-    await rm(inboxOf(rec.id), { recursive: true, force: true });
+    const started = Date.now();
+    const onSignal = () => {
+      rec.status = "stopped";
+      delete rec.pid;
+      save(rec).finally(() => process.exit(130));
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    try {
+      const result = await runAgent(rec.messages, {
+        baseUrl: rec.baseUrl,
+        model: rec.model,
+        apiKey: opts.apiKey,
+        maxSteps: opts.maxSteps,
+        onEvent: opts.onEvent,
+        inbox: async () => {
+          const controls = await takeControl(rec.id);
+          if ((opts.maxTimeMs !== undefined && Date.now() - started >= opts.maxTimeMs) || await opts.shouldStop?.()) controls.push({ kind: "stop" });
+          return controls;
+        },
+        save: () => save(rec),
+      });
+      rec.status = result.status;
+      rec.answer = result.answer;
+    } catch (e) {
+      rec.status = "failed";
+      rec.answer = `error: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      delete rec.pid;
+      await save(rec);
+      await rm(inboxOf(rec.id), { recursive: true, force: true });
+    }
+    return rec;
+  } finally {
+    await lock.close();
   }
-  return rec;
 }
 
 // The conversation as a person reads it: prompts, the steps taken, and the

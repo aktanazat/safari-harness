@@ -19,12 +19,47 @@ export const SAFARI = "com.apple.Safari";
 // Runs the helper and parses its one JSON line; failures carry its stderr.
 // Typed text goes on stdin, unchanged and without an added newline: cards
 // use this path too, and process arguments expose their digits (09-30).
-export async function input(args: string[], timeout = 10000, stdin?: string): Promise<unknown> {
+export async function input(args: string[], timeout = 10000, stdin?: string, completion?: () => Promise<boolean>): Promise<unknown> {
   try {
     const running = execFileAsync(INPUT, args, { timeout });
-    running.child.stdin?.end(stdin);
+    let handshake = false;
+    let pipeError: Error | undefined;
+    if (completion) {
+      let pending = "";
+      running.child.stdout?.on("data", (chunk: Buffer | string) => {
+        if (handshake) return;
+        pending += String(chunk);
+        const newline = pending.indexOf("\n");
+        if (newline < 0) return;
+        let ready: unknown;
+        try {
+          ready = JSON.parse(pending.slice(0, newline));
+        } catch {
+          pipeError = new Error("native paste returned an invalid completion message");
+          running.child.stdin?.end("uncertain\n");
+          return;
+        }
+        if (!ready || typeof ready !== "object" || !("awaitingCompletion" in ready) || ready.awaitingCompletion !== true) {
+          pipeError = new Error("native paste returned no completion request");
+          running.child.stdin?.end("uncertain\n");
+          return;
+        }
+        handshake = true;
+        void completion().catch(() => false).then((complete) => {
+          if (!running.child.stdin?.destroyed) running.child.stdin?.end(complete ? "complete\n" : "uncertain\n");
+        });
+      });
+      // The child can exit on a native refusal before it reads our answer.
+      // execFile's result, not this pipe, carries that failure.
+      running.child.stdin?.on("error", (error: Error) => { pipeError = error; });
+      running.child.stdin?.write(`${stdin ?? ""}\n`);
+    } else {
+      running.child.stdin?.end(stdin);
+    }
     const { stdout } = await running;
-    return JSON.parse(stdout);
+    if (pipeError) throw pipeError;
+    if (completion && !handshake) throw new Error("native paste did not confirm its completion handshake");
+    return JSON.parse(stdout.trim().split("\n").at(-1) ?? "");
   } catch (e) {
     const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
     throw new Error(`input ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);

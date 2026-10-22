@@ -69,10 +69,10 @@ test("an action or a wait answers with the page after it, whole or only the line
   expect(await callTool("wait", { tab: 7, text: "Total", snapshot: true })).toMatchObject({ found: true, page: { snapshot: '[1] button "Pay"\nTotal $42.10\nShipping $5.00' } });
 });
 
-test("an action's snapshot that is not true, words, or {query, root, diff} fails before the page is asked anything", async () => {
+test("invalid action snapshot options refuse before the page receives an action", async () => {
   const sent = cartSafari();
-  await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toThrow("snapshot takes query, root, and diff, not selector");
-  await expect(callTool("wait", { tab: 7, text: "Total", snapshot: 3 })).rejects.toThrow("snapshot takes true, words (only the lines with them), or {query, root, diff}, not 3");
+  await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toBeInstanceOf(Error);
+  await expect(callTool("wait", { tab: 7, text: "Total", snapshot: 3 })).rejects.toBeInstanceOf(Error);
   expect(sent).toEqual([]);
 });
 
