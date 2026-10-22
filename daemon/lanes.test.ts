@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, jest, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
+import { inLane } from "./lanes.ts";
 import { callTool } from "./tools.ts";
 
 // One acting call at a time on a tab (lanes.ts). Safari is a fake: it
@@ -135,4 +136,41 @@ test("a run's acting steps on one tab take its lane in turn", async () => {
   const run = await as(agent.pid, "run", { steps: [{ tool: "type", args: { tab: 7, ref: "1", text: "hi" } }, { tool: "select", args: { tab: 7, ref: "2", option: "Blue" } }] });
   expect(run).toMatchObject({ steps: [{ tool: "type", value: { ok: true } }, { tool: "select", value: { ok: true } }], notRun: 0 });
   expect(page.sent).toEqual(["7 type 1", "7 select 2"]);
+});
+
+test("a composite video's own fixed evaluation runs while competing input remains queued", async () => {
+  const page = safari();
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const observation = runAs(agent.pid, () => inLane("video", { tab: 7 }, async () => 7, async () => {
+    await as(agent.pid, "eval", { tab: 7, expression: "video.currentTime" });
+    entered.resolve();
+    await finish.promise;
+  }));
+  await entered.promise;
+  const competitor = as(other, "type", { tab: 7, ref: "1", text: "after video" });
+  await settled();
+  expect(page.sent).toEqual(["7 eval video.currentTime"]);
+  finish.resolve();
+  await observation;
+  await competitor;
+  expect(page.sent).toEqual(["7 eval video.currentTime", "7 type 1"]);
+});
+
+test("an inherited asynchronous continuation cannot reuse a composite lane after it has been released", async () => {
+  const page = safari();
+  const later = Promise.withResolvers<void>();
+  let continuation: Promise<unknown> | undefined;
+  await runAs(agent.pid, () => inLane("video", { tab: 7 }, async () => 7, async () => {
+    continuation = later.promise.then(() => as(agent.pid, "type", { tab: 7, ref: "later", text: "not early" }));
+  }));
+  const holder = as(other, "click", { tab: 7, ref: "hold" });
+  await settled();
+  later.resolve();
+  await settled();
+  expect(page.sent).toEqual(["7 click hold"]);
+  page.answer("7 click hold");
+  await holder;
+  await continuation;
+  expect(page.sent).toEqual(["7 click hold", "7 type later"]);
 });

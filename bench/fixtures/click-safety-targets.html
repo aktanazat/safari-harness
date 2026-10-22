@@ -1,0 +1,67 @@
+<!doctype html>
+<title>Click safety targets</title>
+<style>
+  body { margin: 16px; font: 16px sans-serif; }
+  .covered { position: relative; width: 180px; height: 60px; margin-bottom: 16px; }
+  #covered, #cover { position: absolute; inset: 0; width: 180px; height: 60px; }
+  #cover { z-index: 2; background: white; }
+  #descendant { padding: 0; width: 180px; height: 48px; }
+  #descendant span { display: block; padding: 12px; }
+  #shadow-host { display: block; width: 180px; margin: 16px 0; }
+  #hidden { display: none; }
+  #transparent-parent { opacity: 0; }
+  #clip { width: 80px; height: 36px; overflow: hidden; margin: 16px 0; }
+  #clipped { width: 240px; height: 36px; }
+  #wrapped-box { width: 95px; margin: 16px 0; }
+  #checkbox { display: none; }
+  #combo-options { position: relative; width: 180px; padding: 0; list-style: none; }
+  #combo-options [role=option] { height: 36px; }
+  #option-cover { position: absolute; inset: 0; background: white; z-index: 2; }
+  #far { margin-top: 2400px; }
+</style>
+<div class="covered">
+  <button id="covered">Covered action</button>
+  <div id="cover">Blocking notice</div>
+</div>
+<button id="descendant"><span>Visible descendant</span></button>
+<div id="shadow-host"></div>
+<button id="hidden">Hidden action</button>
+<div id="transparent-parent"><button id="transparent">Transparent ancestor</button></div>
+<button id="disabled" disabled><span id="disabled-child">Disabled child</span></button>
+<div aria-disabled="true"><button id="aria-disabled">Unavailable action</button></div>
+<div inert><button id="inert">Inert action</button></div>
+<div id="clip"><button id="clipped">Clipped action</button></div>
+<div id="wrapped-box"><a id="wrapped" href="#wrapped">Wrapped link with several words</a></div>
+<label id="checkbox-label" for="checkbox">Accept terms</label><input id="checkbox" type="checkbox">
+<label for="plan">Plan</label><select id="plan"><option value="free">Free</option><option value="pro">Pro</option></select>
+<input id="keyboard" aria-label="Keyboard field">
+<button id="combo" role="combobox" aria-expanded="false" aria-controls="combo-options">Choose city</button>
+<ul id="combo-options" role="listbox" hidden>
+  <li id="paris" role="option">Paris</li>
+  <li id="lyon" role="option">Lyon</li>
+  <li id="option-cover" aria-hidden="true" hidden>Option notice</li>
+</ul>
+<button id="far">Far action</button>
+<script>
+  window.safety = { covered: 0, cover: 0, descendant: 0, shadow: 0, hidden: 0, transparent: 0, disabled: 0, aria: 0, inert: 0, clipped: 0, wrapped: 0, key: 0, plan: "free", comboOpen: 0, comboChoice: "", far: 0 };
+  for (const [id, key] of [["covered", "covered"], ["cover", "cover"], ["descendant", "descendant"], ["hidden", "hidden"], ["transparent", "transparent"], ["disabled-child", "disabled"], ["aria-disabled", "aria"], ["inert", "inert"], ["clipped", "clipped"], ["far", "far"]]) {
+    document.getElementById(id).addEventListener("click", () => window.safety[key]++);
+  }
+  document.getElementById("wrapped").addEventListener("click", (event) => { event.preventDefault(); window.safety.wrapped++; });
+  const root = document.getElementById("shadow-host").attachShadow({ mode: "open" });
+  root.innerHTML = '<a href="#shadow" style="display:block;padding:12px"><span>Shadow link</span></a>';
+  root.querySelector("a").addEventListener("click", (event) => { event.preventDefault(); window.safety.shadow++; });
+  document.getElementById("keyboard").addEventListener("keyup", (event) => { if (event.key === "ArrowDown") window.safety.key++; });
+  document.getElementById("plan").addEventListener("change", (event) => { window.safety.plan = event.target.value; });
+  document.getElementById("combo").addEventListener("mousedown", () => {
+    window.safety.comboOpen++;
+    document.getElementById("combo-options").hidden = false;
+    document.getElementById("combo").setAttribute("aria-expanded", "true");
+  });
+  for (const id of ["paris", "lyon"]) {
+    document.getElementById(id).addEventListener("click", () => { window.safety.comboChoice = document.getElementById(id).textContent; });
+  }
+  const publishSafety = () => { document.body.dataset.safety = JSON.stringify(window.safety); };
+  for (const type of ["click", "mousedown", "keyup", "change"]) document.addEventListener(type, publishSafety);
+  publishSafety();
+</script>

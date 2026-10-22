@@ -128,7 +128,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody", "memoryPage"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -336,6 +336,9 @@ async function unlessSilent(tabId, frameId) {
 // the user's tab again. Its waits end by the action's time limit.
 async function act(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null) {
   const deadline = Date.now() + timeoutMs;
+  const preflight = await upgradeFrameClick(tabId, op, args, deadline, frameId, kept);
+  if (preflight?.error) return preflight;
+  const healed = preflight?.value?.healed;
   const source = await api.tabs.get(tabId);
   const [front] = await api.tabs.query({ active: true, windowId: source.windowId });
   let opened = null;
@@ -364,6 +367,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null)
     // an action answers an object; anything else is passed on as it came
     if (!res || !res.value || typeof res.value !== "object" || Array.isArray(res.value)) return res;
     const { expect, ...value } = res.value;
+    if (healed && value.healed === undefined) value.healed = healed;
     // A copy that answers through executeScript (a page open since before
     // the extension reloaded) cannot message it, so the tab its link or
     // window.open is making is announced from its answer instead.
@@ -670,10 +674,16 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
   }
   const { frameId, args } = frame ? { frameId: frame, args: domArgs } : frameOf(domArgs);
   if (domOp === "snapshot") {
+    const identify = args?.[0]?.identifyDocument === true;
+    const beforeDocument = identify ? await upgradeDocumentId(tabId) : undefined;
     const kept = new Map();
     const res = await snapshotFrame(tabId, args, timeoutMs, frameId, kept);
     if (!res || !res.value || typeof res.value.snapshot !== "string") return res;
     const value = await stitchFrames(tabId, res.value, (args && args[0]) || {}, null, 0, kept);
+    if (identify) {
+      const afterDocument = await upgradeDocumentId(tabId);
+      if (beforeDocument && beforeDocument === afterDocument) value.documentId = afterDocument;
+    }
     snapshotRefs.set(tabId, kept);
     return { value };
   }
@@ -1196,6 +1206,7 @@ async function screenshotInWindow(tabId, windowId, opts) {
   // Tile height and overlap are original raster pixels, independent of DPR.
   const tileHeight = opts.tileHeight ?? 1400;
   if (opts.tiles && (!Number.isInteger(tileHeight) || tileHeight < 256 || tileHeight > 8192)) throw new Error("tileHeight must be an integer from 256 to 8192 raster pixels");
+  const beforeDocument = await upgradeDocumentId(tabId);
   const secrets = opts.secrets ?? [];
   const [front] = await api.tabs.query({ active: true, windowId });
   const flip = front && front.id !== tabId;
@@ -1261,6 +1272,8 @@ async function screenshotInWindow(tabId, windowId, opts) {
     if (selected) await clean(() => api.tabs.update(front.id, { active: true }));
   }
   if (failure) throw failure;
+  const afterDocument = await upgradeDocumentId(tabId);
+  if (beforeDocument && beforeDocument !== afterDocument) throw new Error("screenshot privacy: a page document changed during capture");
   const first = shots[0];
   let canvas = first.canvas;
   const source = { ...first.state.source, capturedAt: first.capturedAt, width: canvas.width, height: canvas.height, privacy: { masked: shots.reduce((sum, shot) => sum + shot.state.masked, 0) } };
@@ -1288,7 +1301,7 @@ async function screenshotInWindow(tabId, windowId, opts) {
   }
   source.width = canvas.width;
   source.height = canvas.height;
-  return { data: await pngOf(canvas), ...result, source, ...(opts.tiles ? { tiles: await captureTiles(canvas, tileHeight) } : {}) };
+  return { data: await pngOf(canvas), ...result, source, ...(beforeDocument ? { document: beforeDocument } : {}), ...(opts.tiles ? { tiles: await captureTiles(canvas, tileHeight) } : {}) };
 }
 
 // Runs in the page: empties what its origin keeps, and says the origin
@@ -1541,6 +1554,18 @@ async function handle(msg) {
       if (!r) throw new Error("the page did not run it");
       return r.result;
     }
+    case "upgrade.context":
+      return upgradeContext(args[0]);
+    case "upgrade.configure":
+      return upgradeConfigure(args[0], args[1], args[2]);
+    case "upgrade.audit":
+      return upgradeAudit(args[0], args[1] ?? {});
+    case "upgrade.react":
+      return upgradeReact(args[0], args[1], args[2] ?? {});
+    case "upgrade.site":
+      return upgradeSite(args[0], args[1], args[2], args[3], args[4]);
+    case "upgrade.native":
+      return upgradeNativePreflight(args[0], args[1]);
     case "fetchFile": {
       const [url] = args;
       const res = await fetch(url, { credentials: "include" });

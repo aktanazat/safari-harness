@@ -37,6 +37,7 @@ type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; eff
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
 type SnapshotOptions = { interactive?: boolean; showHidden?: boolean; ref?: string; selector?: string; maxNodes?: number };
+type PasteOptions = { html?: string; tsv?: string };
 
 const DOWNLOADS = nodePath.join(homedir(), "Downloads");
 
@@ -163,6 +164,15 @@ export class Locator {
   async click(opts: { noWaitAfter?: boolean } = {}): Promise<void> {
     await this.#page.clickTarget(this.target, opts.noWaitAfter === true);
   }
+  async dragTo(target: Locator): Promise<void> {
+    if (!(target instanceof Locator) || target.#page.id !== this.#page.id || target.#page.session !== this.#page.session) {
+      throw new Error("dragTo needs a locator in the same page");
+    }
+    await this.#page.act("real_input", { do: "drag", ref: this.target, target: target.target });
+  }
+  async paste(text: string, opts: PasteOptions = {}): Promise<void> {
+    await this.#page.act("real_input", { do: "paste", ref: this.target, text: String(text), ...(opts.html === undefined ? {} : { html: opts.html }), ...(opts.tsv === undefined ? {} : { tsv: opts.tsv }) });
+  }
   // opts names where a {{code}} in text comes from: { secret: "page", from:
   // <mail tab> } for an emailed one. Without it, a script's emailed code
   // waited 30 s for a text message (10-02).
@@ -272,7 +282,7 @@ export class Page {
   #title: string;
   downloadWaiter: Waiter<Download> | null = null;
   popupWaiter: Waiter<Page> | null = null;
-  readonly keyboard: { press: (key: string) => Promise<void>; type: (text: string) => Promise<void> };
+  readonly keyboard: { press: (key: string) => Promise<void>; type: (text: string) => Promise<void>; paste: (text: string, opts?: PasteOptions) => Promise<void> };
   readonly mouse: { click: (x: number, y: number) => Promise<void> };
 
   constructor(session: ReplSession, row: TabRow) {
@@ -283,6 +293,7 @@ export class Page {
     this.keyboard = {
       press: async (key) => { await this.act("press", { key: String(key) }); },
       type: async (text) => { await this.act("type", { ref: ":focus", text: String(text), append: true }); },
+      paste: async (text, opts = {}) => { await this.act("real_input", { do: "paste", text: String(text), ...(opts.html === undefined ? {} : { html: opts.html }), ...(opts.tsv === undefined ? {} : { tsv: opts.tsv }) }); },
     };
     this.mouse = { click: async (x, y) => { await this.act("click", { x, y }); } };
   }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Video observation fixture</title>
+<style>body{margin:24px;background:white}video{display:block;width:320px;height:192px;background:black}</style></head>
+<body><video id="movie" preload="auto" muted playsinline></video><p id="state">loading video</p>
+<script>
+const movie = document.querySelector("#movie");
+const state = document.querySelector("#state");
+let decoded = false;
+const update = () => {
+  if (movie.error) {
+    state.textContent = `video failed: code=${movie.error.code}, ${movie.error.message}`;
+    return;
+  }
+  if (decoded) return;
+  const seekable = Array.from({ length: movie.seekable.length }, (_, index) => [movie.seekable.start(index), movie.seekable.end(index)]);
+  if (movie.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && movie.videoWidth === 160 && movie.videoHeight === 96 && seekable.some(([start, end]) => start <= 0.2 && end > 1.4)) {
+    movie.pause();
+    decoded = true;
+    state.textContent = "video decoded";
+    return;
+  }
+  state.textContent = `loading video: ready=${movie.readyState}, network=${movie.networkState}, seekable=${JSON.stringify(seekable)}`;
+};
+for (const event of ["loadedmetadata", "loadeddata", "canplay", "progress", "durationchange", "suspend", "stalled", "error"]) movie.addEventListener(event, update);
+movie.src = "video-observation.mp4?token=private-video-query";
+movie.load();
+update();
+</script></body></html>

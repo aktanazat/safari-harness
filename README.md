@@ -379,6 +379,9 @@ safari imessage send "+1…" --file ~/Pictures/a.jpg   # a photo; succeeds only 
 `safari agents` and the local `/agents` page include retained task history;
 archived tasks cannot control a new process. Action pictures are opt-in
 and use the same screenshot protection as CLI, MCP and REPL captures.
+The user can choose Inspect only for a task: reads of its current pages
+continue, while navigation, input, arbitrary scripts and session requests
+refuse until the user allows actions again.
 A failed or uncertain action is not permission to retry it blindly.
 
 Get attachment ids from history/search messages' `files` array, then use
@@ -395,6 +398,32 @@ their file URLs. Success does not mean every destination app accepts paste.
 talks to it while it runs, `resume` goes on after it answers. Its agent can
 search engram memory and read the site guides. From omp, use the MCP tools
 instead.
+### Browser inspection and native editing
+
+Snapshots can return recoverable revisions with `--updates` and
+`--since <revision>`. Protected screenshots can use `--ifChanged`: unchanged
+pixels return the prior verified receipt, with its original time, not a new
+image. Clicks refuse covered, hidden, disabled or uncertain replacement
+targets, including readable containing frames.
+
+Optional tools are available on demand through `run`, CLI and REPL:
+`audit` runs actual axe checks; `react` inspects real component/state
+structure on explicitly enabled development hosts; `site_actions` adds
+optional experimental WebMCP compatibility for cooperating sites.
+React and site-action startup hooks are off by default and require explicit
+host-wide consent because Safari match patterns cover every port.
+`video` observes selected decoded moments with protected image receipts and
+guarded playback restoration. See `safari guide <tool>` for each contract.
+
+`real_input` supports atomic drag-and-drop and formatted paste with plain
+text, HTML and TSV representations. Targets must be visible and uncovered.
+Paste restores the old clipboard only if the user has not copied something
+else. It refuses secret fields and reports delivery, not editor acceptance.
+
+Routines support durable pause/resume, cross-process overlap prevention and
+`--session <id>` continuation of saved Safari work. They never silently
+replace missing or changed saved work with a fresh conversation.
+
 
 ### safari repl
 
@@ -586,6 +615,16 @@ with on-device OCR, immutable receipts after output reuse, lossless overlapping
 pieces, a fresh view after takeover, access-wall classification and a report
 that preserves a numeric disagreement and an unread source. It closes its own
 tabs and server and prints the retained proof files.
+
+The upgrade smoke commands use only their own local fixture pages:
+`bun scripts/check-agent-upgrades.ts`,
+`bun scripts/check-native-interactions.ts`, and
+`bun scripts/check-video-observation.ts`. They exercise real Safari click
+occlusion, snapshot recovery, conditional protected captures, actual axe and
+React, optional WebMCP, native drag/paste and protected video moments.
+They restore the prior front tab, close owned pages and remove their
+temporary capture bundles. CLI delivery does not prove editor acceptance;
+the native smoke reads the actual editor after delivery.
 
 passwords, card numbers and sign-in codes in capture titles and addresses are
 hidden, including values you typed yourself.

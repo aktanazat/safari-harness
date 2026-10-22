@@ -17,10 +17,46 @@ const recorded = (c: Candidate, index: number, count: number): Fingerprint => ({
 
 const CASES: { what: string; fp: Fingerprint; now: Candidate[]; want: Match }[] = [
   {
-    what: "the only element that looked like it, and still the only one",
+    what: "the only context-free element that looked like it, and still the only one",
     fp: recorded(button("Save"), 0, 1),
-    now: [button("Cancel"), button("Save", "Draft saved 2 min ago")],
+    now: [button("Cancel"), button("Save")],
     want: { index: 1 },
+  },
+  {
+    what: "a unique control replaced by another row's control is not the same business target",
+    fp: recorded(button("Save", "Invoice 42"), 0, 1),
+    now: [button("Save", "Invoice 43")],
+    want: { count: 1 },
+  },
+  {
+    what: "a unique context-free control moved into a named row needs a fresh read",
+    fp: recorded(button("Save"), 0, 1),
+    now: [button("Save", "Invoice 43")],
+    want: { count: 1 },
+  },
+  {
+    what: "a unique row's control remains recoverable with the same nearby business text",
+    fp: recorded(button("Save", "Invoice 42"), 0, 1),
+    now: [button("Save", "Invoice 42", "#replacement>button:nth-of-type(1)")],
+    want: { index: 0 },
+  },
+  {
+    what: "a row's missing nearby business text cannot be replaced by position",
+    fp: recorded(button("Save", "Invoice 42"), 0, 1),
+    now: [button("Save")],
+    want: { count: 1 },
+  },
+  {
+    what: "an empty nearby text does not identify the one blank row left among prior lookalikes",
+    fp: recorded(button("Delete"), 1, 3),
+    now: [button("Delete", "Invoice 41"), button("Delete"), button("Delete", "Invoice 43")],
+    want: { count: 3 },
+  },
+  {
+    what: "one remaining context-free lookalike cannot prove which prior row survived",
+    fp: recorded(button("Delete"), 1, 3),
+    now: [button("Delete")],
+    want: { count: 1 },
   },
   {
     what: "nothing like it on the page",
@@ -59,16 +95,16 @@ const CASES: { what: string; fp: Fingerprint; now: Candidate[]; want: Match }[] 
     want: { index: 0 },
   },
   {
-    what: "lookalikes in boxes that read the same, told apart by their path",
+    what: "lookalikes in boxes that read the same stay ambiguous even on the same CSS path",
     fp: recorded(button("Edit", "Settings", "section:nth-of-type(2)>button:nth-of-type(1)"), 1, 2),
     now: [button("Edit", "Settings", "section:nth-of-type(1)>button:nth-of-type(1)"), button("Edit", "Settings", "section:nth-of-type(2)>button:nth-of-type(1)")],
-    want: { index: 1 },
+    want: { count: 2 },
   },
   {
-    what: "identical lookalikes, as many as before: the one in the same place",
+    what: "identical lookalikes stay ambiguous even when their count and ordinal are unchanged",
     fp: recorded(button("Reply"), 1, 3),
     now: [button("Reply"), button("Reply"), button("Reply")],
-    want: { index: 1 },
+    want: { count: 3 },
   },
   {
     what: "identical lookalikes, fewer than before: its place proves nothing",

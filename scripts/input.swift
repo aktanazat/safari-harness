@@ -16,6 +16,8 @@
 //   input move X Y
 //   input drag X1 Y1 X2 Y2
 //   input type [--gap MS]         UTF-8 text on stdin, through EOF
+//   input paste                   JSON {text,html?,tsv?} line on stdin;
+//                                 waits for a complete/uncertain line after F20
 //   input key SPEC                Enter, Tab, Escape, Backspace, ArrowUp, cmd+a, shift+Tab
 //   input idle MS MAX             waits until the user has let go of keys and
 //                                 buttons for MS, MAX at most: {"idle"}
@@ -26,13 +28,38 @@
 //                                 free part: {"window","screen","visible"}
 // Points are global screen points with the origin at the top-left of the main
 // display, the space of both the Accessibility API and CGEvent. Each command
-// prints one JSON line. click, type, and key end with a press of F20 (see
+// prints JSON lines. click, drag, type, paste, and key end with F20 (see
 // mark). All but idle, front, activate, and window need Accessibility
 // permission for the app that runs this.
 import AppKit
 import ApplicationServices
 
+var emergencyRelease: CGEvent?
+var emergencyClipboardRestore: (() -> Void)?
+var terminationSources: [DispatchSourceSignal] = []
+
+func cleanNativeInput() {
+    emergencyRelease?.post(tap: .cghidEventTap)
+    emergencyRelease = nil
+    emergencyClipboardRestore?()
+    emergencyClipboardRestore = nil
+}
+
+func guardNativeLifetime() {
+    guard terminationSources.isEmpty else { return }
+    for number in [SIGTERM, SIGINT, SIGHUP] {
+        signal(number, SIG_IGN)
+        let watcher = DispatchSource.makeSignalSource(signal: number, queue: .main)
+        watcher.setEventHandler {
+            cleanNativeInput()
+            exit(128 + number)
+        }
+        watcher.resume()
+        terminationSources.append(watcher)
+    }
+}
 func fail(_ message: String, _ code: Int32 = 1) -> Never {
+    cleanNativeInput()
     FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
     exit(code)
 }
@@ -120,27 +147,46 @@ func move(_ args: [String]) {
 // Presses at the start, moves to the end in small steps with the button held,
 // and lets go there, the way sliders and drag handles expect.
 func drag(_ args: [String]) {
-    guard args.count >= 4 else { fail("usage: input drag X1 Y1 X2 Y2", 2) }
+    guard args.count == 4 else { fail("usage: input drag X1 Y1 X2 Y2", 2) }
     let from = point(args[0], args[1])
     let to = point(args[2], args[3])
     requireAccess()
     requireOnScreen(from)
     requireOnScreen(to)
+    let target = keyTarget()
+    guardNativeLifetime()
     let home = CGEvent(source: nil)?.location
-    mouse(.mouseMoved, from)
-    pause(50)
-    mouse(.leftMouseDown, from)
-    pause(60)
-    let steps = 15
-    for i in 1...steps {
-        let t = CGFloat(i) / CGFloat(steps)
-        mouse(.leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
-        pause(16)
+    func event(_ kind: CGEventType, _ at: CGPoint) -> CGEvent {
+        guard let value = CGEvent(mouseEventSource: source, mouseType: kind, mouseCursorPosition: at, mouseButton: .left) else { fail("cannot prepare drag input") }
+        value.flags = []
+        return value
     }
-    pause(50)
-    mouse(.leftMouseUp, to)
-    pause(40)
-    if let home { mouse(.mouseMoved, home) }
+    let down = event(.leftMouseDown, from)
+    let up = event(.leftMouseUp, from)
+    let approach = event(.mouseMoved, from)
+    let moves = (1...20).map { index -> CGEvent in
+        let fraction = CGFloat(index) / 20
+        return event(.leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction))
+    }
+    defer {
+        cleanNativeInput()
+        if let home { mouse(.mouseMoved, home) }
+    }
+    approach.post(tap: .cghidEventTap)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    if inFrontInstead(of: target) != nil { fail("Safari lost focus before the drag, so no button was pressed") }
+    emergencyRelease = up
+    down.post(tap: .cghidEventTap)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.06))
+    for move in moves {
+        if inFrontInstead(of: target) != nil { fail("drag stopped because Safari lost focus; the mouse button was released, but the page may have changed") }
+        up.location = move.location
+        move.post(tap: .cghidEventTap)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.016))
+    }
+    up.post(tap: .cghidEventTap)
+    emergencyRelease = nil
+    if inFrontInstead(of: target) == nil { mark() }
     printJSON(["from": ["x": from.x, "y": from.y], "to": ["x": to.x, "y": to.y]])
 }
 
@@ -348,6 +394,132 @@ func keyCombo(_ args: [String]) {
     press(code, mods, text: alone ? Array(String(ch).utf16) : [])
     mark()
     printJSON(["key": spec])
+}
+
+typealias ClipboardContents = [[NSPasteboard.PasteboardType: Data]]
+
+enum ClipboardFailure: Error {
+    case changed, unreadable, rejected
+}
+
+protocol ClipboardStore {
+    var changeCount: Int { get }
+    func snapshot() throws -> ClipboardContents
+    func clear(ifUnchangedSince count: Int) -> Int?
+    func write(_ contents: ClipboardContents, ifUnchangedSince count: Int) throws -> Bool
+}
+
+struct NativeClipboard: ClipboardStore {
+    let board: NSPasteboard
+    var changeCount: Int { board.changeCount }
+    func snapshot() throws -> ClipboardContents {
+        try (board.pasteboardItems ?? []).map { item in
+            var values: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                guard let data = item.data(forType: type) else { throw ClipboardFailure.unreadable }
+                values[type] = data
+            }
+            return values
+        }
+    }
+    func clear(ifUnchangedSince count: Int) -> Int? {
+        guard board.changeCount == count else { return nil }
+        return board.clearContents()
+    }
+    func write(_ contents: ClipboardContents, ifUnchangedSince count: Int) throws -> Bool {
+        guard board.changeCount == count else { return false }
+        if contents.isEmpty { return true }
+        let items = contents.map { values in
+            let item = NSPasteboardItem()
+            for (type, bytes) in values { item.setData(bytes, forType: type) }
+            return item
+        }
+        guard board.writeObjects(items) else { throw ClipboardFailure.rejected }
+        return board.changeCount == count
+    }
+}
+
+final class TemporaryClipboard<Store: ClipboardStore> {
+    private let store: Store
+    private let saved: ClipboardContents
+    private var owned: Int?
+    init(_ store: Store, contents: ClipboardContents) throws {
+        self.store = store
+        let before = store.changeCount
+        saved = try store.snapshot()
+        guard let count = store.clear(ifUnchangedSince: before) else { throw ClipboardFailure.changed }
+        owned = count
+        do {
+            guard try store.write(contents, ifUnchangedSince: count) else { throw ClipboardFailure.changed }
+        } catch {
+            _ = try? restore()
+            throw error
+        }
+    }
+    @discardableResult
+    func restore() throws -> Bool {
+        guard let count = owned else { return false }
+        owned = nil
+        guard let restoring = store.clear(ifUnchangedSince: count) else { return false }
+        return try store.write(saved, ifUnchangedSince: restoring)
+    }
+}
+
+struct PastePayload: Decodable {
+    let text: String
+    let html: String?
+    let tsv: String?
+    var contents: ClipboardContents {
+        var values: [NSPasteboard.PasteboardType: Data] = [.string: Data(text.utf8)]
+        if let html { values[.html] = Data(html.utf8) }
+        if let tsv { values[NSPasteboard.PasteboardType("public.utf8-tab-separated-values-text")] = Data(tsv.utf8) }
+        return [values]
+    }
+}
+
+func paste(_ args: [String]) {
+    guard args.isEmpty, let line = readLine(), line.utf8.count <= 4 * 1024 * 1024,
+          let payload = try? JSONDecoder().decode(PastePayload.self, from: Data(line.utf8)) else {
+        fail("paste needs a JSON line {text,html?,tsv?} on stdin, at most 4 MiB", 2)
+    }
+    requireAccess()
+    let target = keyTarget()
+    if let focused = element(attribute(target.safari, kAXFocusedUIElementAttribute)),
+       attribute(focused, kAXSubroleAttribute) as? String == "AXSecureTextField" {
+        fail("paste does not accept password fields; use the existing secret-filling tools")
+    }
+    guardNativeLifetime()
+    let clipboard: TemporaryClipboard<NativeClipboard>
+    do {
+        clipboard = try TemporaryClipboard(NativeClipboard(board: .general), contents: payload.contents)
+    } catch {
+        fail("the clipboard changed or could not be preserved, so no paste was sent")
+    }
+    emergencyClipboardRestore = { _ = try? clipboard.restore() }
+    defer { cleanNativeInput() }
+    if inFrontInstead(of: target) != nil { fail("Safari lost focus, so no paste was sent") }
+    press(9, [modifierKeys["cmd"]!])
+    mark()
+    printJSON(["awaitingCompletion": true])
+    let deadline = Date(timeIntervalSinceNow: 7)
+    var complete = false
+    while Date() < deadline {
+        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        if poll(&descriptor, 1, 0) > 0 {
+            complete = readLine() == "complete"
+            break
+        }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+    }
+    let restored: Bool
+    do {
+        restored = try clipboard.restore()
+    } catch {
+        fail("paste was sent but the previous clipboard could not be restored; read the editor before any retry")
+    }
+    emergencyClipboardRestore = nil
+    guard complete else { fail("paste was sent but the page did not confirm processing its input; the outcome is unknown, so read the editor before repeating it") }
+    printJSON(["pasted": true, "clipboardRestored": restored])
 }
 
 // Waits until the user has let go of every key and mouse button for MS
@@ -583,6 +755,7 @@ func setValue(_ args: [String]) {
     printJSON(["set": true])
 }
 
+#if !INPUT_TESTING
 let argv = Array(CommandLine.arguments.dropFirst())
 let rest = Array(argv.dropFirst())
 switch argv.first {
@@ -593,10 +766,12 @@ case "click": click(rest)
 case "move": move(rest)
 case "drag": drag(rest)
 case "type": typeText(rest)
+case "paste": paste(rest)
 case "key": keyCombo(rest)
 case "idle": idle(rest)
 case "front": front()
 case "activate": activate(rest)
 case "window": window(rest)
-default: fail("usage: input webarea | press MARK W H | setvalue [--append] MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
+default: fail("usage: input webarea | press MARK W H | setvalue [--append] MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | paste (JSON line on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
 }
+#endif

@@ -1,0 +1,40 @@
+<!doctype html>
+<title>Replacement identity</title>
+<ul id="orders"></ul>
+<p id="result">No approvals</p>
+<input id="draw-command" type="hidden">
+<script>
+  window.approvals = [];
+  document.body.dataset.approvals = "[]";
+  const identical = location.search.includes("identical");
+  const single = location.search.includes("single");
+  function drawOrders(ids, copyRefs = false) {
+    const orders = document.getElementById("orders");
+    const before = [...orders.children];
+    orders.replaceChildren(...ids.map((id, index) => {
+      const row = copyRefs ? before[index].cloneNode(true) : document.createElement("li");
+      row.dataset.business = id;
+      let label = row.querySelector("span");
+      let button = row.querySelector("button");
+      if (!label) { label = document.createElement("span"); row.append(label, " "); }
+      if (!button) { button = document.createElement("button"); button.textContent = "Approve"; row.append(button); }
+      label.textContent = identical ? "Invoice queued" : `Invoice ${id}`;
+      button.addEventListener("click", () => {
+        window.approvals.push(id);
+        document.body.dataset.approvals = JSON.stringify(window.approvals);
+        document.getElementById("result").textContent = `Approved ${id}`;
+      });
+      return row;
+    }));
+  }
+  function moveConnected(ids) {
+    const orders = document.getElementById("orders");
+    for (const id of ids) orders.append([...orders.children].find((row) => row.dataset.business === id));
+  }
+  document.getElementById("draw-command").addEventListener("change", (event) => {
+    const command = JSON.parse(event.target.value);
+    if (command.move) moveConnected(command.ids);
+    else drawOrders(command.ids, command.copyRefs);
+  });
+  drawOrders(single ? [location.hash === "#different" ? "B" : "A"] : location.hash === "#reverse" ? ["C", "A", "B"] : ["A", "B", "C"]);
+</script>

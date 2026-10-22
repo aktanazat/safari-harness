@@ -190,6 +190,7 @@ else
   if [ ! -d "$RELEASES/$sha" ]; then
     tmp="$(mktemp -d "$RELEASES/.new.XXXXXX")"
     git -C "$ROOT" archive "$full" | tar -x -C "$tmp"
+    if [ -f "$tmp/bun.lock" ]; then bun install --cwd "$tmp" --frozen-lockfile --production; fi
     for f in "$tmp"/extension/*.js; do node --check "$f"; done
     # what the app and extension are built from, as git names it
     git -C "$ROOT" rev-parse "$full:extension" "$full:Safari Harness" | shasum -a 256 | cut -c1-16 >"$tmp/.extension"

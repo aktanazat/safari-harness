@@ -17,10 +17,9 @@ export type Match = { index: number } | { count: number };
 
 // content.js carries these two bodies, between its "shared with
 // daemon/fingerprint.ts" markers, to heal a stale ref inside the page;
-// fingerprint.test.ts runs both copies on one table. A guess here clicks
-// the wrong element, so lookalikes (each row's "Delete") resolve only on
-// the evidence of their surroundings, and an element that was one of
-// several never passes for the only one left.
+// fingerprint.test.ts runs both copies on one table. Replacements must
+// preserve unique nearby text, or remain the sole context-free control.
+// Ordinals and CSS positions never establish business identity.
 export function lookalikeKey(c: { role: string; name: string; tag: string }): string {
   return `${c.role}\n${c.name}\n${c.tag}`;
 }
@@ -29,16 +28,14 @@ export function matchFingerprint(fp: Fingerprint, candidates: readonly Candidate
   const want = lookalikeKey(fp);
   const same = [];
   for (let i = 0; i < candidates.length; i++) if (lookalikeKey(candidates[i]) === want) same.push(i);
-  if (same.length === 1 && fp.count === 1) return { index: same[0] };
-  // One of several lookalikes, then or now: the one whose surroundings read
-  // the same; among several of those, the one on the same path, or the one
-  // at the same place among as many lookalikes as before.
-  const kin = same.filter((i) => candidates[i].near === fp.near);
-  if (kin.length === 1) return { index: kin[0] };
-  const onPath = kin.filter((i) => candidates[i].path === fp.path);
-  if (onPath.length === 1) return { index: onPath[0] };
-  const placed = same[fp.index];
-  if (same.length === fp.count && kin.includes(placed)) return { index: placed };
+  // Position and CSS paths survive a reorder without preserving identity.
+  // Repeated controls need unique, nonempty matching nearby text.
+  if (fp.near) {
+    const kin = same.filter((i) => candidates[i].near === fp.near);
+    if (kin.length === 1) return { index: kin[0] };
+  } else if (same.length === 1 && fp.count === 1 && !candidates[same[0]].near) {
+    return { index: same[0] };
+  }
   return { count: same.length };
 }
 

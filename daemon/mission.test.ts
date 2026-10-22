@@ -8,7 +8,7 @@ import { connect } from "./fake-safari.ts";
 import { saveCapture, verifyEvidence } from "./evidence.ts";
 import { failureOf, HarnessError } from "./failures.ts";
 import * as front from "./front.ts";
-import { admitNativeAction, finishNativeAction, missionCall, missionRoute, watched, type Overview } from "./mission.ts";
+import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, missionRoute, watched, withTaskCancellation, type Overview } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { passwords } from "./passwords.ts";
 import { callTool, endTurn } from "./tools.ts";
@@ -407,6 +407,9 @@ test.each([
   { tool: "snapshot", args: { maxNodes: 1 }, value: fullView },
   { tool: "extract", args: { maxBytes: 10 }, value: { text: "Continue", truncated: false } },
   { tool: "snapshot", args: {}, value: { ...fullView, truncated: true } },
+  { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "delta", revision: "new-revision", baseRevision: "old-revision", edits: [{ start: 0, deleteCount: 1, lines: ["Continue"] }] } } },
+  { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "unchanged", revision: "old-revision", baseRevision: "old-revision" } } },
+  { tool: "shot", args: { ifChanged: true }, value: { unchanged: true, previous: { path: "/a/previous.png" } } },
   { tool: "extract", args: { selector: "main" }, value: { text: "Continue" } },
   { tool: "extract", args: { as: "table" }, value: { tables: [] } },
   { tool: "data", args: {}, value: { meta: { title: "Continue" } } },
@@ -983,6 +986,124 @@ test("failed Safari listings leave task controls usable and mark only windows un
   } finally {
     s.ops["tabs.list"] = list;
   }
+});
+
+test("stopping a task aborts its in-flight site action without starting another dispatch", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://cancel-action.example/");
+  const entered = Promise.withResolvers<void>();
+  let dispatched = 0;
+  const result = observedCall(a.pid, "site_actions", { tab, do: "call", name: "add_item" }, async () => withTaskCancellation((signal) => {
+    dispatched++;
+    entered.resolve();
+    const pending = Promise.withResolvers<{ status: "unknown"; retry: false }>();
+    signal.addEventListener("abort", () => pending.resolve({ status: "unknown", retry: false }), { once: true });
+    return pending.promise;
+  }));
+  await entered.promise;
+  expect((await press(pageOf(tab), "stop")).status).toBe(200);
+  expect(await result).toEqual({ status: "unknown", retry: false });
+  expect(dispatched).toBe(1);
+  await expect(call(a.pid, "site_actions", { tab, do: "call", name: "add_item", input: {} })).rejects.toMatchObject({ code: "stopped" });
+  expect(dispatched).toBe(1);
+});
+
+test("inspect-only task controls block input and session requests without restricting another task's reads or actions", async () => {
+  const [a, b] = [agent(), agent()];
+  const tab = await open(a.pid, "https://inspect.example/");
+  const other = await open(b.pid, "https://ordinary.example/");
+  const page = pageOf(tab);
+  expect((await press(page, "inspect_on")).status).toBe(200);
+  expect(await call(a.pid, "snapshot", { tab })).toMatchObject(fullView);
+  const before = s.effects.length;
+  for (const [tool, args] of [
+    ["open", { url: "https://inspect.example/remove" }],
+    ["goto", { tab, url: "https://inspect.example/remove" }],
+    ["history", { tab, do: "reload" }],
+    ["map", { urls: ["https://inspect.example/remove"], what: "extract" }],
+    ["shots", { urls: ["https://inspect.example/remove"] }],
+    ["click", { tab, ref: "submit" }],
+    ["type", { tab, ref: "field", text: "new value" }],
+    ["eval", { tab, expression: "document.querySelector('button').click()" }],
+    ["fetch", { tab, url: "https://inspect.example/remove", method: "GET" }],
+    ["fetch", { tab, url: "https://inspect.example/update", method: "POST", body: "{}" }],
+    ["cookies", { tab, do: "clear" }],
+    ["download", { tab, url: "https://inspect.example/file" }],
+    ["site_actions", { tab, do: "call" }],
+    ["react", { tab, do: "enable" }],
+    ["video", { tab, do: "frames", ref: "#movie", times: [1] }],
+    ["map", { urls: ["https://inspect.example/"], what: "eval", expression: "document.querySelector('button').click()" }],
+  ] as const) await expect(call(a.pid, tool, args)).rejects.toMatchObject({ code: "blocked", effect: "none" });
+  await expect(native(a.pid, { tab })).rejects.toMatchObject({ code: "blocked", effect: "none" });
+  expect(s.effects.length).toBe(before);
+  await call(b.pid, "click", { tab: other, ref: "allowed" });
+  expect(s.effects.slice(before)).toEqual([{ tab: other, ref: "allowed" }]);
+  expect((await press(page, "inspect_off")).status).toBe(200);
+  await call(a.pid, "click", { tab, ref: "allowed-again" });
+  expect(s.effects.at(-1)).toEqual({ tab, ref: "allowed-again" });
+});
+
+test("inspect-only is checked again at nested batch boundaries and cannot be disabled by page arguments", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://inspect-batch.example/");
+  await press(pageOf(tab), "inspect_on");
+  const before = s.effects.length;
+  const result = await call(a.pid, "run", { steps: [
+    { tool: "snapshot", args: { tab } },
+    { tool: "click", args: { tab, ref: "blocked" } },
+    { tool: "click", args: { tab, ref: "not-run" } },
+  ] });
+  expect(result).toMatchObject({ steps: [{ value: fullView }, { failure: { code: "blocked", effect: "none" } }], notRun: 1 });
+  await expect(call(a.pid, "click", { tab, ref: "blocked", inspectionOnly: false })).rejects.toMatchObject({ code: "blocked" });
+  expect(s.effects.length).toBe(before);
+});
+
+test("an admitted site action cannot use an earlier permission after the user restricts the task", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://inspect-admission.example/");
+  const page = pageOf(tab);
+  await watched(a.pid, "run", {}, () => runAs(a.pid, async () => {
+    const permit = await admitSiteAction(tab, { name: "remove_record", revision: "catalog-one", input: {} });
+    await press(page, "inspect_on");
+    expect(() => permit()).toThrow(HarnessError);
+  }));
+});
+
+test("a video lease refuses restoration after user takeover and cannot inspect another task's tab", async () => {
+  const [a, b] = [agent(), agent()];
+  const tab = await open(a.pid, "https://video-lease.example/");
+  const other = await open(b.pid, "https://other-video.example/");
+  await watched(a.pid, "video", { tab, do: "frames" }, () => runAs(a.pid, async () => {
+    await expect(admitPageObservation(other, true)).rejects.toMatchObject({ code: "blocked" });
+    const lease = await admitPageObservation(tab, true);
+    try {
+      lease.check();
+      await press(pageOf(tab), "drive");
+      expect(() => lease.check()).toThrow(HarnessError);
+      await press(pageOf(tab), "giveback");
+      expect(() => lease.check()).toThrow(HarnessError);
+    } finally { lease.release(); }
+  }));
+});
+
+test("native completion reads can settle during a user hold but cannot authorize another action", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://native-completion.example/");
+  const page = pageOf(tab);
+  const permit = await native(a.pid, { tab });
+  await press(page, "pause");
+  try {
+    expect(await observedCall(a.pid, "input_state", { tab, focus: false, after: 0, ms: 0 }, async () => ({ marks: 1 }))).toEqual({ marks: 1 });
+    await watched(a.pid, "action_finish", { tab, permit: permit.permit }, () => runAs(a.pid, () => finishNativeAction(tab, permit.permit, false)));
+    let ran = false;
+    const held = observedCall(a.pid, "input_state", { tab, focus: false, after: 1, ms: 0 }, async () => { ran = true; return { marks: 1 }; });
+    await settled();
+    expect(ran).toBe(false);
+    await press(page, "resume");
+    await held;
+    await call(a.pid, "click", { tab, ref: "after-resume" });
+    expect(s.effects.at(-1)).toEqual({ tab, ref: "after-resume" });
+  } finally { await press(page, "resume"); }
 });
 
 async function recentPage(tab: number): Promise<Overview["recentTabs"][number]> {

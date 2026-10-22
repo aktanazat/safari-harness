@@ -73,6 +73,7 @@ type Agent = {
   revision: number;
   views: Map<number, View>;
   pictures: boolean;
+  inspectionOnly: boolean;
   takeovers: Set<Promise<number | undefined>>;
   owner?: number;
   process?: string;
@@ -85,19 +86,20 @@ type Agent = {
   stopped?: number;
   ended?: number;
   waiting: Set<() => void>;
+  actions: Set<AbortController>;
   unwatch?: () => void;
 };
 
 function fresh(owner?: number): Agent {
   const now = Date.now();
-  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set() };
+  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, inspectionOnly: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set(), actions: new Set() };
 }
 
 const agents = new Map<number, Agent>();
 const nobody = fresh();
 let history = new MissionHistory();
 let historyError: string | undefined;
-const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean }>();
+const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean; trustedInspection: boolean }>();
 const spaceAgents = new Map<string, string>();
 
 export function tracksOwner(owner: number | undefined): boolean {
@@ -126,6 +128,7 @@ function remember(agent: Agent): void {
       ...(agent.ended === undefined ? {} : { ended: agent.ended }),
       spaces: [...spaceAgents].filter(([, id]) => id === agent.id).map(([id]) => id),
       pictures: agent.pictures,
+      ...(agent.inspectionOnly ? { inspectionOnly: true } : {}),
       calls: agent.calls.map((c) => ({
         t: c.t, tool: c.tool, tab: c.tab, ms: c.ms, code: c.code, evidence: c.evidence, picture: c.picture,
         outcome: c.pendingNative ? agent.ended === undefined ? "running" : "interrupted" : c.ms === undefined ? "running" : c.error ? "failed" : "done",
@@ -162,12 +165,15 @@ onRaised(() => {
 function track(owner: number): Agent {
   prune(Date.now());
   const agent = fresh(owner);
+  const previous = history.list().find((record) => record.owner === owner);
+  agent.inspectionOnly = previous?.interrupted === true && previous.inspectionOnly === true;
   if (!agents.has(owner)) {
     for (const id of spaceAgents.keys()) if (spaceById(id)?.owner === owner) spaceAgents.set(id, agent.id);
   }
   agents.set(owner, agent);
   agent.unwatch = watchOwner(owner, () => {
     agent.ended = Date.now();
+    for (const action of agent.actions) action.abort();
     release(agent);
     remember(agent);
     agent.unwatch = undefined;
@@ -212,6 +218,10 @@ function statusOf(a: Agent): Status {
 
 // ---------- the gate ----------
 
+function completesNative(agent: Agent, tool: string, args: Record<string, unknown>): boolean {
+  return tool === "action_finish" || tool === "input_state" && typeof args.tab === "number" && !!agent.views.get(followTab(args.tab))?.native?.size;
+}
+
 // Runs one call of owner's through the user's hold on it, and records it.
 export async function watched<T>(owner: number | undefined, tool: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
   const parent = scope.getStore();
@@ -225,11 +235,11 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   agent.last = call.t;
   const began = performance.now();
   let ran = false;
-  const context = { agent, call, delegated: false, nested: false };
+  const context = { agent, call, delegated: false, nested: false, trustedInspection: parent?.trustedInspection === true || tool === "video" && (args.do === undefined || args.do === "inspect") };
   remember(agent);
   try {
     return await scope.run(context, async () => {
-      if (owner !== undefined && tool !== "action_finish") await admit(agent, call);
+      if (owner !== undefined && !completesNative(agent, tool, args)) await admit(agent, call);
       ran = true;
       const value = await execute(agent, tool, args, () => run(), false, () => context.delegated);
       Object.assign(call, outcomeOf(tool, value, withheld));
@@ -262,12 +272,53 @@ export async function missionCall<T>(tool: string, args: Record<string, unknown>
     return watched(currentOwner(), tool, args, () => missionCall(tool, args, run));
   }
   context.delegated = true;
-  if (context.agent.owner !== undefined && tool !== "action_finish") await admit(context.agent, context.call);
+  if (context.agent.owner !== undefined && !completesNative(context.agent, tool, args)) await admit(context.agent, context.call);
   const needsTab = affectsPage(tool, args) || wholeView(tool, args);
   const tab = needsTab && args.tab !== undefined && args.tab !== null ? await resolveTab(args.tab) : undefined;
   const pinned = tab === undefined ? args : { ...args, tab };
-  if (context.agent.owner !== undefined && tool !== "action_finish") await admit(context.agent, context.call);
+  if (context.agent.owner !== undefined && !completesNative(context.agent, tool, pinned)) await admit(context.agent, context.call);
   return execute(context.agent, tool, pinned, () => run(pinned), true, () => context.nested);
+}
+
+export async function withTaskCancellation<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const context = scope.getStore();
+  if (!context) throw new HarnessError("unavailable", "site actions need an active harness request", { effect: "none" });
+  const controller = new AbortController();
+  context.agent.actions.add(controller);
+  try { return await run(controller.signal); }
+  finally { context.agent.actions.delete(controller); }
+}
+export async function admitPageObservation(tab: number, acting: boolean): Promise<{ signal: AbortSignal; check(): void; release(): void }> {
+  const context = scope.getStore();
+  if (!context) throw new HarnessError("unavailable", "video observation needs an active harness request", { effect: "none" });
+  await admit(context.agent, context.call);
+  const revision = context.agent.revision;
+  const controller = new AbortController();
+  const check = () => {
+    if (context.agent.stopped !== undefined || context.agent.ended !== undefined) throw new HarnessError("stopped", STOPPED);
+    if (context.agent.hold !== undefined) throw new HarnessError("waiting_for_human", PAUSED);
+    if (context.agent.revision !== revision) throw new HarnessError("stale_view", "the task changed during video observation; leave playback as it is");
+    if (!tabsOwnedBy(context.agent.owner).includes(tab)) throw new HarnessError("blocked", "video observation needs a tab opened by this task");
+    checkAction(context.agent, "video", { tab, do: acting ? "frames" : "inspect" });
+    controller.signal.throwIfAborted();
+  };
+  check();
+  context.agent.actions.add(controller);
+  return { signal: controller.signal, check, release: () => { context.agent.actions.delete(controller); } };
+}
+
+
+export async function admitSiteAction(tab: number, args: Record<string, unknown>): Promise<() => void> {
+  const context = scope.getStore();
+  if (!context) throw new HarnessError("unavailable", "site actions need an active harness request", { effect: "none" });
+  await admit(context.agent, context.call);
+  const check = () => {
+    if (context.agent.stopped !== undefined || context.agent.ended !== undefined) throw new HarnessError("stopped", STOPPED);
+    if (context.agent.hold !== undefined) throw new HarnessError("waiting_for_human", PAUSED);
+    checkAction(context.agent, "site_actions", { ...args, tab, do: "call" });
+  };
+  check();
+  return check;
 }
 
 export async function admitNativeAction(args: Record<string, unknown>): Promise<{ ok: true; tab: number; permit: string }> {
@@ -355,8 +406,23 @@ async function pictureAfter(agent: Agent, call: Call, tab: number, uncertain = f
 }
 
 const OBSERVATIONS: Record<string, true> = { snapshot: true, extract: true, shot: true };
-const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, passwords: true };
-const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true, noWaitAfter: true };
+const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, passwords: true, site_actions: true, react: true };
+const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true, noWaitAfter: true, ifChanged: true };
+const INSPECTION_READS = new Set("tabs info snapshot extract shot report data wait run element painted lookalikes net console browsing_history status doctor action_finish input_state audit".split(" "));
+
+function inspectionAllowed(tool: string, args: Record<string, unknown>): boolean {
+  if (INSPECTION_READS.has(tool)) return true;
+  if (tool === "eval") return scope.getStore()?.trustedInspection === true && args.page !== true;
+  if (tool === "select") return args.option === undefined;
+  if (tool === "dialog") return args.do === undefined || args.do === "read";
+  if (tool === "react") return args.do === undefined || args.do === "status" || args.do === "inspect";
+  if (tool === "video") return args.do === undefined || args.do === "inspect";
+  if (tool === "pdf") return args.do === "read";
+  if (tool === "recordings") return args.do === undefined || args.do === "list" || args.do === "show";
+  if (tool === "memory") return args.do === undefined || args.do === "status" || args.do === "search" || args.do === "show";
+  return false;
+}
+
 
 function syncViews(agent: Agent): void {
   for (const [old, view] of agent.views) {
@@ -406,12 +472,15 @@ function observed(tool: string, args: Record<string, unknown>, value: unknown): 
   if (typeof value !== "object") return tool === "extract" && typeof value === "string";
   if ("ok" in value && value.ok === false || "isError" in value && value.isError === true || "error" in value) return false;
   if ("truncated" in value && value.truncated === true || "cut" in value && !!value.cut) return false;
+  if ("unchanged" in value && value.unchanged === true) return false;
+  if (tool === "snapshot" && "update" in value && value.update && typeof value.update === "object" && "kind" in value.update && value.update.kind !== "full") return false;
   if (tool === "shot") return captureSummaries(value).length > 0;
   if (tool === "snapshot") return "snapshot" in value && typeof value.snapshot === "string";
   return tool === "extract" && "text" in value && typeof value.text === "string";
 }
 
-async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
+function checkAction(agent: Agent, tool: string, args: Record<string, unknown>) {
+  if (agent.inspectionOnly && !inspectionAllowed(tool, args)) throw new HarnessError("blocked", "this task may only inspect its current pages; the user must allow actions from its task controls", { next: "continue reading current pages, or wait for the user to allow actions" });
   syncViews(agent);
   const rawTab = tabOf(args.tab).tab;
   const tab = rawTab === undefined ? undefined : followTab(rawTab);
@@ -426,6 +495,11 @@ async function execute<T>(agent: Agent, tool: string, args: Record<string, unkno
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
     throw new HarnessError("effect_unknown", "that action may already have happened; snapshot or read this tab before repeating it", { effect: "none", retryable: true, next: "snapshot or extract this tab and check whether the action already happened" });
   }
+  return { tab, effectful, key };
+}
+
+async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
+  const { tab, effectful, key } = checkAction(agent, tool, args);
   const revision = agent.revision;
   try {
     const value = await run();
@@ -607,7 +681,7 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 
 // ---------- what the pages read ----------
 
-type Summary = { id: string; owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; controlSecret?: string };
+type Summary = { id: string; owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; inspectionOnly?: boolean; controlSecret?: string };
 // /agents.json, and what safari agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
 type WindowSummary = ManagedWindow & { closeSecret: string };
@@ -625,6 +699,7 @@ function summaryOf(a: Agent): Summary {
     active: a.last,
     raised: a.raised,
     pictures: a.pictures,
+    inspectionOnly: a.inspectionOnly,
     controls: a.owner !== undefined && status !== "stopped" && status !== "ended",
     needsObservation: [...a.views].filter(([, view]) => view.stale || view.all || view.native?.size || view.retries.size > 0).map(([tab]) => tab),
     ...(a.owner === undefined || status === "stopped" || status === "ended" ? {} : { controlSecret: secretOf(`agent:${a.id}`) }),
@@ -762,7 +837,7 @@ const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-
 
 // ---------- the controls ----------
 
-const ACTIONS = ["pause", "resume", "stop", "drive", "giveback", "pictures_on", "pictures_off"] as const;
+const ACTIONS = ["pause", "resume", "stop", "drive", "giveback", "pictures_on", "pictures_off", "inspect_on", "inspect_off"] as const;
 type Action = (typeof ACTIONS)[number];
 const isAction = (a: unknown): a is Action => typeof a === "string" && (ACTIONS as readonly string[]).includes(a);
 
@@ -848,6 +923,13 @@ async function control(owner: number | undefined, action: unknown, from: string,
   if (!agent || agent.ended !== undefined) return problem(409, "this agent has ended");
   if (agent.stopped !== undefined) return problem(409, "this agent is stopped");
   switch (action) {
+    case "inspect_on":
+    case "inspect_off":
+      agent.inspectionOnly = action === "inspect_on";
+      agent.revision++;
+      if (agent.inspectionOnly) for (const action of agent.actions) action.abort();
+      note(agent.inspectionOnly ? "task inspect-only" : "task actions allowed", { owner, from });
+      break;
     case "pictures_on":
     case "pictures_off":
       agent.pictures = action === "pictures_on";
@@ -882,12 +964,14 @@ async function control(owner: number | undefined, action: unknown, from: string,
     }
     case "stop":
       agent.stopped = Date.now();
+      for (const action of agent.actions) action.abort();
       release(agent);
       closeTabsOf(owner);
       note("agent stopped", { owner, from });
       break;
   }
   remember(agent);
+  if (action === "inspect_on" && historyError) return problem(503, "Inspect-only is active, but its setting could not be saved.");
   return Response.json({ ok: true, status: statusOf(agent) });
 }
 
@@ -1017,7 +1101,7 @@ const SCRIPT = String.raw`
     if (opened) { opened.opener = null; event.preventDefault(); }
   });
   const byId = (id) => document.getElementById(id);
-  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures" };
+  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures", inspect_on: "Inspect only", inspect_off: "Allow actions" };
   const SAY = { working: "Working", "waiting on the user": "Waiting on you", paused: "Paused", "user is driving": "You are driving", stopped: "Stopped", ended: "Ended" };
   const TONE = { working: "go", "waiting on the user": "ask", paused: "hold", "user is driving": "hold", stopped: "end", ended: "end" };
   const DONE = {
@@ -1028,6 +1112,8 @@ const SCRIPT = String.raw`
     stop: () => "Stopped.",
     pictures_on: () => "Saving action pictures.",
     pictures_off: () => "Not saving new pictures.",
+    inspect_on: () => "Inspect-only mode.",
+    inspect_off: () => "Actions allowed.",
   };
   const ARMING = "Press again to stop.";
   let timer = 0;
@@ -1076,9 +1162,10 @@ const SCRIPT = String.raw`
   function actionsOf(a) {
     if (!a.controls) return [];
     const pictures = a.pictures ? "pictures_off" : "pictures_on";
-    if (a.status === "paused") return ["resume", "drive", "stop", pictures];
-    if (a.status === "user is driving") return ["giveback", "stop", pictures];
-    return ["pause", "drive", "stop", pictures];
+    const inspection = a.inspectionOnly ? "inspect_off" : "inspect_on";
+    if (a.status === "paused") return ["resume", "drive", "stop", pictures, inspection];
+    if (a.status === "user is driving") return ["giveback", "stop", pictures, inspection];
+    return ["pause", "drive", "stop", pictures, inspection];
   }
 
   function buttons(a, target, prefix) {
@@ -1250,7 +1337,7 @@ const SCRIPT = String.raw`
     status.className = "status " + (TONE[a.status] || "go");
     setText(status, SAY[a.status] || a.status);
     const over = a.status === "stopped" || a.status === "ended";
-    setText(byId("who"), a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : ""));
+    setText(byId("who"), (a.inspectionOnly ? "Inspect only · " : "") + (a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : "")));
     draw(byId("controls"), a.id + "|" + actionsOf(a).join(), () => buttons(a, { id: data.id, secret: a.controlSecret }, ""));
     setText(byId("picture-note"), a.controls ? "Pictures save locally and may briefly select the tab." : "");
     draw(byId("tabs"), JSON.stringify(s.tabs), () => (!s.tabs ? [make("li", "empty", "Safari is not connected.")] : s.tabs.length ? s.tabs.map(tabRow) : [make("li", "empty", "None besides this page.")]));
@@ -1277,7 +1364,7 @@ const SCRIPT = String.raw`
       heading.id = "agent-" + key;
       return [heading, make("span", "status " + (TONE[a.status] || "go"), SAY[a.status] || a.status)];
     });
-    setText(row.facts, (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + (raised(a) ? raised(a) + " · " : "") + "last seen " + span(now - a.active) + " ago");
+    setText(row.facts, (a.inspectionOnly ? "Inspect only · " : "") + (a.tabs === null ? "" : a.tabs + (a.tabs === 1 ? " tab · " : " tabs · ")) + (raised(a) ? raised(a) + " · " : "") + "last seen " + span(now - a.active) + " ago");
     row.tasks.hidden = !a.tasks.length;
     draw(row.tasks, JSON.stringify(a.tasks), () => a.tasks.flatMap((t, i) => {
       const link = make("a", "", t.name);

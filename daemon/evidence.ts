@@ -19,6 +19,7 @@ export type CaptureSource = {
 };
 export type Capture = {
   data: string;
+  document?: string;
   screens?: number;
   cut?: boolean;
   source: CaptureSource;
@@ -27,6 +28,10 @@ export type Capture = {
 type TileReceipt = { path: string; sha256: string; region: Region };
 export type Evidence = CaptureSource & { path: string; sha256: string; tiles?: TileReceipt[] };
 export type CaptureResult = { path: string; screens?: number; cut?: string; evidence: Evidence };
+export type CaptureSettings = { ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean; tiles?: boolean; tileHeight?: number };
+export type CaptureScope = { tab: number; caller: number | string; settings?: CaptureSettings };
+export type UnchangedCapture = { unchanged: true; previous: CaptureResult };
+export type ConditionalCaptureResult = CaptureResult | UnchangedCapture;
 type Manifest = {
   version: 1;
   output: string;
@@ -46,6 +51,15 @@ export type VerifiedEvidence = {
   cut?: boolean;
 };
 type Png = { width: number; height: number; depth: number; color: number; channels: number; stride: number; rows: Buffer; palette?: Buffer; transparency?: Buffer };
+type PreparedCapture = {
+  source: CaptureSource;
+  bytes: Buffer;
+  image: Png;
+  screens?: number;
+  cut?: boolean;
+  tiles?: { bytes: Buffer; sha256: string; region: Region }[];
+};
+type CaptureBaseline = { tab: number; caller: number | string; variant: string; image: Png; result: CaptureResult; bytes: number };
 
 const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_PIXELS = 64 * 1024 * 1024;
@@ -228,8 +242,7 @@ function rgba(image: Png, x: number, y: number, out: Uint16Array): void {
     out[3] = image.color === 6 ? sample(image, x, y, 3) * scale : trns && first === trns.readUInt16BE(0) && green === trns.readUInt16BE(2) && blue === trns.readUInt16BE(4) ? 0 : 65535;
   }
 }
-function tileMatches(image: Png, tile: Png, region: Region): void {
-  if (tile.width !== region.width || tile.height !== region.height) throw new Error("tile PNG dimensions do not match its region");
+function pixelsMatch(image: Png, tile: Png, region: Region): boolean {
   const samePalette = image.palette === undefined ? tile.palette === undefined : tile.palette !== undefined && image.palette.equals(tile.palette);
   const sameTransparency = image.transparency === undefined ? tile.transparency === undefined : tile.transparency !== undefined && image.transparency.equals(tile.transparency);
   const sameFormat = image.color === tile.color && image.depth === tile.depth && image.depth >= 8 && samePalette && sameTransparency;
@@ -238,15 +251,20 @@ function tileMatches(image: Png, tile: Png, region: Region): void {
     for (let y = 0; y < tile.height; y++) {
       const start = (region.y + y) * image.stride + 1 + region.x * bpp;
       const row = y * tile.stride + 1;
-      if (!image.rows.subarray(start, start + tile.width * bpp).equals(tile.rows.subarray(row, row + tile.width * bpp))) throw new Error("tile pixels do not match the original raster coordinates");
+      if (!image.rows.subarray(start, start + tile.width * bpp).equals(tile.rows.subarray(row, row + tile.width * bpp))) return false;
     }
-    return;
+    return true;
   }
   const original = new Uint16Array(4), piece = new Uint16Array(4);
   for (let y = 0; y < tile.height; y++) for (let x = 0; x < tile.width; x++) {
     rgba(image, region.x + x, region.y + y, original); rgba(tile, x, y, piece);
-    if (original[0] !== piece[0] || original[1] !== piece[1] || original[2] !== piece[2] || original[3] !== piece[3]) throw new Error("tile pixels do not match the original raster coordinates");
+    if (original[0] !== piece[0] || original[1] !== piece[1] || original[2] !== piece[2] || original[3] !== piece[3]) return false;
   }
+  return true;
+}
+function tileMatches(image: Png, tile: Png, region: Region): void {
+  if (tile.width !== region.width || tile.height !== region.height) throw new Error("tile PNG dimensions do not match its region");
+  if (!pixelsMatch(image, tile, region)) throw new Error("tile pixels do not match the original raster coordinates");
 }
 function tileCoverage(regions: Region[], width: number, height: number): void {
   if (!regions.length || regions.length > 256) throw new Error("tiles must contain between 1 and 256 image pieces");
@@ -340,8 +358,7 @@ async function latestReceipt(output: string): Promise<string | undefined> {
   } catch (error) { if (missing(error)) return undefined; throw error; }
 }
 
-export async function saveCapture(capture: Capture, out?: string): Promise<CaptureResult> {
-  if (out !== undefined) absolute(out, "out");
+function prepareCapture(capture: Capture): PreparedCapture {
   const raw = object(capture, "capture");
   if (raw.source === undefined) throw new Error("capture has no protected source metadata; reload the Safari Harness extension before taking another screenshot");
   let source: CaptureSource;
@@ -363,6 +380,11 @@ export async function saveCapture(capture: Capture, out?: string): Promise<Captu
       tiles.push({ bytes: tileBytes, sha256: digest(tileBytes), region: regions[i] });
     }
   }
+  return { source, bytes, image, ...(screens === undefined ? {} : { screens }), ...(cut === undefined ? {} : { cut }), ...(raw.tiles === undefined ? {} : { tiles }) };
+}
+
+async function savePreparedCapture(capture: PreparedCapture, out?: string): Promise<CaptureResult> {
+  const { source, bytes, screens, cut, tiles } = capture;
   const asked = out === undefined ? join(await mkdtemp(join(tmpdir(), "safari-shot-")), "shot.png") : absolute(out, "out");
   await mkdir(dirname(asked), { recursive: true, mode: 0o700 });
   const output = join(await realpath(dirname(asked)), basename(asked));
@@ -376,7 +398,7 @@ export async function saveCapture(capture: Capture, out?: string): Promise<Captu
     const sha256 = digest(bytes), path = join(bundle, `image-${sha256}.png`);
     try {
       const receipts: TileReceipt[] = [];
-      for (let i = 0; i < tiles.length; i++) {
+      if (tiles) for (let i = 0; i < tiles.length; i++) {
         const tile = tiles[i], tilePath = join(bundle, `tile-${i + 1}-${tile.sha256}.png`);
         generated.push(tilePath);
         await writePrivate(tilePath, tile.bytes, true);
@@ -387,7 +409,7 @@ export async function saveCapture(capture: Capture, out?: string): Promise<Captu
       const manifest: Manifest = {
         version: 1, output, image: { path, sha256 }, source,
         ...(screens === undefined ? {} : { screens }), ...(cut === undefined ? {} : { cut }),
-        ...(raw.tiles === undefined ? {} : { tiles: receipts }),
+        ...(tiles === undefined ? {} : { tiles: receipts }),
       };
       const document = `${JSON.stringify(manifest, null, 2)}\n`;
       const receipt = join(bundle, `capture-${digest(document)}.json`);
@@ -405,6 +427,160 @@ export async function saveCapture(capture: Capture, out?: string): Promise<Captu
       throw error;
     }
   });
+}
+
+export async function saveCapture(capture: Capture, out?: string): Promise<CaptureResult> {
+  if (out !== undefined) absolute(out, "out");
+  return savePreparedCapture(prepareCapture(capture), out);
+}
+
+function boundedText(value: unknown, name: string, maximum: number): string {
+  const result = text(value, name);
+  if (!result.length || result.length > maximum) throw new Error(`${name} must contain between 1 and ${maximum} characters`);
+  return result;
+}
+function captureSettings(value: CaptureSettings | undefined): object {
+  const settings: Record<string, unknown> = value === undefined ? {} : object(value, "capture settings");
+  const boolean = (name: string) => {
+    const flag = settings[name];
+    if (flag !== undefined && typeof flag !== "boolean") throw new Error(`capture settings.${name} must be a boolean`);
+    return flag === true;
+  };
+  const tiles = boolean("tiles");
+  const tileHeight = tiles ? integer(settings.tileHeight ?? 1400, "capture settings.tileHeight", 256) : undefined;
+  if (tileHeight !== undefined && tileHeight > 8192) throw new Error("capture settings.tileHeight must be at most 8192");
+  return {
+    ref: settings.ref === undefined ? null : boundedText(settings.ref, "capture settings.ref", 2048),
+    annotate: boolean("annotate"), fullPage: boolean("fullPage"), live: boolean("live"), tiles,
+    tileHeight: tileHeight ?? null,
+  };
+}
+function baselineKey(tab: number, caller: number | string, variant: string): string {
+  return `${digest(JSON.stringify([tab, caller]))}:${variant}`;
+}
+function retainedBytes(bytes: Buffer): Buffer {
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) return bytes;
+  const retained = Buffer.allocUnsafeSlow(bytes.byteLength);
+  bytes.copy(retained);
+  return retained;
+}
+
+export class ConditionalCaptures {
+  private readonly entries = new Map<string, CaptureBaseline>();
+  private readonly maxEntries: number;
+  private readonly maxBytes: number;
+  private bytes = 0;
+  private generation = 0;
+  private pending: Promise<void> = Promise.resolve();
+
+  constructor(limits: { maxEntries?: number; maxBytes?: number } = {}) {
+    this.maxEntries = integer(limits.maxEntries ?? 50, "conditional capture entry limit", 1);
+    this.maxBytes = integer(limits.maxBytes ?? 64 * 1024 * 1024, "conditional capture byte limit", 1);
+  }
+
+  save(capture: Capture, scope: CaptureScope, out?: string, ifChanged?: false): Promise<CaptureResult>;
+  save(capture: Capture, scope: CaptureScope, out: string | undefined, ifChanged: boolean): Promise<ConditionalCaptureResult>;
+  save(capture: Capture, scope: CaptureScope, out?: string, ifChanged = false): Promise<ConditionalCaptureResult> {
+    const generation = this.generation;
+    const result = this.pending.then(() => this.saveNext(capture, scope, out, ifChanged, generation));
+    this.pending = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async saveNext(capture: Capture, scope: CaptureScope, out: string | undefined, ifChanged: boolean, generation: number): Promise<ConditionalCaptureResult> {
+    if (typeof ifChanged !== "boolean") throw new Error("ifChanged must be a boolean");
+    if (out !== undefined) absolute(out, "out");
+    const tab = integer(scope.tab, "capture tab");
+    const caller = typeof scope.caller === "number" ? integer(scope.caller, "capture caller", 1) : boundedText(scope.caller, "capture caller", 256);
+    const settings = captureSettings(scope.settings);
+    const prepared = prepareCapture(capture);
+    if (capture.document === undefined && !ifChanged) {
+      const result = await savePreparedCapture(prepared, out);
+      if (generation === this.generation) {
+        for (const [key, entry] of this.entries) if (entry.tab === tab && entry.caller === caller) this.drop(key);
+      }
+      return result;
+    }
+    const document = boundedText(capture.document, "capture document identity", 256);
+    const source = { ...prepared.source, capturedAt: undefined };
+    const variant = digest(JSON.stringify({
+      document, settings, source, out: out === undefined ? null : resolve(out),
+      screens: prepared.screens ?? null, cut: prepared.cut ?? false,
+      tiles: prepared.tiles?.map((tile) => tile.region) ?? null,
+    }));
+    const key = baselineKey(tab, caller, variant);
+    const previous = generation === this.generation ? this.entries.get(key) : undefined;
+    if (ifChanged && previous && previous.image.width === prepared.image.width && previous.image.height === prepared.image.height &&
+        pixelsMatch(previous.image, prepared.image, { x: 0, y: 0, width: prepared.image.width, height: prepared.image.height })) {
+      try {
+        await verifyEvidence(previous.result.evidence.path);
+        if (generation === this.generation && this.entries.get(key) === previous) {
+          this.entries.delete(key);
+          this.entries.set(key, previous);
+          return { unchanged: true, previous: structuredClone(previous.result) };
+        }
+      } catch {
+        if (this.entries.get(key) === previous) this.drop(key);
+      }
+    }
+    const result = await savePreparedCapture(prepared, out);
+    if (generation === this.generation) {
+      this.drop(key);
+      if (prepared.image.rows.byteLength > this.maxBytes) return result;
+      const image: Png = {
+        ...prepared.image,
+        rows: retainedBytes(prepared.image.rows),
+        palette: prepared.image.palette === undefined ? undefined : retainedBytes(prepared.image.palette),
+        transparency: prepared.image.transparency === undefined ? undefined : retainedBytes(prepared.image.transparency),
+      };
+      const stored = structuredClone(result);
+      const bytes = image.rows.byteLength + (image.palette?.byteLength ?? 0) + (image.transparency?.byteLength ?? 0) +
+        JSON.stringify(stored).length * 2 + JSON.stringify([tab, caller, variant]).length * 2 + key.length * 2;
+      if (bytes <= this.maxBytes) {
+        while (this.entries.size >= this.maxEntries || this.bytes + bytes > this.maxBytes) {
+          const oldest = this.entries.keys().next().value;
+          if (oldest === undefined) break;
+          this.drop(oldest);
+        }
+        this.entries.set(key, { tab, caller, variant, image, result: stored, bytes });
+        this.bytes += bytes;
+      }
+    }
+    return result;
+  }
+
+  private drop(key: string): void {
+    const entry = this.entries.get(key);
+    if (entry) this.bytes -= entry.bytes;
+    this.entries.delete(key);
+  }
+
+  forgetTab(tab: number): void {
+    this.generation++;
+    for (const [key, entry] of this.entries) if (entry.tab === tab) this.drop(key);
+  }
+
+  forgetCaller(caller: number | string): void {
+    this.generation++;
+    for (const [key, entry] of this.entries) if (entry.caller === caller) this.drop(key);
+  }
+
+  renumberTab(from: number, to: number): void {
+    if (from === to) return;
+    this.forgetTab(to);
+    const moved = [...this.entries].filter(([, entry]) => entry.tab === from);
+    for (const [key, entry] of moved) {
+      this.entries.delete(key);
+      entry.tab = to;
+      this.entries.set(baselineKey(to, entry.caller, entry.variant), entry);
+    }
+  }
+
+  clear(): void {
+    this.generation++;
+    this.entries.clear();
+    this.bytes = 0;
+  }
 }
 
 export async function verifyEvidence(receiptPath: string): Promise<VerifiedEvidence> {

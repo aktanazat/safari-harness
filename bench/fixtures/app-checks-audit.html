@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>App accessibility checks</title>
+<style>body { color: #111; background: white; font: 18px system-ui; } .gradient { background: linear-gradient(90deg, white, #ddd); color: #333; padding: 16px; }</style>
+<script>
+  window.appAxeReads = 0;
+  window.appAxeGetter = () => { window.appAxeReads++; return { version: '4.10.3', run() { throw new Error('site axe must not run'); } }; };
+  Object.defineProperty(window, 'axe', { configurable: false, get: window.appAxeGetter });
+</script>
+</head>
+<body><main><h1>Account settings</h1>
+<input id="unlabelled" value="private-form-value-never-output">
+<button type="button" onclick="document.querySelector('#unlabelled').setAttribute('aria-label', 'Display name')">fix label</button>
+<p class="gradient">This text needs manual contrast review against its background image.</p>
+<iframe title="Sandboxed details" sandbox srcdoc="<!doctype html><html lang='en'><title>Private frame</title><input value='private-frame-value'></html>"></iframe>
+</main></body>
+</html>

@@ -15,5 +15,8 @@
     "helpers": "swiftc -O scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O scripts/input.swift -o scripts/input && swiftc -O scripts/pairing.swift -o scripts/pairing && swiftc -O scripts/spaces.swift -o scripts/spaces && swiftc -O scripts/bench.swift -o scripts/bench && swiftc -O scripts/attachments.swift -o scripts/attachments",
     "check": "bun scripts/check-live.ts",
     "check:research": "bun scripts/check-research.ts"
+  },
+  "dependencies": {
+    "ajv": "8.17.1"
   }
 }

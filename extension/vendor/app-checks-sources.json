@@ -1,0 +1,34 @@
+{
+  "axe": {
+    "version": "4.10.3",
+    "source": "https://unpkg.com/axe-core@4.10.3/axe.min.js",
+    "sourceCode": "https://unpkg.com/axe-core@4.10.3/axe.js",
+    "sha256": "880970c081707360e64f34cea25ff91892f5bc95675b0776925b9709dd8a68bb",
+    "license": "MPL-2.0",
+    "licenseFile": "axe-LICENSE",
+    "thirdPartyLicenses": "axe-LICENSE-3RD-PARTY.txt",
+    "changes": "none; inject only in the extension isolated world"
+  },
+  "reactHook": {
+    "version": "18.3.1",
+    "source": "https://github.com/facebook/react/blob/v18.3.1/packages/react-devtools-shared/src/hook.js",
+    "license": "MIT",
+    "licenseFile": "react-hook-LICENSE",
+    "changes": "Derived subset: renderer registration, committed root tracking and event API. Console, profiler and renderer backend code omitted. Adds inert creator, explicit disposal and retention bounds."
+  },
+  "fixtureReact": {
+    "version": "18.3.1",
+    "source": "https://unpkg.com/react@18.3.1/umd/react.development.js",
+    "sha256": "28348fef6cb0ed8b2ceeb22deaf824428fd13875d84c73d38f77dd216fc24e7f",
+    "file": "../../bench/fixtures/app-checks-vendor/react-18.3.1.development.js",
+    "license": "MIT"
+  },
+  "fixtureReactDOM": {
+    "version": "18.3.1",
+    "source": "https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js",
+    "sha256": "f9044a5e9c39db8bb1a204dff924e526ec0a621e695bb69de1035811be8709e4",
+    "file": "../../bench/fixtures/app-checks-vendor/react-dom-18.3.1.development.js",
+    "license": "MIT",
+    "licenseFile": "../../bench/fixtures/app-checks-vendor/react-LICENSE"
+  }
+}

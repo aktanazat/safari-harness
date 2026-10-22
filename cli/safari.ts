@@ -68,8 +68,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari keep <tab>                          leave a tab open for the user when your
                                              turn ends
   safari focus <tab>                         activate a tab
-  safari snapshot --tab N [--query text] [--root sel] [--diff]
-                                             page outline with [ref]s
+  safari snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
+                                             page outline with [ref]s; recoverable updates
   safari click <ref> --tab N                 click by snapshot ref
   safari clickat <x> <y> --tab N             click by coordinates
   safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
@@ -129,9 +129,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari cookies --tab N                     cookies for the page
   safari cookies clear --tab N|--url U       forget the site (cookies, storage);
                                              closes your tabs on it
-  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles]
+  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles] [--ifChanged]
                                              protected screenshot and source receipt;
-                                             --tiles adds readable overlapping pieces
+                                             unchanged pixels can return the prior receipt
   safari shots <url>... --widths 390,1440 --out folder [--full] [--tiles]
                                              capture each page and width with its receipt
 
@@ -163,6 +163,12 @@ const USAGE = `safari — drive Safari from the terminal
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
                                              (safari passwords logins --tab N: a first word is do)
+  safari real_input --do drag --ref R --target R --tab N
+                                             guarded native drag; no implicit scroll
+  safari real_input --do paste --text text [--html html] [--tsv text] --tab N
+                                             formatted paste; restores an unchanged clipboard
+  safari guide audit|react|site_actions|video
+                                             on-demand accessibility, app and video inspection
   safari run --steps '<json>' | --steps-file <path> | --steps -
                                              several tools in one call; steps from a
                                              file, or stdin for -, need no shell quoting
@@ -183,10 +189,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari host [list] | use <ssh-host|local> | status [host]
                                              drive another Mac's Safari through ssh
   safari mcp                                 run the MCP stdio server (thin client)
-  safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m] "<task>"
-  safari routine list | run <name> [--dry] | remove <name>
-                                             scheduled tasks run through omp; --on runs
-                                             a routine once, on that day
+  safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
+  safari routine list | run <name> [--dry] | pause|resume|remove <name>
+                                             new tasks run through omp; --session continues
+                                             saved Safari work; --on runs once on that day
   safari routine add <name> --at HH:MM|--every MIN --watch <url>
                       --selector CSS | --text REGEX | --eval JS | --replay <recording>
                                              a watch: no model; texts your phone when the
@@ -493,6 +499,7 @@ async function runAndReport(rec: SessionRecord, argv: string[]) {
   const done = await runSession(rec, { apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: Number(flag("steps", argv) ?? 30), onEvent: showEvent });
   if (done.status !== "done") console.error(`session ${done.id} ${done.status}; go on with: safari session resume ${done.id} "<prompt>"`);
   console.log(done.answer ?? "");
+  if (done.status !== "done") process.exit(1);
 }
 
 async function sessionCommand(argv: string[]) {
@@ -693,31 +700,37 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
-    const { parseSchedule, routineAdd, routineAddScript, routineAddWatch, routineList, routineRemove, routineRun } = await import("./launchd.ts");
+    const { parseSchedule, routineAdd, routineAddScript, routineAddWatch, routineList, routinePause, routineResume, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
       const schedule = parseSchedule(flag("at", r), flag("every", r), flag("on", r));
       const url = flag("watch", r);
       const script = flag("script", r);
+      const session = flag("session", r);
+      if (session !== undefined && (script !== undefined || url !== undefined)) fail("--session continues model work; do not combine it with --script or --watch");
       if (script !== undefined) {
         if (url !== undefined || pos.length > 1) fail("a script routine takes a name, a schedule, and --script: no task, no --watch");
         console.log(await routineAddScript(pos[0], resolve(script), schedule));
-      } else if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r)));
+      } else if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r), session));
       else if (pos.length > 1) fail("a watch runs no model, so it takes no task");
       else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, schedule));
     } else if (sub === "list") {
       print(await routineList());
     } else if (sub === "run") {
-      const { code, log, note } = await routineRun(pos[0], { dry: hasFlag("dry", r), scheduled: hasFlag("scheduled", r) });
+      const { code, log, note } = await routineRun(pos[0], { dry: hasFlag("dry", r), scheduled: hasFlag("scheduled", r), generation: flag("generation", r) });
       if (note !== undefined) console.log(note);
       console.log(log ? `exit ${code}; log: ${log}` : `exit ${code}`);
       // Under -q a failed run printed nothing at all (Tools.md, 10-16): its
       // one line on stderr has the exit, the note's first line, and the log.
       if (quiet && code !== 0) say(`error: exit ${code}${note ? `: ${note.split("\n")[0]}` : ""}${log ? `; log: ${log}` : ""}`);
       process.exit(code);
+    } else if (sub === "pause") {
+      console.log(await routinePause(pos[0]));
+    } else if (sub === "resume") {
+      console.log(await routineResume(pos[0]));
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
-    } else fail("usage: safari routine add|list|run|remove", 2);
+    } else fail("usage: safari routine add|list|run|pause|resume|remove", 2);
     return;
   }
 
@@ -1074,7 +1087,7 @@ async function main() {
 // Flags that take no value; the word after them is positional, unless it is
 // true or false: on 10-04 `eval --page true "const ..."` ran "true const
 // ..." and failed at its second word.
-const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, page: true, annotate: true, full: true, live: true, tiles: true, history: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true };
+const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, updates: true, ifChanged: true, includeValues: true, page: true, annotate: true, full: true, live: true, tiles: true, history: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true };
 
 function isFlagValue(i: number, argv: string[]): boolean {
   const prev = argv[i - 1];
