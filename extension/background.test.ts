@@ -137,6 +137,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const pages = new Map<string, Doc>();
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
+  const onActivated = new Hook<[{ tabId: number; windowId: number }]>();
   const onClicked = new Hook<[{ id: number; url: string; title: string }]>();
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
@@ -226,6 +227,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     alarms: { onAlarm: hook(), create: () => {}, clear: async () => true },
     tabs: {
       onUpdated,
+      onActivated,
       onRemoved,
       onCreated: hook(),
       onAttached: hook(),
@@ -247,7 +249,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       update: async (id: number, { url, active }: { url?: string; active?: boolean }) => {
         const tab = tabOf(id);
         if (url !== undefined) load(tab, pages.get(url) ?? new Doc(url));
-        if (active) actives.set(tab.window ?? 1, id);
+        if (active && actives.get(tab.window ?? 1) !== id) {
+          actives.set(tab.window ?? 1, id);
+          onActivated.fire({ tabId: id, windowId: tab.window ?? 1 });
+        }
         return row(tab);
       },
       remove: async (id: number) => {
@@ -449,6 +454,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     request,
     captureWith(next: () => string | Promise<string>) { picture = next; },
     active(window = 1) { return actives.get(window); },
+    tabListenerCounts() { return { updated: onUpdated.listeners.size, activated: onActivated.listeners.size }; },
     // He clicks the toolbar button with tab in front.
     toolbar(tab: Tab) {
       onClicked.fire({ id: tab.id, url: tab.doc.url, title: "Example" });
@@ -506,7 +512,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     // He brings tab's window to the front, tab showing in it.
     focus(tab: Tab) {
       const window = tab.window ?? 1;
-      actives.set(window, tab.id);
+      if (actives.get(window) !== tab.id) {
+        actives.set(window, tab.id);
+        onActivated.fire({ tabId: tab.id, windowId: window });
+      }
       focused = window;
       browser.windows.onFocusChanged.fire(window);
     },
@@ -1624,7 +1633,7 @@ type ShotResult = {
 
 function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 1 }, height = 10) {
   let y = 0, savedY = 0;
-  const page = { protected: false, finished: 0, refusePrepare: false, changeDuringCapture: false, get y() { return y; } };
+  const page = { protected: false, annotated: false, finished: 0, refusePrepare: false, changeDuringCapture: false, get y() { return y; } };
   tab.doc.title = "Private page";
   const state = () => ({
     ok: true,
@@ -1653,6 +1662,7 @@ function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 
     }
     if (op === "locate") return { x: 1, y: 1, width: 4, height: 3, innerWidth: viewport.width, innerHeight: viewport.height };
     if (op === "settle") { page.finished += 2; return { finished: 2 }; }
+    if (op === "annotate") page.annotated = msg.args?.[0] === true;
     return { ok: true };
   };
   return page;
@@ -1723,6 +1733,55 @@ test("a page that changes while Safari captures returns no image bytes", async (
   expect(answer.value).toBeUndefined();
   expect(answer.error).toStartWith("screenshot privacy: ");
   expect(page.protected).toBe(false);
+});
+
+test("a screenshot refuses another tab's pixels when selection switches away and back during capture", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const other = b.open("https://example.com/other");
+  const page = shotPage(tab);
+  b.focus(tab);
+  const listeners = b.tabListenerCounts();
+  b.captureWith(() => {
+    expect(b.active()).toBe(tab.id);
+    expect(page.protected).toBe(true);
+    expect(page.annotated).toBe(true);
+    b.focus(other);
+    const pixels = `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 249))}`;
+    b.focus(tab);
+    return pixels;
+  });
+  const answer = await b.request("shot", [tab.id, { live: true, annotate: true }]);
+  expect(answer.value).toBeUndefined();
+  expect(answer.error).toBe("screenshot privacy: the protected tab changed during capture");
+  expect(b.active()).toBe(tab.id);
+  expect(page.protected).toBe(false);
+  expect(page.annotated).toBe(false);
+  expect(b.tabListenerCounts()).toEqual(listeners);
+});
+
+test("a screenshot still returns protected pixels when another window switches tabs during capture", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const other = b.open("https://example.com/other", true, 2);
+  const next = b.open("https://example.com/next", true, 2);
+  const page = shotPage(tab);
+  b.focus(other);
+  b.focus(tab);
+  const listeners = b.tabListenerCounts();
+  b.captureWith(() => {
+    b.focus(next);
+    return `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 9))}`;
+  });
+  const answer = await b.request("shot", [tab.id, { live: true }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  expect(result.source).toMatchObject({ url: tab.doc.url, privacy: { masked: 1 } });
+  expect(Array.from(readRaster(result.data).pixels)).toEqual(Array.from(rasterImage(8, 6, (x, y) => x >= 2 && x < 4 && y >= 1 && y < 3 ? 0 : 9).pixels));
+  expect(b.active()).toBe(tab.id);
+  expect(b.active(2)).toBe(next.id);
+  expect(page.protected).toBe(false);
+  expect(b.tabListenerCounts()).toEqual(listeners);
 });
 
 test("overlapping tiles preserve the original image and identify every retained raster row", async () => {

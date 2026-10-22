@@ -1128,7 +1128,9 @@ async function protectedCapture(tabId, mark, phase, secrets, frameId = 0) {
 async function privateGrab(tabId, windowId, mark, secrets) {
   let changed = false;
   const onUpdated = (id, info) => { if (id === tabId && (info.status === "loading" || info.url !== undefined)) changed = true; };
+  const onActivated = (info) => { if (info.windowId === windowId && info.tabId !== tabId) changed = true; };
   api.tabs.onUpdated.addListener(onUpdated);
+  api.tabs.onActivated.addListener(onActivated);
   let bitmap;
   try {
     const state = await protectedCapture(tabId, mark, "prepare", secrets);
@@ -1161,6 +1163,7 @@ async function privateGrab(tabId, windowId, mark, secrets) {
   } finally {
     bitmap?.close();
     api.tabs.onUpdated.removeListener(onUpdated);
+    api.tabs.onActivated.removeListener(onActivated);
   }
 }
 

@@ -78,6 +78,9 @@ try {
   const tab = await open(`/plain?token=FictionalSignedTokenValue&review=${encodedCode}`);
   await invoke("activate", { tab });
   await invoke("wait", { tab, selector: "#opaque", ms: 3000 });
+  await state(tab, `document.querySelector('input[autocomplete="one-time-code"]').setAttribute("aria-label", ${JSON.stringify(`Verification code ${sentinels[1]}`)})`);
+  const extracted = await invoke("extract", { tab }) as { controls?: { role: string; label: string }[] };
+  check("a user-filled sign-in code stays out of control labels", extracted.controls?.some((control) => control.label === "Verification code ...") === true && extracted.controls.some((control) => control.role === "button" && control.label === "Count 0") && !JSON.stringify(extracted.controls).includes(sentinels[1]), extracted.controls);
   await invoke("keep_secret", { tab, texts: [sentinels[0], "2026"] });
   const beforeCapture = await state(tab, "JSON.stringify({children:[...document.documentElement.children].map(e=>e.tagName),x:scrollX,y:scrollY,focus:document.activeElement.tagName})");
   const shot = await invoke("shot", { tab, fullPage: true, ...(baseline ? {} : { tiles: true, tileHeight: 1000 }), out: join(dir, "full.png") }) as Partial<EvidenceModule.CaptureResult> & Pick<EvidenceModule.CaptureResult, "path">;

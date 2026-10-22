@@ -303,7 +303,7 @@
   }
 
   // An input named for a code shows only that it is filled once it holds
-  // digits, and its name loses its value (head, in outline): a code the
+  // digits, and its name loses its value (protectedFieldName): a code the
   // user or the page put in, which the harness never typed, is a secret
   // too (USCIS, 09-30). A term must start a word, so "shipping" holds no
   // pin; a zip, postal, promo, or phone country code stays readable, as
@@ -338,6 +338,12 @@
       if (u) s.push("url=" + u);
     }
     return s;
+  }
+
+  // A field shown only as filled has its value cut from its name too:
+  // USCIS named its code field "…required <the code>" (09-30).
+  function protectedFieldName(el, name, states = stateOf(el)) {
+    return states.includes("filled") && el.value.length >= 3 ? name.replaceAll(el.value, "...") : name;
   }
 
   // Link targets cost most of a snapshot's bytes, mostly tracking queries.
@@ -987,10 +993,7 @@
       const st = stateOf(n.el);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
-      // a field shown only as filled has its value cut from its name too:
-      // USCIS named its code field "…required <the code>" (09-30)
-      const echoed = st.includes("filled") && n.el.value.length >= 3;
-      const name = n.name ? clip(echoed ? n.name.replaceAll(n.el.value, "...") : n.name, TEXT_MAX) : "";
+      const name = n.name ? clip(protectedFieldName(n.el, n.name, st), TEXT_MAX) : "";
       const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
       return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
     };
@@ -2949,7 +2952,7 @@
       for (const el of deepQueryAll('button,input,textarea,[role="button"],[role="textbox"]', at.root)) {
         const role = getExplicitRole(el);
         if ((role !== "button" && role !== "textbox") || !shown(el)) continue;
-        const label = accessibleName(el);
+        const label = protectedFieldName(el, accessibleName(el));
         if (label) controls.push({ role, label });
       }
     }

@@ -213,6 +213,40 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "complete extract hides a user-filled one-time code echoed in its control label and preserves ordinary control names",
+    page: "filled-code.html",
+    steps: [
+      {
+        op: "eval",
+        args: [`(() => {
+          const code = document.getElementById("code");
+          code.autocomplete = "one-time-code";
+          code.value = "731692";
+          code.setAttribute("aria-label", "Verification code 731692");
+          document.getElementById("zip").setAttribute("aria-label", "ZIP code 95616");
+          const instruction = document.createElement("p");
+          instruction.textContent = "Enter the verification code to continue.";
+          document.body.append(instruction);
+          return true;
+        })()`],
+        answer: { value: { ok: true, result: true } },
+      },
+      {
+        op: "extract",
+        answer: {
+          value: {
+            text: "Enter the verification code to continue.",
+            controls: [
+              { role: "textbox", label: "Verification code ..." },
+              { role: "textbox", label: "ZIP code 95616" },
+              { role: "textbox", label: "Embed code" },
+            ],
+          },
+        },
+      },
+    ],
+  },
+  {
     name: "typing on a label's ref types into the field it labels",
     page: "form.html",
     steps: [

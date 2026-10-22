@@ -347,7 +347,7 @@ async function pictureAfter(agent: Agent, call: Call, tab: number, uncertain = f
 
 const OBSERVATIONS: Record<string, true> = { snapshot: true, extract: true, shot: true };
 const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, passwords: true };
-const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true };
+const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true, noWaitAfter: true };
 
 function syncViews(agent: Agent): void {
   for (const [old, view] of agent.views) {

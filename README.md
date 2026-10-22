@@ -522,6 +522,8 @@ hidden, including values you typed yourself.
 
 the privacy fixes now cover disguised addresses and secret text drawn outside its field. saved picture limits now count both stored copies.
 
+captures stop if another tab appears mid-capture. field labels hide sign-in codes. changing how an action waits does not let an uncertain action run again.
+
 password changes need a fresh page read after you give control back.
 
 the bounded local attack scenarios use disposable homes and synthetic data:

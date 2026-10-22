@@ -450,6 +450,9 @@ test("an uncertain identical action is blocked until observation, without blocki
   const action = () => observedCall(a.pid, "click", { tab, ref: 9 }, async () => { sent++; throw new HarnessError("timeout", "reply lost after dispatch"); });
   await expect(action()).rejects.toMatchObject({ code: "timeout", effect: "possibly_effected" });
   await expect(observedCall(a.pid, "click", { ref: "9", tab, snapshot: true, x: 20, y: 30, ignored: "not part of the action" }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown", effect: "none" });
+  for (const noWaitAfter of [false, true]) {
+    await expect(observedCall(a.pid, "click", { tab, ref: 9, noWaitAfter }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown", effect: "none" });
+  }
   expect(sent).toBe(1);
   await call(a.pid, "click", { tab, ref: "different" });
   await expect(call(a.pid, "click", { tab })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
