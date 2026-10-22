@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -380,6 +380,18 @@ test("Bun.write writes a file, its relative path from the session's folder as fs
   const repl = new ReplSession("test", { cwd, invoke: async () => ({ ok: true }) });
   expect(await repl.run("await Bun.write('notes/today.md', 'héllo')")).toEqual({ output: "6" });
   expect(readFileSync(join(cwd, "notes", "today.md"), "utf8")).toBe("héllo");
+});
+
+// 10-22: a script that saved its results with Bun.write had no way to read
+// them back in its next run; Bun.file was not defined.
+test("Bun.file reads a file by its path from the session's folder, as text or JSON, and says whether one exists", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "repl-test-"));
+  mkdirSync(join(cwd, "data"));
+  writeFileSync(join(cwd, "data", "people.json"), '{"found":7}');
+  const repl = new ReplSession("test", { cwd, invoke: async () => ({ ok: true }) });
+  expect(await repl.run("(await Bun.file('data/people.json').json()).found")).toEqual({ output: "7" });
+  expect(await repl.run("(await Bun.file('data/people.json').text()).length")).toEqual({ output: "11" });
+  expect(await repl.run("await Bun.file('data/missing.json').exists()")).toEqual({ output: "false" });
 });
 
 test("imessage.search passes the chat it keeps to the search tool", async () => {
