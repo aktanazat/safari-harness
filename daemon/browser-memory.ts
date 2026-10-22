@@ -9,7 +9,7 @@ export type MemoryConfig = { enabled: boolean; researchEnabled: boolean; sites: 
 export type MemoryPage = {
   id: string; url: string; title: string; site: string; visitedAt: number; summary: string; note: string;
   state: "pending" | "ready" | "failed"; error?: string;
-  observation: "viewed" | "agent_research"; task?: string; reason?: string; partial?: boolean; scope?: "public";
+  observation: "viewed" | "agent_research"; reason?: string; partial?: boolean; scope?: "public";
   summarySource: "none" | "provider" | "user"; summaryEditedAt?: number; noteEditedAt?: number; excerpt?: string;
 };
 export type MemoryStatus = { config: MemoryConfig; total: number; pending: number; error?: string; provider: "omp"; model: string };
@@ -17,7 +17,7 @@ export type MemorySearch = { query?: string; site?: string; limit?: number; offs
 type SummaryPage = { url: string; title: string; body: string };
 type Summarizer = (page: SummaryPage, signal: AbortSignal) => Promise<string>;
 export type BrowserMemoryOptions = { directory?: string; now?: () => number; summarize?: Summarizer };
-type PageRow = Omit<MemoryPage, "error" | "summaryEditedAt" | "noteEditedAt" | "task" | "reason" | "partial" | "scope"> & {
+type PageRow = Omit<MemoryPage, "error" | "summaryEditedAt" | "noteEditedAt" | "reason" | "partial" | "scope"> & {
   body: string; hash: string; revision: string; error: string | null; summaryEditedAt: number | null; noteEditedAt: number | null;
   scope: string; reason: string | null; partial: number | null;
 };
@@ -38,7 +38,7 @@ const COLUMNS = "id, url, title, site, visitedAt, summary, note, state, error, o
 const READABLE_SCOPE = "(observation='viewed' OR (observation='agent_research' AND scope='public'))";
 const RECEIPT_MS = 10 * 60_000;
 const MAX_CANDIDATES = 32;
-const MAX_CANDIDATE_BYTES = 1_048_576;
+const MAX_CANDIDATE_BYTES = 3 * 1_048_576;
 const PAGE_SCHEMA = `CREATE TABLE pages (
   id TEXT PRIMARY KEY, url TEXT NOT NULL, site TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   visitedAt INTEGER NOT NULL, hash TEXT NOT NULL, revision TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
@@ -445,7 +445,7 @@ export class BrowserMemory {
     const readAt = input.readAt ?? this.now();
     if (!Number.isSafeInteger(readAt) || readAt <= this.now() - RECEIPT_MS || readAt > this.now()) return null;
     const bytes = Buffer.byteLength(body, "utf8");
-    while (this.candidates.size >= MAX_CANDIDATES || [...this.candidates.values()].filter((candidate) => candidate.owner === owner).length >= 8 ||
+    while (this.candidates.size >= MAX_CANDIDATES || [...this.candidates.values()].filter((candidate) => candidate.owner === owner).length >= 20 ||
         [...this.candidates.values()].reduce((total, candidate) => total + Buffer.byteLength(candidate.body, "utf8"), bytes) > MAX_CANDIDATE_BYTES) {
       const oldest = [...this.candidates].find(([, candidate]) => candidate.owner === owner) ?? this.candidates.entries().next().value;
       if (!oldest) break;

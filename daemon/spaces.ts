@@ -28,8 +28,7 @@
 // caller's own call may start a Safari the user quit; ended windows wait
 // while it is gone.
 // The windows are saved as they change, so a restarted daemon picks up
-// where the last left off (loadSpaces). A page with no durable ownership
-// record is not enough evidence to close a window.
+// where the last left off (loadSpaces).
 
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -38,7 +37,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
-import { closeTab, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -184,9 +183,13 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
 // transient release permission. The current runtime must admit cleanup again.
 type Kept = Space;
 let spacesFile: string | undefined;
+let taskTracked: ((owner: number | undefined) => boolean) | undefined;
+let inspectUntracked = false;
 
-export function loadSpaces(path: string): void {
+export function loadSpaces(path: string, tracked: (owner: number | undefined) => boolean): void {
   spacesFile = path;
+  taskTracked = tracked;
+  inspectUntracked = true;
   let saved: { spaces?: Kept[]; closing?: Kept[]; ended?: Kept[] } = {};
   try {
     saved = JSON.parse(readFileSync(path, "utf8")) as typeof saved;
@@ -201,6 +204,12 @@ export function loadSpaces(path: string): void {
   }
   for (const s of saved.closing ?? []) { delete s.done; closing.set(s.name, s); watchExit(s.owner); }
   for (const s of saved.ended ?? []) { delete s.done; ended.add(s); watchExit(s.owner); }
+  sweepSoon();
+}
+
+export function inspectUntrackedWindows(): void {
+  if (!taskTracked) return;
+  inspectUntracked = true;
   sweepSoon();
 }
 
@@ -371,7 +380,7 @@ async function end(space: Space) {
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
-    if (space.group === "making") return;
+    if (space.group === "making" && taskTracked?.(space.owner) !== false) return;
   }
   ended.add(space);
   save();
@@ -381,7 +390,7 @@ async function end(space: Space) {
   const failed = unclosed.get(space);
   if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
   const inWindow = await located(space);
-  if (!space.done || inWindow.some(t => !isPage(t, space))) return;
+  if (!space.done || (taskTracked?.(space.owner) !== false && inWindow.some(t => !isPage(t, space)))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
     try {
@@ -421,6 +430,25 @@ function sweep(): Promise<void> {
 
 async function sweepOnce() {
   if (!bridge.connected) return;
+  if (taskTracked) endUntrackedTurns(taskTracked);
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
+    if (taskTracked?.(s.owner) === false) s.done = true;
+  }
+  let listed: TabInfo[] | undefined;
+  if (inspectUntracked && making.size === 0) {
+    listed = await listTabs();
+    const registered = new Map([...spaces.values(), ...closing.values(), ...ended].map(s => [s.id, s]));
+    for (const tab of listed) {
+      if (!tab.url?.startsWith(`${PAGE}?`)) continue;
+      const id = new URL(tab.url).searchParams.get("id");
+      if (!id) continue;
+      const space = registered.get(id);
+      if ((!space || taskTracked?.(space.owner) === false) && making.size === 0) {
+        await closeTab(tab.id, "untracked agent status page");
+      }
+    }
+    inspectUntracked = making.size > 0;
+  }
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
     if (Date.now() - (s.used ?? 0) >= 20 * 60_000) s.done = true;
   }
@@ -434,10 +462,10 @@ async function sweepOnce() {
   }
   for (const s of [...ended]) if (s.done) await end(s);
   if (spaces.size === 0) return;
-  const tabs = await listTabs();
+  const tabs = listed ?? await listTabs();
   for (const s of [...spaces.values()]) {
     const inWindow = await located(s, tabs);
-    if (inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
+    if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
 }
 

@@ -496,6 +496,17 @@ export function endTurn(owner: number, prepared?: TurnPreparation): Promise<Turn
   return ending;
 }
 
+export function endUntrackedTurns(tracked: (owner: number) => boolean): void {
+  const owners = new Set<number>();
+  for (const { owner } of harnessTabs.values()) {
+    if (owner === undefined || owners.has(owner)) continue;
+    owners.add(owner);
+    if (!tracked(owner)) void endTurn(owner).catch(e => {
+      note("untracked agent cleanup failed", { owner, error: e instanceof Error ? e.message : String(e) });
+    });
+  }
+}
+
 // A tab the user is to see or answer outlives its agent's turn and its
 // exit, as one opened with keep does. The extension still answers its
 // dialogs, so the agent can go on in it once he has answered, and the

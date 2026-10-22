@@ -26,7 +26,7 @@ import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent } from "./journal.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
-import { missionRoute, watched } from "./mission.ts";
+import { missionRoute, tracksOwner, watched } from "./mission.ts";
 import { saveRecording } from "./recordings.ts";
 import { notify } from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
@@ -57,10 +57,8 @@ note("start", {
   code: CODE,
   reason: !last ? "first start" : last.kind === "stop" ? `after a stop: ${String(last.reason)}` : "the previous daemon ended without stopping (it crashed or was killed)",
 });
-// Restore ownership and protection metadata, not prior cleanup permission.
-// The current owning runtime must admit release (tools.ts, spaces.ts).
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
-loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`));
+loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`), tracksOwner);
 openMissionHistory(join(homedir(), ".local/share/safari-harness", `history-${httpPort}.json`));
 // The extension reports every load in its owned tabs (bridge.ts), including
 // loads no tool caused, so browsing_history can leave those visits out.

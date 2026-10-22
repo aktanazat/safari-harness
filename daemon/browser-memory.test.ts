@@ -429,6 +429,22 @@ test("research saves cannot replace viewed text at the same URL and ambient site
   expect(memory.detail(viewed.id)).toBeNull();
 });
 
+test("the first and last sources in a full research batch remain savable", () => {
+  const memory = store();
+  memory.configure({ researchEnabled: true });
+  const body = "回收电池研究结果".repeat(6_000).slice(0, 48_000);
+  const receipts = Array.from({ length: 20 }, (_, index) => {
+    const receipt = memory.holdResearch({ ...input, body, url: `https://example.com/research/${index}`, partial: false }, 123);
+    if (!receipt) throw new Error("expected a held public research source");
+    return receipt;
+  });
+  const first = memory.saveResearch(receipts[0].id, 123, "Used the first source in the comparison.");
+  const last = memory.saveResearch(receipts[19].id, 123, "Used the last source in the comparison.");
+  expect(memory.detail(first.id)?.body).toBe(body);
+  expect(first.url).toBe("https://example.com/research/0");
+  expect(last.url).toBe("https://example.com/research/19");
+});
+
 test("a foreign caller cannot save a receipt but the original caller still can", () => {
   const memory = store();
   memory.configure({ researchEnabled: true });
@@ -521,9 +537,9 @@ test("forgetting research cancels a pending provider summary and a late result c
 test("research candidate bytes are bounded even before the candidate-count limit is reached", () => {
   const memory = store();
   memory.configure({ researchEnabled: true });
-  const first = memory.holdResearch({ ...input, body: "漢".repeat(16000), partial: false }, 1000);
+  const first = memory.holdResearch({ ...input, body: "漢".repeat(48_000), partial: false }, 1000);
   if (!first) throw new Error("expected a held research read");
-  for (let owner = 1001; owner < 1032; owner++) memory.holdResearch({ ...input, body: "漢".repeat(16000), partial: false }, owner);
+  for (let owner = 1001; owner < 1032; owner++) memory.holdResearch({ ...input, body: "漢".repeat(48_000), partial: false }, owner);
   expect(() => memory.saveResearch(first.id, 1000, "Oldest candidate.")).toThrow("expired, forgotten, or belongs to another caller");
   expect(memory.status().total).toBe(0);
 });
