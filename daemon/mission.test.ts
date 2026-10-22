@@ -48,6 +48,7 @@ function safari() {
       closing.get(id as number)?.();
       return { ok: true };
     },
+    dialogs: () => ({ ok: true }),
     probe: () => [],
     relay: ([tab, op, args]) => {
       const t = tabs.get(tab as number);
@@ -87,7 +88,7 @@ function safari() {
     closing.set(tab, resolve);
     return promise;
   };
-  return { tabs, closed, effects, changed };
+  return { tabs, closed, effects, changed, ops };
 }
 
 // One Safari for the whole file: every agent's tabs close as this file
@@ -105,25 +106,13 @@ function agent() {
   return p;
 }
 
-// Neither an agent's exit nor a stop is cleanup authority (6fc219a): its
-// tabs and window close at the cleanup its runtime admits as its turn ends
-// (endTurn in tools.ts). The files after this one reuse these tab ids, and
-// a later file's fake clock drives the owner sweep only once no watch is
-// left running it on the real one: this file ends once all is closed and
-// the daemon has seen every agent here exit.
 afterAll(async () => {
   for (const p of spawned) p.kill();
   await Promise.all(spawned.map((p) => p.exited));
-  const protectedTabs = [...fixtureTabs].filter((tab) => s.tabs.has(tab) && s.changed.has(tab)).sort((a, b) => a - b);
-  try {
-    for (const p of spawned) await endTurn(p.pid);
-    expect([...fixtureTabs].filter((tab) => s.tabs.has(tab)).sort((a, b) => a - b)).toEqual(protectedTabs);
-  } finally {
-    for (const tab of fixtureTabs) if (s.tabs.has(tab)) expect(await tools.closeTab(tab, "the test explicitly closed its own retained page")).toMatchObject({ ok: true });
-    for (const p of spawned) await endTurn(p.pid);
-    await Promise.all([...s.tabs.values()].filter((t) => t.windowId !== 1).map((t) => s.closed(t.id)));
-    await Promise.all(spawned.map((p) => new Promise<void>((resolve) => watchOwner(p.pid, resolve))));
-  }
+  for (const tab of fixtureTabs) if (s.tabs.has(tab)) await tools.closeTab(tab, "the test explicitly closed its own retained page");
+  for (const p of spawned) await endTurn(p.pid);
+  await Promise.all([...s.tabs.values()].filter((t) => t.windowId !== 1).map((t) => s.closed(t.id)));
+  await Promise.all(spawned.map((p) => new Promise<void>((resolve) => watchOwner(p.pid, resolve))));
 });
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
@@ -142,9 +131,9 @@ async function open(owner: number, url: string): Promise<number> {
   return t.id;
 }
 
-async function ask(url: string, init?: RequestInit): Promise<Response> {
+async function ask(url: string, init?: RequestInit, route: typeof missionRoute = missionRoute): Promise<Response> {
   const req = new Request(url, init);
-  const res = await missionRoute(req, new URL(req.url));
+  const res = await route(req, new URL(req.url));
   if (!res) throw new Error(`no mission route for ${url}`);
   return res;
 }
@@ -848,5 +837,135 @@ test("giveback protects a task tab whose already-running open finishes during ta
     relay.mockRestore();
     await press(page, "giveback");
     await opening;
+  }
+});
+
+async function resourceTab(owner: number, url: string): Promise<number> {
+  const tab = await runAs(owner, () => callTool("open", { url, background: true })) as { id: number };
+  fixtureTabs.add(tab.id);
+  return tab.id;
+}
+
+async function registeredWindow(tab: number, route: typeof missionRoute = missionRoute): Promise<NonNullable<Overview["windows"]>[number]> {
+  const id = pageOf(tab).searchParams.get("id");
+  const overview = await (await ask("http://127.0.0.1:37334/agents.json", undefined, route)).json() as Overview;
+  const window = overview.windows?.find((window) => window.id === id);
+  if (!window) throw new Error(`no registered window for tab ${tab}`);
+  return window;
+}
+
+async function closeRegisteredWindow(window: { id: string; closeSecret: string }, change: { origin?: string; site?: string } = {}, route: typeof missionRoute = missionRoute): Promise<Response> {
+  return ask("http://127.0.0.1:37334/agents/windows/close", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: change.origin ?? "http://127.0.0.1:37334", "sec-fetch-site": change.site ?? "same-origin" },
+    body: JSON.stringify({ id: window.id, secret: window.closeSecret }),
+  }, route);
+}
+
+test("registered windows remain listed with their page titles and redacted addresses when their agent has no mission record", async () => {
+  const a = agent();
+  const tab = await resourceTab(a.pid, "https://payment.example/confirmation?token=not-for-the-list#receipt");
+  s.tabs.get(tab)!.title = "Asylum payment";
+  const page = pageOf(tab);
+  const window = await registeredWindow(tab);
+  expect(await listed(a.pid)).toBeUndefined();
+  expect(window).toMatchObject({
+    id: page.searchParams.get("id"),
+    name: page.searchParams.get("name"),
+    owner: a.pid,
+    ended: false,
+    tabs: [{ id: tab, title: "Asylum payment", url: "https://payment.example/confirmation?…" }],
+  });
+  expect(window.tabs).toHaveLength(1);
+  expect(JSON.stringify(window)).not.toContain("not-for-the-list");
+});
+
+test("a mission restart keeps registered windows visible but refuses an earlier page's close token", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://restart.example/");
+  const before = await registeredWindow(tab);
+  // This tests a module restart: a static import shares the old agents and
+  // secret. Keep the shared fake's front listener while loading a fresh one.
+  const listener = spyOn(front, "onRaised").mockImplementation(() => {});
+  let route: typeof missionRoute;
+  try {
+    route = (await import(`./mission.ts?windows-restart-${randomUUID()}`)).missionRoute;
+  } finally {
+    listener.mockRestore();
+  }
+  const overview = await (await ask("http://127.0.0.1:37334/agents.json", undefined, route)).json() as Overview;
+  expect(overview.agents.find((agent) => agent.owner === a.pid)).toBeUndefined();
+  expect(overview.windows?.find((window) => window.id === before.id)).toMatchObject({
+    id: before.id, name: before.name, owner: a.pid, tabs: [{ id: tab, url: "https://restart.example/" }],
+  });
+  expect((await closeRegisteredWindow(before, {}, route)).status).toBe(403);
+  expect(s.tabs.has(tab)).toBe(true);
+});
+
+test("an authorized close removes only the selected registered window and its kept pages without needing an agent record", async () => {
+  const [a, b] = [agent(), agent()];
+  const tab = await resourceTab(a.pid, "https://kept-window.example/");
+  await runAs(a.pid, () => callTool("keep", { tab }));
+  const other = await open(b.pid, "https://other-window.example/");
+  const window = await registeredWindow(tab);
+  expect(await listed(a.pid)).toBeUndefined();
+  const response = await closeRegisteredWindow(window);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true, closed: 1, remaining: 0 });
+  expect([...s.tabs.values()].filter((tab) => tab.windowId === window.window)).toEqual([]);
+  expect(s.tabs.has(other)).toBe(true);
+  expect(s.tabs.get(1)?.title).toBe("His page");
+  const overview = await (await ask("http://127.0.0.1:37334/agents.json")).json() as Overview;
+  expect(overview.windows?.find((remaining) => remaining.id === window.id)).toBeUndefined();
+});
+
+test.each(["guess", "another window", "another origin", "cross-site"] as const)("closing a registered window with %s authority is refused without changing any tabs", async (authority) => {
+  const [a, b] = [agent(), agent()];
+  const tab = await resourceTab(a.pid, "https://protected-window.example/");
+  const other = await resourceTab(b.pid, "https://different-window.example/");
+  const window = await registeredWindow(tab);
+  const elsewhere = await registeredWindow(other);
+  const before = [...s.tabs.values()];
+  const secret = authority === "guess" ? "a-guess" : authority === "another window" ? elsewhere.closeSecret : window.closeSecret;
+  const response = await closeRegisteredWindow({ id: window.id, closeSecret: secret }, {
+    ...(authority === "another origin" ? { origin: "https://evil.example" } : {}),
+    ...(authority === "cross-site" ? { site: "cross-site" } : {}),
+  });
+  expect(response.status).toBe(403);
+  expect([...s.tabs.values()]).toEqual(before);
+});
+
+test("a window page without a registration cannot authorize closing a user's window", async () => {
+  const id = randomUUID();
+  const marker = 1_004_000;
+  s.tabs.set(marker, { id: marker, title: "Copied page", url: `http://127.0.0.1:37334/space?id=${id}&name=copied&size=1100x800`, windowId: 1, active: false });
+  try {
+    const before = [...s.tabs.values()];
+    const response = await closeRegisteredWindow({ id, closeSecret: "a-guess" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: "this window is no longer registered; reload the agents page" });
+    expect([...s.tabs.values()]).toEqual(before);
+  } finally {
+    s.tabs.delete(marker);
+  }
+});
+
+test("failed Safari listings leave task controls usable and mark only windows unavailable", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://busy-safari.example/");
+  const page = pageOf(tab);
+  const list = s.ops["tabs.list"];
+  s.ops["tabs.list"] = () => { throw new Error("Safari did not answer its tab listing"); };
+  try {
+    const response = await ask("http://127.0.0.1:37334/agents.json");
+    expect(response.status).toBe(200);
+    const overview = await response.json() as Overview;
+    expect(overview.windows).toBeNull();
+    expect(overview.agents.find(agent => agent.owner === a.pid)?.status).toBe("working");
+    expect((await press(page, "pause")).status).toBe(200);
+    const paused = await (await ask("http://127.0.0.1:37334/agents.json")).json() as Overview;
+    expect(paused.agents.find(agent => agent.owner === a.pid)?.status).toBe("paused");
+  } finally {
+    s.ops["tabs.list"] = list;
   }
 });

@@ -14,7 +14,7 @@ import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
-import { currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -221,9 +221,6 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
   return res;
 }
 
-// Only an admitted completion may release disposable pages. Age, tab count
-// and owner exit cannot prove that a task or background work has finished.
-// Protection flags and URL-only resume points share the existing checkpoint.
 // acted: an action has changed the page since it loaded (revived). site: a
 // repl site global's own tab (sites/kit.ts), whose page its calls need: an
 // agent is never sent to go on in it. url: the page it showed when the
@@ -409,8 +406,6 @@ export function endTurn(owner: number, prepared?: TurnPreparation): Promise<Turn
     if (sweepingTabs) await sweepingTabs;
     await sweep();
     await turnEnded(owner);
-    for (const t of harnessTabs.values()) if (t.owner === owner) delete t.done;
-    save();
     const retained = tabsOpenedBy(owner);
     const failed = [...harnessTabs.values()].filter((t) => t.owner === owner && t.failed).length;
     return { ok: true as const, closed: before - retained, retained, failed, deferred: !bridge.connected };
@@ -461,6 +456,7 @@ function sweep(): Promise<void> {
 // already gone is let go as found closed (lost); a refusal waits for the
 // next turn's end.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const IDLE_MS = 20 * 60_000;
 
 async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
@@ -468,16 +464,29 @@ async function sweepOnce() {
   // sweep lists the tabs, which notes what they show and finds those a
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
-  const listed = await listTabs().catch((): TabInfo[] => []);
+  const listed = await listTabs().catch(() => undefined);
+  if (listed === undefined) return;
   const now = Date.now();
-  const due = [...harnessTabs].filter(([, t]) => t.done && !t.closing && !t.acted && !t.site && !t.handoff && !t.unsafe && (t.retry === undefined || (t.retry.tries <= CLOSE_RETRY_MS.length && now >= t.retry.at)) && (t.url === undefined || resumeAddress(t.url) !== undefined) && (t.owner === undefined || !activeCalls.get(t.owner)?.pending.size));
+  const shown = new Map(listed.map((t) => [t.id, t]));
+  const due = [...harnessTabs].filter(([tab, t]) => {
+    if (t.closing || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(t.owner)?.pending.size)) return false;
+    const handoff = handoffs.get(tab);
+    if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
+    const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
+    const disposable = !t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined);
+    return exited || (disposable && (t.done || now - t.used >= IDLE_MS));
+  });
   if (due.length === 0) return;
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
-  const shown = new Map(listed.map((t) => [t.id, t.url]));
   await Promise.all(due.map(async ([tab, t]) => {
     try {
       if (harnessTabs.get(tab) !== t) return;
+      if (!shown.has(tab)) {
+        lost(tab, false);
+        return;
+      }
+      if (reconnectedSince(t)) return;
       const res = (await bridge.request("tabs.close", [tab, "idle"], 20000)) as { ok?: boolean; front?: true; protected?: string } | null;
       if (res?.front) {
         t.used = Date.now();
@@ -487,8 +496,8 @@ async function sweepOnce() {
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
-        const why = "as its agent's turn ended";
-        recordClosed(tab, why, resumeAddress(shown.get(tab) ?? t.url), t.owner);
+        const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+        recordClosed(tab, why, resumeAddress(shown.get(tab)?.url ?? t.url), t.owner);
         forget(tab);
         note("tab closed", { tab, owner: t.owner ?? null, why });
       }
@@ -510,6 +519,7 @@ async function sweepOnce() {
       save();
     }
   }));
+  await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
 }
 
 function forget(tab: number) {

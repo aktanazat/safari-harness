@@ -2,11 +2,12 @@ import { expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, turnOff } from "./groups.ts";
 import { runAs } from "./owner.ts";
-import { spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -16,7 +17,7 @@ const dir = mkdtempSync(join(tmpdir(), "spaces-test-"));
 Object.assign(files, { queue: join(dir, "groups.json"), off: join(dir, "groups-off.json"), keeper: join(dir, "keeper.pid"), log: join(dir, "keeper.log") });
 process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
 
-type Tab = { id: number; url: string; windowId: number; active: boolean };
+type Tab = { id: number; url: string; windowId: number; active: boolean; history?: unknown };
 
 // The ids every fake Safari here hands out, none twice in this file: the
 // daemon's records of one test's windows outlast that test.
@@ -26,6 +27,7 @@ let next = 1000;
 function safari() {
   const tabs = new Map<number, Tab>([[1, { id: 1, url: "https://his.example/", windowId: 1, active: true }]]);
   const closed: number[] = [];
+  const owned = new Set<number>();
   // Windows the extension holds the keeper to be making a tab group of.
   const regrouping = new Set<number>();
   // What the extension maps the ids it had before a reload to (adopt in
@@ -41,6 +43,7 @@ function safari() {
     "tabs.open": ([url, background, windowId]) => {
       const t = { id: next++, url: String(url), windowId: typeof windowId === "number" ? windowId : 1, active: !background };
       tabs.set(t.id, t);
+      owned.add(t.id);
       return t;
     },
     "tabs.navigate": ([id, url]) => {
@@ -51,14 +54,16 @@ function safari() {
     "windows.open": ([url]) => {
       const t = { id: next++, url: String(url), windowId: next++, active: true };
       tabs.set(t.id, t);
+      owned.add(t.id);
       return { windowId: t.windowId, tabId: t.id };
     },
     "windows.resolve": ([id]) => {
       const now = oldWindows.get(id as number) ?? (id as number);
       return [...tabs.values()].some((t) => t.windowId === now) ? now : null;
     },
-    "tabs.close": ([id]) => {
+    "tabs.close": ([id, only]) => {
       const now = oldTabs.get(id as number) ?? (id as number);
+      if (only === "idle" && !owned.has(now)) return { ok: false };
       tabs.delete(now);
       closed.push(now);
       return { ok: true };
@@ -76,9 +81,14 @@ function safari() {
     },
     // the page ops open waits on (afterWall): a plain page, no bot check
     probe: () => [],
-    relay: () => ({ ok: true }),
+    relay: ([id, op, args]) => {
+      const tab = tabs.get(Number(id));
+      if (op !== "eval" || !tab?.url.includes("/space?")) return { ok: true };
+      const history = { state: tab.history, replaceState(value: unknown) { tab.history = value; } };
+      return { ok: true, result: runInNewContext(String((args as unknown[])[0]), { history }) };
+    },
     // how an owned tab answers dialogs, which also owns it (renumber)
-    dialogs: () => ({ ok: true }),
+    dialogs: ([id]) => { owned.add(Number(id)); return { ok: true }; },
     // background.js "window": the size a window gets is one no other window
     // has, here a point taller than asked.
     window: ([id, size, whole]) => {
@@ -106,6 +116,7 @@ function safari() {
   // The extension reloads: every tab and window gets a new id.
   const reload = () => {
     const was = [...tabs.values()];
+    owned.clear();
     tabs.clear();
     for (const t of was) {
       if (!oldWindows.has(t.windowId)) oldWindows.set(t.windowId, next++);
@@ -117,6 +128,7 @@ function safari() {
   // new ids, which the extension, started afresh, maps to nothing.
   const relaunch = () => {
     const was = [...tabs.values()];
+    owned.clear();
     const windows = new Map<number, number>();
     tabs.clear();
     for (const t of was) {
@@ -127,6 +139,72 @@ function safari() {
   };
   return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized, silent };
 }
+
+test("window management finds a restored registered window without an agent record and closes only that window", async () => {
+  const s = safari();
+  const path = join(dir, "managed-restart.json");
+  const before = await daemonOn(47350, "managed-before");
+  const after = await daemonOn(47350, "managed-after");
+  before.loadSpaces(path);
+  const window = await runAs(process.pid, () => before.spaceWindow("receipt"));
+  const content = { id: next++, url: "https://receipt.example/success", windowId: window.window, active: false };
+  s.tabs.set(content.id, content);
+  after.loadSpaces(path);
+  s.relaunch();
+  const listed = await after.managedWindows();
+  expect(listed).toHaveLength(1);
+  expect(listed[0].tabs.map(t => t.url)).toEqual(["https://receipt.example/success"]);
+  expect(await after.closeManagedWindow(listed[0].id)).toEqual({ ok: true, closed: 1, remaining: 0 });
+  expect([...s.tabs.values()].map(t => t.url)).toEqual(["https://his.example/"]);
+  expect(await after.managedWindows()).toEqual([]);
+});
+
+test("a copied or unknown window page never grants manual close authority", async () => {
+  const s = safari();
+  const foreign = { id: next++, url: "http://127.0.0.1:37334/space?id=foreign&name=receipt&size=1100x800", windowId: 1, active: false };
+  s.tabs.set(foreign.id, foreign);
+  expect(await managedWindows()).toEqual([]);
+  await expect(closeManagedWindow("foreign")).rejects.toThrow("no longer tracked");
+  expect([...s.tabs.keys()]).toEqual([1, foreign.id]);
+});
+
+test("a registered marker restored without extension ownership still closes when its task ends", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47351, "restored-marker");
+  const owned = await runAs(process.pid, () => daemon.spaceWindow());
+  s.relaunch();
+  await daemon.turnEnded(process.pid);
+  expect(pageIn(s.tabs, owned.window)).toBeUndefined();
+  expect([...s.tabs.values()].map(t => t.url)).toEqual(["https://his.example/"]);
+});
+
+test("a copied registered address cannot redirect window closure into the user's window", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47352, "copied-registered");
+  const owned = await runAs(process.pid, () => daemon.spaceWindow());
+  const marker = pageIn(s.tabs, owned.window)!;
+  const content = { id: next++, url: "https://result.example/", windowId: owned.window, active: false };
+  s.tabs.set(content.id, content);
+  s.tabs.delete(marker.id);
+  const copied = { ...marker, id: next++, windowId: 1, history: undefined };
+  s.tabs.set(copied.id, copied);
+  expect((await daemon.managedWindows()).map(w => w.window)).toEqual([owned.window]);
+  expect(await daemon.closeManagedWindow(owned.id)).toEqual({ ok: true, closed: 1, remaining: 0 });
+  expect([...s.tabs.keys()]).toEqual([1, copied.id]);
+});
+
+test("a copied registered address cannot resurrect closure authority after the real window is gone", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47353, "copied-after-close");
+  const owned = await runAs(process.pid, () => daemon.spaceWindow());
+  const marker = pageIn(s.tabs, owned.window)!;
+  s.tabs.delete(marker.id);
+  const copied = { ...marker, id: next++, windowId: 1, history: undefined };
+  s.tabs.set(copied.id, copied);
+  expect(await daemon.managedWindows()).toEqual([]);
+  await expect(daemon.closeManagedWindow(owned.id)).rejects.toThrow("no longer tracked");
+  expect([...s.tabs.keys()]).toEqual([1, copied.id]);
+});
 
 // An agent process, to open tabs for and then end.
 const agent = () => Bun.spawn(["sleep", "60"]);

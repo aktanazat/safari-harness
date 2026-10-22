@@ -37,8 +37,8 @@ import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { currentOwner, watchOwner } from "./owner.ts";
-import type { TabInfo } from "./tools.ts";
+import { alive, currentOwner, watchOwner } from "./owner.ts";
+import { closeTab, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -49,7 +49,7 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; done?: true };
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; done?: true; used?: number; proof?: string };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -95,6 +95,14 @@ const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`
 
 const listTabs = async () => (await bridge.request("tabs.list")) as TabInfo[];
 
+async function identify(space: Space, tab: number): Promise<void> {
+  const proof = randomUUID();
+  const result = await bridge.tab(tab, "eval", [`(() => { history.replaceState({ ...history.state, safariHarnessSpace: ${JSON.stringify(proof)} }, ""); return true; })()`]).catch(() => null) as { result?: unknown } | null;
+  if (result?.result !== true) return;
+  space.proof = proof;
+  save();
+}
+
 // The keeper begins, or is done, making space's window a tab group. The
 // extension takes no tab Safari makes in the window meanwhile for a page's
 // popup (09-30: a blank one went to an agent, which could neither read nor
@@ -104,26 +112,27 @@ async function regrouping(space: Space, on: boolean) {
   if (bridge.connected) await bridge.request("windows.regrouping", [space.window, on]).catch(() => undefined);
 }
 
-// The tabs in space's window. Its page names the window: Safari gives every
-// window a new id when the extension reloads and when Safari itself starts
-// again, which no reload maps. On 10-05 every agent's window was lost three
-// times so: its page closed, its tabs stayed in a window no one owned, and
-// the agent's next tab opened another window. Without the page, the
-// extension maps an id a reload changed.
+// Browser window aliases and the original page's history state establish
+// ownership independently of a copied address.
 async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   const all = tabs ?? (await listTabs());
-  const page = all.find((t) => isPage(t, space))?.windowId;
-  if (page !== undefined && page !== space.window) {
-    space.window = page;
+  let window = all.some(t => t.windowId === space.window) ? space.window : await bridge.request("windows.resolve", [space.window]).catch(() => null) as number | null;
+  if (window === null && space.proof) {
+    const pages = all.filter(t => isPage(t, space) && pageAt(t) !== undefined);
+    if (pages.length === 1) {
+      const result = await bridge.tab(pages[0].id, "eval", ["history.state?.safariHarnessSpace ?? null"]).catch(() => null) as { result?: unknown } | null;
+      if (result?.result === space.proof) window = pages[0].windowId ?? null;
+    }
+  }
+  if (window === null) return [];
+  if (window !== space.window) {
+    space.window = window;
     save();
   }
-  const inWindow = all.filter((t) => t.windowId === space.window);
-  if (inWindow.length > 0) return inWindow;
-  const now = (await bridge.request("windows.resolve", [space.window]).catch(() => null)) as number | null;
-  if (now === null || now === space.window) return [];
-  space.window = now;
-  save();
-  return all.filter((t) => t.windowId === now);
+  const owned = all.filter(t => t.windowId === window);
+  const page = owned.find(t => isPage(t, space) && pageAt(t) !== undefined);
+  if (!space.proof && page) await identify(space, page.id);
+  return owned;
 }
 
 // The window an open by the calling agent goes in, made when it has none
@@ -153,13 +162,14 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
       const name = spaceName(group, owner);
       const size = nextSize();
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-      const w = (await bridge.request("windows.open", [page, size])) as { windowId: number };
+      const w = (await bridge.request("windows.open", [page, size])) as { windowId: number; tabId: number };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size, owner, group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      const space: Space = { key, id, window: w.windowId, name, size, owner, used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
       save();
+      await identify(space, w.tabId);
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();
@@ -207,7 +217,7 @@ function watchExit(owner: number | undefined) {
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.why ? { why: s.why } : {}) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -375,6 +385,8 @@ async function end(space: Space) {
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
     try {
+      await bridge.request("dialogs", [page.id, { accept: false, text: null }]);
+      if (!space.done) return;
       const result = await bridge.request("tabs.close", [page.id, "idle"], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
     } catch (e) {
@@ -409,6 +421,9 @@ function sweep(): Promise<void> {
 
 async function sweepOnce() {
   if (!bridge.connected) return;
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
+    if (Date.now() - (s.used ?? 0) >= 20 * 60_000) s.done = true;
+  }
   // A pass with no window to locate, and no ended one whose agent's turn has
   // ended, is the last, and asks Safari nothing: a window that ended before
   // its agent's turn did waits for turnEnded, which sweeps by itself.
@@ -426,15 +441,17 @@ async function sweepOnce() {
   }
 }
 
-// A new owned call invalidates an earlier completion's empty-window intent.
-export function turnResumed(owner: number): void {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) delete s.done;
+export function turnResumed(owner: number | undefined): void {
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) {
+    delete s.done;
+    s.used = Date.now();
+  }
   save();
 }
 
 // The runtime admitted cleanup of this owner's disposable tabs (endTurn,
 // tools.ts). Its windows can end only when nothing but their marker remains.
-export async function turnEnded(owner: number): Promise<void> {
+export async function turnEnded(owner: number | undefined): Promise<void> {
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) s.done = true;
   save();
   if (spaces.size > 0 || ended.size > 0) sweepSoon();
@@ -487,3 +504,54 @@ export function resized(window: number, size: Size): void {
 
 // An agent window's own page, which is no one's tab to work in.
 export const isSpacePage = (t: TabInfo) => t.url?.startsWith(`${PAGE}?`) ?? false;
+
+export type ManagedWindow = { id: string; name: string; owner: number | null; window: number; ended: boolean; tabs: { id: number; title: string; url: string }[] };
+
+export async function managedWindows(listed?: TabInfo[]): Promise<ManagedWindow[]> {
+  if (!bridge.connected) return [];
+  const tabs = listed ?? await listTabs();
+  const registered = new Map([...spaces.values(), ...closing.values(), ...ended].map(s => [s.id, s]));
+  const windows: ManagedWindow[] = [];
+  for (const s of registered.values()) {
+    const owned = await located(s, tabs);
+    if (owned.length === 0) continue;
+    windows.push({
+      id: s.id, name: s.name, owner: s.owner ?? null, window: s.window,
+      ended: s.owner !== undefined && !alive(s.owner),
+      tabs: owned.filter(t => !isPage(t, s)).map(t => ({ id: t.id, title: t.title ?? "", url: t.url ?? "" })),
+    });
+  }
+  return windows;
+}
+
+export async function closeManagedWindow(id: string): Promise<{ ok: boolean; closed: number; remaining: number }> {
+  if (!bridge.connected) throw new Error("Safari is not connected.");
+  const s = [...spaces.values(), ...closing.values(), ...ended].find(space => space.id === id);
+  if (!s) throw new Error("This window is no longer tracked.");
+  const before = await located(s);
+  if (before.length === 0) throw new Error("This window is no longer tracked.");
+  const window = s.window;
+  let closed = 0;
+  for (const tab of before) {
+    if (isPage(tab, s)) continue;
+    const result = await closeTab(tab.id, "from the windows page") as { ok?: boolean };
+    if (result.ok) closed++;
+  }
+  const remaining = (await listTabs()).filter(t => t.windowId === window);
+  if (remaining.some(t => !isPage(t, s))) return { ok: false, closed, remaining: remaining.filter(t => !isPage(t, s)).length };
+  const marker = remaining.find(t => isPage(t, s));
+  if (marker) {
+    const result = await closeTab(marker.id, "from the windows page") as { ok?: boolean };
+    if (!result.ok) return { ok: false, closed, remaining: 1 };
+  }
+  s.done = true;
+  if (s.group === "grouped" || s.group === "making") await end(s);
+  else {
+    if (spaces.get(s.key) === s) spaces.delete(s.key);
+    if (closing.get(s.name) === s) closing.delete(s.name);
+    ended.delete(s);
+    unclosed.delete(s);
+    save();
+  }
+  return { ok: true, closed, remaining: 0 };
+}

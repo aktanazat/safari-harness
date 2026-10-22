@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { files } from "./groups.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { loadSpaces } from "./spaces.ts";
 import { ReplSession } from "./repl.ts";
 import { callTool, closeTabsOf, endTurn, prepareTurnEnd, loadTabs } from "./tools.ts";
@@ -16,7 +16,7 @@ const state = join(directory, "tabs.json");
 const browser = join(directory, "browser.json");
 Object.assign(files, { queue: join(directory, "groups.json"), off: join(directory, "off.json"), keeper: join(directory, "keeper.pid"), log: join(directory, "keeper.log") });
 writeFileSync(files.off, JSON.stringify({ why: "isolated lifecycle fixture" }));
-type Tab = { id: number; url: string; windowId: number };
+type Tab = { id: number; url: string; windowId: number; typed?: true; front?: true };
 const tabs = new Map<number, Tab>();
 let next = 100;
 let gate: { op: string; entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
@@ -43,12 +43,15 @@ const extension = {
         tabs.set(tab.id, tab); opened++; value = tab;
       } else if (op === "tabs.close") {
         if (refused) value = { ok: false };
+        else if (args[1] === "idle" && tabs.get(Number(args[0]))?.typed) value = { ok: false, protected: "form" };
+        else if (args[1] === "idle" && tabs.get(Number(args[0]))?.front) value = { ok: false, front: true };
         else tabs.delete(Number(args[0]));
       } else if (op === "relay") {
         const tab = tabs.get(Number(args[0]));
         if (!tab) { bridge.handleMessage(JSON.stringify({ id, error: "that tab is gone: it was closed" })); return; }
         if (args[1] === "click") clicks++;
-        if (args[1] === "eval") evaluations++;
+        if (args[1] === "type") tab.typed = true;
+        if (args[1] === "eval" && !tab.url.includes("/space?")) evaluations++;
         if (args[1] === "fetch") submissions++;
         value = args[1] === "extract" ? { text: "fixture result", title: "Fixture", url: tab.url } : { ok: true };
       }
@@ -111,11 +114,30 @@ if (mode === "restart" || mode === "action" || mode === "fresh-eval" || mode ===
     await invoke("type", { tab, ref: "input", text: "unsent fixture text" });
     await repl.close();
     console.log(JSON.stringify({ retainedForm: tabs.has(tab) }));
-  } else if (mode === "eval-state") {
-    const tab = await open("script-state");
-    await invoke("eval", { tab: tab.id, expression: "window.fixtureDraft = 'unsent script state'" });
-    await endTurn(owner);
-    console.log(JSON.stringify({ retained: tabs.has(tab.id), evaluations }));
+  } else if (mode === "idle-cleanup" || mode === "exit-cleanup") {
+    const plain = await open("result");
+    await invoke("click", { tab: plain.id, ref: "Read more" });
+    const form = await open("form");
+    await invoke("type", { tab: form.id, ref: "input", text: "unsent fixture text" });
+    const kept = await open("kept", { keep: true });
+    const front = await open("front");
+    tabs.get(front.id)!.front = true;
+    const recent = await open("recent");
+    const saved = JSON.parse(readFileSync(state, "utf8")) as { version: number; tabs: Record<string, { used: number }> };
+    for (const [id, recorded] of Object.entries(saved.tabs)) if (Number(id) !== recent.id) recorded.used = Date.now() - 21 * 60_000;
+    writeFileSync(state, JSON.stringify(saved));
+    loadTabs(state);
+    if (mode === "exit-cleanup") {
+      const dead = Bun.spawnSync(["true"]).pid;
+      for (const recorded of Object.values(saved.tabs)) Object.assign(recorded, { owner: dead });
+      writeFileSync(state, JSON.stringify(saved));
+      loadTabs(state);
+      const exited = Promise.withResolvers<void>();
+      watchOwner(dead, exited.resolve);
+      await exited.promise;
+    }
+    await endTurn(owner + 1);
+    console.log(JSON.stringify({ plain: tabs.has(plain.id), form: tabs.has(form.id), kept: tabs.has(kept.id), front: tabs.has(front.id), recent: tabs.has(recent.id) }));
   } else if (mode === "aged" || mode === "cap" || mode === "stopped") {
     const plain = await open("unfinished");
     if (mode === "cap") for (let n = 0; n < 8; n++) await open(`unfinished-${n}`);

@@ -61,11 +61,15 @@ test("a foreign owner cannot lazily reopen another owner's closed result", async
   expect(await fixture("foreign", directory)).toMatchObject({ opened: 0, error: expect.stringContaining("open it again") });
 });
 
-test("a script action's non-recreatable state stays open after admitted cleanup", async () => {
-  expect(await fixture("eval-state")).toEqual({ retained: true, evaluations: 1 });
+test("unused changed pages close after twenty minutes without closing forms, kept pages, the front page, or recently used pages", async () => {
+  expect(await fixture("idle-cleanup")).toEqual({ plain: false, form: true, kept: true, front: true, recent: true });
 });
 
-test.each(["aged", "cap", "stopped"])("%s is not authority to close another unfinished task's pages", async mode => {
+test("an exited task releases its changed pages while preserving forms, kept pages, and the front page", async () => {
+  expect(await fixture("exit-cleanup")).toEqual({ plain: false, form: true, kept: true, front: true, recent: false });
+});
+
+test.each(["cap", "stopped"])("%s is not authority to close another unfinished task's pages", async mode => {
   expect(await fixture(mode)).toEqual({ retained: true, residentPages: mode === "cap" ? 9 : 1 });
 });
 

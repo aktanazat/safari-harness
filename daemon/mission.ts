@@ -29,7 +29,7 @@ import { affectsPage } from "./lanes.ts";
 import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
-import { spaceById, spaceEnded } from "./spaces.ts";
+import { closeManagedWindow, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
 import { closeTabsOf, resolveTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 
@@ -601,7 +601,8 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 type Summary = { id: string; owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; controlSecret?: string };
 // /agents.json, and what safari agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
-export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[] };
+type WindowSummary = ManagedWindow & { closeSecret: string };
+export type Overview = { now: number; agents: (Summary & { last: Call | null; tasks: { id: string; name: string }[]; tabs: number | null })[]; windows: WindowSummary[] | null };
 
 function summaryOf(a: Agent): Summary {
   const status = statusOf(a);
@@ -668,6 +669,14 @@ async function spaceState(url: URL): Promise<Response> {
   });
 }
 
+function publicWindow(window: ManagedWindow): WindowSummary {
+  return {
+    ...window,
+    tabs: window.tabs.map((tab) => ({ id: tab.id, title: cut(tab.title, 120), url: tab.url ? place(tab.url, []) : "" })),
+    closeSecret: secretOf(`window:${window.id}`),
+  };
+}
+
 function publicCall<T extends { picture?: HistoryPicture }>(call: T, mission: string) {
   const { picture, ...rest } = call;
   return { ...rest, ...(picture ? { picture: "missing" in picture ? picture : { id: picture.id, capture: picture.capture }, mission } : {}) };
@@ -715,7 +724,7 @@ async function overview(): Promise<Overview> {
   // a row stays put while its agent works, so its buttons never move under
   // the user's pointer.
   const over = (s: Status) => s === "stopped" || s === "ended";
-  return { now, agents: rows.sort((x, y) => Number(over(x.status)) - Number(over(y.status)) || y.since - x.since) };
+  return { now, agents: rows.sort((x, y) => Number(over(x.status)) - Number(over(y.status)) || y.since - x.since), windows: tabs === undefined ? null : (await managedWindows(tabs)).map(publicWindow) };
 }
 
 const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-store" } });
@@ -765,6 +774,19 @@ async function agentsControl(req: Request): Promise<Response> {
   if (!matches(body.secret, `agent:${agent.id}`) && legacy?.get(owner) !== agent.id) return problem(403, "reload the agents page");
   if (body.mission !== undefined && body.mission !== agents.get(owner)?.id) return problem(409, "this task has ended");
   return control(owner, body.action, "the agents page");
+}
+
+async function windowClose(req: Request): Promise<Response> {
+  const body = await bodyOf(req);
+  if (!body) return problem(400, "send JSON: {id, secret}");
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!(await managedWindows()).some((window) => window.id === id)) return problem(409, "this window is no longer registered; reload the agents page");
+  if (!matches(body.secret, `window:${id}`)) return problem(403, "reload the agents page");
+  try {
+    return json(await closeManagedWindow(id));
+  } catch {
+    return problem(409, "this window could not be closed; reload the agents page");
+  }
 }
 
 async function control(owner: number | undefined, action: unknown, from: string, window?: number): Promise<Response> {
@@ -914,14 +936,14 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .foot { margin-top: 2.5rem; color: var(--muted); font-size: 0.85rem; }
 .agents > li { padding: 1.25rem 0; border-top: 1px solid var(--line); }
 .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; }
-.agents h2 { margin: 0; color: var(--text); font-size: 1.05rem; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.agents h2, .windows h3 { margin: 0; color: var(--text); font-size: 1.05rem; font-weight: 650; letter-spacing: 0; text-transform: none; overflow-wrap: anywhere; }
 .facts, .tasks, .last { margin-top: 0.3rem; }
 .facts { color: var(--muted); }
 .last { color: var(--muted); font-family: var(--mono); font-size: 0.82rem; overflow-wrap: anywhere; }
 .agents .controls { margin-top: 0.8rem; }
 [hidden] { display: none !important; }
 a { color: var(--hold); text-underline-offset: 0.15em; }
-header p a, .tasks a { display: inline-flex; min-height: 44px; min-width: 44px; align-items: center; }
+header p a, .tasks a, .windows h3 a, .foot a { display: inline-flex; min-height: 44px; min-width: 44px; align-items: center; }
 .picture { grid-column: 2; margin: 0.4rem 0; min-width: 0; }
 .picture img { display: block; max-width: 100%; max-height: 32rem; height: auto; object-fit: contain; border: 1px solid var(--line); }
 .picture figcaption { color: var(--muted); font-size: 0.85rem; }
@@ -934,6 +956,12 @@ const SCRIPT = String.raw`
 {
   const data = document.body.dataset;
   const overview = data.kind === "agents";
+  const windowsLink = document.querySelector("[data-windows]");
+  windowsLink?.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const opened = window.open(windowsLink.href, "safari-window-manager", "popup");
+    if (opened) { opened.opener = null; event.preventDefault(); }
+  });
   const byId = (id) => document.getElementById(id);
   const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures" };
   const SAY = { working: "Working", "waiting on the user": "Waiting on you", paused: "Paused", "user is driving": "You are driving", stopped: "Stopped", ended: "Ended" };
@@ -1062,6 +1090,24 @@ const SCRIPT = String.raw`
     poll();
   }
 
+  async function closeWindow(button, window) {
+    if (!confirm(window.ended ? "Close this window and all its tabs, including kept pages?" : "Close this working window and all its tabs, including kept pages? The task will keep running.")) return;
+    button.disabled = true;
+    try {
+      const res = await fetch("/agents/windows/close", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: window.id, secret: window.closeSecret }),
+      });
+      const out = await res.json().catch(() => ({}));
+      say(!res.ok ? out.error || "The harness refused that." : out.ok ? "Window closed." : "The window still has open tabs. Review it before closing again.");
+    } catch {
+      say("The harness is not answering.");
+    }
+    button.disabled = false;
+    poll();
+  }
+
   function tabRow(t) {
     const li = make("li", "tab");
     li.append(make("span", "title", t.title || "Untitled"), make("span", "url", t.url));
@@ -1114,7 +1160,7 @@ const SCRIPT = String.raw`
     if (!a) {
       status.className = "status end";
       setText(status, s.ended ? "Ended" : "Not tracked");
-      setText(byId("who"), s.ended ? "This task has ended. Its window closes on its own." : "The harness restarted after this window opened, so it no longer knows its agent.");
+      setText(byId("who"), s.ended ? "This task has ended." : "No live task record.");
       draw(byId("controls"), "", () => []);
       setText(byId("picture-note"), "");
       const gone = s.ended ? "Not shown once the task has ended." : "Unknown.";
@@ -1168,7 +1214,57 @@ const SCRIPT = String.raw`
     return row.li;
   }
 
+  const windowRows = new Map();
+  const noWindows = make("li", "empty", "No registered windows are open.");
+
+  function windowRow(window) {
+    let row = windowRows.get(window.id);
+    if (!row) {
+      const heading = make("h3");
+      const link = make("a");
+      heading.append(link);
+      const button = make("button", "stop", "Close window");
+      button.type = "button";
+      button.dataset.key = "window:" + window.id + ":close";
+      const controls = make("div", "controls");
+      controls.setAttribute("role", "group");
+      controls.setAttribute("aria-labelledby", "window-" + window.id);
+      heading.id = "window-" + window.id;
+      controls.append(button);
+      row = { li: make("li"), link, status: make("span"), facts: make("p", "facts"), titles: make("p", "facts"), current: window };
+      const head = make("div", "head");
+      head.append(heading, row.status);
+      row.li.append(head, row.facts, row.titles, controls);
+      button.addEventListener("click", () => closeWindow(button, row.current));
+      windowRows.set(window.id, row);
+    }
+    row.current = window;
+    const name = window.name.replace(/\s*\(agent \d+\)(?=, window \d+$|$)/, "").replace(/^agent \d+(?=, window \d+$|$)/, "Agent window");
+    const title = window.tabs[0]?.title || name;
+    setText(row.link, title);
+    row.link.href = "/space?id=" + encodeURIComponent(window.id) + "&name=" + encodeURIComponent(window.name);
+    row.status.className = "status " + (window.ended ? "end" : "go");
+    setText(row.status, window.ended ? "Finished" : "Working");
+    setText(row.facts, (title === name ? "" : name + " · ") + window.tabs.length + (window.tabs.length === 1 ? " tab" : " tabs"));
+    setText(row.titles, window.tabs.slice(1).map((tab) => tab.title || tab.url || "Untitled").join(" · "));
+    row.titles.hidden = window.tabs.length < 2;
+    return row.li;
+  }
+
+  function renderWindows(windows) {
+    const list = byId("windows");
+    if (windows === null) {
+      list.replaceChildren(make("li", "empty", "Safari's windows are unavailable. Try again."));
+      return;
+    }
+    const shown = new Set(windows.map((window) => window.id));
+    for (const key of windowRows.keys()) if (!shown.has(key)) windowRows.delete(key);
+    const next = windows.length ? windows.map(windowRow) : [noWindows];
+    if (next.length !== list.children.length || next.some((li, i) => list.children[i] !== li)) list.replaceChildren(...next);
+  }
+
   function renderAgents(o) {
+    renderWindows(o.windows);
     const list = byId("agents");
     const shown = new Set(o.agents.map((a) => a.id || String(a.owner)));
     for (const key of rows.keys()) if (!shown.has(key)) rows.delete(key);
@@ -1267,7 +1363,7 @@ function spacePage(url: URL): Response {
     `<p id="note" class="note" aria-live="polite"></p>`,
     `<h2>Tabs in this window</h2><ul id="tabs" class="rows"></ul>`,
     `<h2>What it did</h2><ol id="calls" class="rows"></ol>`,
-    `<p class="foot"><a href="/agents/history${spaceAgents.has(id) ? `?id=${spaceAgents.get(id)}` : ""}">History</a></p>`,
+    `<p class="foot"><a href="/agents#windows" target="_blank" rel="noopener" data-windows>Windows</a> · <a href="/agents/history${spaceAgents.has(id) ? `?id=${spaceAgents.get(id)}` : ""}">History</a></p>`,
   ].join(""));
 }
 
@@ -1280,6 +1376,7 @@ function agentsPage(): Response {
   return page("Agents in Safari", `data-kind="agents" data-secret="${secret}"`, [
     `<header><h1>Agents in Safari</h1><p><a href="/agents/history">History</a></p></header>`,
     `<p id="note" class="note" aria-live="polite"></p>`,
+    `<section aria-labelledby="windows-title"><h2 id="windows-title">Windows</h2><ul id="windows" class="agents windows"></ul></section>`,
     `<ul id="agents" class="agents"></ul>`,
   ].join(""));
 }
@@ -1306,6 +1403,7 @@ const ROUTES: Record<string, (req: Request, url: URL) => Response | Promise<Resp
   ].join("")),
   "GET /agents/history.json": (_req, url) => historyRows(url),
   "POST /agents/control": (req) => agentsControl(req),
+  "POST /agents/windows/close": (req) => windowClose(req),
 };
 
 // The answer to one of this file's routes; undefined for any other request.

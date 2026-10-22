@@ -188,9 +188,17 @@ tab IDs with a call-generation token; it never closes a page. `turn-end`
 then releases that preparation; an intervening owner call invalidates it,
 and a request without one is rejected. omp's main session sends both at
 its final `agent_end` (`omp/index.ts`); subagents share its process id and
-send nothing. When an owner process exits, the daemon releases its
-disposable pages and empty windows by itself. Kept, changed and front
-pages stay either way.
+send nothing. When an owner process exits, the daemon releases its pages
+and empty windows by itself, including pages it clicked. Active calls and
+pending handoffs are not interrupted.
+
+ordinary unused pages close after 20 minutes. unfinished forms, pages deliberately left for you, and your front page stay open. the windows page lets you close them yourself.
+
+`/agents#windows` lists every durably registered window, even after its
+agent record has gone. Close window confirms before closing that window's
+tabs, including kept pages. A copied or unknown window page grants no
+close authority. Automatic cleanup keeps form and front-page protection
+after Safari restarts, and restores only proven ownership.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),
@@ -259,6 +267,11 @@ extension, which gives every tab a new id; the extension maps the ids
 agents hold to the new ones and tells the daemon, so each agent keeps its
 tabs. An agent session keeps its MCP server's code, and omp's extension,
 until it restarts.
+
+Normal deployments must contain both the selected release and the running
+release in their Git history. Unknown or unrelated history is refused
+before a release is built or selected. Use the current installer; an old
+script without this check cannot enforce it.
 
 `scripts/dev-install.sh --rollback` selects the previous release only when
 its reader supports the current writer's checkpoint format. Version-2

@@ -13,13 +13,18 @@ Tabs
   is his front tab, only when he asks about his page. Never navigate,
   type in, or close his tabs.
 - `open` on a site where you have a tab loads in it (`new: true` for a
-  second). Your tabs close when your turn ends, so a task's last call is
-  never `close`. Kept pages, changed pages, pending handoffs, unsent
-  forms, and his front tab stay. `keep` a page meant for him.
+  second). Your tabs close when your turn ends or your agent exits, so a
+  task's last call is never `close`. Ordinary unused pages close after 20
+  minutes, even if you clicked them. Kept pages, pending handoffs, unsent
+  forms, and his front tab stay. `keep` only a page he still needs; do not
+  keep a finished result unless he asked to leave it open.
 - A tab id you hold keeps working after its tab closed idle or at a turn's
   end: the next call opens the page again, fresh, and names the new id.
   Snapshot before acting there. Do not open another tab or start another
   `repl --session` for it.
+- Every window page links to Windows (`/agents#windows`), which lists all
+  registered windows, including finished tasks. Close window asks before
+  closing that window and its kept pages. Never use it to close his windows.
 - When a call says he paused or stopped you, do what it says.
 - After Give back, read a fresh whole-page snapshot or extract of that
   tab before acting. A queued action cannot reuse the old view.

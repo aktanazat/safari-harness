@@ -17,6 +17,7 @@ const closes: unknown[][] = [];
 const opens: unknown[][] = [];
 const relays: unknown[][] = [];
 const gone = new Set<number>();
+const forms = new Set<number>();
 let showing: { id: number; url: string; windowId?: number }[] = [];
 let nextTab = 0;
 let nextWindow = 0;
@@ -25,16 +26,29 @@ let onClose = () => {};
 afterEach(() => { closes.length = 0; hisFront = undefined; });
 const SIGN_IN_PAGE = { name: "", type: "text/html", size: 13, disposition: null, url: "https://slack.com/signin", data: Buffer.from("<html>sign in").toString("base64") };
 function answer(op: string, args: unknown[]): unknown {
-  if (op === "windows.open") return { windowId: ++nextWindow, tabId: 900 + nextWindow };
-  if (op === "tabs.open") return { id: ++nextTab, windowId: args[2] };
+  if (op === "windows.open") {
+    const tabId = 900 + ++nextWindow;
+    showing.push({ id: tabId, url: String(args[0]), windowId: nextWindow });
+    return { windowId: nextWindow, tabId };
+  }
+  if (op === "tabs.open") {
+    const tab = { id: ++nextTab, url: String(args[0]), windowId: Number(args[2]) };
+    gone.delete(tab.id);
+    showing.push(tab);
+    return tab;
+  }
   if (op === "tabs.navigate") {
     const shown = showing.find((t) => t.id === args[0]);
     if (shown) shown.url = String(args[1]);
     return { id: args[0], url: args[1] };
   }
-  if (op === "tabs.list") return showing;
+  if (op === "tabs.list") return [...new Map(showing.filter(t => !gone.has(t.id)).map(t => [t.id, t])).values()];
   if (op === "probe") return [];
-  if (op === "relay" && args[0] === 1 && args[1] === "click") return { ok: true, newTab: { id: 100 } };
+  if (op === "relay" && args[1] === "type") forms.add(Number(args[0]));
+  if (op === "relay" && args[0] === 1 && args[1] === "click") {
+    showing.push({ id: 100, url: "https://example.com/popup", windowId: showing.find(t => t.id === 1)?.windowId });
+    return { ok: true, newTab: { id: 100 } };
+  }
   // a page's fetch carries its site's cookies; the extension's own fetch,
   // without them, gets the site's sign-in page, and so does a page's on a
   // site the user is signed out of
@@ -44,6 +58,7 @@ function answer(op: string, args: unknown[]): unknown {
   }
   if (op === "fetchFile") return SIGN_IN_PAGE;
   if (op === "tabs.close" && args[1] === "idle" && args[0] === hisFront) return { ok: false, front: true };
+  if (op === "tabs.close" && args[1] === "idle" && forms.has(Number(args[0]))) return { ok: false, protected: "form" };
   return { ok: true };
 }
 const ext = {
@@ -52,7 +67,7 @@ const ext = {
     const value = answer(op, args);
     if (op === "tabs.open") opens.push(args);
     if (op === "relay") relays.push(args);
-    if (op === "tabs.close" && !(typeof value === "object" && value !== null && "front" in value)) gone.add(Number(args[0]));
+    if (op === "tabs.close" && typeof value === "object" && value !== null && "ok" in value && value.ok === true) gone.add(Number(args[0]));
     bridge.handleMessage(JSON.stringify(op === "relay" && gone.has(Number(args[0])) ? { id, error: "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user" } : { id, value }));
     if (op === "tabs.close") {
       closes.push(args);
@@ -98,17 +113,19 @@ afterAll(async () => {
 test("a restarted daemon closes an exited agent's tabs by itself, never another owner's", async () => {
   const exited = Bun.spawnSync(["true"]).pid;
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  showing = [{ id: 11, url: "https://exited.example/" }, { id: 12, url: "https://working.example/" }];
   writeFileSync(file, JSON.stringify({ 11: exited, 12: process.pid }));
   loadTabs(file);
   await closedAs("idle", [11]);
   await settled();
   expect(closesAs("idle")).toEqual([11]);
-  expect(JSON.parse(readFileSync(file, "utf8")).tabs).toEqual({ 12: { owner: process.pid, used: expect.any(Number), seen: expect.any(Number) } });
+  expect(JSON.parse(readFileSync(file, "utf8")).tabs).toMatchObject({ 12: { owner: process.pid } });
+  expect(JSON.parse(readFileSync(file, "utf8")).tabs).not.toHaveProperty("11");
 });
 
 // An agent that is done need not spend a turn on close. One it asked to
 // keep is the user's.
-test("admitted cleanup after exit releases disposable tabs and popups but preserves kept and changed pages", async () => {
+test("admitted cleanup after exit releases clicked pages and popups but preserves kept pages", async () => {
   const agent = keeper();
   const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   await as("open", { url: "https://example.com/", background: true }); // tab 1
@@ -120,11 +137,10 @@ test("admitted cleanup after exit releases disposable tabs and popups but preser
   await as("close", { tab: 5 });
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs("idle", [2, 4, 100]);
+  await closedAs("idle", [1, 2, 4, 100]);
   await settled();
-  expect(closesAs("idle").filter(tab => tab !== 5)).toEqual([2, 4, 100]);
-  expect(gone.has(1)).toBe(false);
-  await as("close", { tab: 1 });
+  expect(closesAs("idle").filter(tab => tab !== 5)).toEqual([1, 2, 4, 100]);
+  expect(gone.has(3)).toBe(false);
 });
 
 // Tabs an agent left open as it handed the turn back to the user piled up
@@ -324,6 +340,7 @@ test("a model's open loads in its agent's tab on that site, never in a form in p
   expect(b.note).toContain("in place of https://shop.example/a");
   expect(urlOf(a)).toBe("https://shop.example/b");
   await model(agent.pid, "click", { tab: a, ref: "Next" });
+  await model(agent.pid, "type", { tab: a, ref: "Address", text: "draft address" });
   const c = await open(agent.pid, "https://shop.example/c");
   const his = await open(other.pid, "https://shop.example/d");
   await model(agent.pid, "keep", { tab: c });
@@ -398,14 +415,15 @@ test("a sweep asks nothing of Safari while its extension is gone", async () => {
 
 // On 10-07 four deploys in three hours each gave a research agent's 13
 // tabs a fresh 20 minutes, and they stayed open in his Safari.
-test("old and recently used pages both survive a restart without current completion authority", async () => {
+test("a restart preserves the idle deadline while a recently used page remains open", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  showing = [{ id: 9021, url: "https://old.example/" }, { id: 9022, url: "https://recent.example/" }];
   writeFileSync(file, JSON.stringify({ 9021: { owner: process.pid, used: Date.now() - 21 * 60_000 }, 9022: { owner: process.pid, used: Date.now() } }));
   loadTabs(file);
   await endTurn(Bun.spawnSync(["true"]).pid);
-  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([]);
+  expect(closesAs("idle").filter(tab => tab === 9021 || tab === 9022)).toEqual([9021]);
   const saved = JSON.parse(readFileSync(file, "utf8"));
-  expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9021", "9022"]);
+  expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9022"]);
 });
 
 // On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.
