@@ -369,7 +369,14 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 // one try each sweep, each a wait in the extension's queue. A page
 // already gone is closed.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
-const unclosed = new Map<Space, { tries: number; at: number }>();
+const unclosed = new Map<Space | string, { tries: number; at: number }>();
+
+function failedClose(key: Space | string, name: string, error: string): void {
+  const tries = (unclosed.get(key)?.tries ?? 0) + 1;
+  const wait = CLOSE_RETRY_MS[tries - 1];
+  unclosed.set(key, { tries, at: Date.now() + (wait ?? 0) });
+  note("window not closed", { name, error, retryS: wait === undefined ? null : wait / 1000 });
+}
 
 async function end(space: Space) {
   // once: each sweep ends again a window whose page is still open
@@ -401,10 +408,7 @@ async function end(space: Space) {
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (!why.startsWith("that tab is gone")) {
-        const tries = (failed?.tries ?? 0) + 1;
-        const wait = CLOSE_RETRY_MS[tries - 1];
-        unclosed.set(space, { tries, at: Date.now() + (wait ?? 0) });
-        note("window not closed", { name: space.name, error: why, retryS: wait === undefined ? null : wait / 1000 });
+        failedClose(space, space.name, why);
         return;
       }
     }
@@ -444,7 +448,18 @@ async function sweepOnce() {
       if (!id) continue;
       const space = registered.get(id);
       if ((!space || taskTracked?.(space.owner) === false) && making.size === 0) {
-        await closeTab(tab.id, "untracked agent status page");
+        const key = space ?? `${tab.id}:${id}`;
+        const failed = unclosed.get(key);
+        if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) continue;
+        try {
+          const result = await closeTab(tab.id, "untracked agent status page") as { ok?: boolean } | null;
+          if (result?.ok === true) unclosed.delete(key);
+          else failedClose(key, space?.name ?? "untracked agent status", "Safari did not close the status page");
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          if (why.startsWith("that tab is gone")) unclosed.delete(key);
+          else failedClose(key, space?.name ?? "untracked agent status", why);
+        }
       }
     }
     inspectUntracked = making.size > 0;

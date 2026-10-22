@@ -901,3 +901,41 @@ test("an open goes on in its agent's window while Safari lists no tabs, and fail
     o.kill();
   }
 });
+
+test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }])("untracked status close failures are bounded (registered=$registered)", async ({ registered, port }) => {
+  const s = safari();
+  const daemon = await daemonOn(port, `untracked-backoff-${registered}`);
+  const owner = agent();
+  const page = registered
+    ? pageIn(s.tabs, (await runAs(owner.pid, () => daemon.spaceWindow())).window)!
+    : { id: next++, url: `http://127.0.0.1:${port}/space?id=blocked&name=blocked&size=1100x800`, windowId: next++, active: true };
+  if (!registered) s.tabs.set(page.id, page);
+  const healthy = { id: next++, url: `http://127.0.0.1:${port}/space?id=healthy&name=healthy&size=1101x800`, windowId: next++, active: true };
+  s.tabs.set(healthy.id, healthy);
+  const close = s.ops["tabs.close"];
+  const start = Date.now();
+  let now = start;
+  const tries: number[] = [];
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== page.id) return close(args);
+    tries.push(now - start);
+    throw new Error("Safari did not close the status page");
+  };
+  daemon.loadSpaces(join(dir, `untracked-backoff-${registered}.json`), () => false);
+  try {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+      now = start + at;
+      setSystemTime(new Date(now));
+      daemon.inspectUntrackedWindows();
+      await daemon.turnEnded(owner.pid);
+    }
+    expect(tries).toEqual([0, 60_000, 180_000, 420_000]);
+    expect(s.tabs.has(healthy.id)).toBe(false);
+    expect(s.tabs.has(1)).toBe(true);
+  } finally {
+    setSystemTime();
+    s.ops["tabs.close"] = close;
+    owner.kill();
+    await owner.exited;
+  }
+});

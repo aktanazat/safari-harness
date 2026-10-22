@@ -220,6 +220,9 @@ remain protected. After a restart, status pages whose window record is
 missing close without claiming ownership of any other tabs in that window.
 Copied or reopened status pages also close when they cannot be tracked.
 Their addresses never grant permission to close other tabs in the window.
+These are task-owned tabs, including unkept `safari open` tabs; use
+`--keep` for a page that should outlive its task. Status-page closes use
+the same bounded retry limits as other agent-window cleanup.
 
 Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 `SAFARI_HARNESS_PHONE_PORT` (daemon),

@@ -435,7 +435,7 @@ const SCRIPT = String.raw`
     safeSource(row.source, page.url);
     row.time.dateTime = new Date(page.visitedAt).toISOString();
     setText(row.time, (page.observation === "agent_research" ? "read by an agent " : "viewed ") + pageTime(page));
-    setText(row.research, page.observation === "agent_research" ? [page.task, page.reason, page.partial ? "partial page" : ""].filter(Boolean).join(" · ") : "");
+    setText(row.research, page.observation === "agent_research" ? [page.reason, page.partial ? "partial page" : ""].filter(Boolean).join(" · ") : "");
     row.research.hidden = !row.research.textContent;
     setText(row.pageError, page.error || (page.state === "failed" ? "summary failed; saved page text is available." : ""));
     row.pageError.hidden = !row.pageError.textContent;
