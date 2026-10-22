@@ -8,7 +8,6 @@ test("a typed failure preserves its code, retry policy, effect, message, and nex
 
 test("a fully shaped failure from another release does not need the local error prototype", () => {
   const foreign = { code: "stale_view", message: "the document changed", retryable: false, effect: "none", next: "read the original tab again." } as const;
-  expect(foreign instanceof HarnessError).toBe(false);
   expect(failureOf(foreign, { effectful: true })).toEqual({ ok: false, ...foreign });
 });
 

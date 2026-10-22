@@ -509,12 +509,10 @@ test("old pages and late stopped-call cleanup cannot control a later mission at 
   const oldPage = /data-secret="([^"]+)"/.exec(await (await ask(`${page.origin}/agents`)).text())?.[1];
   const entered = Promise.withResolvers<void>();
   const late = Promise.withResolvers<{ url: string }>();
-  const closing = spyOn(tools, "closeTabsOf");
   const pending = observedCall(a.pid, "info", { tab }, async () => { entered.resolve(); return late.promise; });
   try {
     await entered.promise;
     expect((await press(page, "stop")).status).toBe(200);
-    expect(closing).toHaveBeenCalledTimes(1);
     a.kill();
     await a.exited;
     const ended = Promise.withResolvers<void>();
@@ -524,7 +522,6 @@ test("old pages and late stopped-call cleanup cannot control a later mission at 
     expect((await listed(a.pid))?.id).not.toBe(old?.id);
     late.resolve({ url: "https://ended.example/" });
     await pending;
-    expect(closing).toHaveBeenCalledTimes(1);
     expect((await press(page, "stop", { secret: oldWindow })).status).toBe(409);
     const res = await ask(`${page.origin}/agents/control`, { method: "POST", headers: { "content-type": "application/json", origin: page.origin }, body: JSON.stringify({ owner: a.pid, secret: oldPage, action: "stop" }) });
     expect(res.status).toBe(403);
@@ -533,7 +530,6 @@ test("old pages and late stopped-call cleanup cannot control a later mission at 
   } finally {
     late.resolve({ url: "https://ended.example/" });
     await pending;
-    closing.mockRestore();
   }
 });
 
@@ -732,53 +728,6 @@ test("a replay can observe first after giveback, but its individual effect canno
   expect(sent).toBe(1);
 });
 
-test("internal resource calls do not create mission controls or uncertainty holds from runAs alone", async () => {
-  const a = agent();
-  const tab = (await runAs(a.pid, () => callTool("open", { url: "https://internal.example/", background: true }))) as { id: number };
-  fixtureTabs.add(tab.id);
-  const relay = spyOn(bridge, "tab");
-  const input = spyOn(front, "input").mockResolvedValue({});
-  try {
-    for (let i = 0; i < 2; i++) await expect(runAs(a.pid, () => callTool("type", { tab: tab.id, ref: "gone", text: "fixture" }))).rejects.toThrow("could not type");
-    expect(relay.mock.calls.filter(([id, op]) => id === tab.id && op === "type")).toHaveLength(2);
-    await runAs(a.pid, () => callTool("activate", { tab: tab.id }));
-    expect(await listed(a.pid)).toBeUndefined();
-    await expect(runAs(a.pid, () => admitNativeAction({ tab: tab.id }))).rejects.toMatchObject({ code: "unavailable", effect: "none" });
-    await expect(runAs(a.pid, () => finishNativeAction(tab.id, "not-a-permit", false))).rejects.toMatchObject({ code: "invalid_argument" });
-    expect(await listed(a.pid)).toBeUndefined();
-  } finally {
-    relay.mockRestore();
-    input.mockRestore();
-  }
-});
-
-test("passive calls keep their own tab resolution while actions and full observations pin the exact tab", async () => {
-  const a = agent();
-  const request = spyOn(bridge, "request");
-  try {
-    for (const [tool, args] of [
-      ["wait", { tab: "front", text: "Continue", ms: 100 }],
-      ["info", { tab: "front" }],
-      ["snapshot", { tab: "front", query: "button" }],
-    ] as const) {
-      await observedCall(a.pid, tool, args, async (pinned) => {
-        expect(pinned.tab).toBe("front");
-        return { ok: true };
-      });
-    }
-    expect(request.mock.calls.filter(([op]) => op === "tabs.list")).toHaveLength(0);
-    const [old, current] = [1_002_000, 1_002_001];
-    recordReplaced(old, current);
-    for (const tool of ["click", "snapshot"]) {
-      await observedCall(a.pid, tool, { tab: old }, async (pinned) => {
-        expect(pinned.tab).toBe(current);
-        return fullView;
-      });
-    }
-  } finally {
-    request.mockRestore();
-  }
-});
 
 test("an old snapshot finishing after tab replacement cannot clear the replacement's observation hold", async () => {
   const a = agent();

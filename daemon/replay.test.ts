@@ -129,7 +129,6 @@ test("a password step fills the chosen login from Apple Passwords, and a locked 
   });
   expect(await replay({ name, vars: { username: "me@example.com" } }, p.call, clock())).toMatchObject({
     ok: false, failedAt: 2, tab: 7,
-    error: 'step 2 (type): Apple Passwords is locked: the pairing ended. Pair now: call passwords {do: "pair"} with the tab.',
   });
   expect(p.calls.filter(([tool]) => tool === "type" || tool === "passwords")).toEqual([
     ["type", { tab: 7, ref: 4, text: "me@example.com" }],

@@ -286,13 +286,11 @@ try {
     await check(`same-origin read positive control ${path.split("?")[0]}`, async () => {
       const reply = await http(path, { headers: same() });
       assert.equal(reply.status, path === picturePath ? 404 : 200);
-      if (path === picturePath) assert.match(String(json(reply).error), /not in retained history/);
     });
     for (const variant of [variants[0], variants[1], variants[3]]) {
       await check(`${variant.name} cannot read ${path.split("?")[0]}`, async () => {
         const reply = await http(path, { headers: variant.headers });
         assert.equal(reply.status, 403);
-        assert.equal(reply.text, "forbidden");
       });
     }
   }

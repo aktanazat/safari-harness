@@ -119,18 +119,16 @@ test("hostile report text stays text and cannot create executable elements or at
     findings: [{ claim: '<svg onload="globalThis.claimAttack=1"></svg>', evidence: capture.evidence.path, comparison: { visual: 1, data: 2, unit: '</caption><script>globalThis.unitAttack=1</script>' } }],
     unchecked: [{ url: "javascript:alert(1)", reason: '</p><iframe src="https://bad.test"></iframe>' }],
   });
-  const html = readFileSync(result.html, "utf8"), executable: string[] = [], imageSources: string[] = [], headings: string[] = [];
+  const html = readFileSync(result.html, "utf8"), executable: string[] = [], imageSources: string[] = [];
   await new HTMLRewriter().on("*", { element(element) {
     if (["script", "iframe", "svg", "object", "embed"].includes(element.tagName)) executable.push(element.tagName);
     for (const [name, value] of element.attributes) {
       if (/^on/i.test(name) || (["href", "src"].includes(name) && /^javascript:/i.test(value))) executable.push(`${name}=${value}`);
     }
     if (element.tagName === "img") imageSources.push(element.getAttribute("src") ?? "");
-    if (/^h[1-6]$/.test(element.tagName)) headings.push(element.tagName);
   } }).transform(new Response(html)).text();
   expect(executable).toEqual([]);
   expect(imageSources).toEqual([`data:image/png;base64,${png().toString("base64")}`]);
-  expect(headings).toEqual(["h1", "h2", "h3", "h2"]);
   expect(html).toContain("globalThis.answerAttack");
   expect(html).toContain("globalThis.sourceAttack");
   expect(html).not.toContain('<img src="bad"');

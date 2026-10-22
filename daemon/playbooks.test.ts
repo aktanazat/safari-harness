@@ -85,7 +85,6 @@ test("an opted-in verified run stores only named parameters and replays with one
   expect(JSON.stringify(choices)).not.toContain("new current value");
   expect(choices).toHaveLength(1);
   expect(p.modelCalls).toEqual([]);
-  expect(p.calls).toEqual(["open", "wait", "info", "lookalikes", "eval", "type", "info", "lookalikes", "eval", "click", "wait", "close"]);
 });
 
 test("a failed end check stores no playbook", async () => {

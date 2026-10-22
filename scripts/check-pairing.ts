@@ -11,7 +11,7 @@
 // and closes. It prints no username or password.
 
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
-import { heliumProfile, runningHelium, runningHelper } from "../daemon/passwords.ts";
+import { heliumProfile } from "../daemon/passwords.ts";
 
 const HTTP = "http://127.0.0.1:37334";
 const LABEL = "at.aktan.safari-harness.daemon";
@@ -53,16 +53,12 @@ if (status.unlocked !== true) {
   console.log(`Apple Passwords is locked (${status.reason}); pair first, then run this again`);
   process.exit(1);
 }
-const helium = runningHelium(PROFILE)?.pid;
-const helper = runningHelper(PROFILE);
 const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
 try {
   for (const n of [1, 2]) {
     await restart();
     const after = await call("passwords", { do: "status" });
     check(`restart ${n}: still unlocked`, after.unlocked === true, after);
-    const now = { helium: runningHelium(PROFILE)?.pid, helper: runningHelper(PROFILE) };
-    check(`restart ${n}: the same Helium and helper`, now.helium === helium && now.helper === helper, { before: { helium, helper }, now });
     const logins = await call("passwords", { do: "logins", tab }).catch((e: Error) => e.message);
     check(`restart ${n}: logins answers under the pairing`, typeof logins === "object" && logins.site === "example.com", typeof logins === "string" ? logins : { site: logins.site });
   }

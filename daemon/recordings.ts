@@ -12,11 +12,6 @@ import type { Fingerprint } from "./fingerprint.ts";
 export type Field = { type: string; autocomplete: string; name: string; id: string; label: string };
 export type Recording = { url: string; steps: unknown[]; title?: unknown; startedAt?: unknown };
 
-// content.js judges each field as he types; this copy judges each step
-// again before it is saved, so a page script that sent a secret's text
-// still leaves only its kind on disk. Keep it as content.js's copy between
-// its "shared with daemon/recordings.ts" markers: recordings.test.ts runs
-// both on one table.
 const SECRET_HINTS = { password: /passw|passcode|\bpin\b/i, code: /\botp\b|one.?time|verification.?code|\b2fa\b|\bmfa\b/i, card: /\bcc-|card|cvv|cvc|csc|expir|security.?code/i };
 
 export function secretOfField(f: Field): string | null {

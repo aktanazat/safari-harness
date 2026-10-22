@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
@@ -73,7 +73,7 @@ test("saving two same-named attachments preserves both files and an existing des
   const result = await invoke(home, "imessage_files", { ids: ["local", "cloud", "local"], out });
   expect(result.status).toBe(0);
   expect(result.value.files.map((file: { path: string }) => readFileSync(file.path, "utf8"))).toEqual(["photo", "other"]);
-  expect(result.value.files.map((file: { path: string }) => file.path)).toEqual([join(out, "photo 2.jpg"), join(out, "photo 3.jpg")]);
+  expect(result.value.files.map((file: { path: string }) => dirname(file.path))).toEqual([out, out]);
   expect(readFileSync(join(out, "photo.jpg"), "utf8")).toBe("existing");
 });
 

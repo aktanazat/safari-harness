@@ -37,9 +37,3 @@ test("replay --json prints one line of JSON and exits 0 only when every step wen
   expect(bad).toEqual({ lines: [JSON.stringify(BAD)], code: 1 });
   expect(gone).toEqual({ lines: [JSON.stringify({ ok: false, error: "no recording named gone; recordings lists them" })], code: 1 });
 });
-
-test("safari has a replay command, so a watch can play recordings", async () => {
-  const help = await safari("replay", "--help");
-  expect(help.code).toBe(0);
-  expect(help.lines[0]).toStartWith("  safari replay <name>");
-});

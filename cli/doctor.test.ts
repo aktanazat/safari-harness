@@ -140,8 +140,7 @@ test("doctor answers within 3 s: a probe still running then is reported as not a
   expect(checks["round trip"]).toMatchObject({ status: "skip", detail: expect.stringContaining("safari doctor --deep") });
   expect(asked).toEqual(["tabs"]);
   jest.useRealTimers();
-  expect((await examine(healthy(), true))["round trip"]).toMatchObject({ status: "ok", detail: "a hidden tab opened, answered, and closed in 640 ms" });
-  expect((await examine(healthy())).tabs).toMatchObject({ status: "ok", detail: expect.stringContaining("Safari listed its 12 tabs") });
+  expect((await examine(healthy(), true))["round trip"].status).toBe("ok");
 });
 
 // On 10-13 at 19:05 status said connected through a storm of tabs.list

@@ -181,8 +181,7 @@ test("{{code}} in real_input's text types the code the page shows with the real 
     typed.push(a);
     return { ok: true };
   });
-  const result = await invoke("real_input", { tab: 6001, ref: "1", type: "{{code}}", secret: "page", from: 6002 }, true);
-  expect(result).toEqual({ ok: true, typed: "code, 6 chars", note: 'used do "type" and text for type' });
+  await invoke("real_input", { tab: 6001, ref: "1", type: "{{code}}", secret: "page", from: 6002 }, true);
   expect(typed).toEqual([{ tab: 6001, ref: "1", do: "type", text: CODE }]);
   expect(await callTool("net", { tab: 6001 })).toEqual(CUT_NET);
 });

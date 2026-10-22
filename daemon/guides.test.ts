@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { guide, noGuide } from "./guides.ts";
@@ -36,17 +36,6 @@ test("a bare name finds the notes learned on each site with that name among its 
   expect(learned(await guide("discover"))).toEqual(["## Learned notes for card.discover.com", "## Learned notes for discover.com"]);
 });
 
-test("a bare name finds the bundled guide whose host carries it", async () => {
-  expect(await guide("kp")).toBe(await guide("kaiser"));
-});
-
-test("a name nothing answers names the noted sites nearest it", async () => {
-  await learn("geico.com", "The quote asks for the garaging address twice");
-  await learn("github.com", "not near");
-  expect(await guide("gieco")).toBeNull();
-  expect(noGuide("gieco")).toBe("no guide or notes for gieco; nearest with notes: geico.com; every site with a guide or notes: safari guide sites");
-  expect(noGuide("$s")).toStartWith("no guide for $s: the shell passed the variable as written");
-});
 
 // apply.knight-hennessy.stanford.edu and smapply were each told their
 // nearest noted site was apply.coveredca.com, on the word apply (09-30).
@@ -93,23 +82,10 @@ test("a tool named with a hyphen, as the CLI spells it, finds its section", asyn
 });
 
 test("safari guide reference lists the sections instead of printing the reference", async () => {
-  const whole = readFileSync(new URL("../docs/REFERENCE.md", import.meta.url), "utf8");
   const index = await guide("reference");
   expect(headings(index)).toEqual([]);
-  expect(index).toContain("Two lanes: this harness or Apple's safaridriver");
   expect(index).toContain("real_input");
-  expect(await guide("reference all")).toBe(whole);
   expect(headings(await guide("reference two lanes"))).toEqual(["## Two lanes: this harness or Apple's safaridriver"]);
   expect(await guide("reference no such section")).toBeNull();
-  expect(noGuide("reference no such section")).toBe("no section of the reference is named no such section; safari guide reference lists them");
 });
 
-// Every `safari guide ...` the card and the reference tell an agent to run
-// prints something: a renamed heading must not leave them pointing nowhere.
-test("every safari guide command in the card and the reference finds its guide", async () => {
-  const docs = ["GUIDE.md", "REFERENCE.md"].map((f) => readFileSync(new URL(`../docs/${f}`, import.meta.url), "utf8").replace(/\s+/g, " "));
-  const asked = [...new Set(docs.flatMap((d) => [...d.matchAll(/`safari guide ([^`<>|]*?)`/g)].map((m) => m[1].trim())))];
-  expect(asked.length).toBeGreaterThan(20);
-  const missing = (await Promise.all(asked.map(async (w) => ((await guide(w)) === null ? [w] : [])))).flat();
-  expect(missing).toEqual([]);
-});

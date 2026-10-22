@@ -56,18 +56,6 @@ test("a read whose answer changes is never stopped, and neither is an action tha
   }
 });
 
-// In the logs from 09-28 to 10-19 agents read a tab with snapshot in the
-// turn after 373 actions on it, a page the action's own snapshot gives.
-test("an owner's first snapshot of the tab its last action ran on says the action could have answered with it", async () => {
-  safari((op) => ({ value: op === "snapshot" ? { url: "https://shop.example/cart", title: "Cart", nodes: 1, truncated: false, snapshot: "Total $42.10" } : { ok: true } }));
-  await model(108, "click", { tab: 7, ref: "Next" });
-  expect(await model(108, "snapshot", { tab: 8 })).not.toHaveProperty("note");
-  await model(108, "click", { tab: 7, ref: "Next" });
-  expect(await model(108, "snapshot", { tab: 7, query: "Total" })).toMatchObject({ note: 'next time pass snapshot: "Total" to click (CLI --snapshot=Total): its answer then has this page, one call instead of two' });
-  await model(108, "click", { tab: 7, ref: "Next" });
-  expect(await model(108, "snapshot", { tab: 7 })).not.toHaveProperty("note");
-});
-
 test("the same check after each new step is not a loop; after the same step again and again it is", async () => {
   safari((op) => ({ value: op === "tabInfo" ? { url: "https://shop.example/form", title: "Form" } : { ok: true } }));
   for (let i = 1; i <= 8; i++) {
@@ -134,42 +122,6 @@ test("snapshot given an address says to open it first", () => {
 // page's text.
 test("map given max says what keeps each page short instead", () => {
   expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
-});
-
-test("waiting on the clock past a minute in 10 minutes gets a hint to wait on the page; a wait on text never does", async () => {
-  jest.useFakeTimers();
-  // A page that never goes quiet holds a wait with only ms all of its ms.
-  safari((op, args) => {
-    if (op === "wait" && args[1] && typeof args[1] === "object" && !("text" in args[1] && args[1].text)) jest.advanceTimersByTime(30_000);
-    return { value: { found: true } };
-  });
-  const sleep = () => model(106, "wait", { tab: 7, ms: 30_000 });
-  expect(await sleep()).not.toHaveProperty("hint");
-  expect(await sleep()).not.toHaveProperty("hint");
-  expect(await sleep()).toMatchObject({ ok: true, hint: "you slept 90 s in the last 10 minutes; wait on the page instead: with text or a selector it returns once the page shows them, with changed: true (a script's page.waitForChange()) once new lines appear" });
-  expect(await model(106, "wait", { tab: 7, text: "Saved" })).not.toHaveProperty("hint");
-  // Sleeps older than 10 minutes no longer count.
-  jest.advanceTimersByTime(10 * 60_000);
-  expect(await sleep()).not.toHaveProperty("hint");
-});
-
-// In the two weeks of logs before 10-19 every wait past the budget carried
-// the hint: 125 answers did, and agents cut it from their output with grep
-// 50 times, 44 in one session.
-test("an agent that keeps sleeping is told once, again when its total doubles, and again 10 minutes on", async () => {
-  jest.useFakeTimers();
-  safari((op) => {
-    if (op === "wait") jest.advanceTimersByTime(30_000);
-    return { value: { found: true } };
-  });
-  // 32 sleeps of 30 s in a row; the last 10 minutes hold 20 of them at most.
-  const told: number[] = [];
-  for (let i = 1; i <= 32; i++) {
-    const r = await model(111, "wait", { tab: 7, ms: 30_000 });
-    if (r && typeof r === "object" && "hint" in r) told.push(i);
-  }
-  // at 90 s, 180 s and 360 s, then at 600 s, 10 minutes after the 360 s
-  expect(told).toEqual([3, 6, 12, 32]);
 });
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44

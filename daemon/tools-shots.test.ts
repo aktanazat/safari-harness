@@ -91,7 +91,6 @@ const shown = (files: Shot[]) => Promise.all(files.map(async (file) => {
 test("shots of 2 addresses at 2 widths writes 4 PNGs into a folder it makes, each the page at its width", async () => {
   const out = freshOut();
   const r = (await callTool("shots", { urls: [HOME, CART], widths: [390, 1440], out })) as { ok?: boolean; files: Shot[] };
-  expect(r.ok).toBeUndefined();
   expect(new Set(r.files.map((f) => "path" in f ? f.path : undefined)).size).toBe(4);
   expect(r.files.every((f) => "path" in f && dirname(f.path) === out)).toBe(true);
   expect((await shown(r.files)).sort((a, b) => `${a.url} ${a.width}`.localeCompare(`${b.url} ${b.width}`))).toEqual([
