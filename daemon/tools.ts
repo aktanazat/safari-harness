@@ -15,7 +15,7 @@ import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
-import { alive, currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -89,20 +89,27 @@ export async function listTabs(): Promise<TabInfo[]> {
 // page. Tools that run in the caller pass their own way to list tabs.
 export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = listTabs): Promise<number> {
   if (tab === undefined || tab === null) throw new HarnessError("invalid_argument", 'tab is required: the id open returned (CLI --tab <id>), or "front" for the tab the user has in front (CLI --tab front)');
+  let id: number;
   if (tab === "front") {
     const listed = await tabs();
     const front = listed.find((t) => t.front);
     // A listing Safari's windows did not finish names no front tab
     // (partial), which is not Safari having none.
     if (!front) throw new Error(listed.some((t) => typeof t.partial === "string") ? "Safari did not say which tab is in front within 2.5 s; try again, or name the tab by its id" : "Safari has no front tab");
-    return front.id;
+    id = front.id;
+  } else {
+    id = typeof tab === "number" ? tab : Number(tab);
+    if (!Number.isFinite(id)) throw new HarnessError("invalid_argument", 'tab must be a tab id from open, or "front"');
   }
-  const id = typeof tab === "number" ? tab : Number(tab);
-  if (!Number.isFinite(id)) throw new HarnessError("invalid_argument", 'tab must be a tab id from open, or "front"');
   // a tab Safari swapped for another is reached under its new id
   const now = followTab(id);
   const mine = harnessTabs.get(now);
   if (mine) {
+    const call = calling.getStore();
+    if (call) {
+      (mine.calls ??= new Set()).add(call.pending);
+      call.tabs.add(mine);
+    }
     mine.used = Date.now();
     save();
   }
@@ -156,7 +163,7 @@ async function openIn(group: string | undefined, space: Space, address: string, 
 async function alsoOn(tab: number, url: string): Promise<string | undefined> {
   const owner = currentOwner();
   const host = pageHost(webAddress(url));
-  const others = [...harnessTabs].filter(([id, t]) => id !== tab && t.owner === owner && !t.site);
+  const others = [...harnessTabs].filter(([id, t]) => id !== tab && matchesTask(t, owner, currentTask()) && !t.site);
   if (owner === undefined || host === undefined || others.length === 0) return undefined;
   const ids = new Set(others.map(([id]) => id));
   const had = (await listTabs().catch((): TabInfo[] => [])).filter((t) => ids.has(t.id) && pageHost(t.url) === host).map((t) => t.id);
@@ -182,7 +189,7 @@ async function reuseTab(address: string, space: Space, among?: Set<number>): Pro
   const host = pageHost(address);
   const free = (id: number) => {
     const t = harnessTabs.get(id);
-    return t !== undefined && t.owner === owner && !t.site && !t.acted && !t.closing && !reusing.has(id) && (among === undefined || among.has(id));
+    return t !== undefined && matchesTask(t, owner, currentTask()) && !t.site && !t.acted && !t.closing && !reusing.has(id) && (among === undefined || among.has(id));
   };
   if (owner === undefined || host === undefined || ![...harnessTabs.keys()].some(free)) return undefined;
   const fits = (await listTabs().catch((): TabInfo[] => [])).filter((t): t is TabInfo & { url: string } => free(t.id) && t.windowId === space.window && !t.front && pageHost(t.url) === host);
@@ -246,17 +253,17 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // started again (restored). done: cleanup was explicitly admitted for it.
 // failed: its last close at a turn's end did not close it; retry: how many
 // of those closes threw, and when the next may go (sweepOnce).
-type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
+type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
 let sweeper: Timer | undefined;
 type OwnerCalls = { epoch: string; pending: Set<Promise<void>> };
-const activeCalls = new Map<number, OwnerCalls>();
-const calling = new AsyncLocalStorage<boolean>();
-export type TurnPreparation = { owner: number; epoch: string; tabs: number[] };
+const activeCalls = new Map<number | string, OwnerCalls>();
+const calling = new AsyncLocalStorage<{ pending: Promise<void>; tabs: Set<HarnessTab> }>();
+export type TurnPreparation = { owner: number; task?: string; epoch: string; tabs: number[] };
 type TurnReceipt = { ok: true; closed: number; retained: number; failed: number; deferred: boolean; invalidated?: true };
-const endingTurns = new Map<number, Promise<TurnReceipt>>();
+const endingTurns = new Map<number | string, Promise<TurnReceipt>>();
 let sweepingTabs: Promise<void> | undefined;
 
 // Each tab the harness closed of late, with why, when, and what it showed,
@@ -401,7 +408,7 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "failed" | "retry"> & { owner?: number | null };
+  type SavedTab = Omit<HarnessTab, "owner" | "calls" | "closing" | "failed" | "retry"> & { owner?: number | null };
   type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
   let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
@@ -421,14 +428,14 @@ export function loadTabs(path: string): void {
   save();
 }
 
-function own(tab: number, owner: number | undefined) {
-  remember(tab, owner);
+function own(tab: number, owner: number | undefined, task = currentTask()) {
+  remember(tab, owner, Date.now(), task);
   save();
 }
 
 
-function remember(tab: number, owner: number | undefined, used = Date.now()) {
-  harnessTabs.set(tab, { owner, used, seen: bridge.extensionInfo?.connectedAt });
+function remember(tab: number, owner: number | undefined, used = Date.now(), task?: string) {
+  harnessTabs.set(tab, { owner, task, used, seen: bridge.extensionInfo?.connectedAt });
   if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => exited(owner)));
   sweeper ??= setInterval(sweep, 60_000);
   sweeper.unref();
@@ -452,48 +459,84 @@ export function closeTabsOf(owner: number): void {
 
 // How many tabs owner opened that are still open, wherever they are
 // (mission.ts).
-export function tabsOpenedBy(owner: number | undefined): number {
+export function tabsOpenedBy(owner: number | undefined, task?: string): number {
   let n = 0;
-  for (const t of harnessTabs.values()) if (t.owner === owner) n++;
+  for (const t of harnessTabs.values()) if (matchesTask(t, owner, task)) n++;
   return n;
 }
 
-export function* tabsOwnedBy(owner: number | undefined): Generator<number, void, unknown> {
-  for (const [tab, recorded] of harnessTabs) if (recorded.owner === owner) yield tab;
+export function* tabsOwnedBy(owner: number | undefined, task?: string): Generator<number, void, unknown> {
+  for (const [tab, recorded] of harnessTabs) if (matchesTask(recorded, owner, task)) yield tab;
+}
+
+function taskKey(owner: number, task?: string): number | string {
+  return task === undefined ? owner : JSON.stringify([owner, task]);
+}
+
+function callsFor(key: number | string, epoch?: string): OwnerCalls {
+  let calls = activeCalls.get(key);
+  if (!calls) {
+    calls = { epoch: epoch ?? randomUUID(), pending: new Set<Promise<void>>() };
+    activeCalls.set(key, calls);
+  } else if (epoch !== undefined) {
+    calls.epoch = epoch;
+  }
+  return calls;
+}
+
+async function drainTask(owner: number, task?: string): Promise<void> {
+  const key = taskKey(owner, task);
+  for (;;) {
+    const pending = activeCalls.get(key)?.pending;
+    if (pending?.size) {
+      await Promise.all(pending);
+      continue;
+    }
+    let using: Promise<void> | undefined;
+    for (const tab of harnessTabs.values()) if (matchesTask(tab, owner, task) && tab.calls?.size) {
+      using = tab.calls.values().next().value;
+      break;
+    }
+    if (!using) return;
+    await using;
+  }
 }
 
 // Drain only. The runtime rechecks its canonical completion authority after
 // this returns, then commits a release carrying these exact resources.
-export async function prepareTurnEnd(owner: number): Promise<TurnPreparation> {
-  while (activeCalls.get(owner)?.pending.size) await Promise.all(activeCalls.get(owner)!.pending);
-  const calls = activeCalls.get(owner) ?? { epoch: randomUUID(), pending: new Set<Promise<void>>() };
-  activeCalls.set(owner, calls);
-  return { owner, epoch: calls.epoch, tabs: [...harnessTabs].filter(([, t]) => t.owner === owner).map(([tab]) => tab) };
+export async function prepareTurnEnd(owner: number, task?: string): Promise<TurnPreparation> {
+  await drainTask(owner, task);
+  const calls = callsFor(taskKey(owner, task));
+  return { owner, ...(task === undefined ? {} : { task }), epoch: calls.epoch, tabs: [...tabsOwnedBy(owner, task)] };
 }
 
-export function endTurn(owner: number, prepared?: TurnPreparation): Promise<TurnReceipt> {
-  const pending = endingTurns.get(owner);
+export function endTurn(owner: number, prepared?: TurnPreparation, task?: string): Promise<TurnReceipt> {
+  const key = taskKey(owner, task);
+  const pending = endingTurns.get(owner) ?? endingTurns.get(key);
   if (pending) return pending;
-  const owned = [...harnessTabs].filter(([, t]) => t.owner === owner).map(([tab]) => tab);
-  if (prepared && (prepared.owner !== owner || prepared.epoch !== (activeCalls.get(owner)?.epoch ?? null) || prepared.tabs.length !== owned.length || owned.some(tab => !prepared.tabs.includes(tab)))) {
+  const owned = [...tabsOwnedBy(owner, task)];
+  if (prepared && (prepared.owner !== owner || prepared.task !== task || prepared.epoch !== (activeCalls.get(key)?.epoch ?? null) || prepared.tabs.length !== owned.length || owned.some(tab => !prepared.tabs.includes(tab)))) {
     return Promise.resolve({ ok: true, closed: 0, retained: owned.length, failed: 0, deferred: false, invalidated: true });
   }
   // Install the barrier synchronously: later owner calls wait for release,
   // then read a freshly reopened safe URL rather than joining this sweep.
   const ending = Promise.resolve().then(async () => {
-    await Promise.all(activeCalls.get(owner)?.pending ?? []);
-    conditionalCaptures.forgetCaller(owner);
-    const before = tabsOpenedBy(owner);
-    for (const t of harnessTabs.values()) if (t.owner === owner) t.done = true;
+    await drainTask(owner, task);
+    if (task === undefined) conditionalCaptures.forgetCaller(owner);
+    const before = tabsOpenedBy(owner, task);
+    for (const t of harnessTabs.values()) if (matchesTask(t, owner, task)) t.done = true;
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
-    await turnEnded(owner);
-    const retained = tabsOpenedBy(owner);
-    const failed = [...harnessTabs.values()].filter((t) => t.owner === owner && t.failed).length;
+    await turnEnded(owner, task);
+    const retained = tabsOpenedBy(owner, task);
+    const failed = [...harnessTabs.values()].filter((t) => matchesTask(t, owner, task) && t.failed).length;
     return { ok: true as const, closed: before - retained, retained, failed, deferred: !bridge.connected };
-  }).finally(() => endingTurns.delete(owner));
-  endingTurns.set(owner, ending);
+  }).finally(() => {
+    endingTurns.delete(key);
+    if (task !== undefined && tabsOpenedBy(owner, task) === 0 && !activeCalls.get(key)?.pending.size) activeCalls.delete(key);
+  });
+  endingTurns.set(key, ending);
   return ending;
 }
 
@@ -565,7 +608,7 @@ async function sweepOnce() {
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
   const due = [...harnessTabs].filter(([tab, t]) => {
-    if (t.closing || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(t.owner)?.pending.size)) return false;
+    if (t.closing || t.calls?.size || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task))?.pending.size)) return false;
     const handoff = handoffs.get(tab);
     if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
     const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
@@ -644,7 +687,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -675,7 +718,7 @@ bridge.onTab = (e) => {
   const from = harnessTabs.get(e.opener);
   const keeper = keepers.get(e.opener);
   if (from) {
-    own(e.tab, from.owner);
+    own(e.tab, from.owner, from.task);
     if (from.owner !== undefined) queuePopup(from.owner, { tab: e.tab, url: e.url });
   } else if (keeper !== undefined) {
     keptBy(e.tab, keeper);
@@ -2083,7 +2126,10 @@ async function agentTabOn(url: string): Promise<number | undefined> {
   const owner = currentOwner();
   const host = URL.parse(url)?.hostname;
   if (owner === undefined || !host) return undefined;
-  const onSite = (t: TabInfo) => harnessTabs.get(t.id)?.owner === owner && site(URL.parse(t.url ?? "")?.hostname ?? "") === site(host);
+  const onSite = (t: TabInfo) => {
+    const held = harnessTabs.get(t.id);
+    return held !== undefined && matchesTask(held, owner, currentTask()) && site(URL.parse(t.url ?? "")?.hostname ?? "") === site(host);
+  };
   return (await listTabs()).find(onSite)?.id;
 }
 
@@ -2232,7 +2278,7 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     const result = withEffect(await run({ ...a, tab }));
     const opened = newTabOf(result);
     const from = harnessTabs.get(tab);
-    if (opened && from) own(opened.id, from.owner);
+    if (opened && from) own(opened.id, from.owner, from.task);
     return withPage(result, tab, a.snapshot);
   };
 }
@@ -2391,7 +2437,11 @@ export const TOOLS: Record<string, Tool> = {
   tabs: {
     desc: "List your tabs, the user's front tab, and a count of his others.",
     params: { host: { type: "string", description: "list his tabs on this site" }, all: { type: "boolean", description: "list every tab" } },
-    run: async (a) => tabsView(await listTabs(), new Map([...harnessTabs].map(([id, t]) => [id, t.owner])), a),
+    run: async (a) => {
+      const owner = currentOwner();
+      const task = currentTask();
+      return tabsView(await listTabs(), new Map([...harnessTabs].map(([id, t]) => [id, matchesTask(t, owner, task) ? t.owner : undefined])), a);
+    },
   },
   open: {
     desc: 'Open a URL and wait until it is readable; pass its id as tab to later calls. tab "front": the user\'s front tab, when he asks about it.',
@@ -3070,27 +3120,39 @@ export function formatResult(value: unknown): string {
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const owner = currentOwner();
   if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news);
-  const ending = endingTurns.get(owner);
-  if (ending) await ending;
+  const task = currentTask();
+  const key = taskKey(owner, task);
+  for (;;) {
+    const ending = endingTurns.get(owner) ?? endingTurns.get(key);
+    if (!ending) break;
+    await ending;
+  }
   if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
   const settled = Promise.withResolvers<void>();
-  const active = activeCalls.get(owner) ?? { epoch: randomUUID(), pending: new Set<Promise<void>>() };
-  active.epoch = randomUUID();
-  active.pending.add(settled.promise);
-  activeCalls.set(owner, active);
+  const epoch = randomUUID();
+  const aggregate = callsFor(owner, epoch);
+  const active = task === undefined ? aggregate : callsFor(key, epoch);
+  aggregate.pending.add(settled.promise);
+  if (active !== aggregate) active.pending.add(settled.promise);
   for (const t of harnessTabs.values()) {
-    if (t.owner !== owner) continue;
+    if (!matchesTask(t, owner, task)) continue;
     delete t.done;
-    // the turn's end tries a close that failed afresh (sweepOnce)
     delete t.retry;
   }
-  turnResumed(owner);
+  turnResumed(owner, task);
   save();
+  const call = { pending: settled.promise, tabs: new Set<HarnessTab>() };
   try {
-    return await calling.run(true, () => invokeTool(name, args, model, news));
+    return await calling.run(call, () => invokeTool(name, args, model, news));
   } finally {
-    active.pending.delete(settled.promise);
-    if (active.pending.size === 0 && tabsOpenedBy(owner) === 0) activeCalls.delete(owner);
+    for (const tab of call.tabs) {
+      tab.calls?.delete(settled.promise);
+      if (tab.calls?.size === 0) delete tab.calls;
+    }
+    aggregate.pending.delete(settled.promise);
+    if (active !== aggregate) active.pending.delete(settled.promise);
+    if (aggregate.pending.size === 0 && tabsOpenedBy(owner) === 0) activeCalls.delete(owner);
+    if (task !== undefined && active.pending.size === 0 && tabsOpenedBy(owner, task) === 0) activeCalls.delete(key);
     settled.resolve();
   }
 }

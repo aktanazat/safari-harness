@@ -1,7 +1,6 @@
 // Agent windows: every tab the harness opens goes into a Safari window of
 // the agent's own, never into one of the user's windows or tab groups (his
-// ask of 09-28). A window is one assignment: the agent process a call works
-// for (currentOwner, owner.ts) and the group name open was given, if any.
+// ask of 09-28).
 // It opens behind his window, without focus, on the daemon's /space page,
 // titled with the assignment's name, which labels the window for him. The
 // page also lets the extension find the window after it reloads, which
@@ -37,7 +36,7 @@ import { lastRaised } from "./front.ts";
 import { uncover } from "./place.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { alive, currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
 import { closeTab, endUntrackedTurns, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -49,7 +48,7 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; done?: true; used?: number; proof?: string };
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -143,7 +142,8 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
 // made anew. A stuck extension's error still fails the open at once.
 export async function spaceWindow(group?: string, lost?: Space): Promise<Space> {
   const owner = currentOwner();
-  const key = `${owner ?? "daemon"}:${group ?? ""}`;
+  const task = currentTask();
+  const key = task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
   const had = spaces.get(key);
   const inWindow = had && (await located(had).catch((e: unknown) => {
     if (e instanceof TimedOut) return undefined;
@@ -164,7 +164,7 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
       const w = (await bridge.request("windows.open", [page, size])) as { windowId: number; tabId: number };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size, owner, used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      const space: Space = { key, id, window: w.windowId, name, size, owner, ...(task === undefined ? {} : { task }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
@@ -227,7 +227,7 @@ function watchExit(owner: number | undefined) {
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -493,8 +493,8 @@ async function sweepOnce() {
   }
 }
 
-export function turnResumed(owner: number | undefined): void {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) {
+export function turnResumed(owner: number | undefined, task?: string): void {
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) {
     delete s.done;
     s.used = Date.now();
   }
@@ -503,8 +503,8 @@ export function turnResumed(owner: number | undefined): void {
 
 // The runtime admitted cleanup of this owner's disposable tabs (endTurn,
 // tools.ts). Its windows can end only when nothing but their marker remains.
-export async function turnEnded(owner: number | undefined): Promise<void> {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.owner === owner) s.done = true;
+export async function turnEnded(owner: number | undefined, task?: string): Promise<void> {
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) s.done = true;
   save();
   if (spaces.size > 0 || ended.size > 0) sweepSoon();
   if (spaceSweeping) await spaceSweeping;
@@ -516,9 +516,7 @@ export async function turnEnded(owner: number | undefined): Promise<void> {
 export function spaceById(id: string): { owner?: number; window: number } | undefined {
   const space = [...spaces.values()].find((s) => s.id === id);
   if (!space) return undefined;
-  // key: "<owner, or daemon>:<group>" (spaceWindow)
-  const who = space.key.slice(0, space.key.indexOf(":"));
-  return who === "daemon" ? { window: space.window } : { owner: Number(who), window: space.window };
+  return space.owner === undefined ? { window: space.window } : { owner: space.owner, window: space.window };
 }
 
 // Whether the window whose page carries id has ended, its page left open
@@ -541,8 +539,8 @@ export function ownersByPage(tabs: TabInfo[]): Map<number, number> {
 
 // The agent windows open now, and whose each is (tabs-view.ts): a tab in
 // one is that agent's.
-export function windowOwners(): Map<number, number | undefined> {
-  return new Map([...spaces.values()].map((s) => [s.window, s.owner]));
+export function windowOwners(task?: string): Map<number, number | undefined> {
+  return new Map([...spaces.values()].map((s) => [s.window, task === undefined || s.task === task ? s.owner : undefined]));
 }
 
 // A window its agent sized (tools.ts viewport), which its keeper finds by

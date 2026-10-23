@@ -42,6 +42,21 @@ clients may cut a call at 60 s: split long waits across calls. Scripts run
 outside the page: read `document`, `window` and the rest through
 `page.evaluate(() => ...)`.
 
+omp identifies each call by its session and agent, not just its process.
+When a helper finishes, only its disposable pages are released. A sibling
+or the main session keeps its pages. Main completion releases all remaining
+pages owned by that process, including abandoned helper pages. Kept pages,
+pending handoffs and personal pages remain protected.
+
+This identity follows every REPL run, including a named session reused by
+another helper. Reusing bindings does not reuse the previous caller's page
+ownership. The omp extension adds the reserved `__safariTask` MCP argument;
+the MCP boundary removes it before Safari validates the tool arguments.
+CLI calls receive the same identity through a command-scoped
+`SAFARI_HARNESS_TASK` environment variable. A shared REPL process never uses
+its launch environment as the identity of a later run. Clients without a
+task identity retain process-wide ownership.
+
 ## Tabs
 
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes

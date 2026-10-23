@@ -47,6 +47,22 @@ export function callFor<T>(pid: number, fn: () => T): T {
   return asker.run(pid, fn);
 }
 
+// A task is scoped to one invocation, not to a shared MCP process or REPL.
+// The object also represents an explicit unnamed invocation: it must not
+// fall back to the environment inherited when a named session started.
+const tasks = new AsyncLocalStorage<{ task: string | undefined }>();
+
+export function withTask<T>(task: string | undefined, fn: () => T): T {
+  return tasks.run({ task }, fn);
+}
+
+export function currentTask(): string | undefined {
+  const context = tasks.getStore();
+  if (context !== undefined) return context.task;
+  const task = process.env.SAFARI_HARNESS_TASK;
+  return task && task.trim() ? task : undefined;
+}
+
 type Missed = "refused" | "restarting";
 
 // How long a call waits for the daemon to answer again: launchd starts a
@@ -103,7 +119,8 @@ export function takesNews(): boolean {
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
   const asked = asker.getStore();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
+  const task = currentTask();
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   const effectful = affectsPage(tool, args);
   let res = await attempt(base, body, effectful);
   if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body, effectful);

@@ -10,7 +10,7 @@
 // subagent. The user himself, at a terminal, and a caller with no agent
 // behind it get every tab.
 
-import { currentOwner, processName } from "./owner.ts";
+import { currentOwner, currentTask, processName } from "./owner.ts";
 import { siteHost } from "./notes.ts";
 import { isSpacePage, windowOwners } from "./spaces.ts";
 import type { TabInfo } from "./tools.ts";
@@ -49,7 +49,7 @@ export async function tabsView(tabs: TabInfo[], owners: Map<number, number | und
 
   // A tab the harness opened is its opener's wherever it is; any other tab
   // is the agent's whose window holds it, and the user's outside them.
-  const windows = windowOwners();
+  const windows = windowOwners(currentTask());
   const whose = (t: TabInfo): "mine" | "his" | "other" => {
     if (owners.has(t.id)) return owners.get(t.id) === me ? "mine" : "other";
     if (t.windowId !== undefined && windows.has(t.windowId)) return windows.get(t.windowId) === me ? "mine" : "other";

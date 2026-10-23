@@ -66,14 +66,22 @@ export async function processName(pid: number): Promise<string | undefined> {
 
 // ---------- daemon side ----------
 
-const scope = new AsyncLocalStorage<number | undefined>();
+const scope = new AsyncLocalStorage<{ owner?: number; task?: string }>();
 
-export function runAs<T>(pid: number | undefined, fn: () => T): T {
-  return scope.run(pid, fn);
+export function runAs<T>(pid: number | undefined, fn: () => T, task?: string): T {
+  return scope.run({ owner: pid, task }, fn);
 }
 
 export function currentOwner(): number | undefined {
-  return scope.getStore();
+  return scope.getStore()?.owner;
+}
+
+export function currentTask(): string | undefined {
+  return scope.getStore()?.task;
+}
+
+export function matchesTask(record: { owner?: number; task?: string }, owner: number | undefined, task?: string): boolean {
+  return record.owner === owner && (task === undefined || record.task === task);
 }
 
 // One sweep checks every watched pid each second (a signal-0 kill each),

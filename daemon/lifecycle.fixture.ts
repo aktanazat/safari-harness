@@ -22,7 +22,7 @@ writeFileSync(files.off, JSON.stringify({ why: "isolated lifecycle fixture" }));
 type Tab = { id: number; url: string; title?: string; windowId: number; typed?: true; front?: true };
 const tabs = new Map<number, Tab>();
 let next = 100;
-let gate: { op: string; entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
+let gate: { op: string; tab?: number; entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
 let refused = false;
 let clicks = 0;
 let opened = 0;
@@ -33,7 +33,7 @@ const extension = {
     const { id, op, args } = JSON.parse(data) as { id?: string; op: string; args: unknown[] };
     if (!id) return;
     void (async () => {
-      if (op === gate?.op) { gate.entered.resolve(); await gate.release.promise; }
+      if (op === gate?.op && (gate.tab === undefined || Number(args[0]) === gate.tab)) { gate.entered.resolve(); await gate.release.promise; }
       let value: unknown = { ok: true };
       if (op === "tabs.list") value = [...tabs.values()];
       else if (op === "probe") value = [];
@@ -68,6 +68,62 @@ const invoke = (tool: string, args: Record<string, unknown> = {}) => runAs(owner
 const open = async (path: string, more: Record<string, unknown> = {}) => (await invoke("open", { url: `https://fixture.example/${path}`, background: true, ...more })) as Tab;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+if (mode === "helper-restart") {
+  const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; first: number; second: number; main: number; kept: number; personal: number; window: number };
+  const aliases: Record<number, number> = {};
+  for (const tab of saved.tabs) {
+    aliases[tab.id] = tab.id + 1000;
+    tabs.set(tab.id + 1000, { ...tab, id: tab.id + 1000 });
+  }
+  loadTabs(state);
+  loadSpaces(join(directory, "spaces.json"), tracksOwner);
+  bridge.handleMessage(JSON.stringify({ op: "tab", kind: "renumbered", tabs: aliases }));
+  await runAs(owner, () => callTool("extract", { tab: aliases[saved.second] }), "fixture:second");
+  await endTurn(owner + 1);
+  console.log(JSON.stringify({ first: tabs.has(aliases[saved.first]), second: tabs.has(aliases[saved.second]), main: tabs.has(aliases[saved.main]), kept: tabs.has(aliases[saved.kept]), personal: tabs.has(aliases[saved.personal]), firstWindow: [...tabs.values()].some(tab => tab.windowId === saved.window) }));
+} else if (mode.startsWith("helper-")) {
+  loadTabs(state);
+  loadSpaces(join(directory, "spaces.json"), () => true);
+  const asTask = (task: string, tool: string, args: Record<string, unknown>) => runAs(owner, () => callTool(tool, args), task);
+  const openTask = (task: string, path: string, more: Record<string, unknown> = {}) => asTask(task, "open", { url: `https://fixture.example/${path}`, background: true, group: "research", ...more }) as Promise<Tab>;
+  const main = await openTask("fixture:main", "main");
+  const first = await openTask("fixture:first", "first");
+  const second = await openTask("fixture:second", "second");
+  const kept = await openTask("fixture:first", "kept", { keep: true, group: "kept" });
+  const personal = ++next;
+  tabs.set(personal, { id: personal, url: "https://personal.example/", windowId: 1 });
+  if (mode === "helper-seed") {
+    bridge.detach(extension);
+    const prepared = await prepareTurnEnd(owner, "fixture:first");
+    const receipt = await endTurn(owner, prepared, "fixture:first");
+    writeFileSync(browser, JSON.stringify({ tabs: [...tabs.values()], first: first.id, second: second.id, main: main.id, kept: kept.id, personal, window: first.windowId }));
+    console.log(JSON.stringify({ deferred: receipt.deferred, retained: receipt.retained }));
+  } else if (["helper-busy", "helper-sibling-busy", "helper-shared-read", "helper-shared-front"].includes(mode)) {
+    const target = mode === "helper-sibling-busy" ? second : first;
+    const task = mode === "helper-busy" ? "fixture:first" : "fixture:second";
+    gate = { op: "relay", tab: target.id, entered: Promise.withResolvers(), release: Promise.withResolvers() };
+    if (mode === "helper-shared-front") tabs.get(first.id)!.front = true;
+    const running = asTask(task, "extract", { tab: mode === "helper-shared-front" ? "front" : target.id });
+    await gate.entered.promise;
+    let reported = false;
+    const ending = endTurn(owner, undefined, "fixture:first").then(receipt => { reported = true; return receipt; });
+    for (let n = 0; n < 10; n++) await flush();
+    const whileBusy = { reported, first: tabs.has(first.id), second: tabs.has(second.id) };
+    gate.release.resolve();
+    await running;
+    const receipt = await ending;
+    console.log(JSON.stringify({ whileBusy, first: tabs.has(first.id), second: tabs.has(second.id), main: tabs.has(main.id), receipt }));
+  } else {
+    const prepared = await prepareTurnEnd(owner, "fixture:first");
+    if (mode === "helper-stale") await asTask("fixture:first", "extract", { tab: first.id });
+    else await asTask("fixture:second", "extract", { tab: second.id });
+    if (mode === "helper-foreign") prepared.task = "fixture:second";
+    const receipt = await endTurn(owner, prepared, "fixture:first");
+    const afterHelper = { first: tabs.has(first.id), second: tabs.has(second.id), main: tabs.has(main.id), kept: tabs.has(kept.id), personal: tabs.has(personal), firstWindow: [...tabs.values()].some(tab => tab.windowId === first.windowId) };
+    await endTurn(owner);
+    console.log(JSON.stringify({ separateWindows: new Set([main.windowId, first.windowId, second.windowId]).size === 3, afterHelper, afterMain: { main: tabs.has(main.id), second: tabs.has(second.id), kept: tabs.has(kept.id), personal: tabs.has(personal) }, receipt }));
+  }
+} else
 if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-same-resume"].includes(mode)) {
   const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; disposable: number[]; kept: number; handoff: number; personal: number; window: number };
   const aliases: Record<number, number> = {};

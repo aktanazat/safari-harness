@@ -175,7 +175,7 @@ carry a password.
 | Port  | What |
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
-| 37334 | HTTP: `POST /rpc {tool,args}`, `GET /health`, `POST /turn-end/prepare {owner}`, `POST /turn-end {owner,prepared}`, `POST /shutdown` |
+| 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
 | 37335 | HTTP on 127.0.0.1, from the first card approval: the page his iPhone opens to approve a card fill, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
@@ -186,17 +186,20 @@ the bridge's extension origin may take `/passwords`. 37335 serves only the
 approval page: an answer must come from that page's own origin and carry
 the card's passkey signature over that request's challenge.
 
-`turn-end/prepare` drains the owner's active calls and returns exact owned
-tab IDs with a call-generation token; it never closes a page. `turn-end`
-then releases that preparation; an intervening owner call invalidates it,
-and a request without one is rejected. omp's main session sends both at
-its final `agent_end` (`omp/index.ts`); subagents share its process id and
-send nothing. An admitted completed turn or the owning process's exit
-immediately closes disposable agent tabs and their empty windows. This
-includes clicked pages, filled fields, site-global tabs and an agent page
-in front. Pages explicitly kept for the user and pending handoffs stay
-protected; the user's own tabs are never part of this cleanup. Active
-calls finish before cleanup.
+`turn-end/prepare` drains the requested task's active calls and returns exact
+owned tab IDs with a call-generation token; it never closes a page.
+`turn-end` releases that preparation. New work in the same task invalidates
+it; unrelated helpers do not. A request without a preparation is rejected.
+omp tags browser calls with the session and agent identity, including calls
+through the CLI and shared REPLs. Each helper's final `agent_end` releases
+only its pages and empty windows. Main-session completion or process exit
+also releases any abandoned descendants. Identically named groups in
+different tasks still get separate windows. Clicked pages, filled fields,
+site-global tabs and an agent page in front are included. Pages explicitly
+kept for the user, pending handoffs and personal tabs stay protected.
+Cleanup waits for a task's in-flight calls and any shared reads using its
+pages, not for unrelated sibling work. Existing omp processes retain their
+loaded extension; new sessions load this task-aware completion hook.
 
 Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
 with the existing form, front-page, kept-page and handoff protections.

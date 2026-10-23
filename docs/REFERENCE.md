@@ -134,16 +134,18 @@ Safari is the user's everyday browser, so treat his tabs as his.
 
 ### Cleanup authority
 
-- An admitted completed turn from the main session immediately closes
-  disposable agent tabs and their empty windows. The owning process's
-  exit does the same. Clicked pages, script-changed pages, filled fields,
-  site-global tabs and an agent page in front are included. A subagent's
-  end, cancellation mid-turn or tab count is not completed-turn cleanup
-  authority.
-- Cleanup first drains active calls without closing anything. Safari then
-  checks the exact prepared tab ids and call generation before closing.
-  New work invalidates the preparation. Ownership must be proven; the
-  user's own tabs are never part of this cleanup.
+- An admitted completed turn from a helper closes only that helper's
+  disposable tabs and empty windows. Main-session completion or process
+  exit also releases abandoned descendants. The session and agent identity,
+  not a group label or shared process id, keeps helpers apart. Clicked
+  pages, script-changed pages, filled fields, site-global tabs and an agent
+  page in front are included. Cancellation mid-turn or tab count alone is
+  not completed-turn cleanup authority.
+- Cleanup drains the matching task's active calls and any pending reads of
+  its pages. Unrelated siblings can keep working. Safari checks the exact
+  prepared tab ids, task and call generation before closing. New work in
+  that task invalidates its preparation; sibling work does not. Ownership
+  must be proven; the user's own tabs are never part of this cleanup.
 - Pages explicitly kept for the user and pending handoffs stay protected.
   A protected or foreign tab keeps its window intact; cleanup does not
   move it to make a group deletable. Use `keep` for a page he still needs,

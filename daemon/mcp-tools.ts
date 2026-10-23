@@ -10,6 +10,7 @@ import { CALLER_GROUPS } from "./caller.ts";
 import { invoke } from "./call.ts";
 import { saveAnswer } from "./save.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
+import { withTask } from "./rpc.ts";
 
 // This connection's own REPL session: its bindings last as long as the
 // connection runs this release, and its tabs close with it.
@@ -65,11 +66,15 @@ const REPLY_CHARS = 30_000;
 
 // A call's answer as the client reads it; a failed call throws.
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
-  const value = name === "repl" ? await REPL_TOOL.run(args) : await invoke(name, args, true);
-  const text = formatResult(value);
-  if (text.length <= REPLY_CHARS) return text;
-  const path = await saveAnswer(text);
-  return `${text.slice(0, REPLY_CHARS)}\n…cut at ${REPLY_CHARS} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
+  const { __safariTask, ...input } = args;
+  const task = typeof __safariTask === "string" && __safariTask.trim() ? __safariTask : undefined;
+  return withTask(task, async () => {
+    const value = name === "repl" ? await REPL_TOOL.run(input) : await invoke(name, input, true);
+    const text = formatResult(value);
+    if (text.length <= REPLY_CHARS) return text;
+    const path = await saveAnswer(text);
+    return `${text.slice(0, REPLY_CHARS)}\n…cut at ${REPLY_CHARS} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
+  });
 }
 
 // The connection ends: the REPL session's tabs close.

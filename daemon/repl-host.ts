@@ -24,7 +24,7 @@ import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
 import { pageHost } from "./notes.ts";
 import { ownerOf, watchOwner } from "./owner.ts";
-import { callFor, ownCalls } from "./rpc.ts";
+import { callFor, currentTask, ownCalls, withTask } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
 const IDLE_MS = 30 * 60_000;
@@ -66,6 +66,7 @@ async function start(id: string, host: string | undefined, endsWith: number | un
   await chmod(REPL_DIR, 0o700);
   await unlink(socketOf(id)).catch(() => {});
   const env = { ...process.env };
+  delete env.SAFARI_HARNESS_TASK;
   const remote = env.SAFARI_HARNESS_REMOTE;
   if (remote) {
     delete env.SAFARI_HARNESS_HTTP;
@@ -96,6 +97,7 @@ async function start(id: string, host: string | undefined, endsWith: number | un
 // when the process endsWith names does, if one is named.
 export async function runInSession(id: string, code: string, opts: { host?: string; timeoutMs?: number; endsWith?: number } = {}): Promise<ReplResult & { started: boolean; hint?: string }> {
   checkSessionId(id);
+  const task = currentTask();
   let started = false;
   const running = await info(id);
   if (!running) {
@@ -104,7 +106,7 @@ export async function runInSession(id: string, code: string, opts: { host?: stri
   } else if (opts.host && opts.host !== running.host) {
     throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
   }
-  const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid });
+  const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid, ...(task === undefined ? {} : { task }) });
   const result = { ...((await res.json()) as ReplResult), started };
   const hint = started ? await alsoRunning(id) : undefined;
   return hint === undefined ? result : { ...result, hint };
@@ -182,14 +184,16 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
         return Response.json({ ok: true });
       }
       if (route === "/run") {
-        const { code, timeoutMs, caller } = (await req.json()) as { code: string; timeoutMs?: number; caller?: number };
+        const { code, timeoutMs, caller, task } = (await req.json()) as { code: string; timeoutMs?: number; caller?: number; task?: string };
         busy += 1;
         clearTimeout(idle);
         try {
-          const run = () => session.run(String(code), timeoutMs);
-          if (!(Number.isInteger(caller) && Number(caller) > 1)) return Response.json(await run());
-          owner = (await ownerOf(Number(caller))) ?? owner;
-          return Response.json(await callFor(Number(caller), run));
+          return await withTask(typeof task === "string" && task.trim() ? task : undefined, async () => {
+            const run = () => session.run(String(code), timeoutMs);
+            if (!(Number.isInteger(caller) && Number(caller) > 1)) return Response.json(await run());
+            owner = (await ownerOf(Number(caller))) ?? owner;
+            return Response.json(await callFor(Number(caller), run));
+          });
         } finally {
           busy -= 1;
           lastUsed = new Date().toISOString();

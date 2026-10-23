@@ -23,6 +23,33 @@ async function fixture(mode: string, directory?: string): Promise<Record<string,
   }
 }
 
+test("helper completion closes only its own window while unrelated task calls leave its admission valid", async () => {
+  expect(await fixture("helper-isolation")).toMatchObject({
+    separateWindows: true,
+    afterHelper: { first: false, firstWindow: false, second: true, main: true, kept: true, personal: true },
+    afterMain: { main: false, second: false, kept: true, personal: true },
+    receipt: { closed: 1, retained: 0, failed: 0 },
+  });
+});
+
+test.each(["helper-stale", "helper-foreign"])("%s cannot release a helper's pages with an invalid admission", async mode => {
+  expect(await fixture(mode)).toMatchObject({ afterHelper: { first: true, second: true, main: true }, receipt: { invalidated: true, closed: 0 } });
+});
+
+test.each(["helper-busy", "helper-shared-read", "helper-shared-front"])("%s finishes its page's pending work before releasing it", async mode => {
+  expect(await fixture(mode)).toMatchObject({ whileBusy: { reported: false, first: true, second: true }, first: false, second: true, main: true, receipt: { closed: 1, retained: 0 } });
+});
+
+test("helper completion does not wait for a busy sibling on a different page", async () => {
+  expect(await fixture("helper-sibling-busy")).toMatchObject({ whileBusy: { reported: true, first: false, second: true }, first: false, second: true, main: true, receipt: { closed: 1, retained: 0 } });
+});
+
+test("a helper's deferred completion survives restart and a sibling's next call", async () => {
+  const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
+  expect(await fixture("helper-seed", directory)).toEqual({ deferred: true, retained: 1 });
+  expect(await fixture("helper-restart", directory)).toEqual({ first: false, firstWindow: false, second: true, main: true, kept: true, personal: true });
+});
+
 test("completion stays pending until owned pages close and leaves a kept page open", async () => {
   expect(await fixture("completion")).toMatchObject({ reportedWhileBusy: false, remaining: false, kept: true, receipt: { closed: 1, retained: 0, failed: 0 } });
 });

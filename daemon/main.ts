@@ -224,9 +224,13 @@ const rpcServer = Bun.serve({
         const failure = failureOf(new HarnessError("invalid_argument", "bad json"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
       }
-      const { tool, args, caller, own, model, news } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown };
+      const { tool, args, caller, own, model, news, task } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown; task?: unknown };
       if (!tool) {
         const failure = failureOf(new HarnessError("invalid_argument", "missing tool"));
+        return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
+      }
+      if (task !== undefined && (typeof task !== "string" || task.length === 0)) {
+        const failure = failureOf(new HarnessError("invalid_argument", "task must be a nonempty string"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
       }
       inFlight++;
@@ -236,7 +240,7 @@ const rpcServer = Bun.serve({
         // news: false leaves the agent's news to a later call (rpc.ts).
         const pid = Number.isInteger(caller) && Number(caller) > 1 ? Number(caller) : undefined;
         const owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
-        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false)));
+        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false), task));
         return Response.json({ ok: true, value });
       } catch (e) {
         const failure = failureOf(e, { effectful: affectsPage(tool, args ?? {}) });
@@ -251,14 +255,16 @@ const rpcServer = Bun.serve({
       const body = safeParse(await req.text());
       const owner = body?.owner;
       if (!Number.isInteger(owner) || Number(owner) <= 1) return Response.json({ ok: false, error: "owner must be a process id" }, { status: 400 });
+      const task = body?.task;
+      if (task !== undefined && (typeof task !== "string" || task.length === 0)) return Response.json({ ok: false, error: "task must be a nonempty string" }, { status: 400 });
       inFlight++;
       try {
-        if (url.pathname === "/turn-end/prepare") return Response.json(await prepareTurnEnd(Number(owner)));
+        if (url.pathname === "/turn-end/prepare") return Response.json(await prepareTurnEnd(Number(owner), task));
         const prepared = body?.prepared;
         if (!prepared || typeof prepared !== "object" || !("owner" in prepared) || prepared.owner !== owner || !("epoch" in prepared) || typeof prepared.epoch !== "string" || !("tabs" in prepared) || !Array.isArray(prepared.tabs) || !prepared.tabs.every(tab => Number.isInteger(tab) && tab > 0)) {
           return Response.json({ ok: false, error: "a current owned-resource preparation is required" }, { status: 409 });
         }
-        return Response.json(await endTurn(Number(owner), prepared as TurnPreparation));
+        return Response.json(await endTurn(Number(owner), prepared as TurnPreparation, task));
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
       }
