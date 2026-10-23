@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { changeQueue, files, readQueue, turnOff } from "./groups.ts";
+import { changeQueue, files, readQueue } from "./groups.ts";
 import { tracksOwner } from "./mission.ts";
 import { runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
