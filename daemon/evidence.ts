@@ -513,8 +513,9 @@ export class ConditionalCaptures {
     if (ifChanged && previous && previous.image.width === prepared.image.width && previous.image.height === prepared.image.height &&
         pixelsMatch(previous.image, prepared.image, { x: 0, y: 0, width: prepared.image.width, height: prepared.image.height })) {
       try {
-        await verifyEvidence(previous.result.evidence.path);
-        if (generation === this.generation && this.entries.get(key) === previous) {
+        const verified = await verifyEvidence(previous.result.evidence.path);
+        const matchesOutput = await withOutput(verified.output, async () => (await readRegular(verified.output)).equals(verified.image));
+        if (matchesOutput && generation === this.generation && this.entries.get(key) === previous) {
           this.entries.delete(key);
           this.entries.set(key, previous);
           return { unchanged: true, previous: structuredClone(previous.result) };

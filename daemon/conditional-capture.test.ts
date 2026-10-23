@@ -189,6 +189,26 @@ test("a newly requested output path is written even when its pixels match an ear
   expect(readFileSync(out)).toEqual(png());
 });
 
+test.each(["another tab", "an edited output", "a removed output"])("matching pixels publish a consistent image after %s replaces the output", async (replacement) => {
+  const captures = new ConditionalCaptures(), out = join(temporary(), "replaced-output.png");
+  const first = saved(await captures.save(capture(), scope, out, true));
+  if (replacement === "another tab") await captures.save(capture(9), { ...scope, tab: 13 }, out, true);
+  if (replacement === "an edited output") writeFileSync(out, "synthetic replacement");
+  if (replacement === "a removed output") unlinkSync(out);
+  const next = capture(); next.source.capturedAt = "2026-10-21T12:01:00.000Z";
+  const result = saved(await captures.save(next, scope, out, true));
+  const verified = await verifyEvidence(result.evidence.path);
+  expect(result.path).toBe(out);
+  expect(readFileSync(result.path)).toEqual(verified.image);
+  expect(verified.image).toEqual(png());
+  expect(verified.evidence).toEqual(result.evidence);
+  expect(result.evidence.capturedAt).toBe(next.source.capturedAt);
+  expect(result.evidence.path).not.toBe(first.evidence.path);
+  const original = await verifyEvidence(first.evidence.path);
+  expect(original.image).toEqual(png());
+  expect(original.evidence.capturedAt).toBe("2026-10-21T12:00:00.000Z");
+});
+
 test("stitched tiled captures suppress unchanged pixels without writing new tile files", async () => {
   const captures = new ConditionalCaptures(), out = join(temporary(), "tiled.png"), tileScope = { ...scope, settings: { fullPage: true, tiles: true } };
   const first = saved(await captures.save(tiled(), tileScope, out, true));

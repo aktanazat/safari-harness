@@ -80,6 +80,44 @@ const positionedLayouts: { name: string; body: string; markup: string; root?: st
     error: "visible",
   },
   {
+    name: "an enlarged overflow box keeps a visible control clickable beyond its unscaled width",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:scale(2);transform-origin:0 0;overflow:hidden;width:100px;height:60px;border:8px solid black;margin:100px"><button id="action" style="position:relative;left:70px;top:30px;width:20px;height:20px;padding:0">Save</button></div>',
+  },
+  {
+    name: "a shrunk overflow box clicks the visible sliver inside its scaled borders",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:scale(.5);transform-origin:0 0;overflow:clip;width:24px;height:36px;border:40px solid black;margin:100px"><button id="action" style="position:absolute;left:0;top:0;width:240px;height:36px;padding:0">Save</button></div>',
+  },
+  {
+    name: "an overflow box inherits its ancestor's scale when locating a visible control",
+    body: "overflow:hidden",
+    markup: '<div style="transform:scale(2);transform-origin:0 0;margin:100px"><div style="position:relative;overflow:hidden;width:100px;height:60px;border:8px solid black"><button id="action" style="position:relative;left:70px;top:30px;width:20px;height:20px;padding:0">Save</button></div></div>',
+  },
+  {
+    name: "an overflow box scales its horizontal and vertical clipping bounds independently",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:scale(2,3);transform-origin:0 0;overflow:hidden;width:100px;height:60px;border:8px solid black;margin:100px"><button id="action" style="position:relative;left:70px;top:30px;width:20px;height:20px;padding:0">Save</button></div>',
+  },
+  {
+    name: "a scaled control behind a real cover receives no click",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:scale(2);transform-origin:0 0;overflow:hidden;width:100px;height:60px;border:8px solid black;margin:100px"><button id="action" style="position:relative;left:70px;top:30px;width:20px;height:20px;padding:0">Save</button></div><div style="position:fixed;inset:0;z-index:2;background:white">Blocking notice</div>',
+    error: "covered",
+  },
+  {
+    name: "a fixed control outside its scaled containing block receives no click",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:scale(.5);transform-origin:0 0;overflow:clip;width:24px;height:36px;margin:100px"><button id="action" style="position:fixed;left:100px;top:0;width:240px;height:36px">Save</button></div>',
+    error: "visible",
+  },
+  {
+    name: "a rotated scaled control behind a real cover receives no click",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:rotate(20deg) scale(2);transform-origin:0 0;overflow:hidden;width:100px;height:60px;border:8px solid black;margin:100px"><button id="action" style="position:relative;left:70px;top:30px;width:20px;height:20px;padding:0">Save</button></div><div style="position:fixed;inset:0;z-index:2;background:white">Blocking notice</div>',
+    error: "covered",
+  },
+  {
     name: "root overflow clips to the viewport rather than the root element's smaller box",
     root: "overflow:hidden;width:24px;height:36px",
     body: "",
@@ -138,10 +176,36 @@ const unavailableClicks: Row[] = [
   ],
 }));
 
+const secretPaste: Row[] = [
+  { name: "shown current password", autocomplete: "current-password" },
+  { name: "shown new password", autocomplete: "new-password" },
+  { name: "one-time code", autocomplete: "one-time-code" },
+  { name: "card number", autocomplete: "cc-number" },
+  { name: "card security code", autocomplete: "cc-csc" },
+  { name: "card expiry", autocomplete: "cc-exp" },
+  { name: "billing card expiry month", autocomplete: "billing cc-exp-month" },
+  { name: "card expiry year", autocomplete: "cc-exp-year" },
+].map(({ name, autocomplete }) => ({
+  name: `native paste preparation refuses a ${name} field before focusing it`,
+  page: targets,
+  steps: [
+    evaluate(`(() => {
+      const field = document.getElementById("keyboard");
+      document.body.prepend(field);
+      field.autocomplete = ${JSON.stringify(autocomplete)};
+      document.getElementById("descendant").focus();
+      return true;
+    })()`, true),
+    { op: "nativeProbe", args: [{ kind: "paste", ref: "#keyboard" }], answer: { error: expect.stringContaining("native paste refuses") } },
+    evaluate("document.activeElement.id", "descendant"),
+  ],
+}));
+
 benchRows("safe clicks in WebKit", [
   ...coveredClicks,
   ...unavailableClicks,
   ...positionedClicks,
+  ...secretPaste,
   {
     name: "a visible descendant receives the click intended for its control",
     page: targets,
@@ -341,6 +405,32 @@ benchRows("safe clicks in WebKit", [
       evaluate("(() => { document.getElementById('keyboard').type = 'password'; return true; })()", true),
       { op: "nativeProbe", args: [{ kind: "paste", ref: "#keyboard" }], answer: { error: expect.stringContaining("password") } },
       evaluate("document.activeElement.id === 'keyboard'", false),
+    ],
+  },
+  {
+    name: "native paste preparation refuses a field previously filled as secret without stealing focus",
+    page: targets,
+    steps: [
+      evaluate("(() => { document.body.prepend(document.getElementById('keyboard')); return true; })()", true),
+      { op: "type", args: ["#keyboard", "fixture-only", { secret: true, noWaitAfter: true }], answer: { value: { ok: true, kept: true } } },
+      evaluate("(() => { document.getElementById('descendant').focus(); return true; })()", true),
+      { op: "nativeProbe", args: [{ kind: "paste", ref: "#keyboard" }], answer: { error: expect.stringContaining("secret fields") } },
+      evaluate("document.activeElement.id", "descendant"),
+    ],
+  },
+  {
+    name: "native paste preparation refuses an already focused one-time code field without a ref",
+    page: targets,
+    steps: [
+      evaluate(`(() => {
+        const field = document.getElementById("keyboard");
+        document.body.prepend(field);
+        field.autocomplete = "one-time-code";
+        field.focus();
+        return true;
+      })()`, true),
+      { op: "nativeProbe", args: [{ kind: "paste" }], answer: { error: expect.stringContaining("secret fields") } },
+      evaluate("document.activeElement.id", "keyboard"),
     ],
   },
   {

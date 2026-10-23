@@ -52,7 +52,8 @@ console.log("Summary: the model's closing words.");
 `);
 writeFileSync(join(home, ".bun", "bin", "omp"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(home, "omp.ts"))} "$@"\n`);
 chmodSync(join(home, ".bun", "bin", "omp"), 0o755);
-writeFileSync(join(home, ".bun", "bin", "launchctl"), "#!/bin/sh\ncase \"$1\" in print) exit 1;; *) exit 0;; esac\n");
+const launchctlLog = join(home, "launchctl.log");
+writeFileSync(join(home, ".bun", "bin", "launchctl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(launchctlLog)}\ncase "$1" in print) exit 1;; *) exit 0;; esac\n`);
 chmodSync(join(home, ".bun", "bin", "launchctl"), 0o755);
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
@@ -260,6 +261,73 @@ function savedSession(id: string, baseUrl: string): string {
   return path;
 }
 
+test.each([false, true])("pause lets an active scheduled model finish (saved conversation=%s) and resume never interrupts it", async (saved) => {
+  const name = saved ? "draining-saved" : "draining-model";
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<Response>();
+  const answer = () => Response.json({ choices: [{ message: { role: "assistant", content: "active continuation finished" } }] });
+  let requests = 0;
+  const endpoint = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch() {
+      requests++;
+      entered.resolve();
+      return requests === 1 ? release.promise : answer();
+    },
+  });
+  const target = saved ? ["--session", "abc56789"] : [];
+  if (saved) savedSession("abc56789", `http://127.0.0.1:${endpoint.port}/v1`);
+  expect((await command(["routine", "add", name, "--every", "60", ...target, "continue"])).code).toBe(0);
+  if (!saved) writeFileSync(join(routines, `${name}.md`), JSON.stringify({ gate: `http://127.0.0.1:${endpoint.port}` }));
+  const generation = routineMeta(name).generation;
+  const first = startCommand(["routine", "run", name, "--scheduled", "--generation", generation]);
+  const stdout = new Response(first.stdout).text();
+  const stderr = new Response(first.stderr).text();
+  try {
+    await Promise.race([entered.promise, first.exited.then((code) => { throw new Error(`routine ended before its task started: ${code}`); })]);
+    const priorCommands = readFileSync(launchctlLog, "utf8");
+    expect((await command(["routine", "pause", name])).code).toBe(0);
+    expect(routineMeta(name).paused).toBe(true);
+    expect(routineMeta(name).generation).not.toBe(generation);
+    // launchctl removal terminates its active job and remaining process group.
+    // This stand-in records commands without touching any launchd service.
+    expect(readFileSync(launchctlLog, "utf8")).toBe(priorCommands);
+    const earlyResume = await command(["routine", "resume", name]);
+    expect(earlyResume.code).toBe(1);
+    expect(earlyResume.err).toContain("is running");
+    expect(readFileSync(launchctlLog, "utf8")).toBe(priorCommands);
+    expect(routineMeta(name).paused).toBe(true);
+    const overlap = await command(["routine", "run", name, "--scheduled", "--generation", generation]);
+    expect(overlap.code).toBe(1);
+    expect(overlap.out).toContain("already running");
+    expect(requests).toBe(1);
+    release.resolve(answer());
+    expect(await first.exited).toBe(0);
+    expect(outputLog(await stdout)).toContain(saved ? "active continuation finished" : "The scheduled task finished.");
+    expect(await stderr).toBe("");
+    const paused = await command(["routine", "run", name, "--scheduled", "--generation", generation]);
+    expect(paused.code).toBe(1);
+    expect(paused.out).toContain("is paused");
+    expect((await command(["routine", "resume", name])).code).toBe(0);
+    const resumed = routineMeta(name);
+    expect(resumed.paused).toBe(false);
+    expect(resumed.generation).not.toBe(generation);
+    const installed = readFileSync(join(home, "Library", "LaunchAgents", `at.aktan.safari-harness.routine.${name}.plist`), "utf8");
+    expect(installed).toContain(`<string>${resumed.generation}</string>`);
+    const stale = await command(["routine", "run", name, "--scheduled", "--generation", generation]);
+    expect(stale.code).toBe(1);
+    expect(stale.out).toContain("schedule changed");
+    const current = await command(["routine", "run", name, "--scheduled", "--generation", resumed.generation]);
+    expect(current.code).toBe(0);
+    expect(requests).toBe(2);
+  } finally {
+    release.resolve(answer());
+    await first.exited;
+    await Promise.all([stdout, stderr]);
+    endpoint.stop(true);
+  }
+}, 15_000);
+
 test("a routine continues the selected conversation with its original messages, host and model", async () => {
   const requests: { model: string; messages: { role: string; content: string }[] }[] = [];
   const endpoint = Bun.serve({
@@ -349,9 +417,9 @@ test("a saved conversation already running in another process cannot be resumed 
   }
 }, 15_000);
 
-test.each(["pause", "remove"] as const)("a running saved continuation respects %s and cannot restore its old schedule", async (control) => {
-  const id = control === "pause" ? "abc56789" : "abc67890";
-  const name = `active-${control}`;
+test("removing a running saved continuation stops it and cannot restore its old schedule", async () => {
+  const id = "abc67890";
+  const name = "active-remove";
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<Response>();
   let requests = 0;
@@ -367,14 +435,14 @@ test.each(["pause", "remove"] as const)("a running saved continuation respects %
   const stderr = new Response(first.stderr).text();
   try {
     await Promise.race([entered.promise, first.exited.then((code) => { throw new Error(`continuation ended before reaching the endpoint: ${code}`); })]);
-    expect((await command(["routine", control, name])).code).toBe(0);
+    expect((await command(["routine", "remove", name])).code).toBe(0);
     expect(await first.exited).toBe(1);
     expect(JSON.parse(readFileSync(path, "utf8")).status).toBe("stopped");
     expect(requests).toBe(1);
     const queued = await command(["routine", "run", name, "--scheduled", "--generation", generation]);
     expect(queued.code).toBe(1);
-    expect(queued.out).toContain(control === "pause" ? "is paused" : "no routine named");
-    expect(existsSync(join(routines, `${name}.json`))).toBe(control === "pause");
+    expect(queued.out).toContain("no routine named");
+    expect(existsSync(join(routines, `${name}.json`))).toBe(false);
   } finally {
     release.resolve(Response.json({ choices: [{ message: { role: "assistant", content: "must not be used after stopping" } }] }));
     if (first.exitCode === null) first.kill();

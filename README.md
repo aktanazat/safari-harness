@@ -413,9 +413,11 @@ instead.
 Snapshots can return recoverable revisions with `--updates` and
 `--since <revision>`. Protected screenshots can use `--ifChanged`: unchanged
 pixels return the prior verified receipt, with its original time, not a new
-image. Clicks refuse covered, hidden, disabled or uncertain replacement
-targets, including readable containing frames. Viewport-fixed controls remain
-clickable when body scrolling is locked; real containing-block clips still apply.
+image. Replaced or removed output files are republished instead of returning
+an inconsistent image path. Clicks refuse covered, hidden, disabled or uncertain
+replacement targets, including readable containing frames. Viewport-fixed
+controls remain clickable when body scrolling is locked; real containing-block
+clips still apply, including scaled containers.
 
 Optional tools are available on demand through `run`, CLI and REPL:
 `audit` runs actual axe checks; `react` inspects real component/state
@@ -435,8 +437,8 @@ guarded playback restoration. See `safari guide <tool>` for each contract.
 text, HTML and TSV representations. Targets must be visible and uncovered.
 Paste restores the old clipboard only if the user has not copied something
 else. If an existing clipboard representation cannot be preserved, it sends no
-paste and leaves the clipboard unchanged. It refuses secret fields and reports
-delivery, not editor acceptance.
+paste and leaves the clipboard unchanged. It refuses password, code, card and
+previously marked secret fields, and reports delivery, not editor acceptance.
 Safari's [post-drag pointer-event defect](https://bugs.webkit.org/show_bug.cgi?id=202287)
 can omit the next `pointerdown` after an HTML drag-and-drop. Native input
 does not send an extra click or invent a successful page result to hide it.
@@ -444,7 +446,8 @@ does not send an extra click or invent a successful page result to hide it.
 
 Routines support durable pause/resume, cross-process overlap prevention and
 `--session <id>` continuation of saved Safari work. They never silently
-replace missing or changed saved work with a fresh conversation.
+replace missing or changed saved work with a fresh conversation. Pausing blocks
+future runs while admitted work finishes. Resuming refuses until that work ends.
 
 
 ### safari repl

@@ -370,14 +370,15 @@ export async function routinePause(name: string | undefined): Promise<string> {
     if (!meta) throw new Error(`no routine named ${n}`);
     await writeMeta({ ...meta, paused: true, pauseReason: "paused by user", generation: crypto.randomUUID(), awake: undefined });
     stopAwake(meta);
-    await unload(ROUTINE_PREFIX + n);
+    // The durable pause and new generation reject future/queued invocations.
+    // Booting out the job would also terminate the run already in progress.
     return `routine ${n} paused; no new runs will start`;
   });
 }
 
 export async function routineResume(name: string | undefined): Promise<string> {
   const n = checkName(name);
-  return withState(n, async () => {
+  return replaceRoutine(n, async () => {
     const meta = await readMeta(n);
     if (!meta) throw new Error(`no routine named ${n}`);
     if (meta.session) await selectedSession(meta.session);
@@ -422,9 +423,18 @@ async function runModel(meta: RoutineMeta, promptPath: string, log: string, lock
       const rec = await selectedSession(meta.session);
       await connectHost(rec.host);
       let events = Promise.resolve();
+      let continuationStarted = false;
       const done = await runSession(rec, {
         apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: 30, prompt: await readFile(promptPath, "utf8"),
-        shouldStop: async () => !(await allowed()),
+        shouldStop: async () => {
+          if (!continuationStarted) {
+            continuationStarted = await allowed();
+            return !continuationStarted;
+          }
+          // Pause only prevents new work; removal still stops this run.
+          // The run lease prevents replacement until this continuation ends.
+          return (await readMeta(meta.name)) === undefined;
+        },
         maxTimeMs: SCRIPT_MS,
         onEvent: (ev) => {
           if (ev.type === "tool") events = events.then(() => appendFile(log, `${new Date().toISOString()} ${ev.name} ${ev.ok ? "ok" : "error"}\n`));

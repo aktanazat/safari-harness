@@ -1536,13 +1536,18 @@
           && rootStyle.contain === "none" && style.contain === "none")) continue;
         if (style.overflowX === "visible" && style.overflowY === "visible") continue;
         const clip = node.getBoundingClientRect();
+        // Client dimensions are untransformed; bring them into viewport
+        // coordinates, including scale inherited from an outer ancestor.
+        // These are candidate bounds, never a substitute for hit-testing.
+        const sx = node.offsetWidth ? clip.width / node.offsetWidth : 1;
+        const sy = node.offsetHeight ? clip.height / node.offsetHeight : 1;
         if (style.overflowX !== "visible") {
-          left = Math.max(left, clip.left + node.clientLeft);
-          right = Math.min(right, clip.left + node.clientLeft + node.clientWidth);
+          left = Math.max(left, clip.left + node.clientLeft * sx);
+          right = Math.min(right, clip.left + (node.clientLeft + node.clientWidth) * sx);
         }
         if (style.overflowY !== "visible") {
-          top = Math.max(top, clip.top + node.clientTop);
-          bottom = Math.min(bottom, clip.top + node.clientTop + node.clientHeight);
+          top = Math.max(top, clip.top + node.clientTop * sy);
+          bottom = Math.min(bottom, clip.top + (node.clientTop + node.clientHeight) * sy);
         }
       }
       if (right <= left || bottom <= top) continue;
@@ -1634,7 +1639,7 @@
 
   function nativePasteBlocked(el) {
     if (!el) return "there is no focused editable field for native paste";
-    if (el.type === "password" || /\b(current-password|new-password)\b/.test(el.getAttribute("autocomplete") ?? "")) return "native paste refuses password fields";
+    if (secretField(el)) return "native paste refuses secret fields, including passwords";
     if (!(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return "native paste needs a text field or editable region";
     if (el.readOnly || el.getAttribute("aria-readonly") === "true") return "that field is read-only, so it cannot receive native paste";
     return null;
