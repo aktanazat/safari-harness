@@ -637,6 +637,11 @@ a second daemon on other ports and leaves the real one alone. Run each
 and session state. The suites cover sign-in code detection, pairing and fill
 against synthetic helpers, tab ownership and cleanup, and the actual MCP
 tool-list byte ceiling. Native conditional cases are unverified when skipped.
+
+The native transport fixture runs its stand-in with Node, so it exercises
+Bun's child-process pipes without using Bun's readline implementation at
+both ends. The production helper remains Swift.
+
 `bun run check` runs live checks in real Safari; it is separate from isolated
 suite verification and may restart the installed service.
 
