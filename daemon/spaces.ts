@@ -34,6 +34,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
+import { uncover } from "./place.ts";
 import { groupsOff, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
@@ -169,6 +170,9 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
       sweepSoon();
       save();
       await identify(space, w.tabId);
+      // Safari opens each new window at one place, over the ones before it
+      // (place.ts).
+      await uncover(w.tabId).catch(() => undefined);
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();

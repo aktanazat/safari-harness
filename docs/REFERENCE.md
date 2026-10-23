@@ -76,8 +76,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
   `window` take only a tab id.
-- Every tab you open goes into a Safari window of your own, opened behind
-  his without taking focus, never into his windows or tab groups. `group` on
+- Every tab you open goes into a Safari window of your own, never into his
+  windows or tab groups. It opens behind his without taking focus, where no
+  other window covers it when a display has room. `group` on
   `open` (CLI `--group trip`) gives one task a window of its own; without it
   all your tabs share one. The window opens on a page titled with the task's
   name (the group, or "agent", and your process id, then ", window 2" and up
@@ -1340,6 +1341,14 @@ not a count of unique secrets. Unknown sensitive text baked into arbitrary
 images, video, canvas or closed rendering is not a universal detection
 guarantee.
 
+Safari draws nothing in a window other windows cover whole, so its page
+never passes the privacy gate's paint check. When that window is yours,
+`shot` moves it, without focus, to where it shows and captures through the
+whole gate once more; no other window moves. With no room on any display,
+or a window minimized or on another desktop, it fails with code
+`unavailable` and a message saying so. Read the page with `snapshot` or
+`extract` then.
+
 `tiles: true` also saves readable, overlapping pieces without resizing
 or dropping the original. `tileHeight` defaults to 1400 and accepts
 256–8192 original raster pixels. Adjacent pieces overlap by 64 raster
@@ -1370,7 +1379,7 @@ For several viewport widths, use `shots`.
 address at each width in one owned tab and window, then closes them.
 CLI: `safari shots --widths 390,1440 --out DIR --tiles URL...`.
 Each successful `files` item includes `{url, width, path, evidence}`,
-using the same privacy gate and immutable receipts as `shot`.
+using the same privacy gate, window move and immutable receipts as `shot`.
 A failed item includes `error` and `failure` instead, remains in its
 place, and adds `ok: false` to the overall answer (CLI: exit 1).
 The output name is `<host-path>-<width>.png` under the absolute `out`

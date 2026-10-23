@@ -26,11 +26,13 @@
 //   input window W H              Safari's window of that size, the screen
 //                                 holding most of it, and the main display's
 //                                 free part: {"window","screen","visible"}
+//   input windows                 every app's windows on screen, front to
+//                                 back, and every screen: {"windows","screens"}
 // Points are global screen points with the origin at the top-left of the main
 // display, the space of both the Accessibility API and CGEvent. Each command
 // prints JSON lines. click, drag, type, paste, and key end with F20 (see
-// mark). All but idle, front, activate, and window need Accessibility
-// permission for the app that runs this.
+// mark). All but idle, front, activate, window, and windows need
+// Accessibility permission for the app that runs this.
 import AppKit
 import ApplicationServices
 
@@ -600,6 +602,26 @@ func window(_ args: [String]) {
     printJSON(["window": rectJSON(frame), "screen": rectJSON(screen), "visible": rectJSON(topDown(NSScreen.screens[0].visibleFrame))])
 }
 
+// Every app's windows on screen at the normal level, front to back, each
+// marked when it is Safari's, and every screen with the part of it the menu
+// bar and Dock leave free: daemon/place.ts finds in them a spot no window
+// covers. A window drawn fully transparent covers nothing and is left out.
+func windows() {
+    let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first?.processIdentifier
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+    let shown = list.compactMap { info -> [String: Any]? in
+        guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+              let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+              let r = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
+        var w = rectJSON(r)
+        w["safari"] = safari != nil && (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safari
+        return w
+    }
+    let screens = NSScreen.screens.map { ["frame": rectJSON(topDown($0.frame)), "visible": rectJSON(topDown($0.visibleFrame))] }
+    printJSON(["windows": shown, "screens": screens])
+}
+
 // ---------- webarea ----------
 
 func attribute(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -772,6 +794,7 @@ case "idle": idle(rest)
 case "front": front()
 case "activate": activate(rest)
 case "window": window(rest)
-default: fail("usage: input webarea | press MARK W H | setvalue [--append] MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | paste (JSON line on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H", 2)
+case "windows": windows()
+default: fail("usage: input webarea | press MARK W H | setvalue [--append] MARK W H (text on stdin) | click X Y [--count N] [--button left|right] | move X Y | drag X1 Y1 X2 Y2 | type [--gap MS] (UTF-8 text on stdin) | paste (JSON line on stdin) | key SPEC | idle MS MAX | front | activate BUNDLEID | window W H | windows", 2)
 }
 #endif
