@@ -30,6 +30,12 @@ final class MemoryClipboard: ClipboardStore {
     }
 }
 
+final class UnavailableClipboardData: NSObject, NSPasteboardItemDataProvider {
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        // This declared representation deliberately cannot be fulfilled.
+    }
+}
+
 func require(_ condition: Bool, _ message: String) {
     if !condition { fail(message) }
 }
@@ -91,6 +97,40 @@ do {
         require(try board.snapshot() == supplied, "the native pasteboard did not hold every supplied representation")
         require(try transaction.restore(), "native pasteboard restoration failed")
         require(try board.snapshot() == original, "native pasteboard changed original bytes or item order")
+    case "native-unavailable":
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("safari-harness-unavailable-test-\(getpid())"))
+        defer { pasteboard.releaseGlobally() }
+        let readable = NSPasteboardItem()
+        let unavailable = NSPasteboardItem()
+        let missingType = NSPasteboard.PasteboardType("example.unavailable-original-format")
+        let provider = UnavailableClipboardData()
+        require(readable.setString("first fixture item", forType: .string), "could not prepare the readable fixture item")
+        require(unavailable.setString("second fixture item", forType: .string), "could not prepare the unavailable fixture item")
+        require(unavailable.setDataProvider(provider, forTypes: [missingType]), "could not declare the unavailable representation")
+        pasteboard.clearContents()
+        require(pasteboard.writeObjects([readable, unavailable]), "could not install the isolated unavailable fixture")
+        let board = NativeClipboard(board: pasteboard)
+        let before = board.changeCount
+        do {
+            _ = try TemporaryClipboard(board, contents: supplied)
+            fail("an unreadable original representation was replaced")
+        } catch {
+            require(error.localizedDescription.contains("clipboard item 2") && error.localizedDescription.contains(missingType.rawValue), "the refusal did not identify the unavailable item and type")
+            require(board.changeCount == before, "refusing an unavailable representation changed clipboard ownership")
+            let items = pasteboard.pasteboardItems ?? []
+            require(items.count == 2, "refusing an unavailable representation lost an original item")
+            require(items[0].string(forType: .string) == "first fixture item" && items[1].string(forType: .string) == "second fixture item", "refusing an unavailable representation changed original data")
+            require(items[1].types.contains(missingType), "refusing an unavailable representation dropped its declaration")
+        }
+    case "native-empty":
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("safari-harness-empty-test-\(getpid())"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        let board = NativeClipboard(board: pasteboard)
+        let transaction = try TemporaryClipboard(board, contents: supplied)
+        require(try board.snapshot() == supplied, "an empty original clipboard prevented installing the paste")
+        require(try transaction.restore(), "the empty original clipboard was not restored")
+        require(try board.snapshot().isEmpty, "restoring an empty original clipboard left paste data behind")
     default:
         fail("unknown native clipboard test", 2)
     }

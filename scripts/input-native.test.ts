@@ -27,6 +27,8 @@ test.each([
   ["failed-write", "restores the previous clipboard when installing paste data fails"],
   ["restore-once", "does not overwrite a later copy on repeated cleanup"],
   ["native-isolated", "round-trips bytes and item order through an isolated real pasteboard"],
+  ["native-unavailable", "identifies an unavailable original representation and refuses without changing either original item"],
+  ["native-empty", "restores an originally empty isolated pasteboard without retaining paste data"],
 ])("native paste %s: %s", async (scenario) => {
   const process = Bun.spawn([binary, scenario], { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]);

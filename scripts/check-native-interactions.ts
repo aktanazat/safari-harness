@@ -11,6 +11,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { return new 
 let tab: number | undefined;
 const repl = new ReplSession("native-interactions-smoke", { cwd: join(import.meta.dir, ".."), quiet: true });
 let passed = 0;
+const failures: unknown[] = [];
 function checked(scenario: string) {
   passed++;
   console.log(JSON.stringify({ pass: scenario }));
@@ -66,7 +67,21 @@ try {
   assert.equal(await evaluate("document.querySelector('#password').value"), "");
   checked("the new paste surface refuses password fields");
   console.log(`${passed} passed; 0 failed; real Safari native interaction scenarios`);
+} catch (error) {
+  failures.push(error);
 } finally {
-  try { if (tab !== undefined) await rpc("close", { tab }); }
-  finally { try { await repl.close(); } finally { server.stop(true); } }
+  try {
+    if (tab !== undefined) await rpc("close", { tab });
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await repl.close();
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    server.stop(true);
+  }
 }
+if (failures.length === 1) throw failures[0];
+if (failures.length > 1) throw new AggregateError(failures, "native interaction check failed; cleanup also failed");

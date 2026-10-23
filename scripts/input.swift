@@ -398,8 +398,22 @@ func keyCombo(_ args: [String]) {
 
 typealias ClipboardContents = [[NSPasteboard.PasteboardType: Data]]
 
-enum ClipboardFailure: Error {
+enum ClipboardFailure: LocalizedError {
     case changed, unreadable, rejected
+    case unreadableRepresentation(item: Int, type: NSPasteboard.PasteboardType)
+
+    var errorDescription: String? {
+        switch self {
+        case .changed:
+            return "the clipboard changed while preparing the paste, so no paste was sent"
+        case .unreadable:
+            return "the clipboard items could not be read; the clipboard was left unchanged and no paste was sent"
+        case .unreadableRepresentation(let item, let type):
+            return "clipboard item \(item + 1) could not provide representation \(type.rawValue); the clipboard was left unchanged and no paste was sent"
+        case .rejected:
+            return "the clipboard rejected the paste data, so no paste was sent"
+        }
+    }
 }
 
 protocol ClipboardStore {
@@ -413,10 +427,13 @@ struct NativeClipboard: ClipboardStore {
     let board: NSPasteboard
     var changeCount: Int { board.changeCount }
     func snapshot() throws -> ClipboardContents {
-        try (board.pasteboardItems ?? []).map { item in
+        guard let items = board.pasteboardItems else { throw ClipboardFailure.unreadable }
+        return try items.enumerated().map { index, item in
             var values: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
-                guard let data = item.data(forType: type) else { throw ClipboardFailure.unreadable }
+                guard let data = item.data(forType: type) else {
+                    throw ClipboardFailure.unreadableRepresentation(item: index, type: type)
+                }
                 values[type] = data
             }
             return values
@@ -492,8 +509,10 @@ func paste(_ args: [String]) {
     let clipboard: TemporaryClipboard<NativeClipboard>
     do {
         clipboard = try TemporaryClipboard(NativeClipboard(board: .general), contents: payload.contents)
+    } catch let error as ClipboardFailure {
+        fail(error.localizedDescription)
     } catch {
-        fail("the clipboard changed or could not be preserved, so no paste was sent")
+        fail("the clipboard could not be preserved, so no paste was sent")
     }
     emergencyClipboardRestore = { _ = try? clipboard.restore() }
     defer { cleanNativeInput() }
