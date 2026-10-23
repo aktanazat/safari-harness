@@ -4,10 +4,11 @@ import { jest, setSystemTime } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
-import { connect } from "./fake-safari.ts";
+import { connect, historyFixture } from "./fake-safari.ts";
 import { files } from "./groups.ts";
 import { tracksOwner } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
+import * as front from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
 import { ReplSession } from "./repl.ts";
 import { callTool, closeTabsOf, endTurn, prepareTurnEnd, loadTabs, recentlyClosedTabs, restoreClosedTab } from "./tools.ts";
@@ -27,6 +28,8 @@ let refused = false;
 let clicks = 0;
 let opened = 0;
 let evaluations = 0;
+let handoffDone = false;
+const pageHistory = historyFixture();
 let submissions = 0;
 const extension = {
   send(data: string) {
@@ -56,7 +59,10 @@ const extension = {
         if (args[1] === "type") tab.typed = true;
         if (args[1] === "eval" && !tab.url.includes("/space?")) evaluations++;
         if (args[1] === "fetch") submissions++;
-        value = args[1] === "extract" ? { text: "fixture result", title: "Fixture", url: tab.url } : { ok: true };
+        value = args[1] === "extract" ? { text: "fixture result", title: "Fixture", url: tab.url }
+          : args[1] === "wait" ? { found: handoffDone }
+          : args[1] === "eval" && tab.url.includes("/space?") ? { result: pageHistory(tab.id, String((args[2] as unknown[])[0])) }
+          : { ok: true };
       }
       bridge.handleMessage(JSON.stringify({ id, value }));
     })();
@@ -87,8 +93,9 @@ if (mode === "helper-restart") {
   const asTask = (task: string, tool: string, args: Record<string, unknown>) => runAs(owner, () => callTool(tool, args), task);
   const openTask = (task: string, path: string, more: Record<string, unknown> = {}) => asTask(task, "open", { url: `https://fixture.example/${path}`, background: true, group: "research", ...more }) as Promise<Tab>;
   const main = await openTask("fixture:main", "main");
-  const first = await openTask("fixture:first", "first");
-  const second = await openTask("fixture:second", "second");
+  const shared = mode === "helper-reversed-restore";
+  const first = await openTask("fixture:first", shared ? "shared" : "first");
+  const second = await openTask("fixture:second", shared ? "shared" : "second");
   const kept = await openTask("fixture:first", "kept", { keep: true, group: "kept" });
   const personal = ++next;
   tabs.set(personal, { id: personal, url: "https://personal.example/", windowId: 1 });
@@ -98,6 +105,37 @@ if (mode === "helper-restart") {
     const receipt = await endTurn(owner, prepared, "fixture:first");
     writeFileSync(browser, JSON.stringify({ tabs: [...tabs.values()], first: first.id, second: second.id, main: main.id, kept: kept.id, personal, window: first.windowId }));
     console.log(JSON.stringify({ deferred: receipt.deferred, retained: receipt.retained }));
+  } else if (mode === "helper-background-handoff") {
+    jest.useFakeTimers();
+    jest.spyOn(front, "input").mockImplementation(async () => ({ bundleId: "com.apple.mail" }));
+    jest.spyOn(front, "notify").mockImplementation(() => {});
+    const result = await openTask("fixture:first", "finished", { group: "finished" });
+    await asTask("fixture:first", "handoff_wait", { tab: first.id, why: "Finish the fixture check", until: "saved", ms: 0, away: true, background: true });
+    for (let n = 0; n < 2; n++) { jest.advanceTimersByTime(1000); await flush(); }
+    const prepared = await prepareTurnEnd(owner, "fixture:first");
+    const receipt = await endTurn(owner, prepared, "fixture:first");
+    const pending = { handoff: tabs.has(first.id), result: tabs.has(result.id), second: tabs.has(second.id), main: tabs.has(main.id), kept: tabs.has(kept.id), personal: tabs.has(personal) };
+    handoffDone = true;
+    for (let n = 0; n < 2; n++) { jest.advanceTimersByTime(1000); await flush(); }
+    await endTurn(owner, undefined, "fixture:first");
+    console.log(JSON.stringify({ pending, afterUser: tabs.has(first.id), receipt }));
+    jest.useRealTimers();
+  } else if (mode === "helper-reversed-restore") {
+    const before = [...tabs.values()];
+    tabs.clear();
+    for (const row of before) {
+      const id = 11000 - row.id;
+      tabs.set(id, { ...row, id, windowId: row.windowId + 1000 });
+      const state = pageHistory(row.id, "history.state");
+      if (state !== null) pageHistory(id, `history.replaceState(${JSON.stringify(state)})`);
+    }
+    bridge.detach(extension);
+    setSystemTime(new Date(Date.now() + 1000));
+    connect(extension);
+    await asTask("fixture:second", "tabs", { all: true });
+    const prepared = await prepareTurnEnd(owner, "fixture:first");
+    const receipt = await endTurn(owner, prepared, "fixture:first");
+    console.log(JSON.stringify({ first: tabs.has(11000 - first.id), second: tabs.has(11000 - second.id), main: tabs.has(11000 - main.id), kept: tabs.has(11000 - kept.id), personal: tabs.has(11000 - personal), receipt }));
   } else if (["helper-busy", "helper-sibling-busy", "helper-shared-read", "helper-shared-front"].includes(mode)) {
     const target = mode === "helper-sibling-busy" ? second : first;
     const task = mode === "helper-busy" ? "fixture:first" : "fixture:second";

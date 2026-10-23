@@ -106,7 +106,7 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   const mine = harnessTabs.get(now);
   if (mine) {
     const call = calling.getStore();
-    if (call) {
+    if (call?.live) {
       (mine.calls ??= new Set()).add(call.pending);
       call.tabs.add(mine);
     }
@@ -260,7 +260,7 @@ let tabsFile: string | undefined;
 let sweeper: Timer | undefined;
 type OwnerCalls = { epoch: string; pending: Set<Promise<void>> };
 const activeCalls = new Map<number | string, OwnerCalls>();
-const calling = new AsyncLocalStorage<{ pending: Promise<void>; tabs: Set<HarnessTab> }>();
+const calling = new AsyncLocalStorage<{ live: boolean; pending: Promise<void>; tabs: Set<HarnessTab> }>();
 export type TurnPreparation = { owner: number; task?: string; epoch: string; tabs: number[] };
 type TurnReceipt = { ok: true; closed: number; retained: number; failed: number; deferred: boolean; invalidated?: true };
 const endingTurns = new Map<number | string, Promise<TurnReceipt>>();
@@ -769,7 +769,8 @@ function sighted(tabs: TabInfo[]): void {
   const lost: [number, HarnessTab][] = [];
   for (const [id, t] of harnessTabs) {
     const shown = listed.get(id);
-    if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owners.get(shown.windowId) === t.owner))) {
+    const owner = shown?.windowId === undefined ? undefined : owners.get(shown.windowId);
+    if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owner?.owner === t.owner && owner?.task === t.task))) {
       changed ||= t.url !== shown.url || t.seen !== now;
       t.url = shown.url;
       t.seen = now;
@@ -793,13 +794,13 @@ function restored(lost: [number, HarnessTab][], tabs: TabInfo[]): void {
   const free = new Map<string, number[]>();
   for (const t of tabs) {
     const owner = t.windowId === undefined ? undefined : owners.get(t.windowId);
-    if (owner === undefined || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
-    const key = `${owner} ${t.url}`;
+    if (owner?.owner === undefined || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
+    const key = JSON.stringify([owner.owner, owner.task ?? null, t.url]);
     free.set(key, [...(free.get(key) ?? []), t.id]);
   }
   const was = new Map<string, number[]>();
   for (const [id, t] of lost) {
-    const key = `${t.owner} ${t.url}`;
+    const key = JSON.stringify([t.owner, t.task ?? null, t.url]);
     was.set(key, [...(was.get(key) ?? []), id]);
   }
   const moved = new Map<number, number>();
@@ -3119,7 +3120,7 @@ export function formatResult(value: unknown): string {
 // real_input's steps do (input.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const owner = currentOwner();
-  if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news);
+  if (owner === undefined || calling.getStore()?.live) return invokeTool(name, args, model, news);
   const task = currentTask();
   const key = taskKey(owner, task);
   for (;;) {
@@ -3141,10 +3142,11 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   }
   turnResumed(owner, task);
   save();
-  const call = { pending: settled.promise, tabs: new Set<HarnessTab>() };
+  const call = { live: true, pending: settled.promise, tabs: new Set<HarnessTab>() };
   try {
     return await calling.run(call, () => invokeTool(name, args, model, news));
   } finally {
+    call.live = false;
     for (const tab of call.tabs) {
       tab.calls?.delete(settled.promise);
       if (tab.calls?.size === 0) delete tab.calls;

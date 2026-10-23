@@ -146,10 +146,14 @@ Safari is the user's everyday browser, so treat his tabs as his.
   prepared tab ids, task and call generation before closing. New work in
   that task invalidates its preparation; sibling work does not. Ownership
   must be proven; the user's own tabs are never part of this cleanup.
+  Restart recovery also matches the registered window's task, so identical
+  URLs in different helpers cannot exchange ownership.
 - Pages explicitly kept for the user and pending handoffs stay protected.
   A protected or foreign tab keeps its window intact; cleanup does not
   move it to make a group deletable. Use `keep` for a page he still needs,
   not to preserve an agent's finished work.
+  Background handoff polling continues without holding a finished call's
+  cleanup open.
 - Ordinary idle cleanup is unchanged: eligible unused pages close after
   20 minutes. Existing protections for changed pages, unsent forms,
   site-global tabs, kept pages, pending handoffs and the front tab still

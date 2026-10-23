@@ -200,6 +200,9 @@ kept for the user, pending handoffs and personal tabs stay protected.
 Cleanup waits for a task's in-flight calls and any shared reads using its
 pages, not for unrelated sibling work. Existing omp processes retain their
 loaded extension; new sessions load this task-aware completion hook.
+Background handoff polling does not keep a finished call alive. Recovery
+after a Safari restart distinguishes identical URLs by the task in each
+registered window.
 
 Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
 with the existing form, front-page, kept-page and handoff protections.

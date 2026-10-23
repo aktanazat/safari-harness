@@ -512,11 +512,11 @@ export async function turnEnded(owner: number | undefined, task?: string): Promi
 }
 
 // The assignment whose window's page carries id, for that page
-// (mission.ts): undefined once the window has ended, or after a restart.
-export function spaceById(id: string): { owner?: number; window: number } | undefined {
+// (mission.ts): undefined once the window has ended.
+export function spaceById(id: string): Pick<Space, "owner" | "task" | "window"> | undefined {
   const space = [...spaces.values()].find((s) => s.id === id);
   if (!space) return undefined;
-  return space.owner === undefined ? { window: space.window } : { owner: space.owner, window: space.window };
+  return { owner: space.owner, task: space.task, window: space.window };
 }
 
 // Whether the window whose page carries id has ended, its page left open
@@ -527,12 +527,12 @@ export function spaceEnded(id: string): boolean {
 
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
-export function ownersByPage(tabs: TabInfo[]): Map<number, number> {
-  const owners = new Map<number, number>();
+export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task">> {
+  const owners = new Map<number, Pick<Space, "owner" | "task">>();
   for (const t of tabs) {
     const p = pageAt(t);
-    const owner = p === undefined ? undefined : spaceById(p.id)?.owner;
-    if (p !== undefined && owner !== undefined) owners.set(p.window, owner);
+    const owner = p === undefined ? undefined : spaceById(p.id);
+    if (p !== undefined && owner?.owner !== undefined) owners.set(p.window, owner);
   }
   return owners;
 }

@@ -50,6 +50,21 @@ test("a helper's deferred completion survives restart and a sibling's next call"
   expect(await fixture("helper-restart", directory)).toEqual({ first: false, firstWindow: false, second: true, main: true, kept: true, personal: true });
 });
 
+test("a returned background handoff cannot block helper completion and stays protected until the user finishes", async () => {
+  expect(await fixture("helper-background-handoff")).toMatchObject({
+    pending: { handoff: true, result: false, second: true, main: true, kept: true, personal: true },
+    afterUser: false,
+    receipt: { closed: 1, retained: 1, failed: 0 },
+  });
+});
+
+test("same-address sibling pages retain their task after a browser restart reverses tab ids without aliases", async () => {
+  expect(await fixture("helper-reversed-restore")).toMatchObject({
+    first: false, second: true, main: true, kept: true, personal: true,
+    receipt: { closed: 1, retained: 0, failed: 0 },
+  });
+});
+
 test("completion stays pending until owned pages close and leaves a kept page open", async () => {
   expect(await fixture("completion")).toMatchObject({ reportedWhileBusy: false, remaining: false, kept: true, receipt: { closed: 1, retained: 0, failed: 0 } });
 });
