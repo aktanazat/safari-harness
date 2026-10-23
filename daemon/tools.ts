@@ -14,6 +14,7 @@ import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { uncover } from "./place.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -1639,26 +1640,54 @@ function absoluteOut(out: unknown): string | undefined {
 
 type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean; tiles?: boolean; tileHeight?: number };
 
+// One shot through the extension's privacy gate (background.js,
+// privateGrab), which captures nothing until the page has painted.
+async function shotOnce(tab: number, opts: ShotOpts): Promise<Capture> {
+  const capture = await bridge.request("shot", [tab, {
+    ref: opts.ref,
+    annotate: !!opts.annotate,
+    fullPage: !!opts.fullPage,
+    live: !!opts.live,
+    tiles: !!opts.tiles,
+    tileHeight: opts.tileHeight,
+    secrets: [...(tabSecrets.get(tab) ?? [])],
+  }], 60000) as Capture;
+  if (capture.source === undefined) throw new HarnessError("privacy", "protected screenshot metadata is missing; reload the safari harness extension", { effect: "none", next: "reload the safari harness extension before capturing again" });
+  const page = redacted(unsecret(tab, { url: capture.source.url, title: capture.source.title })) as Pick<Capture["source"], "url" | "title">;
+  return { ...capture, source: { ...capture.source, ...page } };
+}
+
+const UNPAINTED = "screenshot privacy: the protected page did not paint";
+// Why a shot's window could not show its page (place.ts, uncover).
+const UNSEEN: Record<"covered" | "hidden", string> = {
+  covered: "screenshot: other windows cover your window and no display has room to show it, so Safari does not draw its page; nothing was captured",
+  hidden: "screenshot: your window is minimized or on another desktop, so Safari does not draw its page; nothing was captured",
+};
+
 // What the tab shows, as base64 PNG (Safari's own capture: no window
 // chrome, no screen-recording permission). ref crops to one element;
 // annotate draws the snapshot's refs on the page for the capture; fullPage
 // scrolls and stitches (sticky headers repeat). The extension ends the
 // page's finite animations first, up to 1 s, so a shot shows where they
-// land; live leaves them running.
+// land; live leaves them running. WebKit draws nothing in a window other
+// windows cover whole, so its page never paints there (place.ts): when the
+// tab's window is the calling agent's own, it moves where nothing covers it
+// and the shot goes through the whole gate once more; with no room on any
+// display, the error says so. Any other window stays where it is.
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
   try {
-    const capture = await bridge.request("shot", [tab, {
-      ref: opts.ref,
-      annotate: !!opts.annotate,
-      fullPage: !!opts.fullPage,
-      live: !!opts.live,
-      tiles: !!opts.tiles,
-      tileHeight: opts.tileHeight,
-      secrets: [...(tabSecrets.get(tab) ?? [])],
-    }], 60000) as Capture;
-    if (capture.source === undefined) throw new HarnessError("privacy", "protected screenshot metadata is missing; reload the safari harness extension", { effect: "none", next: "reload the safari harness extension before capturing again" });
-    const page = redacted(unsecret(tab, { url: capture.source.url, title: capture.source.title })) as Pick<Capture["source"], "url" | "title">;
-    return { ...capture, source: { ...capture.source, ...page } };
+    try {
+      return await shotOnce(tab, opts);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== UNPAINTED) throw error;
+      const window = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.windowId;
+      const owners = windowOwners();
+      if (window === undefined || !owners.has(window) || owners.get(window) !== currentOwner()) throw error;
+      const where = await uncover(tab).catch(() => undefined);
+      if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "read the page with snapshot or extract, or shoot again once your window can show on a display" });
+      if (where !== "moved") throw error;
+      return await shotOnce(tab, opts);
+    }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("screenshot privacy:")) {
       throw new HarnessError("privacy", String(unsecret(tab, error.message)), {

@@ -1499,6 +1499,17 @@ async function handle(msg) {
       await api.windows.update(windowId, { focused: true });
       return { ok: true };
     }
+    // A tab's window: its size, by which the daemon finds it among the
+    // windows on screen (daemon/place.ts), and its state. With bounds it
+    // moves first, taking no focus: left and top count from the top-left of
+    // the screen it is on, as with tabs.activate. Safari moves only a normal
+    // window; one minimized, zoomed or in full screen stays as it is.
+    case "windows.frame": {
+      const [tabId, bounds] = args;
+      const { windowId } = await api.tabs.get(tabId);
+      const w = bounds ? await api.windows.update(windowId, { left: Math.round(bounds.left), top: Math.round(bounds.top) }) : await api.windows.get(windowId);
+      return { width: w.width, height: w.height, state: w.state };
+    }
     case "cookies": {
       const [url] = args;
       if (!url || url.startsWith("about:")) return [];

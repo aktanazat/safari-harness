@@ -36,6 +36,8 @@ daemon/
                     its steps from the caller too
   spaces.ts         each agent's own Safari window, opened behind the user's,
                     one per task (`open --group`), on a page titled with it
+  place.ts          moves an agent's window where no other window covers it:
+                    a new one, and one whose shot did not paint
   groups.ts         makes a window its task's Safari tab group, and deletes
                     the group after, only while the user is away from the keys
   keeper.ts         runs groups.ts from the agent's terminal, which has the
@@ -140,7 +142,8 @@ scripts/
   input.swift       helper: posts real clicks and keys (CGEvent) into
                     Safari's page area, and presses an element through
                     Safari's accessibility tree; needs Accessibility
-                    permission
+                    permission. `input windows` lists the windows on screen
+                    for place.ts and needs none
   pairing.swift     helper: the pairing code read off Apple's window, and
                     its Save Password button; needs Accessibility permission
   spaces.swift      helper: works an agent window's tab group sidebar through
