@@ -598,6 +598,8 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent fo
     const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
     const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
     writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
+    const content = { id: next++, url: "https://working.example/", windowId: owned.window, active: false };
+    s.tabs.set(content.id, content);
     restarted.loadSpaces(path, tracksOwner);
     await restarted.turnEnded(q.pid + 1);
     expect(s.tabs.has(page.id)).toBe(true);
@@ -607,6 +609,7 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent fo
     const expected: Spaces.Space = { ...record };
     delete expected.done;
     expect(retained[phase]).toStrictEqual([expected]);
+    s.tabs.delete(content.id);
     await restarted.turnEnded(q.pid);
     if (phase === "closing") {
       expect(await restarted.spaceTool({ op: "release", name: owned.name })).toMatchObject({ ok: true, left: 0 });
@@ -619,6 +622,30 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent fo
   } finally {
     q.kill();
     await q.exited;
+  }
+});
+
+test.each(["spaces", "closing", "ended"] as const)("a restart closes an empty untracked %s window while its owner is still alive", async phase => {
+  const s = safari();
+  const owner = agent();
+  const path = join(dir, `empty-untracked-${phase}.json`);
+  const first = await daemonOn(47358, `empty-before-${phase}`);
+  const restarted = await daemonOn(47358, `empty-after-${phase}`);
+  try {
+    first.loadSpaces(path, () => true);
+    const owned = await runAs(owner.pid, () => first.spaceWindow());
+    const page = pageIn(s.tabs, owned.window)!;
+    const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
+    const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain" };
+    writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
+    restarted.loadSpaces(path, tracksOwner);
+    await restarted.turnEnded(owner.pid + 1);
+    expect(s.tabs.has(page.id)).toBe(false);
+    expect(s.tabs.has(1)).toBe(true);
+    expect(owner.exitCode).toBeNull();
+  } finally {
+    owner.kill();
+    await owner.exited;
   }
 });
 

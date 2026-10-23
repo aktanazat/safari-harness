@@ -470,6 +470,14 @@ async function sweepOnce() {
   }
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
     if (Date.now() - (s.used ?? 0) >= 20 * 60_000) s.done = true;
+    if (taskTracked && taskTracked(s.owner) === undefined && !s.done) {
+      listed ??= await listTabs();
+      const inWindow = await located(s, listed);
+      if (!inWindow.some(t => !isPage(t, s))) {
+        s.done = true;
+        await end(s);
+      }
+    }
   }
   // A pass with no window to locate, and no ended one whose agent's turn has
   // ended, is the last, and asks Safari nothing: a window that ended before

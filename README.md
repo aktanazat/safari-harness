@@ -219,8 +219,9 @@ appropriate to idle cleanup or completed-task cleanup.
 
 When a task has positively ended, its disposable tabs and status page close
 automatically. A living process without a restored task record remains unknown;
-its forms and front pages keep idle-cleanup protection. Kept pages, handoffs and
-personal tabs remain protected. After a restart, status pages whose window record is
+its forms and front pages keep idle-cleanup protection. Its empty task window
+closes without waiting for idle cleanup. Kept pages, handoffs and personal tabs
+remain protected. After a restart, status pages whose window record is
 missing close without claiming ownership of any other tabs in that window.
 Copied or reopened status pages also close when they cannot be tracked.
 Their addresses never grant permission to close other tabs in the window.
