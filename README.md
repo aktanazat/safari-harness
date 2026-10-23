@@ -414,7 +414,8 @@ Snapshots can return recoverable revisions with `--updates` and
 `--since <revision>`. Protected screenshots can use `--ifChanged`: unchanged
 pixels return the prior verified receipt, with its original time, not a new
 image. Clicks refuse covered, hidden, disabled or uncertain replacement
-targets, including readable containing frames.
+targets, including readable containing frames. Viewport-fixed controls remain
+clickable when body scrolling is locked; real containing-block clips still apply.
 
 Optional tools are available on demand through `run`, CLI and REPL:
 `audit` runs actual axe checks; `react` inspects real component/state
@@ -433,7 +434,9 @@ guarded playback restoration. See `safari guide <tool>` for each contract.
 `real_input` supports atomic drag-and-drop and formatted paste with plain
 text, HTML and TSV representations. Targets must be visible and uncovered.
 Paste restores the old clipboard only if the user has not copied something
-else. It refuses secret fields and reports delivery, not editor acceptance.
+else. If an existing clipboard representation cannot be preserved, it sends no
+paste and leaves the clipboard unchanged. It refuses secret fields and reports
+delivery, not editor acceptance.
 Safari's [post-drag pointer-event defect](https://bugs.webkit.org/show_bug.cgi?id=202287)
 can omit the next `pointerdown` after an HTML drag-and-drop. Native input
 does not send an extra click or invent a successful page result to hide it.

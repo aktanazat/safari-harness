@@ -1503,14 +1503,37 @@
     if (blocked) return { error: blocked };
     if (scroll) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     const view = el.ownerDocument.defaultView || window;
+    const doc = el.ownerDocument, root = doc.documentElement;
+    const rootStyle = view.getComputedStyle(root);
+    const targetStyle = view.getComputedStyle(el);
     let cover = null;
     let boxes = 0;
     for (const rect of el.getClientRects()) {
       if (++boxes > 32) break;
       let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
       let right = Math.min(view.innerWidth, rect.right), bottom = Math.min(view.innerHeight, rect.bottom);
+      let positioned = targetStyle.position === "fixed" || targetStyle.position === "absolute" ? el : null;
       for (let node = el.assignedSlot ?? parentOf(el); node; node = node.assignedSlot ?? parentOf(node)) {
         const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+        // Out-of-flow boxes escape overflow between themselves and their
+        // actual containing block. Safari also reports transformed fixed
+        // containing blocks through offsetParent.
+        if (positioned && node !== positioned.offsetParent) continue;
+        if (style.display === "contents") continue;
+        // offsetParent uses a static body as a fallback even when the
+        // absolute containing block is the viewport, not the body.
+        if (positioned && node === doc.body && style.position === "static" && view.getComputedStyle(positioned).position === "absolute"
+          && style.transform === "none" && style.perspective === "none" && style.filter === "none"
+          && (!style.backdropFilter || style.backdropFilter === "none")
+          && (!style.translate || style.translate === "none") && (!style.rotate || style.rotate === "none") && (!style.scale || style.scale === "none")
+          && !/\b(layout|paint|strict|content)\b/.test(style.contain) && style.contentVisibility !== "auto"
+          && !/(^|,)\s*(position|transform|perspective|filter|backdrop-filter|translate|rotate|scale|contain|content-visibility)\s*(,|$)/.test(style.willChange)) continue;
+        positioned = style.position === "fixed" || style.position === "absolute" ? node : null;
+        // Root overflow, and eligible HTML body overflow, clips the
+        // viewport already intersected above, not the element's own box.
+        if (node === root || (node === doc.body && root.localName === "html" && node.localName === "body"
+          && rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible"
+          && rootStyle.contain === "none" && style.contain === "none")) continue;
         if (style.overflowX === "visible" && style.overflowY === "visible") continue;
         const clip = node.getBoundingClientRect();
         if (style.overflowX !== "visible") {

@@ -29,6 +29,86 @@ const cover = (selector: string): Step => evaluate(`(() => {
   return true;
 })()`, true);
 
+const positionedLayout = (body: string, markup: string, root = ""): Step => evaluate(`(() => {
+  document.documentElement.style.cssText = ${JSON.stringify(root)};
+  document.body.style.cssText = ${JSON.stringify(`margin:0;overflow:visible;${body}`)};
+  document.body.innerHTML = ${JSON.stringify(markup)};
+  document.body.dataset.clicks = "0";
+  document.getElementById("action").addEventListener("click", () => {
+    document.body.dataset.clicks = String(Number(document.body.dataset.clicks) + 1);
+  });
+  return true;
+})()`, true);
+
+const positionedLayouts: { name: string; body: string; markup: string; root?: string; ref?: string; error?: string }[] = [
+  {
+    name: "a viewport-fixed editor control remains clickable when scroll locking leaves the body empty",
+    body: "overflow:hidden",
+    markup: '<button id="action" style="position:fixed;left:100px;top:100px;width:180px;height:48px">Save</button>',
+  },
+  {
+    name: "body overflow propagated to the viewport does not clip a control to the body's empty box",
+    body: "height:0;overflow:hidden",
+    markup: '<button id="action" style="position:relative;left:100px;top:100px;width:180px;height:48px">Save</button>',
+  },
+  {
+    name: "a descendant of a viewport-fixed toolbar remains clickable outside the empty body",
+    body: "overflow:hidden",
+    markup: '<div style="position:fixed;left:100px;top:100px"><button id="action" style="width:180px;height:48px"><span style="display:block">Save</span></button></div>',
+    ref: "#action span",
+  },
+  {
+    name: "a viewport-fixed control escapes an overflow ancestor that does not contain its position",
+    body: "overflow:hidden",
+    markup: '<div style="width:0;height:0;overflow:hidden"><button id="action" style="position:fixed;left:100px;top:100px;width:180px;height:48px">Save</button></div>',
+  },
+  {
+    name: "an absolute viewport control escapes a static overflow body and intermediate overflow box",
+    root: "overflow:hidden",
+    body: "height:0;overflow:hidden",
+    markup: '<div style="width:0;height:0;overflow:hidden"><button id="action" style="position:absolute;left:100px;top:100px;width:180px;height:48px">Save</button></div>',
+  },
+  {
+    name: "a fixed control clicks the narrow visible area inside its transformed containing block",
+    body: "overflow:hidden",
+    markup: '<div style="position:relative;transform:translateZ(0);overflow:hidden;width:24px;height:36px;margin:100px"><button id="action" style="position:fixed;left:0;top:0;width:240px;height:36px">Save</button></div>',
+  },
+  {
+    name: "a fixed control outside its transformed containing block remains unclickable",
+    body: "overflow:hidden",
+    markup: '<div style="transform:translateZ(0);overflow:clip;width:24px;height:36px;margin:100px"><button id="action" style="position:fixed;left:100px;top:0;width:240px;height:36px">Save</button></div>',
+    error: "visible",
+  },
+  {
+    name: "root overflow clips to the viewport rather than the root element's smaller box",
+    root: "overflow:hidden;width:24px;height:36px",
+    body: "",
+    markup: '<button id="action" style="position:relative;left:100px;top:100px;width:180px;height:48px">Save</button>',
+  },
+  {
+    name: "body overflow still clips its positioned child when root overflow prevents propagation",
+    root: "overflow:hidden",
+    body: "position:relative;overflow:hidden;width:24px;height:36px",
+    markup: '<button id="action" style="position:absolute;left:0;top:0;width:240px;height:36px">Save</button>',
+  },
+  {
+    name: "a covered viewport-fixed editor control receives no click despite escaping body overflow",
+    body: "overflow:hidden",
+    markup: '<button id="action" style="position:fixed;left:100px;top:100px;width:180px;height:48px">Save</button><div style="position:fixed;inset:0;z-index:2;background:white">Blocking notice</div>',
+    error: "covered",
+  },
+];
+
+const positionedClicks: Row[] = positionedLayouts.map(({ name, body, markup, root, ref, error }) => ({
+  name,
+  page: targets,
+  steps: [
+    positionedLayout(body, markup, root),
+    { op: "click", args: [ref ?? "#action"], answer: error ? { error: expect.stringContaining(error) } : { value: { ok: true } } },
+    evaluate("document.body.dataset.clicks", error ? "0" : "1"),
+  ],
+}));
+
 const coveredClicks: Row[] = [
   { name: "a covered selector target receives no click and names its cover", setup: [], target: "#covered" },
   { name: "a covered text target receives no click and names its cover", setup: [], target: "Covered action" },
@@ -61,6 +141,7 @@ const unavailableClicks: Row[] = [
 benchRows("safe clicks in WebKit", [
   ...coveredClicks,
   ...unavailableClicks,
+  ...positionedClicks,
   {
     name: "a visible descendant receives the click intended for its control",
     page: targets,
