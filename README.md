@@ -214,8 +214,9 @@ draft. Website cookies, logins and session credentials are untouched.
 including windows holding pages left for the user after a task ends.
 Close window confirms before closing that window's tabs, including kept
 pages. A copied or unknown window page grants no close authority.
-Restarts restore only proven ownership and preserve the protections
-appropriate to idle cleanup or completed-task cleanup.
+Restarts restore proven ownership and already-admitted completion, so finished
+pages still close if Safari was disconnected when the task ended. New work
+clears that owner's pending completion before using its pages.
 
 When a task has positively ended, its disposable tabs and status page close
 automatically. A living process without a restored task record remains unknown;

@@ -1095,6 +1095,29 @@ test("a reloaded extension tells the daemon each tab's new id, and again each ti
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([renumbered, renumbered]);
 });
 
+test("a daemon reconnect confirms unchanged owned tabs but never personal, closed, or unproven tabs", async () => {
+  const b = await start();
+  b.open("https://personal.example/");
+  const owned = b.open("https://example.com/?token=fixture");
+  await b.own(owned);
+  const closed = b.open("https://closed.example/");
+  await b.own(closed);
+  b.close(closed);
+  await b.clock.advance(0);
+  b.told.length = 0;
+  b.drop();
+  b.reconnect();
+  await b.clock.advance(0);
+  expect(b.told.filter(m => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { [owned.id]: owned.id } }]);
+  b.reloaded();
+  await b.clock.advance(0);
+  b.told.length = 0;
+  b.drop();
+  b.reconnect();
+  await b.clock.advance(0);
+  expect(b.told.filter(m => m.kind === "renumbered")).toEqual([]);
+});
+
 // 10-20 and 10-21: on a Mac nearly out of memory, Safari answered every
 // write to the extension's local storage "Invalid call to
 // browser.storage.local.set(). Disk I/O error." until it was quit. Each

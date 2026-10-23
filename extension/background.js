@@ -53,9 +53,8 @@ function connect() {
       send({ op: "hello", role: "extension", ua: navigator.userAgent });
       if (awake.size > 0) send({ op: "ticks", on: true });
       sendRecordings().catch(() => {});
-      // the new ids a reload gave the tabs (sendIds); an adopt not begun
-      // yet sends them itself once it ends
-      adopted?.then(sendIds, () => {});
+      if (adopted) adopted.then(sendIds, () => {});
+      else void sendIds({ tabs: {} });
     };
     sock.onmessage = (ev) => {
       let msg;
@@ -1915,8 +1914,17 @@ async function adopt() {
 // The daemon keeps tab ids too (tools.ts), and agents hold them: it is told
 // each old id and its tab's id now once they are read, and again each time
 // it connects, since a restarted daemon has only its own list of tabs.
-function sendIds({ tabs }) {
+async function sendIds({ tabs }) {
   if (Object.keys(tabs).length > 0) send({ op: "tab", kind: "renumbered", tabs });
+  try {
+    const open = await bounded(api.tabs.query({}), "tabs.query", Date.now() + 2 * LIST_MS);
+    const policies = await store.get(open.map(t => `dialogs:${t.id}`));
+    const confirmed = {};
+    for (const tab of open) if (policies[`dialogs:${tab.id}`]) confirmed[tab.id] = tab.id;
+    if (Object.keys(confirmed).length > 0) send({ op: "tab", kind: "renumbered", tabs: confirmed });
+  } catch (error) {
+    log("could not confirm current owned tabs", String(error));
+  }
 }
 api.runtime.onInstalled.addListener(() => { adopted ??= adopt(); });
 // A tab moved to another window (window, or the user dragging it) marks

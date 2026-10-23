@@ -68,7 +68,26 @@ const invoke = (tool: string, args: Record<string, unknown> = {}) => runAs(owner
 const open = async (path: string, more: Record<string, unknown> = {}) => (await invoke("open", { url: `https://fixture.example/${path}`, background: true, ...more })) as Tab;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-if (mode === "live-seed") {
+if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-same-resume"].includes(mode)) {
+  const saved = JSON.parse(readFileSync(browser, "utf8")) as { tabs: Tab[]; disposable: number[]; kept: number; handoff: number; personal: number; window: number };
+  const aliases: Record<number, number> = {};
+  for (const tab of saved.tabs) {
+    const id = tab.id + (mode.startsWith("deferred-same-") ? 0 : 1000);
+    aliases[tab.id] = id;
+    tabs.set(id, { ...tab, id });
+  }
+  loadTabs(state);
+  loadSpaces(join(directory, "spaces.json"), tracksOwner);
+  bridge.handleMessage(JSON.stringify({ op: "tab", kind: "renumbered", tabs: aliases }));
+  if (mode.endsWith("-resume")) await invoke("extract", { tab: aliases[saved.disposable[0]] });
+  await endTurn(owner + 1);
+  await flush();
+  console.log(JSON.stringify({
+    disposable: saved.disposable.map(id => tabs.has(aliases[id])),
+    kept: tabs.has(aliases[saved.kept]), handoff: tabs.has(aliases[saved.handoff]), personal: tabs.has(aliases[saved.personal]),
+    completedWindow: [...tabs.values()].some(tab => tab.windowId === saved.window),
+  }));
+} else if (mode === "live-seed") {
   loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
   const plain = await open("live-result");
   const form = await open("live-form");
@@ -124,7 +143,38 @@ if (mode === "live-seed") {
   }
 } else {
   loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
-  if (mode === "recovery-title") {
+  if (mode === "deferred-seed") {
+    const plain = await open("deferred-result");
+    const form = await open("deferred-form");
+    await invoke("type", { tab: form.id, ref: "input", text: "unsent fixture text" });
+    const site = await open("deferred-site", { site: true });
+    const unsafe = await open("callback?token=credential-fixture");
+    const kept = await open("deferred-kept", { keep: true, group: "kept" });
+    const handoff = await open("deferred-handoff", { group: "handoff" });
+    const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { tabs: Record<string, { handoff?: true }> };
+    checkpoint.tabs[handoff.id].handoff = true;
+    writeFileSync(state, JSON.stringify(checkpoint));
+    loadTabs(state);
+    const personal = ++next;
+    tabs.set(personal, { id: personal, url: "https://personal.example/", windowId: 1 });
+    bridge.detach(extension);
+    const receipt = await endTurn(owner);
+    writeFileSync(browser, JSON.stringify({ tabs: [...tabs.values()], disposable: [plain.id, form.id, site.id, unsafe.id], kept: kept.id, handoff: handoff.id, personal, window: plain.windowId }));
+    console.log(JSON.stringify({ deferred: receipt.deferred, retained: receipt.retained }));
+  } else if (mode === "remap-completed") {
+    const unsafe = await open("callback?token=credential-fixture");
+    const kept = await open("remap-kept", { keep: true });
+    loadTabs(state);
+    bridge.detach(extension);
+    setSystemTime(new Date(Date.now() + 1000));
+    connect(extension);
+    const alias = unsafe.id + 1000;
+    tabs.set(alias, { ...tabs.get(unsafe.id)!, id: alias });
+    tabs.delete(unsafe.id);
+    bridge.handleMessage(JSON.stringify({ op: "tab", kind: "renumbered", tabs: { [unsafe.id]: alias } }));
+    await endTurn(owner);
+    console.log(JSON.stringify({ disposable: tabs.has(alias), kept: tabs.has(kept.id) }));
+  } else if (mode === "recovery-title") {
     const tab = await open("mail");
     tabs.get(tab.id)!.title = "123456 is your password reset code — private-value-fixture";
     keepSecret(tab.id, "private-value-fixture");

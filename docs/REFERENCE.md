@@ -171,11 +171,11 @@ Safari is the user's everyday browser, so treat his tabs as his.
   It loads a fresh page with Safari's normal site session, not a saved
   draft. Website cookies, logins and session credentials are untouched
   by closing tabs or expiring recovery metadata.
-- A disconnected or refused cleanup leaves ownership recorded for the next
-  admitted attempt. A cancelled or failed task can release disposable
-  resources only through the same gate, without being reported as
-  completed. A daemon restart restores tab and window ownership, never a
-  saved cleanup permission.
+- A disconnected or refused cleanup keeps both ownership and its admitted
+  completion recorded across daemon restarts. Once the browser proves which
+  tabs they are, cleanup resumes without waiting for the owner process to exit.
+  New work clears that owner's pending completion before using its pages.
+  Missing task records alone never authorize closing a living owner's work.
 
 ## Mission control: the user watches and holds you
 

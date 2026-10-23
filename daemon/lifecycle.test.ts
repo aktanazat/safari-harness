@@ -35,6 +35,21 @@ test("a refused automatic close remains tracked and closes on the next completio
   expect(await fixture("refusal")).toMatchObject({ receipt: { closed: 0, retained: 1, failed: 1 }, retry: { closed: 1, retained: 0, failed: 0 }, remaining: false });
 });
 
+test.each([
+  ["deferred-restart", false],
+  ["deferred-resume", true],
+  ["deferred-same-restart", false],
+  ["deferred-same-resume", true],
+] as const)("%s preserves completion across restart until new work invalidates it", async (mode, resumed) => {
+  const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
+  expect(await fixture("deferred-seed", directory)).toEqual({ deferred: true, retained: 5 });
+  expect(await fixture(mode, directory)).toEqual({ disposable: [resumed, resumed, resumed, resumed], kept: true, handoff: true, personal: true, completedWindow: resumed });
+});
+
+test("a trusted browser remap allows completed pages with nonrecoverable addresses to close", async () => {
+  expect(await fixture("remap-completed")).toEqual({ disposable: false, kept: true });
+});
+
 test("cancellation closes its disposable pages even when a field is filled in", async () => {
   expect(await fixture("cancel")).toEqual({ plain: false, form: false });
 });

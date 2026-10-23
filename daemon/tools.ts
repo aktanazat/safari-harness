@@ -401,7 +401,7 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed" | "retry"> & { owner?: number | null };
+  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "failed" | "retry"> & { owner?: number | null };
   type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
   let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
@@ -414,7 +414,7 @@ export function loadTabs(path: string): void {
   for (const [tab, kept] of Object.entries(rows)) {
     const t: SavedTab = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
     remember(Number(tab), typeof t.owner === "number" ? t.owner : undefined, t.used);
-    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
+    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: t.done === true ? true : undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
   }
   for (const [tab, closed] of Object.entries(state?.closed ?? {})) closedTabs.set(Number(tab), { ...closed, url: resumeAddress(closed.url) });
   for (const [tab, keeper] of Object.entries(state?.keepers ?? {})) keptBy(Number(tab), keeper);
@@ -644,7 +644,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -706,6 +706,8 @@ function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): v
   for (const [from, to] of tabs) {
     if (!moveKept(from, to)) continue;
     owned = true;
+    const held = harnessTabs.get(to);
+    if (held) held.seen = bridge.extensionInfo?.connectedAt;
     void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
   }
   if (owned) save();

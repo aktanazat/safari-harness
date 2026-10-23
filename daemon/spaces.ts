@@ -183,8 +183,6 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
 }
 
 
-// A restart preserves every ownership record, but never a previous process's
-// transient release permission. The current runtime must admit cleanup again.
 type Kept = Space;
 let spacesFile: string | undefined;
 let taskTracked: ((owner: number | undefined) => boolean | undefined) | undefined;
@@ -201,13 +199,12 @@ export function loadSpaces(path: string, tracked: (owner: number | undefined) =>
     // none kept yet
   }
   for (const s of saved.spaces ?? []) {
-    delete s.done;
     spaces.set(s.key, s);
     watchExit(s.owner);
     sweepSoon();
   }
-  for (const s of saved.closing ?? []) { delete s.done; closing.set(s.name, s); watchExit(s.owner); }
-  for (const s of saved.ended ?? []) { delete s.done; ended.add(s); watchExit(s.owner); }
+  for (const s of saved.closing ?? []) { closing.set(s.name, s); watchExit(s.owner); }
+  for (const s of saved.ended ?? []) { ended.add(s); watchExit(s.owner); }
   sweepSoon();
 }
 
@@ -230,7 +227,7 @@ function watchExit(owner: number | undefined) {
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });

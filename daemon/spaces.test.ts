@@ -585,7 +585,7 @@ test("a restarted daemon puts an agent's next tab in the window it already had",
   await until(() => !pageIn(s.tabs, before.window));
 });
 
-test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent for a living owner without a runtime task requires fresh admission", async phase => {
+test.each(["spaces", "closing", "ended"] as const)("a saved %s window without admitted completion preserves a living owner's work", async phase => {
   const s = safari();
   const q = agent();
   const path = join(dir, `admission-${phase}.json`);
@@ -596,7 +596,7 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent fo
     const owned = await runAs(q.pid, () => first.spaceWindow());
     const page = pageIn(s.tabs, owned.window)!;
     const stored = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
-    const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain", done: true };
+    const record: Spaces.Space = { ...stored.spaces[0], group: phase === "closing" ? "grouped" : "plain" };
     writeFileSync(path, JSON.stringify({ version: 2, spaces: [], closing: [], ended: [], [phase]: [record] }));
     const content = { id: next++, url: "https://working.example/", windowId: owned.window, active: false };
     s.tabs.set(content.id, content);
@@ -607,7 +607,6 @@ test.each(["spaces", "closing", "ended"] as const)("a saved %s cleanup intent fo
     expect(await restarted.spaceTool({ op: "release", name: owned.name })).toEqual({ ok: false });
     const retained = JSON.parse(readFileSync(path, "utf8")) as Record<typeof phase, Spaces.Space[]>;
     const expected: Spaces.Space = { ...record };
-    delete expected.done;
     expect(retained[phase]).toStrictEqual([expected]);
     s.tabs.delete(content.id);
     await restarted.turnEnded(q.pid);
