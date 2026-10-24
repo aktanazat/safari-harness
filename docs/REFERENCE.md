@@ -283,14 +283,16 @@ answer says what was used in a `note`: another case, or `-` for `_`
 (`browsing-history`, `max_bytes`), and names models reach for: `go` or
 `action` for `do`, `value` for `option`, `query` for `text`, `note` for
 `fact`, `code` or `js` for `expression`, `selector` for `root`, `x`/`y` for
-`dx`/`dy`, `files` for `paths`, click's or hover's `text` for `ref`, and
-net's `query` for `url`, each only on a tool that takes the second and
-not the first. `real_input
+`dx`/`dy`, `files` for `paths`, click's or hover's `text` for `ref`,
+net's `query` for `url`, and download's `out_dir` for `out`, each only on
+a tool that takes the second and not the first. `real_input
 {type: "…"}` is `do: "type"` with that text, `do: "press"` is
 `do: "key"`, and `net {start: true}` is `do: "start"`. A parameter the
 tool does not take fails the call before anything runs, with the closest
 one: "unknown parameter optoin for select; did you mean option? (params:
-tab, ref, option, snapshot)"; `snapshot {url}` and `extract {url}` say to
+tab, ref, option, snapshot)"; several such parameters fail together, each
+with its closest (`unknown parameters for select: optoin (did you mean
+option?), color (params: …)`); `snapshot {url}` and `extract {url}` say to
 open the page first, and `scroll {to}` scrolls to the top or bottom. The CLI
 takes tools the same way (`safari
 browsing-history`, `safari real-input`), and the first word after a tool
