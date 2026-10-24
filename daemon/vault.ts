@@ -88,8 +88,7 @@ export function memSecretVault(dir = LOGINS_DIR): Vault & { rebuild(logins: Logi
     return out;
   }
 
-  // mem-secret list fails on a store with nothing in it.
-  const listed = async (): Promise<string[]> => existsSync(join(dir, "secrets.env")) ? (await memSecret(["list"])).split("\n").filter(Boolean) : [];
+  const listed = async (): Promise<string[]> => (await memSecret(["list"])).split("\n").filter(Boolean);
 
   async function write(logins: Login[], remove: string[]): Promise<void> {
     const set: Record<string, string> = {};
