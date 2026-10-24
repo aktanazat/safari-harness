@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as phone from "./phone.ts";
 import * as client from "./rpc.ts";
 import { invoke } from "./call.ts";
-import { playbooksTool } from "./playbooks.ts";
+import { notePlaybookTab, playbooksTool, sweepPlaybookLearning } from "./playbooks.ts";
 import { loadRecording, saveRecording } from "./recordings.ts";
 import { replay } from "./replay.ts";
 
@@ -173,4 +173,22 @@ test.each([
   const p = fixture(); saveRecording(rec());
   expect(await playbooksTool({ do: "run", url, goal, vars: { q: "shoes" } }, p.call, async () => answer)).toMatchObject({ ok: false, abstained: true, reason: expect.any(String) });
   expect(p.calls).toEqual([]);
+});
+
+// Nothing removed an agent's list of the tabs it may learn: 10-21, 12 of
+// them, one per agent since the first.
+test("an agent's list of learnable tabs goes once its last one closes", async () => {
+  await notePlaybookTab("open", { url, background: true }, { id: 7 });
+  await notePlaybookTab("close", { tab: 7 }, { ok: true });
+  expect(readdirSync(join(home, "playbook-learning"))).toEqual([]);
+});
+
+test("the daemon's start removes the learning files of agents that have exited, and keeps a running agent's", async () => {
+  const exited = Bun.spawn(["true"]);
+  await exited.exited;
+  const dir = join(home, "playbook-learning");
+  mkdirSync(dir);
+  for (const name of [`${exited.pid}-tabs.json`, `${exited.pid}-7.json`, `${process.pid}-tabs.json`]) writeFileSync(join(dir, name), "{}");
+  sweepPlaybookLearning();
+  expect(readdirSync(dir)).toEqual([`${process.pid}-tabs.json`]);
 });

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Overview } from "./mission.ts";
 
@@ -251,4 +251,50 @@ test("the session of an agent's plain safari repl calls ends when that agent exi
   await ended.promise;
   watcher.close();
   expect(await running()).toBe(false);
+}, 30_000);
+
+// What gone sessions left stayed: nothing removed it (10-21: 11 folders
+// and 15 logs, all empty). A session that starts removes what is a minute
+// old or more: folders with nothing saved in them, and logs empty or a week
+// old. A folder changed in the last minute may be a session starting, with
+// no socket yet; an MCP server's own session runs in that server, with none.
+test("a session that starts removes what gone sessions left, and nothing of a session running or starting, or of a running MCP server", async () => {
+  const repl = join(state, "repl");
+  await command(`runInSession("live", "1")`);
+  const exited = Bun.spawn(["true"]);
+  await exited.exited;
+  for (const folder of ["gone", "kept", "starting", `mcp-${process.pid}`, `mcp-${exited.pid}`]) mkdirSync(join(repl, folder), { recursive: true });
+  writeFileSync(join(repl, "kept", "notes.txt"), "saved");
+  for (const log of ["gone.log", "kept.log"]) writeFileSync(join(repl, log), "");
+  for (const log of ["said.log", "recent.log"]) writeFileSync(join(repl, log), "an error\n");
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+  for (const name of ["live", "gone", "kept", `mcp-${process.pid}`, `mcp-${exited.pid}`, "gone.log", "kept.log", "recent.log"]) utimesSync(join(repl, name), ago(2), ago(2));
+  utimesSync(join(repl, "said.log"), ago(8 * 24 * 60), ago(8 * 24 * 60));
+  const fixture = new Set(["live", "gone", "gone.log", "kept", "kept.log", "said.log", "recent.log", "starting", `mcp-${process.pid}`, `mcp-${exited.pid}`]);
+  const left = () => readdirSync(repl).filter((n) => fixture.has(n)).sort();
+  const kept = ["live", "kept", "starting", `mcp-${process.pid}`, "recent.log"].sort();
+  // the host sweeps once it answers; a sweep that never comes runs out the time
+  const swept = Promise.withResolvers<void>();
+  const watcher = watch(repl, () => {
+    if (Bun.deepEquals(left(), kept)) swept.resolve();
+  });
+  await command(`runInSession("sweeper", "1")`);
+  await swept.promise;
+  watcher.close();
+  expect(left()).toEqual(kept);
+}, 30_000);
+
+test("a session that ends leaves no empty folder or log behind", async () => {
+  await command(`runInSession("brief", "1")`);
+  const repl = join(state, "repl");
+  const sock = join(repl, "brief.sock");
+  // the host tidies, then takes its socket away and exits
+  const ended = Promise.withResolvers<void>();
+  const watcher = watch(repl, () => {
+    if (!existsSync(sock)) ended.resolve();
+  });
+  await command(`closeSession("brief")`);
+  await ended.promise;
+  watcher.close();
+  expect(readdirSync(repl).filter((n) => n.startsWith("brief"))).toEqual([]);
 }, 30_000);

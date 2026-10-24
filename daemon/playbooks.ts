@@ -1,8 +1,9 @@
 // Only opted-in agent calls on one named tab are learned. There is no
 // browser listener: the caller observes its own invoke calls, not the user.
 // The daemon and extension need no restart to try this caller-side tool.
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { alive } from "./owner.ts";
 import { dataFile } from "./phone.ts";
 import { agentOf, rpc } from "./rpc.ts";
 import { assertAgentRecording, checkOf, gateOfStep, listRecordings, loadRecording, playbookUrl, publicLabel, saveRecording } from "./recordings.ts";
@@ -60,9 +61,23 @@ export async function notePlaybookTab(tool: string, args: Record<string, unknown
     for (const [id, at] of Object.entries(held)) if (Date.now() - at > MAX_AGE) delete held[id];
     if (tool === "open" && args.background === true && Number.isInteger(fields(result).id)) held[String(fields(result).id)] = Date.now();
     else if ((tool === "close" || tool === "keep") && fields(result).ok !== false) delete held[String(args.tab)];
-    write(path, held);
+    if (Object.keys(held).length > 0) write(path, held);
+    else remove(path);
   });
   if ((tool === "close" || tool === "keep") && fields(result).ok !== false && Number.isInteger(args.tab)) remove(dataFile(`playbook-learning/${owner}-${args.tab}.json`));
+}
+
+// At daemon start: the files of agents that have exited, their tab lists
+// and learn sessions, which only their own calls would remove (10-21: 12
+// tab lists, one per agent since the first).
+export function sweepPlaybookLearning(): void {
+  const dir = dataFile("playbook-learning");
+  let names: string[];
+  try { names = readdirSync(dir); } catch (e) { if (missing(e)) return; throw e; }
+  for (const name of names) {
+    const owner = /^(\d+)-(?:tabs|\d+)\.json$/.exec(name)?.[1];
+    if (owner !== undefined && !alive(Number(owner))) remove(join(dir, name));
+  }
 }
 
 // Read only control identity and field facts, never an input value, page

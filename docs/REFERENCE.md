@@ -383,6 +383,8 @@ carrying the page in context.
   back as it is, and nothing is written.
 - CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
   path.
+- A file in the saved folder is deleted a week after it was saved, as
+  another is saved there or the daemon starts. Copy one you want to keep.
 - An MCP reply keeps an answer's first 30,000 characters. A longer answer
   is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
   and the reply ends by saying so and where: read the part you need from

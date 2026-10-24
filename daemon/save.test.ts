@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
@@ -66,6 +66,46 @@ test("a page's error is preserved without reporting or writing a saved file", as
   expect(reply).toMatchObject({ error: "no content root" });
   expect(reply).not.toHaveProperty("saved");
   expect(existsSync(path)).toBe(false);
+});
+
+// Saved reads hold signed-in pages' text, so the saved folder keeps a week
+// of them. save.ts takes that folder from HOME as it loads, so a process of
+// its own with a scratch HOME does each save. Two files there, saved 8 and
+// 6 days ago; the save's own path is printed.
+const homes: string[] = [];
+afterAll(() => {
+  for (const home of homes) rmSync(home, { recursive: true, force: true });
+});
+async function saveWithOldFiles(call: string): Promise<{ saved: string; folder: string; path: string }> {
+  const home = mkdtempSync(join(tmpdir(), "save-home-"));
+  homes.push(home);
+  const saved = join(home, ".local/share/safari-harness/saved");
+  const folder = join(home, "chosen");
+  const day = 24 * 60 * 60;
+  const now = Date.now() / 1000;
+  for (const dir of [saved, folder]) {
+    mkdirSync(dir, { recursive: true });
+    for (const [name, days] of [["old.txt", 8], ["recent.txt", 6]] as const) {
+      writeFileSync(join(dir, name), "page text");
+      utimesSync(join(dir, name), now - days * day, now - days * day);
+    }
+  }
+  const script = `const save = await import(${JSON.stringify(join(import.meta.dir, "save.ts"))});
+const folder = ${JSON.stringify(folder)};
+console.log(${call});`;
+  const proc = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "inherit" });
+  const path = (await new Response(proc.stdout).text()).trim();
+  return { saved, folder, path };
+}
+
+test("a read saved to the saved folder deletes the reads saved there over a week ago, and keeps the rest", async () => {
+  const { saved, path } = await saveWithOldFiles(`await save.saveAnswer("new")`);
+  expect(readdirSync(saved).sort()).toEqual([basename(path), "recent.txt"].sort());
+});
+
+test("a read saved to a folder the caller named leaves that folder's old files alone", async () => {
+  const { folder, path } = await saveWithOldFiles(`(await save.saveOutput("extract", { text: "new", url: "https://shop.example/" }, { dir: folder }, async () => "")).saved`);
+  expect(readdirSync(folder).sort()).toEqual([basename(path), "old.txt", "recent.txt"].sort());
 });
 
 // The daemon's folder is not the caller's; and a request that changes
