@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, readQueue } from "./groups.ts";
+import { recent } from "./journal.ts";
 import { tracksOwner } from "./mission.ts";
 import { alive, runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
@@ -805,8 +806,9 @@ test("an ended window whose page Safari says is already gone is closed, and not 
   expect({ asked: w.asked(), ended: spaceEnded(w.id) }).toEqual({ asked: 1, ended: false });
 });
 
-// One lost window's close failed 69 times in 5.7 min, a try each sweep.
-test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then left", async () => {
+// One lost window's close failed 69 times in 5.7 min, a try each sweep; a
+// page left after its third try stayed open until the daemon restarted.
+test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then every 15", async () => {
   let now = Date.now();
   const tries: number[] = [];
   const start = now;
@@ -815,7 +817,7 @@ test("an ended window whose page Safari will not close is asked again after one,
     throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
   });
   try {
-    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 1_319_000, 1_320_000]) {
       now = start + at;
       setSystemTime(new Date(now));
       await turnEnded(w.pid);
@@ -823,7 +825,27 @@ test("an ended window whose page Safari will not close is asked again after one,
   } finally {
     setSystemTime();
   }
-  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000], ended: true });
+  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000, 1_320_000], ended: true });
+});
+
+// On 10-23 ended agents' windows stayed open through restarts, and nothing
+// in safari status --journal said so.
+test("a window that holds only its page five minutes after its task ended is noted in the journal once", async () => {
+  const start = Date.now();
+  const w = await unclosable(() => {
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  });
+  const noted: number[] = [];
+  try {
+    for (const at of [0, 299_000, 300_000, 1_500_000]) {
+      setSystemTime(new Date(start + at));
+      await turnEnded(w.pid);
+      noted.push(recent(2000).filter((e) => e.kind === "agent window whose task ended over 5 min ago is still open" && e.owner === w.pid).reduce((n, e) => n + (typeof e.n === "number" ? e.n : 1), 0));
+    }
+  } finally {
+    setSystemTime();
+  }
+  expect(noted).toEqual([0, 0, 1, 1]);
 });
 
 // Between the tries of a close that failed, every 5 s sweep asked Safari for
@@ -912,7 +934,7 @@ test("an open goes on in its agent's window while Safari lists no tabs, and fail
   }
 });
 
-test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }])("untracked status close failures are bounded (registered=$registered)", async ({ registered, port }) => {
+test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }])("untracked status close failures back off to every 15 minutes (registered=$registered)", async ({ registered, port }) => {
   const s = safari();
   const daemon = await daemonOn(port, `untracked-backoff-${registered}`);
   const owner = agent();
@@ -933,13 +955,13 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
   };
   daemon.loadSpaces(join(dir, `untracked-backoff-${registered}.json`), () => false);
   try {
-    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 1_319_000, 1_320_000]) {
       now = start + at;
       setSystemTime(new Date(now));
       daemon.inspectUntrackedWindows();
       await daemon.turnEnded(owner.pid);
     }
-    expect(tries).toEqual([0, 60_000, 180_000, 420_000]);
+    expect(tries).toEqual([0, 60_000, 180_000, 420_000, 1_320_000]);
     expect(s.tabs.has(healthy.id)).toBe(false);
     expect(s.tabs.has(1)).toBe(true);
   } finally {

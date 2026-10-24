@@ -365,18 +365,20 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 
 // A window page Safari would not close (a native sheet holds it, or the
 // extension does not answer) is asked again after one, two, then four
-// minutes, and then left until the daemon starts again: in the daemon log
-// of 09-30 to 10-16 one lost window's close failed 69 times in 5.7 min,
-// one try each sweep, each a wait in the extension's queue. A page
-// already gone is closed.
+// minutes, then every 15: in the daemon log of 09-30 to 10-16 one lost
+// window's close failed 69 times in 5.7 min, one try each sweep, each a
+// wait in the extension's queue, and a page left after its third try
+// stayed open until the daemon started again. A page already gone is
+// closed.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const SLOW_RETRY_MS = 15 * 60_000;
 const unclosed = new Map<Space | string, { tries: number; at: number }>();
 
 function failedClose(key: Space | string, name: string, error: string): void {
   const tries = (unclosed.get(key)?.tries ?? 0) + 1;
-  const wait = CLOSE_RETRY_MS[tries - 1];
-  unclosed.set(key, { tries, at: Date.now() + (wait ?? 0) });
-  note("window not closed", { name, error, retryS: wait === undefined ? null : wait / 1000 });
+  const wait = CLOSE_RETRY_MS[tries - 1] ?? SLOW_RETRY_MS;
+  unclosed.set(key, { tries, at: Date.now() + wait });
+  note("window not closed", { name, error, retryS: wait / 1000 });
 }
 
 async function end(space: Space) {
@@ -398,7 +400,7 @@ async function end(space: Space) {
   // A page whose close failed is looked for again only once its next try is
   // due: until then a sweep would list Safari's tabs for nothing.
   const failed = unclosed.get(space);
-  if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
+  if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
   if (!space.done || (taskTracked?.(space.owner) !== false && inWindow.some(t => !isPage(t, space)))) return;
   const page = inWindow.find(t => isPage(t, space));
@@ -453,7 +455,7 @@ async function sweepOnce() {
       if ((!space || (taskTracked?.(space.owner) === false && !(space.group === "making" && keeperRunning()))) && making.size === 0) {
         const key = space ?? `${tab.id}:${id}`;
         const failed = unclosed.get(key);
-        if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) continue;
+        if (failed && Date.now() < failed.at) continue;
         try {
           const result = await closeTab(tab.id, "untracked agent status page") as { ok?: boolean } | null;
           if (result?.ok === true) unclosed.delete(key);
@@ -478,6 +480,7 @@ async function sweepOnce() {
       }
     }
   }
+  listed = await stillOpen(listed);
   // A pass with no window to locate, and no ended one whose agent's turn has
   // ended, is the last, and asks Safari nothing: a window that ended before
   // its agent's turn did waits for turnEnded, which sweeps by itself.
@@ -493,6 +496,32 @@ async function sweepOnce() {
     const inWindow = await located(s, tabs);
     if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
+}
+
+// When each window's task was first seen ended, for the journal's note of
+// one that holds nothing but its page five minutes on (safari status
+// --journal): on 10-23 ended agents' windows stayed open through restarts,
+// and nothing said so. Each window is looked at once, at five minutes.
+const STILL_OPEN_MS = 5 * 60_000;
+const doneAt = new Map<Space, { at: number; checked?: true }>();
+
+async function stillOpen(listed: TabInfo[] | undefined): Promise<TabInfo[] | undefined> {
+  const records = new Set([...spaces.values(), ...closing.values(), ...ended]);
+  for (const s of doneAt.keys()) if (!records.has(s) || !s.done) doneAt.delete(s);
+  for (const s of records) {
+    const since = doneAt.get(s);
+    if (!s.done || since?.checked) continue;
+    if (!since) {
+      doneAt.set(s, { at: Date.now() });
+      continue;
+    }
+    if (Date.now() - since.at < STILL_OPEN_MS) continue;
+    since.checked = true;
+    listed ??= await listTabs();
+    const inWindow = await located(s, listed);
+    if (inWindow.length > 0 && inWindow.every((t) => isPage(t, s))) note("agent window whose task ended over 5 min ago is still open", { name: s.name, owner: s.owner ?? null, minutes: Math.floor((Date.now() - since.at) / 60_000) });
+  }
+  return listed;
 }
 
 export function turnResumed(owner: number | undefined, task?: string): void {
