@@ -19,6 +19,8 @@ function healthy(): Probes {
     freeBytes: async () => 150e9,
     swapMb: async () => 0,
     groupsOff: () => undefined,
+    alerts: () => ({ on: true, lastAt: Date.now() }),
+    deploying: () => undefined,
   };
 }
 
@@ -70,6 +72,8 @@ test("with the daemon down, the fix fits why, and nothing that needs the daemon 
   const crashing = await examine(down, true);
   expect(crashing.daemon.status).toBe("fail");
   expect(crashing.daemon.fix).toContain("daemon.log");
+  // a deploy is restarting it: nothing to install or read, only to wait (HD-13)
+  expect((await examine({ ...down, deploying: () => 40 }, true)).daemon).toMatchObject({ status: "warn", detail: "restarting for a deploy", fix: "run safari doctor again in 40 s" });
   expect(asked).toEqual([]);
 });
 

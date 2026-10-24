@@ -14,14 +14,16 @@
 //   safari serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { TOOLS, formatResult, resolveTab, type Tool } from "../daemon/tools.ts";
 import { rowsOf } from "../daemon/tabs-view.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
-import { daemonHttp } from "../daemon/rpc.ts";
+import { daemonHttp, deployingFor } from "../daemon/rpc.ts";
+import { alertHealth } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
@@ -630,10 +632,12 @@ async function fillCommand(argv: string[]) {
 // running (S99PartC, DaemonLogs). Anything else says what came back.
 async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
   const base = daemonHttp();
-  const res = await fetch(`${base}${path}`, init).catch((e: unknown) =>
-    fail(e instanceof Error && "code" in e && e.code === "ConnectionRefused"
-      ? `daemon not reachable at ${base}: nothing listens there; start it with: safari daemon install`
-      : `the daemon at ${base} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`));
+  const res = await fetch(`${base}${path}`, init).catch((e: unknown) => {
+    const deploy = deployingFor();
+    return fail(e instanceof Error && "code" in e && e.code === "ConnectionRefused"
+      ? deploy !== undefined ? `safari is restarting for a deploy; try again in ${deploy} s` : `daemon not reachable at ${base}: nothing listens there; start it with: safari daemon install`
+      : `the daemon at ${base} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  });
   const text = await res.text();
   let body: unknown;
   try {
@@ -779,14 +783,25 @@ async function main() {
   }
 
   // status: the daemon; its extension, stuck (connected, but its calls
-  // time out), connected, or disconnected; and the extension's own events
-  // of the last 10 minutes, 5 at most (--json: the whole health answer).
-  // It printed every tab and window event, 2.2 KB for a yes or no, and
-  // said connected while every call timed out (S99PartC).
+  // time out), connected, or disconnected; whether alerts reach the user's
+  // phone; how far the live release is ahead of origin/master, as its
+  // deploy found it (scripts/dev-install.sh); and the extension's own
+  // events of the last 10 minutes, 5 at most (--json: the whole health
+  // answer, with alerts and upstream). It printed every tab and window
+  // event, 2.2 KB for a yes or no, and said connected while every call
+  // timed out (S99PartC).
   if (cmd === "status") {
     type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connected?: boolean; stuck?: boolean; sinceAnswerMs?: number | null; timeouts?: Record<string, number>; connectedAt?: number } | null; journal?: JournalEvent[] };
+    type Upstream = { branch: string; ahead: number; master: string; at: string };
     const h = await daemonJson<Health>("/health");
-    if (json) return print(h);
+    const alerts = alertHealth();
+    let upstream: Upstream | undefined;
+    try {
+      upstream = h.root ? (JSON.parse(readFileSync(join(h.root, ".upstream"), "utf8")) as Upstream) : undefined;
+    } catch {
+      upstream = undefined;
+    }
+    if (json) return print({ ...h, alerts, ...(upstream ? { upstream } : {}) });
     const at = (t: string | number) => new Date(t).toLocaleString("sv").slice(5);
     console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
     const e = h.extension;
@@ -795,6 +810,10 @@ async function main() {
     console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
       : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; run: safari extension reload`
       : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
+    console.log(!alerts.on ? `${alerts.why}: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat`
+      : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`
+      : "phone alerts on");
+    if (upstream && upstream.ahead > 0) console.log(`live release is ${upstream.ahead} commit(s) ahead of origin/master, from branch ${upstream.branch}, as its deploy at ${at(upstream.at)} found it: merge it`);
     const since = Date.now() - 10 * 60_000;
     const events = (h.journal ?? []).filter((ev) => Object.hasOwn(EXTENSION_EVENTS, ev.kind) && Date.parse(ev.t) >= since).slice(-5);
     for (const { t, kind, ...more } of events) console.log(`${at(t)}  ${kind}${Object.keys(more).length ? `  ${JSON.stringify(more)}` : ""}`);

@@ -57,7 +57,8 @@ daemon/
                     passkey gives after Face ID; one approval covers that
                     card on that site for 30 minutes
   telegram.ts       sends an alert, and its picture, to his Telegram through
-                    ~/.local/bin/tell-aktan
+                    ~/.local/bin/tell-aktan; says the alert is off when that
+                    is missing (safari doctor and status check it)
   watch.ts          watch routines: one value read off a page on a schedule,
                     alerted when it changes, with no model
   recordings.ts     teach mode's recordings, saved for the user alone (0600),
@@ -295,7 +296,9 @@ is committed and deployed.
 A deploy restarts only what changed. When the daemon's code differs from
 the running daemon's (`code` in `safari status --json`), the daemon stops
 taking calls, finishes the ones in flight, and exits; launchd starts the
-new one, and calls made meanwhile wait for it. If the new one does not
+new one, and calls made meanwhile wait for it; one that finds no daemon
+says a deploy restarts it and when to try again
+(`~/.local/share/safari-harness/deploying`). If the new one does not
 come up, checkpoint compatibility gates the fallback below. When the
 extension or the app changed, the app is installed over `/Applications`
 and Safari reloads the
@@ -328,8 +331,11 @@ backup and current state, and leave the current release selected. No
 automatic downgrade or stale-state overwrite is attempted. Failed
 installations print the retained backup path; successful ones delete it.
 
-`~/.local/share/safari-harness/deploys.log` lists every deploy. The five
-latest releases stay, and any that was in use in the past week.
+`~/.local/share/safari-harness/deploys.log` lists every deploy. A deploy
+of a commit not on origin/master warns and ends its line with `unmerged
+<branch>`; `safari status` then says how many commits ahead the live
+release is (the release's `.upstream`). The five latest releases stay,
+and any that was in use in the past week.
 
 ## Use
 

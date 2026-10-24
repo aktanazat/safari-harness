@@ -631,8 +631,11 @@ Automation); the first send asks.
 The harness alerts the user's phone at most 6 times an hour, counting every
 agent's questions and handoffs and every watch routine's notes. Past that,
 the call fails and says when the next alert can go. The alerts go through
-`~/.local/bin/tell-aktan`, which sends to his Telegram chat with Akyl; his
-replies there never reach the harness.
+`~/.local/bin/tell-aktan` (the text on stdin, a picture's path as its one
+argument), which sends to his Telegram chat with Akyl; his replies there
+never reach the harness. When it is missing or fails, nothing claims an
+alert went: the call says "the phone alert is off" (or "failed") and why,
+so tell him in your chat. `safari status` and `safari doctor` show it.
 
 ## Confirm before anything irreversible
 
@@ -668,7 +671,9 @@ things unless its saved task explicitly says to.
   then tell the user. Do not run `safari extension reload`, `doctor`,
   `guide`, or `status` for it, and never loop on them.
 - `daemon not reachable`: run `safari daemon install`. Its log is at
-  `~/Library/Logs/safari-harness/daemon.log`.
+  `~/Library/Logs/safari-harness/daemon.log`. `safari is restarting for a
+  deploy; try again in N s` means a deploy is starting the new daemon:
+  wait that long, then call again.
 - When the extension reloads (every deploy of it, and each reload the
   daemon asks for), a page already open
   gets a fresh copy of the harness's script at the next call to it, and
@@ -1861,7 +1866,8 @@ does (`safari guide reference acting`), files it downloaded included.
   text the page shows once he is done, for a step that leaves the address
   as it was (a card form, Touch ID); text already on the page is refused.
   It returns `{done, waitedMs, url, title, challenge, alerted}` (`alerted`:
-  `sent`, or why not, such as `not sent: at the Mac`; `not sent yet` or
+  `sent`, or why not, such as `not sent: at the Mac` or `not sent: the
+  phone alert is off: ...; tell the user in your chat`; `not sent yet` or
   `sending; outcome not confirmed` when the call ran out first), plus
   `joined` when the tab's handoff was already running. `done` is true when
   the check is gone, when `until` shows, or, when the tab showed no check
@@ -2052,7 +2058,8 @@ File, leaving out verification-code keys, and deletes the file.
   password he approved (kept 5 minutes) with no second prompt. When he is
   away from the Mac (locked, asleep, or idle 3 minutes), the call asks
   for nothing and says so at once: `handoff` the tab, which alerts his
-  phone, or call again once he is back. Until he
+  phone (or, with the alert off, says to tell him in your chat), or call
+  again once he is back. Until he
   acts, Apple's helper answers nothing else, so every other `passwords`
   call, from any agent, waits for him and runs once he has; one still
   waiting 25 s after it began says what it waits on, and whether the
@@ -2502,7 +2509,9 @@ with its `since` to keep waiting.
   sends nothing and returns `{atMac: true}`: ask in your own chat. Away from
   the Mac, it puts the question on his phone (Telegram) and returns `{sent:
   true}` at once. He cannot answer there: ask in your own chat too, and he
-  answers there once he is back. `safari ask "<question>"` does the same.
+  answers there once he is back. When the alert cannot go it returns
+  `{sent: false, why, hint}`: ask in your chat. `safari ask "<question>"`
+  does the same.
 
 ## routine
 
@@ -2583,7 +2592,9 @@ safari routine add orders --at 09:00 --watch https://example.com/orders --replay
   reads the value again.
 - `routine list` shows each watch's last value and last run; `routine run
   <name>` runs it now.
-- The alerts count toward the 6 an hour.
+- The alerts count toward the 6 an hour. A run whose alert cannot go keeps
+  the old value, exits 1, and notes `the user was not told: <why>`; the
+  next run tries again.
 - A watch cannot take the name of a routine that runs a model.
 
 ### Scripts: a fixed task at a set time
@@ -2678,7 +2689,10 @@ waits, screenshots, and fetches do not count). `--json` prints the whole
 health answer.
 
 Its first lines say whether the extension is connected, stuck (with how
-long since it last answered), or disconnected, then the last few events;
+long since it last answered), or disconnected; whether phone alerts work
+(`phone alerts on`, how the last one went, or why they are off); when
+the live release is not on origin/master, how many commits ahead it is,
+as its deploy found it (`upstream` in `--json`); then the last few events.
 `safari status --journal` prints them all. "daemon not reachable" means
 nothing listens on the daemon's port: `safari daemon install`. No `status`
 check is needed before work: every tool says so when the extension is not
