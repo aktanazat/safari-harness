@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { listTools } from "./mcp-tools.ts";
 
 // Every CLI command and every MCP session starts a bun process, and each
 // module it imports adds to that start. A tool call needs the tools, not
@@ -65,4 +66,21 @@ test("the MCP server loads the repl's modules only when the repl runs", async ()
   expect(plain.text).toContain("Example Domain");
   expect(plain.modules.filter((m) => COMMAND_ONLY.test(m))).toEqual([]);
   expect((await mcpCall("repl", { code: "console.log(6 * 7)" })).text).toBe("42");
+});
+
+// Each agent session runs an MCP server for its whole length, whether it
+// calls a tool or not: loaded to list them, the tools took 6 of each
+// server's 16 MB (fresh.ts).
+test("an MCP server answers initialize and lists every tool without loading the tools' code", async () => {
+  const { proc, modules } = spawn([join(REPO, "daemon/mcp.ts")]);
+  for (const [id, method] of [[1, "initialize"], [2, "tools/list"]]) proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method })}\n`);
+  proc.stdin.flush();
+  const lines = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  let out = "";
+  while (out.split("\n").length < 3) out += (await lines.read()).value ?? "";
+  proc.stdin.end();
+  await proc.exited;
+  const replies: { id: number; result: { tools?: unknown[] } }[] = out.split("\n").slice(0, 2).map((line) => JSON.parse(line));
+  expect(replies.find((r) => r.id === 2)?.result.tools).toEqual(listTools());
+  expect((await modules()).filter((m) => m.endsWith("/daemon/tools.ts"))).toEqual([]);
 });

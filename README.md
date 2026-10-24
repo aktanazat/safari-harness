@@ -103,8 +103,10 @@ daemon/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
                     tools itself); lasts the agent's session across deploys
-  mcp-tools.ts      the tools one release offers over MCP; after a deploy the
-                    server loads the daemon's release's copy (fresh.ts)
+  mcp-tools.ts      the tools one release offers over MCP, loaded at a
+                    session's first call (until then the server lists them by
+                    running this file); after a deploy the server loads the
+                    daemon's release's copy (fresh.ts)
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
                     attachment retrieval, and draft-then-approve sending
                     (chat.db read-only, AddressBook, osascript)
