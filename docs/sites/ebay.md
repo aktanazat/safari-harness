@@ -26,5 +26,5 @@ Plain `read` of signed-in eBay pages gets HTTP 403; use `open` or `map`.
 
 ## Readers
 Shipped with the harness; run with `eval {tab, reader}` or `map {urls, what: "eval", reader}`.
-- `search` on a /sch/ page: `heading`, `exact` (false on an empty search: `rows` is then empty and `unrelated` counts the rows shown), and `rows` (id, url, title, price, condition, sold, shipping, location, seller, s-l1600 image), ads left out.
-- `item` on an /itm/ page: title, price, status, seller, shipping, location, returns, item specifics, full-size images, and the description iframe's address.
+- `search` on a /sch/ page: `heading`, `exact` (false on an empty search: `rows` is then empty and `unrelated` counts the rows shown), and `rows` (id, url, title, price or "$a to $b" range, `bestOffer`, `bids` and `timeLeft` on auctions, condition, sold, shipping, location, seller, s-l1600 image), ads left out.
+- `item` on an /itm/ page: title, price alone and `bestOffer` (the listing takes offers), status, seller, shipping, location, returns, item specifics, full-size images, and the description iframe's address.

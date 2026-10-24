@@ -4,7 +4,8 @@ const shipping = /^(.*?)\.? See details\s*for shipping(?:Located in: (.*))?/.exe
 ({
   id: /\/itm\/(\d+)/.exec(location.pathname)?.[1],
   title: text(document.querySelector("h1")),
-  price: text(document.querySelector("[data-testid=x-price-primary]")),
+  price: text(document.querySelector("[data-testid=x-price-primary] .x-price-primary__price") ?? document.querySelector("[data-testid=x-price-primary]")),
+  bestOffer: !!document.querySelector("[data-testid=x-price-primary] .x-price-primary__orBestOffer"),
   status: text(document.querySelector("[data-testid=d-statusmessage]")) || undefined,
   seller: /\/(?:sch|str|usr)\/([^/?]+)/.exec(document.querySelector("[data-testid=x-sellercard-atf] a[href*='/sch/'], [data-testid=x-sellercard-atf] a[href*='/str/'], [data-testid=x-sellercard-atf] a[href*='/usr/']")?.href ?? "")?.[1],
   shipping: shipping?.[1] ?? value(".ux-labels-values--shipping"),
