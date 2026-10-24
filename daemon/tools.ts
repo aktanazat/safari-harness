@@ -177,31 +177,40 @@ async function alsoOn(tab: number, url: string): Promise<string | undefined> {
 // of its 17 tabs. Only a tab the agent alone works in, in the window the
 // open goes to, is taken: never one kept for the user, a site global's,
 // one he has in front, or one an action changed since it loaded (a form in
-// progress). Of several, the one used longest ago goes, and a tab being
-// loaded is claimed, so two opens at once take two tabs. Scripts, map, and
-// replay call as no model (repl.ts, map.ts, replay.ts): each of their
-// opens gets a tab of its own, but for a script's open of an address its
-// session opened in an earlier call, which may take a tab named in again.
-const reusing = new Set<number>();
+// progress). Of several, the one used longest ago goes. A tab an open is
+// loading is no other open's until that open has read it: on 10-23 two
+// opens at once on github.com took one tab, and the second answered with
+// the first's page. Scripts, map, and replay call as no model (repl.ts,
+// map.ts, replay.ts): each of their opens gets a tab of its own, but for a
+// script's open of an address its session opened in an earlier call,
+// which may take a tab named in again.
+const loading = new Set<number>();
 
 async function reuseTab(address: string, space: Space, among?: Set<number>): Promise<{ tab: TabInfo & { space: SpaceNote }; was: string } | undefined> {
   const owner = currentOwner();
   const host = pageHost(address);
   const free = (id: number) => {
     const t = harnessTabs.get(id);
-    return t !== undefined && matchesTask(t, owner, currentTask()) && !t.site && !t.acted && !t.closing && !reusing.has(id) && (among === undefined || among.has(id));
+    return t !== undefined && matchesTask(t, owner, currentTask()) && !t.site && !t.acted && !t.closing && !loading.has(id) && (among === undefined || among.has(id));
   };
   if (owner === undefined || host === undefined || ![...harnessTabs.keys()].some(free)) return undefined;
   const fits = (await listTabs().catch((): TabInfo[] => [])).filter((t): t is TabInfo & { url: string } => free(t.id) && t.windowId === space.window && !t.front && pageHost(t.url) === host);
   const used = (t: TabInfo) => harnessTabs.get(t.id)?.used ?? 0;
   const pick = fits.sort((x, y) => used(x) - used(y))[0];
   if (pick === undefined) return undefined;
-  reusing.add(pick.id);
+  loading.add(pick.id);
   try {
     const t = await inLane("goto", { tab: pick.id }, resolveTab, () => navigate(pick.id, address));
+    // a load the tab was still finishing can land over this one
+    const page = (u: string) => u.split("#")[0];
+    if (page(t.url) === page(pick.url) && page(address) !== page(pick.url)) {
+      loading.delete(pick.id);
+      return undefined;
+    }
     return { tab: { ...t, space: spaceNote(space) }, was: pick.url };
-  } finally {
-    reusing.delete(pick.id);
+  } catch (e) {
+    loading.delete(pick.id);
+    throw e;
   }
 }
 
@@ -2458,21 +2467,30 @@ export const TOOLS: Record<string, Tool> = {
       const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
-        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
-        return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
+        try {
+          const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+          return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
+        } finally {
+          loading.delete(t.id);
+        }
       }
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
       const t = await openIn(group, space, address, !!a.background, !!a.background || !a.keep);
-      if (a.keep) keepTab(t.id);
-      else own(t.id, currentOwner());
-      const held = harnessTabs.get(t.id);
-      if (held) held.url = t.url;
-      if (a.site === true && held) held.site = true;
-      save();
-      const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
-      const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
-      return had === undefined ? result : beside(result, "hint", had);
+      loading.add(t.id);
+      try {
+        if (a.keep) keepTab(t.id);
+        else own(t.id, currentOwner());
+        const held = harnessTabs.get(t.id);
+        if (held) held.url = t.url;
+        if (a.site === true && held) held.site = true;
+        save();
+        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+        const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
+        return had === undefined ? result : beside(result, "hint", had);
+      } finally {
+        loading.delete(t.id);
+      }
     },
   },
   // Agent windows and their tab groups, for the keeper (keeper.ts).
