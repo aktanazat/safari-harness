@@ -163,6 +163,27 @@ test("a reader saved for a site runs by name on its subdomains' pages, in the wo
   expect(world).toBe("page");
 });
 
+test("map, as a model calls it, runs a saved reader on each page", async () => {
+  await learn({ site: "carfax.com", reader: "listings", expression: "['A1', 'B2']" });
+  const { pages } = (await runAs(process.pid, () => callTool("map", { urls: ["https://helix.carfax.com/results"], what: "eval", reader: "listings" }, true))) as { pages: { value: unknown }[] };
+  expect(pages.map((p) => p.value)).toEqual([{ ok: true, result: ["A1", "B2"] }]);
+});
+
+const shipped = (file: string) => readFileSync(new URL(`./sites/readers/${file}`, import.meta.url), "utf8");
+
+test("a reader that ships with the harness runs by name on its site's pages, in its file's world", () => {
+  expect(readerFor("https://www.ebay.com/sch/i.html?_nkw=lamp", "search")).toEqual({ expression: shipped("ebay.com/search.js"), page: false, shipped: true });
+  expect(readerFor("https://poshmark.com/search?query=lamp", "search")).toEqual({ expression: shipped("poshmark.com/search.page.js"), page: true, shipped: true });
+});
+
+test("a reader saved by a shipped reader's name takes its place until forgotten, and the shipped one cannot be forgotten", async () => {
+  expect(await learn({ site: "ebay.com", reader: "search", expression: "document.title" })).toContain("in place of the one that ships with the harness");
+  expect(readerFor("https://www.ebay.com/sch/i.html", "search").expression).toBe("document.title");
+  await learn({ site: "ebay.com", forget: "search" });
+  expect(readerFor("https://www.ebay.com/sch/i.html", "search").expression).toBe(shipped("ebay.com/search.js"));
+  await expect(learn({ site: "ebay.com", forget: "search" })).rejects.toThrow("reader search for ebay.com ships with the harness; save one by that name to replace it");
+});
+
 test("a reader that holds a token is refused and not kept", async () => {
   await expect(learn({ site: "carfax.com", reader: "api", expression: "fetch('/api', { headers: { authorization: 'Bearer abcdefghijklmnopqrstuvwxyz123456' } })" })).rejects.toThrow("not saved: this looks like a token");
   expect(await learn({ site: "carfax.com" })).toBe("no notes or readers for carfax.com");

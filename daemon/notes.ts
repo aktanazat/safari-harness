@@ -84,7 +84,7 @@ export function notedHosts(): string[] {
     const kind = [READERS, REAL_INPUT, ".md"].find((k) => f.endsWith(k));
     return kind ? [f.slice(0, -kind.length)] : [];
   });
-  return [...new Set(hosts)].sort();
+  return [...new Set([...hosts, ...readdirSync(SHIPPED)])].sort();
 }
 
 function notesFiles(): string[] {
@@ -100,12 +100,12 @@ function notesFiles(): string[] {
 // them, then its readers and its mark for real input; null when it has none.
 export function notesSection(host: string): string | null {
   const notes = readNotes(host);
-  const readers = Object.entries(readReaders(host));
+  const readers = Object.entries(readersAt(host));
   const real = readReal(host);
   const sources = readHistory(host).sources;
   const sections = [
     ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent}${sources[noteKey(n)] ? `; source: ${sources[noteKey(n)]}` : ""})`).join("\n")}`] : []),
-    ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${r.date}, ${r.agent}${r.source ? `; source: ${r.source}` : ""})`).join("\n")}`] : []),
+    ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${origin(r)})`).join("\n")}`] : []),
     ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); ${markingGuide(host) ? "its guide marks it too, so it stays marked" : `learn {site: "${host}", real: false} undoes it`}.`]),
   ];
   return sections.length ? sections.join("\n\n") : null;
@@ -119,8 +119,38 @@ const READER_NAME = /^[a-z][a-z0-9_-]{0,39}$/i;
 const MAX_READER_CHARS = 10_000;
 
 type Reader = { expression: string; page: boolean; date: string; agent: string; source?: string };
+type Shipped = { expression: string; page: boolean; shipped: true };
 
 const readersOf = (host: string) => join(notesDir(), `${host}${READERS}`);
+
+// Readers that ship with the harness, one file a reader:
+// sites/readers/<host>/<name>.js, or <name>.page.js to run in the page's
+// own world. A reader saved under the same name takes its place.
+const SHIPPED = new URL("./sites/readers/", import.meta.url);
+
+function shippedReaders(host: string): Record<string, Shipped> {
+  const readers = Object.create(null) as Record<string, Shipped>;
+  let files: string[];
+  try {
+    files = readdirSync(new URL(`${host}/`, SHIPPED));
+  } catch (e) {
+    if (e instanceof Error && "code" in e && e.code === "ENOENT") return readers;
+    throw e;
+  }
+  for (const f of files) {
+    const [, name, page] = /^(.+?)(\.page)?\.js$/.exec(f) ?? [];
+    if (name) readers[name] = { expression: readFileSync(new URL(`${host}/${f}`, SHIPPED), "utf8"), page: page !== undefined, shipped: true };
+  }
+  return readers;
+}
+
+function readersAt(host: string): Record<string, Reader | Shipped> {
+  return Object.assign(shippedReaders(host), readReaders(host));
+}
+
+function origin(r: Reader | Shipped): string {
+  return "shipped" in r ? "ships with the harness" : `${r.date}, ${r.agent}${r.source ? `; source: ${r.source}` : ""}`;
+}
 
 // A host's readers by name, in objects with no prototype: a reader named
 // constructor is the agent's, not Object's.
@@ -149,14 +179,14 @@ function sitesOf(host: string): string[] {
 
 // The reader called name saved for the page at url's site, or for a site
 // above it.
-export function readerFor(url: string, name: string): Reader {
+export function readerFor(url: string, name: string): Reader | Shipped {
   const host = siteHost(url);
   const sites = sitesOf(host);
   for (const site of sites) {
-    const reader = readReaders(site)[name];
+    const reader = readersAt(site)[name];
     if (reader) return reader;
   }
-  const saved = sites.flatMap((site) => Object.keys(readReaders(site)));
+  const saved = sites.flatMap((site) => Object.keys(readersAt(site)));
   throw new Error(`no reader ${name} saved for ${host}; ${saved.length ? `saved: ${saved.join(", ")}` : "save one with learn {site, reader, expression}"}`);
 }
 
@@ -541,23 +571,24 @@ function saveReader(host: string, name: string, expression: string, page: boolea
   refuseInstructions(expression);
   const readers = readReaders(host);
   const replaced = Object.hasOwn(readers, name);
+  const shipped = !replaced && Object.hasOwn(shippedReaders(host), name);
   readers[name] = { expression, page, date: new Date().toLocaleDateString("sv"), agent, ...(source ? { source } : {}) };
   return change(host, {
     kind: "readers", content: readersText(readers), agent, source,
     summary: `${replaced ? "replaced" : "saved"} reader ${name}`,
-    message: `saved reader ${name} for ${host}${replaced ? ", in place of the one saved before" : ""}; run it with eval {tab, reader: "${name}"}, or map with what: "eval"`,
+    message: `saved reader ${name} for ${host}${replaced ? ", in place of the one saved before" : shipped ? ", in place of the one that ships with the harness" : ""}; run it with eval {tab, reader: "${name}"}, or map with what: "eval"`,
   });
 }
 
 function showReader(host: string, name: string): string {
-  const reader = readReaders(host)[name];
+  const reader = readersAt(host)[name];
   if (!reader) throw new Error(`no reader ${name} for ${host}`);
-  return `reader ${name} for ${host} (${reader.page ? "runs in the page's own world; " : ""}${reader.date}, ${reader.agent}${reader.source ? `; source: ${reader.source}` : ""}):\n${reader.expression}`;
+  return `reader ${name} for ${host} (${reader.page ? "runs in the page's own world; " : ""}${origin(reader)}):\n${reader.expression}`;
 }
 
 function forgetReader(host: string, name: string, agent: string, source?: string): string {
   const readers = readReaders(host);
-  if (!Object.hasOwn(readers, name)) throw new Error(`no reader ${name} for ${host}`);
+  if (!Object.hasOwn(readers, name)) throw new Error(Object.hasOwn(shippedReaders(host), name) ? `reader ${name} for ${host} ships with the harness; save one by that name to replace it` : `no reader ${name} for ${host}`);
   delete readers[name];
   return change(host, {
     kind: "readers", content: readersText(readers), agent, source,
@@ -654,7 +685,7 @@ export function firstNotes(url: unknown, again = false): { notes?: string; first
 // called guide, a CLI command, and was told there is no such tool.
 function linesFor(site: string): string[] {
   const notes = readNotes(site);
-  const readers = Object.keys(readReaders(site));
+  const readers = Object.keys(readersAt(site));
   const chars = notes.reduce((sum, n) => sum + n.fact.length, 0);
   return [
     ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with learn {site: "${site}"}`]),
