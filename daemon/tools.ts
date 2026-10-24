@@ -1726,18 +1726,23 @@ const UNSEEN: Record<"covered" | "hidden", string> = {
 // page's finite animations first, up to 1 s, so a shot shows where they
 // land; live leaves them running. WebKit draws nothing in a window other
 // windows cover whole, so its page never paints there (place.ts): when the
-// tab's window is the calling agent's own, it moves where nothing covers it
-// and the shot goes through the whole gate once more; with no room on any
-// display, the error says so. Any other window stays where it is.
+// tab's window is the calling agent's own, or a window its page opened that
+// holds only its tabs, it moves where nothing covers it and the shot goes
+// through the whole gate once more; with no room on any display, the error
+// says so. Any other window stays where it is, and the error names activate.
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
   try {
     try {
       return await shotOnce(tab, opts);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== UNPAINTED) throw error;
-      const window = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.windowId;
+      const tabs = await listTabs().catch((): TabInfo[] => []);
+      const window = tabs.find((t) => t.id === tab)?.windowId;
+      if (window === undefined) throw error;
       const owners = windowOwners();
-      if (window === undefined || !owners.has(window) || owners.get(window) !== currentOwner()) throw error;
+      const owner = currentOwner();
+      const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
+      if (!mine) throw error;
       const where = await uncover(tab).catch(() => undefined);
       if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "read the page with snapshot or extract, or shoot again once your window can show on a display" });
       if (where !== "moved") throw error;
@@ -1747,7 +1752,7 @@ export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capt
     if (error instanceof Error && error.message.startsWith("screenshot privacy:")) {
       throw new HarnessError("privacy", String(unsecret(tab, error.message)), {
         effect: "none",
-        next: "read the page as text, or wait until the protected content can be checked safely",
+        next: error.message === UNPAINTED ? "activate brings its window in front, where it paints (the user sees it), then shot again; or read the page as text" : "read the page as text, or wait until the protected content can be checked safely",
       });
     }
     throw error;
