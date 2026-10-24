@@ -75,7 +75,7 @@ function connect() {
         // An id Safari no longer knows that no reload maps (adopt): the
         // answer says what closed its tab, as far as this page saw (goneText).
         const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
-        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : text });
+        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text });
       });
     };
     sock.onclose = (ev) => {
@@ -185,6 +185,8 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
   const began = Date.now();
   const deadline = began + timeoutMs;
   const left = () => Math.max(deadline - Date.now(), 500);
+  const file = frameId === 0 && files.get(tabId);
+  if (file) throw new Error(fileText(file));
   const msg = { __safariHarness: 1, id: nextId(), op, args, ...(kept && { kept }) };
   let refused = false;
   if (op !== "memoryPage") keepAwake(tabId);
@@ -232,7 +234,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       if (res !== undefined) return res;
       break;
     } catch (e) {
-      if (e.timedOut && op === "eval") throw await ranPast(tabId, timeoutMs);
+      if (e.timedOut && op === "eval") throw await ranPast(tabId, timeoutMs, args[0]);
       if (!e.navigated) throw e;
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
@@ -243,16 +245,21 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
   if (failedPage(t)) throw unopened(t.url);
   // Safari puts no script in a blank tab, and a reload leaves it blank: a
   // popup opened with no address was told to reload, and its agent read,
-  // reloaded, and tried to close it for a minute (01a0f14c, 09-30).
-  if (frameId === 0 && (!t.url || t.url === "about:blank") && t.status === "complete") throw new Error("this tab is blank (a popup opened with no address): there is nothing in it to read; goto an address in it, or close it");
+  // reloaded, and tried to close it for a minute (01a0f14c, 09-30). An
+  // address that downloads a file leaves its tab blank too (K13).
+  if (frameId === 0 && (!t.url || t.url === "about:blank") && t.status === "complete") throw new Error("this tab is blank (a popup opened with no address, or an address that downloaded a file: save that with download {url}): there is nothing in it to read; goto an address in it, or close it");
   // Safari keeps the extension off a site the user has not allowed it on.
   // Through 10-16 it refused 451 times, in 357 tabs, and each request was
-  // told to reload a page that reloading could not open to it.
+  // told to reload a page that reloading could not open to it. A tab still
+  // with no address has had no page commit to it: on 10-23 such tabs were
+  // told "Safari lets no extension into :" (K3, SR-7).
   if (refused && frameId === 0) {
     const host = /^https?:\/\/([^/?#]+)/.exec(t.url || "")?.[1];
     throw new Error(host
       ? `Safari has not allowed the extension on ${host}: in Safari Settings, Extensions, Safari Harness Bridge: Edit Websites, set ${host} to Allow; then retry`
-      : `Safari lets no extension into ${t.url}: goto a web address in this tab, or use another`);
+      : t.url
+        ? `Safari lets no extension into ${t.url}: goto a web address in this tab, or use another`
+        : `no page loaded into this tab in ${Math.round((Date.now() - began) / 1000)} s (Safari gives it no address yet): goto the address again; a PDF reads with pdf {do: "read", url}, and a file saves with download {url}`);
   }
   throw new Error(`the page at ${t.url || "about:blank"} did not answer in ${Math.round((Date.now() - began) / 1000)} s; reload it with goto and retry`);
 }
@@ -267,15 +274,91 @@ function failedPage(t) {
 }
 const unopened = (url) => new Error(`Safari could not open ${url}: the site did not answer`);
 
+// Safari refuses the extension a tab whose page it may not read, in words
+// that name neither the page nor a way on: on 10-23 an open with a
+// snapshot answered them raw, and the agent left the address unexplained
+// (SONA-13). It is most often Safari's own page for a site that did not
+// load, or a site the extension is not allowed on.
+async function barredText(tabId) {
+  const t = typeof tabId === "number" ? await api.tabs.get(tabId).catch(() => null) : null;
+  if (t && failedPage(t)) return unopened(t.url).message;
+  const at = t?.url ? ` at ${t.url}${realTitle(t) ? ` ("${t.title}")` : ""}` : "";
+  return `Safari would not let the extension into the tab${at}: it shows a page no extension may read, most often Safari's own page for a site that did not load (check that the address opens in Safari: a VPN or Tailscale off, a site down), else a site the extension is not allowed on (Safari Settings, Extensions, Safari Harness Bridge, Edit Websites). Nothing was done in the page`;
+}
+
 // An eval the page took but did not finish in time is the agent's code
 // running long: a page that answers nothing fails its ping first, in words
 // of its own. On 09-30 evals that scrolled and slept in a loop were told
-// the page did not answer (01a0f039, 01a0f031). In a tab behind another, a
-// video's play() and an animation never settle: on 10-16 an eval that
-// awaited play() there ran out its 30 s (AkylUsage).
-async function ranPast(tabId, ms) {
-  const behind = await api.tabs.get(tabId).then((t) => !t.active, () => false);
-  return new Error(`your code ran past ${Math.round(ms / 1000)} s; the page answered and is fine.${behind ? " This tab is behind another in its window, where a video's play() and an animation never settle: activate it first, or don't await them." : ""} Keep sleeps and long loops out of eval: a loop across steps goes in repl, and wait {text} waits for words the page will show`);
+// the page did not answer (01a0f039, 01a0f031). What the code awaited
+// says why: a fetch or a promise that never settled (on 10-23 a map's
+// eval awaiting fetch() was told about video, HD-10), or, in a tab behind
+// another, a video's play() or an animation, which never settle there (on
+// 10-16 an eval that awaited play() ran out its 30 s, AkylUsage).
+async function ranPast(tabId, ms, src = "") {
+  const code = String(src);
+  let why = "";
+  if (/\bfetch\s*\(/.test(code)) why = " A fetch you awaited never answered: bound it with AbortSignal.timeout(ms), as in fetch(url, {signal: AbortSignal.timeout(5000)}).";
+  else if (/\.play\s*\(|animat|\.finished\b|requestAnimationFrame/.test(code) && await api.tabs.get(tabId).then((t) => !t.active, () => false)) why = " This tab is behind another in its window, where a video's play() and an animation never settle: activate it first, or don't await them.";
+  else if (/\bawait\b|\.then\s*\(|\bPromise\b/.test(code)) why = " A promise you awaited never settled: race it against a timeout, as AbortSignal.timeout(ms) bounds a fetch.";
+  return new Error(`your code ran past ${Math.round(ms / 1000)} s; the page answered and is fine.${why} Keep sleeps and long loops out of eval: a loop across steps goes in repl, and wait {text} waits for words the page will show`);
+}
+
+// ---------- files ----------
+// An address Safari does not show as a page: a file it downloads, its tab
+// left with no address. On 10-22 and 10-23 open answered such tabs, and
+// each read of one then waited 36 s to fail with "Safari lets no extension
+// into :" or "this tab is blank (a popup opened with no address)" (K3,
+// K13, SR-7). A tab that still shows no address FILE_WAIT_MS into an open
+// or goto has its address asked for once, headers only: a PDF is read with
+// pdf and any other file saved with download, and each read of the tab
+// says so at once. A PDF Safari shows inline is a page, which content.js
+// names.
+const FILE_WAIT_MS = 2000;
+const FILE_PROBE_MS = 5000;
+const files = new Map();
+
+async function fileAt(url) {
+  if (!/^https?:/i.test(url)) return null;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), FILE_PROBE_MS);
+  try {
+    const res = await fetch(url, { credentials: "include", signal: stop.signal });
+    if (!res.ok) return null;
+    const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const disposition = res.headers.get("content-disposition") || "";
+    const name = /filename\*?=(?:UTF-8'')?"?([^";]+)/i.exec(disposition)?.[1] ?? "";
+    if (type === "application/pdf" || /\.pdf$/i.test(name) || (type === "application/octet-stream" && /\.pdf$/i.test(new URL(res.url).pathname))) return { kind: "pdf", url };
+    if (/^attachment/i.test(disposition) || (type && !/^(?:text\/|image\/|video\/|audio\/|application\/(?:xhtml\+xml|xml|json|javascript)|application\/[\w.-]+\+(?:json|xml))/.test(type))) return { kind: "download", url, type };
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    stop.abort();
+  }
+}
+
+function fileText(file) {
+  return file.kind === "pdf"
+    ? `this address is a PDF, which Safari does not show as a page: read its text with pdf {do: "read", url: "${file.url}"}`
+    : `this address downloads a file${file.type ? ` (${file.type})` : ""}, which Safari does not show as a page: save it with download {url: "${file.url}"}`;
+}
+
+// openedPage, unless FILE_WAIT_MS on the tab still shows no address (or,
+// for a goto, the one it had before) and its address is a file.
+async function openedOrFile(tabId, url, until, before = "") {
+  files.delete(tabId);
+  const opened = openedPage(tabId, until);
+  let timer;
+  const looked = new Promise((resolve) => { timer = setTimeout(resolve, FILE_WAIT_MS); }).then(async () => {
+    const t = await api.tabs.get(tabId).catch(() => null);
+    const file = t && ready.get(tabId) !== true && (!t.url || t.url === "about:blank" || (before && t.url === before)) ? await fileAt(url) : null;
+    if (!file) return opened;
+    files.set(tabId, file);
+    return { tab: t, loading: false, file };
+  });
+  try { return await Promise.race([opened, looked]); }
+  finally { clearTimeout(timer); }
 }
 
 // Whether the tab still holds the frame: one the page took away (GEICO's,
@@ -546,11 +629,11 @@ function unlessHeld(tabId, frameId, script, reply, since) {
 // to a ping after PING_MS fails it then, as above; one that navigates
 // meanwhile is left to the script's answer. On 09-30 page-world code past
 // 30 s was told only that the daemon's request timed out.
-function pageTimed(tabId, frameId, ms, run) {
+function pageTimed(tabId, frameId, ms, run, src) {
   const began = Date.now();
   const stop = Promise.withResolvers();
   const held = setTimeout(() => reach(tabId, frameId, PING_MS, began).catch((e) => e.navigated || stop.reject(e)), PING_MS);
-  const late = setTimeout(() => ranPast(tabId, ms).then(stop.reject), ms);
+  const late = setTimeout(() => ranPast(tabId, ms, src).then(stop.reject), ms);
   return Promise.race([run, stop.promise]).finally(() => {
     clearTimeout(held);
     clearTimeout(late);
@@ -569,10 +652,12 @@ api.tabs.onRemoved.addListener((id) => {
   ways.delete(id);
   silent.delete(id);
   shutFrames.delete(id);
+  files.delete(id);
 });
 api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessReady !== 1 || !sender.tab) return;
   const frameId = sender.frameId || 0;
+  if (frameId === 0) files.delete(sender.tab.id);
   learnWay(sender.tab.id, frameId, "message");
   silent.get(sender.tab.id)?.delete(frameId);
   shutFrames.get(sender.tab.id)?.delete(frameId);
@@ -1211,6 +1296,7 @@ async function screenshotInWindow(tabId, windowId, opts) {
   const flip = front && front.id !== tabId;
   const mark = crypto.randomUUID();
   let started = false;
+  let stilled = false;
   let annotated = false;
   let selected = false;
   let failure;
@@ -1237,9 +1323,24 @@ async function screenshotInWindow(tabId, windowId, opts) {
       const settled = await toTab(tabId, "settle", [SETTLE_MS], SETTLE_MS + 2000).catch(() => null);
       if (settled?.value?.finished) await toTab(tabId, "painted", [], 3000).catch(() => {});
     };
+    // A page that changed between masking and capture (a playing video, an
+    // endless animation: SR-6) is tried once more with them paused.
     const grab = async () => {
       await settle();
-      const shot = await privateGrab(tabId, windowId, mark, secrets);
+      let shot;
+      try {
+        shot = await privateGrab(tabId, windowId, mark, secrets);
+      } catch (error) {
+        if (stilled || !String(error.message).startsWith("screenshot privacy: the page changed during capture")) throw error;
+        stilled = true;
+        await pageValue(tabId, "stillPage", [true]);
+        await settle();
+        shot = await privateGrab(tabId, windowId, mark, secrets).catch((again) => {
+          throw String(again.message).startsWith("screenshot privacy: the page changed during capture")
+            ? screenshotPrivacyError("the page kept changing during capture, even with its video and animations paused (a carousel or a live feed): capture it with shots {urls}, which loads it in a tab of its own, or read it as text")
+            : again;
+        });
+      }
       shots.push(shot);
       await protectedCapture(tabId, mark, "clear", secrets);
       return shot;
@@ -1268,6 +1369,7 @@ async function screenshotInWindow(tabId, windowId, opts) {
     for (const frameId of cropFrames) await clean(() => protectedCapture(tabId, mark, "restore", secrets, frameId));
     if (started) await clean(() => protectedCapture(tabId, mark, "restore", secrets));
     if (annotated) await clean(() => pageValue(tabId, "annotate", [false]));
+    if (stilled) await clean(() => pageValue(tabId, "stillPage", [false]));
     if (selected) await clean(() => api.tabs.update(front.id, { active: true }));
   }
   if (failure) throw failure;
@@ -1378,13 +1480,13 @@ async function handle(msg) {
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
-      const { tab: t, loading } = await openedPage(tab.id, Date.now() + 15000);
+      const { tab: t, loading, file } = await openedOrFile(tab.id, url, Date.now() + 15000);
       if (failedPage(t)) {
         closing.add(t.id);
         api.tabs.remove(t.id).catch(() => closing.delete(t.id));
         throw unopened(url);
       }
-      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind } : {}) };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -1444,12 +1546,13 @@ async function handle(msg) {
     }
     case "tabs.navigate": {
       const [tabId, url] = args;
+      const before = (await api.tabs.get(tabId).catch(() => null))?.url ?? "";
       ready.set(tabId, false);
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
-      const { tab: t, loading } = await openedPage(tabId, Date.now() + 20000);
+      const { tab: t, loading, file } = await openedOrFile(tabId, url, Date.now() + 20000, before === url ? "" : before);
       if (failedPage(t)) throw unopened(url);
-      return { id: t.id, url: t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind } : {}) };
     }
     // With bounds, the window moves as well: left and top count from the
     // top-left of the screen it is on (daemon/tools.ts, showTab). The
@@ -1553,7 +1656,7 @@ async function handle(msg) {
     case "evalPage": {
       const [tabId, src, frameId, timeoutMs] = args;
       keepAwake(tabId);
-      const [r] = await pageTimed(tabId, frameId, timeoutMs, api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] }));
+      const [r] = await pageTimed(tabId, frameId, timeoutMs, api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] }), src);
       if (!r) throw new Error("the page did not run it");
       if (r.result && r.result.error) throw new Error(r.result.error);
       return r.result;

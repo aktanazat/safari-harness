@@ -136,6 +136,9 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   // What Safari shows at each address the harness opens a tab on or loads
   // in one; any other address shows a page of its own.
   const pages = new Map<string, Doc>();
+  // The headers a server answers a fetch of each address with that serves
+  // a file (serveFile); any other fetch reads a data: address.
+  const served = new Map<string, Headers>();
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onActivated = new Hook<[{ tabId: number; windowId: number }]>();
@@ -243,7 +246,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
         const tab = { id: nextTab++, doc: pages.get(url) ?? new Doc(url), window: windowId };
         tabs.set(tab.id, tab);
         browser.tabs.onCreated.fire({ id: tab.id, windowId });
-        copyIn(tab, tab.doc);
+        if (!tab.doc.shut) copyIn(tab, tab.doc);
         return row(tab);
       },
       // goto: Safari loads the address in the tab.
@@ -378,7 +381,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
 
   new Function("browser", "WebSocket", "setTimeout", "clearTimeout", "setInterval", "Date", "console", "OffscreenCanvas", "FileReader", "fetch", "createImageBitmap", SOURCE)(
     browser, Socket, clock.setTimeout, clock.clearTimeout, () => 0, class extends Date { constructor() { super(clock.now); } static now() { return clock.now; } }, { log: () => {} },
-    RasterCanvas, RasterReader, async (url: string) => ({ blob: async () => new Blob([Buffer.from(url.split(",")[1], "base64")]) }),
+    RasterCanvas, RasterReader, async (url: string) => (served.has(url) ? { ok: true, url, headers: served.get(url) } : { blob: async () => new Blob([Buffer.from(url.split(",")[1], "base64")]) }),
     async (blob: Blob) => ({ ...JSON.parse(await blob.text()), close() {} }),
   );
   await settle();
@@ -435,6 +438,14 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     // Safari shows doc at its address when the harness opens or loads it.
     serve(doc: Doc) {
       pages.set(doc.url, doc);
+    },
+    // url serves a file with these headers: Safari downloads it, or shows
+    // it as no page, and the tab opened on it keeps no address or script.
+    serveFile(url: string, headers: Record<string, string>) {
+      const blank = new Doc("");
+      blank.shut = true;
+      pages.set(url, blank);
+      served.set(url, new Headers(headers));
     },
     // The tab that shows doc.
     showing(doc: Doc): Tab {
@@ -751,6 +762,63 @@ test("an eval past its limit blames the code on a page that answers, and the pag
   expect(ran?.error).toMatch(/ran past 30 s/);
   expect(ran?.error).not.toMatch(/did not answer/);
   expect(stuck?.error).toMatch(/did not answer in 10 s/);
+});
+
+// On 10-23 a map's eval that awaited fetch() ran past its limit and was
+// told a video or animation in a tab behind another never settles (HD-10).
+test("an eval past its limit that awaited a fetch is told to bound the fetch, not about video", async () => {
+  const b = await start();
+  const busy = b.open("https://example.com/");
+  busy.doc.does = () => never();
+  let ran: Answer | undefined;
+  b.ask(busy, "eval", ["const r = await fetch('/api/items'); return r.json()"]).then((a) => { ran = a; });
+  await b.clock.advance(31_000);
+  expect(ran?.error).toMatch(/ran past 30 s.*A fetch you awaited never answered: bound it with AbortSignal\.timeout/);
+  expect(ran?.error).not.toMatch(/video/);
+});
+
+// On 10-23 an open with a snapshot answered Safari's own words, "This
+// extension does not have access to this tab", and the agent left the
+// address unexplained (SONA-13).
+test("a request Safari refuses the extension's script names the tab's address and what to check", async () => {
+  const b = await start();
+  const tab = b.open("https://nas.tail1234.ts.net/");
+  tab.doc.shut = true;
+  const answer = await b.request("evalPage", [tab.id, "1", 0, 30000]);
+  expect(answer.error).toStartWith("Safari would not let the extension into the tab at https://nas.tail1234.ts.net/: it shows a page no extension may read, most often Safari's own page for a site that did not load");
+});
+
+// On 10-22 and 10-23 open answered tabs whose address downloaded a file,
+// and each read of one then waited 36 s to fail with "Safari lets no
+// extension into :" or "this tab is blank" (K3, K13, SR-7).
+test.each([
+  ["a PDF", { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="leaflet.pdf"' }, "pdf", 'this address is a PDF, which Safari does not show as a page: read its text with pdf {do: "read", url: "https://example.com/leaflet?download=true"}'],
+  ["another file", { "content-type": "application/zip" }, "download", 'this address downloads a file (application/zip), which Safari does not show as a page: save it with download {url: "https://example.com/leaflet?download=true"}'],
+])("open of an address that downloads %s answers once the tab shows no page, and a read of the tab says what to use at once", async (_name, headers, file, told) => {
+  const b = await start();
+  const url = "https://example.com/leaflet?download=true";
+  b.serveFile(url, headers);
+  let opened: Answer | undefined;
+  b.request("tabs.open", [url, true]).then((a) => { opened = a; });
+  // an owned tab first waits out its dialog setting (5 s), then FILE_WAIT_MS
+  await b.clock.advance(7000);
+  expect(opened?.value).toMatchObject({ url, file });
+  const tab = opened?.value;
+  if (!tab || typeof tab !== "object" || !("id" in tab)) throw new Error("open answered no tab");
+  let read: Answer | undefined;
+  b.request("relay", [tab.id, "extract", [{}], 30000, 0]).then((a) => { read = a; });
+  await b.clock.advance(0);
+  expect(read?.error).toBe(told);
+});
+
+test("open of a page slow to load is not taken for a file", async () => {
+  const b = await start();
+  const url = "https://example.com/guide";
+  b.serveFile(url, { "content-type": "text/html; charset=utf-8" });
+  let opened: Answer | undefined;
+  b.request("tabs.open", [url, true]).then((a) => { opened = a; });
+  await b.clock.advance(15_000);
+  expect(opened?.value).not.toHaveProperty("file");
 });
 
 // eval with page: true runs by executeScript, which has no limit of its
@@ -1601,7 +1669,7 @@ type ShotResult = {
 
 function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 1 }, height = 10) {
   let y = 0, savedY = 0;
-  const page = { protected: false, annotated: false, finished: 0, refusePrepare: false, changeDuringCapture: false, get y() { return y; } };
+  const page = { protected: false, annotated: false, finished: 0, refusePrepare: false, changeDuringCapture: false, stillsChange: false, still: false, get y() { return y; } };
   tab.doc.title = "Private page";
   const state = () => ({
     ok: true,
@@ -1631,6 +1699,11 @@ function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 
     if (op === "locate") return { x: 1, y: 1, width: 4, height: 3, innerWidth: viewport.width, innerHeight: viewport.height };
     if (op === "settle") { page.finished += 2; return { finished: 2 }; }
     if (op === "annotate") page.annotated = msg.args?.[0] === true;
+    // the page stops changing once its video and animations are paused
+    if (op === "stillPage") {
+      page.still = msg.args?.[0] === true;
+      if (page.still && page.stillsChange) page.changeDuringCapture = false;
+    }
     return { ok: true };
   };
   return page;
@@ -1691,7 +1764,7 @@ test("a raw capture exception restores protection and selection without disguisi
   expect(b.active()).toBe(front.id);
 });
 
-test("a page that changes while Safari captures returns no image bytes", async () => {
+test("a page that keeps changing while Safari captures, its video and animations paused, returns no image bytes", async () => {
   const b = await start();
   const tab = b.open("https://example.com/private");
   const page = shotPage(tab);
@@ -1699,8 +1772,24 @@ test("a page that changes while Safari captures returns no image bytes", async (
   page.changeDuringCapture = true;
   const answer = await b.request("shot", [tab.id, { live: true }]);
   expect(answer.value).toBeUndefined();
-  expect(answer.error).toStartWith("screenshot privacy: ");
+  expect(answer.error).toStartWith("screenshot privacy: the page kept changing during capture, even with its video and animations paused");
   expect(page.protected).toBe(false);
+  expect(page.still).toBe(false);
+});
+
+// SR-6: a shot of a page playing a video failed its check each time.
+test("a page that changes while Safari captures is captured again with its video and animations paused, which play again after", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/private");
+  const page = shotPage(tab);
+  b.focus(tab);
+  page.changeDuringCapture = true;
+  page.stillsChange = true;
+  const answer = await b.request("shot", [tab.id, { live: true }]);
+  expect(answer.error).toBeUndefined();
+  expect(answer.value).toMatchObject({ source: { privacy: { masked: 1 } } });
+  expect(page.protected).toBe(false);
+  expect(page.still).toBe(false);
 });
 
 test("a screenshot refuses another tab's pixels when selection switches away and back during capture", async () => {
