@@ -155,7 +155,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              (a file.pdf needs no tab)
   safari window <width> <height> --tab N     resize the tab's window to that size
   safari window --size 390x844 --tab N       the same, as WIDTHxHEIGHT
-  safari history-search [text]               search Safari browsing history
+  safari history-search [text] [--any a b c] search Safari browsing history; --any: any of several texts
   safari fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card
   safari fill login [--bitwarden] [--user name] --tab N
@@ -1019,7 +1019,12 @@ async function main() {
       args.height = Number(wh[1]);
       break;
     }
-    case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
+    case "history-search": case "browsing-history": {
+      // --any a b c: each word a text of its own, as in browsing_history's any
+      const any = flag("any", rest);
+      args = any === undefined || any.startsWith("[") ? { text: positional.join(" ") || undefined } : { any: [any, ...positional] };
+      break;
+    }
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
     case "ask": args.question = positional.join(" "); break;

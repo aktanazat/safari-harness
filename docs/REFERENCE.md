@@ -2452,6 +2452,10 @@ daemon, model training or approval bypass is added.
   10,000 to 20,000 loads, their addresses cut as answers are, in
   `~/.local/share/safari-harness/loads-<port>.jsonl`. It reads Safari's
   history file, so the terminal needs Full Disk Access.
+- `any: ["mexidol", "mildronate"]` (CLI `safari history-search --any
+  mexidol mildronate`) searches several texts in one call: each row says
+  the `term` it holds, `limit` counts for each term, and `noMatch` lists the
+  terms no address held.
 
 ## imessage_chats
 
