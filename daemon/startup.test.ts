@@ -1,7 +1,8 @@
 import { afterAll, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { listTools } from "./mcp-tools.ts";
 
 // Every CLI command and every MCP session starts a bun process, and each
@@ -83,4 +84,25 @@ test("an MCP server answers initialize and lists every tool without loading the 
   const replies: { id: number; result: { tools?: unknown[] } }[] = out.split("\n").slice(0, 2).map((line) => JSON.parse(line));
   expect(replies.find((r) => r.id === 2)?.result.tools).toEqual(listTools());
   expect((await modules()).filter((m) => m.endsWith("/daemon/tools.ts"))).toEqual([]);
+});
+
+// node:crypto and node:net held 1 MB of each MCP server that made no call
+// (10-21); Bun hashes and listens without them. A builtin is not in
+// require.cache, so the import lines of the server's files tell what it
+// loads as it starts.
+test("an MCP server starts without node:crypto or node:net", () => {
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const files = new Set<string>();
+  const modules = new Set<string>();
+  const walk = (file: string) => {
+    if (files.has(file)) return;
+    files.add(file);
+    for (const { kind, path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+      if (kind === "dynamic-import") continue;
+      if (path.startsWith(".")) walk(join(dirname(file), path));
+      else modules.add(path);
+    }
+  };
+  walk(join(REPO, "daemon/mcp.ts"));
+  expect([...modules].filter((m) => m === "node:crypto" || m === "node:net")).toEqual([]);
 });
