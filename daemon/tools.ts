@@ -177,31 +177,40 @@ async function alsoOn(tab: number, url: string): Promise<string | undefined> {
 // of its 17 tabs. Only a tab the agent alone works in, in the window the
 // open goes to, is taken: never one kept for the user, a site global's,
 // one he has in front, or one an action changed since it loaded (a form in
-// progress). Of several, the one used longest ago goes, and a tab being
-// loaded is claimed, so two opens at once take two tabs. Scripts, map, and
-// replay call as no model (repl.ts, map.ts, replay.ts): each of their
-// opens gets a tab of its own, but for a script's open of an address its
-// session opened in an earlier call, which may take a tab named in again.
-const reusing = new Set<number>();
+// progress). Of several, the one used longest ago goes. A tab an open is
+// loading is no other open's until that open has read it: on 10-23 two
+// opens at once on github.com took one tab, and the second answered with
+// the first's page. Scripts, map, and replay call as no model (repl.ts,
+// map.ts, replay.ts): each of their opens gets a tab of its own, but for a
+// script's open of an address its session opened in an earlier call,
+// which may take a tab named in again.
+const loading = new Set<number>();
 
 async function reuseTab(address: string, space: Space, among?: Set<number>): Promise<{ tab: TabInfo & { space: SpaceNote }; was: string } | undefined> {
   const owner = currentOwner();
   const host = pageHost(address);
   const free = (id: number) => {
     const t = harnessTabs.get(id);
-    return t !== undefined && matchesTask(t, owner, currentTask()) && !t.site && !t.acted && !t.closing && !reusing.has(id) && (among === undefined || among.has(id));
+    return t !== undefined && matchesTask(t, owner, currentTask()) && !t.site && !t.acted && !t.closing && !loading.has(id) && (among === undefined || among.has(id));
   };
   if (owner === undefined || host === undefined || ![...harnessTabs.keys()].some(free)) return undefined;
   const fits = (await listTabs().catch((): TabInfo[] => [])).filter((t): t is TabInfo & { url: string } => free(t.id) && t.windowId === space.window && !t.front && pageHost(t.url) === host);
   const used = (t: TabInfo) => harnessTabs.get(t.id)?.used ?? 0;
   const pick = fits.sort((x, y) => used(x) - used(y))[0];
   if (pick === undefined) return undefined;
-  reusing.add(pick.id);
+  loading.add(pick.id);
   try {
     const t = await inLane("goto", { tab: pick.id }, resolveTab, () => navigate(pick.id, address));
+    // a load the tab was still finishing can land over this one
+    const page = (u: string) => u.split("#")[0];
+    if (page(t.url) === page(pick.url) && page(address) !== page(pick.url)) {
+      loading.delete(pick.id);
+      return undefined;
+    }
     return { tab: { ...t, space: spaceNote(space) }, was: pick.url };
-  } finally {
-    reusing.delete(pick.id);
+  } catch (e) {
+    loading.delete(pick.id);
+    throw e;
   }
 }
 
@@ -1717,18 +1726,23 @@ const UNSEEN: Record<"covered" | "hidden", string> = {
 // page's finite animations first, up to 1 s, so a shot shows where they
 // land; live leaves them running. WebKit draws nothing in a window other
 // windows cover whole, so its page never paints there (place.ts): when the
-// tab's window is the calling agent's own, it moves where nothing covers it
-// and the shot goes through the whole gate once more; with no room on any
-// display, the error says so. Any other window stays where it is.
+// tab's window is the calling agent's own, or a window its page opened that
+// holds only its tabs, it moves where nothing covers it and the shot goes
+// through the whole gate once more; with no room on any display, the error
+// says so. Any other window stays where it is, and the error names activate.
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
   try {
     try {
       return await shotOnce(tab, opts);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== UNPAINTED) throw error;
-      const window = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.windowId;
+      const tabs = await listTabs().catch((): TabInfo[] => []);
+      const window = tabs.find((t) => t.id === tab)?.windowId;
+      if (window === undefined) throw error;
       const owners = windowOwners();
-      if (window === undefined || !owners.has(window) || owners.get(window) !== currentOwner()) throw error;
+      const owner = currentOwner();
+      const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
+      if (!mine) throw error;
       const where = await uncover(tab).catch(() => undefined);
       if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "read the page with snapshot or extract, or shoot again once your window can show on a display" });
       if (where !== "moved") throw error;
@@ -1738,7 +1752,7 @@ export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capt
     if (error instanceof Error && error.message.startsWith("screenshot privacy:")) {
       throw new HarnessError("privacy", String(unsecret(tab, error.message)), {
         effect: "none",
-        next: "read the page as text, or wait until the protected content can be checked safely",
+        next: error.message === UNPAINTED ? "activate brings its window in front, where it paints (the user sees it), then shot again; or read the page as text" : "read the page as text, or wait until the protected content can be checked safely",
       });
     }
     throw error;
@@ -2458,21 +2472,30 @@ export const TOOLS: Record<string, Tool> = {
       const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
-        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
-        return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
+        try {
+          const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+          return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
+        } finally {
+          loading.delete(t.id);
+        }
       }
       // A kept tab is the user's to close; one kept in front also shows him
       // its dialogs.
       const t = await openIn(group, space, address, !!a.background, !!a.background || !a.keep);
-      if (a.keep) keepTab(t.id);
-      else own(t.id, currentOwner());
-      const held = harnessTabs.get(t.id);
-      if (held) held.url = t.url;
-      if (a.site === true && held) held.site = true;
-      save();
-      const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
-      const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
-      return had === undefined ? result : beside(result, "hint", had);
+      loading.add(t.id);
+      try {
+        if (a.keep) keepTab(t.id);
+        else own(t.id, currentOwner());
+        const held = harnessTabs.get(t.id);
+        if (held) held.url = t.url;
+        if (a.site === true && held) held.site = true;
+        save();
+        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+        const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
+        return had === undefined ? result : beside(result, "hint", had);
+      } finally {
+        loading.delete(t.id);
+      }
     },
   },
   // Agent windows and their tab groups, for the keeper (keeper.ts).
@@ -3207,11 +3230,13 @@ async function lostReopened(e: unknown, tool: string, args: Record<string, unkno
 // times while the user typed his next ask, and each cost a failed read, an
 // open, and a wait to find the page again; from 10-02 to 10-05 six tabs a
 // 99point agent kept by id in files closed after 20 minutes unused, and
-// each failed its next call. A read runs on the fresh page. An action does
-// not, since what earlier ones entered there is gone (a form in progress, a
-// checkout): it says so, and the agent looks first. A tab the agent or the
-// user closed stays closed, another agent's never opens, and neither does
-// one a caller's own steps name (hidden tools: real_input's in input.ts).
+// each failed its next call. A read runs on the fresh page, and so does an
+// eval of a saved reader, which reads by what learn saves it as. An action
+// does not, since what earlier ones entered there is gone (a form in
+// progress, a checkout): it says so, and the agent looks first. A tab the
+// agent or the user closed stays closed, another agent's never opens, and
+// neither does one a caller's own steps name (hidden tools: real_input's in
+// input.ts).
 const FRESH_ACTIONS: Record<string, true> = { goto: true, scroll: true };
 
 async function reopen(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
@@ -3242,7 +3267,9 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
   }
   const opened = await opening;
   const was = `tab ${args.tab} had closed ${opened.closed.why} ${opened.closed.found ? "by" : "at"} ${localTime(new Date(opened.closed.at))}; it is open again on ${redactUrl(opened.closed.url!)}, loaded fresh`;
-  if (affectsPage(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new HarnessError("stale_view", `${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: snapshot it, then act`);
+  if (affectsPage(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool) && !(tool === "eval" && args.reader !== undefined)) {
+    throw new HarnessError("stale_view", `${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: ${tool === "eval" ? "an eval that only reads can run there again; else snapshot it, then act" : "snapshot it, then act"}`);
+  }
   return was;
 }
 

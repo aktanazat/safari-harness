@@ -927,6 +927,11 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a sign-in step that asks how to send the code lists the ways it offers",
+    page: "two-factor-choice.html",
+    steps: [{ op: "eval", args: ["window.__safariHarnessProbe.code()"], answer: { value: { ok: true, result: { found: false, methods: ["Authentication app", "Text message", "WhatsApp"] } } } }],
+  },
+  {
     name: "extract of a page that says it is loading waits for its text, and leaves the loading line out",
     page: "loading.html",
     // the case comes 1 s after the page loads

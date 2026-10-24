@@ -94,6 +94,7 @@ When a call fails
 - `effect: "possibly_effected"` means the action may already have happened.
   Do not repeat it blindly. Read a fresh whole-page snapshot or extract,
   check the result, then decide. Follow the failure's `next` field.
+  `effect: "none"`: nothing happened; a refused link names its address.
 - `pageState` distinguishes content from sign-in, subscriber, consent and
   region walls, loading, errors and unread pages. A successful read of a
   wall is not a successful read of the requested content.

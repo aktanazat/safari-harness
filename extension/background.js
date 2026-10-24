@@ -75,7 +75,7 @@ function connect() {
         // An id Safari no longer knows that no reload maps (adopt): the
         // answer says what closed its tab, as far as this page saw (goneText).
         const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
-        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : text });
+        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : text, ...(err?.failure ? { failure: err.failure } : {}) });
       });
     };
     sock.onclose = (ev) => {
@@ -132,6 +132,9 @@ const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "p
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
 const START_MS = { load: 3000, tab: 3000, script: 400 };
+// The page called window.open, and no tab came of it in START_MS.tab:
+// Safari blocks a popup a script asks for outside a real click.
+const POPUP_BLOCKED = "the page tried to open a tab and none opened in 3 s: Safari blocks a popup a scripted click opens; click the same ref with real_input";
 // How long a page gets to show its script is there. A page that answers
 // nothing (a dialog open on it, or one stuck loading) fails the request
 // then, not at the request's own limit; a heavy page starting up answers
@@ -383,6 +386,7 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null)
       const t = await api.tabs.get(tabId);
       value.navigated = { url: t.url, title: t.title };
     }
+    if (expect === "tab" && opened === null && !navigated) value.next = POPUP_BLOCKED;
     if (opened !== null) {
       if (front && !source.active) await api.tabs.update(front.id, { active: true });
       if (await ownsTab(tabId)) await ownTab(opened);
@@ -1476,7 +1480,7 @@ async function handle(msg) {
       const reading = (domOp === "extract" || domOp === "snapshot") && !frameId && memoryPolicy.researchEnabled === true;
       const readArgs = (domOp === "extract" || domOp === "snapshot") ? [{ ...(domArgs?.[0] ?? {}), memoryResearch: reading }, ...(domArgs?.slice(1) ?? [])] : domArgs;
       const res = await relayOp(tabId, domOp, readArgs, timeoutMs, frameId);
-      if (res && res.error) throw new Error(res.error);
+      if (res && res.error) throw Object.assign(new Error(res.error), res.failure ? { failure: res.failure } : {});
       const value = res && res.value;
       if (!value || typeof value !== "object" || !Object.hasOwn(value, "memorySource")) return value;
       const { memorySource, ...result } = value;

@@ -4,18 +4,19 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { runner } from "../bench/bench.ts";
+import { HarnessError } from "./failures.ts";
 import { runSteps } from "./tools.ts";
 
 // A run's steps against a stand-in for its tools that records each call:
-// open makes tabs 5, 6, ...; click fails, as one on a disabled control
-// does; every other tool answers ok.
+// open makes tabs 5, 6, ...; click is refused before any event, as one on a
+// disabled control is (content.js); every other tool answers ok.
 function tools() {
   const calls: [string, Record<string, unknown>][] = [];
   let next = 5;
   const call = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
     calls.push([tool, args]);
     if (tool === "open") return { id: next++ };
-    if (tool === "click") throw new Error("that control is disabled");
+    if (tool === "click") throw new HarnessError("stale_view", "that control is disabled", { effect: "none" });
     return { ok: true };
   };
   return { calls, call };
@@ -59,7 +60,7 @@ test("close and keep still run after a step fails, on the run's tab", async () =
         step: 2,
         tool: "click",
         error: "that control is disabled",
-        failure: { ok: false, code: "effect_unknown", effect: "possibly_effected", retryable: false, message: "that control is disabled" },
+        failure: { ok: false, code: "stale_view", effect: "none", retryable: true, message: "that control is disabled" },
       },
       { step: 4, tool: "keep", value: { ok: true } },
     ],

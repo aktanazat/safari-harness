@@ -1,10 +1,13 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { captureFixture, connect } from "./fake-safari.ts";
 import * as front from "./front.ts";
 import { runAs } from "./owner.ts";
 import * as spaces from "./spaces.ts";
-import { captureTab } from "./tools.ts";
+import { captureTab, loadTabs } from "./tools.ts";
 
 // On 10-22 Safari opened every agent window at one place on the display
 // above, and the shots of every agent whose window others covered failed
@@ -92,8 +95,21 @@ test("a shot whose window another agent's covers moves that window alone where n
 test("a shot whose page did not paint leaves a window that is not the caller's where it is", async () => {
   const theirs = { id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 };
   const windows = mac([{ ...HIS }, { id: 3, safari: true, ...SAFARI_PUT, width: 1001, height: 780 }, { ...theirs }], { 11: 1, 21: 2, 31: 3 }, { 2: 7, 3: 8 });
-  await expect(runAs(8, () => captureTab(21))).rejects.toMatchObject({ code: "privacy", message: UNPAINTED });
+  await expect(runAs(8, () => captureTab(21))).rejects.toMatchObject({ code: "privacy", message: UNPAINTED, next: expect.stringContaining("activate") });
   expect(byId(windows, 2)).toEqual(theirs);
+});
+
+// On 10-23 a shot of a console popup the page opened failed "did not
+// paint" after 9.5 s; after activate the same shot took 0.3 s.
+test("a shot of a popup window the caller's page opened moves that window where it shows, and captures its page", async () => {
+  const popup = { id: 5, safari: true, x: 200, y: 200, width: 600, height: 500 };
+  const windows = mac([{ ...HIS }, { ...popup }], { 11: 1, 51: 5 }, {});
+  const state = join(mkdtempSync(join(tmpdir(), "place-")), "tabs.json");
+  writeFileSync(state, JSON.stringify({ 51: process.pid }));
+  loadTabs(state);
+  const capture = await runAs(process.pid, () => captureTab(51));
+  expect(capture.source.url).toBe("https://page.example/51");
+  expect([shared(byId(windows, 5), HIS), byId(windows, 1)]).toEqual([0, HIS]);
 });
 
 test("a shot whose window no display has room to show says it is covered, and moves nothing", async () => {

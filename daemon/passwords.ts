@@ -36,6 +36,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeF
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
+import { HarnessError } from "./failures.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
 import { isAway } from "./phone.ts";
@@ -563,8 +564,8 @@ export class ApplePasswords {
   // had asked for.
   private heldUp(a: Approval): Error {
     const since = localTime(new Date(a.since));
-    if (a.owner !== currentOwner()) return new Error(`another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call waited for him and did not run; call again to wait more, or sign in another way (the site's emailed code or reset link)`);
-    return new Error(`Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`);
+    if (a.owner !== currentOwner()) return new HarnessError("waiting_for_human", `another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call waited for him and did not run; call again to wait more, or sign in another way (the site's emailed code or reset link)`, { next: "call again to wait more, or sign in another way" });
+    return new HarnessError("waiting_for_human", `Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`, { next: `ask him to approve, then call ${a.again} again` });
   }
 
   // How long the call under way has left before it must answer.
@@ -824,7 +825,7 @@ export class ApplePasswords {
       // user away, nothing is asked; a probe that fails reads as at the Mac.
       if (await isAway().catch(() => false)) {
         const off = alertsOff();
-        throw new Error(`the user is away from the Mac, where Apple Passwords asks for his Touch ID before it gives ${ask.what}, so nothing was asked: a prompt no one answers holds the helper for every agent. Call handoff on this tab, which ${off === undefined ? "alerts his phone and " : ""}ends once he has done the step himself${off === undefined ? "" : ` (${off}: tell the user in your chat)`}, or call ${ask.again} again once he is back`);
+        throw new HarnessError("waiting_for_human", `the user is away from the Mac, where Apple Passwords asks for his Touch ID before it gives ${ask.what}, so nothing was asked: a prompt no one answers holds the helper for every agent. Call handoff on this tab, which ${off === undefined ? "alerts his phone and " : ""}ends once he has done the step himself${off === undefined ? "" : ` (${off}: tell the user in your chat)`}, or call ${ask.again} again once he is back`, { next: `call handoff on this tab, or call ${ask.again} again once he is back` });
       }
       const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), gaveUp: false };
       this.pending = next;
@@ -838,7 +839,7 @@ export class ApplePasswords {
     }, { joins: ask.key });
     if (!(await within(a.reply, this.left(), this.timers))) {
       a.gaveUp = true;
-      throw new Error(`the Mac is asking the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}); ask him to approve, then call ${a.again} again`);
+      throw new HarnessError("waiting_for_human", `the Mac is asking the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}); ask him to approve, then call ${a.again} again`, { next: `ask him to approve, then call ${a.again} again` });
     }
     if (this.kept.get(a.key) === a) {
       a.drop?.();
@@ -967,7 +968,7 @@ export class ApplePasswords {
   // not keep the login.
   async fill(tab: number, username?: string, source: "vault" | "apple" = "vault"): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; from?: "vault"; vault?: string }> {
     const form = await loginForm(tab);
-    if (!form.password && !form.username) throw new Error("no sign-in form on this page");
+    if (!form.password && !form.username) throw new HarnessError("not_content", "no sign-in form on this page", { next: "open the page with the sign-in form, then call fill again" });
     const { site } = form;
     const type = async (login: string, secret: string | null) => {
       keepSecret(tab, secret);
@@ -997,7 +998,7 @@ export class ApplePasswords {
     await this.session();
     const frames = await probe(tab, "code");
     const field = frames.find((f) => f.found);
-    if (!field) throw new Error("no verification code field on this page");
+    if (!field) throw noCodeField(frames.flatMap((f) => f.methods ?? []));
     const site = httpsHost(field.origin);
     const { code, username: login } = await this.oneTimeCode(site, username);
     keepSecret(tab, code);
@@ -1189,7 +1190,7 @@ export const passwords = new ApplePasswords();
 // ---------- a Safari tab's sign-in form ----------
 
 // What a frame of the tab says it holds (probeFrames in background.js).
-type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean; fresh?: number; maxLength?: number; rules?: string; current?: "empty" | "filled" };
+type Probe = { frame: number; origin: string; username?: boolean; password?: boolean; found?: boolean; methods?: string[]; fresh?: number; maxLength?: number; rules?: string; current?: "empty" | "filled" };
 
 function isProbe(p: unknown): p is Probe {
   return !!p && typeof p === "object" && "frame" in p && typeof p.frame === "number" && "origin" in p && typeof p.origin === "string";
@@ -1199,6 +1200,13 @@ function isProbe(p: unknown): p is Probe {
 async function probe(tab: number, what: "login" | "code" | "change"): Promise<Probe[]> {
   const frames = await bridge.request("probe", [tab, what]);
   return Array.isArray(frames) ? frames.filter(isProbe) : [];
+}
+
+// A page that asks how to send the code shows its choices before any field.
+function noCodeField(methods: string[]): HarnessError {
+  if (!methods.length) return new HarnessError("not_content", "no verification code field on this page", { next: "open the page that asks for the code, then call code again" });
+  const next = "click the authentication app choice (the codes Apple Passwords keeps are those), then call code again";
+  return new HarnessError("not_content", `no verification code field on this page; it asks how to send the code: ${methods.map((m) => JSON.stringify(m)).join(", ")}: ${next}`, { next });
 }
 
 // The site a login may be used on comes from the page itself, never from

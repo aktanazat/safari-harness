@@ -49,6 +49,13 @@ export function readFailure(value: unknown): Failure | undefined {
   return { ok: false, code: f.code, retryable: f.retryable, effect: f.effect, message: f.message, next: f.next };
 }
 
+// An error the extension answered, typed when the page said what kind it
+// was: content.js marks a click it refused before sending any event.
+export function answeredError(message: string, failure: unknown): Error {
+  const f = fields(failure);
+  return f && isCode(f.code) && (f.effect === "none" || f.effect === "possibly_effected") ? new HarnessError(f.code, message, { effect: f.effect }) : new Error(message);
+}
+
 function diagnosticCode(value: Record<string, unknown>): FailureCode | undefined {
   if (isCode(value.code)) return value.code;
   switch (value.code) {

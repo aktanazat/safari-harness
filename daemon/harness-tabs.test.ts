@@ -23,6 +23,9 @@ let nextTab = 0;
 let nextWindow = 0;
 let hisFront: number | undefined;
 let onClose = () => {};
+// A tab whose page the harness is still reading after an open: its probe
+// answers once until settles, and arrived says the probe came.
+let loadingTab: { tab: number; until: Promise<void>; arrived: () => void } | undefined;
 afterEach(() => { closes.length = 0; hisFront = undefined; });
 const SIGN_IN_PAGE = { name: "", type: "text/html", size: 13, disposition: null, url: "https://slack.com/signin", data: Buffer.from("<html>sign in").toString("base64") };
 function answer(op: string, args: unknown[]): unknown {
@@ -64,6 +67,13 @@ function answer(op: string, args: unknown[]): unknown {
 const ext = {
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+    if (op === "probe" && loadingTab?.tab === args[0]) {
+      const { until, arrived } = loadingTab;
+      loadingTab = undefined;
+      arrived();
+      void until.then(() => bridge.handleMessage(JSON.stringify({ id, value: [] })));
+      return;
+    }
     const value = answer(op, args);
     if (op === "tabs.open") opens.push(args);
     if (op === "relay") relays.push(args);
@@ -334,6 +344,27 @@ test("a model's open loads in its agent's tab on that site, never in a form in p
   await Promise.all([endTurn(agent.pid), endTurn(other.pid)]);
   await closedAs([a, his, e, f]);
   expect([gone.has(a), gone.has(c)]).toEqual([true, false]);
+  showing = [];
+});
+
+// 10-23: two opens at once on github.com took one tab, and the second
+// answered with the first's page.
+test("an open never loads in a tab another open is still loading", async () => {
+  const agent = keeper();
+  const model = (url: string) => runAs(agent.pid, () => callTool("open", { url }, true)) as Promise<{ id: number; url: string }>;
+  const loaded = Promise.withResolvers<void>();
+  const arrived = Promise.withResolvers<void>();
+  loadingTab = { tab: nextTab + 1, until: loaded.promise, arrived: arrived.resolve };
+  const first = model("https://pages.example/a");
+  await arrived.promise;
+  const second = await model("https://pages.example/b");
+  loaded.resolve();
+  const a = await first;
+  expect(second.id).not.toBe(a.id);
+  expect([a.id, second.id].map((tab) => showing.find((s) => s.id === tab)?.url)).toEqual(["https://pages.example/a", "https://pages.example/b"]);
+  agent.kill();
+  await endTurn(agent.pid);
+  await closedAs([a.id, second.id]);
   showing = [];
 });
 

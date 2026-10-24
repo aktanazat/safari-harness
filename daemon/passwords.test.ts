@@ -227,12 +227,13 @@ async function paired(p: ApplePasswords, helper = appleHelper()) {
 // embedded frame from another site, as Apple's is) records what was typed.
 // Its change-password form has an empty current-password field, unless
 // current is "none", and two new-password fields, which allow
-// form.maxLength characters when given.
+// form.maxLength characters when given. A page that asks how to send a code
+// before it shows a field offers form.methods.
 // As in the content script, a fill lands only when sent to the frame that
 // holds the form, for the site that frame is on. A form that submits itself
 // once filled takes the page away before it can answer, so the extension
 // answers where the page went instead (act in background.js).
-function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number; rules?: string; current?: "none" } = { frame: 0, url }, navigated?: { url: string; title: string }) {
+function fakeTab(url: string, form: { frame: number; url: string; maxLength?: number; rules?: string; current?: "none"; methods?: string[] } = { frame: 0, url }, navigated?: { url: string; title: string }) {
   const page: { username?: string; password?: string; code?: string; current?: string; fresh?: string } = {};
   connect({
     send(data: string) {
@@ -241,7 +242,7 @@ function fakeTab(url: string, form: { frame: number; url: string; maxLength?: nu
       if (outer === "probe") {
         const holds = args[1] === "login" ? { username: true, password: true }
           : args[1] === "change" ? { fresh: 2, ...(form.current === "none" ? {} : { current: "empty" }), ...(form.maxLength ? { maxLength: form.maxLength } : {}), ...(form.rules ? { rules: form.rules } : {}) }
-          : { found: true };
+          : form.methods ? { found: false, methods: form.methods } : { found: true };
         const frames = [{ frame: 0, origin: new URL(url).origin }, { frame: form.frame, origin: new URL(form.url).origin, ...holds }];
         return answer({ value: form.frame ? frames : [frames[1]] });
       }
@@ -301,7 +302,7 @@ test("a fill waiting on Touch ID answers before the agent's call ends, and the s
   const first = runAs(AGENT, () => p.fill(7));
   await answering;
   clock.runOut();
-  expect(await locked(first)).toStartWith(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`);
+  await expect(first).rejects.toMatchObject({ code: "waiting_for_human", effect: "none", message: expect.stringContaining(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`) });
   expect(page).toEqual({});
   hold.approve();
   expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
@@ -317,7 +318,7 @@ test("away from the Mac, a fill the vault cannot do asks for no Touch ID and ans
   const page = fakeTab(`https://${SITE}/signin`);
   const { helper } = await paired(p);
   process.env.SAFARI_HARNESS_AWAY = "1";
-  await expect(p.fill(7)).rejects.toThrow("away from the Mac");
+  await expect(p.fill(7)).rejects.toMatchObject({ code: "waiting_for_human", effect: "none", message: expect.stringContaining("away from the Mac") });
   expect([helper.queries, page]).toEqual([[`4 ${SITE}`], {}]);
   spyOn(phone, "isAway").mockRejectedValue(new Error("the away probe timed out"));
   expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
@@ -626,6 +627,16 @@ test("code types the site's verification code into the page but never returns it
   expect(page).toEqual({ code: OTP });
   expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
   expect(await bridge.tab(7, "extract")).toEqual({ text: "..." });
+});
+
+// Instagram asked how to send its code before it showed a field, and code
+// answered only that no field was there.
+test("code on a page that asks how to send the code names the choices it shows and asks Apple Passwords for nothing", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/challenge`, { frame: 0, url: `https://${SITE}/challenge`, methods: ["Authentication app", "Text message"] });
+  const { helper } = await paired(p);
+  await expect(p.fillCode(7)).rejects.toMatchObject({ code: "not_content", effect: "none", message: expect.stringContaining('"Authentication app", "Text message"') });
+  expect([helper.queries, page]).toEqual([[], {}]);
 });
 
 // The new password must be the one Apple Passwords keeps: a page given one

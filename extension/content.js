@@ -1430,10 +1430,31 @@
     return [...form.elements].every((f) => !/^(INPUT|TEXTAREA)$/.test(f.tagName) || /^(hidden|submit|reset|button|image|checkbox|radio|file)$/.test(f.type) || f.value !== "" || !shown(f));
   }
 
-  function click(ref) {
-    const el = resolve(ref, true);
-    if (!el) return missing(ref);
+  // A click refused before its first event did nothing (failures.ts); one
+  // on a link names where it goes, which goto opens instead.
+  const UNSENT = { code: "stale_view", effect: "none" };
+  function refused(el, res) {
+    const a = el.closest("a[href]");
+    const doc = el.ownerDocument.URL.split("#")[0];
+    const to = a && !a.closest("[aria-disabled=true], [inert]") && /^https?:/.test(a.href) && a.href.split("#")[0] !== doc ? a.href : null;
+    return { ...res, error: to ? `${res.error}; it links to ${to}, which goto opens` : res.error, failure: UNSENT };
+  }
+
+  function click(ref, el = resolve(ref, true)) {
+    if (!el) return { ...missing(ref), failure: UNSENT };
     return clickElement(el);
+  }
+
+  // A target with no box even scrolled into view may get one once the page
+  // answers the scroll (rows it draws as they come into view): it is tried
+  // once more when the page next changes, or after UNSEEN_MS.
+  const UNSEEN_MS = 500;
+  function clickShown(ref, opts) {
+    const el = resolve(ref, true);
+    const once = () => afterward(() => withOutcome(() => click(ref, el)), opts);
+    const first = once();
+    if (!first?.unseen) return first;
+    return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(once);
   }
 
   function clickBlocked(el) {
@@ -1566,21 +1587,24 @@
         cover ??= hit;
       }
     }
-    return { error: cover ? `that target is covered by ${named(cover)}; dismiss the cover or re-run snapshot before clicking` : "that target has no visible clickable area; scroll it into view or re-run snapshot" };
+    if (cover) return { error: `that target is covered by ${named(cover)}; dismiss the cover or re-run snapshot before clicking` };
+    return { error: scroll ? "that target has no visible clickable area, even scrolled into view; re-run snapshot" : "that target has no visible clickable area; scroll it into view or re-run snapshot", unseen: true };
   }
 
   function clickElement(el, stopAfterEvent = null) {
     const point = clickPoint(el);
-    if (point.error) return point;
+    if (point.error) return refused(el, point);
     watchTarget(el);
+    let checks = 0;
     const clicked = fireClick(point.hit, point.x, point.y, () => {
+      checks += 1;
       const blocked = clickBlocked(el) || clickBlocked(point.hit);
       if (blocked) return { error: blocked };
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
       if (!hit || !insideTarget(el, hit)) return { error: `that target became covered${hit ? ` by ${named(hit)}` : ""}; re-run snapshot before clicking` };
       return frameCover(el.ownerDocument, point.x, point.y);
     }, stopAfterEvent);
-    if (clicked.error) return clicked;
+    if (clicked.error) return checks === 1 ? refused(el, clicked) : clicked;
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
     return { ok: true };
   }
@@ -1761,7 +1785,7 @@
     return afterward(() => withOutcome(() => {
       watchTarget(box);
       const selected = clickElement(opt.el);
-      if (selected.error) return selected;
+      if (selected.error) return { error: selected.error };
       return { ok: true, value: opt.label };
     }), opts);
   }
@@ -2586,8 +2610,20 @@
     return named ? [named] : [];
   }
 
+  // The ways a sign-in offers to send its code, when it asks for one before
+  // it shows a field: Instagram's chooser offered an authentication app or
+  // a text message, and code answered only that no field was there.
+  const CODE_METHOD = /authenticat|text message|\bsms\b|whatsapp|security key|backup code|recovery code|\be-?mail\b|\bcall\b|another way|other (?:options|ways)|verification method/i;
+  function codeMethods() {
+    const named = deepQueryAll("button, a[href], label, input[type=radio], [role=button], [role=link], [role=radio], [role=option], [role=menuitem], [role=menuitemradio]")
+      .filter(shown).map((el) => (accessibleName(el) || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)).filter((n) => CODE_METHOD.test(n));
+    return [...new Set(named)].slice(0, 6);
+  }
+
   function codeField() {
-    return { origin: location.origin, found: codeFields().length > 0 };
+    if (codeFields().length) return { origin: location.origin, found: true };
+    const methods = codeMethods();
+    return { origin: location.origin, found: false, ...(methods.length ? { methods } : {}) };
   }
 
   // A change-password (or sign-up) form: the new-password fields, marked
@@ -4466,7 +4502,7 @@
   const handlers = {
     snapshot: (opts) => memoryRead(snapshot, opts),
     memoryPage,
-    click: (ref, opts) => afterward(() => withOutcome(() => click(ref)), opts),
+    click: clickShown,
     clickProbe,
     assertFrameClickable,
     nativeProbe,
@@ -4605,7 +4641,7 @@
     // { error }; send those as errors so callers never mistake them for success.
     // Neither carries a secret the harness typed on this page (unsecret).
     const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
-      ? { id: msg.id, error: unsecret(value.error) }
+      ? { id: msg.id, error: unsecret(value.error), ...(value.failure ? { failure: value.failure } : {}) }
       : { id: msg.id, value: msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed))) };
     let out;
     healedNow = null;
