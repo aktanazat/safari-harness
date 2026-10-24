@@ -368,15 +368,17 @@ blocked or the page needs the user's session. Keep long text you will need
 again with `save` (next section) instead of fetching it twice.
 
 In omp, the harness's extension stands behind those tools. A `read` that
-did not get the page (a 403 or 429, a bot check, a sign-in page, a page
-that draws itself with JavaScript, X) comes back with a `safari:` line:
-Safari's copy of the page, read in a background tab of yours within 20 s,
-or what Safari answered and the next step. A curl, wget, or fetch in a
-shell whose output shows a wall gets the `safari map <url>` command for
-its page, not a copy. A run that would end with such a page no Safari call
-answered is sent back once with the list: a lead at its end, a helper at
-its first `yield`. A page its instructions said to leave may stay, and
-the reply says so.
+did not get the page (a 403 or 429, a bot check as open and map judge
+one, a sign-in page, a page that draws itself with JavaScript, X) comes
+back with a `safari:` line: Safari's copy of the page, read in a
+background tab of yours within 20 s (an app's loading line waited out up
+to 10 s), or what Safari answered and the next step. A curl, wget, or
+fetch in a shell whose output shows a wall gets the `safari map <url>`
+command for the page it fetched, not a copy. A run that would end with
+such a page no Safari call of its own answered is sent back once with
+the sites, each with the harness's own reason and next step, never a
+page's words: a lead at its end, a helper at its first `yield`. A page
+its instructions said to leave may stay, and the reply says so.
 
 ## Saving a read to a file
 
