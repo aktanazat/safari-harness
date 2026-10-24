@@ -2684,7 +2684,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source: sms, page, or passwords" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
     // MCP client is never offered it: safari type --secret env --env VAR
     unlisted: { env: SECRET_ENV, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
@@ -2774,7 +2774,7 @@ export const TOOLS: Record<string, Tool> = {
     params: {
       urls: { type: "array", items: { type: "string" }, description: "addresses, as strings" },
       what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
-      wait: { type: "object", description: 'before each read (with follow, each followed page\'s), as wait takes it: {"text":"…"}' },
+      wait: { type: "object", description: 'before each read (followed pages\' too), as wait takes it: {"text":"…"}' },
       expression: { type: "string", description: "JS, for eval (or reader)" },
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
@@ -2782,7 +2782,7 @@ export const TOOLS: Record<string, Tool> = {
       concurrency: { type: "number", description: "default 6 (max)" },
       save: { description: "true, or an absolute folder: a file per page" },
       follow: { type: "object", description: `{"match": CSS selector or "/regex/" on the address, "max": ${MAP_MAX_URLS}}: read the links on each url that match, under it` },
-      fresh: { type: "boolean", description: "read again, not from this task's reads of the last 10 min" },
+      fresh: { type: "boolean", description: "ignore this task's reads of the last 10 min" },
     },
     required: ["urls"],
     // The model's map call was checked (guard.ts); its opens, waits, reads,
@@ -2890,7 +2890,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Answer-first reports cite verified image receipts. List unread pages. Numeric mismatches do not verify claims.",
     params: {
       out: { type: "string", description: "absolute folder: report.md + index.html" },
-      title: { type: "string", description: "title" },
+      title: { type: "string" },
       answer: { type: "string", description: "supported answer and limits" },
       findings: { type: "array", items: { type: "object", properties: { claim: { type: "string" }, evidence: { type: "string" }, region: { type: "object" }, comparison: { type: "object" } }, required: ["claim", "evidence"] }, description: "claim + receipt; optional region {x,y,width,height} in image px, comparison {visual,data,unit,tolerance}" },
       unchecked: { type: "array", items: { type: "object", properties: { url: { type: "string" }, reason: { type: "string" } }, required: ["url", "reason"] }, description: "unread pages + reasons, not proof of absence" },
@@ -2900,7 +2900,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   pdf: {
     desc: "save prints the page to PDF; read returns a PDF's text (path, url, or the tab's PDF).",
-    params: { tab: TAB, do: { type: "string", enum: ["save", "read"], description: "default save" }, path: { type: "string", description: "PDF to read" }, url: { type: "string", description: "PDF address to read" }, out: { type: "string", description: "PDF path" } },
+    params: { tab: TAB, do: { type: "string", enum: ["save", "read"], description: "default save" }, path: { type: "string", description: "PDF to read" }, url: { type: "string", description: "PDF address" }, out: { type: "string", description: "PDF path" } },
     unlisted: { maxBytes: { type: "number", description: "text limit for read" } },
     run: (a) => pdf(a as { tab?: number; do?: string; path?: string; url?: string; out?: string }),
   },
@@ -3121,7 +3121,7 @@ export const TOOLS: Record<string, Tool> = {
   card_phone: CARD_PHONE,
   passwords: {
     desc: "Saved logins/cards; never reveal or ask for secrets. fill: vault (no Touch ID), else Apple Passwords + saved copy; source:apple bypasses failed vault. code fills 2FA; logins lists usernames. change saves/fills a strong password; set passwordrules first; caller submits. setup-code saves visible authenticator QR; code confirms. Locked calls pair automatically or prompt on Mac; retry clears dismissed approval. cards lists; card-fill fills; card-save asks on Mac. Start card-phone at Mac for iPhone Face ID during away card-fill; amount is total. done releases access; status explains locks.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"], description: "step" }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],

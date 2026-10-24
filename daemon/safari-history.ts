@@ -146,7 +146,7 @@ export const HISTORY_TOOLS: Record<string, Tool> = {
     desc: "Search the user's Safari browsing history by title or address, newest first.",
     params: {
       text: { type: "string", description: "words in the title or address, case-insensitive; omit for all" },
-      any: { type: "array", items: { type: "string" }, description: "several texts at once" },
+      any: { type: "array", items: { type: "string" }, description: "several texts" },
       days: { type: "number", description: "how far back, default 30" },
       limit: { type: "number", description: "default 30, max 200" },
     },

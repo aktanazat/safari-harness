@@ -477,7 +477,7 @@ export const INPUT_TOOLS: Record<string, Tool> = {
     desc: "Real mouse/keyboard when scripts fail. Ref-click and ref-type stay behind; others briefly bring the tab forward. {{code}} fills unseen codes.",
     params: {
       tab: TAB,
-      do: { type: "string", enum: ["click", "type", "key"], description: "what to do" },
+      do: { type: "string", enum: ["click", "type", "key"] },
       ref: REF,
       text: { type: "string", description: "to type; a final line break sends it" },
       send: { description: "Send button's ref, if the auto one misses" },
