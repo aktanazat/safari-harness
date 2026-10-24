@@ -2289,6 +2289,12 @@ it reads the page's own script variables.
   `learn {site, forget: "listings"}` removes it.
 - Never a secret: a script that looks like it holds a password, code,
   card number, or token is refused, as a fact is.
+- Some readers ship with the harness (`daemon/sites/readers/<host>/`, a
+  `.page.js` one runs in the page's world): eBay, Depop, Grailed,
+  Poshmark, Mercari, ShopGoodwill, and Instagram; each site's guide says
+  what they return. `learn {site}` lists them as shipping with the
+  harness. One saved by the same name takes its place; forgetting that
+  brings the shipped one back, which itself cannot be forgotten.
 
 ## guide
 
