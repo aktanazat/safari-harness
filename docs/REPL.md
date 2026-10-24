@@ -52,10 +52,12 @@ This identity follows every REPL run, including a named session reused by
 another helper. Reusing bindings does not reuse the previous caller's page
 ownership. The omp extension adds the reserved `__safariTask` MCP argument;
 the MCP boundary removes it before Safari validates the tool arguments.
-CLI calls receive the same identity through a command-scoped
-`SAFARI_HARNESS_TASK` environment variable. A shared REPL process never uses
-its launch environment as the identity of a later run. Clients without a
-task identity retain process-wide ownership.
+Shell commands run as written. Before each one runs, the extension saves
+its identity under the session id omp gives the command (`PI_SESSION_ID`),
+and the CLI calls the command makes, directly or through scripts, read it
+there. A shared REPL process never uses its launch environment as the
+identity of a later run. Clients without a task identity retain
+process-wide ownership.
 
 ## Tabs
 

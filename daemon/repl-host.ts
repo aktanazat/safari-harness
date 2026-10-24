@@ -73,7 +73,7 @@ async function start(id: string, host: string | undefined, endsWith: number | un
   await chmod(REPL_DIR, 0o700);
   await unlink(socketOf(id)).catch(() => {});
   const env = { ...process.env };
-  delete env.SAFARI_HARNESS_TASK;
+  delete env.PI_SESSION_ID;
   const remote = env.SAFARI_HARNESS_REMOTE;
   if (remote) {
     delete env.SAFARI_HARNESS_HTTP;

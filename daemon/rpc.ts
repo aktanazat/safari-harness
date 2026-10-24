@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { ownerOf } from "./owner.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage, withQueued } from "./lanes.ts";
+import { sessionTask } from "./session-task.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -80,9 +81,7 @@ export function withTask<T>(task: string | undefined, fn: () => T): T {
 
 export function currentTask(): string | undefined {
   const context = tasks.getStore();
-  if (context !== undefined) return context.task;
-  const task = process.env.SAFARI_HARNESS_TASK;
-  return task && task.trim() ? task : undefined;
+  return context === undefined ? sessionTask() : context.task;
 }
 
 type Missed = "refused" | "restarting";

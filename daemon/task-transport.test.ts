@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 const MCP = join(import.meta.dir, "mcp-tools.ts");
 const CLI = join(import.meta.dir, "../cli/safari.ts");
+const EXTENSION = join(import.meta.dir, "../omp/index.ts");
+const SESSION_TASK = join(import.meta.dir, "session-task.ts");
 type WireCall = { tool: string; args: Record<string, unknown>; caller?: number; task?: string };
 
 async function transport(run: (url: string, home: string, calls: WireCall[]) => Promise<void>) {
@@ -20,9 +22,13 @@ async function transport(run: (url: string, home: string, calls: WireCall[]) => 
   finally { server.stop(true); await rm(home, { recursive: true, force: true }); }
 }
 
-async function script(code: string, url: string, home: string, task = "bootstrap") {
-  const child = Bun.spawn([process.execPath, "-e", code], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, SAFARI_HARNESS_TASK: task },
+// Each script runs as a shell command of the omp session whose task is
+// "bootstrap".
+async function script(code: string, url: string, home: string) {
+  const child = Bun.spawn([process.execPath, "-e", `import { setSessionTask } from ${JSON.stringify(SESSION_TASK)};
+setSessionTask("bootstrap-session", "bootstrap");
+${code}`], {
+    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, PI_SESSION_ID: "bootstrap-session" },
     stdout: "pipe", stderr: "pipe",
   });
   const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -77,26 +83,46 @@ try {
   } finally { watcher.close(); }
  }
 }`, url, home);
-    expect(calls.filter(c => c.tool === "open").map(c => [c.args.url, c.task])).toEqual([
-      ["https://helper.example/", "session:helper"],
-      ["https://sibling.example/", "session:sibling"],
-      ["https://legacy.example/", undefined],
+    expect(calls.filter(c => c.tool === "open" || c.tool === "close").map(c => [c.tool, c.args.url ?? c.args.tab, c.task])).toEqual([
+      ["open", "https://helper.example/", "session:helper"],
+      ["open", "https://sibling.example/", "session:sibling"],
+      ["open", "https://legacy.example/", undefined],
+      ["close", 801, undefined],
     ]);
   });
 }, 30_000);
 
-test("Safari CLI RPCs inherit only the command's task environment", async () => {
+// omp keeps a shell command as written and gives it its session's id
+// (PI_SESSION_ID), so the CLI in it finds the task the omp extension left
+// for that session. A command copied with an old task wrapper from a
+// transcript (AH1, HD-4) still goes as its own agent's.
+test("a shell command runs as written, and the Safari CLI in it sends its own agent's task", async () => {
   await transport(async (url, home, calls) => {
-    const command = async (task: string) => {
-      const child = Bun.spawn([process.execPath, CLI, "tabs", "--json", "--host", "local"], {
-        env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, SAFARI_HARNESS_TASK: task }, stdout: "pipe", stderr: "pipe",
+    const cli = `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} tabs --json --host local`;
+    const helpers = [
+      { session: "helper-a", id: "reader", command: cli },
+      { session: "helper-b", id: "sibling", command: `SAFARI_HARNESS_TASK='["lead-a","main"]' eval '${cli}'` },
+    ];
+    const revised = await script(`import safariTurnEnd from ${JSON.stringify(EXTENSION)};
+const hooks = {};
+safariTurnEnd({ on: (event, handler) => { hooks[event] = handler; } });
+const on = (session, agent) => ({ mode: "rpc", agent, sessionManager: { getSessionId: () => session } });
+hooks.tool_call({ toolName: "task", input: {} }, on("lead-a", { kind: "main", id: "main" }));
+const revised = ${JSON.stringify(helpers)}.map((h) => hooks.tool_call({ toolName: "bash", input: { command: h.command } }, on(h.session, { kind: "sub", id: h.id, parentId: "main" })));
+process.stdout.write(JSON.stringify(revised.map((r) => r ?? "as written")));`, url, home);
+    expect(JSON.parse(revised)).toEqual(["as written", "as written"]);
+    await Promise.all(helpers.map(async ({ session, command }) => {
+      const child = Bun.spawn(["/bin/sh", "-c", command], {
+        env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, PI_SESSION_ID: session }, stdout: "pipe", stderr: "pipe",
       });
       const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect({ exit, error }).toEqual({ exit: 0, error: "" });
       expect(JSON.parse(output)).toEqual({ tabs: [] });
-    };
-    await Promise.all([command("session:helper"), command("session:sibling")]);
-    expect(calls.filter(c => c.tool === "tabs").map(c => c.task).sort()).toEqual(["session:helper", "session:sibling"]);
+    }));
+    expect(calls.filter((c) => c.tool === "tabs").map((c) => c.task).sort()).toEqual([
+      JSON.stringify(["helper-a", "reader", "lead-a"]),
+      JSON.stringify(["helper-b", "sibling", "lead-a"]),
+    ]);
   });
 });
 
