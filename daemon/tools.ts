@@ -3230,11 +3230,13 @@ async function lostReopened(e: unknown, tool: string, args: Record<string, unkno
 // times while the user typed his next ask, and each cost a failed read, an
 // open, and a wait to find the page again; from 10-02 to 10-05 six tabs a
 // 99point agent kept by id in files closed after 20 minutes unused, and
-// each failed its next call. A read runs on the fresh page. An action does
-// not, since what earlier ones entered there is gone (a form in progress, a
-// checkout): it says so, and the agent looks first. A tab the agent or the
-// user closed stays closed, another agent's never opens, and neither does
-// one a caller's own steps name (hidden tools: real_input's in input.ts).
+// each failed its next call. A read runs on the fresh page, and so does an
+// eval of a saved reader, which reads by what learn saves it as. An action
+// does not, since what earlier ones entered there is gone (a form in
+// progress, a checkout): it says so, and the agent looks first. A tab the
+// agent or the user closed stays closed, another agent's never opens, and
+// neither does one a caller's own steps name (hidden tools: real_input's in
+// input.ts).
 const FRESH_ACTIONS: Record<string, true> = { goto: true, scroll: true };
 
 async function reopen(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
@@ -3265,7 +3267,9 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
   }
   const opened = await opening;
   const was = `tab ${args.tab} had closed ${opened.closed.why} ${opened.closed.found ? "by" : "at"} ${localTime(new Date(opened.closed.at))}; it is open again on ${redactUrl(opened.closed.url!)}, loaded fresh`;
-  if (affectsPage(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool)) throw new HarnessError("stale_view", `${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: snapshot it, then act`);
+  if (affectsPage(tool, args) && !Object.hasOwn(FRESH_ACTIONS, tool) && !(tool === "eval" && args.reader !== undefined)) {
+    throw new HarnessError("stale_view", `${was} as tab ${opened.tab.id}, so its refs and anything typed there are gone: ${tool === "eval" ? "an eval that only reads can run there again; else snapshot it, then act" : "snapshot it, then act"}`);
+  }
   return was;
 }
 
