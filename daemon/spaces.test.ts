@@ -411,6 +411,33 @@ test("an agent's calls within a minute of its window's last write leave the daem
   q.kill();
 });
 
+// 10-23 review: the file waited for a call a minute after the one before,
+// and each call moved that time, so a window called every 30 s kept in the
+// file the time it opened, and a daemon that started again closed it as
+// unused.
+test("an agent's window called every 30 s keeps its last use in the daemon's file of windows within a minute", async () => {
+  safari();
+  const daemon = await daemonOn(47360, "used");
+  const q = agent();
+  const path = join(dir, "used.json");
+  daemon.loadSpaces(path, () => true);
+  await runAs(q.pid, () => daemon.spaceWindow());
+  const start = Date.now();
+  const behind: number[] = [];
+  try {
+    for (let at = 30_000; at <= 25 * 60_000; at += 30_000) {
+      setSystemTime(new Date(start + at));
+      daemon.turnResumed(q.pid);
+      const { spaces } = JSON.parse(readFileSync(path, "utf8")) as { spaces: Spaces.Space[] };
+      behind.push(start + at - spaces[0]!.used!);
+    }
+  } finally {
+    setSystemTime();
+  }
+  q.kill();
+  expect(Math.max(...behind)).toBeLessThanOrEqual(60_000);
+});
+
 // 10-07: an agent sizing its tab for a screenshot split it from its window
 // into one that named no agent. Its own window takes the size, and the
 // keeper, which finds the window by size, is told the size Safari gave it.

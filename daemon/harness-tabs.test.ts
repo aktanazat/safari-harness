@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -468,4 +468,33 @@ test("an agent's calls to its tab within a minute leave the daemon's file of tab
   agent.kill();
   await endTurn(agent.pid);
   await closedAs([tab]);
+});
+
+// 10-23 review: the file waited for a call a minute after the one before,
+// and each call moved that time, so a tab called every 30 s kept in the
+// file the time it opened, and a daemon that started again closed it as
+// idle.
+test("an agent's tab called every 30 s keeps its last use in the daemon's file of tabs within a minute", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  loadTabs(file);
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://calls.example/", background: true });
+  const tab = nextTab;
+  const start = Date.now();
+  const behind: number[] = [];
+  try {
+    for (let at = 30_000; at <= 25 * 60_000; at += 30_000) {
+      setSystemTime(new Date(start + at));
+      await as("info", { tab });
+      const saved = JSON.parse(readFileSync(file, "utf8")) as { tabs: Record<string, { used: number }> };
+      behind.push(start + at - saved.tabs[tab]!.used);
+    }
+  } finally {
+    setSystemTime();
+  }
+  agent.kill();
+  await endTurn(agent.pid);
+  await closedAs([tab]);
+  expect(Math.max(...behind)).toBeLessThanOrEqual(60_000);
 });

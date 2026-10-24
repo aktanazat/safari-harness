@@ -202,6 +202,8 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
 
 type Kept = Space;
 let spacesFile: string | undefined;
+// the used time the file of windows holds for each, as last written (save)
+const written = new WeakMap<Space, number>();
 let taskTracked: ((owner: number | undefined) => boolean | undefined) | undefined;
 let inspectUntracked = false;
 
@@ -249,6 +251,7 @@ function save() {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
     renameSync(pending, spacesFile);
+    for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.used !== undefined) written.set(s, s.used);
   } catch (e) {
     console.error("[safari-harness] window list not written:", e instanceof Error ? e.message : e);
   }
@@ -567,9 +570,9 @@ async function stillOpen(listed: TabInfo[] | undefined): Promise<TabInfo[] | und
 export function turnResumed(owner: number | undefined, task?: string): void {
   let changed = false;
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) {
-    // used counts in minutes (sweepOnce): writing the file for each call
-    // rewrote every window at every call
-    if (s.done || Date.now() - (s.used ?? 0) >= 60_000) changed = true;
+    // used counts in minutes (sweepOnce), so the file is written only once
+    // the time it holds for this window is a minute behind
+    if (s.done || Date.now() - (written.get(s) ?? 0) >= 60_000) changed = true;
     delete s.done;
     s.used = Date.now();
   }
