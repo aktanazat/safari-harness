@@ -368,8 +368,9 @@ blocked or the page needs the user's session. Keep long text you will need
 again with `save` (next section) instead of fetching it twice.
 
 In omp, the harness's extension stands behind those tools. A `read` that
-did not get the page (a 403 or 429, a bot check as open and map judge
-one, a sign-in page, a page that draws itself with JavaScript, X) comes
+did not get the page (a 403, 429, or 503, a bot check as open and map judge
+one, also in HTML no reader could render, such as AWS WAF's silent wall,
+a sign-in page, a page that draws itself with JavaScript, X) comes
 back with a `safari:` line: Safari's copy of the page, read in a
 background tab of yours within 20 s (an app's loading line waited out up
 to 10 s), or what Safari answered and the next step. A curl, wget, or
@@ -588,8 +589,8 @@ check, no solving services.
   `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
   a `challenge:` line under its header. `kind` names the service
   (cloudflare, akamai, datadome, perimeterx, aws-waf, kasada, imperva,
-  apple, recaptcha, hcaptcha, arkose, geetest, or other for a short page
-  that asks the reader to prove they are human). `where` is `"page"` when
+  amazon, apple, recaptcha, hcaptcha, arkose, geetest, or other for a short
+  page that asks the reader to prove they are human). `where` is `"page"` when
   the check stands in for the whole page, `"box"` when it is a box inside a
   page that otherwise reads (often on a form, such as an unanswered
   Cloudflare Turnstile), and `"block"` when the site has turned the
@@ -601,7 +602,8 @@ check, no solving services.
   answers `{done: true, byItself: true}`, with no notice or alert, when the
   page lets Safari through meanwhile.
 - `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
-  merely loads AWS's scripts.
+  merely loads AWS's scripts. Its silent wall, which Safari passes by
+  itself, counts only in a web read's HTML (omp).
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
 - `handoff {tab, why}` hands the tab to the user (`safari guide handoff`).

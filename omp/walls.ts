@@ -31,7 +31,9 @@ const JS_SHELL_CHARS = 500;
 const COPY_CHARS = 200;
 const SHELL_OUTPUT_CHARS = 5000;
 
-const REFUSED: Record<string, true> = { "401": true, "403": true, "406": true, "429": true, "451": true, "999": true };
+// Statuses a site turns automated reads away with. Amazon's is a 503 with
+// its "Sorry! Something went wrong!" page, which read does not show (10-24).
+const REFUSED: Record<string, true> = { "401": true, "403": true, "406": true, "429": true, "451": true, "503": true, "999": true };
 const JS_NOTE = "Page appears to require JavaScript or is mostly navigation";
 // Wall titles that challenge.ts's classify (readWall) does not know as
 // titles; it knows Cloudflare's "Just a moment..." and "Attention Required!".
@@ -42,6 +44,8 @@ const BLOCK_URL = /\/blocked\?|apology|abuse-detection|captcha|challenge|verify-
 const LOOPBACK = /^(?:localhost|127\.|0\.0\.0\.0$|\[::1\]$)/;
 const X_POST = /^https?:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/[^/?#]+\/status\/\d+/i;
 const SELECTOR = /:(?:raw|conflicts|img|-?\d+(?:[-+]\d*)?(?:,\d+(?:-\d+)?)*)$/;
+// A page read gives as its HTML: Amazon's 503 page opens with a comment.
+const HTML = /^\s*(?:<!--[\s\S]*?-->\s*)*<(?:!doctype html|html|head)\b/i;
 const FETCHES = /\bcurl\b|\bwget\b|\bfetch\s*\(|\brequests\.|\bhttpx\.|\burllib\b|\baiohttp\b/;
 // A wall a fetch prints: its vendor's own words first; the generic ones
 // count only in output short enough to be the wall itself.
@@ -115,10 +119,12 @@ function sameAddress(a: string, b: string): boolean {
   return key(a) === key(b);
 }
 
-type Read = { final: string; method: string; notes: string; title: string; base: string; body: string };
+type Read = { final: string; method: string; notes: string; title: string; base: string; body: string; html: boolean };
 
 // read's answer for a web page: "URL:", "Method:" and "Notes:" lines, then
-// "---" and the page, which starts with its own front matter (title, base).
+// "---" and the page, which starts with its own front matter (title, base),
+// or is the page's HTML as served when no reader rendered it (Method:
+// raw-html) or it came as something else (raw).
 function readOf(text: string): Read | undefined {
   if (!text.startsWith("URL: ")) return undefined;
   const cut = text.indexOf("\n---\n");
@@ -132,14 +138,18 @@ function readOf(text: string): Read | undefined {
       body = body.slice(end + 5);
     }
   }
+  const html = HTML.test(body);
   const field = (from: string, name: string) => from.match(new RegExp(`^${name}: (.*)$`, "m"))?.[1]?.trim().replace(/^"(.*)"$/, "$1") ?? "";
   const notes = cut < 0 ? field(head, "Notes") : head.slice(head.indexOf("Notes: ") < 0 ? head.length : head.indexOf("Notes: ") + 7).trim();
-  return { final: field(head, "URL"), method: field(head, "Method"), notes, title: field(front, "title"), base: field(front, "base"), body: body.trim() };
+  return { final: field(head, "URL"), method: field(head, "Method"), notes, title: field(front, "title"), base: field(front, "base"), body: body.trim(), html };
 }
 
-// A page's words, past its links' and images' addresses.
-function wordsOf(body: string): string {
-  return body.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
+// A page's words, past its links' and images' addresses; of a page read
+// gave as HTML, what a browser without scripts shows of it: its text past
+// scripts, styles, and comments, and the <noscript> that asks for them.
+function wordsOf(read: Read): string {
+  if (read.html) return read.body.replace(/<!--[\s\S]*?-->|<(script|style|template|title)\b[\s\S]*?<\/\1\s*>|<[^>]*>/gi, " ").replace(/\s+/g, " ").trim();
+  return read.body.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
 }
 
 // A page whose words are little but a sign-in.
@@ -159,11 +169,13 @@ function loadingLine(words: string): string | undefined {
 // The bot check that challenge.ts's classify, as open and map use it, sees
 // in a read short enough to be one, given the page's words as content.js
 // gives them: Walmart's PerimeterX "Robot or human?", whose title no list
-// here knows. Loaded here, not at the top, as tools.ts is below.
+// here knows. A page read gave as HTML is given as source too, as only a
+// fetch sees it: AWS WAF's silent wall on mapquest (10-22). Loaded here,
+// not at the top, as tools.ts is below.
 async function checkOf(url: string, read: Read, words: string): Promise<string | undefined> {
   const { classify, TEXT_MAX } = await import("../daemon/challenge.ts");
   if (words.length > TEXT_MAX) return undefined;
-  const check = classify([{ url: read.final || url, title: read.title, text: words, markers: [], answered: [], frames: [] }]);
+  const check = classify([{ url: read.final || url, title: read.title, text: words, markers: [], answered: [], frames: [], ...(read.html ? { source: read.body } : {}) }]);
   if (!check || check.where === "box") return undefined;
   return check.kind === "other" ? "a bot check" : `a bot check from ${check.kind}`;
 }
@@ -180,12 +192,14 @@ async function readWall(url: string, text: string): Promise<{ why: string; wait?
   if (read.method === "x-unavailable") return { why: "X answers automated reads with nothing" };
   const status = read.notes.match(/HTTP (\d{3})\b/)?.[1];
   const failed = read.method === "failed" || /fetch failed/i.test(read.notes);
-  if (failed && status !== undefined && Object.hasOwn(REFUSED, status)) return { why: `HTTP ${status}` };
   if (failed && status === undefined && /Cause: /.test(read.notes) && !/ENOTFOUND|ECONNREFUSED/.test(read.notes)) return { why: read.notes.replace(/^[\s\S]*?Cause: /, "").replace(/\. For more information[\s\S]*$/, "").trim() };
-  const words = wordsOf(read.body);
+  const words = wordsOf(read);
   // a long page at such an address is the page, an article about a challenge
   if (words.length < SHELL_CHARS && (BLOCK_URL.test(landed) || BLOCK_URL.test(read.base))) return { why: `a bot check at ${landed || read.base}` };
   if ((LOGIN_URL.test(read.final) && (moved || read.body.length < SHELL_CHARS)) || (LOGIN_TITLE.test(read.title) && read.body.length < SHELL_CHARS) || signInOnly(words)) return { why: `a sign-in page${landed ? ` at ${landed}` : ""}` };
+  // a read sent on to a wall or a sign-in page met that page, whatever it
+  // answered: Stanford's sign-in answered 503 (10-19)
+  if (failed && status !== undefined && Object.hasOwn(REFUSED, status)) return { why: `HTTP ${status}` };
   const check = await checkOf(url, read, words);
   if (check !== undefined) return { why: check };
   if (CHECK_TITLE.test(read.title) && read.body.length < SHELL_CHARS) return { why: `a bot check ("${read.title}")` };

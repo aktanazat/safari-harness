@@ -17,15 +17,17 @@ export type Challenge = { kind: string; where: "page" | "box" | "block" };
 // characters (a wall says what it is in a few lines; a longer page reads as
 // ""), which MARKERS it shows (a script or an iframe counts by being there),
 // which ANSWERS hold a token, and the addresses of the frames it shows on
-// the page.
-export type Facts = { url: string; title: string; text: string; markers: string[]; answered: string[]; frames: string[] };
+// the page. A page fetched without a browser (a web read, omp/walls.ts)
+// also gives its HTML as served, before any script ran: content.js never
+// does, since Safari has run the page's scripts.
+export type Facts = { url: string; title: string; text: string; markers: string[]; answered: string[]; frames: string[]; source?: string };
 
-// url, title, text, and topMarkers are the top page's; markers and frames
-// are looked for in every frame. The first rule the tab shows names its
-// check, so a vendor's block comes before its check, and wording no vendor
-// claims comes last. A check with an answer field counts until that field
-// holds its token.
-type Rule = Challenge & { url?: RegExp; title?: RegExp; text?: RegExp; topMarkers?: string[]; markers?: string[]; frames?: RegExp; answer?: string };
+// url, title, text, topMarkers, and source are the top page's; markers and
+// frames are looked for in every frame. The first rule the tab shows names
+// its check, so a vendor's block comes before its check, and wording no
+// vendor claims comes last. A check with an answer field counts until that
+// field holds its token.
+type Rule = Challenge & { url?: RegExp; title?: RegExp; text?: RegExp; topMarkers?: string[]; markers?: string[]; frames?: RegExp; source?: RegExp; answer?: string };
 
 const RULES: Rule[] = [
   // Blocks: the site refuses the browser outright.
@@ -62,6 +64,10 @@ const RULES: Rule[] = [
   // did, so each read as a wall (09-30). Its silent wall, an empty page that
   // reloads itself once challenge.js has a token, asks the user nothing.
   { kind: "aws-waf", where: "page", topMarkers: ["#captcha-container .amzn-captcha-modal"] },
+  // Only a fetch without a browser stays on that silent wall: its HTML sets
+  // gokuProps, the wall's own sealed context, and loads challenge.js, which
+  // never runs there (mapquest's listings, 10-22).
+  { kind: "aws-waf", where: "page", source: /^(?=[\s\S]*\bwindow\.gokuProps\s*=)(?=[\s\S]*<script\b[^>]*\bsrc=["']https:\/\/[\w.-]+\.awswaf\.com\/)/ },
   // Kasada answers a first visit with a blank page that runs ips.js from
   // this fixed path. Every page it guards loads the same page again in a
   // hidden frame, so only the top page running it is the wall.
@@ -77,6 +83,9 @@ const RULES: Rule[] = [
   },
   { kind: "apple", where: "page", url: /^https:\/\/([\w-]+\.)*apple\.com\/verify-human\// },
   { kind: "recaptcha", where: "page", url: /^https:\/\/(www\.)?google\.[a-z.]+\/sorry\// },
+  // Amazon's own robot check: one button to continue shopping (10-24), or,
+  // under the title "Robot Check", characters to type.
+  { kind: "amazon", where: "page", title: /^robot check$/i, text: /\bclick the button below to continue shopping\b|\benter the characters you see below\b/i },
   // Boxes in a page. An invisible reCAPTCHA (the corner badge) or hCaptcha
   // asks the user nothing unless it opens its puzzle, which is a frame of its own.
   {
@@ -124,6 +133,7 @@ export function classify(frames: Facts[]): Challenge | undefined {
   if (!top) return undefined;
   for (const rule of RULES) {
     const seen = rule.url?.test(top.url) || rule.title?.test(top.title) || rule.text?.test(top.text) || top.markers.some((m) => rule.topMarkers?.includes(m))
+      || (top.source !== undefined && rule.source?.test(top.source))
       || frames.some((f) => f.markers.some((m) => rule.markers?.includes(m)) || f.frames.some((u) => rule.frames?.test(u)));
     if (!seen) continue;
     const answer = rule.answer;

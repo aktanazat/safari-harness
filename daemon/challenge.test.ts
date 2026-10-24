@@ -66,3 +66,13 @@ test("AWS's puzzle is a check once drawn, in place of the page or in a box on it
   expect(classify(tab("https://shop.example.com/", "", { markers: ["#captcha-container .amzn-captcha-modal", ".amzn-captcha-modal"] }))).toEqual({ kind: "aws-waf", where: "page" });
   expect(classify(tab("https://my.example.gov/account", "Account", { markers: [".amzn-captcha-modal"] }))).toEqual({ kind: "aws-waf", where: "box" });
 });
+
+// A web read (omp/walls.ts) gives the page's HTML as served, which Safari,
+// having run its scripts, never does: mapquest's listings were AWS's silent
+// wall in it (10-22), while the token script alone is a page using AWS's API.
+test("AWS's silent wall is a check in a page's HTML as served, and its token script alone is not", () => {
+  const script = `<script src="https://c5916b07717d.2677fd1e.us-east-1.token.awswaf.com/c5916b07717d/264200a3e03c/94525ca03eed/challenge.js"></script>`;
+  const wall = `<!DOCTYPE html><html lang="en"><head><title></title><script>window.awsWafCookieDomainList = [];window.gokuProps = {"key":"x","iv":"x","context":"x"};</script>${script}</head><body><div id="challenge-container"></div></body></html>`;
+  expect(classify(tab("https://www.mapquest.com/us/california/gastronom-kiev-market-12220388", "", { source: wall }))).toEqual({ kind: "aws-waf", where: "page" });
+  expect(classify(tab("https://my.uscis.gov/account", "Account", { source: `<!DOCTYPE html><html><head>${script}</head><body>Your account</body></html>` }))).toBeUndefined();
+});
