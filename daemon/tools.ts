@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
-import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { followTab, forgetPopups, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, raiseSafari, SAFARI, show } from "./front.ts";
@@ -469,6 +469,7 @@ function orphan(owner: number) {
 
 function exited(owner: number) {
   watches.delete(owner);
+  forgetPopups(owner);
   orphan(owner);
   void endTurn(owner).catch(() => {});
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge, type TabEvent } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
-import { runAs } from "./owner.ts";
+import { runAs, watchOwner } from "./owner.ts";
 import { callTool, endTurn, formatResult, loadTabs } from "./tools.ts";
 
 // A stand-in extension: open hands out tabs 201, 202, ...; a page op
@@ -154,6 +154,22 @@ test("popups from a tab an agent kept, and theirs, reach that agent's next resul
     lines: [270, 271, 272].map((tab) => expect.stringMatching(new RegExp(`\\b${tab}\\b.*\\bstays open for the user\\b`))),
     closed: [],
   });
+});
+
+// A pid comes back as another process's: a popup its agent's page opened
+// after the agent's last call went, before, to that later process's call.
+test("a popup its agent exited without hearing of is news to no later caller with that agent's pid", async () => {
+  const gone = Bun.spawn(["sleep", "60"]);
+  await runAs(gone.pid, () => callTool("open", { url: "https://a.example/", background: true }));
+  fromExtension({ kind: "popup", tab: 290, opener: nextTab, url: "https://login.example/" });
+  gone.kill();
+  await gone.exited;
+  // owner.ts looks for exits once a second, and calls the daemon's watch first
+  const { promise: seen, resolve } = Promise.withResolvers<void>();
+  watchOwner(gone.pid, resolve);
+  await seen;
+  const later = await open();
+  expect(await runAs(gone.pid, () => callTool("info", { tab: later }))).not.toHaveProperty("popup");
 });
 
 // real_input's calls to the daemon between the steps of its action opt out,

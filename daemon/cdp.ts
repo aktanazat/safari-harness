@@ -41,7 +41,8 @@ type EventPump = {
   consoleOn: boolean;
   lastNetT: number;
   lastConsoleT: number;
-  timer: ReturnType<typeof setInterval>;
+  busy: boolean;
+  timer: Timer;
 };
 
 const pumps: Record<string, EventPump> = {};
@@ -55,7 +56,11 @@ function startPump(send: Send, tabId: number, connId: number) {
     consoleOn: false,
     lastNetT: 0,
     lastConsoleT: 0,
+    busy: false,
+    // A tick waits for the last: a hung page would pile reads up behind it.
     timer: setInterval(async () => {
+      if (pump.busy) return;
+      pump.busy = true;
       try {
         if (pump.netOn) {
           const res = (await tools.netRead({ tab: tabId })) as { entries: { kind: string; url: string; method: string; status?: number; error?: string; ms: number; t: number }[] };
@@ -110,8 +115,14 @@ function startPump(send: Send, tabId: number, connId: number) {
             });
           }
         }
-      } catch {
-        // tab gone or bridge hiccup; the next poll or a detach will clean up
+      } catch (e) {
+        // a bridge hiccup is tried again at the next tick
+        if (e instanceof Error && e.message.startsWith("that tab is gone")) {
+          clearInterval(pump.timer);
+          delete pumps[key];
+        }
+      } finally {
+        pump.busy = false;
       }
     }, 800),
   };
