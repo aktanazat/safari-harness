@@ -369,8 +369,10 @@ again with `save` (next section) instead of fetching it twice.
 
 `extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
 to a file, and the answer is only `{saved, url, bytes, head}`: the file's
-path, the page's address, its size in bytes, and its first 500 characters.
-Read the parts you need from the file (grep it, or read a range) instead of
+path, the page's address, its size in bytes, and its first 500 characters,
+with the read's `status` and `type` when it has them (`fetch`) and its
+`pageState`: a page not found or a rate limit says `kind: "error"`. Read
+the parts you need from the file (grep it, or read a range) instead of
 carrying the page in context.
 
 - `save: true` writes a new file,
@@ -392,7 +394,8 @@ carrying the page in context.
 - An MCP reply keeps an answer's first 30,000 characters. A longer answer
   is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
   and the reply ends by saying so and where: read the part you need from
-  that file, or narrow the read.
+  that file, or narrow the read. A long `map` answer lists every page
+  first, then gives each page an even share, and a page cut says where.
 
 ## Acting
 
@@ -1077,7 +1080,9 @@ each with: `extract` (the default), `snapshot`, `eval` with `expression`,
 or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
 page opens in a background tab in your window, is read, and closes, 6 at a
 time (`concurrency`, fewer if you ask). It returns `pages` in the order of
-`urls`, each `{url, ok, value or error, ms}`.
+`urls`, each `{url, ok, value or error, ms}`, with the `title` it opened
+with, and `finalUrl` when it opened at another address. The answer's
+first line counts the pages read and failed.
 
 - `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":
   ".listing"}`, `{"quiet": true}`), holds each read until its page shows
@@ -1096,28 +1101,49 @@ time (`concurrency`, fewer if you ask). It returns `pages` in the order of
   counts the matching links past `max`. A selector is waited for, so a
   list a script draws late is still read; a listing on which nothing
   matches fails saying so. `wait` holds each item's read, not the
-  listing's. The 50 s cover the listings and their pages together.
+  listing's; a `note` says so when none of them showed it. The 50 s cover
+  the listings and their pages together. The matching links past `max`,
+  and items the 50 s left unread, come back as `urls`, to map next.
 - A page that fails (an error from the page, a tab that went away) is
-  reported in its place, and the others are still read.
+  reported in its place, and the others are still read. So is a page that
+  reads as an error page (HTTP 400 or more, a page not found, a rate
+  limit): it fails, with what it read in `value`.
+- A page that opens as its site's error page (eBay's "Error Page | eBay")
+  is loaded again 2 s and then 5 s later, and `retried` says how often;
+  one that stays an error page fails with open's warning.
 - A PDF, downloaded or shown in Safari's viewer, is read with `pdf {do:
   "read", url}` for `extract`; its value is the PDF's text.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
   with the pages read so far. A page not read by then is reported in its
-  place as unfinished: map those again, in a call with fewer pages. One
-  still being read goes on, and its tab closes when it ends; with `save`,
-  it writes no file.
+  place as unfinished, and its address comes back in `urls`: map those
+  again, in a call with fewer pages. One still being read goes on, and
+  its tab closes when it ends; with `save`, it writes no file.
+- Google's and Bing's results pages load one at a time, 3 s apart, across
+  every map: a burst of searches meets a reCAPTCHA.
+- A page your task (you and the agents you started) read the same way in
+  the last 10 minutes is answered from that read, not loaded: `ms: 0`,
+  and `from` says whose read and when (`from Lead's read 40 s ago`).
+  `fresh: true` loads every page again. An `eval`, or a `fetch` that
+  changes something, is never kept.
 - A bot check that stands in for a page is waited on as `open` waits on
   one, then reported with `challenge` if it is still up; its page is not
   read. Open that page yourself and `handoff` it if the user should pass
   the check. A check in a box on a page that otherwise reads normally is
-  noted beside the page's value.
+  noted beside the page's value. Once a site showed your task a check, its
+  pages are not loaded again for 10 minutes: each fails at once with
+  `challenge` and an error naming who met it and when. Hand that page to
+  the user once, skip the site, or pass `fresh: true`.
 - A tab that would not close says why in `closeError`.
 - `save: true` (the saved folder) or an absolute folder writes each page's
   output to a file of its own there, as `save` does for one read; each
-  `value` is then `{saved, bytes, head}`.
+  `value` is then `{saved, bytes, head}`. A failed page's read is saved
+  too. A folder you name gets `index.json`: each page's `url`, `title`,
+  `ok`, `status`, `ms`, and `saved` or `error`, failed pages included; a
+  later map's line for the same address replaces the earlier one. An
+  `eval`'s file holds `{url, title, ok, ms, value}`.
 - `fetch` asks for each address again with its page's cookies and returns
-  the body as the server sends it.
-- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save]`.
+  the body as the server sends it; an answer of HTTP 400 or more fails.
+- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save] [--fresh]`.
 - More than 3 pages of the same kind (search results, item pages, a
   site's listings) go through `map`, never a `goto` loop, a bash loop of
   `goto` and `eval`, or a bash loop of `map` calls. One call takes 20
@@ -1249,6 +1275,11 @@ Safari's viewer fails naming `pdf {do: "read", url}`.
 An address with a `#fragment` naming a heading, section, or anchor reads
 that section only (a heading's runs to the next heading of its level),
 with a `note`; `selector: "body"` reads the whole page.
+
+A GitHub file page (`/blob/`) reads as its line numbers, so `extract`
+without `selector`, `query`, or `as` answers with its raw file instead,
+and its `note` says so; when the raw file cannot be read, the note says
+why beside the page's own read.
 
 `query` keeps the lines holding some text, as `snapshot`'s does, and
 `selector` (or `root`) narrows the read to one region (`safari guide
@@ -2018,7 +2049,10 @@ without it.
   carries them. `Load failed` is Safari's word for a request that got no
   answer; `fetch` adds whether its host exists at all, or a DNS block list
   on this network stops it, and otherwise the page's rules (CORS, its
-  security policy) refused it or the server dropped it.
+  security policy) refused it or the server dropped it. A plain GET
+  refused so is asked again from the extension, outside the page's rules
+  and without the site's sign-in, and its `note` says so: a file on
+  raw.githubusercontent.com reads from any page this way.
 - A site's API call from the shell goes through `fetch`, never `eval
   "fetch(…)"`: `safari fetch --tab T <url>`, with `--method POST --body
   '<json>'` for a POST. The tab is one of yours on that site, so the

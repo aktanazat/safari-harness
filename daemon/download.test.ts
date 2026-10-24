@@ -1,21 +1,24 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { download, TOOLS } from "./tools.ts";
+import { download, extract, pageFetch, TOOLS } from "./tools.ts";
+import * as unanswered from "./unanswered.ts";
 
 // download of a url with no tab is the extension's own fetch, with no
 // page's cookies (fetchFile in background.js): it answers what the site
 // sent from where its redirects ended, or fails as refuse says. In tab 7,
 // a download by ref and the page's own fetch get no answer ("Load
-// failed"), and the ref's link goes to link. An address in images answers
-// that JPEG, or 404 when it maps to null.
+// failed"), the ref's link goes to link, and the page is a GitHub file
+// page, read as its line numbers. An address in images answers that JPEG,
+// or 404 when it maps to null.
 let served = { url: "", type: "", body: Buffer.alloc(0) };
 let refuse: string | undefined;
 let link = "";
 const fetched: string[] = [];
 const images = new Map<string, Buffer | null>();
+const BLOB = "https://github.com/o/r/blob/main/src/a.c";
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
@@ -23,13 +26,14 @@ connect({
     if (op === "fetchFile") fetched.push(String(args[0]));
     const image = op === "fetchFile" ? images.get(String(args[0])) : undefined;
     const reply = image === null ? { error: "download failed: HTTP 404" }
-      : image ? { value: { name: "", type: "image/jpeg", size: image.length, disposition: null, url: String(args[0]), data: image.toString("base64") } }
+      : image ? { value: { name: "", type: "image/jpeg", size: image.length, disposition: null, url: String(args[0]), status: 200, data: image.toString("base64") } }
       : op === "fetchFile" && refuse !== undefined ? { error: refuse }
-      : op === "fetchFile" ? { value: { name: "", type: served.type, size: served.body.length, disposition: null, url: served.url, data: served.body.toString("base64") } }
+      : op === "fetchFile" ? { value: { name: "", type: served.type, size: served.body.length, disposition: null, url: served.url, status: 200, data: served.body.toString("base64") } }
       : op === "tabs.list" ? { value: [{ id: 7, url: "https://developer.apple.com/account/resources/authkeys/list", title: "Keys", windowId: 1, active: true }] }
-      : page === "download" || page === "fetchFile" ? { error: "Load failed" }
+      : page === "download" || page === "fetchFile" || page === "fetch" ? { error: "Load failed" }
       : page === "element" ? { value: { value: link } }
       : page === "downloadStop" ? { value: { ok: true } }
+      : page === "extract" ? { value: { url: BLOB, title: "r/src/a.c at main · o/r", text: "1\n2\n3", truncated: false } }
       : { error: `nothing answers ${op}` };
     queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
   },
@@ -109,4 +113,41 @@ test("download of several urls saves each under its place in the list, reports a
   expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual(answer);
   expect(readdirSync(folder).sort()).toEqual(["01-a.jpg", "03-b.jpg"]);
   expect(readFileSync(join(folder, "03-b.jpg"), "utf8")).toBe("b's bytes");
+});
+
+const RAW = "https://raw.githubusercontent.com/o/r/main/src/a.c";
+const SOURCE = "int main(void) {\n  return 0;\n}\n";
+
+// On 10-23 every fetch of raw.githubusercontent.com from a page failed
+// "Load failed", 54 pages in 12 maps: the page's rules refused it (K1).
+test("a GET the page's rules refuse is asked again by the extension, saying so; a 404 there is a status, and a POST is not asked again", async () => {
+  const dns = spyOn(unanswered, "hostAnswer").mockImplementation(async () => "found");
+  try {
+    served = { url: RAW, type: "text/plain; charset=utf-8", body: Buffer.from(SOURCE) };
+    fetched.length = 0;
+    expect(await pageFetch({ tab: 7, url: RAW })).toEqual({ status: 200, url: RAW, type: "text/plain; charset=utf-8", text: SOURCE, truncated: false, note: "the page's rules refused its own request, so this is the extension's, which carries none of the site's sign-in" });
+    refuse = "download failed: HTTP 404";
+    expect(await pageFetch({ tab: 7, url: RAW })).toMatchObject({ status: 404, text: "" });
+    refuse = undefined;
+    await expect(pageFetch({ tab: 7, url: RAW, method: "POST", body: "{}" })).rejects.toThrow("raw.githubusercontent.com exists");
+    expect(fetched).toEqual([RAW, RAW]);
+  } finally {
+    refuse = undefined;
+    dns.mockRestore();
+  }
+});
+
+// On 10-23 eight of 64 GitHub file pages read kept under 15% of the file:
+// extract reads the page's line numbers, not its code (K7).
+test("extract of a GitHub file page answers with its raw file, saying so; a read of part of the page does not", async () => {
+  const dns = spyOn(unanswered, "hostAnswer").mockImplementation(async () => "found");
+  try {
+    served = { url: RAW, type: "text/plain; charset=utf-8", body: Buffer.from(SOURCE) };
+    fetched.length = 0;
+    expect(await extract({ tab: 7 })).toMatchObject({ url: BLOB, text: SOURCE, truncated: false, note: "GitHub's file page reads as its line numbers, so this is its raw file, https://github.com/o/r/raw/main/src/a.c" });
+    expect(fetched).toEqual(["https://github.com/o/r/raw/main/src/a.c"]);
+    expect(await extract({ tab: 7, query: "return" })).toMatchObject({ text: "1\n2\n3" });
+  } finally {
+    dns.mockRestore();
+  }
 });

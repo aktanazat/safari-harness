@@ -88,6 +88,7 @@ export function listTools(): unknown[] {
 // does (agent.ts); a longer answer is saved whole, and the reply says where.
 // The cut was 100 000 characters and said nothing; on 10-01 and 10-02, 82
 // answers past 10 000 made up half of the 3 M characters ten sessions read.
+// A map's answer is fitted page by page (formatResult's max).
 const REPLY_CHARS = 30_000;
 
 // A call's answer as the client reads it; a failed call throws.
@@ -99,7 +100,8 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
     const text = formatResult(value);
     if (text.length <= REPLY_CHARS) return text;
     const path = await saveAnswer(text);
-    return `${text.slice(0, REPLY_CHARS)}\n…cut at ${REPLY_CHARS} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
+    const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
+    return `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
   });
 }
 
