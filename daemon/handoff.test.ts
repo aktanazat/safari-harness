@@ -263,6 +263,21 @@ test("a user away from the Mac gets one alert with a picture of the page, howeve
   expect(m.texts).toEqual([{ line: expect.stringContaining("shop.example"), picture: true }]);
 });
 
+// On 10-23 the alert command was missing, and the agent was left to guess
+// that the user, away, never heard (SONA-03).
+test("an alert that cannot go says why and tells the agent to tell the user in its chat", async () => {
+  process.env.SAFARI_HARNESS_AWAY = "1";
+  mac(78, { url: "https://shop.example/login", check: "box" });
+  spyOn(telegram, "sendTelegram").mockImplementation(async () => {
+    throw new Error("the phone alert is off: tell is missing");
+  });
+  const t = taken((a) => a.alerted !== undefined);
+  const handed = handoff(78, "Clear the check", 1000);
+  await t;
+  await tick();
+  expect(await handed).toMatchObject({ done: false, alerted: "not sent: the phone alert is off: tell is missing; tell the user in your chat" });
+});
+
 test("a user who clears the check while the alert to their phone is on its way ends the handoff: the call that sent it returns done, with no second notice", async () => {
   process.env.SAFARI_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };

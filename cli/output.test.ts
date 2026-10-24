@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,10 +23,10 @@ afterAll(() => server.stop(true));
 const home = realpathSync(mkdtempSync(join(tmpdir(), "output-cli-")));
 const daemon = `http://127.0.0.1:${server.port}`;
 
-async function safari(argv: string[], at = daemon) {
+async function safari(argv: string[], at = daemon, more: Record<string, string> = {}) {
   const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...argv], {
     cwd: home,
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: at },
+    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: at, ...more },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -111,7 +111,7 @@ test("status tells a daemon that is not running from one that answered an error,
   });
   const stuck = await safari(["status"]);
   expect(stuck.code).toBe(0);
-  const [daemonLine, extensionLine, ...events] = stuck.out.split("\n");
+  const [daemonLine, extensionLine, , ...events] = stuck.out.split("\n");
   expect(daemonLine).toBe("daemon 4242, 1 call(s) in flight");
   expect(extensionLine).toBe("extension stuck: connected, but its calls time out (snapshot 3 in a row), last answered 95 s ago; run: safari extension reload");
   expect(events).toHaveLength(1);
@@ -200,4 +200,69 @@ test("guide takes every word after it", async () => {
   expect(lanes.out).not.toBe("");
   expect(lanes).toEqual(phrase);
   expect(lanes.out).not.toBe(broad.out);
+});
+
+// On 10-23 ~/.local/bin/tell-aktan was gone after the Mac moved: ask
+// failed with a spawn error, and handoff and passwords still promised his
+// phone an alert (HD-5, SONA-03).
+test("status, doctor, and ask say the phone alerts are off while tell-aktan is missing, and how the last one went once it runs", async () => {
+  health = () => Response.json({ pid: 4242, extension: null });
+  const tell = join(home, ".local/bin/tell-aktan");
+  const away = { SAFARI_HARNESS_AWAY: "1" };
+  const alertLine = async () => (await safari(["status"])).out.split("\n")[2];
+  const alertCheck = async () => JSON.parse((await safari(["doctor", "--json"])).out).checks.find((c: { name: string }) => c.name === "phone alerts")?.status;
+  const asked = async () => JSON.parse((await safari(["ask", "which color?", "--json"], daemon, away)).out);
+  try {
+    expect(await alertLine()).toBe("the phone alert is off: ~/.local/bin/tell-aktan is missing: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat");
+    expect(JSON.parse((await safari(["status", "--json"])).out).alerts).toEqual({ on: false, why: "the phone alert is off: ~/.local/bin/tell-aktan is missing" });
+    expect(await alertCheck()).toBe("fail");
+    expect(await asked()).toMatchObject({ sent: false, why: "the phone alert is off: ~/.local/bin/tell-aktan is missing", hint: expect.stringContaining("ask it in your own chat") });
+    mkdirSync(join(home, ".local/bin"), { recursive: true });
+    writeFileSync(tell, `#!/bin/sh\ncat >> "$HOME/told"\n`);
+    chmodSync(tell, 0o755);
+    expect(await asked()).toMatchObject({ sent: true });
+    expect(readFileSync(join(home, "told"), "utf8")).toContain("which color?");
+    expect(await alertLine()).toBe("phone alerts on");
+    expect(await alertCheck()).toBe("ok");
+    writeFileSync(tell, "#!/bin/sh\necho 'no route to host' >&2\nexit 1\n");
+    expect(await asked()).toMatchObject({ sent: false, why: "the phone alert failed: no route to host" });
+    expect(await alertLine()).toMatch(/^phone alerts on, but the last one, at .+, failed: the phone alert failed: no route to host$/);
+    expect(await alertCheck()).toBe("warn");
+  } finally {
+    rmSync(join(home, ".local"), { recursive: true, force: true });
+  }
+}, 30_000);
+
+// On 10-23 a call made during a deploy said the daemon was not reachable
+// and to install it (HD-13).
+test("while a deploy restarts the daemon, status says so and when to try again, rather than to install it", async () => {
+  const stopped = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+  const gone = `http://127.0.0.1:${stopped.port}`;
+  await stopped.stop(true);
+  const marker = join(home, ".local/share/safari-harness/deploying");
+  mkdirSync(join(marker, ".."), { recursive: true });
+  try {
+    writeFileSync(marker, `${Math.floor(Date.now() / 1000) + 40}\n`);
+    expect(await safari(["status"], gone)).toMatchObject({ out: "", err: expect.stringMatching(/^error: safari is restarting for a deploy; try again in (39|40|41) s$/), code: 1 });
+    writeFileSync(marker, `${Math.floor(Date.now() / 1000) - 5}\n`);
+    expect((await safari(["status"], gone)).err).toContain("start it with: safari daemon install");
+  } finally {
+    rmSync(join(home, ".local"), { recursive: true, force: true });
+  }
+});
+
+// On 10-23 the live release sat 6 commits off master for a day (HD-1).
+test("status says how far the live release is ahead of origin/master, as its deploy recorded it, and nothing once it is merged", async () => {
+  const root = join(home, "release");
+  mkdirSync(root, { recursive: true });
+  health = () => Response.json({ pid: 4242, root, code: "c", extension: null });
+  try {
+    writeFileSync(join(root, ".upstream"), JSON.stringify({ branch: "up-omp", ahead: 6, master: "48a9362", at: "2026-10-23T05:00:00Z" }));
+    expect((await safari(["status"])).out.split("\n")[3]).toMatch(/^live release is 6 commit\(s\) ahead of origin\/master, from branch up-omp, as its deploy at .+ found it: merge it$/);
+    expect(JSON.parse((await safari(["status", "--json"])).out).upstream).toMatchObject({ branch: "up-omp", ahead: 6 });
+    writeFileSync(join(root, ".upstream"), JSON.stringify({ branch: "master", ahead: 0, master: "48a9362", at: "2026-10-23T05:00:00Z" }));
+    expect((await safari(["status"])).out).not.toContain("ahead of origin/master");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

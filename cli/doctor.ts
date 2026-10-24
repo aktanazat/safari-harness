@@ -15,7 +15,9 @@ import { promisify } from "node:util";
 import { input } from "../daemon/front.ts";
 import { files, groupsOff } from "../daemon/groups.ts";
 import { openChatDb } from "../daemon/imessage.ts";
-import { daemonHttp, rpc } from "../daemon/rpc.ts";
+import { daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
+import { alertHealth, type AlertHealth } from "../daemon/phone.ts";
+import { TELL_SHOWN } from "../daemon/telegram.ts";
 import type { TabInfo } from "../daemon/tools.ts";
 import { daemonLoaded } from "./launchd.ts";
 
@@ -64,6 +66,9 @@ export type Probes = {
   freeBytes: () => Promise<number>;
   swapMb: () => Promise<number | undefined>;
   groupsOff: () => string | undefined;
+  alerts: () => AlertHealth;
+  // seconds a deploy that restarts the daemon still expects to take
+  deploying: () => number | undefined;
 };
 
 type Outcome<T> = { value: T } | { error: string };
@@ -162,15 +167,27 @@ const LIVE: Probes = {
     throw new Error("its answer has no host.swap_used_mb");
   },
   groupsOff,
+  alerts: alertHealth,
+  deploying: deployingFor,
 };
 
-function daemonCheck(health: Health | null, loaded: boolean): Check {
+function daemonCheck(health: Health | null, loaded: boolean, deploying: number | undefined): Check {
+  if (health === null && deploying !== undefined) return { name: "daemon", status: "warn", detail: "restarting for a deploy", fix: `run safari doctor again in ${deploying} s` };
   if (health === null) {
     const fix = loaded ? "launchd starts it, but it keeps stopping: read ~/Library/Logs/safari-harness/daemon.log" : "safari daemon install";
     return { name: "daemon", status: "fail", detail: `not answering at ${daemonHttp()}`, fix };
   }
   if (health.stopping) return { name: "daemon", status: "warn", detail: `restarting (${health.stopping})`, fix: "run safari doctor again in a minute" };
   return { name: "daemon", status: "ok", detail: `answering, pid ${health.pid}` };
+}
+
+// handoff, ask, and watch routines reach the user's phone through it; on
+// 10-23 it was missing and nothing said so (HD-5).
+function alertsCheck(a: AlertHealth): Check {
+  const name = "phone alerts";
+  if (!a.on) return { name, status: "fail", detail: `${a.why}, so handoff, ask, and watch routines cannot reach the user's phone`, fix: `put back ${TELL_SHOWN}: it reads the text on stdin, takes a picture's path as its one argument, and exits 0 once sent` };
+  if (a.lastFailed !== undefined && a.lastAt !== undefined) return { name, status: "warn", detail: `the last alert, at ${new Date(a.lastAt).toLocaleString("sv").slice(5, 16)}, failed: ${a.lastFailed}`, fix: `send one by hand to see why: echo test | ${TELL_SHOWN}` };
+  return { name, status: "ok", detail: `${TELL_SHOWN} is there to run${a.lastAt === undefined ? "" : `; the last alert went at ${new Date(a.lastAt).toLocaleString("sv").slice(5, 16)}`}` };
 }
 
 function launchdCheck(loaded: boolean, answering: boolean): Check {
@@ -288,7 +305,7 @@ export async function doctor(probe: Probes = LIVE, { deep = false }: { deep?: bo
     safari
       ? { name: "safari", status: "ok", detail: "running" }
       : { name: "safari", status: "warn", detail: "not running, so the checks that need it did not run", fix: "open Safari, then run safari doctor again" },
-    daemonCheck(health, loaded),
+    daemonCheck(health, loaded, probe.deploying()),
     launchdCheck(loaded, health !== null),
     !up || !safari ? { name: "extension", status: "skip", detail: missing } : extensionCheck(extension),
     tabs === undefined
@@ -309,6 +326,7 @@ export async function doctor(probe: Probes = LIVE, { deep = false }: { deep?: bo
       ? { name: "messages", status: "fail", detail: "cannot read the Messages database, so codes sent by text are not found", fix: `System Settings > Privacy & Security > Full Disk Access: ${TERMINAL}` }
       : { name: "messages", status: "ok", detail: "the Messages database is readable, so codes sent by text are found" },
     passwordsCheck(pairing),
+    alertsCheck(probe.alerts()),
     free < LOW_DISK_BYTES
       ? { name: "disk", status: "fail", detail: `${(free / 1024 ** 3).toFixed(1)} GB free`, fix: "free up space: downloads, saved PDFs, and deploys need it" }
       : { name: "disk", status: "ok", detail: `${(free / 1024 ** 3).toFixed(1)} GB free` },

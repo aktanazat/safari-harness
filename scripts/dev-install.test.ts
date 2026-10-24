@@ -89,15 +89,30 @@ rmdir() {
     command rmdir "$@"
   fi
 }
-curl() { command cat "$HOME/health.json"; }
+curl() {
+  case "$*" in */shutdown*) if [ -n "\${DEPLOY_THROUGH:-}" ]; then
+    command cp "$HOME/.local/share/safari-harness/deploying" "$HOME/deploying-seen" 2>/dev/null
+    jq '.pid = 2 | .code = "new"' "$HOME/health.json" >"$HOME/health.next" && command mv "$HOME/health.next" "$HOME/health.json"
+  fi ;; esac
+  command cat "$HOME/health.json"
+}
 bun() {
-  if [ "$1" != "$CHECKPOINTS" ] || [ "$2" != check ]; then return 99; fi
-  "$REAL_BUN" "$@" || return $?
-  printf '%s\\n' check > "$HOME/checkpoint-accepted"
-  return ${checkpointAccepted}
+  if [ "$1" = -e ]; then "$REAL_BUN" "$@"; return; fi
+  if [ "$1" = "$CHECKPOINTS" ] && [ "$2" = check ]; then
+    "$REAL_BUN" "$@" || return $?
+    printf '%s\\n' check > "$HOME/checkpoint-accepted"
+    [ -z "\${DEPLOY_THROUGH:-}" ] || return 0
+    return ${checkpointAccepted}
+  fi
+  [ -n "\${DEPLOY_THROUGH:-}" ] || return 99
+  case "$1" in
+    "$CHECKPOINTS") [ "$2" != snapshot ] || echo "$HOME/checkpoint" ;;
+    */daemon/codehash.ts) echo new ;;
+    *) return 99 ;;
+  esac
 }
 xcodebuild() { return 99; }
-lsregister() { return 99; }
+lsregister() { [ -n "\${DEPLOY_THROUGH:-}" ] || return 99; }
 pluginkit() { return 99; }
 launchctl() { return 99; }
 rsync() { return 99; }
@@ -119,7 +134,7 @@ ditto() { return 99; }
     GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
     GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
   };
-  git("init", "--quiet");
+  git("init", "--quiet", "--initial-branch=work");
   git("add", "daemon/codehash.ts");
   git("commit", "--quiet", "-m", "base");
   base = git("rev-parse", "HEAD");
@@ -229,4 +244,50 @@ test("an explicit rollback cannot bypass checkpoint compatibility", () => {
   release(short(sibling), 1);
   writeFileSync(join(data, "deploys.log"), `2000-01-01T00:00:00Z ${short(installed)} ${short(sibling)} deploy\n`);
   expectRefused("--rollback", "manual rollback across checkpoint formats is blocked");
+});
+
+// The whole deploy, past checkpoint admission: the daemon's code changed,
+// so it restarts; the app and extension stay as they are.
+function deployThrough(target: string) {
+  writeFileSync(join(home, "health.json"), JSON.stringify({ ok: true, pid: 1, code: "old", root: join(releases, short(installed)), extension: { connectedAt: 1 } }));
+  writeFileSync(join(releases, short(target), ".extension"), "app-key\n");
+  writeFileSync(join(data, "installed-extension"), "app-key\n");
+  mkdirSync(join(home, ".bun/bin"), { recursive: true });
+  mkdirSync(join(home, "Library/LaunchAgents"), { recursive: true });
+  writeFileSync(join(home, "Library/LaunchAgents/at.aktan.safari-harness.daemon.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>ProgramArguments</key><array><string>bun</string><string>${current}/daemon/main.ts</string></array></dict></plist>
+`);
+  const result = Bun.spawnSync(["/bin/bash", join(checkout, "scripts/dev-install.sh"), target], { env: { ...env, DEPLOY_THROUGH: "1" }, stdout: "pipe", stderr: "pipe" });
+  const log = existsSync(join(data, "deploys.log")) ? readFileSync(join(data, "deploys.log"), "utf8").trim().split("\n").at(-1) : undefined;
+  return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString(), log };
+}
+
+// On 10-23 the live release was a branch's tip, 6 commits off master, and
+// nothing said so (HD-1).
+test("a deploy of a commit that is not on origin/master warns, and logs and records how far ahead it is", () => {
+  git("update-ref", "refs/remotes/origin/master", installed);
+  const deployed = deployThrough(descendant);
+  expect(deployed).toMatchObject({ code: 0, err: `warning: release ${short(descendant)} is 1 commit(s) ahead of origin/master, from branch work; merge it, or work started from master lacks it\n` });
+  expect(deployed.log).toEndWith(`${short(descendant)} ${short(installed)} deploy unmerged work`);
+  expect(JSON.parse(readFileSync(join(releases, short(descendant), ".upstream"), "utf8"))).toMatchObject({ branch: "work", ahead: 1, master: short(installed) });
+});
+
+test("a deploy of a commit on origin/master logs no warning and records that it is not ahead", () => {
+  git("update-ref", "refs/remotes/origin/master", descendant);
+  const deployed = deployThrough(descendant);
+  expect(deployed).toMatchObject({ code: 0, err: "" });
+  expect(deployed.log).toEndWith(`${short(descendant)} ${short(installed)} deploy`);
+  expect(JSON.parse(readFileSync(join(releases, short(descendant), ".upstream"), "utf8"))).toMatchObject({ ahead: 0 });
+});
+
+// On 10-23 a call made while a deploy restarted the daemon said to install
+// it (HD-13): the marker that says a deploy restarts it lasts exactly as
+// long as the restart.
+test("a deploy marks the daemon's restart for callers until it is done", () => {
+  git("update-ref", "refs/remotes/origin/master", descendant);
+  const started = Math.floor(Date.now() / 1000);
+  const deployed = deployThrough(descendant);
+  expect(deployed).toMatchObject({ code: 0, out: expect.stringContaining("daemon: restarted (its code changed)") });
+  expect(Number(readFileSync(join(home, "deploying-seen"), "utf8"))).toBeGreaterThan(started + 60);
+  expect(existsSync(join(data, "deploying"))).toBe(false);
 });

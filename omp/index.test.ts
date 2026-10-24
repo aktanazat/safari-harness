@@ -125,6 +125,35 @@ test("shell commands receive isolated task environments across a pipeline and ch
   });
 });
 
+// Agents copy the wrapped command out of their transcript (AH1, HD-4).
+const copiedFrom = (command: string, layers: number) => Array.from({ length: layers }, (_, i) => JSON.stringify(["session-b", `copied-${i}`]))
+  .reduce((inner, other) => `SAFARI_HARNESS_TASK='${other.replaceAll("'", "'\\''")}' eval '${inner.replaceAll("'", "'\\''")}'`, command);
+
+async function shell(command: string) {
+  const child = Bun.spawn(["/bin/sh", "-c", command], { env: { ...process.env, SAFARI_HARNESS_TASK: "inherited" }, stdout: "pipe", stderr: "pipe" });
+  const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { exit, error, output };
+}
+
+test.each([0, 1, 3])("a command copied under %i task wrappers runs once, under this agent's own task", async (layers) => {
+  await withHook(async (_end, tool) => {
+    const command = `printf '%s|%s\\n' "it's" "$SAFARI_HARNESS_TASK" | /bin/cat && echo "done $((1 + 1))"`;
+    const wrapped = tool({ toolName: "bash", input: { command: copiedFrom(command, layers) } }, context("sub", "rpc", "helper"))?.input.command;
+    if (typeof wrapped !== "string") throw new Error("shell command must remain text");
+    expect(await shell(wrapped)).toEqual({ exit: 0, error: "", output: `it's|${task}\ndone 2\n` });
+    expect(wrapped).toBe(tool({ toolName: "bash", input: { command } }, context("sub", "rpc", "helper"))?.input.command);
+  });
+});
+
+test("a copied wrapper with more commands after it still runs all of them under this agent's own task", async () => {
+  await withHook(async (_end, tool) => {
+    const command = `${copiedFrom(`printf '%s ' "$SAFARI_HARNESS_TASK"`, 2)} && printf '%s' "$SAFARI_HARNESS_TASK"`;
+    const wrapped = tool({ toolName: "bash", input: { command } }, context("sub", "rpc", "helper"))?.input.command;
+    if (typeof wrapped !== "string") throw new Error("shell command must remain text");
+    expect(await shell(wrapped)).toEqual({ exit: 0, error: "", output: `${task} ${task}` });
+  });
+});
+
 test("helper shell tools carry their exact task through the real Safari CLI to HTTP", async () => {
   await withHook(async (_end, tool, requests) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(join(import.meta.dir, "../cli/safari.ts"))} tabs --json --host local`;

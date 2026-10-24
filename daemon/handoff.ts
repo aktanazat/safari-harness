@@ -116,7 +116,7 @@ async function handoff(given: unknown, why: string | undefined, ms = 60000, unti
       // later ones join it, and a background check names it by id
       first = await wait({ ms: 0, ...(until === undefined ? {} : { until }), ...(background ? { background: true } : {}), ...(id === undefined ? {} : { id }) });
       while (!h.done && Date.now() < end) {
-        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end, card(tab, h, background)).catch((e: Error) => `not sent: ${e.message}`)) : undefined;
+        const alerted = h.alert ? await beforeEnd(alertUser(tab, h, end, card(tab, h, background)).catch((e: Error) => `not sent: ${e.message}; tell the user in your chat`)) : undefined;
         if (alerted !== undefined) h = { ...h, alerted };
         // A probe that fails reads as at the Mac: the notification is up either way.
         const away = alerted === undefined && h.alerted === undefined && (await beforeEnd(isAway().catch(() => false)));
