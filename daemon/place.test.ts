@@ -116,7 +116,7 @@ test("a shot whose window no display has room to show says it is covered, and mo
   const ours = { id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 };
   const windows = mac([{ ...HIS }, { id: 4, safari: false, ...ABOVE.visible }, { ...ours }], { 11: 1, 21: 2 }, { 2: 7 });
   const failed = await runAs(7, () => captureTab(21)).catch((e: unknown) => e);
-  expect(failed).toMatchObject({ code: "unavailable", effect: "none" });
+  expect(failed).toMatchObject({ code: "unavailable", effect: "none", next: expect.stringContaining("activate") });
   expect((failed as Error).message).toStartWith("screenshot: other windows cover your window");
   expect(byId(windows, 2)).toEqual(ours);
 });

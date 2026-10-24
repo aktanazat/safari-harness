@@ -1851,7 +1851,7 @@ export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capt
       const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
       if (!mine) throw error;
       const where = await uncover(tab).catch(() => undefined);
-      if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "read the page with snapshot or extract, or shoot again once your window can show on a display" });
+      if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "activate brings your window in front, where it paints (the user sees it), then shot again; or read the page with snapshot or extract" });
       if (where !== "moved") throw error;
       return await shotOnce(tab, opts);
     }
