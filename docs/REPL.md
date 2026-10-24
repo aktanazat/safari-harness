@@ -80,10 +80,10 @@ task identity retain process-wide ownership.
 
 ## Reading a page
 
-- `snapshot(page, {interactive, showHidden, ref, selector, maxNodes})`
-  returns `{tree, diff}`: the outline with `[ref]`s (600 lines unless
-  `maxNodes`; past that it says where it was cut), and what changed since
-  this session's last snapshot of the same view.
+- `snapshot(page, {interactive, showHidden, ref, selector, maxNodes})`, or
+  `page.snapshot({...})`, returns `{tree, diff}`: the outline with `[ref]`s
+  (600 lines unless `maxNodes`; past that it says where it was cut), and
+  what changed since this session's last snapshot of the same view.
 - `page.content()`, `page.title()`, `page.url()`, `page.evaluate(fn, arg)`
   (runs in the page; falls back to the extension's world when the page
   forbids scripts).
@@ -258,7 +258,16 @@ and whose `exists()` says whether it is there.
 - Large results go to a file (`fs.writeFile('rows.json', ...)`); print a
   count and the path, not the whole thing. Output past 10,000 characters
   is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
-  and the answer is its first 2,000 characters and that path.
+  and the answer is its first 2,000 characters and that path. A run that
+  fails keeps 8 lines of its output, and 8 of its error, the rest saved
+  the same way.
+- A name the script got wrong comes back with its nearest (`getTab is not
+  defined` → `hint: did you mean getTabs?`); a page method called on
+  something that is not a page (a `listBrowserTabs()` row) says so.
+- The MCP `repl` tool's own session (no `session`) starts over when the
+  harness is updated mid-task: its first answer begins `this repl session
+  started fresh at <time>`, with the pages to `attachBrowserTab(id)` again.
+  A named session keeps its bindings.
 - Reading a script bundle or a page's source: write it to a file
   (`fs.writeFile`) or let the output spill to one, then grep the file for
   the API path or name you want, instead of printing slices of it.
