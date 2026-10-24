@@ -30,7 +30,7 @@ function answer(op: string, args: unknown[]): { value: unknown } | { error: stri
     pressed.push(row.id);
     return { value: { mark: "__sh_press_t", width: 1200, height: 800 } };
   }
-  if (dom === "pressDone") return { value: [] };
+  if (dom === "pressDone") return { value: { errors: [] } };
   return { error: `no ${dom} here` };
 }
 

@@ -29,7 +29,9 @@ const GHOSTTY = "com.mitchellh.ghostty";
 // front window, what the page did on each scripted click, in order
 // (withReceipt in extension/content.js; nothing by default), the tab it
 // opens on a real click, which the daemon queues for the agent
-// (continuity.ts), the app the user brings forward while the helper types,
+// (continuity.ts), the tab its page says it opens on a press, which the
+// extension reports a moment after the press has answered,
+// the app the user brings forward while the helper types,
 // a field that garbles keys typed fast or at any pace (a card mask), the
 // lines a chat shows after text is sent, a user who never pauses, the
 // kind of field typed into (a one-line input unless said), the row of code
@@ -43,6 +45,7 @@ type Page = {
   area?: { x: number; y: number; width: number; height: number };
   clicked?: Record<string, unknown>[];
   popup?: { tab: number; url: string };
+  opens?: { tab: number; url: string };
   takeover?: string;
   garble?: "fast" | "always";
   reply?: string[];
@@ -104,7 +107,10 @@ function mac(page: Page = {}): Mac {
       if (op === "tabs.activate") return ((frontWindow = show(args[0])), answer({ ok: true }));
       const dom = op === "relay" ? args[1] : undefined;
       if (dom === "pressMark") return answer(page.picker ? { picker: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
-      if (dom === "pressDone") return answer(page.errors ?? []);
+      if (dom === "pressDone") {
+        if (page.opens && page.owner !== undefined) setTimeout(queuePopup, 100, page.owner, page.opens);
+        return answer({ errors: page.errors ?? [], ...(page.opens ? { tab: true } : {}) });
+      }
       if (dom === "typeMark") {
         const [ref, , append] = args[2];
         // a box of the row, by the class the row's mark gave it
@@ -498,6 +504,23 @@ test("a real click's answer carries the tab its action opened", async () => {
   try {
     mac({ owner: owner.pid, popup: { tab: 22, url: "https://accounts.example/" } });
     expect(await runAs(owner.pid, () => invoke("real_input", { tab: 21, do: "click", ref: "#go", count: 2 }, true))).toEqual({ ok: true, at: { x: 140, y: 160 }, popup: { tab: 22, url: "https://accounts.example/" } });
+  } finally {
+    owner.kill();
+    await owner.exited;
+    const ended = Promise.withResolvers<void>();
+    watchOwner(owner.pid, ended.resolve);
+    await ended.promise;
+  }
+});
+
+// On 10-24 a press on a link opened a tab that its answer did not name: the
+// extension reports a tab once its page has an address, after the press
+// had answered, and the tab went to the agent's next call.
+test("a press whose page said a tab is opening answers with that tab", async () => {
+  const owner = Bun.spawn(["sleep", "60"]);
+  try {
+    mac({ owner: owner.pid, opens: { tab: 23, url: "http://127.0.0.1:47812/child.html" } });
+    expect(await runAs(owner.pid, () => invoke("real_input", { tab: 21, do: "click", ref: "#go" }, true))).toEqual({ ok: true, background: true, popup: { tab: 23, url: "http://127.0.0.1:47812/child.html" } });
   } finally {
     owner.kill();
     await owner.exited;

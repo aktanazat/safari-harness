@@ -799,9 +799,10 @@
   // press, which may come after the helper has returned. Answers with the
   // errors the page threw from the mark on (dialogs.js), after a press that
   // came has had the receipt's shortest watch to show them: a page that
-  // refuses a passkey or clipboard call for want of focus says so then. A
-  // mark this frame does not hold is another frame's, which relayOp then
-  // asks.
+  // refuses a passkey or clipboard call for want of focus says so then;
+  // and tab: true when the page said a tab is coming since (announceTab),
+  // which the daemon waits to hear of. A mark this frame does not hold is
+  // another frame's, which relayOp then asks.
   async function pressDone(ref, mark, ms) {
     const p = presses.get(mark);
     if (!p) return missing(ref);
@@ -810,7 +811,7 @@
     p.el.classList.remove(mark);
     p.el.removeEventListener("click", p.listen, true);
     if (came) await sleep(RECEIPT_SPAN.min);
-    return hear(p.since)?.errors ?? [];
+    return { errors: hear(p.since)?.errors ?? [], ...(tabSaid >= p.since ? { tab: true } : {}) };
   }
 
   // Safari runs no extension script in srcdoc and about:blank frames, so
@@ -2019,7 +2020,11 @@
   }, { signal: life.signal });
   // Safari gives a tab a page opens no opener, so the page says one is
   // coming (tabs a page opens, in background.js).
-  const announceTab = () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); };
+  let tabSaid = 0;
+  const announceTab = () => {
+    tabSaid = Date.now();
+    api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {});
+  };
   document.addEventListener("__sh_popup", announceTab, { signal: life.signal });
   // A click on a link that opens another tab says so too, a real one
   // included: on 10-24 real_input's answer named no tab its link opened.
