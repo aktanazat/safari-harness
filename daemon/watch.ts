@@ -139,7 +139,7 @@ async function read(w: Watch): Promise<Read> {
 }
 
 // One run. An alert that fails leaves the old value, so the next run sends
-// it again.
+// it again, and the note says why he was not told.
 export async function runWatch(name: string, w: Watch): Promise<Ran> {
   const file = stateFile(name);
   const kept = readJson(file);
@@ -150,7 +150,8 @@ export async function runWatch(name: string, w: Watch): Promise<Ran> {
     const site = new URL(w.url).hostname.replace(/^www\./, "");
     const now = Date.now();
     if (state.checkAlertedAt !== undefined && now - state.checkAlertedAt < DAY_MS) return { code: 1, note: `${site} shows ${got.wall}; the user was alerted about it within the day` };
-    await alert(`${name} needs you: ${site} shows ${got.wall}`);
+    const failed = await alert(`${name} needs you: ${site} shows ${got.wall}`).then(() => undefined, (e: Error) => e.message);
+    if (failed !== undefined) return { code: 1, note: `${site} shows ${got.wall}; the user was not told: ${failed}` };
     writeJson(file, { ...state, checkAlertedAt: now });
     return { code: 1, note: `${site} shows ${got.wall}; alerted the user` };
   }
@@ -161,7 +162,8 @@ export async function runWatch(name: string, w: Watch): Promise<Ran> {
   if (got.value === state.value) return { code: 0, note: `no change: ${got.value}` };
   // each value cut short in the alert; the state keeps all of it
   const [was, now] = [state.value, got.value].map((v) => (v.length > CLIP ? `${v.slice(0, CLIP - 1)}…` : v));
-  await alert(`${name}: ${was} -> ${now} (${w.url})`);
+  const failed = await alert(`${name}: ${was} -> ${now} (${w.url})`).then(() => undefined, (e: Error) => e.message);
+  if (failed !== undefined) return { code: 1, note: `changed: ${state.value} -> ${got.value}; the user was not told: ${failed}` };
   writeJson(file, { ...state, value: got.value });
   return { code: 0, note: `changed: ${state.value} -> ${got.value}; alerted the user` };
 }

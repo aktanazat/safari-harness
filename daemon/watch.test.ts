@@ -81,3 +81,16 @@ test.each([
   const line = `stock needs you: shop.example shows ${wall}`;
   expect(texts).toEqual([line, line, line, "stock: 3 left -> 2 left (https://shop.example/item)"]);
 });
+
+// On 10-23 the alert command was missing, and nothing said so (HD-5).
+test("a change the user could not be told about is noted with why, and the next run tells him", async () => {
+  page = { value: "3 left" };
+  await runWatch("stock", WATCH);
+  page = { value: "2 left" };
+  spyOn(telegram, "sendTelegram").mockImplementationOnce(async () => {
+    throw new Error("the phone alert is off: tell is missing");
+  });
+  expect(await runWatch("stock", WATCH)).toEqual({ code: 1, note: "changed: 3 left -> 2 left; the user was not told: the phone alert is off: tell is missing" });
+  expect(await runWatch("stock", WATCH)).toEqual({ code: 0, note: "changed: 3 left -> 2 left; alerted the user" });
+  expect(texts).toEqual(["stock: 3 left -> 2 left (https://shop.example/item)"]);
+});

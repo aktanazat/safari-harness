@@ -3,14 +3,14 @@
 // through here, and a handoff's goes to Akyl's phone app beside it (akyl). A
 // log of them (alerts.jsonl), shared by every process that sends one, holds
 // them to LIMIT an hour across all agents and routines. It keeps when each
-// went and from which process, never the line.
+// went and from which process, and why one failed, never the line.
 
 import { execFile } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { sendTelegram } from "./telegram.ts";
+import { alertsOff, sendTelegram } from "./telegram.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -38,8 +38,10 @@ export async function isAway(): Promise<boolean> {
   return s.locked === true || s.asleep === true || s.console !== true || (typeof s.idle === "number" && s.idle >= IDLE_S);
 }
 
-// failed marks an alert that never went: it gives back its place in the hour.
-type Sent = { at: number; pid: number; failed?: true };
+// failed marks an alert that never went: it gives back its place in the
+// hour. error is why, cut to ERROR_MAX.
+type Sent = { at: number; pid: number; failed?: true; error?: string };
+const ERROR_MAX = 200;
 
 function isSent(v: unknown): v is Sent {
   return !!v && typeof v === "object" && "at" in v && typeof v.at === "number" && "pid" in v && typeof v.pid === "number";
@@ -107,6 +109,20 @@ function went(lines: Sent[]): Sent[] {
   return lines.filter((s) => !s.failed && !failed.has(key(s)));
 }
 
+// Whether an alert can go now, and when the last one was tried and why it
+// failed if it did: for safari status and safari doctor.
+export type AlertHealth = { on: false; why: string } | { on: true; lastAt?: number; lastFailed?: string };
+
+export function alertHealth(): AlertHealth {
+  const off = alertsOff();
+  if (off !== undefined) return { on: false, why: off };
+  const lines = logLines();
+  const tried = lines.filter((s) => !s.failed).at(-1);
+  if (tried === undefined) return { on: true };
+  const failed = lines.find((s) => s.failed && s.at === tried.at && s.pid === tried.pid);
+  return { on: true, lastAt: tried.at, ...(failed ? { lastFailed: failed.error ?? "no reason was kept" } : {}) };
+}
+
 // Sends line to his phone, with a picture's path when there is one, unless
 // LIMIT went in the last hour: then the error says so, and when the next
 // may go. beside starts with the send and never changes how it goes.
@@ -134,7 +150,7 @@ export async function alert(line: string, picture?: string, beside?: () => Promi
   try {
     await sendTelegram(line, picture);
   } catch (e) {
-    appendFileSync(log, `${JSON.stringify({ ...sent, failed: true })}\n`);
+    appendFileSync(log, `${JSON.stringify({ ...sent, failed: true, error: (e instanceof Error ? e.message : String(e)).slice(0, ERROR_MAX) })}\n`);
     throw e;
   }
 }
