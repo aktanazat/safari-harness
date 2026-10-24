@@ -1,0 +1,21 @@
+const l = JSON.parse(document.getElementById("__NEXT_DATA__").textContent).props.pageProps.listing;
+({
+  id: l.id,
+  url: `https://www.grailed.com/listings/${l.id}`,
+  title: l.title,
+  designers: l.designers.map((d) => d.name),
+  price: l.price,
+  sold: l.sold,
+  soldAt: l.soldAt ?? undefined,
+  soldPrice: l.sold ? l.soldPrice : undefined,
+  size: l.prettySize ?? l.size,
+  condition: l.condition,
+  traits: Object.fromEntries(l.traits.map((t) => [t.name, t.value])),
+  description: l.description,
+  seller: l.seller.username,
+  location: l.seller.location,
+  shipping: Object.fromEntries(Object.entries(l.shipping).filter(([, s]) => s.enabled).map(([region, s]) => [region, s.amount])),
+  priceDrops: l.priceDrops,
+  listed: l.createdAt,
+  images: l.photos.map((p) => p.url),
+});

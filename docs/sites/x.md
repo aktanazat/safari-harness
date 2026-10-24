@@ -6,6 +6,9 @@ hosts: x.com, twitter.com, www.x.com, mobile.twitter.com
 
 Signed out, the global throws "not signed in to x.com in Safari". If Safari is on the wrong account, the user switches accounts from the account menu at the bottom of the left column on `x.com/home` instead of signing out.
 
+## Posts
+- Status pages (`x.com/<handle>/status/<id>`) by `open` or `map`: wait on `{"selector": "article"}`. A text wait such as `{"text": "NASA"}` matches the title ("NASA on X: …") before the post draws: on 10-23 three `map` pages returned with no article and no text that way.
+
 ## Accounts
 - The account menu's "Log out @<handle>" names the signed-in account.
 - "Add an existing account" goes to /i/jf/onboarding/web?mode=login, which shows a choice of sign-in options before any username field. Snapshot it before you wait for a field.

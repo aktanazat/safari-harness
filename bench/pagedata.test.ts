@@ -23,6 +23,11 @@ benchRows("content.js page data, eval, and editors in WebKit", [
     }],
   },
   {
+    name: "data reads a Next.js app-router page's flight rows, the text its self.__next_f pushes hold",
+    page: "data-flight.html",
+    steps: [{ op: "data", answer: { value: { flight: '1:I[123,["chunk.js"],"Price"]\n2:["$","$L1",null,{"price":"89.00"}]\n' } } }],
+  },
+  {
     name: "eval's sh.q and sh.qa find elements inside shadow roots, where the page's own queries stop",
     page: "shadow.html",
     steps: [{

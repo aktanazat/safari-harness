@@ -48,7 +48,7 @@ test("pick follows dotted keys, [n] items, and quoted keys", async () => {
 });
 
 test("a pick that is not a path says how one looks", async () => {
-  for (const pick of ["", ".next", "next..props", "next.", "next[x]", "next[1", "next[0]props"]) {
+  for (const pick of ["", ".next", "next..", "next..[0]", "next.", "next[x]", "next[1", "next[0]props"]) {
     await expect(data(shop, { pick })).rejects.toThrow("a path looks like next.props.items[0].name");
   }
 });
@@ -57,6 +57,28 @@ test("a pick past the data names the step it could not take and what was there",
   await expect(data(shop, { pick: "next.props.pageProps.itemz" })).rejects.toThrow('next.props.pageProps has no "itemz"; its keys: items');
   await expect(data(shop, { pick: "next.props.pageProps.items[40]" })).rejects.toThrow("next.props.pageProps.items has no [40]; it is a list of 40");
   await expect(data(shop, { pick: "apollo.ROOT_QUERY" })).rejects.toThrow("this page has no apollo data; it has jsonld, meta, next");
+});
+
+test("..key picks every value under that key at any depth, in order", async () => {
+  expect((await data(shop, { pick: "next..name" })).value).toEqual(items.map((i) => i.name));
+  expect((await data(shop, { pick: "next..items[0][2].name" })).value).toBe("Item 2");
+  await expect(data(shop, { pick: "next..sku" })).rejects.toThrow('pick: next has no "sku" at any depth; its keys: props, page, buildId');
+});
+
+// As Depop's item page streamed it on 10-23: a module row, a hint row with
+// no id, a text row whose length counts bytes (é is two) and that the next
+// row follows on the same line, a plain row, and the page's element tree,
+// where $L1 is a client component and div is not.
+test("Next.js app router's flight rows come back as each client component's props, with referenced rows filled in", async () => {
+  const flight = [
+    '1:I[123,["chunk.js"],"Price"]',
+    ':HL["/style.css","style"]',
+    '3:T6,héllo4:{"amount":"9.99"}',
+    '5:["$","div",null,{"className":"page","children":["$","$L1",null,{"price":"$4","note":"$3","label":"$$5 off","children":"Buy"}]}]',
+    "",
+  ].join("\n");
+  const out = await data({ dom: { url: "", title: "", flight } });
+  expect(out.data).toEqual({ flight: [{ price: { amount: "9.99" }, note: "héllo", label: "$5 off" }] });
 });
 
 test("the whole comes back while it fits in max", async () => {

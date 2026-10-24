@@ -13,5 +13,11 @@ Public listings; search and item pages read without signing in. Notes from one h
 - `ranking=recent&limit=24` in place of `sort=newlyListed&items_per_page=24` answered 403 with a "Just a moment" page: keep the parameters above.
 
 ## Items
-- An item page is `www.depop.com/products/<slug>/`. `__NEXT_DATA__` is null there: the listing sits in the page's `self.__next_f.push(...)` script chunks (Next.js flight data). Joined, the object holding `"pictures":[` is the product (brand, description, sizes, seller, status), and the one holding `"totalCurrentPrice"` the price with `shippingCost`.
+- An item page is `www.depop.com/products/<slug>/`. Many of them: `map` with a wait on `{"text": "Buy now"}` or `{"selector": "script[type=\"application/ld+json\"]"}` (both 0.6-1.4 s on 10-23).
+- `data` has the listing: `jsonld` the title, description, and `P0.jpg` images; `flight` (the Next.js `self.__next_f` stream; `__NEXT_DATA__` is null) the rest. `data {tab, pick: "flight..price[0]"}` is the price with `shippingCost` and `totalCurrentPrice`; `flight..pictures` the photos.
+- Full-size images: the `P0.jpg` format of each picture (1280x1280 on 10-23).
 - From a www.depop.com tab, `fetch` of an item page's HTML returns the same chunks, so details for many items come from one `repl` script without opening a page each: about 1,400 listings ran at well under 1 s each on 10-16.
+
+## Readers
+Shipped with the harness; run with `eval {tab, reader}` or `map {urls, what: "eval", reader}`.
+- `item` on a /products/ page: title, brand, status, sizes, description, seller, location, price (with shipping, fees, total), and the P0.jpg images.
