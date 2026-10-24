@@ -1027,12 +1027,16 @@ async function main() {
       // Steps from a file, or stdin for --steps -, need no shell quoting:
       // an apostrophe in one step's text broke an agent's quoted JSON (09-29).
       // A bare JSON array is the steps too: `run --json '[…]'` failed then.
+      // A file may hold the MCP call's object, {"steps": […], "tab": N}, as
+      // the guide shows it: two agents' files so were refused (10-22).
       const file = flag("steps-file", rest);
       const bare = positional[0]?.trimStart().startsWith("[") ? positional.join(" ") : undefined;
       const steps = file !== undefined ? await Bun.file(resolve(file)).text() : flag("steps", rest) === "-" ? await readStdin() : bare;
       if (steps === undefined) break;
       try {
-        args.steps = JSON.parse(steps);
+        const parsed: unknown = JSON.parse(steps);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "steps" in parsed) args = { ...parsed, ...args };
+        else args.steps = parsed;
       } catch (e) {
         fail(`the steps are not JSON (${e instanceof Error ? e.message : String(e)}): give an array like [{"tool": "open", "args": {"url": "…"}}]`, 2);
       }

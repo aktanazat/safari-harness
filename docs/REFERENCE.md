@@ -1007,7 +1007,8 @@ in step M`, and one naming a tab the run did not open gets a note. Every
 tool but `repl` can be a step, `real_input`,
 `handoff`, and the Messages tools included. From a shell, steps whose text
 holds quotes go in a file (`safari run --steps-file steps.json`) or on
-stdin (`--steps -`); a bare JSON array as the argument works too. An MCP
+stdin (`--steps -`); a bare JSON array as the argument works too, and the
+file may hold the MCP shape, `{"steps": [...], "tab": N}`, as well. An MCP
 call passes an object, `{"steps": [...]}`: the client refuses a bare list.
 With `real: true`, a run sends its steps' `click` and `type` on a ref as
 real input, as on a site marked for it (`safari guide reference acting`).
