@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
@@ -136,12 +136,23 @@ export async function openTab(url: string, background = false, group?: string, o
   return openIn(group, await spaceWindow(group), address, background, owned);
 }
 
+// The daemon's own pages (mission.ts): an agent's open of one goes in its
+// window when it has one, else in a tab of its own outside any agent
+// window: on 10-23 each open of /agents from an agent made it a window.
+function daemonPage(address: string): boolean {
+  const u = URL.parse(address);
+  return u !== null && (u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port === String(Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)) && /^\/(agents|space|memory)(\/|$)/.test(u.pathname);
+}
+
 // A window that closed since its space last found it fails the open: from
 // 10-12 to 10-16 opens failed "Invalid call to tabs.create(). Window not
 // found." after the agent's window closed, 8.7 s each (S99PartC). The space
 // is found again, in a new window when its own is gone, and the open tried
-// once more.
-async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }> {
+// once more. No space opens a plain tab.
+async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }>;
+async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space?: SpaceNote }>;
+async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space?: SpaceNote }> {
+  if (space === undefined) return (await bridge.request("tabs.open", [address, background, undefined, owned])) as TabInfo;
   let t: TabInfo;
   try {
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
@@ -2461,9 +2472,9 @@ export const TOOLS: Record<string, Tool> = {
       pageRead(a.snapshot);
       const address = webAddress(a.url);
       const group = a.group === undefined ? undefined : str(a.group, "group");
-      const space = await spaceWindow(group);
+      const space = daemonPage(address) ? heldSpace(group) : await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
-      const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
+      const reused = space !== undefined && (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
         const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
@@ -2497,10 +2508,10 @@ export const TOOLS: Record<string, Tool> = {
   // closed the sign-up its agent had kept.
   close: {
     desc: "Close a tab you opened.",
-    params: { tab: OWN_TAB },
+    params: { tab: OWN_TAB, window: { type: "number", description: "an ended agent's window" }, confirm: { type: "boolean", description: "the user said yes" } },
     unlisted: { held: { type: "boolean", description: "only while the harness holds it: a kept tab stays" } },
-    required: ["tab"],
     run: async (a) => {
+      if (a.window !== undefined) return closeWindow(num(a.window, "window"), a.confirm === true);
       const tab = num(a.tab, "tab");
       const mine = harnessTabs.get(followTab(tab));
       if (a.held === true && !mine) return { ok: true, kept: true };

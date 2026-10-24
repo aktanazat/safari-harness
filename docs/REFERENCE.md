@@ -895,6 +895,9 @@ have, use `safari goto <url> --tab N`.
   `warning`, and the tab stays yours: an error page is not an empty
   result. Load it again, or the address the site's guide gives.
 - `open` with `background: true` keeps his current tab in front.
+- The daemon's own pages (`/agents`, `/space`, `/memory` on
+  `127.0.0.1:37334`) open in your agent window if you have one, else as a
+  plain tab of yours: never a new agent window.
 - `keep: true` (CLI `--keep`) leaves the tab open for the user past your
   turn (`safari guide keep`); `group` (CLI `--group trip`) gives a task a
   window of its own (`safari guide reference lifecycle`).
@@ -951,6 +954,13 @@ click opened), never one the user has or one you kept for him unless he
 is done with it. `close` on a tab already closed does not fail: it answers
 `{ok: true, already: "tab N was closed by … at <time>"}`.
 
+- `close {window: W}` (CLI `safari close --window W`) closes an agent
+  window whose agent has ended or that no task record names, with every
+  tab in it, kept pages too: the windows on `/agents` do the same. The
+  first call closes nothing and answers `{ok: false, ask, name, titles}`:
+  ask the user `ask`, and on his yes call again with `confirm: true`. A
+  working agent's window fails; it closes as that agent's turn ends.
+  `tabs {all: true}` gives each tab's `windowId`.
 - A native sheet (a sign-in or permission prompt) can keep Safari from
   closing a tab. A tab the harness opened still closes, within about 15 s;
   `close` on any other tab so held, or in a window off screen, fails within

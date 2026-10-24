@@ -972,6 +972,52 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
   }
 });
 
+// On 10-23 each open of /agents from an agent made it a window of its own.
+test("an agent's open of the daemon's own page makes no window: a plain tab without one, else a tab in its window", async () => {
+  const s = safari();
+  const a = agent();
+  const windows = () => [...s.tabs.values()].filter((t) => t.url.includes("/space?")).length;
+  try {
+    const before = windows();
+    const plain = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/agents", background: true })) as { id: number };
+    expect({ windows: windows(), window: s.tabs.get(plain.id)?.windowId }).toEqual({ windows: before, window: 1 });
+    const work = await runAs(a.pid, () => openTab("https://work.example/", true));
+    const memory = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/memory", background: true })) as { id: number };
+    expect({ windows: windows(), window: s.tabs.get(memory.id)?.windowId }).toEqual({ windows: before + 1, window: work.windowId });
+  } finally {
+    a.kill();
+    await a.exited;
+    await endTurn(a.pid);
+  }
+});
+
+// The windows on /agents close an ended agent's window after asking; an
+// agent asked to clear such windows had no way to (10-23).
+test("close {window} asks first, then closes an untracked agent's window with its kept page, and refuses a working agent's", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47480, "close-window");
+  const [gone, working] = [agent(), agent()];
+  daemon.loadSpaces(join(dir, "close-window.json"), (o) => (o === working.pid ? true : undefined));
+  try {
+    const ended = await runAs(gone.pid, () => daemon.spaceWindow());
+    const busy = await runAs(working.pid, () => daemon.spaceWindow());
+    const kept = { id: next++, url: "https://kept.example/", windowId: ended.window, active: false };
+    s.tabs.set(kept.id, kept);
+    gone.kill();
+    await gone.exited;
+    expect(await daemon.closeWindow(ended.window, false)).toMatchObject({ ok: false, ask: "Close this window and all its tabs, including kept pages?" });
+    expect(s.tabs.has(kept.id)).toBe(true);
+    expect(await daemon.closeWindow(ended.window, true)).toEqual({ ok: true, closed: 1, remaining: 0 });
+    expect([...s.tabs.values()].filter((t) => t.windowId === ended.window)).toEqual([]);
+    await expect(daemon.closeWindow(busy.window, true)).rejects.toThrow(`window ${busy.window} is agent ${working.pid}'s, which is still working`);
+    expect(pageIn(s.tabs, busy.window)).toBeDefined();
+  } finally {
+    working.kill();
+    await working.exited;
+    await daemon.turnEnded(working.pid);
+  }
+});
+
 // Every window state, restart, and owner kind, and what cleanup leaves of
 // the window once its agent's task ends: on 10-23 an ended agent's windows
 // stayed open through a daemon restart and an extension reload, and a

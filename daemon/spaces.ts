@@ -135,6 +135,18 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   return owned;
 }
 
+function spaceKey(group: string | undefined): string {
+  const owner = currentOwner();
+  const task = currentTask();
+  return task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
+}
+
+// The calling agent's window for group, never a new one: on 10-23 each
+// open of /agents from an agent made it a window of its own (tools.ts).
+export function heldSpace(group?: string): Space | undefined {
+  return spaces.get(spaceKey(group));
+}
+
 // The window an open by the calling agent goes in, made when it has none
 // or the user closed it. A tab list that times out leaves the window as it
 // was: on 10-16 an open failed "extension request tabs.list timed out after
@@ -144,7 +156,7 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
 export async function spaceWindow(group?: string, lost?: Space): Promise<Space> {
   const owner = currentOwner();
   const task = currentTask();
-  const key = task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
+  const key = spaceKey(group);
   const had = spaces.get(key);
   const inWindow = had && (await located(had).catch((e: unknown) => {
     if (e instanceof TimedOut) return undefined;
@@ -612,7 +624,7 @@ export async function managedWindows(listed?: TabInfo[]): Promise<ManagedWindow[
   return windows;
 }
 
-export async function closeManagedWindow(id: string): Promise<{ ok: boolean; closed: number; remaining: number }> {
+export async function closeManagedWindow(id: string, why = "from the windows page"): Promise<{ ok: boolean; closed: number; remaining: number }> {
   if (!bridge.connected) throw new Error("Safari is not connected.");
   const s = [...spaces.values(), ...closing.values(), ...ended].find(space => space.id === id);
   if (!s) throw new Error("This window is no longer tracked.");
@@ -622,14 +634,14 @@ export async function closeManagedWindow(id: string): Promise<{ ok: boolean; clo
   let closed = 0;
   for (const tab of before) {
     if (isPage(tab, s)) continue;
-    const result = await closeTab(tab.id, "from the windows page") as { ok?: boolean };
+    const result = await closeTab(tab.id, why) as { ok?: boolean };
     if (result.ok) closed++;
   }
   const remaining = (await listTabs()).filter(t => t.windowId === window);
   if (remaining.some(t => !isPage(t, s))) return { ok: false, closed, remaining: remaining.filter(t => !isPage(t, s)).length };
   const marker = remaining.find(t => isPage(t, s));
   if (marker) {
-    const result = await closeTab(marker.id, "from the windows page") as { ok?: boolean };
+    const result = await closeTab(marker.id, why) as { ok?: boolean };
     if (!result.ok) return { ok: false, closed, remaining: 1 };
   }
   s.done = true;
@@ -642,4 +654,25 @@ export async function closeManagedWindow(id: string): Promise<{ ok: boolean; clo
     save();
   }
   return { ok: true, closed, remaining: 0 };
+}
+
+// close {window} (tools.ts): a window whose agent has ended, or that no
+// task record names, closes with every tab in it, kept pages too, once the
+// caller says the user agreed to the question the windows on /agents ask
+// (mission.ts). A working agent's window closes as its turn ends.
+export async function closeWindow(window: number, confirm: boolean): Promise<unknown> {
+  const w = (await managedWindows()).find((m) => m.window === window);
+  const s = w && [...spaces.values(), ...closing.values(), ...ended].find((space) => space.id === w.id);
+  if (!w || !s) throw new Error(`window ${window} is no agent window the harness tracks; tabs {all: true} gives each tab's windowId`);
+  if (taskTracked?.(s.owner) === true) throw new Error(`window ${window} is ${s.owner === undefined ? "the harness's" : `agent ${s.owner}'s`}, which is still working; its tabs close when its turn ends`);
+  if (!confirm) {
+    return {
+      ok: false,
+      ask: w.ended ? "Close this window and all its tabs, including kept pages?" : "Close this working window and all its tabs, including kept pages? The task will keep running.",
+      name: w.name,
+      titles: w.tabs.map((t) => t.title),
+      next: `ask the user that; on his yes, close {window: ${window}, confirm: true}`,
+    };
+  }
+  return closeManagedWindow(w.id, "with its window, by a close call");
 }
