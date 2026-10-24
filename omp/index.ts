@@ -3,7 +3,7 @@ import { daemonHttp } from "../daemon/rpc.ts";
 type AgentEnd = { willContinue?: boolean };
 type Context = {
   mode: string;
-  agent?: { kind: "main" | "sub"; id: string };
+  agent?: { kind: "main" | "sub"; id: string; parentId?: string };
   sessionManager?: { getSessionId(): string };
 };
 type ToolCall = { toolName: string; input: Record<string, unknown> };
@@ -14,10 +14,22 @@ type ExtensionApi = {
   logger?: { warn(message: string): void };
 };
 
+// omp runs each helper in a session of its own. A helper's task also names
+// its lead's session, fixed at the helper's first call, so the daemon keeps
+// a session's reads for its helpers too (daemon/reads.ts). By agent id, the
+// lead's session of that agent's latest call; by helper session, its lead's.
+const leadOfAgent = new Map<string, string>();
+const leadOfHelper = new Map<string, string>();
+
 function taskOf(ctx: Context): string | undefined {
   const session = ctx.sessionManager?.getSessionId();
-  const agent = ctx.agent?.id;
-  return session && agent ? JSON.stringify([session, agent]) : undefined;
+  const agent = ctx.agent;
+  if (!session || !agent?.id) return undefined;
+  const parent = agent.parentId === undefined ? undefined : leadOfAgent.get(agent.parentId);
+  const lead = agent.kind === "main" ? session : leadOfHelper.get(session) ?? parent ?? session;
+  if (agent.kind === "sub") leadOfHelper.set(session, lead);
+  leadOfAgent.set(agent.id, lead);
+  return JSON.stringify(lead === session ? [session, agent.id] : [session, agent.id, lead]);
 }
 
 function shellQuote(value: string): string {

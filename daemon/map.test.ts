@@ -518,8 +518,10 @@ test.each([
   });
 });
 
-// A task's agents, as omp names one: [session, agent].
-const as = (agent: string, args: Record<string, unknown>, pid = process.pid) => runAs(pid, () => waited(mapPages(args, callTool)), JSON.stringify(["s1", agent]));
+// A session's agents, as omp names them (omp/index.ts): its lead [session,
+// agent], and each helper [a session of its own, agent, the lead's session].
+const taskIn = (session: string, agent: string) => JSON.stringify(agent === "Lead" ? [session, agent] : [`${session}/${agent}`, agent, session]);
+const as = (agent: string, args: Record<string, unknown>, pid = process.pid, session = "s1") => runAs(pid, () => waited(mapPages(args, callTool)), taskIn(session, agent));
 
 // On 10-23 a kernel research task's 1526 loads covered 1016 addresses, and
 // 297 of them read a page another of its agents had read (K9).
@@ -556,6 +558,22 @@ test("a site that showed this task a bot check is not loaded again, saying who m
   await as("Lead", { urls: [WALLED], fresh: true });
   await as("Other", { urls: [WALLED] }, process.ppid);
   expect(opened.length).toBe(before + 2);
+});
+
+// omp can move a process to another session (/new, /resume) within the 10
+// minutes; on review a page one session read, and a site that showed it a
+// check, reached the next.
+test("a page or a site one session read or met is loaded again for another session of the same process", async () => {
+  jest.useFakeTimers();
+  const page = "https://shop.example/session";
+  readUrls.length = 0;
+  await as("Lead", { urls: [page] }, process.pid, "s2");
+  await as("Lead", { urls: [page] }, process.pid, "s3");
+  expect(readUrls).toEqual([page, page]);
+  await as("Helper", { urls: [WALLED] }, process.pid, "s2");
+  const before = opened.length;
+  await as("Lead", { urls: [WALLED] }, process.pid, "s3");
+  expect(opened.length).toBe(before + 1);
 });
 
 // On 10-22 a map of four Google searches met four reCAPTCHA pages (K12).

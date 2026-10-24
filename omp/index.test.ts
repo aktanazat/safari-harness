@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import safariTurnEnd from "./index.ts";
 
-type Context = { mode: string; agent: { kind: "main" | "sub"; id: string }; sessionManager: { getSessionId(): string } };
+type Context = { mode: string; agent: { kind: "main" | "sub"; id: string; parentId?: string }; sessionManager: { getSessionId(): string } };
 type End = { willContinue?: boolean };
 type ToolCall = { toolName: string; input: Record<string, unknown> };
 type ToolResult = { input: Record<string, unknown> } | undefined;
@@ -82,6 +82,21 @@ test("the same agent id in another session receives another task identity", asyn
     const ctx = context("sub", "rpc", "helper");
     ctx.sessionManager = { getSessionId: () => "session-b" };
     expect(tool({ toolName: "mcp__safari_tabs", input: {} }, ctx)?.input).toEqual({ __safariTask: JSON.stringify(["session-b", "helper"]) });
+  });
+});
+
+// omp runs each helper in a session of its own. Its task also names the
+// session its lead started it in, whose reads it shares (daemon/reads.ts),
+// even after the lead moves to another session.
+test("a helper's task names its lead's session, and keeps it after the lead moves to another session", async () => {
+  await withHook(async (_end, tool) => {
+    const lead = (session: string): Context => ({ mode: "rpc", agent: { kind: "main", id: "main" }, sessionManager: { getSessionId: () => session } });
+    const helper = (session: string): Context => ({ mode: "rpc", agent: { kind: "sub", id: "reader", parentId: "main" }, sessionManager: { getSessionId: () => session } });
+    const taskOf = (ctx: Context) => tool({ toolName: "mcp__safari_tabs", input: {} }, ctx)?.input.__safariTask;
+    tool({ toolName: "task", input: {} }, lead("lead-a"));
+    expect(taskOf(helper("helper-a"))).toBe(JSON.stringify(["helper-a", "reader", "lead-a"]));
+    tool({ toolName: "task", input: {} }, lead("lead-b"));
+    expect([taskOf(helper("helper-a")), taskOf(helper("helper-b"))]).toEqual([JSON.stringify(["helper-a", "reader", "lead-a"]), JSON.stringify(["helper-b", "reader", "lead-b"])]);
   });
 });
 
