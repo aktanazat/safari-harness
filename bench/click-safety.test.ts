@@ -6,6 +6,8 @@ import { benchRows, runner, type Row, type Step } from "./bench.ts";
 const targets = "click-safety-targets.html";
 const identity = "click-safety-identity.html";
 const evaluate = (source: string, result: unknown): Step => ({ op: "eval", args: [source], answer: { value: { ok: true, result } } });
+// what a click refused before its first event carries (failures.ts)
+const unsent = { code: "stale_view", effect: "none" };
 const state = (expression: string, result: unknown): Step => evaluate(`(() => {
   const safety = JSON.parse(document.body.dataset.safety);
   return (${expression});
@@ -135,6 +137,12 @@ const positionedLayouts: { name: string; body: string; markup: string; root?: st
     markup: '<button id="action" style="position:fixed;left:100px;top:100px;width:180px;height:48px">Save</button><div style="position:fixed;inset:0;z-index:2;background:white">Blocking notice</div>',
     error: "covered",
   },
+  {
+    name: "a covered link's refusal names its address, which goto opens",
+    body: "overflow:hidden",
+    markup: '<a id="action" href="https://example.com/servers" style="position:fixed;left:100px;top:100px;width:180px;height:48px;display:block">Servers</a><div style="position:fixed;inset:0;z-index:2;background:white">Blocking notice</div>',
+    error: "links to https://example.com/servers, which goto opens",
+  },
 ];
 
 const positionedClicks: Row[] = positionedLayouts.map(({ name, body, markup, root, ref, error }) => ({
@@ -142,7 +150,7 @@ const positionedClicks: Row[] = positionedLayouts.map(({ name, body, markup, roo
   page: targets,
   steps: [
     positionedLayout(body, markup, root),
-    { op: "click", args: [ref ?? "#action"], answer: error ? { error: expect.stringContaining(error) } : { value: { ok: true } } },
+    { op: "click", args: [ref ?? "#action"], answer: error ? { error: expect.stringContaining(error), failure: unsent } : { value: { ok: true } } },
     evaluate("document.body.dataset.clicks", error ? "0" : "1"),
   ],
 }));
@@ -156,7 +164,7 @@ const coveredClicks: Row[] = [
   page: targets,
   steps: [
     ...setup,
-    { op: "click", args: [target], answer: { error: expect.stringContaining("covered by") } },
+    { op: "click", args: [target], answer: { error: expect.stringContaining("covered by"), failure: unsent } },
     state("({ target: safety.covered, cover: safety.cover })", { target: 0, cover: 0 }),
   ],
 }));
@@ -171,7 +179,7 @@ const unavailableClicks: Row[] = [
   name,
   page: targets,
   steps: [
-    { op: "click", args: [target], answer: { error: expect.stringContaining(reason) } },
+    { op: "click", args: [target], answer: { error: expect.stringContaining(reason), failure: unsent } },
     state(`safety.${counter}`, 0),
   ],
 }));
@@ -206,6 +214,19 @@ benchRows("safe clicks in WebKit", [
   ...unavailableClicks,
   ...positionedClicks,
   ...secretPaste,
+  // On 10-23 a link in a list the page was still drawing had no area to
+  // click; the agent went to its address instead. The page's own timer
+  // shows the target 300 ms on, after the click's first look found none.
+  {
+    name: "a target the page shows a moment after the click asks gets the click",
+    page: targets,
+    steps: [
+      positionedLayout("", '<div id="wrap" style="height:0;overflow:hidden"><button id="action" style="width:180px;height:48px">Save</button></div>'),
+      evaluate('(() => { setTimeout(() => { document.getElementById("wrap").style.height = "auto"; }, 300); return true; })()', true),
+      { op: "click", args: ["#action"], answer: { value: { ok: true } } },
+      evaluate("document.body.dataset.clicks", "1"),
+    ],
+  },
   {
     name: "a visible descendant receives the click intended for its control",
     page: targets,

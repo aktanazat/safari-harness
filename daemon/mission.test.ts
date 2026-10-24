@@ -55,6 +55,8 @@ function safari() {
       if (op === "click" || op === "type" || op === "press") changed.add(Number(tab));
       if (op === "snapshot") return { url: t.url, title: t.title, snapshot: "[1] button Continue", truncated: false };
       if (op === "extract") return { url: t.url, title: t.title, text: "Continue to the next page", truncated: false };
+      // content.js refuses a covered target before it sends any event
+      if (op === "click" && (args as unknown[])[0] === "covered") throw Object.assign(new Error("that target is covered by div \"Cookies\"; dismiss the cover or re-run snapshot before clicking"), { failure: { code: "stale_view", effect: "none" } });
       if (op === "click") { effects.push({ tab: Number(tab), ref: (args as unknown[])[0] }); return { ok: true }; }
       if (op !== "type") return { url: t.url, title: t.title };
       const [ref, text] = args as [string, string];
@@ -68,7 +70,7 @@ function safari() {
     try {
       return { value: run(args) };
     } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
+      return { error: e instanceof Error ? e.message : String(e), ...(e instanceof Error && "failure" in e ? { failure: e.failure } : {}) };
     }
   };
   const sock: ExtSocket = {
@@ -582,6 +584,25 @@ test("a refused action picture is an explicit nonsecret gap and never retries or
     const saved = await (await ask(`${page.origin}/agents/history.json?id=${(await listed(a.pid))!.id}`)).json();
     expect(saved.missions[0].calls.at(-1)).toMatchObject({ outcome: "done", picture: { missing: "privacy guard refused capture" } });
     expect(JSON.stringify(saved)).not.toContain("secret page text");
+  } finally {
+    capture.mockRestore();
+  }
+});
+
+// On 10-23 a click refused before any event read as possibly done: it took
+// a picture after, and the same click was then blocked until the agent
+// looked again.
+test("a click the page refused before any event fails with no effect, takes no picture, and may be sent again", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://refused.example/");
+  const page = pageOf(tab);
+  const capture = spyOn(tools, "screenshot").mockRejectedValue(new HarnessError("privacy", "no picture here"));
+  try {
+    await press(page, "pictures_on");
+    const refused = { code: "stale_view", effect: "none", message: expect.stringContaining("covered by") };
+    await expect(call(a.pid, "click", { tab, ref: "covered" })).rejects.toMatchObject(refused);
+    await expect(call(a.pid, "click", { tab, ref: "covered" })).rejects.toMatchObject(refused);
+    expect(capture).not.toHaveBeenCalled();
   } finally {
     capture.mockRestore();
   }

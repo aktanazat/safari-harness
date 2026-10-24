@@ -4,7 +4,7 @@
 // Protocol (JSON over ws):
 //   extension -> daemon  {op:"hello", role:"extension", ua}
 //   daemon -> extension  {id, op, args}   (op handled by background.js)
-//   extension -> daemon  {id, value} | {id, error}
+//   extension -> daemon  {id, value} | {id, error, failure?}  (failures.ts)
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
 //   daemon -> extension  {op:"tick"}       every TICK_MS while it runs
 //   daemon -> extension  {op:"reload"}     have Safari reload the extension,
@@ -21,8 +21,9 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { note } from "./journal.ts";
-import { unsecret } from "./redact.ts";
+import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
+import { answeredError } from "./failures.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -384,7 +385,8 @@ export class Bridge {
     if (!p) return;
     this.pending.delete(key);
     clearTimeout(p.timer);
-    if (msg.error !== undefined) p.reject(new Error(String(msg.error)));
+    // a typed refusal may name the address of the link it did not click
+    if (msg.error !== undefined) p.reject(answeredError(msg.failure === undefined ? String(msg.error) : redactUrl(String(msg.error)), msg.failure));
     else p.resolve(msg.value);
   }
 

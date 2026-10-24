@@ -9,8 +9,8 @@ import { expect, test } from "bun:test";
 const SOURCE = `${await Bun.file(new URL("./upgrades.js", import.meta.url)).text()}\n${await Bun.file(new URL("./background.js", import.meta.url)).text()}`;
 
 type Msg = { __safariHarness?: number; id: string; op: string; args?: unknown[]; kept?: unknown };
-type Reply = { id: string; value?: unknown; error?: string };
-type Answer = { value?: unknown; error?: string };
+type Reply = { id: string; value?: unknown; error?: string; failure?: unknown };
+type Answer = { value?: unknown; error?: string; failure?: unknown };
 type Sender = { tab: { id: number; windowId: number }; frameId: number };
 type Inject = { target: { tabId: number; frameIds?: number[]; allFrames?: boolean }; func?: (...args: unknown[]) => unknown; args?: unknown[]; files?: string[] };
 type Cookie = { name: string; value: string; domain: string; path: string; secure: boolean };
@@ -202,9 +202,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     const answer = async (m: Msg): Promise<Reply> => {
       if (m.op === "ping") return { id: m.id, value: true };
       doc.ran.push(m.op);
-      // content.js sends a failure it reports as { error } as an error
+      // content.js sends a failure it reports as { error } as an error,
+      // with the failure a refusal before any event carries
       const value = await doc.does(m.op, m);
-      return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { id: m.id, error: value.error } : { id: m.id, value };
+      return value && typeof value === "object" && "error" in value && typeof value.error === "string" ? { id: m.id, error: value.error, ...("failure" in value ? { failure: value.failure } : {}) } : { id: m.id, value };
     };
     w.__safariHarnessRun = (m: Msg) => (w.__safariHarnessInjected === claim ? answer(m) : null);
     if (!doc.live) return;
@@ -369,8 +370,8 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     onclose = (_ev: { code: number }) => {};
     constructor() { sockets.push(this); }
     send(data: string) {
-      const m = JSON.parse(data) as { id?: string; op: string; value?: unknown; error?: string };
-      if (m.id !== undefined) waiting.get(m.id)?.({ value: m.value, error: m.error });
+      const m = JSON.parse(data) as { id?: string; op: string; value?: unknown; error?: string; failure?: unknown };
+      if (m.id !== undefined) waiting.get(m.id)?.({ value: m.value, error: m.error, ...(m.failure === undefined ? {} : { failure: m.failure }) });
       else told.push(m);
     }
     close() {}
@@ -893,6 +894,25 @@ test("a click whose page opens a tab reports it, whether Safari makes the tab be
     await b.clock.advance(5000);
     expect(await answer).toEqual({ value: { ok: true, newTab: { id: opened.at(-1)!.id, url: "https://example.com/popup", title: "" } } });
   }
+});
+
+// On 10-23 a click on a link that opens a window answered ok after 3 s
+// with nothing opened; real_input on the same ref opened it.
+test("a click whose page asks for a tab that never comes says to click it with real_input", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  tab.doc.does = (op) => (op === "click" ? { ok: true, expect: "tab" } : {});
+  const answer = b.ask(tab, "click", ["1"]);
+  await b.clock.advance(5000);
+  expect(await answer).toEqual({ value: { ok: true, next: expect.stringContaining("real_input") } });
+});
+
+test("a click the page refused before any event reaches the daemon with its failure", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const refusal = { error: "that target is covered by div \"Cookies\"", failure: { code: "stale_view", effect: "none" } };
+  tab.doc.does = (op) => (op === "click" ? refusal : {});
+  expect(await b.ask(tab, "click", ["1"])).toEqual(refusal);
 });
 
 test("a popup an owned page opens on its own goes to the agent, and one the user's page opens stays his", async () => {
