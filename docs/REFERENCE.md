@@ -499,8 +499,8 @@ Signing in, in this order:
 1. Check for an existing session first: open the site and snapshot it. Most
    sites the user uses are already signed in.
 2. Saved logins come through the `passwords` tool (`safari guide
-   passwords`), which never shows the password: the copy his engram vault
-   keeps, with no Touch ID, else his Apple Passwords. A locked Apple
+   passwords`), which never shows the password: the copy kept on this
+   Mac, with no Touch ID, else his Apple Passwords. A locked Apple
    Passwords pairs by itself; never ask for the pairing code in chat.
 3. A site that offers a passkey or Touch ID sign-in: click its passkey
    button, then `handoff` (`safari guide handoff`) so the user can touch the sensor.
@@ -1801,13 +1801,16 @@ without it.
 (sign-in order: `safari guide reference logged-in`).
 
 Saved logins come through the `passwords` tool, which never shows the
-password: first the copy the user's engram vault keeps for the site,
-with no pairing and no Touch ID (the result says `from: "vault"`),
-else his Apple Passwords, whose login the vault then keeps (one login
-per site; a fill naming another login leaves the vault's alone, and
-`vault` says why one could not be kept). If the vault's password no
-longer signs in, `fill` again with `source: "apple"`: it fills Apple
-Passwords' login and replaces the vault's copy.
+password: first the copy of Apple Passwords kept on this Mac only (sealed
+to its key, never synced), with no pairing and no Touch ID (the result
+says `from: "vault"`), else his Apple Passwords, whose login the copy
+then keeps (`vault` says why one could not be kept). Where several logins
+are kept for the site, `fill` names them until `username` picks one. If
+the copy's password no longer signs in, `fill` again with `source:
+"apple"`: it fills Apple Passwords' login and replaces the copy's. Apple
+Passwords stays the source: `bun scripts/import-apple-passwords.ts
+<file>` rebuilds the whole copy from its File > Export All Passwords to
+File, leaving out verification-code keys, and deletes the file.
 - `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, with
   `waiting` while the Mac waits on Touch ID, or `{unlocked: false,
   reason}`.

@@ -196,7 +196,7 @@ afterAll(() => {
 
 // The vault keeps nothing here, unless a test hands in one that does
 // (memoryVault): the tests of Apple Passwords' own path fill from it.
-const NO_VAULT: Vault = { login: async () => undefined, keep: async () => {} };
+const NO_VAULT: Vault = { logins: async () => [], keep: async () => {} };
 
 function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), approvalShown: () => Promise<boolean | undefined> = async () => true, vault = NO_VAULT) {
   profiles.push(profile);
@@ -204,15 +204,14 @@ function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), appr
   return { p: new ApplePasswords({ profile, timers: clock.timers, approvalShown, vault }), profile, clock };
 }
 
-// The vault (vault.ts) as a map, one login per host.
-function memoryVault(logins: Record<string, { username: string; password: string }> = {}) {
+// The vault (vault.ts) as a map from host to the logins kept there.
+function memoryVault(logins: Record<string, { username: string; password: string }[]> = {}) {
   const kept = new Map(Object.entries(logins));
   const vault: Vault = {
-    login: async (host) => {
-      const login = kept.get(host);
-      return login && { ...login, host };
+    logins: async (host) => (kept.get(host) ?? []).map((l) => ({ ...l, host })),
+    keep: async (logins) => {
+      for (const { host, username, password } of logins) kept.set(host, [...(kept.get(host) ?? []).filter((l) => l.username !== username), { username, password }]);
     },
-    keep: async (host, username, password) => void kept.set(host, { username, password }),
   };
   return { kept, vault };
 }
@@ -664,29 +663,41 @@ test("a login Apple Passwords fills is kept in the vault, and the next fill type
   expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
 });
 
-test("a fill naming a login the vault does not keep fills Apple Passwords' one, and the vault keeps its own", async () => {
+test("a fill naming a login the vault does not keep fills Apple Passwords' one, and the vault keeps it beside the other", async () => {
   const other = { username: "other@example.com", password: "other password" };
-  const { kept, vault } = memoryVault({ [SITE]: other });
+  const { kept, vault } = memoryVault({ [SITE]: [other] });
   const { p } = scratch(undefined, undefined, vault);
   const page = fakeTab(`https://${SITE}/signin`);
   await paired(p);
   expect(await p.fill(7, USER)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(page).toEqual({ username: USER, password: SECRET });
-  expect(kept.get(SITE)).toEqual(other);
+  expect(kept.get(SITE)).toEqual([other, { username: USER, password: SECRET }]);
+});
+
+// Apple Passwords keeps ten Google accounts for accounts.google.com
+// (10-23); a fill there that names none must not pick one.
+test("a fill where the vault keeps several logins fills none until a username is named, then that one with no pairing", async () => {
+  const other = { username: "other@example.com", password: "other password" };
+  const { vault } = memoryVault({ [SITE]: [other, { username: USER, password: SECRET }] });
+  const { p } = scratch(undefined, undefined, vault);
+  const page = fakeTab(`https://${SITE}/signin`);
+  await expect(p.fill(7)).rejects.toThrow(`several saved logins for ${SITE}; pass username: ${other.username}, ${USER}`);
+  expect(await p.fill(7, other.username)).toMatchObject({ username: other.username, from: "vault" });
+  expect(page).toEqual(other);
 });
 
 test("fill with source apple types Apple Passwords' password over an old one the vault keeps, and the vault then keeps the new one", async () => {
-  const { kept, vault } = memoryVault({ [SITE]: { username: USER, password: "old password" } });
+  const { kept, vault } = memoryVault({ [SITE]: [{ username: USER, password: "old password" }] });
   const { p } = scratch(undefined, undefined, vault);
   const page = fakeTab(`https://${SITE}/signin`);
   await paired(p);
   await p.fill(7, undefined, "apple");
   expect(page.password).toBe(SECRET);
-  expect(kept.get(SITE)).toEqual({ username: USER, password: SECRET });
+  expect(kept.get(SITE)).toEqual([{ username: USER, password: SECRET }]);
 });
 
 test("a fill whose login the vault cannot keep still fills, and says why", async () => {
-  const { p } = scratch(undefined, undefined, { login: async () => undefined, keep: async () => Promise.reject(new Error("the vault refused: locked")) });
+  const { p } = scratch(undefined, undefined, { logins: async () => [], keep: async () => Promise.reject(new Error("the vault refused: locked")) });
   const page = fakeTab(`https://${SITE}/signin`);
   await paired(p);
   expect(await p.fill(7)).toMatchObject({ filled: ["username", "password"] });
