@@ -182,6 +182,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   tabs they are, cleanup resumes without waiting for the owner process to exit.
   New work clears that owner's pending completion before using its pages.
   Missing task records alone never authorize closing a living owner's work.
+- To learn who closed tab N, call `snapshot {tab: N}`; the error says
+  harness, window, or user.
 
 ## Mission control: the user watches and holds you
 
@@ -681,15 +683,17 @@ things unless its saved task explicitly says to.
   on its own stays the user's until the page reloads.
 - "that tab is gone: tab N was closed <why> at <time> (it showed <url>);
   open it again": the harness closed it itself (a close call, the end of
-  your turn, 20 minutes unused, or its agent exited). If a safe address was
-  retained for recovery, the original tab id can reopen it for five
+  your turn, 20 minutes unused, its agent exited, or "with its window" as
+  that window's task ended). "agent P's tab N" says another agent's
+  cleanup closed it, not yours. If a safe address was retained for
+  recovery, the original tab id can reopen it for five
   minutes after closure ([cleanup and recovery](#cleanup-authority)).
   After expiry, open the needed address as new work. Use `keep` only for a
   page the user still needs left open.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
-  - "the harness closed it <t> ago (at the end of a turn, or after 20
-    minutes unused)".
+  - "the harness closed it <t> ago, as its agent's turn or task ended or
+    after 20 minutes unused".
   - "it closed with its window <t> ago".
   - "the user or its own page closed it <t> ago".
   - "Safari has had no tab N in the <t> since the extension started": it

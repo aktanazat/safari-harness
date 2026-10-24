@@ -37,7 +37,7 @@ import { uncover } from "./place.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -57,6 +57,7 @@ const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
 const SWEEP_MS = 5000;
+const IDLE_MS = 20 * 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -410,6 +411,12 @@ async function end(space: Space) {
       if (!space.done) return;
       const result = await bridge.request("tabs.close", [page.id], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
+      const tracked = taskTracked?.(space.owner);
+      let why = "as its agent's turn ended";
+      if (tracked === false) why = "as its agent's task ended";
+      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 20 minutes unused";
+      else if (taskTracked && tracked === undefined) why = "as no task record names its agent";
+      windowPageClosed(page.id, `with its window, ${why}`, space.owner);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (!why.startsWith("that tab is gone")) {
@@ -457,7 +464,7 @@ async function sweepOnce() {
         const failed = unclosed.get(key);
         if (failed && Date.now() < failed.at) continue;
         try {
-          const result = await closeTab(tab.id, "untracked agent status page") as { ok?: boolean } | null;
+          const result = await closeTab(tab.id, space ? "with its window, as its agent's task ended" : "with its window, as no record names it") as { ok?: boolean } | null;
           if (result?.ok === true) unclosed.delete(key);
           else failedClose(key, space?.name ?? "untracked agent status", "Safari did not close the status page");
         } catch (e) {
@@ -470,7 +477,7 @@ async function sweepOnce() {
     inspectUntracked = making.size > 0;
   }
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
-    if (Date.now() - (s.used ?? 0) >= 20 * 60_000) s.done = true;
+    if (Date.now() - (s.used ?? 0) >= IDLE_MS) s.done = true;
     if (taskTracked && taskTracked(s.owner) === undefined && !s.done) {
       listed ??= await listTabs();
       const inWindow = await located(s, listed);

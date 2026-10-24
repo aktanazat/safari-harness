@@ -351,6 +351,13 @@ function recordClosed(tab: number, why: string, url?: string, agent?: number, fo
   if (closedTabs.size > CLOSED_KEPT) closedTabs.delete(closedTabs.keys().next().value!);
 }
 
+// A window's own page that spaces.ts closed as the window ended: a later
+// call that names it is told whose window it was and why it closed.
+export function windowPageClosed(tab: number, why: string, agent?: number): void {
+  recordClosed(tab, why, undefined, agent);
+  save();
+}
+
 // Whether the extension connected again since Safari last listed a tab the
 // harness holds: a reload of the extension, or a Safari that started again,
 // ends its connection (bridge.extensionInfo). The user's own closes, a
@@ -384,7 +391,8 @@ function goneCause(tab: number, as: unknown): string {
   const closed = closedTabs.get(tab);
   if (closed) {
     const showed = closed.url ? ` (it showed ${redactUrl(closed.url)})` : "";
-    return `tab ${as} was closed ${closed.why} ${closed.found ? "by" : "at"} ${localTime(new Date(closed.at))}${showed}`;
+    const whose = closed.agent !== undefined && closed.agent !== currentOwner() ? `agent ${closed.agent}'s ` : "";
+    return `${whose}tab ${as} was closed ${closed.why} ${closed.found ? "by" : "at"} ${localTime(new Date(closed.at))}${showed}`;
   }
   const held = harnessTabs.get(tab);
   if (held) return `tab ${as}${held.url ? ` (it showed ${redactUrl(held.url)})` : ""} was closed ${reconnectedSince(held) ? LOST_RECONNECTED : LOST_OUTSIDE}`;
