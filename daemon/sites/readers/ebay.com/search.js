@@ -4,18 +4,22 @@ const exact = !document.querySelector(".srp-save-null-search") && !heading.start
 const rows = [...document.querySelectorAll("ul.srp-results > li[data-listingid]")].map((li) => {
   const id = /\/itm\/(\d+)/.exec(li.querySelector("a.s-card__link")?.href ?? "")?.[1];
   const attrs = [...li.querySelectorAll(".s-card__attribute-row")].map(text);
-  const price = text(li.querySelector(".s-card__price"));
+  const price = text(li.querySelector(".s-card__price")?.parentElement);
+  const bids = attrs.find((a) => /^\d+ bids?\b/.test(a));
   return {
     id,
     url: `https://www.ebay.com/itm/${id}`,
     title: text(li.querySelector(".s-card__title")).replace(/Opens in a new window or tab$/, ""),
     price,
+    bestOffer: attrs.includes("or Best Offer"),
+    bids: bids && parseInt(bids, 10),
+    timeLeft: /Time left\s*(.+)/.exec(bids ?? "")?.[1],
     condition: text(li.querySelector(".s-card__subtitle")),
     sold: /^Sold (.+)/.exec(text(li.querySelector(".s-card__caption")))?.[1],
     shipping: attrs.find((a) => /delivery|shipping/i.test(a)),
     location: attrs.find((a) => a.startsWith("Located in "))?.slice(11),
     seller: attrs.find((a) => / positive \(/.test(a)),
-    details: attrs.filter((a) => !a.startsWith(price) && !/delivery|shipping|^Located in | positive \(|^View similar|^Sell one like this/i.test(a)),
+    details: attrs.filter((a) => !a.startsWith(price) && a !== bids && a !== "or Best Offer" && !/delivery|shipping|^Located in | positive \(|^View similar|^Sell one like this/i.test(a)),
     image: li.querySelector("img")?.src.replace(/\/s-l\d+\./, "/s-l1600."),
   };
 });
