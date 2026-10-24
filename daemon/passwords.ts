@@ -370,7 +370,7 @@ export class ApplePasswords {
   // Seals the session the bridge keeps; the key file holds the same key.
   private stashKey: Buffer | null = null;
 
-  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown, vault = memSecretVault }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined>; vault?: Vault } = {}) {
+  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown, vault = memSecretVault() }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined>; vault?: Vault } = {}) {
     this.port = port;
     this.profile = profile;
     this.keyFile = join(profile, KEY_FILE);
@@ -955,12 +955,12 @@ export class ApplePasswords {
   }
 
   // Fills the saved login into the tab's sign-in form: the one the vault
-  // keeps for its site, with no pairing and no Touch ID, else Apple
-  // Passwords' (source "apple" skips the vault, as when the vault's
-  // password is out of date), which the vault then keeps unless it keeps
-  // another login for the site. The result names the fields filled, never
-  // the password, where the page went when the form submitted itself, and
-  // why the vault could not keep the login.
+  // keeps for its site (the one named, else the only one), with no pairing
+  // and no Touch ID, else Apple Passwords' (source "apple" skips the vault,
+  // as when the vault's password is out of date), which the vault then
+  // keeps. The result names the fields filled, never the password, where
+  // the page went when the form submitted itself, and why the vault could
+  // not keep the login.
   async fill(tab: number, username?: string, source: "vault" | "apple" = "vault"): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; from?: "vault"; vault?: string }> {
     const form = await loginForm(tab);
     if (!form.password && !form.username) throw new Error("no sign-in form on this page");
@@ -971,19 +971,20 @@ export class ApplePasswords {
       const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
       return { ...filledOf(res, sent, "login"), username: login, site };
     };
-    const vault = await this.vault.login(site).then((kept) => ({ kept }), (e: Error) => ({ why: e.message }));
-    const kept = "kept" in vault ? vault.kept : undefined;
-    if (source === "vault" && kept && (username === undefined || username === kept.username)) {
-      return { ...(await type(kept.username, form.password ? kept.password : null)), from: "vault" };
+    const vault = await this.vault.logins(site).then((kept) => ({ kept }), (e: Error) => ({ why: e.message }));
+    if (source === "vault" && "kept" in vault) {
+      if (username === undefined && vault.kept.length > 1) throw new Error(`several saved logins for ${site}; pass username: ${vault.kept.map((l) => l.username).join(", ")}`);
+      const kept = vault.kept.find((l) => username === undefined || l.username === username);
+      if (kept) return { ...(await type(kept.username, form.password ? kept.password : null)), from: "vault" };
     }
     await this.session();
     const { login, saved } = await this.chosenLogin(site, username);
     if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
     const filled = await type(login, secret);
-    if (secret === null || (kept && kept.username !== login)) return filled;
+    if (secret === null) return filled;
     if ("why" in vault) return { ...filled, vault: `not kept in the vault: ${vault.why}` };
-    return { ...filled, ...(await keeping(this.vault.keep(site, login, secret))) };
+    return { ...filled, ...(await keeping(this.vault.keep([{ host: site, username: login, password: secret }]))) };
   }
 
   // Types the site's current verification code into the tab's code field,
@@ -1061,15 +1062,11 @@ export class ApplePasswords {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
-    const notes: string[] = [];
-    for (const site of [c.site, ...c.sharedWith]) {
-      const { vault } = await keeping(this.vault.keep(site, c.login, c.secret));
-      if (vault) notes.push(c.sharedWith.length ? `${site}: ${vault}` : vault);
-    }
+    const { vault } = await keeping(this.vault.keep([c.site, ...c.sharedWith].map((host) => ({ host, username: c.login, password: c.secret }))));
     keepSecret(tab, c.current, c.secret);
     const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
-    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, ...(c.sharedWith.length ? { sharedWith: c.sharedWith } : {}), saved: true, ...(notes.length ? { vault: notes.join("; ") } : {}) };
+    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, ...(c.sharedWith.length ? { sharedWith: c.sharedWith } : {}), saved: true, ...(vault ? { vault } : {}) };
   }
 
   dropChange(tab: number): void {
