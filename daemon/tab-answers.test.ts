@@ -9,7 +9,7 @@ import { expect, test } from "bun:test";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
-import { callTool } from "./tools.ts";
+import { callTool, endTurn } from "./tools.ts";
 
 // A stand-in extension. showing is Safari's tab list; a tab it no longer
 // has answers as the extension's own "that tab is gone" does.
@@ -20,7 +20,11 @@ let nextWindow = 7100;
 const GONE = "that tab is gone: the harness closed it 0 s ago; find it with tabs, or open it again";
 
 function answer(op: string, args: unknown[]): { value: unknown } | { error: string } {
-  if (op === "windows.open") return { value: { windowId: ++nextWindow, tabId: 9100 + nextWindow } };
+  if (op === "windows.open") {
+    const page = { id: 9100 + ++nextWindow, url: String(args[0]), title: "agent window", windowId: nextWindow };
+    showing.push(page);
+    return { value: { windowId: page.windowId, tabId: page.id } };
+  }
   if (op === "tabs.open") {
     const url = String(args[0]);
     const tab = { id: ++nextTab, url, title: url.includes("ebay.com") ? "Error Page | eBay" : "Example Domain", windowId: Number(args[2]) };
@@ -67,4 +71,17 @@ test("open answers a page its site's guide names as the error page as not ok, an
   // the tabs close here, so no later file's cleanup of exited agents meets them
   for (const tab of [erroredTab, nextTab]) await runAs(agent.pid, () => callTool("close", { tab }));
   agent.kill();
+});
+
+// On 10-23 an agent was told "a tab you need past your turn must be kept
+// with keep" of tab 284602, the page of a window another agent's ended
+// task had held: nothing said whose it was.
+test("a call on the page of another agent's ended window names that agent and that the window closed", async () => {
+  const [mine, theirs] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const opened = await runAs(theirs.pid, () => callTool("open", { url: "https://example.com/window", background: true })) as { windowId: number };
+  const page = showing.find((t) => t.windowId === opened.windowId && t.url.includes("/space?"))!;
+  await endTurn(theirs.pid);
+  await expect(runAs(mine.pid, () => callTool("snapshot", { tab: page.id }))).rejects.toThrow(`that tab is gone: agent ${theirs.pid}'s tab ${page.id} was closed with its window, as its agent's turn ended at `);
+  mine.kill();
+  theirs.kill();
 });

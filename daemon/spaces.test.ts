@@ -6,8 +6,9 @@ import { runInNewContext } from "node:vm";
 import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, readQueue } from "./groups.ts";
+import { recent } from "./journal.ts";
 import { tracksOwner } from "./mission.ts";
-import { runAs } from "./owner.ts";
+import { alive, runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
@@ -805,8 +806,9 @@ test("an ended window whose page Safari says is already gone is closed, and not 
   expect({ asked: w.asked(), ended: spaceEnded(w.id) }).toEqual({ asked: 1, ended: false });
 });
 
-// One lost window's close failed 69 times in 5.7 min, a try each sweep.
-test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then left", async () => {
+// One lost window's close failed 69 times in 5.7 min, a try each sweep; a
+// page left after its third try stayed open until the daemon restarted.
+test("an ended window whose page Safari will not close is asked again after one, two and four minutes, then every 15", async () => {
   let now = Date.now();
   const tries: number[] = [];
   const start = now;
@@ -815,7 +817,7 @@ test("an ended window whose page Safari will not close is asked again after one,
     throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
   });
   try {
-    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 1_319_000, 1_320_000]) {
       now = start + at;
       setSystemTime(new Date(now));
       await turnEnded(w.pid);
@@ -823,7 +825,27 @@ test("an ended window whose page Safari will not close is asked again after one,
   } finally {
     setSystemTime();
   }
-  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000], ended: true });
+  expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000, 1_320_000], ended: true });
+});
+
+// On 10-23 ended agents' windows stayed open through restarts, and nothing
+// in safari status --journal said so.
+test("a window that holds only its page five minutes after its task ended is noted in the journal once", async () => {
+  const start = Date.now();
+  const w = await unclosable(() => {
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  });
+  const noted: number[] = [];
+  try {
+    for (const at of [0, 299_000, 300_000, 1_500_000]) {
+      setSystemTime(new Date(start + at));
+      await turnEnded(w.pid);
+      noted.push(recent(2000).filter((e) => e.kind === "agent window whose task ended over 5 min ago is still open" && e.owner === w.pid).reduce((n, e) => n + (typeof e.n === "number" ? e.n : 1), 0));
+    }
+  } finally {
+    setSystemTime();
+  }
+  expect(noted).toEqual([0, 0, 1, 1]);
 });
 
 // Between the tries of a close that failed, every 5 s sweep asked Safari for
@@ -912,7 +934,7 @@ test("an open goes on in its agent's window while Safari lists no tabs, and fail
   }
 });
 
-test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }])("untracked status close failures are bounded (registered=$registered)", async ({ registered, port }) => {
+test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }])("untracked status close failures back off to every 15 minutes (registered=$registered)", async ({ registered, port }) => {
   const s = safari();
   const daemon = await daemonOn(port, `untracked-backoff-${registered}`);
   const owner = agent();
@@ -933,13 +955,13 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
   };
   daemon.loadSpaces(join(dir, `untracked-backoff-${registered}.json`), () => false);
   try {
-    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 3_600_000]) {
+    for (const at of [0, 59_000, 60_000, 179_000, 180_000, 419_000, 420_000, 1_319_000, 1_320_000]) {
       now = start + at;
       setSystemTime(new Date(now));
       daemon.inspectUntrackedWindows();
       await daemon.turnEnded(owner.pid);
     }
-    expect(tries).toEqual([0, 60_000, 180_000, 420_000]);
+    expect(tries).toEqual([0, 60_000, 180_000, 420_000, 1_320_000]);
     expect(s.tabs.has(healthy.id)).toBe(false);
     expect(s.tabs.has(1)).toBe(true);
   } finally {
@@ -949,3 +971,132 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
     await owner.exited;
   }
 });
+
+// On 10-23 each open of /agents from an agent made it a window of its own.
+test("an agent's open of the daemon's own page makes no window: a plain tab without one, else a tab in its window", async () => {
+  const s = safari();
+  const a = agent();
+  const windows = () => [...s.tabs.values()].filter((t) => t.url.includes("/space?")).length;
+  try {
+    const before = windows();
+    const plain = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/agents", background: true })) as { id: number };
+    expect({ windows: windows(), window: s.tabs.get(plain.id)?.windowId }).toEqual({ windows: before, window: 1 });
+    const work = await runAs(a.pid, () => openTab("https://work.example/", true));
+    const memory = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/memory", background: true })) as { id: number };
+    expect({ windows: windows(), window: s.tabs.get(memory.id)?.windowId }).toEqual({ windows: before + 1, window: work.windowId });
+  } finally {
+    a.kill();
+    await a.exited;
+    await endTurn(a.pid);
+  }
+});
+
+// The windows on /agents close an ended agent's window after asking; an
+// agent asked to clear such windows had no way to (10-23).
+test("close {window} asks first, then closes an untracked agent's window with its kept page, and refuses a working agent's", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47480, "close-window");
+  const [gone, working] = [agent(), agent()];
+  daemon.loadSpaces(join(dir, "close-window.json"), (o) => (o === working.pid ? true : undefined));
+  try {
+    const ended = await runAs(gone.pid, () => daemon.spaceWindow());
+    const busy = await runAs(working.pid, () => daemon.spaceWindow());
+    const kept = { id: next++, url: "https://kept.example/", windowId: ended.window, active: false };
+    s.tabs.set(kept.id, kept);
+    gone.kill();
+    await gone.exited;
+    expect(await daemon.closeWindow(ended.window, false)).toMatchObject({ ok: false, ask: "Close this window and all its tabs, including kept pages?" });
+    expect(s.tabs.has(kept.id)).toBe(true);
+    expect(await daemon.closeWindow(ended.window, true)).toEqual({ ok: true, closed: 1, remaining: 0 });
+    expect([...s.tabs.values()].filter((t) => t.windowId === ended.window)).toEqual([]);
+    await expect(daemon.closeWindow(busy.window, true)).rejects.toThrow(`window ${busy.window} is agent ${working.pid}'s, which is still working`);
+    expect(pageIn(s.tabs, busy.window)).toBeDefined();
+  } finally {
+    working.kill();
+    await working.exited;
+    await daemon.turnEnded(working.pid);
+  }
+});
+
+// Every window state, restart, and owner kind, and what cleanup leaves of
+// the window once its agent's task ends: on 10-23 an ended agent's windows
+// stayed open through a daemon restart and an extension reload, and a
+// window closed under the keeper while it made the window's group (HD-3).
+// Each case writes the saved records itself, so no other daemon's sweep
+// closes its page first.
+const STATES = ["making", "active", "closing", "ended", "kept"] as const;
+const RESTARTS = ["none", "daemon", "Safari", "extension"] as const;
+const OWNERS = ["main", "helper", "CLI", "untracked"] as const;
+type Outcome = "closed" | "open" | "released" | "closed by the keeper";
+const OUTCOMES: Record<(typeof STATES)[number], Record<(typeof OWNERS)[number], Outcome>> = {
+  // The keeper's step on the window goes on; its answer ends the window.
+  making: { main: "closed by the keeper", helper: "closed by the keeper", CLI: "closed by the keeper", untracked: "closed by the keeper" },
+  active: { main: "closed", helper: "closed", CLI: "closed", untracked: "closed" },
+  // The group goes to the keeper, which deletes it.
+  closing: { main: "released", helper: "released", CLI: "released", untracked: "released" },
+  ended: { main: "closed", helper: "closed", CLI: "closed", untracked: "closed" },
+  // A page kept for the user holds a living agent's window; an exited
+  // agent's label closes beside it.
+  kept: { main: "open", helper: "open", CLI: "closed", untracked: "open" },
+};
+const CASES = STATES.flatMap((state) => RESTARTS.flatMap((restart) => OWNERS.map((owner) => ({ state, restart, owner, outcome: OUTCOMES[state][owner] }))))
+  .map((c, i) => ({ ...c, port: 47400 + i }));
+
+test.each(CASES)("a $state window of a $owner agent after a $restart restart: $outcome", async ({ state, restart, owner: kind, outcome, port }) => {
+  const s = safari();
+  const proc = agent();
+  const pid = proc.pid;
+  const task = kind === "main" ? "main" : kind === "helper" ? "helper" : undefined;
+  const lost = restart === "daemon" || kind === "untracked";
+  const window = (task: string | undefined, group: Spaces.Space["group"], extra: string[] = []) => {
+    const id = `table-${port}-${task ?? "cli"}`;
+    const windowId = next++;
+    const size = { width: 1000 + (port % 250), height: task === "main" && kind === "helper" ? 900 : 800 };
+    const name = `${task ?? "cli"} (agent ${pid})`;
+    const proof = `proof-${id}`;
+    const page = { id: next++, url: `http://127.0.0.1:${port}/space?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`, windowId, active: true, history: { safariHarnessSpace: proof } };
+    s.tabs.set(page.id, page);
+    for (const url of extra) {
+      const t = { id: next++, url, windowId, active: false };
+      s.tabs.set(t.id, t);
+    }
+    const record: Spaces.Space = { key: task === undefined ? `${pid}:` : JSON.stringify([pid, task, ""]), id, window: windowId, name, size, owner: pid, ...(task === undefined ? {} : { task }), group, used: Date.now(), proof };
+    return record;
+  };
+  const saved: { spaces: Spaces.Space[]; closing: Spaces.Space[]; ended: Spaces.Space[] } = { spaces: [], closing: [], ended: [] };
+  if (kind === "helper") saved.spaces.push(window("main", "waiting", ["https://main.example/working"]));
+  const own = window(task, state === "making" ? "making" : state === "closing" ? "grouped" : "waiting", state === "kept" ? ["https://kept.example/"] : []);
+  if (state === "closing") saved.closing.push(own);
+  else if (state === "ended") saved.ended.push(own);
+  else saved.spaces.push(own);
+  const pages = [...s.tabs.values()].filter((t) => t.url.includes("/space?")).map((t) => t.url);
+  const open = (url: string) => [...s.tabs.values()].some((t) => t.url === url);
+  const path = join(dir, `table-${port}.json`);
+  writeFileSync(path, JSON.stringify({ version: 2, ...saved }));
+  if (state === "making") writeFileSync(files.keeper, String(process.pid));
+  const daemon = await daemonOn(port, `table-${port}`);
+  try {
+    daemon.loadSpaces(path, (o) => (o !== pid ? true : !alive(pid) ? false : lost ? undefined : true));
+    if (restart === "Safari") s.relaunch();
+    if (restart === "extension") s.reload();
+    if (kind === "CLI") {
+      proc.kill();
+      await proc.exited;
+    }
+    await daemon.turnEnded(kind === "untracked" ? pid + 1 : pid, task);
+    if (outcome === "closed by the keeper") {
+      expect(open(pages.at(-1)!)).toBe(true);
+      expect(await daemon.spaceTool({ op: "plain", name: own.name, why: "the group took no name" })).toEqual({ ok: true });
+    }
+    if (outcome === "released") expect(await daemon.spaceTool({ op: "release", name: own.name })).toMatchObject({ ok: true, left: 0 });
+    else expect(open(pages.at(-1)!)).toBe(outcome === "open");
+    expect(open("https://his.example/")).toBe(true);
+    if (state === "kept") expect(open("https://kept.example/")).toBe(true);
+    if (kind === "helper") expect(open(pages[0]) && open("https://main.example/working")).toBe(true);
+  } finally {
+    rmSync(files.keeper, { force: true });
+    proc.kill();
+    await proc.exited;
+    await daemon.turnEnded(pid);
+  }
+}, 15_000);

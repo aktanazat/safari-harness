@@ -184,6 +184,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   tabs they are, cleanup resumes without waiting for the owner process to exit.
   New work clears that owner's pending completion before using its pages.
   Missing task records alone never authorize closing a living owner's work.
+- To learn who closed tab N, call `snapshot {tab: N}`; the error says
+  harness, window, or user.
 
 ## Mission control: the user watches and holds you
 
@@ -688,15 +690,17 @@ things unless its saved task explicitly says to.
   on its own stays the user's until the page reloads.
 - "that tab is gone: tab N was closed <why> at <time> (it showed <url>);
   open it again": the harness closed it itself (a close call, the end of
-  your turn, 20 minutes unused, or its agent exited). If a safe address was
-  retained for recovery, the original tab id can reopen it for five
+  your turn, 20 minutes unused, its agent exited, or "with its window" as
+  that window's task ended). "agent P's tab N" says another agent's
+  cleanup closed it, not yours. If a safe address was retained for
+  recovery, the original tab id can reopen it for five
   minutes after closure ([cleanup and recovery](#cleanup-authority)).
   After expiry, open the needed address as new work. Use `keep` only for a
   page the user still needs left open.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
-  - "the harness closed it <t> ago (at the end of a turn, or after 20
-    minutes unused)".
+  - "the harness closed it <t> ago, as its agent's turn or task ended or
+    after 20 minutes unused".
   - "it closed with its window <t> ago".
   - "the user or its own page closed it <t> ago".
   - "Safari has had no tab N in the <t> since the extension started": it
@@ -911,6 +915,9 @@ have, use `safari goto <url> --tab N`.
   `warning`, and the tab stays yours: an error page is not an empty
   result. Load it again, or the address the site's guide gives.
 - `open` with `background: true` keeps his current tab in front.
+- The daemon's own pages (`/agents`, `/space`, `/memory` on
+  `127.0.0.1:37334`) open in your agent window if you have one, else as a
+  plain tab of yours: never a new agent window.
 - `keep: true` (CLI `--keep`) leaves the tab open for the user past your
   turn (`safari guide keep`); `group` (CLI `--group trip`) gives a task a
   window of its own (`safari guide reference lifecycle`).
@@ -967,6 +974,13 @@ click opened), never one the user has or one you kept for him unless he
 is done with it. `close` on a tab already closed does not fail: it answers
 `{ok: true, already: "tab N was closed by … at <time>"}`.
 
+- `close {window: W}` (CLI `safari close --window W`) closes an agent
+  window whose agent has ended or that no task record names, with every
+  tab in it, kept pages too: the windows on `/agents` do the same. The
+  first call closes nothing and answers `{ok: false, ask, name, titles}`:
+  ask the user `ask`, and on his yes call again with `confirm: true`. A
+  working agent's window fails; it closes as that agent's turn ends.
+  `tabs {all: true}` gives each tab's `windowId`.
 - A native sheet (a sign-in or permission prompt) can keep Safari from
   closing a tab. A tab the harness opened still closes, within about 15 s;
   `close` on any other tab so held, or in a window off screen, fails within

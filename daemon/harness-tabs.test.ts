@@ -197,8 +197,9 @@ test("a repl session's end closes the tabs it opened, but not one kept for the u
 
 // Late in September a chat tab closed while its agent waited 50 minutes on
 // a subagent, and "that tab is gone" alone cost it 10 turns to recover.
-// Another agent's call to such a tab is not that agent's to open again.
-test("another agent's call to a tab the harness closed says why and when, and what the tab showed", async () => {
+// Another agent's call to such a tab is not that agent's to open again, and
+// is told whose tab it was (on 10-23 one was told to keep a tab it never had).
+test("another agent's call to a tab the harness closed says whose it was, why and when, and what it showed", async () => {
   const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
   await runAs(agent.pid, () => callTool("open", { url: "https://chat.example/c/1", background: true }));
   const tab = nextTab;
@@ -208,7 +209,7 @@ test("another agent's call to a tab the harness closed says why and when, and wh
   await settled();
   showing = [];
   const later = runAs(other.pid, () => callTool("extract", { tab }));
-  await expect(later).rejects.toThrow(new RegExp(`^that tab is gone: tab ${tab} was closed as its agent's turn ended at .+ \\(it showed https://chat\\.example/c/1\\); open it again$`));
+  await expect(later).rejects.toThrow(new RegExp(`^that tab is gone: agent ${agent.pid}'s tab ${tab} was closed as its agent's turn ended at .+ \\(it showed https://chat\\.example/c/1\\); open it again$`));
   expect(nextTab).toBe(tab);
   agent.kill();
   other.kill();

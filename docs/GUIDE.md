@@ -34,7 +34,8 @@ Tabs
 - Every window page links to Windows (`/agents#windows`), which lists all
   registered windows that remain, including pages left for him after a
   task ends. Close window asks before closing that window and its kept
-  pages. Never use it to close his windows.
+  pages; `close {window}` does the same for an ended agent's window, on
+  his yes. Never use it to close his windows.
 - When a call says he paused or stopped you, do what it says.
 - After Give back, read a fresh whole-page snapshot or extract of that
   tab before acting. A queued action cannot reuse the old view.

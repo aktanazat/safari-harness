@@ -34,10 +34,10 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { uncover } from "./place.ts";
-import { groupsOff, readQueue } from "./groups.ts";
+import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -57,6 +57,7 @@ const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
 const SWEEP_MS = 5000;
+const IDLE_MS = 20 * 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -134,6 +135,18 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   return owned;
 }
 
+function spaceKey(group: string | undefined): string {
+  const owner = currentOwner();
+  const task = currentTask();
+  return task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
+}
+
+// The calling agent's window for group, never a new one: on 10-23 each
+// open of /agents from an agent made it a window of its own (tools.ts).
+export function heldSpace(group?: string): Space | undefined {
+  return spaces.get(spaceKey(group));
+}
+
 // The window an open by the calling agent goes in, made when it has none
 // or the user closed it. A tab list that times out leaves the window as it
 // was: on 10-16 an open failed "extension request tabs.list timed out after
@@ -143,7 +156,7 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
 export async function spaceWindow(group?: string, lost?: Space): Promise<Space> {
   const owner = currentOwner();
   const task = currentTask();
-  const key = task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
+  const key = spaceKey(group);
   const had = spaces.get(key);
   const inWindow = had && (await located(had).catch((e: unknown) => {
     if (e instanceof TimedOut) return undefined;
@@ -365,18 +378,20 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 
 // A window page Safari would not close (a native sheet holds it, or the
 // extension does not answer) is asked again after one, two, then four
-// minutes, and then left until the daemon starts again: in the daemon log
-// of 09-30 to 10-16 one lost window's close failed 69 times in 5.7 min,
-// one try each sweep, each a wait in the extension's queue. A page
-// already gone is closed.
+// minutes, then every 15: in the daemon log of 09-30 to 10-16 one lost
+// window's close failed 69 times in 5.7 min, one try each sweep, each a
+// wait in the extension's queue, and a page left after its third try
+// stayed open until the daemon started again. A page already gone is
+// closed.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+const SLOW_RETRY_MS = 15 * 60_000;
 const unclosed = new Map<Space | string, { tries: number; at: number }>();
 
 function failedClose(key: Space | string, name: string, error: string): void {
   const tries = (unclosed.get(key)?.tries ?? 0) + 1;
-  const wait = CLOSE_RETRY_MS[tries - 1];
-  unclosed.set(key, { tries, at: Date.now() + (wait ?? 0) });
-  note("window not closed", { name, error, retryS: wait === undefined ? null : wait / 1000 });
+  const wait = CLOSE_RETRY_MS[tries - 1] ?? SLOW_RETRY_MS;
+  unclosed.set(key, { tries, at: Date.now() + wait });
+  note("window not closed", { name, error, retryS: wait / 1000 });
 }
 
 async function end(space: Space) {
@@ -388,7 +403,9 @@ async function end(space: Space) {
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
-    if (space.group === "making" && taskTracked?.(space.owner) !== false) return;
+    // A keeper still making the group gets to finish its step: a window
+    // closed under it leaves a group the next keeper waits on.
+    if (space.group === "making" && (taskTracked?.(space.owner) !== false || keeperRunning())) return;
   }
   ended.add(space);
   save();
@@ -396,7 +413,7 @@ async function end(space: Space) {
   // A page whose close failed is looked for again only once its next try is
   // due: until then a sweep would list Safari's tabs for nothing.
   const failed = unclosed.get(space);
-  if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) return;
+  if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
   if (!space.done || (taskTracked?.(space.owner) !== false && inWindow.some(t => !isPage(t, space)))) return;
   const page = inWindow.find(t => isPage(t, space));
@@ -406,6 +423,12 @@ async function end(space: Space) {
       if (!space.done) return;
       const result = await bridge.request("tabs.close", [page.id], 10000) as { ok?: boolean };
       if (result.ok !== true) return;
+      const tracked = taskTracked?.(space.owner);
+      let why = "as its agent's turn ended";
+      if (tracked === false) why = "as its agent's task ended";
+      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 20 minutes unused";
+      else if (taskTracked && tracked === undefined) why = "as no task record names its agent";
+      windowPageClosed(page.id, `with its window, ${why}`, space.owner);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (!why.startsWith("that tab is gone")) {
@@ -448,12 +471,12 @@ async function sweepOnce() {
       const id = new URL(tab.url).searchParams.get("id");
       if (!id) continue;
       const space = registered.get(id);
-      if ((!space || taskTracked?.(space.owner) === false) && making.size === 0) {
+      if ((!space || (taskTracked?.(space.owner) === false && !(space.group === "making" && keeperRunning()))) && making.size === 0) {
         const key = space ?? `${tab.id}:${id}`;
         const failed = unclosed.get(key);
-        if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) continue;
+        if (failed && Date.now() < failed.at) continue;
         try {
-          const result = await closeTab(tab.id, "untracked agent status page") as { ok?: boolean } | null;
+          const result = await closeTab(tab.id, space ? "with its window, as its agent's task ended" : "with its window, as no record names it") as { ok?: boolean } | null;
           if (result?.ok === true) unclosed.delete(key);
           else failedClose(key, space?.name ?? "untracked agent status", "Safari did not close the status page");
         } catch (e) {
@@ -466,7 +489,7 @@ async function sweepOnce() {
     inspectUntracked = making.size > 0;
   }
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
-    if (Date.now() - (s.used ?? 0) >= 20 * 60_000) s.done = true;
+    if (Date.now() - (s.used ?? 0) >= IDLE_MS) s.done = true;
     if (taskTracked && taskTracked(s.owner) === undefined && !s.done) {
       listed ??= await listTabs();
       const inWindow = await located(s, listed);
@@ -476,6 +499,7 @@ async function sweepOnce() {
       }
     }
   }
+  listed = await stillOpen(listed);
   // A pass with no window to locate, and no ended one whose agent's turn has
   // ended, is the last, and asks Safari nothing: a window that ended before
   // its agent's turn did waits for turnEnded, which sweeps by itself.
@@ -491,6 +515,32 @@ async function sweepOnce() {
     const inWindow = await located(s, tabs);
     if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
+}
+
+// When each window's task was first seen ended, for the journal's note of
+// one that holds nothing but its page five minutes on (safari status
+// --journal): on 10-23 ended agents' windows stayed open through restarts,
+// and nothing said so. Each window is looked at once, at five minutes.
+const STILL_OPEN_MS = 5 * 60_000;
+const doneAt = new Map<Space, { at: number; checked?: true }>();
+
+async function stillOpen(listed: TabInfo[] | undefined): Promise<TabInfo[] | undefined> {
+  const records = new Set([...spaces.values(), ...closing.values(), ...ended]);
+  for (const s of doneAt.keys()) if (!records.has(s) || !s.done) doneAt.delete(s);
+  for (const s of records) {
+    const since = doneAt.get(s);
+    if (!s.done || since?.checked) continue;
+    if (!since) {
+      doneAt.set(s, { at: Date.now() });
+      continue;
+    }
+    if (Date.now() - since.at < STILL_OPEN_MS) continue;
+    since.checked = true;
+    listed ??= await listTabs();
+    const inWindow = await located(s, listed);
+    if (inWindow.length > 0 && inWindow.every((t) => isPage(t, s))) note("agent window whose task ended over 5 min ago is still open", { name: s.name, owner: s.owner ?? null, minutes: Math.floor((Date.now() - since.at) / 60_000) });
+  }
+  return listed;
 }
 
 export function turnResumed(owner: number | undefined, task?: string): void {
@@ -574,7 +624,7 @@ export async function managedWindows(listed?: TabInfo[]): Promise<ManagedWindow[
   return windows;
 }
 
-export async function closeManagedWindow(id: string): Promise<{ ok: boolean; closed: number; remaining: number }> {
+export async function closeManagedWindow(id: string, why = "from the windows page"): Promise<{ ok: boolean; closed: number; remaining: number }> {
   if (!bridge.connected) throw new Error("Safari is not connected.");
   const s = [...spaces.values(), ...closing.values(), ...ended].find(space => space.id === id);
   if (!s) throw new Error("This window is no longer tracked.");
@@ -584,14 +634,14 @@ export async function closeManagedWindow(id: string): Promise<{ ok: boolean; clo
   let closed = 0;
   for (const tab of before) {
     if (isPage(tab, s)) continue;
-    const result = await closeTab(tab.id, "from the windows page") as { ok?: boolean };
+    const result = await closeTab(tab.id, why) as { ok?: boolean };
     if (result.ok) closed++;
   }
   const remaining = (await listTabs()).filter(t => t.windowId === window);
   if (remaining.some(t => !isPage(t, s))) return { ok: false, closed, remaining: remaining.filter(t => !isPage(t, s)).length };
   const marker = remaining.find(t => isPage(t, s));
   if (marker) {
-    const result = await closeTab(marker.id, "from the windows page") as { ok?: boolean };
+    const result = await closeTab(marker.id, why) as { ok?: boolean };
     if (!result.ok) return { ok: false, closed, remaining: 1 };
   }
   s.done = true;
@@ -604,4 +654,25 @@ export async function closeManagedWindow(id: string): Promise<{ ok: boolean; clo
     save();
   }
   return { ok: true, closed, remaining: 0 };
+}
+
+// close {window} (tools.ts): a window whose agent has ended, or that no
+// task record names, closes with every tab in it, kept pages too, once the
+// caller says the user agreed to the question the windows on /agents ask
+// (mission.ts). A working agent's window closes as its turn ends.
+export async function closeWindow(window: number, confirm: boolean): Promise<unknown> {
+  const w = (await managedWindows()).find((m) => m.window === window);
+  const s = w && [...spaces.values(), ...closing.values(), ...ended].find((space) => space.id === w.id);
+  if (!w || !s) throw new Error(`window ${window} is no agent window the harness tracks; tabs {all: true} gives each tab's windowId`);
+  if (taskTracked?.(s.owner) === true) throw new Error(`window ${window} is ${s.owner === undefined ? "the harness's" : `agent ${s.owner}'s`}, which is still working; its tabs close when its turn ends`);
+  if (!confirm) {
+    return {
+      ok: false,
+      ask: w.ended ? "Close this window and all its tabs, including kept pages?" : "Close this working window and all its tabs, including kept pages? The task will keep running.",
+      name: w.name,
+      titles: w.tabs.map((t) => t.title),
+      next: `ask the user that; on his yes, close {window: ${window}, confirm: true}`,
+    };
+  }
+  return closeManagedWindow(w.id, "with its window, by a close call");
 }
