@@ -268,6 +268,8 @@ const WALLS: [Read, string, boolean][] = [
   ["instinct", "a sign-in page", false],
   ["chromium", "a sign-in page", false],
   ["tiziana", "the page draws itself with JavaScript", false],
+  ["confex_loading", "the page draws itself with JavaScript", false],
+  ["salesforce_loading", "the page draws itself with JavaScript", false],
   ["calrecycle", "HTTP 404 at https://www2.calrecycle.ca.gov/BevContainer/NotFound", false],
 ];
 
@@ -285,7 +287,7 @@ test.each(WALLS)("a web read that was not the page (%s) gets Safari's copy, load
 
 // Real read answers that were the page, or an error Safari would only
 // repeat: none waits on Safari.
-const PAGES: Read[] = ["xfinity", "passkey", "login_window", "hark_pricing", "docs_ok", "bun404", "cdtfa", "nfs", "enotfound", "refused_remote"];
+const PAGES: Read[] = ["xfinity", "passkey", "login_window", "hark_pricing", "docs_ok", "psu_news", "bun404", "cdtfa", "nfs", "enotfound", "refused_remote"];
 
 test.each(PAGES)("a web read that was the page, or a plain error (%s), is left as it was and asks Safari nothing", async (name) => {
   await withWeb(copied, async (hooks, maps) => {

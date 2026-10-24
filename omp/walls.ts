@@ -122,10 +122,22 @@ function readOf(text: string): Read | undefined {
   return { final: field(head, "URL"), method: field(head, "Method"), notes, title: field(front, "title"), base: field(front, "base"), body: body.trim() };
 }
 
-// A page whose words, past its links' addresses, are little but a sign-in.
+// A page's words, past its links' and images' addresses.
+function wordsOf(body: string): string {
+  return body.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
+}
+
+// A page whose words are little but a sign-in.
 function signInOnly(body: string): boolean {
-  const words = body.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
+  const words = wordsOf(body);
   return words.length < 300 && /^(?:#+\s*)?(?:log ?in|sign ?in)\b/im.test(words);
+}
+
+// An app that never drew past its loading line: confex's meeting program
+// read only "please wait while the program loads" on 10-21.
+function loadingOnly(body: string): boolean {
+  const words = wordsOf(body);
+  return words.length < JS_SHELL_CHARS && /\bplease wait\b[^\n]{0,80}\bload|^(?:#+\s*)?loading\b/im.test(words);
 }
 
 // Why read's answer for url is not the page, or undefined when it is.
@@ -143,7 +155,7 @@ function readWall(url: string, text: string): string | undefined {
   if ((LOGIN_URL.test(read.final) && (moved || read.body.length < SHELL_CHARS)) || (LOGIN_TITLE.test(read.title) && read.body.length < SHELL_CHARS) || signInOnly(read.body)) return `a sign-in page${landed ? ` at ${landed}` : ""}`;
   if (failed && status !== undefined && moved) return `HTTP ${status} at ${landed}`;
   if (CHECK_TITLE.test(read.title) && read.body.length < SHELL_CHARS) return `a bot check ("${read.title}")`;
-  if (read.notes.includes(JS_NOTE) && read.body.length < JS_SHELL_CHARS) return "the page draws itself with JavaScript";
+  if ((read.notes.includes(JS_NOTE) && read.body.length < JS_SHELL_CHARS) || loadingOnly(read.body)) return "the page draws itself with JavaScript";
   return undefined;
 }
 
