@@ -1978,13 +1978,13 @@ function askedExtension(out: string | undefined, url: string): string | undefine
 // application/json (AkylUsage). It is kept as it came, and the answer is
 // not ok and quotes its start. Any extension out ends with asks for its
 // kind of file.
-async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string) {
+async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string, prefix?: string) {
   const asked = askedExtension(out, url);
   if (asked !== undefined && /^text\/html\b/i.test(f.type)) {
     const went = f.url && f.url !== url ? ` (it went to ${f.url})` : "";
     throw new Error(`${url || "the link"} answered a web page${went}, not a .${asked} file; nothing was saved. A sign-in page is the usual cause: download it with the tab of a page signed in to that site, or give out a name ending in .html to keep the page`);
   }
-  const path = out ?? await freePath(folder, nameOf(f, url));
+  const path = out ?? (prefix === undefined ? await freePath(folder, nameOf(f, url)) : join(folder, prefix + nameOf(f, url)));
   await mkdir(dirname(path), { recursive: true });
   const data = Buffer.from(f.data, "base64");
   await writeFile(path, data);
@@ -2013,7 +2013,7 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // file a ref's link or button downloads, or with only a tab, the file the
 // tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
 // Safari saves too) unless out says where.
-export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string }, folder = DOWNLOADS): Promise<{ ok?: false; path: string; name: string; size: number; type: string; warning?: string; note?: string }> {
+export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string; prefix?: string }, folder = DOWNLOADS): Promise<{ ok?: false; path: string; name: string; size: number; type: string; warning?: string; note?: string }> {
   const out = absoluteOut(opts.out);
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
@@ -2021,7 +2021,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
     const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
     const signIn = signInOrigin(f, url, out);
-    if (signIn === undefined) return saveFile(f, url, out, folder);
+    if (signIn === undefined) return saveFile(f, url, out, folder, opts.prefix);
     // The extension's own fetch carries no sign-in, and a tab opened on the
     // site the sign-in page answered from carries Safari's: on 10-07 a
     // Slack image came back as the sign-in page of 99-point.slack.com,
@@ -2039,7 +2039,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
     const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    return saveFile(f, url, out, folder);
+    return saveFile(f, url, out, folder, opts.prefix);
   }
   const ref = String(opts.ref);
   // A file the server sends after the click is saved by Safari itself, never
@@ -2085,6 +2085,32 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// Several files by url into the folder out names (~/Downloads unless it
+// does), each named NN-<its own name> so a second run writes over the first
+// instead of adding "a (1).jpg". The first goes alone, so a site that
+// answers its sign-in page opens one tab for the rest (download); then four
+// at a time. A file that fails is reported in its place: on 10-22 an agent
+// fetched ten product images through ten map calls in nine minutes.
+async function downloadAll(opts: { tab?: number; urls: unknown; ref?: string; url?: string; out?: string }) {
+  if (opts.ref !== undefined || opts.url !== undefined) throw new Error("give urls alone, or one url or ref");
+  const urls = [opts.urls].flat().map((u) => str(u, "urls"));
+  if (urls.length === 0) throw new Error("urls is empty: give the files' addresses");
+  const folder = absoluteOut(opts.out) ?? DOWNLOADS;
+  const width = Math.max(2, String(urls.length).length);
+  const files: unknown[] = [];
+  const one = (i: number) =>
+    download({ tab: opts.tab, url: urls[i], prefix: `${String(i + 1).padStart(width, "0")}-` }, folder)
+      .catch(downloadHint)
+      .catch((e: unknown) => ({ url: redactUrl(urls[i]), error: e instanceof Error ? e.message : String(e) }))
+      .then((r) => { files[i] = r; });
+  await one(0);
+  let next = 1;
+  await Promise.all(Array.from({ length: Math.min(4, urls.length - 1) }, async () => {
+    while (next < urls.length) await one(next++);
+  }));
+  return { folder, files };
 }
 
 // The address a ref's link names, made whole against its page's.
@@ -2608,8 +2634,8 @@ export const TOOLS: Record<string, Tool> = {
   },
   download: {
     desc: "Save the file a ref's link or button downloads, a url (tab optional), or the file tab shows, into ~/Downloads; returns its path.",
-    params: { tab: TAB, ref: REF, url: { type: "string", description: "instead of ref" }, out: { type: "string", description: "path; /tmp/… for files you only read" } },
-    run: (a) => download(a as { tab?: number; ref?: string; url?: string; out?: string }).catch(downloadHint),
+    params: { tab: TAB, ref: REF, url: { type: "string", description: "instead of ref" }, urls: { type: "array", items: { type: "string" }, description: "several; out: a folder" }, out: { type: "string", description: "path; /tmp/… for files you only read" } },
+    run: (a) => (a.urls === undefined ? download(a as { tab?: number; ref?: string; url?: string; out?: string }).catch(downloadHint) : downloadAll(a as { tab?: number; urls: unknown; out?: string })),
   },
   dialog: {
     desc: "Alerts, confirms, and prompts come back with the action that raised them; confirm and prompt are dismissed unless you accept. read lists recent ones.",

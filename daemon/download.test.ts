@@ -1,25 +1,30 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { download } from "./tools.ts";
+import { download, TOOLS } from "./tools.ts";
 
 // download of a url with no tab is the extension's own fetch, with no
 // page's cookies (fetchFile in background.js): it answers what the site
 // sent from where its redirects ended, or fails as refuse says. In tab 7,
 // a download by ref and the page's own fetch get no answer ("Load
-// failed"), and the ref's link goes to link.
+// failed"), and the ref's link goes to link. An address in images answers
+// that JPEG, or 404 when it maps to null.
 let served = { url: "", type: "", body: Buffer.alloc(0) };
 let refuse: string | undefined;
 let link = "";
 const fetched: string[] = [];
+const images = new Map<string, Buffer | null>();
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
     const page = op === "relay" ? String(args[1]) : "";
     if (op === "fetchFile") fetched.push(String(args[0]));
-    const reply = op === "fetchFile" && refuse !== undefined ? { error: refuse }
+    const image = op === "fetchFile" ? images.get(String(args[0])) : undefined;
+    const reply = image === null ? { error: "download failed: HTTP 404" }
+      : image ? { value: { name: "", type: "image/jpeg", size: image.length, disposition: null, url: String(args[0]), data: image.toString("base64") } }
+      : op === "fetchFile" && refuse !== undefined ? { error: refuse }
       : op === "fetchFile" ? { value: { name: "", type: served.type, size: served.body.length, disposition: null, url: served.url, data: served.body.toString("base64") } }
       : op === "tabs.list" ? { value: [{ id: 7, url: "https://developer.apple.com/account/resources/authkeys/list", title: "Keys", windowId: 1, active: true }] }
       : page === "download" || page === "fetchFile" ? { error: "Load failed" }
@@ -87,4 +92,21 @@ test("JSON in place of the kind of file out names is kept, and the answer is not
   expect(readFileSync(out, "utf8")).toBe(error);
   const asked = join(dir, "answer.json");
   expect(await download({ url: KEY_URL, out: asked }, dir)).not.toHaveProperty("warning");
+});
+
+// On 10-22 an agent fetched ten product images through ten map calls in
+// nine minutes.
+test("download of several urls saves each under its place in the list, reports a failed one in its place, and a second run writes over the first", async () => {
+  const [a, gone, b] = ["https://cdn.example/p/a.jpg", "https://cdn.example/p/gone.jpg", "https://cdn.example/p/b.jpg"];
+  images.set(a, Buffer.from("a's bytes")).set(gone, null).set(b, Buffer.from("b's bytes"));
+  const folder = join(dir, "batch");
+  const answer = { folder, files: [
+    { path: join(folder, "01-a.jpg"), name: "01-a.jpg", size: 9, type: "image/jpeg" },
+    { url: gone, error: "download failed: HTTP 404: nothing is at that address; take a file's address from its page (a ref's link) or the site's API rather than building it" },
+    { path: join(folder, "03-b.jpg"), name: "03-b.jpg", size: 9, type: "image/jpeg" },
+  ] };
+  expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual(answer);
+  expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual(answer);
+  expect(readdirSync(folder).sort()).toEqual(["01-a.jpg", "03-b.jpg"]);
+  expect(readFileSync(join(folder, "03-b.jpg"), "utf8")).toBe("b's bytes");
 });

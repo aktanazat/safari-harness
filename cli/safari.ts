@@ -140,6 +140,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari download <ref|url> [--out file] [--tab N]
                                              save a file into ~/Downloads; a url needs
                                              no tab, a tab alone saves the file it shows
+  safari download <url> <url>... [--out dir] save each as 01-name, 02-name... in dir
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
@@ -995,7 +996,8 @@ async function main() {
     }
     case "download": {
       const target = positional[0];
-      if (target !== undefined && /^https?:/.test(target)) args.url = target;
+      if (positional.length > 1) args.urls = positional;
+      else if (target !== undefined && /^https?:/.test(target)) args.url = target;
       else if (target !== undefined) args.ref = target;
       break;
     }
