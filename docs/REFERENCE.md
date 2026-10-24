@@ -1202,6 +1202,11 @@ is loading. Please wait", or `aria-busy` on its main region or body, gets
 up to 2 s to draw; those lines are left out, with a `note`, and
 `loading: true` says the page was still loading then.
 
+A GitHub file page (`/blob/`) reads as its line numbers, so `extract`
+without `selector`, `query`, or `as` answers with its raw file instead,
+and its `note` says so; when the raw file cannot be read, the note says
+why beside the page's own read.
+
 `query` keeps the lines holding some text, as `snapshot`'s does, and
 `selector` (or `root`) narrows the read to one region (`safari guide
 snapshot`). `save` writes the read to a file (`safari guide reference
@@ -1933,7 +1938,10 @@ without it.
   carries them. `Load failed` is Safari's word for a request that got no
   answer; `fetch` adds whether its host exists at all, or a DNS block list
   on this network stops it, and otherwise the page's rules (CORS, its
-  security policy) refused it or the server dropped it.
+  security policy) refused it or the server dropped it. A plain GET
+  refused so is asked again from the extension, outside the page's rules
+  and without the site's sign-in, and its `note` says so: a file on
+  raw.githubusercontent.com reads from any page this way.
 - A site's API call from the shell goes through `fetch`, never `eval
   "fetch(…)"`: `safari fetch --tab T <url>`, with `--method POST --body
   '<json>'` for a POST. The tab is one of yours on that site, so the

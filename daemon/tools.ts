@@ -1170,9 +1170,31 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>);
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
+  // GitHub's file page draws its code where extract does not read, so it
+  // read as its line numbers: on 10-23 eight of 64 file pages kept under
+  // 15% of the file (K7). Its raw file is read in its place.
+  if ("text" in page && opts.selector === undefined && opts.query === undefined && (opts.as ?? "text") === "text") {
+    const file = GITHUB_FILE.exec(page.url);
+    if (file) return shieldExtract({ ...page, ...(await rawFile(tab, `https://github.com/${file[1]}/raw/${file[2]}`, opts.maxBytes ?? 20000)) });
+  }
   // as: "table" answers rows, not text
   const out = "text" in page ? shieldExtract(page) : "messages" in page ? shieldChat(page) : page;
   return missed ? { ...out, note: missed } : out;
+}
+
+const GITHUB_FILE = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/blob\/([^?#]+)/;
+
+// A GitHub file page's raw file, as its text and a note saying so; a note
+// alone says why it could not be read.
+async function rawFile(tab: number, raw: string, maxBytes: number): Promise<{ text?: string; truncated?: boolean; note: string }> {
+  const shown = "GitHub's file page reads as its line numbers";
+  try {
+    const file = (await pageFetch({ tab, url: raw, maxBytes })) as { status?: number; text?: string; truncated?: boolean; note?: string };
+    if (typeof file.text === "string" && (file.status === undefined || file.status < 400)) return { text: file.text, truncated: file.truncated === true, note: `${shown}, so this is its raw file, ${raw}` };
+    return { note: `${shown}, and its raw file ${raw} answered HTTP ${file.status}${file.note ? ` (${file.note})` : ""}` };
+  } catch (e) {
+    return { note: `${shown}, and its raw file ${raw} could not be read: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 export async function tabInfo(opts: { tab?: number } = {}) {
@@ -1665,7 +1687,34 @@ export async function pageFetch(opts: { tab?: number; url: string; method?: stri
   const tab = await resolveTab(opts.tab);
   const url = str(opts.url, "url");
   return relay(tab, "fetch", [url, { method: opts.method, headers: opts.headers, body: opts.body, maxBytes: opts.maxBytes, base64: !!opts.base64 }], 60000)
-    .catch(async (e: unknown) => { throw await unanswered(e, url); });
+    .catch(async (e: unknown) => {
+      const why = await unanswered(e, url);
+      // The page's rules (CORS, its security policy) refuse some requests
+      // outright, which a plain GET asks again from the extension, outside
+      // them: on 10-23 every fetch of raw.githubusercontent.com failed so,
+      // 54 pages in 12 maps (K1).
+      if (why === e || (opts.method ?? "GET").toUpperCase() !== "GET" || opts.body !== undefined || opts.headers !== undefined) throw why;
+      return extensionFetch(url, opts, why);
+    });
+}
+
+// A GET as the extension sends it (fetchFile in background.js), outside the
+// page's rules and without the site's sign-in, answered as the page's fetch
+// answers, with a note saying whose request it was.
+async function extensionFetch(url: string, opts: { maxBytes?: number; base64?: boolean }, why: unknown) {
+  const note = "the page's rules refused its own request, so this is the extension's, which carries none of the site's sign-in";
+  const f = await bridge.request("fetchFile", [url], 60000).then((v) => v as FilePayload & { status?: number }, (e: unknown) => (e instanceof Error ? e : new Error(String(e))));
+  if (f instanceof Error) {
+    const status = /^download failed: HTTP (\d+)$/.exec(f.message)?.[1];
+    if (status === undefined) throw new Error(`${why instanceof Error ? why.message : String(why)}; the extension's own request failed too: ${f.message}`);
+    return { status: Number(status), url, type: null, text: "", truncated: false, note };
+  }
+  const head = { ...(typeof f.status === "number" ? { status: f.status } : {}), url: f.url || url, type: f.type };
+  const body = Buffer.from(f.data, "base64");
+  const limit = opts.maxBytes || 50000;
+  if (opts.base64) return { ...head, data: body.subarray(0, limit).toString("base64"), truncated: body.length > limit, note };
+  const text = body.toString("utf8");
+  return { ...head, text: text.slice(0, limit), truncated: text.length > limit, note };
 }
 
 async function scratchFile(prefix: string, name: string): Promise<string> {

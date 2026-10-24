@@ -6,6 +6,8 @@ hosts: github.com
 
 Use the `gh` CLI for everything it can do: repos, issues, pull requests, and reads through `gh api`. Safari is for the few profile settings `gh` cannot reach. Verify through the API, not the page.
 
+A file page (`/blob/`) reads as its line numbers: `extract` reads its raw file instead and says so in `note`; a private repo's file is `gh api repos/<o>/<r>/contents/<path>`.
+
 ## Bio
 - `gh api -X PATCH user -f bio=...` fails with "This API operation needs the "user" scope", and adding the scope needs the user's browser approval.
 - In Safari: `https://github.com/settings/profile`, the "Bio" textbox, then `Update profile`. Check with `gh api users/<login>`.

@@ -1587,7 +1587,7 @@ async function handle(msg) {
         r.onerror = () => reject(r.error);
         r.readAsDataURL(blob);
       });
-      return { name: "", type: blob.type, size: blob.size, disposition: res.headers.get("content-disposition"), url: res.url, data };
+      return { name: "", type: blob.type, size: blob.size, disposition: res.headers.get("content-disposition"), url: res.url, status: res.status, data };
     }
     case "shot":
       return screenshot(args[0], args[1] || {});
