@@ -10,6 +10,9 @@ import { callTool } from "./tools.ts";
 // with characters UTF-8 writes in two bytes.
 const TEXT = Array.from({ length: 3000 }, (_, i) => `line ${i}: café`).join("\n");
 const VALUES: Record<string, unknown> = { html: "<p>hi</p>", rows: [{ a: 1 }] };
+// An API that answers its rate limit.
+const LIMITED = "https://shop.example/api/limited";
+const LIMITED_BODY = '{"error":"rate limited"}';
 
 // A stand-in extension for tab 1, cutting text the way content.js does. The
 // ops the page is asked to run are noted.
@@ -24,6 +27,7 @@ function answer(op: string, args: unknown[]): unknown {
     return { url: "https://shop.example/items", title: "Items", text: TEXT.length > limit ? `${TEXT.slice(0, limit)}\n…truncated` : TEXT, truncated: TEXT.length > limit };
   }
   if (dom === "eval") return { ok: true, result: VALUES[String(opts)] };
+  if (opts === LIMITED) return { status: 429, url: LIMITED, type: "application/json", text: LIMITED_BODY, truncated: false };
   return { status: 200, url: "https://shop.example/api", type: "application/json", text: "{}", truncated: false };
 }
 connect({
@@ -75,4 +79,13 @@ test("a save path that is not absolute is refused before the page gets any reque
   const post = callTool("fetch", { tab: 1, url: "https://shop.example/api/order", method: "POST", body: "{}", save: "order.json" });
   await expect(post).rejects.toThrow("save must be true or an absolute file path");
   expect(asked).toEqual([]);
+});
+
+// On 10-23 saved reads of three pages not found and of an API's rate limit
+// answered like any other (K4).
+test("a saved read keeps the page's status, type, and state: an API's rate limit is saved, and says it is an error", async () => {
+  const path = join(dir, "limited.json");
+  const reply = await callTool("fetch", { tab: 1, url: LIMITED, save: path });
+  expect(reply).toMatchObject({ saved: path, status: 429, type: "application/json", pageState: { kind: "error" } });
+  expect(readFileSync(path, "utf8")).toBe(LIMITED_BODY);
 });

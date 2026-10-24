@@ -7,6 +7,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { withPageState } from "./page-state.ts";
 
 export const SAVED_DIR = join(homedir(), ".local/share/safari-harness/saved");
 const HEAD_CHARS = 500;
@@ -103,10 +104,14 @@ export function saveAnswer(text: string): Promise<string> {
 // short even at the raised limit says so, and a bot-check note stays. The
 // answer says which page was read, as the read's own did: pageUrl gives the
 // address of a read whose result carries none (eval), and names its file.
-export async function saveOutput(kind: SaveKind, result: unknown, target: Target, pageUrl: () => Promise<string>): Promise<unknown> {
+// It keeps the page's status, content type, and state (page-state.ts;
+// partial, a read of part of the page): on 10-23 saved reads of three pages
+// not found and of an API's rate limit answered like any other (K4).
+export async function saveOutput(kind: SaveKind, result: unknown, target: Target, pageUrl: () => Promise<string>, partial = false): Promise<unknown> {
   if (!result || typeof result !== "object" || Array.isArray(result)) return result;
   const r = result as Record<string, unknown>;
   if (typeof r.error === "string") return r;
+  const { pageState } = withPageState(kind, r, { partial }) as { pageState?: unknown };
   const file = fileOf(kind, r);
   const url = typeof r.url === "string" ? r.url : await pageUrl();
   const saved = await write(target, url, file);
@@ -114,10 +119,13 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
   return {
     saved,
     ...(url ? { url } : {}),
+    ...(typeof r.status === "number" ? { status: r.status } : {}),
+    ...(typeof r.type === "string" ? { type: r.type } : {}),
     bytes: typeof file.body === "string" ? Buffer.byteLength(file.body) : file.body.byteLength,
     head: text.slice(0, HEAD_CHARS),
     ...(r.truncated === true ? { truncated: true } : {}),
     ...(r.challenge ? { challenge: r.challenge } : {}),
+    ...(pageState ? { pageState } : {}),
     ...(r.memoryReceipt ? { memoryReceipt: r.memoryReceipt } : {}),
     ...(typeof r.memoryWarning === "string" ? { memoryWarning: r.memoryWarning } : {}),
   };

@@ -177,6 +177,12 @@ function mappedPage(value: unknown): unknown {
 const PAGE_TOOLS: Record<string, true> = { open: true, goto: true, snapshot: true, extract: true, fetch: true, info: true };
 const PAGE_WRAPPERS: Record<string, true> = { click: true, type: true, press: true, select: true, hover: true, upload: true, history: true, scroll: true, wait: true, real_input: true };
 
+// Whether a read's arguments take part of the page, which says nothing of
+// the whole page's state.
+export function partialRead(args: Record<string, unknown>): boolean {
+  return ["query", "root", "ref", "selector", "interactive", "diff"].some((key) => args[key] !== undefined && args[key] !== false);
+}
+
 export function withPageState(tool: string, value: unknown, scope?: { partial?: boolean }): unknown {
   const object = record(value);
   if (!object) return value;

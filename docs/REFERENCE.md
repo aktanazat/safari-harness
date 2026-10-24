@@ -363,8 +363,10 @@ again with `save` (next section) instead of fetching it twice.
 
 `extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
 to a file, and the answer is only `{saved, url, bytes, head}`: the file's
-path, the page's address, its size in bytes, and its first 500 characters.
-Read the parts you need from the file (grep it, or read a range) instead of
+path, the page's address, its size in bytes, and its first 500 characters,
+with the read's `status` and `type` when it has them (`fetch`) and its
+`pageState`: a page not found or a rate limit says `kind: "error"`. Read
+the parts you need from the file (grep it, or read a range) instead of
 carrying the page in context.
 
 - `save: true` writes a new file,

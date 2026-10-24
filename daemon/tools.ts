@@ -34,7 +34,7 @@ import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, typ
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
-import { withPageState, stateLine } from "./page-state.ts";
+import { partialRead, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
@@ -2342,7 +2342,7 @@ function saving(kind: SaveKind, run: (a: Record<string, unknown>) => Promise<unk
     if (a.save === undefined || a.save === false) return run(a);
     const target = targetOf(a.save, "file");
     const tab = await resolveTab(a.tab);
-    return saveOutput(kind, await run({ ...withLimit(kind, a), tab }), target, async () => (await listTabs()).find((t) => t.id === tab)?.url ?? "");
+    return saveOutput(kind, await run({ ...withLimit(kind, a), tab }), target, async () => (await listTabs()).find((t) => t.id === tab)?.url ?? "", partialRead(a));
   };
 }
 
@@ -3222,7 +3222,7 @@ async function invokeTool(name: string, args: Record<string, unknown>, model: bo
           back = again.note ?? back;
         }
       }
-    }), { partial: ["query", "root", "ref", "selector", "interactive", "diff"].some((key) => call.args[key] !== undefined && call.args[key] !== false) }));
+    }), { partial: partialRead(call.args) }));
     return back === undefined ? result : beside(result, "note", back);
   } catch (e) {
     throw await unopened(goneWhy(e, call.args.tab));
