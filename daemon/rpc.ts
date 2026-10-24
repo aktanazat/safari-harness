@@ -12,12 +12,34 @@
 // first, is made again, once, as soon as a daemon answers again.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ownerOf } from "./owner.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
+}
+
+// While scripts/dev-install.sh deploys, this file holds the second it
+// expects to be done by. A daemon that does not answer then is restarting,
+// not missing: on 10-23 a call in a deploy said to install it (HD-13).
+const DEPLOYING = join(homedir(), ".local", "share", "safari-harness", "deploying");
+
+// Seconds until the deploy on this Mac expects to be done, or undefined
+// when none runs.
+export function deployingFor(): number | undefined {
+  if (process.env.SAFARI_HARNESS_REMOTE) return undefined;
+  let until: number;
+  try {
+    until = Number(readFileSync(DEPLOYING, "utf8").trim());
+  } catch {
+    return undefined;
+  }
+  const left = Math.ceil(until - Date.now() / 1000);
+  return left > 0 ? left : undefined;
 }
 
 // A named REPL session's process (repl-host.ts) outlives the command that
@@ -123,7 +145,15 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   const effectful = affectsPage(tool, args);
   let res = await attempt(base, body, effectful);
-  if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body, effectful);
+  if (typeof res === "string") {
+    // a deploy's restart may outlast launchd's, up to the 503 wait
+    const ms = Math.max(BACK_MS[res], Math.min((deployingFor() ?? 0) * 1000, BACK_MS.restarting));
+    if (await back(base, ms)) res = await attempt(base, body, effectful);
+  }
+  if (typeof res === "string") {
+    const left = deployingFor();
+    if (left !== undefined) throw new HarnessError("unavailable", `safari is restarting for a deploy; try again in ${left} s`, { effect: "none", retryable: true, next: `wait ${left} s, then make the call again` });
+  }
   if (res === "refused") throw new HarnessError("unavailable", `safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`, { effect: "none", retryable: true, next: "check safari status and start the daemon if needed" });
   if (res === "restarting") throw new HarnessError("unavailable", `the safari daemon at ${base} is restarting and did not answer again within ${BACK_MS.restarting / 1000} s; check it with: safari status`, { effect: "none", retryable: true, next: "wait for the daemon to finish restarting" });
   const out = (await res.json()) as { ok: boolean; value?: unknown; error?: string; failure?: unknown };

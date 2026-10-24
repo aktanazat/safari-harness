@@ -101,8 +101,11 @@ helpers() {
 # restart WHY: stops the daemon once its calls in flight finish and starts
 # the current release's. A fallback first stops that sole job, then either
 # retains compatible state or restores an unchanged pre-start snapshot.
+# Meanwhile DATA/deploying holds the second it should be done by: a call
+# that finds no daemon says a deploy restarts it (rpc.ts), not to install.
 restart() {
   local old pid busy i
+  echo $(($(date +%s) + 120)) >"$DATA/deploying"
   old="$(health .pid)"
   if [ -n "$old" ] && [ "$(job "$DAEMON")" = "$CURRENT/daemon/main.ts" ]; then
     busy="$(curl -s --max-time 5 -X POST -H 'content-type: application/json' -d "$(jq -cn --arg r "$what $sha: $1" '{reason: $r}')" "$BASE/shutdown" | jq -r '.inFlight // 0' 2>/dev/null || true)"
@@ -148,7 +151,7 @@ restart() {
 until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 tmp=""
 checkpoint=""
-trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rmdir "$LOCK"' EXIT
+trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rm -f "$DATA/deploying"; rmdir "$LOCK"' EXIT
 mkdir -p "$RELEASES"
 before="$(readlink "$CURRENT" 2>/dev/null || true)"
 
@@ -299,6 +302,7 @@ elif [ "$(health .code)" != "$want" ]; then
 else
   echo "daemon: unchanged"
 fi
+rm -f "$DATA/deploying"
 
 if [ -n "$app" ]; then
   was="$(health .extension.connectedAt)"
@@ -324,7 +328,23 @@ else
   echo "extension: unchanged"
 fi
 
-[ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what" >>"$DATA/deploys.log"
+# The live release sat off master for a day on 10-23, and work started from
+# master lacked its fixes (HD-1). Its .upstream says how far ahead of
+# origin/master it is, as this checkout knows origin, for safari status.
+unmerged=""
+master="$(git -C "$ROOT" rev-parse --verify --quiet "origin/master^{commit}" || true)"
+ahead="$([ -z "$master" ] || git -C "$ROOT" rev-list --count "$master..$sha" 2>/dev/null || true)"
+if [ -n "$ahead" ]; then
+  branch="$(git -C "$ROOT" name-rev --name-only --no-undefined --refs='refs/heads/*' "$sha" 2>/dev/null || echo "$sha")"
+  jq -n --arg branch "$branch" --argjson ahead "$ahead" --arg master "${master:0:7}" --arg at "$(date -u +%FT%TZ)" '{branch: $branch, ahead: $ahead, master: $master, at: $at}' >"$REL/.upstream"
+  if [ "$ahead" != 0 ]; then
+    unmerged=" unmerged $branch"
+    echo "warning: release $sha is $ahead commit(s) ahead of origin/master, from branch $branch; merge it, or work started from master lacks it" >&2
+  fi
+else
+  rm -f "$REL/.upstream"
+fi
+[ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what$unmerged" >>"$DATA/deploys.log"
 bun "$CHECKPOINTS" discard "$DATA" "$BASE" "$checkpoint"
 checkpoint=""
 
