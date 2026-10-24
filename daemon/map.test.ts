@@ -275,13 +275,13 @@ test("every tab map opens is closed, a failed page's and a bot check's included"
 });
 
 // Nobody watches these tabs, so a check still up once open has waited on it
-// is reported: the agent decides whether to open that page and hand it to
-// the user.
+// is reported with the step that often gets past it: the page opened in a
+// tab, and a wait. In October 28 of 48 runs read "or leave it" as leave it.
 test("a bot check is reported on its page and its page is never read", async () => {
   jest.useFakeTimers();
   readUrls.length = 0;
   const pages = await waited(map({ urls: [WALLED, "https://shop.example/a"] }));
-  expect(pages[0]).toMatchObject({ url: WALLED, ok: false, challenge: { kind: "cloudflare", where: "page" } });
+  expect(pages[0]).toMatchObject({ url: WALLED, ok: false, challenge: { kind: "cloudflare", where: "page" }, error: expect.stringMatching(/open it in a tab and wait a few seconds.*handoff only if it still stands and the page matters$/) });
   expect(pages[1].ok).toBe(true);
   expect(readUrls).toEqual(["https://shop.example/a"]);
 });
@@ -553,7 +553,7 @@ test("a site that showed this task a bot check is not loaded again, saying who m
   await as("SacCake", { urls: [WALLED] });
   const before = opened.length;
   const [page] = (await as("Lead", { urls: [`${WALLED}menu`] })).pages;
-  expect(page).toMatchObject({ ok: false, challenge: { kind: "cloudflare", where: "page" }, error: expect.stringMatching(/^walled\.example showed a cloudflare bot check to SacCake \d+ s ago, so it was not loaded again: .*fresh: true loads it anyway$/) });
+  expect(page).toMatchObject({ ok: false, challenge: { kind: "cloudflare", where: "page" }, error: expect.stringMatching(/^walled\.example showed a cloudflare bot check to SacCake \d+ s ago, so it was not loaded again: open it in a tab and wait a few seconds.*handoff only if it still stands and the page matters; fresh: true loads it anyway$/) });
   expect(opened.length).toBe(before);
   await as("Lead", { urls: [WALLED], fresh: true });
   await as("Other", { urls: [WALLED] }, process.ppid);

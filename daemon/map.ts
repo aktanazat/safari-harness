@@ -30,8 +30,11 @@ export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 
 // A check that stands in for the page leaves nothing to read; one in a box
 // on a page that otherwise reads normally is noted beside what was read.
+// "or leave it" here was read as leave it: 28 of 48 runs that met a check
+// in October never opened the page (harness-audit), and on 10-23 the
+// Lancet's check that stood through map's 9 s let a tab opened later in.
 const CHECKED: Record<"page" | "block", string> = {
-  page: "a bot check stands in for the page; open it and hand it to the user with handoff, or leave it",
+  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters",
   block: "the site turns the browser away; the user cannot clear that either",
 };
 

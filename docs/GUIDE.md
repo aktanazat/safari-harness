@@ -119,9 +119,13 @@ Before a site
   sentence of at most 300 characters, never a secret: `learn {site, fact,
   source}`. `history: true` lists edits; `undo: "<id>"` reverses the latest
   applicable edit without overwriting later or manual changes.
-- A public page reads faster with `read` or `web_search`; on a 403, use
-  `map`, and if it reports a bot check, `open` the page and let it clear.
-  Put files you only read under /tmp with `out`.
+- A public page reads faster with `read` or `web_search`. A `read` that
+  could not load the page (a 403, a bot check, a sign-in page, X) comes
+  back with a `safari:` line: Safari's copy, or what Safari answered and
+  the next step. A curl or fetch that met a wall gets the `safari map`
+  command for its page. Call a page blocked only after Safari also failed
+  on it, quoting what Safari answered; a run that ends with such a page
+  untried is sent back once. Put files you only read under /tmp with `out`.
 - Public GitHub code and trees: `gh api`, `gh`, or a shallow clone and raw
   files, not Safari; Safari is for rendered docs, search, and sign-ins.
 
@@ -136,8 +140,11 @@ cookie, or token, in a reply or a log line. Never sign him out.
 
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and
-  never read its answer from a screenshot. A `challenge` in a result:
-  `handoff {tab, why}`; `where: "block"` cannot be cleared: report it.
+  never read its answer from a screenshot. A `challenge` from `map`:
+  `open` the page in a tab and `wait` a few seconds for its text, since
+  many checks clear by themselves there. One still up in a tab:
+  `handoff {tab, why}` if the page matters. `where: "block"` cannot be
+  cleared: report it.
 
 Privacy and care
 - List his tabs only when the task is about a page he has open.

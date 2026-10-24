@@ -1,4 +1,5 @@
 import { daemonHttp } from "../daemon/rpc.ts";
+import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
 
 type AgentEnd = { willContinue?: boolean };
 type Context = {
@@ -7,10 +8,13 @@ type Context = {
   sessionManager?: { getSessionId(): string };
 };
 type ToolCall = { toolName: string; input: Record<string, unknown> };
-type ToolCallResult = { input: Record<string, unknown> };
+type ToolCallResult = { input: Record<string, unknown> } | { block: true; reason: string };
 type ExtensionApi = {
   on(event: "agent_end", handler: (event: AgentEnd, ctx: Context) => void | Promise<void>): void;
   on(event: "tool_call", handler: (event: ToolCall, ctx: Context) => ToolCallResult | undefined): void;
+  on(event: "tool_result", handler: (event: ToolResult, ctx: Context) => Promise<{ content: Block[] } | undefined>): void;
+  on(event: "session_stop", handler: (event: unknown, ctx: Context) => { continue: true; additionalContext: string } | undefined): void;
+  on(event: "before_agent_start", handler: (event: unknown, ctx: Context) => void): void;
   logger?: { warn(message: string): void };
 };
 
@@ -123,6 +127,13 @@ function unwrapped(command: string): string {
 
 export default function safariTurnEnd(pi: ExtensionApi) {
   pi.on("tool_call", (event, ctx) => {
+    // A helper ends its run by calling yield; one whose run met a page
+    // that did not load, with no Safari attempt at it, is sent back once.
+    if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
+      const session = ctx.sessionManager?.getSessionId();
+      const reason = session === undefined ? undefined : unanswered(session);
+      return reason === undefined ? undefined : { block: true, reason };
+    }
     const task = taskOf(ctx);
     if (task === undefined) return;
     if (event.toolName.startsWith("mcp__safari_")) {
@@ -146,6 +157,17 @@ export default function safariTurnEnd(pi: ExtensionApi) {
       return;
     }
     return release(pi, task);
+  });
+  pi.on("tool_result", (event, ctx) => webResult(event, ctx.sessionManager?.getSessionId(), () => taskOf(ctx)));
+  // A lead's run that would end the same way continues once.
+  pi.on("session_stop", (_event, ctx) => {
+    const session = ctx.sessionManager?.getSessionId();
+    const reason = session === undefined ? undefined : unanswered(session);
+    return reason === undefined ? undefined : { continue: true, additionalContext: reason };
+  });
+  pi.on("before_agent_start", (_event, ctx) => {
+    const session = ctx.sessionManager?.getSessionId();
+    if (session !== undefined && ctx.agent?.kind !== "sub") newRun(session);
   });
 }
 

@@ -129,6 +129,6 @@ export function checked(url: string): { error: string; challenge: Challenge } | 
   const { kind, where } = check.challenge;
   const error = where === "block"
     ? `${site(host)} turned the browser away (${kind}) for ${who} ${when}, so it was not loaded again; the user cannot clear that either: skip it`
-    : `${site(host)} showed ${kind === "other" ? "a bot check" : `a ${kind} bot check`} to ${who} ${when}, so it was not loaded again: hand it to the user once (open it, then handoff), or skip it; fresh: true loads it anyway`;
+    : `${site(host)} showed ${kind === "other" ? "a bot check" : `a ${kind} bot check`} to ${who} ${when}, so it was not loaded again: open it in a tab and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters; fresh: true loads it anyway`;
   return { error, challenge: check.challenge };
 }
