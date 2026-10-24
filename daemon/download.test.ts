@@ -99,20 +99,25 @@ test("JSON in place of the kind of file out names is kept, and the answer is not
 });
 
 // On 10-22 an agent fetched ten product images through ten map calls in
-// nine minutes.
-test("download of several urls saves each under its place in the list, reports a failed one in its place, and a second run writes over the first", async () => {
-  const [a, gone, b] = ["https://cdn.example/p/a.jpg", "https://cdn.example/p/gone.jpg", "https://cdn.example/p/b.jpg"];
-  images.set(a, Buffer.from("a's bytes")).set(gone, null).set(b, Buffer.from("b's bytes"));
+// nine minutes. A later batch, or a file already in the folder, keeps its
+// bytes: numbering restarts with each call.
+test("download of several urls saves each under its place in the list, reports a failed one in its place, and replaces no file already there", async () => {
+  const [a, gone, b, other] = ["https://cdn.example/p/a.jpg", "https://cdn.example/p/gone.jpg", "https://cdn.example/p/b.jpg", "https://other.example/a.jpg"];
+  images.set(a, Buffer.from("a's bytes")).set(gone, null).set(b, Buffer.from("b's bytes")).set(other, Buffer.from("the other a"));
   const folder = join(dir, "batch");
-  const answer = { folder, files: [
+  expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual({ folder, files: [
     { path: join(folder, "01-a.jpg"), name: "01-a.jpg", size: 9, type: "image/jpeg" },
     { url: gone, error: "download failed: HTTP 404: nothing is at that address; take a file's address from its page (a ref's link) or the site's API rather than building it" },
     { path: join(folder, "03-b.jpg"), name: "03-b.jpg", size: 9, type: "image/jpeg" },
-  ] };
-  expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual(answer);
-  expect(await TOOLS.download.run({ urls: [a, gone, b], out: folder })).toEqual(answer);
-  expect(readdirSync(folder).sort()).toEqual(["01-a.jpg", "03-b.jpg"]);
-  expect(readFileSync(join(folder, "03-b.jpg"), "utf8")).toBe("b's bytes");
+  ] });
+  expect(await TOOLS.download.run({ urls: [other], out: folder })).toEqual({ folder, files: [
+    { path: join(folder, "01-a (1).jpg"), name: "01-a (1).jpg", size: 11, type: "image/jpeg" },
+  ] });
+  expect(Object.fromEntries(readdirSync(folder).sort().map((name) => [name, readFileSync(join(folder, name), "utf8")]))).toEqual({
+    "01-a (1).jpg": "the other a",
+    "01-a.jpg": "a's bytes",
+    "03-b.jpg": "b's bytes",
+  });
 });
 
 const RAW = "https://raw.githubusercontent.com/o/r/main/src/a.c";

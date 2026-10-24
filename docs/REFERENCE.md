@@ -2098,9 +2098,10 @@ without it.
   with that file, as it answers any file it saves, instead of an error.
 - `urls: [...]` (CLI `safari download <url> <url>... --out dir`) saves
   several files into the folder `out` names (`~/Downloads` unless it
-  does), each as `01-<name>`, `02-<name>`… so a second run writes over the
-  first. The first goes alone, then four at a time; the answer is
-  `{folder, files}`, a failed one in its place as `{url, error}`.
+  does), each as `01-<name>`, `02-<name>`…; beside a file already there
+  it is `01-<name> (1)`, never replacing it. The first goes alone, then
+  four at a time; the answer is `{folder, files}`, a failed one in its
+  place as `{url, error}`.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
   download still under way when the action ends is waited for up to 30 s;
