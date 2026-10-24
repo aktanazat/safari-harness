@@ -383,6 +383,8 @@ test("a helper that would yield with a page Safari did not load either is sent b
 const opened = `{\n "id": 239642,\n "url": "${ETSY}",\n "title": "Clawd plush"\n}`;
 const stillChecked = `{\n "id": 239642,\n "url": "${ETSY}",\n "title": "Just a moment...",\n "challenge": {\n  "kind": "cloudflare",\n  "where": "page"\n }\n}`;
 const snapshotChecked: Result = { toolName: "mcp__safari_snapshot", toolCallId: "s", input: { tab: 239642 }, content: [{ type: "text", text: `# Just a moment... — ${ETSY} (24 nodes)\nchallenge: {"kind":"cloudflare","where":"page"}\nVerifying you are human. This may take a few seconds.` }] };
+// A run of steps as the NCBI check's was on 10-24: [n tool] and each step's answer.
+const runOf = (steps: { tool: string; args?: Record<string, unknown> }[], text: string): Result => ({ toolName: "write", toolCallId: "r", input: { path: "xd://mcp__safari_run", content: JSON.stringify({ steps }) }, content: [{ type: "text", text }] });
 // What a run did after a wall, and whether its end is held for it: a page
 // Safari met a check on is answered by acting on the page in a tab, not by
 // a read that meets the check again.
@@ -395,6 +397,8 @@ const LATER: [string, (url: string) => unknown, Result[], boolean][] = [
   ["an open the check still stood in", checked, [{ toolName: "mcp__safari_open", toolCallId: "o", input: { url: ETSY }, content: [{ type: "text", text: stillChecked }] }], false],
   ["a snapshot of a tab the check stood in", copied, [snapshotChecked], true],
   ["a snapshot of a tab the check stood in, then a wait on that tab", copied, [snapshotChecked, { toolName: "mcp__safari_wait", toolCallId: "w", input: { tab: 239642, text: "Clawd", ms: 15000 }, content: [{ type: "text", text: '{"ok":true,"found":"Clawd","waitedMs":4200}' }] }], false],
+  ["a run that opened the page and waited, the check standing at its open", checked, [runOf([{ tool: "open", args: { url: ETSY } }, { tool: "wait", args: { ms: 8000 } }, { tool: "info" }], `[1 open] ${stillChecked}\n[2 wait] {\n "ok": true,\n "waitedMs": 3248\n}\n[3 info] {\n "url": "${ETSY}",\n "title": "Clawd plush"\n}`)], false],
+  ["a run whose one step was a map that met the check again", checked, [runOf([{ tool: "map", args: { urls: [ETSY] } }], `[1 map] ## Just a moment... — ${ETSY} (0 ms; challenge: {"kind":"cloudflare","where":"page"})\nerror: ${CHECKED}`)], true],
 ];
 
 test.each(LATER)("a read wall followed by %s holds the run's end: %p", async (_name, answer, later, held) => {

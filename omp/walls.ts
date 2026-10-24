@@ -49,9 +49,9 @@ const SHELL_WALLS: [RegExp, string, boolean][] = [
   [/Access Denied/i, "Access Denied", true],
   [/captcha|verify you are (?:a )?human|Just a moment\.\.\./i, "a bot check", true],
 ];
-// Safari calls that act on the page in a tab: a check they still show is
-// theirs to judge, where map would only answer it again from the task's
-// memory of the check (daemon/reads.ts).
+// Safari calls that act on the page in a tab, alone or as a step of a run:
+// a check they still show is theirs to judge, where map would only answer
+// it again from the task's memory of the check (daemon/reads.ts).
 const ATTEMPTS: Record<string, true> = { open: true, goto: true, wait: true, handoff: true, repl: true, real_input: true };
 
 const NEXT_CHECK = "open it in a tab (safari open URL) and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters";
@@ -270,6 +270,14 @@ function safariCall(toolName: string, input: Record<string, unknown>, text: stri
   return tool === undefined ? undefined : { tool: tool.replaceAll("-", "_"), input, text };
 }
 
+// One of ATTEMPTS, or a run with one among the steps its answer lists
+// ("[2 wait] …", from the MCP tool and the CLI alike): NCBI's check on
+// 10-24 cleared during a run's open, wait and info.
+function attempts(call: SafariCall): boolean {
+  if (call.tool !== "run") return Object.hasOwn(ATTEMPTS, call.tool);
+  return [...call.text.matchAll(/^\[\d+ ([a-z_]+)\]/gm)].some((m) => Object.hasOwn(ATTEMPTS, m[1] ?? ""));
+}
+
 // What a Safari call tells of the run's walls: any call on a wall's site
 // answers it, and a check one met, other than on a page it acts on in a
 // tab, is a wall of its own.
@@ -280,7 +288,7 @@ function sawSafari(session: string, call: SafariCall) {
   if (Number.isInteger(tab) && shown !== undefined) tabs.set(tab, hostOf(shown));
   if (tabs.has(tab)) hosts.add(tabs.get(tab) ?? "");
   for (const wall of walls.get(session) ?? []) if (hosts.has(wall.host)) wall.answered = true;
-  if (Object.hasOwn(ATTEMPTS, call.tool)) return;
+  if (attempts(call)) return;
   for (const m of call.text.matchAll(/"where":\s*"page"/g)) {
     const checked = urlsIn(call.text.slice(0, m.index)).at(-1);
     if (checked !== undefined) metWall(session, checked, "Safari showed a bot check", false);
