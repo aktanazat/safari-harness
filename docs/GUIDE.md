@@ -116,6 +116,8 @@ Before a site
 - A public page reads faster with `read` or `web_search`; on a 403, use
   `map`, and if it reports a bot check, `open` the page and let it clear.
   Put files you only read under /tmp with `out`.
+- Public GitHub code and trees: `gh api`, `gh`, or a shallow clone and raw
+  files, not Safari; Safari is for rendered docs, search, and sign-ins.
 
 Signing in, in this order
 1. A session: most of his sites are signed in.
