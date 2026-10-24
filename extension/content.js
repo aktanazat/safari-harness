@@ -2610,8 +2610,20 @@
     return named ? [named] : [];
   }
 
+  // The ways a sign-in offers to send its code, when it asks for one before
+  // it shows a field: Instagram's chooser offered an authentication app or
+  // a text message, and code answered only that no field was there.
+  const CODE_METHOD = /authenticat|text message|\bsms\b|whatsapp|security key|backup code|recovery code|\be-?mail\b|\bcall\b|another way|other (?:options|ways)|verification method/i;
+  function codeMethods() {
+    const named = deepQueryAll("button, a[href], label, input[type=radio], [role=button], [role=link], [role=radio], [role=option], [role=menuitem], [role=menuitemradio]")
+      .filter(shown).map((el) => (accessibleName(el) || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)).filter((n) => CODE_METHOD.test(n));
+    return [...new Set(named)].slice(0, 6);
+  }
+
   function codeField() {
-    return { origin: location.origin, found: codeFields().length > 0 };
+    if (codeFields().length) return { origin: location.origin, found: true };
+    const methods = codeMethods();
+    return { origin: location.origin, found: false, ...(methods.length ? { methods } : {}) };
   }
 
   // A change-password (or sign-up) form: the new-password fields, marked
