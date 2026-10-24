@@ -151,22 +151,21 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
 
 // A folder's index.json: each page a map saved there, or failed to, by
 // address; a later map's entry for an address takes the place of the
-// earlier. One map writes it at a time. A file there of another shape is
-// left as it is.
+// earlier. One map writes it at a time. A file there that map did not
+// write is the user's, and is left as it is.
+type IndexEntry = { url: string; finalUrl?: string; title?: string; ok: boolean; status?: number; ms: number; saved?: string; error?: string };
+const INDEX_FIELDS: Record<keyof IndexEntry, true> = { url: true, finalUrl: true, title: true, ok: true, status: true, ms: true, saved: true, error: true };
 const indexing = new Map<string, Promise<string>>();
-export function writeIndex(dir: string, entries: { url: string }[]): Promise<string> {
+export function writeIndex(dir: string, entries: IndexEntry[]): Promise<string> {
   const path = join(dir, "index.json");
   const written = (indexing.get(path) ?? Promise.resolve(path)).catch(() => path).then(async () => {
     const text = await readFile(path, "utf8").catch((e: unknown) => {
-      if (e instanceof Error && "code" in e && e.code === "ENOENT") return "[]";
+      if (e instanceof Error && "code" in e && e.code === "ENOENT") return undefined;
       throw e;
     });
-    let before: unknown;
-    try {
-      before = JSON.parse(text);
-    } catch {}
-    if (!Array.isArray(before)) throw new Error(`${path} is not a map's index, so it was left as it is`);
-    const byUrl = new Map(before.map((entry: { url?: unknown }) => [entry?.url, entry]));
+    const before = text === undefined ? [] : mapIndex(text);
+    if (!before) throw new Error(`${path} is not a map's index, so it was left as it is`);
+    const byUrl = new Map(before.map((entry) => [entry.url, entry]));
     for (const entry of entries) {
       byUrl.delete(entry.url);
       byUrl.set(entry.url, entry);
@@ -180,4 +179,22 @@ export function writeIndex(dir: string, entries: { url: string }[]): Promise<str
     if (indexing.get(path) === written) indexing.delete(path);
   }).catch(() => {});
   return written;
+}
+
+// The entries of an index.json map wrote: never empty, and each with map's
+// url, ok and ms and no field map does not write.
+function mapIndex(text: string): IndexEntry[] | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return Array.isArray(value) && value.length > 0 && value.every(isIndexEntry) ? value : undefined;
+}
+
+function isIndexEntry(value: unknown): value is IndexEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.url === "string" && typeof entry.ok === "boolean" && typeof entry.ms === "number" && Object.keys(entry).every((key) => Object.hasOwn(INDEX_FIELDS, key));
 }

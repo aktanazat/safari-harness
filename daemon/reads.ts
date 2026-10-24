@@ -1,10 +1,11 @@
 // What a task's agents read and met, for the task's later loads: map's
 // pages read in the last 10 minutes, and the bot checks sites showed. A
-// task is the agent process its calls come from (owner.ts): a lead and its
-// helpers share one, and nothing passes between tasks. On 10-23 a kernel
-// research task's 1526 loads covered 1016 addresses, and 297 of them read
-// a page another of its agents had read (K9); on 10-22 five agents of a
-// shopping task met Yelp's DataDome check six times in 2 h 22 min (SR-2).
+// task is a session of the agent process its calls come from (owner.ts):
+// a lead and the helpers it started share one, and nothing passes to
+// another session or process. On 10-23 a kernel research task's 1526
+// loads covered 1016 addresses, and 297 of them read a page another of its
+// agents had read (K9); on 10-22 five agents of a shopping task met Yelp's
+// DataDome check six times in 2 h 22 min (SR-2).
 
 import type { Challenge } from "./challenge.ts";
 import { currentOwner, currentTask, watchOwner } from "./owner.ts";
@@ -40,8 +41,22 @@ function drop(key: string) {
   chars -= read.chars;
 }
 
-// Which of the task's agents it was, as omp names a task [session, agent]
-// (omp/index.ts), and how long ago.
+// The key of what a task keeps: its process, its session, and parts. omp
+// names a task [session, agent], and a helper's [its own session, agent,
+// its lead's session] (omp/index.ts); another program's task is a session
+// of its own.
+function keyOf(pid: number, ...parts: string[]): string {
+  const task = currentTask();
+  let session = task ?? null;
+  try {
+    const named: unknown = task === undefined ? undefined : JSON.parse(task);
+    if (Array.isArray(named) && typeof named[0] === "string") session = typeof named[2] === "string" ? named[2] : named[0];
+  } catch {}
+  return JSON.stringify([pid, session, ...parts]);
+}
+
+// Which of the task's agents it was, as omp names a task [session, agent,
+// …] (omp/index.ts), and how long ago.
 function by(kept: Kept): { who: string; when: string } {
   const s = Math.round((Date.now() - kept.at) / 1000);
   const when = s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
@@ -59,7 +74,7 @@ function by(kept: Kept): { who: string; when: string } {
 export function recall(read: string, url: string): { value: unknown; from: string } | undefined {
   const pid = owner();
   if (pid === undefined) return undefined;
-  const key = JSON.stringify([pid, read, url]);
+  const key = keyOf(pid, read, url);
   const kept = reads.get(key);
   if (!kept) return undefined;
   if (Date.now() - kept.at > KEEP_MS) {
@@ -75,7 +90,7 @@ export function keep(read: string, url: string, value: unknown) {
   if (pid === undefined) return;
   const size = JSON.stringify(value).length;
   if (size > MAX_CHARS) return;
-  const key = JSON.stringify([pid, read, url]);
+  const key = keyOf(pid, read, url);
   drop(key);
   reads.set(key, { owner: pid, at: Date.now(), task: currentTask(), value, chars: size });
   chars += size;
@@ -92,7 +107,7 @@ export function met(url: string, challenge: Challenge | null | undefined) {
   const pid = owner();
   const host = URL.parse(url)?.hostname;
   if (pid === undefined || !host || challenge === undefined || challenge?.where === "box") return;
-  const key = JSON.stringify([pid, site(host)]);
+  const key = keyOf(pid, site(host));
   if (challenge === null) checks.delete(key);
   else checks.set(key, { owner: pid, at: Date.now(), task: currentTask(), challenge });
 }
@@ -103,7 +118,7 @@ export function checked(url: string): { error: string; challenge: Challenge } | 
   const pid = owner();
   const host = URL.parse(url)?.hostname;
   if (pid === undefined || !host) return undefined;
-  const key = JSON.stringify([pid, site(host)]);
+  const key = keyOf(pid, site(host));
   const check = checks.get(key);
   if (!check) return undefined;
   if (Date.now() - check.at > KEEP_MS) {

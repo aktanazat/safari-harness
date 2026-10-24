@@ -195,9 +195,10 @@ the card's passkey signature over that request's challenge.
 owned tab IDs with a call-generation token; it never closes a page.
 `turn-end` releases that preparation. New work in the same task invalidates
 it; unrelated helpers do not. A request without a preparation is rejected.
-omp tags browser calls with the session and agent identity, including calls
-through the CLI and shared REPLs. Each helper's final `agent_end` releases
-only its pages and empty windows. Main-session completion or process exit
+omp tags browser calls with the session and agent identity (a helper's
+with its lead's session too), including calls through the CLI and shared
+REPLs. Each helper's final `agent_end` releases only its pages and empty
+windows. Main-session completion or process exit
 also releases any abandoned descendants. Identically named groups in
 different tasks still get separate windows. Clicked pages, filled fields,
 site-global tabs and an agent page in front are included. Pages explicitly

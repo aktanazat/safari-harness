@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -499,8 +499,29 @@ test("with save to a folder, map keeps an index.json there of every page, failed
   expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")).map((e: { url: string }) => e.url)).toEqual(["https://shop.example/a", GONE]);
 });
 
-// A task's agents, as omp names one: [session, agent].
-const as = (agent: string, args: Record<string, unknown>, pid = process.pid) => runAs(pid, () => waited(mapPages(args, callTool)), JSON.stringify(["s1", agent]));
+// An index.json map did not write is the user's: on review one holding
+// [{"name":"first"},{"name":"second"}] lost its first entry to a map that
+// saved beside it.
+test.each([
+  ['[{"name":"first"},{"name":"second"}]'],
+  ['[{"url":"https://shop.example/a","title":"A"}]'],
+  ['[{"url":"https://shop.example/a","ok":true,"ms":1,"notes":"mine"}]'],
+  ["[]"],
+])("map leaves an index.json it did not write as it is, and says so: %s", async (theirs) => {
+  const dir = mkdtempSync(join(tmpdir(), "map-"));
+  writeFileSync(join(dir, "index.json"), theirs);
+  const answer = await mapPages({ urls: ["https://shop.example/a"], save: dir }, callTool);
+  expect({ index: answer.index, note: answer.note, file: readFileSync(join(dir, "index.json"), "utf8") }).toEqual({
+    index: undefined,
+    note: `no index.json: ${join(dir, "index.json")} is not a map's index, so it was left as it is`,
+    file: theirs,
+  });
+});
+
+// A session's agents, as omp names them (omp/index.ts): its lead [session,
+// agent], and each helper [a session of its own, agent, the lead's session].
+const taskIn = (session: string, agent: string) => JSON.stringify(agent === "Lead" ? [session, agent] : [`${session}/${agent}`, agent, session]);
+const as = (agent: string, args: Record<string, unknown>, pid = process.pid, session = "s1") => runAs(pid, () => waited(mapPages(args, callTool)), taskIn(session, agent));
 
 // On 10-23 a kernel research task's 1526 loads covered 1016 addresses, and
 // 297 of them read a page another of its agents had read (K9).
@@ -537,6 +558,22 @@ test("a site that showed this task a bot check is not loaded again, saying who m
   await as("Lead", { urls: [WALLED], fresh: true });
   await as("Other", { urls: [WALLED] }, process.ppid);
   expect(opened.length).toBe(before + 2);
+});
+
+// omp can move a process to another session (/new, /resume) within the 10
+// minutes; on review a page one session read, and a site that showed it a
+// check, reached the next.
+test("a page or a site one session read or met is loaded again for another session of the same process", async () => {
+  jest.useFakeTimers();
+  const page = "https://shop.example/session";
+  readUrls.length = 0;
+  await as("Lead", { urls: [page] }, process.pid, "s2");
+  await as("Lead", { urls: [page] }, process.pid, "s3");
+  expect(readUrls).toEqual([page, page]);
+  await as("Helper", { urls: [WALLED] }, process.pid, "s2");
+  const before = opened.length;
+  await as("Lead", { urls: [WALLED] }, process.pid, "s3");
+  expect(opened.length).toBe(before + 1);
 });
 
 // On 10-22 a map of four Google searches met four reCAPTCHA pages (K12).
