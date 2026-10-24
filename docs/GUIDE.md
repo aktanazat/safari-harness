@@ -5,8 +5,8 @@ Read this card once; it is also the safari skill. After your context is
 compacted, do not read it or the reference again: `safari guide <tool>`
 prints that tool's section (`safari guide eval`), `safari guide
 reference` lists the other sections, `safari guide <site>` a site's
-guide, `safari guide repl` the script API, and `safari <command> --help`
-one command's flags.
+guide, `safari guide repl` the script API (several at once: `safari guide
+repl x`), and `safari <command> --help` one command's flags.
 
 Tabs
 - `open` returns a tab id; pass it as `tab` to every call. `tab: "front"`

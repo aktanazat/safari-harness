@@ -89,3 +89,20 @@ test("safari guide reference lists the sections instead of printing the referenc
   expect(await guide("reference no such section")).toBeNull();
 });
 
+// On 10-22 `safari guide repl x linkedin` missed whole, and its agent asked
+// for each again; another chained lookups with &&.
+test("several topics in one call print each, a miss named in its place", async () => {
+  const text = await guide("click type zzqq");
+  expect(headings(text)).toEqual(["## click", "## type"]);
+  expect(text).toContain(noGuide("zzqq"));
+  expect(await guide("zzqq zzqx")).toBeNull();
+});
+
+// On 10-22 six agents asked for google-search after `safari guide google`
+// listed google's guides, and `safari guide search` missed.
+test("google and search print the google search guide", async () => {
+  const search = await guide("google-search");
+  expect(await guide("search")).toBe(search);
+  expect(await guide("google")).toStartWith((search ?? "").trimEnd());
+});
+

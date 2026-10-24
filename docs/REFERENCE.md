@@ -2317,6 +2317,10 @@ Read it before working on that site.
   `my.uscis.gov`'s); by name (`safari guide slack`), those of every host
   its guide covers. `safari guide sites` ends with the hosts that have
   notes or readers.
+- Several topics print in one call, each in turn: `safari guide repl x
+  linkedin`; a word that names nothing says so in its place.
+- `safari guide google` and `safari guide search` print the Google search
+  guide, with a line naming google's other guides.
 
 ## replay
 

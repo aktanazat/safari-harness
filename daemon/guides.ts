@@ -11,7 +11,9 @@ import { bundled, covering, covers, type Guide } from "./site-guides.ts";
 
 const DOCS = new URL("../docs/", import.meta.url);
 
-// which is what followed `safari guide`, its words joined by spaces.
+// which is what followed `safari guide`, its words joined by spaces. Words
+// that name nothing together are each a topic of their own: on 10-22
+// `safari guide repl x linkedin` missed, and its agent asked three times.
 export async function guide(which?: string): Promise<string | null> {
   const words = (which ?? "").trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return readFile(new URL("GUIDE.md", DOCS), "utf8");
@@ -21,7 +23,11 @@ export async function guide(which?: string): Promise<string | null> {
   if (first === "reference") return referenceSection(reference, rest.join(" "));
   const tool = rest.length === 0 ? sections(reference).find((s) => s.tool === toolName(first)) : undefined;
   if (tool) return tool.text;
-  return (await siteGuide(words.join(" "))) ?? find(sections(reference), words.join(" "))?.text ?? null;
+  const whole = (await siteGuide(words.join(" "))) ?? find(sections(reference), words.join(" "))?.text ?? null;
+  if (whole !== null || rest.length === 0) return whole;
+  const each = await Promise.all(words.map((word) => guide(word)));
+  if (each.every((text) => text === null)) return null;
+  return [...new Set(each.map((text, i) => (text ?? noGuide(words[i])).trimEnd()))].join("\n\n") + "\n";
 }
 
 // A `## ` section of the reference, up to the next `#` or `## ` heading.
@@ -100,12 +106,19 @@ export async function siteGuide(which: string): Promise<string | null> {
   }
   // A bare name is every site with that name among its host's labels:
   // geico is geico.com, discover card.discover.com and discover.com. 16 of
-  // 95 lookups from 09-28 to 09-30 gave a bare name and missed.
+  // 95 lookups from 09-28 to 09-30 gave a bare name and missed. google is
+  // google-search, and search too: on 10-22 six agents asked for it again
+  // after the list of google's guides, and one's search missed.
   if (/^[a-z0-9-]+$/.test(q)) {
     const docs = guides.filter((g) => g.hosts.some((entry) => labels(entry.split("/")[0]).includes(q)));
     const noted = notedHosts().filter((h) => labels(h).includes(q));
+    const main = docs.find((g) => g.slug === `${q}-search`);
+    const others = docs.filter((g) => g !== main).map((g) => g.slug);
+    if (main) return withLearned(others.length ? `${main.text.trimEnd()}\n\nOther guides for ${q}: ${others.join(", ")}\n` : main.text, noted);
     if (docs.length > 1) return withLearned(`${docs.length} guides cover ${q}; ask for one by its name:\n${listing(docs)}`, noted);
     if (docs.length || noted.length) return withLearned(docs[0]?.text ?? null, noted);
+    const ending = guides.filter((g) => g.slug.endsWith(`-${q}`));
+    if (ending.length === 1) return ending[0].text;
   }
   const slash = q.indexOf("/");
   const [host, path] = slash < 0 ? [q, "/"] : [q.slice(0, slash), q.slice(slash)];
