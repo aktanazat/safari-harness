@@ -251,8 +251,10 @@ async function withWeb(answer: ((url: string) => unknown) | "down", run: (hooks:
 // Real read answers from October transcripts that were not the page, and
 // what Safari's copy waits for: an X post's article, an app's loading line
 // to go. The PerimeterX walls are as Safari met them on Walmart and Zillow
-// (daemon/challenge-corpus.json), in read's form. A reason ending in ")" is
-// the whole of it; the others are how it starts.
+// (daemon/challenge-corpus.json), in read's form. Mapquest's AWS WAF wall
+// came as its HTML; Amazon's robot check is the page Amazon gave a bare
+// fetch of a product on 10-24, as read renders it. A reason ending in ")"
+// is the whole of it; the others are how it starts.
 const WALLS: [Read, string, Record<string, unknown> | undefined][] = [
   ["etsy", "HTTP 403", undefined],
   ["h999", "HTTP 999", undefined],
@@ -278,6 +280,9 @@ const WALLS: [Read, string, Record<string, unknown> | undefined][] = [
   ["fastrak_check", "a bot check from imperva)", undefined],
   ["px_walmart", "a bot check from perimeterx)", undefined],
   ["px_zillow", "a bot check from perimeterx)", undefined],
+  ["aws_waf_mapquest", "a bot check from aws-waf)", undefined],
+  ["amazon_robot_check", "a bot check from amazon)", undefined],
+  ["amazon_503", "HTTP 503", undefined],
   ["confex_loading", "the page draws itself with JavaScript)", { gone: "please wait while the program loads", ms: 10000 }],
   ["salesforce_loading", "the page draws itself with JavaScript)", { gone: "Loading", ms: 10000 }],
 ];
@@ -298,8 +303,9 @@ test.each(WALLS)("a web read that was not the page (%s) gets Safari's copy, load
 // repeat: none waits on Safari. Calrecycle's and Proxxon's 404s went on to
 // their sites' own error pages; Paradigm's article sits at an address that
 // names a challenge, asked at an older one; Wikipedia's CAPTCHA article
-// says "not a robot".
-const PAGES: Read[] = ["xfinity", "passkey", "login_window", "hark_pricing", "docs_ok", "psu_news", "bun404", "cdtfa", "nfs", "enotfound", "refused_remote", "calrecycle", "proxxon", "paradigm_moved", "captcha_article"];
+// says "not a robot"; Amazon's product page came as its HTML, cut at
+// read's 50 KB, which is all scripts.
+const PAGES: Read[] = ["xfinity", "passkey", "login_window", "hark_pricing", "docs_ok", "psu_news", "bun404", "cdtfa", "nfs", "enotfound", "refused_remote", "calrecycle", "proxxon", "paradigm_moved", "captcha_article", "amazon_product"];
 
 test.each(PAGES)("a web read that was the page, or a plain error (%s), is left as it was and asks Safari nothing", async (name) => {
   await withWeb(copied, async (hooks, maps) => {
