@@ -367,6 +367,17 @@ use `read`, `web_search`, or Iris first, and open Safari only when those are
 blocked or the page needs the user's session. Keep long text you will need
 again with `save` (next section) instead of fetching it twice.
 
+In omp, the harness's extension stands behind those tools. A `read` that
+did not get the page (a 403 or 429, a bot check, a sign-in page, a page
+that draws itself with JavaScript, X) comes back with a `safari:` line:
+Safari's copy of the page, read in a background tab of yours within 20 s,
+or what Safari answered and the next step. A curl, wget, or fetch in a
+shell whose output shows a wall gets the `safari map <url>` command for
+its page, not a copy. A run that would end with such a page no Safari call
+answered is sent back once with the list: a lead at its end, a helper at
+its first `yield`. A page its instructions said to leave may stay, and
+the reply says so.
+
 ## Saving a read to a file
 
 `extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
@@ -1131,12 +1142,15 @@ first line counts the pages read and failed.
   changes something, is never kept.
 - A bot check that stands in for a page is waited on as `open` waits on
   one, then reported with `challenge` if it is still up; its page is not
-  read. Open that page yourself and `handoff` it if the user should pass
-  the check. A check in a box on a page that otherwise reads normally is
-  noted beside the page's value. Once a site showed your task a check, its
-  pages are not loaded again for 10 minutes: each fails at once with
-  `challenge` and an error naming who met it and when. Hand that page to
-  the user once, skip the site, or pass `fresh: true`.
+  read. Open that page in a tab and `wait` a few seconds for its text:
+  many checks clear by themselves in a real Safari tab (the Lancet's,
+  still up after map's 9 s on 10-23, let a tab opened later through).
+  `handoff` it only if the check still stands and the page matters. A
+  check in a box on a page that otherwise reads normally is noted beside
+  the page's value. Once a site showed your task a check, its pages are
+  not loaded again for 10 minutes: each fails at once with `challenge` and
+  an error naming who met it and when. Open that page in a tab as above,
+  or pass `fresh: true`.
 - A tab that would not close says why in `closeError`.
 - `save: true` (the saved folder) or an absolute folder writes each page's
   output to a file of its own there, as `save` does for one read; each

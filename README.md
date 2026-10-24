@@ -141,6 +141,9 @@ bench/              the WebKit bench's rows for content.js, one page per
                     behavior in fixtures/ (see Tests)
 omp/index.ts        omp extension: releases disposable pages only through
                     the owning runtime's current task/job/input authority
+omp/walls.ts        pages the web tools could not load: Safari's copy beside
+                    a read, the map command beside a walled shell fetch, and
+                    one nudge at a run's end for a page no Safari call tried
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
