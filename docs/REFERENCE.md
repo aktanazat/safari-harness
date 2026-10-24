@@ -922,7 +922,8 @@ true}`, with no address, then one
 line: `the user has N other tabs; pass host: "github.com" (CLI --site
 github.com) to see those on a site, or all: true`. `host` (CLI `--site
 github.com`; `--host` names another Mac) lists his tabs on
-that site and its subdomains; `all` (CLI `--all`) lists every tab. His
+that site and its subdomains; `all` (CLI `--all`) lists every tab, and
+with `host` every tab on that site, yours and other agents' too. His
 tabs never show a query string or fragment. The user at his own
 terminal, and a caller with no agent behind it, get the full list.
 

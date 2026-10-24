@@ -85,6 +85,14 @@ test("an agent sees its own tabs, his front tab, and a count of his others; host
   ]);
 });
 
+// On 10-22 tabs {host: "127.0.0.1", all: true} listed x.com and every other
+// site beside the one page asked for.
+test("host with all lists only the tabs on that site, the agent's own whole", async () => {
+  expect(await as("tabs", { host: "example.com", all: true })).toEqual({ tabs: [{ id: mine.id, windowId: mine.windowId, url: "https://example.com/done?code=...&order=7" }] });
+  const { tabs: github } = (await as("tabs", { host: "github.com", all: true })) as { tabs: Row[] };
+  expect(github.map((t) => t.url)).toEqual(["https://github.com/me/repo", "https://gist.github.com/me/1"]);
+});
+
 test("a caller with no agent behind it gets every tab, secrets in addresses still cut", async () => {
   const { tabs: every } = (await callTool("tabs", {})) as { tabs: Row[] };
   expect(every.map((t) => t.id)).toEqual([...tabs.keys()]);
