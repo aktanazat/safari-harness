@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -497,6 +497,25 @@ test("with save to a folder, map keeps an index.json there of every page, failed
   expect(JSON.parse(readFileSync(savedPath(read), "utf8"))).toEqual({ url: "https://shop.example/a", title: "Page", ok: true, ms: read.ms, value: { cards: 2 } });
   await mapPages({ urls: [GONE], what: "eval", expression: "cards()", save: dir }, callTool);
   expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")).map((e: { url: string }) => e.url)).toEqual(["https://shop.example/a", GONE]);
+});
+
+// An index.json map did not write is the user's: on review one holding
+// [{"name":"first"},{"name":"second"}] lost its first entry to a map that
+// saved beside it.
+test.each([
+  ['[{"name":"first"},{"name":"second"}]'],
+  ['[{"url":"https://shop.example/a","title":"A"}]'],
+  ['[{"url":"https://shop.example/a","ok":true,"ms":1,"notes":"mine"}]'],
+  ["[]"],
+])("map leaves an index.json it did not write as it is, and says so: %s", async (theirs) => {
+  const dir = mkdtempSync(join(tmpdir(), "map-"));
+  writeFileSync(join(dir, "index.json"), theirs);
+  const answer = await mapPages({ urls: ["https://shop.example/a"], save: dir }, callTool);
+  expect({ index: answer.index, note: answer.note, file: readFileSync(join(dir, "index.json"), "utf8") }).toEqual({
+    index: undefined,
+    note: `no index.json: ${join(dir, "index.json")} is not a map's index, so it was left as it is`,
+    file: theirs,
+  });
 });
 
 // A task's agents, as omp names one: [session, agent].

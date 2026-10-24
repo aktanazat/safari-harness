@@ -1141,8 +1141,9 @@ first line counts the pages read and failed.
   `value` is then `{saved, bytes, head}`. A failed page's read is saved
   too. A folder you name gets `index.json`: each page's `url`, `title`,
   `ok`, `status`, `ms`, and `saved` or `error`, failed pages included; a
-  later map's line for the same address replaces the earlier one. An
-  `eval`'s file holds `{url, title, ok, ms, value}`.
+  later map's line for the same address replaces the earlier one; an
+  `index.json` map did not write is left as it is, and `note` says so.
+  An `eval`'s file holds `{url, title, ok, ms, value}`.
 - `fetch` asks for each address again with its page's cookies and returns
   the body as the server sends it; an answer of HTTP 400 or more fails.
 - CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save] [--fresh]`.
