@@ -262,7 +262,9 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
    runs one in the foreground instead). Safari loads every registered copy
    of the app, and each opens the extension socket; the daemon keeps the
    one that connected first, which may be a stale build. The script leaves
-   only the one in `/Applications` registered.
+   only the one in `/Applications` registered. Xcode builds the app in
+   `~/Library/Caches/safari-harness/DerivedData`, one folder every build
+   reuses.
 3. Launch "Safari Harness.app" once, then in Safari:
    Settings ▸ Extensions ▸ enable **Safari Harness**.
    That GUI toggle is the only manual step; no Develop-menu or
