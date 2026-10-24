@@ -171,7 +171,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   tab id can reopen the page fresh under a new id; concurrent calls open
   it once. The answer carries a `note` and `replaced: {from, to}`. Old
   refs cannot be reused: a click or typing does not run until you take a
-  fresh snapshot. `goto`, `eval` and `scroll` can run on the fresh page.
+  fresh snapshot. `goto`, `scroll`, reads, and an `eval` of a saved reader
+  run on the fresh page; another `eval` fails once, and the same call then
+  runs there.
   After expiry, the old id cannot recover it.
 - Recovery saves no form contents, credentials or exact in-page state.
   It loads a fresh page with Safari's normal site session, not a saved
@@ -874,9 +876,11 @@ have, use `safari goto <url> --tab N`.
   answer's `note` names the page it replaced, which is gone. Only a tab you
   alone work in, in the window the open goes to, is taken: never one kept
   for the user, one he has in front, a site global's, or one whose page an
-  action changed since it loaded (a form in progress). For a second tab
-  beside it, to compare two pages, pass `new: true` (CLI `--new`). A
-  script's `openTab` (`repl`), `map`, `replay`, and `playbooks run` open a tab of
+  action changed since it loaded (a form in progress), nor one another
+  `open` is still loading, so two opens at once each get a tab. For a
+  second tab beside it, to compare two pages, pass `new: true` (CLI
+  `--new`). A script's `openTab` (`repl`), `map`, `replay`, and
+  `playbooks run` open a tab of
   their own; `openTab` prints a `hint:` naming the tabs you had there:
   `goto` one of those next time, and close the one you are done with.
 - `open` and `goto` take a whole `http` or `https` address (or
@@ -1349,11 +1353,13 @@ guarantee.
 
 Safari draws nothing in a window other windows cover whole, so its page
 never passes the privacy gate's paint check. When that window is yours,
-`shot` moves it, without focus, to where it shows and captures through the
+or a window your page opened (a popup) holding only your tabs, `shot`
+moves it, without focus, to where it shows and captures through the
 whole gate once more; no other window moves. With no room on any display,
 or a window minimized or on another desktop, it fails with code
 `unavailable` and a message saying so. Read the page with `snapshot` or
-`extract` then.
+`extract` then. Another window's page that did not paint fails with
+`next` naming `activate`, which brings it in front (the user sees it).
 
 `tiles: true` also saves readable, overlapping pieces without resizing
 or dropping the original. `tileHeight` defaults to 1400 and accepts
@@ -1620,7 +1626,14 @@ what an action reports).
   pixels in the tab's viewport, as the page's `clientX` and `clientY` count
   them; `real_input` takes the same.
 - A click that opens another tab answers `newTab` with its id: continue
-  there, and close it too.
+  there, and close it too. A click whose page asks for a tab Safari never
+  opens (it blocks a popup a scripted click asks for) answers after 3 s
+  with `next`: click the same ref with `real_input`.
+- A click refused before any event (a cover, a disabled or inert target, a
+  stale ref) fails with `effect: "none"`, so it may go again once the
+  cause is gone; a refused link names its address, which `goto` opens. A
+  target with no visible area is scrolled to and tried once more within
+  0.5 s, as a list still drawing needs.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
   download still under way when the action ends is waited for up to 30 s;
@@ -2052,7 +2065,8 @@ File, leaving out verification-code keys, and deletes the file.
   password he approved (kept 5 minutes) with no second prompt. When he is
   away from the Mac (locked, asleep, or idle 3 minutes), the call asks
   for nothing and says so at once: `handoff` the tab, which alerts his
-  phone, or call again once he is back. Until he
+  phone, or call again once he is back. Both answers fail with
+  `waiting_for_human` and `effect: "none"`: nothing was filled. Until he
   acts, Apple's helper answers nothing else, so every other `passwords`
   call, from any agent, waits for him and runs once he has; one still
   waiting 25 s after it began says what it waits on, and whether the
@@ -2065,7 +2079,9 @@ File, leaving out verification-code keys, and deletes the file.
 - `passwords {do: "code", tab}` does the same for a verification code
   the user keeps in Apple Passwords (an authenticator setup): it types
   the current code into the page's code field, one digit per box when
-  the page splits it, and never returns it.
+  the page splits it, and never returns it. A page with no code field
+  fails `not_content`; one that asks how to send the code lists the
+  choices it shows: click the authentication app's, then `code` again.
 - `passwords {do: "change", tab}` changes the password on a
   change-password, reset, or sign-up form: it makes a strong password in
   Safari's shape (shorter, without hyphens, when the fields allow fewer
