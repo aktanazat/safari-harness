@@ -727,7 +727,13 @@ things unless its saved task explicitly says to.
   Extensions, Safari Harness Bridge, Edit Websites, set that host to
   Allow, then retry; ask the user, as it is his setting. "Safari lets no
   extension into <url>" means a page no extension may touch (Safari's own
-  pages): `goto` a web address in that tab, or use another.
+  pages): `goto` a web address in that tab, or use another. "no page
+  loaded into this tab" means the tab still has no address: `goto` it
+  again; a PDF reads with `pdf {do: "read", url}`, a file saves with
+  `download {url}`. "Safari would not let the extension into the tab at
+  <url>" is Safari's refusal of a page no extension may read, most often
+  its own page for a site that did not load (check the address in Safari:
+  a VPN or Tailscale off, a site down).
 - "Safari is not running": the tool has started Safari hidden, without
   taking the screen; call again in a few seconds.
 - "Safari extension not connected" while Safari runs, or `extension` is
@@ -888,6 +894,11 @@ have, use `safari goto <url> --tab N`.
   `playbooks run` open a tab of
   their own; `openTab` prints a `hint:` naming the tabs you had there:
   `goto` one of those next time, and close the one you are done with.
+- An address Safari downloads instead of showing (a PDF or other file
+  served as an attachment) leaves its tab with no address. `open` and
+  `goto` then answer within seconds with `file: "pdf"` or `file:
+  "download"`, and every read of that tab says at once to use `pdf {do:
+  "read", url}` or `download {url}`.
 - `open` and `goto` take a whole `http` or `https` address (or
   `about:blank`). Anything else fails before a tab opens: Safari opens no
   local file for the extension, so serve its folder
@@ -1067,6 +1078,8 @@ time (`concurrency`, fewer if you ask). It returns `pages` in the order of
   listing's. The 50 s cover the listings and their pages together.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read.
+- A PDF, downloaded or shown in Safari's viewer, is read with `pdf {do:
+  "read", url}` for `extract`; its value is the PDF's text.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
   with the pages read so far. A page not read by then is reported in its
   place as unfinished: map those again, in a call with fewer pages. One
@@ -1210,11 +1223,17 @@ A page with no text yet, loading placeholders or lines such as "The page
 is loading. Please wait", or `aria-busy` on its main region or body, gets
 up to 2 s to draw; those lines are left out, with a `note`, and
 `loading: true` says the page was still loading then.
+A page whose body is not in place yet gets up to 2 s for it. A PDF in
+Safari's viewer fails naming `pdf {do: "read", url}`.
+An address with a `#fragment` naming a heading, section, or anchor reads
+that section only (a heading's runs to the next heading of its level),
+with a `note`; `selector: "body"` reads the whole page.
 
 `query` keeps the lines holding some text, as `snapshot`'s does, and
 `selector` (or `root`) narrows the read to one region (`safari guide
-snapshot`). `save` writes the read to a file (`safari guide reference
-saving`).
+snapshot`). A `query` that misses inside `selector` (or the section) but
+matches elsewhere on the page says how many lines it left out. `save`
+writes the read to a file (`safari guide reference saving`).
 
 ### Tables and card lists as rows
 
@@ -1260,6 +1279,19 @@ region `selector` names. The latest messages are kept, up to `maxBytes`
 of text (default 20000); `earlier` counts the ones left out. A chat in an
 embedded frame is found there. CLI: `safari extract --as chat --tab N`
 prints a message a line, after who wrote it.
+
+### Pictures
+
+`extract` with `as: "images"` returns the pictures in the read's region
+(`selector`, else the main content), in page order:
+`{url, title, images: [{src, alt, width, height, from}], truncated}`.
+`src` is the full image a picture links to or names in a zoom attribute,
+else its widest `srcset` candidate, else a lazy image's real address
+(`data-src` and kin), else what it shows; CSS backgrounds count too.
+Icons (no side 100 px or more) and repeats are left out. Without
+`selector`, the page's `og:image` and JSON-LD images follow, `from`
+naming which. `query` and `maxBytes` narrow the list. `map` with `as:
+"images"` reads it per page.
 
 ## data
 
@@ -1365,6 +1397,13 @@ or a window minimized or on another desktop, it fails with code
 `unavailable` and a message saying so. Read the page with `snapshot` or
 `extract` then. Another window's page that did not paint fails with
 `next` naming `activate`, which brings it in front (the user sees it).
+
+A page that changes between masking and capture (a playing video, an
+animation) is captured once more with its video, audio and animations
+paused, which play again after. One that still changes (a carousel, a
+live feed) fails saying so: capture it with `shots {urls}`. A page with
+no body yet, or a tab with no viewport (its window minimized), fails
+naming that cause.
 
 `tiles: true` also saves readable, overlapping pieces without resizing
 or dropping the original. `tileHeight` defaults to 1400 and accepts
@@ -2009,7 +2048,9 @@ without it.
 - `pdf` saves the page as a PDF (letter pages, like Export as PDF, from the
   page's current HTML) and returns its path; a page that moves on while it
   is read is saved as the page it moved to. `do: "read"` returns a PDF's
-  text page by page: a local `path`, or the PDF the tab shows.
+  text page by page: a local `path`, a web `url` (fetched with the user's
+  cookies, for a PDF Safari downloads rather than shows), or the PDF the
+  tab shows.
 
 ## cookies
 

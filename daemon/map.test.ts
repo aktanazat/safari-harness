@@ -193,6 +193,21 @@ test("a map whose every page the extension left unanswered fails as a whole, ext
   expect((await mapPages({ urls: urls(3) }, oneOwn)).pages.map((p) => p.ok)).toEqual([false, false, false]);
 });
 
+// On 10-23 a map of two leaflet PDFs waited 36 s on each to read nothing
+// (SR-7).
+test("a PDF page is read through pdf, whether Safari downloads it or shows it in its viewer", async () => {
+  const downloaded = "https://shop.example/leaflet?download=true";
+  const shown = "https://shop.example/leaflet.pdf";
+  const call = async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "open") return { id: args.url === shown ? 2 : 1, url: args.url, ...(args.url === downloaded ? { file: "pdf" } : {}) };
+    if (tool === "extract") throw new Error(`this is a PDF in Safari's viewer, which page reads do not reach: read its text with pdf {do: "read", url: "${shown}"}`);
+    if (tool === "pdf") return { url: args.url, text: `text of ${args.url}` };
+    return { ok: true };
+  };
+  const { pages } = await mapPages({ urls: [downloaded, shown] }, call);
+  expect(pages).toMatchObject([{ url: downloaded, ok: true, value: { text: `text of ${downloaded}` } }, { url: shown, ok: true, value: { text: `text of ${shown}` } }]);
+});
+
 // An eval or fetch read carries no title, and an address may have led to a
 // page not found.
 test("each page carries the title its tab opened with", async () => {

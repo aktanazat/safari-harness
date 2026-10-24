@@ -39,7 +39,7 @@ type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it.
 type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; call: Call };
-type Opened = { id: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string };
+type Opened = { id: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string; file?: string };
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -243,13 +243,25 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   // with a warning: the page holds nothing to read. On 10-16 a hunt's eBay
   // searches answered "Error Page | eBay", read as no listings (HuntsUsage).
   if (opened.ok === false && opened.warning) return { ok: false, error: opened.warning, failure: failureOf(new HarnessError("not_content", opened.warning)) };
+  // A PDF reads through pdf: one Safari downloads opens no page (open
+  // answers its file), one it shows inline answers extract that it is a
+  // PDF. On 10-23 a map of two leaflet PDFs waited 36 s on each to read
+  // nothing (SR-7).
+  const pdfRead = async (): Promise<Outcome> => ({ ok: true, value: await call("pdf", { do: "read", url: opened.url ?? url, ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}) }) });
+  if (read === "extract" && opened.file === "pdf") return pdfRead();
   if (wait) {
     const missed = missOf(await call("wait", { ...wait, tab: opened.id }), waited);
     if (missed) return check ? { ...missed, challenge: check } : missed;
   }
   // fetch asks again for the address the tab opened, with its cookies: the
   // body as the server sends it, where the others read the page it drew.
-  const value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
+  let value: unknown;
+  try {
+    value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
+  } catch (e) {
+    if (read === "extract" && messageOf(e).includes("this is a PDF in Safari's viewer")) return pdfRead();
+    throw e;
+  }
   // A page can answer with an error instead of output (extract's selector
   // matches nothing): it read nothing, so it failed like a page that threw.
   const outcome: Outcome = pageError(value, affectsPage(read, args)) ?? { ok: true, value };

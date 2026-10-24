@@ -156,7 +156,15 @@
     // a fixed box stays where the window puts it; the others scroll
     const view = el.ownerDocument.defaultView || window;
     const fixed = style.position === "fixed";
-    return r.right + (fixed ? 0 : view.scrollX) <= 0 || r.bottom + (fixed ? 0 : view.scrollY) <= 0;
+    return r.right + (fixed ? 0 : view.scrollX) <= 0 || r.bottom + (fixed ? 0 : view.scrollY) <= 0 || (fixed && putAway(r, view));
+  }
+
+  // A fixed box past the window's right or bottom edge: a consent banner or
+  // drawer put away slides there. Unlike a skip link held above or left of
+  // the page, nothing brings it back on focus: its controls print nowhere
+  // either. A dismissed consent dialog stayed in every snapshot (SR-16).
+  function putAway(r, view) {
+    return r.width > 0 && r.height > 0 && (r.left >= view.innerWidth || r.top >= view.innerHeight);
   }
 
   // clip: rect(top, right, bottom, left) leaving no room. An auto edge is
@@ -849,7 +857,7 @@
   function outline(opts = {}, walkOnly = false) {
     pruneRefs();
     const root = opts.root ? rootFor(opts.root) : document.body;
-    if (!root) return noMatch("root", opts.root);
+    if (!root) return opts.root ? noMatch("root", opts.root) : { error: noBody() };
     const maxLines = opts.maxNodes || 600;
     const query = opts.query ? queryMatch(opts.query) : null;
     // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
@@ -877,7 +885,7 @@
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
         if (style.display === "none" || transparent(el, style)) return;
-        if (style.position === "fixed" && el.getClientRects().length === 0) return;
+        if (style.position === "fixed" && (el.getClientRects().length === 0 || putAway(el.getBoundingClientRect(), el.ownerDocument.defaultView || window))) return;
       }
       // A child of a hidden element can show itself with visibility: visible
       // (Slack's workspace chooser does), so a hidden element loses only its
@@ -1122,6 +1130,8 @@
     return `the page has drawn nothing, and it hit ${count}: ${errors.slice(-3).join("; ")}. Waiting for its text may not help: read them with console (do: read), or reload it (history, do: reload), then snapshot again`;
   }
   function snapshot(opts = {}) {
+    if (!document.body) return hasBody().then((has) => (has ? snapshot(opts) : { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: noBody() }));
+    if (shownPdf()) return { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: shownPdfText() };
     const top = window === window.top;
     // Flutter's host element sits in the page itself, so only a page with
     // one pays for a search of every shadow root (2 ms of a read of cnn.com).
@@ -1173,6 +1183,28 @@
       }
     });
   }
+
+  // A page with no body yet: its script took the body away to build it
+  // again, or the read came before the parser put one in. On 10-23 map read
+  // 23 such pages as "no content root", and open said nothing matched root
+  // "undefined" (K2, SR-4). A read waits for one as it waits for a page to
+  // draw; an XML or SVG file never has one.
+  const webDocument = () => !document.documentElement || document.documentElement.namespaceURI === "http://www.w3.org/1999/xhtml";
+  async function hasBody() {
+    if (document.body) return true;
+    if (document.documentElement && webDocument()) await whenPage(() => !!document.body, DRAW_WAIT_MS);
+    return !!document.body;
+  }
+  const noBody = () => (webDocument()
+    ? "the page had not put its document in place yet (no body after 2 s): read it again"
+    : "this is not a web page but an XML or SVG file, which has no body to read: read its source with fetch {url}");
+
+  // Safari shows a PDF served inline in its own viewer, a document with
+  // only an embed in its body: extract read none of its text and said the
+  // page showed no text yet (K3, SR-7; its contentType checked in Safari
+  // on 10-24).
+  const shownPdf = () => window === window.top && document.contentType === "application/pdf";
+  const shownPdfText = () => `this is a PDF in Safari's viewer, which page reads do not reach: read its text with pdf {do: "read", url: "${location.href}"}`;
 
   // ---------- actions ----------
 
@@ -2074,7 +2106,8 @@
 
   function privatePage(secrets, layer = null) {
     const viewport = { width: innerWidth, height: innerHeight, devicePixelRatio };
-    if (!document.documentElement || !document.body || !viewport.width || !viewport.height) throw capturePrivacyError("the page cannot be inspected");
+    if (!document.body) throw capturePrivacyError("the page has no document body yet: wait for it to load, then capture again");
+    if (!viewport.width || !viewport.height) throw capturePrivacyError("the tab has no viewport (its window is minimized or off screen): show it with activate, or capture with shots {urls}");
     if (window.visualViewport && (Math.abs(visualViewport.width - innerWidth) > 1 || Math.abs(visualViewport.height - innerHeight) > 1 || visualViewport.offsetLeft || visualViewport.offsetTop)) throw capturePrivacyError("reset page magnification before capturing");
     const roots = [];
     const fields = [];
@@ -2239,11 +2272,38 @@
     return { ok: true };
   }
 
+  // A shot of a page with a playing video or an endless animation can fail
+  // its privacy check, which finds the page changed between masking and
+  // capture (SR-6). background.js pauses them for one more try, then plays
+  // what it paused again.
+  let stilled = null;
+  function stillPage(on) {
+    if (!on) {
+      const was = stilled;
+      stilled = null;
+      for (const m of was?.media ?? []) m.play().catch(() => {});
+      for (const a of was?.animations ?? []) a.play();
+      return { ok: true };
+    }
+    if (stilled) return { ok: true, paused: 0 };
+    const media = deepQueryAll("video, audio").filter((m) => !m.paused);
+    const animations = document.getAnimations().filter((a) => a.playState === "running");
+    for (const m of media) m.pause();
+    for (const a of animations) a.pause();
+    stilled = { media, animations };
+    return { ok: true, paused: media.length + animations.length };
+  }
+
   function capturePrivacy(mark, phase, secrets = []) {
     if (phase === "restore") return restorePrivateCapture(mark);
     if (typeof mark !== "string" || !mark || !Array.isArray(secrets) || secrets.some((s) => typeof s !== "string")) throw capturePrivacyError("invalid protection request");
     if (phase === "start") {
       if (privateCapture) throw capturePrivacyError("another capture is still protecting this page");
+      // An embedded frame drawn at no size shows nothing to protect.
+      if (window !== window.top && (!innerWidth || !innerHeight)) {
+        privateCapture = { mark, scrolls: [], observers: [], layer: null, timer: null };
+        return { ok: true };
+      }
       const state = privatePage(secrets);
       privateCapture = { mark, scrolls: state.scrolls, observers: [], layer: null, timer: null };
       privateCapture.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
@@ -3143,6 +3203,7 @@
   // the whole page: a progress widget or a heading beside real content
   // must not hold an open.
   function stillLoading() {
+    if (!document.body) return webDocument();
     if (ariaBusy()) return true;
     const { root } = contentRoot();
     if (!root) return false;
@@ -3188,13 +3249,55 @@
     return deepQueryAll("iframe, frame").filter((f) => childToken.has(f) && root.contains(f) && shown(f)).map((f) => ({ token: childToken.get(f), name: named(f) }));
   }
 
+  const HEADINGS = "h1, h2, h3, h4, h5, h6, [role=heading]";
+  function headingLevel(el) {
+    if (!el.matches(HEADINGS)) return 0;
+    return /^H[1-6]$/.test(el.tagName) ? Number(el.tagName[1]) : Number(el.getAttribute("aria-level")) || 2;
+  }
+
+  // The section an address's #fragment names, read alone: the element with
+  // that id (or the anchor with that name) when it holds text and no
+  // heading names it; else from its heading, or the heading after an empty
+  // anchor, as far as the next heading of that level or above. On 10-23 an
+  // agent read all of NVIDIA's PTX guide 54 times, once for each #section
+  // it wanted (K14). A fragment naming nothing shown reads the page.
+  function fragmentSection() {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
+    if (!id) return null;
+    const target = document.getElementById(id) ?? [...document.getElementsByName(id)].find((el) => el.tagName === "A");
+    if (!target || !document.body.contains(target) || target === document.body) return null;
+    const note = `this is the section #${id} the address names; extract with selector "body" reads the whole page`;
+    const start = target.closest(HEADINGS) ?? (norm(target.textContent) ? null : [...document.body.querySelectorAll(HEADINGS)].find((h) => target.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (!start) {
+      const read = tidyText(target);
+      return read.text ? { root: target, read, note } : null;
+    }
+    const level = headingLevel(start);
+    const ends = (el) => headingLevel(el) > 0 && headingLevel(el) <= level;
+    let unit = start;
+    while (!unit.nextElementSibling && unit.parentElement && unit.parentElement !== document.body) unit = unit.parentElement;
+    const units = [unit];
+    for (let el = unit.nextElementSibling; el && !ends(el) && ![...el.querySelectorAll(HEADINGS)].some(ends); el = el.nextElementSibling) units.push(el);
+    const reads = units.map(tidyText);
+    const text = reads.map((r) => r.text).filter(Boolean).join("\n\n");
+    return text ? { root: unit.parentElement, units, read: { text, filler: reads.some((r) => r.filler) }, note } : null;
+  }
+
   // query keeps the lines containing it, searched across the whole body. A
   // default read that finds no text, skeleton or loading lines, or a busy
   // page waits for the page to draw, as snapshot does, and says when it was
   // still loading at the limit.
   async function extract(opts = {}) {
+    if (!(await hasBody())) return { error: noBody() };
+    if (shownPdf()) return { error: shownPdfText() };
     if (opts.as === "table") return tables(opts);
     if (opts.as === "chat") return chatView(opts);
+    if (opts.as === "images") {
+      let found = pictures(opts);
+      if (!opts.selector && found.images?.length === 0) await whenPage(() => (found = pictures(opts)).images.length > 0, DRAW_WAIT_MS);
+      return found;
+    }
     let at;
     if (opts.strict_selector === true) {
       // Secret sources must name one subtree. Count and read it in the same
@@ -3206,15 +3309,15 @@
       if (matches.length !== 1) return { error: `source selector matches ${matches.length} elements, not one` };
       at = { root: matches[0] };
     } else {
-      at = opts.selector ? { root: rootFor(opts.selector) } : opts.query ? { root: document.body } : contentRoot();
+      at = opts.selector ? { root: rootFor(opts.selector) } : fragmentSection() ?? (opts.query ? { root: document.body } : contentRoot());
     }
-    if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
-    let read = tidyText(at.root);
+    if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: noBody() };
+    let read = at.read ?? tidyText(at.root);
     const waits = !opts.selector && !opts.query && window === window.top;
     if (waits && (!read.text || read.filler || ariaBusy())) {
       await whenPage(() => {
-        at = contentRoot();
-        read = tidyText(at.root);
+        at = fragmentSection() ?? contentRoot();
+        read = at.read ?? tidyText(at.root);
         return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
@@ -3223,7 +3326,12 @@
     const notes = [at.note];
     if (opts.query) {
       text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
-      if (!text) notes.push(`no line on the page contains "${opts.query}" (the page has ${read.text.length} characters of text)`);
+      // A selector or section that leaves the lines out: on 10-23 a
+      // podcast's transcript sat outside its main region, and three reads
+      // of selector "main" said no line on the page held the words (SR-9).
+      const elsewhere = !text && at.root !== document.body ? tidyText(document.body).text.split("\n").filter(queryMatch(opts.query)).length : 0;
+      if (elsewhere) notes.push(`no line in ${opts.selector ? `selector "${opts.selector}"` : "this section"} contains "${opts.query}", but ${elsewhere} line${elsewhere === 1 ? "" : "s"} elsewhere on the page do${elsewhere === 1 ? "es" : ""}: ${opts.selector ? "leave selector out" : 'extract with selector "body"'}`);
+      else if (!text) notes.push(`no line on the page contains "${opts.query}" (the page has ${read.text.length} characters of text)`);
     } else if (!text && !opts.selector) {
       notes.push("the page shows no text yet: wait for text you expect (wait with text), then extract again");
     } else if (read.filler) {
@@ -3232,7 +3340,7 @@
     const limit = opts.maxBytes || 20000;
     const frames = opts.strict_selector === true ? [] : framesIn(at.root);
     const controls = [];
-    if (waits && !loading && text.length <= limit) {
+    if (waits && !loading && !at.units && text.length <= limit) {
       for (const el of deepQueryAll('button,input,textarea,[role="button"],[role="textbox"]', at.root)) {
         const role = getExplicitRole(el);
         if ((role !== "button" && role !== "textbox") || !shown(el)) continue;
@@ -3251,6 +3359,113 @@
       ...(opts.query && !text ? regexHint(opts.query) : {}),
       ...(frames.length ? { frames } : {}),
     };
+  }
+
+  // ---------- images ----------
+  // extract with as: "images" lists the pictures under the root (the
+  // selector's, else what extract reads), each once at its largest
+  // address: a link around it to an image file, a zoom's or lazy loader's
+  // data- attribute, a srcset's widest candidate, else what it shows; and
+  // a box's CSS background. Icons (no side ICON_PX or more) are left out,
+  // and without a selector the page's og:image and JSON-LD images follow.
+  // On 10-23 agents wrote 51 scripts reading currentSrc, srcset, and
+  // background-image to collect listing photos (SR-3).
+  const ICON_PX = 100;
+  const FULL_SRC = ["data-zoom-image", "data-zoom-src", "data-large-image", "data-large", "data-full-src", "data-full"];
+  const LAZY_SRC = ["data-src", "data-lazy-src", "data-original", "data-lazy"];
+  const IMAGE_FILE = /\.(?:jpe?g|png|webp|gif|avif|heic|tiff?)$/i;
+
+  // An address as the page names it, made absolute; a file made in the
+  // page (data:, blob:) is a placeholder or has no address to fetch.
+  function imageAddress(src) {
+    if (!src || /^\s*(?:data|blob|javascript):/i.test(src)) return null;
+    try { return new URL(src.trim(), document.baseURI).href; } catch { return null; }
+  }
+
+  // A srcset's candidates, each with its width (w) or density (x).
+  function srcsetOf(set) {
+    return (set || "").split(/,\s+/).map((c) => {
+      const [url, d = "1x"] = c.trim().split(/\s+/);
+      const n = parseFloat(d) || 0;
+      return { url: imageAddress(url), w: d.endsWith("w") ? n : 0, x: d.endsWith("x") ? n : 0 };
+    }).filter((c) => c.url);
+  }
+
+  function pictureOf(img) {
+    const attr = (name) => imageAddress(img.getAttribute(name));
+    const sources = img.parentElement?.tagName === "PICTURE" ? [...img.parentElement.querySelectorAll("source")] : [];
+    const candidates = [img, ...sources].flatMap((el) => [...srcsetOf(el.getAttribute("srcset")), ...srcsetOf(el.getAttribute("data-srcset"))]);
+    const widest = candidates.reduce((a, c) => (!a || c.w > a.w || (!a.w && !c.w && c.x > a.x) ? c : a), null);
+    const link = img.closest("a[href]");
+    const linked = link && IMAGE_FILE.test(new URL(link.href, document.baseURI).pathname) ? imageAddress(link.getAttribute("href")) : null;
+    const full = linked ?? FULL_SRC.map(attr).find(Boolean);
+    const shown = imageAddress(img.currentSrc || img.getAttribute("src"));
+    const src = full ?? widest?.url ?? LAZY_SRC.map(attr).find(Boolean) ?? shown;
+    if (!src) return null;
+    const [aw, ah] = [Number(img.getAttribute("width")), Number(img.getAttribute("height"))];
+    const ratio = img.naturalWidth && img.naturalHeight ? img.naturalHeight / img.naturalWidth : aw && ah ? ah / aw : 0;
+    const size = src === shown && img.naturalWidth ? { width: img.naturalWidth, height: img.naturalHeight }
+      : !full && widest?.url === src && widest.w ? { width: widest.w, ...(ratio ? { height: Math.round(widest.w * ratio) } : {}) } : {};
+    if (!full) {
+      const r = img.getBoundingClientRect();
+      const sides = (src === shown ? [img.naturalWidth, img.naturalHeight, r.width, r.height] : [size.width, aw, ah]).filter((n) => n > 0);
+      if (sides.length && Math.max(...sides) < ICON_PX) return null;
+    }
+    const alt = clip(img.alt || img.getAttribute("aria-label") || img.title || "", 200);
+    return { src, ...(alt ? { alt } : {}), ...size };
+  }
+
+  // The image addresses a JSON-LD block names: image, as a string, a list,
+  // or an ImageObject, at any depth.
+  function linkedImages(data, out = [], depth = 0) {
+    if (!data || typeof data !== "object" || depth > 6) return out;
+    for (const [key, value] of Object.entries(data)) {
+      if (key === "image") for (const v of [value].flat()) out.push(typeof v === "string" ? v : v?.url ?? v?.contentUrl);
+      else linkedImages(value, out, depth + 1);
+    }
+    return out;
+  }
+
+  function pictures(opts) {
+    const root = opts.selector ? rootFor(opts.selector) : contentRoot().root;
+    if (!root) return noMatch("selector", opts.selector);
+    const found = new Map();
+    const add = (image) => {
+      if (!image?.src) return;
+      const u = new URL(image.src);
+      const key = IMAGE_FILE.test(u.pathname) ? u.origin + u.pathname : image.src;
+      const had = found.get(key);
+      if (!had || (image.width ?? 0) > (had.width ?? 0)) found.set(key, { ...image, ...(had?.alt && !image.alt ? { alt: had.alt } : {}) });
+    };
+    for (const el of [root, ...deepElements(root)]) {
+      if (el.tagName === "IMG") { add(pictureOf(el)); continue; }
+      const r = el.getBoundingClientRect();
+      if (Math.max(r.width, r.height) < ICON_PX) continue;
+      const background = getComputedStyle(el).backgroundImage;
+      if (background === "none") continue;
+      const alt = clip(el.getAttribute("aria-label") || el.title || "", 200);
+      for (const m of background.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/g)) add({ src: imageAddress(m[2]), ...(alt ? { alt } : {}) });
+    }
+    if (!opts.selector) {
+      for (const m of document.querySelectorAll('meta[property="og:image"], meta[name="og:image"]')) add({ src: imageAddress(m.content), from: "og:image" });
+      for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+        let data;
+        try { data = JSON.parse(s.textContent); } catch { continue; }
+        for (const src of linkedImages(data)) add({ src: typeof src === "string" ? imageAddress(src) : null, from: "json-ld" });
+      }
+    }
+    const keep = opts.query ? queryMatch(opts.query) : () => true;
+    const limit = opts.maxBytes || 20000;
+    const images = [];
+    let used = 0;
+    let truncated = false;
+    for (const image of found.values()) {
+      if (!keep(`${image.alt ?? ""} ${image.src}`)) continue;
+      used += JSON.stringify(image).length + 1;
+      if (used > limit) { truncated = true; break; }
+      images.push(image);
+    }
+    return { url: location.href, title: document.title, images, truncated };
   }
 
   // A query's parts: "a|b" is a or b. A leading (?i) is dropped: agents
@@ -3295,7 +3510,7 @@
   // list inside a card of one already read is part of that card.
   function tables(opts) {
     const root = opts.selector ? rootFor(opts.selector) : document.body;
-    if (!root) return opts.selector ? noMatch("selector", opts.selector) : { error: "no content root" };
+    if (!root) return noMatch("selector", opts.selector);
     const found = [];
     const lists = [];
     for (const el of [root, ...deepElements(root)]) {
@@ -4575,6 +4790,7 @@
     sendButton,
     annotate,
     capturePrivacy,
+    stillPage,
     dialogs: setDialogs,
     fetch: pageFetch,
     fetchFile,

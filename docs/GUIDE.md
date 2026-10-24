@@ -70,6 +70,8 @@ Turns
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
 - `innerText` empty on a page that shows text: shadow DOM. Read it with
   `snapshot` or `extract`, or `sh.text(sh.q(selector))` in `eval`.
+- Photo addresses: `extract {as: "images"}`, not srcset scripts. A PDF:
+  `pdf {do: "read", url}`.
 - Screenshots of pages at several widths: one `shots` call
   (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of
   `window` and `shot`.

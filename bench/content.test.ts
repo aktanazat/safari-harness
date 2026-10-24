@@ -866,6 +866,64 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: "Pricing\n\nPro costs $12 a month.\n\nCode: BENCH\n\nBilled yearly" } } }],
   },
   {
+    name: "extract of a page that builds its body after it loads waits for the body",
+    page: "body-late.html",
+    steps: [{ op: "extract", answer: { value: { text: "Release notes\n\nVersion 4 ships today." } } }],
+  },
+  {
+    name: "a snapshot of a page that builds its body after it loads waits for the body",
+    page: "body-late.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: 'h1 "Release notes"\nVersion 4 ships today.' } } }],
+  },
+  {
+    name: "extract of an address with a #fragment reads the section it names, as far as the next heading of its level",
+    page: "fragment.html#plain",
+    steps: [
+      { op: "extract", answer: { value: { text: "Plain heading\n\nPlain section text.\n\nSub\n\nSub text.", note: expect.stringContaining("#plain") } } },
+      { op: "extract", args: [{ query: "text" }], answer: { value: { text: "Plain section text.\nSub text." } } },
+    ],
+  },
+  {
+    name: "extract of a #fragment naming a section element reads that section",
+    page: "fragment.html#globaltimer",
+    steps: [{ op: "extract", answer: { value: { text: "globaltimer\n\nA 64-bit global nanosecond timer." } } }],
+  },
+  {
+    name: "extract of a #fragment naming an empty anchor reads from the heading after it",
+    page: "fragment.html#legacy",
+    steps: [{ op: "extract", answer: { value: { text: "Legacy anchor\n\nLegacy text." } } }],
+  },
+  {
+    name: "extract as images lists each picture once at its largest address, icons left out, then the page's own images",
+    page: "images.html",
+    steps: [{
+      op: "extract",
+      args: [{ as: "images" }],
+      answer: { value: { title: "Wool coat", truncated: false, images: [
+        { src: "https://img.invalid/coat-1600.jpg", alt: "Front of the coat", width: 1600, height: 2400 },
+        { src: "https://img.invalid/coat-side.jpg?w=1200", alt: "Side" },
+        { src: "https://img.invalid/coat-back-full.jpg", alt: "Back" },
+        { src: "https://img.invalid/banner.jpg" },
+        { src: "https://img.invalid/og/cover.jpg", from: "og:image" },
+        { src: "https://img.invalid/ld/coat-front.jpg", from: "json-ld" },
+        { src: "https://img.invalid/ld/coat-back.jpg", from: "json-ld" },
+      ] } },
+    }],
+  },
+  {
+    name: "extract reads a transcript a custom element shows through a named slot, and a selector that misses it says where it is",
+    page: "transcript.html",
+    steps: [
+      { op: "extract", args: [{ query: "testosterone" }], answer: { value: { text: "Desire is modulated by the hormone testosterone." } } },
+      { op: "extract", args: [{ selector: "main", query: "testosterone" }], answer: { value: { text: "", note: expect.stringContaining("1 line elsewhere on the page") } } },
+    ],
+  },
+  {
+    name: "a snapshot leaves out a consent dialog slid below the window once dismissed",
+    page: "consent-away.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: 'main\n  h1 "Contact us"\n  [1] button "Send"' } } }],
+  },
+  {
     name: "extract reads the dialog open over the page, and says how to read the page behind it",
     page: "modal.html",
     steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Billing\s+Max plan, renews Oct 1\.\s+Close$/), note: expect.any(String) } } }],
