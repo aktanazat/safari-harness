@@ -275,6 +275,8 @@ of readable content. A blank read does not prove a page is empty.
 Classification uses the current returned facts, not another request or
 an access bypass. Ordinary articles discussing subscriptions or sign-in
 are not themselves walls.
+Safari gives a page read no HTTP status, so a page titled not found
+("Page not found · GitHub", "404") reads as `error` unless its body is prose.
 A complete extraction can also carry `controls: [{role, label}]` for
 visible buttons and text fields. these are accessible labels, not field
 values. classification uses them when inline controls run together in
@@ -1108,7 +1110,7 @@ first line counts the pages read and failed.
   and items the 50 s left unread, come back as `urls`, to map next.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
-  reads as an error page (HTTP 400 or more, a page not found, a rate
+  reads as an error page (HTTP 400 or more, a page titled not found, a rate
   limit): it fails, with what it read in `value`.
 - A page that opens as its site's error page (eBay's "Error Page | eBay")
   is loaded again 2 s and then 5 s later, and `retried` says how often;
@@ -1343,7 +1345,8 @@ prints a message a line, after who wrote it.
 `src` is the full image a picture links to or names in a zoom attribute,
 else its widest `srcset` candidate, else a lazy image's real address
 (`data-src` and kin), else what it shows; CSS backgrounds count too.
-Icons (no side 100 px or more) and repeats are left out. Without
+Icons (no side 100 px or more; for an image not yet drawn, the `w` and `h`
+its address asks for) and repeats are left out. Without
 `selector`, the page's `og:image` and JSON-LD images follow, `from`
 naming which. `query` and `maxBytes` narrow the list. `map` with `as:
 "images"` reads it per page.
