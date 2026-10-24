@@ -2383,6 +2383,20 @@ function cardSecrets(card: Record<string, unknown>): string[] {
   return [number, groups.join(" "), groups.join("-"), typeof card.csc === "string" ? card.csc : ""].filter((s) => s !== "");
 }
 
+// A model's third eval on one site in a task is told to save its script as
+// a reader, once: on 10-22 two agents each wrote their own Instagram post
+// collector, about 13 evals between them, and neither saved it.
+const evalsOn = new Map<string, number>();
+function readerHint(tab: unknown, result: unknown): unknown {
+  const owner = currentOwner();
+  const host = pageHost(harnessTabs.get(followTab(Number(tab)))?.url ?? "");
+  if (!fromModel() || owner === undefined || !host) return result;
+  const key = JSON.stringify([taskKey(owner, currentTask()), host]);
+  const n = (evalsOn.get(key) ?? 0) + 1;
+  evalsOn.set(key, n);
+  return n === 3 ? beside(result, "hint", `a third eval on ${host}: save a script you run again as a reader, learn {site: "${host}", reader: "<name>", expression}, then eval {tab, reader: "<name>"}`) : result;
+}
+
 export const TOOLS: Record<string, Tool> = {
   audit: {
     desc: "Run real axe accessibility checks in readable page frames. Returns findings and explicit skipped frames, not a compliance certificate.",
@@ -2619,7 +2633,7 @@ export const TOOLS: Record<string, Tool> = {
       const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
       if (a.reader === undefined) {
         if (a.expression === undefined) throw new Error("eval needs expression, or reader: a script saved with learn");
-        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page, timeoutMs });
+        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
       }
       if (a.expression !== undefined) throw new Error("give expression or reader, not both");
       return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);

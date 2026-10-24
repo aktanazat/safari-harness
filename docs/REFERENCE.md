@@ -1326,6 +1326,9 @@ words the page will show.
   a second `eval` (`await window.__r`) once it has answered.
 - `innerText` reading empty on a page that shows text means a shadow root:
   `sh.text(sh.q(selector))`, or `snapshot`/`extract`.
+- A model's third `eval` on one site in a task carries a `hint` to save a
+  script it runs again as a reader (`learn {site, reader, expression}`,
+  then `eval {tab, reader}`), once per site and task.
 
 ## shot
 
