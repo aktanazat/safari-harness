@@ -365,6 +365,51 @@ test("an agent whose window the user closed gets a new one on its next open", as
   d.kill();
 });
 
+// 10-21: the sweep the extension's connect starts listed Safari's tabs,
+// then judged by that list every window the daemon held, one an agent
+// opened while Safari listed too: missing from the list, it ended as one
+// the user had closed, and the agent's next tab opened another window.
+test("a window an agent opens while a sweep lists Safari's tabs stays its window", async () => {
+  const s = safari();
+  const daemon = await daemonOn(47358, "listing");
+  const [early, late] = [agent(), agent()];
+  await runAs(early.pid, () => daemon.spaceWindow());
+  const send = s.sock.send;
+  let answer: (() => void) | undefined;
+  s.sock.send = (data) => {
+    const { id, op } = JSON.parse(data) as { id?: string; op: string };
+    if (answer || op !== "tabs.list" || id === undefined) return send(data);
+    const listed = [...s.tabs.values()];
+    answer = () => bridge.handleMessage(JSON.stringify({ id, value: listed }));
+  };
+  const pass = daemon.sweep();
+  await until(() => answer !== undefined);
+  const first = await runAs(late.pid, () => daemon.spaceWindow());
+  answer!();
+  await pass;
+  s.sock.send = send;
+  const again = await runAs(late.pid, () => daemon.spaceWindow());
+  expect(again.window).toBe(first.window);
+  early.kill();
+  late.kill();
+});
+
+// 10-21 audit: each call an agent made wrote the daemon's file of windows
+// again, though only the time of its last call had moved, and that time
+// counts in minutes (sweepOnce).
+test("an agent's calls within a minute of its window's last write leave the daemon's file of windows unwritten", async () => {
+  safari();
+  const daemon = await daemonOn(47359, "calls");
+  const q = agent();
+  const path = join(dir, "calls.json");
+  daemon.loadSpaces(path, () => true);
+  await runAs(q.pid, () => daemon.spaceWindow());
+  writeFileSync(path, "as left");
+  for (let i = 0; i < 3; i++) daemon.turnResumed(q.pid);
+  expect(readFileSync(path, "utf8")).toBe("as left");
+  q.kill();
+});
+
 // 10-07: an agent sizing its tab for a screenshot split it from its window
 // into one that named no agent. Its own window takes the size, and the
 // keeper, which finds the window by size, is told the size Safari gave it.

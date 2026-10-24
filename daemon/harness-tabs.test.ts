@@ -419,3 +419,21 @@ test("opening a ninth tab preserves unfinished work until admitted cleanup", asy
   await closedAs([tabs[0]]);
   showing = [];
 });
+
+// 10-21 audit: each call to an agent's tab wrote the daemon's file of its
+// tabs again, though only the time the tab was last used had moved, and
+// that time counts in minutes (an idle tab closes after 20).
+test("an agent's calls to its tab within a minute leave the daemon's file of tabs unwritten", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  loadTabs(file);
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://calls.example/", background: true });
+  const tab = nextTab;
+  writeFileSync(file, "as left");
+  for (let i = 0; i < 3; i++) await as("info", { tab });
+  expect(readFileSync(file, "utf8")).toBe("as left");
+  agent.kill();
+  await endTurn(agent.pid);
+  await closedAs([tab]);
+});

@@ -56,7 +56,11 @@ const making = new Map<string, Promise<Space>>();
 const ended = new Set<Space>();
 // Ended groups, by name, for the keeper to delete.
 const closing = new Map<string, Space>();
-const SWEEP_MS = 5000;
+// Safari's tabs are listed on this cadence only to notice what the user did
+// to agent windows himself; what the harness does sweeps at once (turnEnded,
+// and the extension's connect in tools.ts). Every 5 s, it was 12 lists a
+// minute while an agent ran (10-21 audit).
+const SWEEP_MS = 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -427,14 +431,29 @@ function sweepSoon() {
 }
 
 let spaceSweeping: Promise<void> | undefined;
+let sweepAgain = false;
 
-function sweep(): Promise<void> {
-  spaceSweeping ??= sweepOnce().finally(() => { spaceSweeping = undefined; });
+// A sweep asked for while one runs runs again after it: the one running may
+// have listed Safari before the change that asked.
+export function sweep(): Promise<void> {
+  if (spaceSweeping) {
+    sweepAgain = true;
+    return spaceSweeping;
+  }
+  spaceSweeping = (async () => {
+    do {
+      sweepAgain = false;
+      await sweepOnce();
+    } while (sweepAgain);
+  })().finally(() => { spaceSweeping = undefined; });
   return spaceSweeping;
 }
 
 async function sweepOnce() {
   if (!bridge.connected) return;
+  // A window made after this, while Safari lists, is not in the list: it
+  // would look empty, and end as one the user closed.
+  const known = new Set(spaces.values());
   if (taskTracked) endUntrackedTurns(taskTracked);
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) {
     if (taskTracked?.(s.owner) === false) s.done = true;
@@ -485,20 +504,26 @@ async function sweepOnce() {
     return;
   }
   for (const s of [...ended]) if (s.done) await end(s);
-  if (spaces.size === 0) return;
+  const judged = [...spaces.values()].filter((s) => known.has(s));
+  if (judged.length === 0) return;
   const tabs = listed ?? await listTabs();
-  for (const s of [...spaces.values()]) {
+  for (const s of judged) {
+    if (spaces.get(s.key) !== s) continue;
     const inWindow = await located(s, tabs);
     if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
   }
 }
 
 export function turnResumed(owner: number | undefined, task?: string): void {
+  let changed = false;
   for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) {
+    // used counts in minutes (sweepOnce): writing the file for each call
+    // rewrote every window at every call
+    if (s.done || Date.now() - (s.used ?? 0) >= 60_000) changed = true;
     delete s.done;
     s.used = Date.now();
   }
-  save();
+  if (changed) save();
 }
 
 // The runtime admitted cleanup of this owner's disposable tabs (endTurn,

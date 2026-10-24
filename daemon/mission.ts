@@ -30,7 +30,7 @@ import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPict
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, recentlyClosedTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
+import { closeTabsOf, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 
 // What a held call answers: each tells the agent what to do next.
@@ -710,10 +710,13 @@ function summaryOf(a: Agent): Summary {
 }
 
 // Safari's tabs, only while the extension is there: a page's poll must
-// never start a Safari the user quit (socket in bridge.ts).
-async function tabList(): Promise<TabInfo[] | undefined> {
+// never start a Safari the user quit (socket in bridge.ts). The pages poll
+// every 2 s for calls; the tabs they show may be 10 s old.
+const PAGE_LIST_MS = 10_000;
+
+async function tabList(maxAgeMs = PAGE_LIST_MS): Promise<TabInfo[] | undefined> {
   if (!bridge.connected) return undefined;
-  return (await bridge.request("tabs.list", [], 5000).catch(() => undefined)) as TabInfo[] | undefined;
+  return recentTabs(maxAgeMs).catch(() => undefined);
 }
 
 // An agent window's page, by its address (spaceWindow in spaces.ts).
@@ -982,7 +985,7 @@ async function control(owner: number | undefined, action: unknown, from: string,
 // of its windows (or of the window whose page he pressed), else the last
 // one there. Safari brings it to the front of its window.
 async function raise(agent: Agent, window: number | undefined): Promise<number | undefined> {
-  const tabs = await tabList();
+  const tabs = await tabList(0);
   if (!tabs || agent.stopped !== undefined || agent.ended !== undefined) return undefined;
   const windows = new Set(window === undefined ? windowsIn(tabs).filter((w) => w.owner === agent.owner).map((w) => w.window) : [window]);
   const mine = inWindows(tabs, windows);
