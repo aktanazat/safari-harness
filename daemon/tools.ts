@@ -2103,7 +2103,7 @@ async function saveFile(f: FilePayload, url: string, out: string | undefined, fo
     const went = f.url && f.url !== url ? ` (it went to ${f.url})` : "";
     throw new Error(`${url || "the link"} answered a web page${went}, not a .${asked} file; nothing was saved. A sign-in page is the usual cause: download it with the tab of a page signed in to that site, or give out a name ending in .html to keep the page`);
   }
-  const path = out ?? (prefix === undefined ? await freePath(folder, nameOf(f, url)) : join(folder, prefix + nameOf(f, url)));
+  const path = out ?? await freePath(folder, (prefix ?? "") + nameOf(f, url));
   await mkdir(dirname(path), { recursive: true });
   const data = Buffer.from(f.data, "base64");
   await writeFile(path, data);
@@ -2207,8 +2207,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
 }
 
 // Several files by url into the folder out names (~/Downloads unless it
-// does), each named NN-<its own name> so a second run writes over the first
-// instead of adding "a (1).jpg". The first goes alone, so a site that
+// does), each named NN-<its own name>, or "NN-a (1).jpg" beside a file
+// already there, which is never replaced. The first goes alone, so a site that
 // answers its sign-in page opens one tab for the rest (download); then four
 // at a time. A file that fails is reported in its place: on 10-22 an agent
 // fetched ten product images through ten map calls in nine minutes.
