@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
-import { followTab, forgetPopups, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
+import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
 import { frontApp, inFront, input, notify, raiseSafari, SAFARI, show } from "./front.ts";
@@ -1286,6 +1286,10 @@ const UNANSWERED = "the page gave no answer in time (Safari or the page is slow)
 // of the tab included: on 10-16 a 3 s wait failed "extension request
 // tabs.list timed out after 5000ms" as it read where the tab was.
 const STOPPED_MS = 1000;
+
+// The longest a tab a page said it was opening takes to be reported: 3 s
+// for its page to report in, and its taking (adoptPopup in background.js).
+const POPUP_REPORT_MS = 4000;
 
 // The longest wait. An MCP client set up as README.md says gives up on a
 // call at 130 s (handoff.ts keeps the same margin). At 30 s, a Philips
@@ -3036,13 +3040,21 @@ export const TOOLS: Record<string, Tool> = {
   },
   // Unmarked once the press has reached it, or after ms. The answer is the
   // errors the page threw from the mark on; news of a tab the press opened
-  // comes in real_input's answer (input.ts).
+  // comes in real_input's answer (input.ts). The extension reports a tab
+  // once its page has an address, within 3 s (adoptPopup in background.js):
+  // on 10-24 a press on a link answered first, and the tab came in the
+  // agent's next call.
   press_done: {
     desc: "Unmark an element once the press has reached it, or after ms; list the errors the page threw since the mark.",
     params: { tab: TAB, ref: REF, mark: { type: "string", description: "from press_mark" }, ms: { type: "number", description: "longest wait for the press" } },
     required: ["tab", "ref", "mark", "ms"],
     hidden: true,
-    run: async (a) => relay(await resolveTab(a.tab), "pressDone", [str(String(a.ref), "ref"), str(a.mark, "mark"), num(a.ms, "ms")], 2000),
+    run: async (a) => {
+      const done = await relay(await resolveTab(a.tab), "pressDone", [str(String(a.ref), "ref"), str(a.mark, "mark"), num(a.ms, "ms")], 2000) as { errors?: unknown; tab?: boolean } | null;
+      const owner = currentOwner();
+      if (done?.tab && owner !== undefined) await popupWaiting(owner, POPUP_REPORT_MS);
+      return done;
+    },
   },
   // The field marked for the helper's setvalue, focused, with its window's
   // size (typeMark in content.js).

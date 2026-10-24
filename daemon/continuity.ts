@@ -26,6 +26,8 @@ type News = { replaced?: Replaced; popup?: Popup };
 const moved = new Map<number, { to: number; connectedAt: number | undefined }>();
 // Popups not yet reported, by the agent that owns them.
 const popups = new Map<number, Popup[]>();
+// Calls waiting for an agent's next popup (popupWaiting).
+const waiters = new Map<number, Set<() => void>>();
 
 // A tab swapped twice is reached by its first id too: every id that led to
 // the old one leads to the new one.
@@ -54,6 +56,22 @@ export function followTab(id: number): number {
 
 export function queuePopup(owner: number, popup: Popup): void {
   popups.set(owner, [...(popups.get(owner) ?? []), popup]);
+  for (const wake of waiters.get(owner) ?? []) wake();
+}
+
+// Settles once the agent has a popup waiting to be reported, or after ms.
+export function popupWaiting(owner: number, ms: number): Promise<void> {
+  if (popups.get(owner)?.length) return Promise.resolve();
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const wake = () => {
+    clearTimeout(timer);
+    waiters.get(owner)?.delete(wake);
+    if (waiters.get(owner)?.size === 0) waiters.delete(owner);
+    resolve();
+  };
+  const timer = setTimeout(wake, ms);
+  waiters.set(owner, (waiters.get(owner) ?? new Set()).add(wake));
+  return promise;
 }
 
 // An agent's popups it exited without hearing of: its pid may come back as

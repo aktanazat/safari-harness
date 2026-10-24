@@ -260,14 +260,15 @@ async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> 
     if (marked && typeof marked === "object" && "picker" in marked) return null;
     if (!isMark(marked)) throw new Error(`press_mark returned no mark for ${String(ref)}: ${JSON.stringify(marked)}`);
     let pressed = false;
-    let errors: unknown;
+    let done: unknown;
     try {
       const r = await deliver(tab, ["press", marked.mark, String(marked.width), String(marked.height)]);
       pressed = !!r && typeof r === "object" && "pressed" in r && r.pressed === true;
     } finally {
-      errors = await rpc("press_done", { tab, ref, mark: marked.mark, ms: pressed ? 500 : 0 }).catch(() => []);
+      done = await rpc("press_done", { tab, ref, mark: marked.mark, ms: pressed ? 500 : 0 }).catch(() => null);
     }
     if (!pressed) return null;
+    const errors = done && typeof done === "object" && "errors" in done ? done.errors : [];
     return Array.isArray(errors) ? errors.filter((e): e is string => typeof e === "string") : [];
   });
 }
