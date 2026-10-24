@@ -7,7 +7,6 @@
 // browsing history, real input) run on that Mac over ssh.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -32,16 +31,14 @@ async function saveHostConfig(cfg: HostConfig): Promise<void> {
   await writeFile(HOST_FILE, `${JSON.stringify(cfg, null, 2)}\n`);
 }
 
-function freePort(): Promise<number> {
-  const { promise, resolve, reject } = Promise.withResolvers<number>();
-  const srv = createServer();
-  srv.once("error", reject);
-  srv.listen(0, "127.0.0.1", () => {
-    const addr = srv.address();
-    const port = addr && typeof addr === "object" ? addr.port : 0;
-    srv.close(() => resolve(port));
-  });
-  return promise;
+// Bun.listen, not node:net: every MCP server imports this file, and
+// node:net with node:crypto (codehash.ts) held 1 MB of each one that
+// made no call (10-21).
+function freePort(): number {
+  const srv = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const { port } = srv;
+  srv.stop(true);
+  return port;
 }
 
 export type Tunnel = { url: string; close: () => void };
@@ -51,7 +48,7 @@ export type Tunnel = { url: string; close: () => void };
 // tunnel cannot outlive this process even if it is killed outright.
 export async function openTunnel(host: string): Promise<Tunnel> {
   if (!/^[A-Za-z0-9_.@-]+$/.test(host)) throw new Error(`not an ssh host name: ${host}`);
-  const port = await freePort();
+  const port = freePort();
   const ssh = Bun.spawn([
     "ssh", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30",
     "-L", `127.0.0.1:${port}:127.0.0.1:${DAEMON_PORT}`, host, "cat",

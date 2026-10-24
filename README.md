@@ -106,8 +106,10 @@ daemon/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
                     tools itself); lasts the agent's session across deploys
-  mcp-tools.ts      the tools one release offers over MCP; after a deploy the
-                    server loads the daemon's release's copy (fresh.ts)
+  mcp-tools.ts      the tools one release offers over MCP, loaded at a
+                    session's first call (until then the server lists them by
+                    running this file); after a deploy the server loads the
+                    daemon's release's copy (fresh.ts)
   imessage.ts       Messages: chats, history, search, sign-in codes, contacts,
                     attachment retrieval, and draft-then-approve sending
                     (chat.db read-only, AddressBook, osascript)
@@ -263,7 +265,9 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
    runs one in the foreground instead). Safari loads every registered copy
    of the app, and each opens the extension socket; the daemon keeps the
    one that connected first, which may be a stale build. The script leaves
-   only the one in `/Applications` registered.
+   only the one in `/Applications` registered. Xcode builds the app in
+   `~/Library/Caches/safari-harness/DerivedData`, one folder every build
+   reuses.
 3. Launch "Safari Harness.app" once, then in Safari:
    Settings ▸ Extensions ▸ enable **Safari Harness**.
    That GUI toggle is the only manual step; no Develop-menu or

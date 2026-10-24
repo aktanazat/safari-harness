@@ -1,6 +1,6 @@
 // Deploys must preserve the installed history before touching a release or native app.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -159,6 +159,54 @@ test("a descendant containing the selected and running releases reaches checkpoi
 test.each([7, 12, 40])("redeploying the same commit resolves a %i-character release id", length => {
   select(installed.slice(0, length), true);
   expectAccepted(installed);
+});
+
+// Each of two extension versions of the descendant deploys past checkpoint
+// admission, builds the app, and stops at the step after (lsregister). The
+// fake xcodebuild notes, per build, whether an earlier build's products
+// were still in its folder, and the folder.
+function buildTwice(): string[][] {
+  const layer = join(root, "app-build.sh");
+  writeFileSync(layer, `
+. "${env.BASH_ENV}"
+bun() {
+  if [ "$1" = "$CHECKPOINTS" ] && [ "$2" = check ]; then "$REAL_BUN" "$@"; return; fi
+  return 99
+}
+xcodebuild() {
+  case "$1" in -checkFirstLaunchStatus) return 0 ;; esac
+  local folder=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = -derivedDataPath ]; then folder="$2"; fi
+    shift
+  done
+  if [ -e "$folder/Build/Products" ]; then printf 'stale\\t%s\\n' "$folder"; else printf 'clean\\t%s\\n' "$folder"; fi >>"$HOME/app-builds"
+  command mkdir -p "$folder/Build/Products/Debug/Safari Harness.app"
+}
+ditto() { [ "$1" = -c ] || return 99; : >"\${@: -1}"; }
+lsregister() { return 99; }
+`);
+  env.BASH_ENV = layer;
+  mkdirSync(join(home, ".Trash"));
+  const target = short(descendant);
+  mkdirSync(join(releases, target, "Safari Harness"));
+  for (const key of ["0123456789abcdef", "fedcba9876543210"]) {
+    writeFileSync(join(releases, target, ".extension"), `${key}\n`);
+    invoke(target);
+  }
+  return readFileSync(join(home, "app-builds"), "utf8").trim().split("\n").map((line) => line.split("\t"));
+}
+
+// Each app build made an Xcode build folder of its own and moved it to the
+// Trash: six of 217 MB in 3.5 hours on 10-21.
+test("two app builds use one build folder and leave nothing in the Trash", () => {
+  const folders = buildTwice().map(([, folder]) => folder);
+  expect(new Set(folders).size).toBe(1);
+  expect(readdirSync(join(home, ".Trash"))).toEqual([]);
+});
+
+test("an app build in the reused folder starts without the products an earlier build left", () => {
+  expect(buildTwice().map(([products]) => products)).toEqual(["clean", "clean"]);
 });
 
 test("a sibling deployment is refused before it can create or switch a release", () => {

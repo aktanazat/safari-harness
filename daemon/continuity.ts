@@ -21,6 +21,8 @@ type News = { replaced?: Replaced; popup?: Popup };
 // old id to another tab; a reloaded extension says again, each time it
 // connects, which tab each old id names now (recordRenumbered), and its own
 // aliases (background.js) lead an old id to its new tab while Safari runs.
+// Ids reported on an earlier connection lead nowhere (followTab), and go as
+// the next is recorded.
 const moved = new Map<number, { to: number; connectedAt: number | undefined }>();
 // Popups not yet reported, by the agent that owns them.
 const popups = new Map<number, Popup[]>();
@@ -29,7 +31,10 @@ const popups = new Map<number, Popup[]>();
 // the old one leads to the new one.
 export function recordReplaced(from: number, to: number): void {
   const connectedAt = bridge.extensionInfo?.connectedAt;
-  for (const [old, m] of moved) if (m.to === from && m.connectedAt === connectedAt) moved.set(old, { to, connectedAt });
+  for (const [old, m] of moved) {
+    if (m.connectedAt !== connectedAt) moved.delete(old);
+    else if (m.to === from) moved.set(old, { to, connectedAt });
+  }
   moved.set(from, { to, connectedAt });
 }
 
@@ -37,6 +42,7 @@ export function recordReplaced(from: number, to: number): void {
 // extension has followed the swaps between already.
 export function recordRenumbered(tabs: Map<number, number>): void {
   const connectedAt = bridge.extensionInfo?.connectedAt;
+  for (const [old, m] of moved) if (m.connectedAt !== connectedAt) moved.delete(old);
   for (const [from, to] of tabs) moved.set(from, { to, connectedAt });
 }
 
@@ -48,6 +54,12 @@ export function followTab(id: number): number {
 
 export function queuePopup(owner: number, popup: Popup): void {
   popups.set(owner, [...(popups.get(owner) ?? []), popup]);
+}
+
+// An agent's popups it exited without hearing of: its pid may come back as
+// another process's.
+export function forgetPopups(owner: number): void {
+  popups.delete(owner);
 }
 
 // Runs a tool call and adds its news to the result: replaced when the call

@@ -17,6 +17,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { alive, changeQueue, check, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
+import { trimLog } from "./journal.ts";
 import { rpc } from "./rpc.ts";
 
 // A window as the space tool's state lists it; tabs, the extension's count
@@ -169,6 +170,8 @@ export async function pass(h: Helper, daemon: Daemon, given: Map<string, number>
 }
 
 if (import.meta.main) {
+  // a few lines a day on 10-21; a log that only grows still fills a disk
+  trimLog(files.log, 1000);
   const { helper, stop: stopHelper } = startHelper();
   const log: Log = (line) => {
     mkdirSync(dirname(files.log), { recursive: true });

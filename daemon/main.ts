@@ -23,7 +23,7 @@ import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { TOOLS, callTool, endTurn, prepareTurnEnd, loadTabs, type TurnPreparation } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
-import { note, openJournal, recent } from "./journal.ts";
+import { note, openJournal, recent, trimLog } from "./journal.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, tracksOwner, watched } from "./mission.ts";
@@ -37,6 +37,8 @@ import { affectsPage } from "./lanes.ts";
 import { openMissionHistory } from "./mission.ts";
 import { localRequest } from "./requests.ts";
 import { browserMemoryRoute, startBrowserMemory, stopBrowserMemory } from "./browser-memory-runtime.ts";
+import { pruneSaved } from "./save.ts";
+import { sweepPlaybookLearning } from "./playbooks.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -50,7 +52,11 @@ for (const level of ["log", "warn", "error"] as const) {
 // The release it runs (scripts/dev-install.sh keeps that one while it runs)
 const ROOT = join(import.meta.dir, "..");
 const CODE = codeHash(ROOT);
-const earlier = openJournal(join(homedir(), "Library", "Logs", "safari-harness", `journal-${httpPort}.jsonl`));
+const LOGS = join(homedir(), "Library", "Logs", "safari-harness");
+// launchd's log of the daemon (cli/launchd.ts), about 600 lines a day on
+// 10-21: a week or so of it stays.
+trimLog(join(LOGS, "daemon.log"), 5000);
+const earlier = openJournal(join(LOGS, `journal-${httpPort}.jsonl`));
 const last = earlier.at(-1);
 note("start", {
   pid: process.pid,
@@ -63,6 +69,9 @@ openMissionHistory(join(homedir(), ".local/share/safari-harness", `history-${htt
 // The extension reports every load in its owned tabs (bridge.ts), including
 // loads no tool caused, so browsing_history can leave those visits out.
 openLoads(loadsFile(httpPort));
+// Files of agents that have exited, and reads saved over a week ago
+void pruneSaved();
+sweepPlaybookLearning();
 // What the user taught in a tab (teach mode) is saved as he stops it; a
 // notification tells him its name, or why it was not saved.
 bridge.onRecording = (recording) => {

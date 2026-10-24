@@ -5,7 +5,6 @@
 //
 //   bun daemon/codehash.ts [DIR]     prints the hash of DIR (default: this one)
 
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,7 +16,10 @@ const PARTS: Record<string, (file: string) => boolean> = {
 };
 
 export function codeHash(root = join(import.meta.dir, "..")): string {
-  const hash = createHash("sha256");
+  // Bun's hasher, not node:crypto's: every MCP server imports this file,
+  // and node:crypto with node:net (host.ts) held 1 MB of each one that
+  // made no call (10-21).
+  const hash = new Bun.CryptoHasher("sha256");
   for (const file of ["package.json", "bun.lock"]) {
     const path = join(root, file);
     if (existsSync(path)) hash.update(`${file}\0`).update(readFileSync(path)).update("\0");

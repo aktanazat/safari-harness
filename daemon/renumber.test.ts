@@ -9,10 +9,12 @@ import { callTool, endTurn, loadTabs } from "./tools.ts";
 
 // A stand-in Safari and its extension. The daemon opens the agent's tabs in
 // a window of the agent's own; a page op answers from the tab it reached,
-// which is noted, as is each close. Like background.js, the extension takes
-// an old id for the tab it names now, fails an id it knows nothing of as
-// Safari does, and closes a tab for the daemon's sweep (only) when the
-// harness owns it: opened as owned, or given how to answer its dialogs.
+// and the tab an agent's info reached is noted (the window sweep's own
+// look at its page is not), as is each close. Like background.js, the
+// extension takes an old id for the tab it names now, fails an id it knows
+// nothing of as Safari does, and closes a tab for the daemon's sweep (only)
+// when the harness owns it: opened as owned, or given how to answer its
+// dialogs.
 type Row = { id: number; url: string; windowId: number };
 const tabs = new Map<number, Row>();
 const owned = new Set<number>();
@@ -49,7 +51,7 @@ function answer(op: string, args: unknown[]): { value: unknown } | { error: stri
     if (args[1]) owned.add(row.id);
     return { value: { dialogs: [], answer: "dismiss" } };
   }
-  if (op === "relay") reached.push(row.id);
+  if (op === "relay" && args[1] === "tabInfo") reached.push(row.id);
   return { value: { ok: true, url: row.url } };
 }
 

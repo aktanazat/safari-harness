@@ -17,17 +17,21 @@
 
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { chmod, mkdir, readdir, unlink } from "node:fs/promises";
+import { chmod, mkdir, readdir, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { REPL_TIMEOUT_MS, ReplSession, type ReplResult } from "./repl.ts";
 import { connectHost } from "./host.ts";
 import { pageHost } from "./notes.ts";
-import { ownerOf, watchOwner } from "./owner.ts";
+import { alive, ownerOf, watchOwner } from "./owner.ts";
 import { callFor, currentTask, ownCalls, withTask } from "./rpc.ts";
 
 export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
 const IDLE_MS = 30 * 60_000;
+// A gone session's log that says something is kept a week.
+const LOG_KEPT_MS = 7 * 24 * 60 * 60_000;
+// Longer than a session takes to answer once started (start).
+const STARTING_MS = 60_000;
 
 // owner: the agent that last ran code in the session (owner.ts).
 export type SessionInfo = { id: string; pid: number; host: string; started: string; lastUsed: string; pwd: string; tabs: { id: number; url: string }[]; owner?: number };
@@ -63,6 +67,9 @@ async function info(id: string): Promise<SessionInfo | null> {
 async function start(id: string, host: string | undefined, endsWith: number | undefined): Promise<void> {
   const dir = join(REPL_DIR, id);
   await mkdir(dir, { recursive: true });
+  // just made or reused, its time says it is starting (sweep)
+  const now = new Date();
+  await utimes(dir, now, now);
   await chmod(REPL_DIR, 0o700);
   await unlink(socketOf(id)).catch(() => {});
   const env = { ...process.env };
@@ -140,6 +147,33 @@ export async function listSessions(): Promise<SessionInfo[]> {
   return found.filter((i): i is SessionInfo => i !== null);
 }
 
+// What session id leaves: its folder if nothing was saved in it, and its
+// log if empty or a week old.
+async function tidy(id: string): Promise<void> {
+  await rmdir(join(REPL_DIR, id)).catch(() => {});
+  const log = join(REPL_DIR, `${id}.log`);
+  const s = await stat(log).catch(() => undefined);
+  if (s && (s.size === 0 || Date.now() - s.mtimeMs > LOG_KEPT_MS)) await unlink(log).catch(() => {});
+}
+
+// What sessions that are gone left, as a session starts: one killed, or
+// one ended before its folder was tidied (10-21: 11 folders and 15 logs,
+// all empty). One whose folder changed in the last minute may be starting.
+// An MCP server's own session (mcp-tools.ts) runs in that server, with no
+// socket, and is gone only once the server is.
+async function sweep(self: string): Promise<void> {
+  const names = await readdir(REPL_DIR).catch(() => []);
+  const ids = new Set(names.filter((n) => !n.endsWith(".sock")).map((n) => n.replace(/\.log$/, "")));
+  ids.delete(self);
+  for (const id of ids) {
+    const server = /^mcp-(\d+)$/.exec(id)?.[1];
+    if (server !== undefined && alive(Number(server))) continue;
+    const s = await stat(join(REPL_DIR, id)).catch(() => stat(join(REPL_DIR, `${id}.log`)).catch(() => undefined));
+    if (!s || Date.now() - s.mtimeMs < STARTING_MS || (await info(id))) continue;
+    await tidy(id);
+  }
+}
+
 // Ends session id: its tabs close. Its files stay in its folder.
 export async function closeSession(id: string): Promise<string> {
   checkSessionId(id);
@@ -162,6 +196,8 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
   const end = async () => {
     clearTimeout(idle);
     await session.close().catch(() => {});
+    // while its socket answers, no other host starts as id
+    await tidy(id);
     await unlink(sock).catch(() => {});
     process.exit(0);
   };
@@ -205,6 +241,7 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
   });
   await chmod(sock, 0o600);
   rest();
+  void sweep(id);
   if (endsWith !== undefined) watchOwner(endsWith, () => void end());
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => void end());
 }
