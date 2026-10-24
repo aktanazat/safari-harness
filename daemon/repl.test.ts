@@ -24,6 +24,7 @@ function session(refusal: "thrown" | "returned" = "thrown") {
     if (tool === "eval" && args.page && refusal === "thrown") throw new Error(BLOCKED);
     if (tool === "eval" && args.page) return { error: WEBKIT };
     if (tool === "eval") return { result: "extension" };
+    if (tool === "snapshot") return { url: "https://example.com", title: "Example", snapshot: 'heading "Example"', truncated: false };
     return { ok: true };
   };
   return { repl: new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke }), calls };
@@ -79,6 +80,32 @@ test("a run's output past 10 000 characters is saved whole, and the result keeps
   if (path) saved.push(path);
   expect(r.output).toStartWith(`${"a".repeat(2_000)}\n…cut at 2000 of 12001 characters`);
   expect(readFileSync(String(path), "utf8")).toBe(`${"a".repeat(6_000)}\n${"b".repeat(6_000)}`);
+});
+
+// On 10-22 a failed script's answer began with a page's whole snapshot,
+// its error at the end.
+test("a failed run's output past 8 lines is cut to them, the whole saved", async () => {
+  const r = await session().repl.run("for (let i = 0; i < 20; i++) console.log(`line ${i}`)\nthrow new Error('boom')");
+  const path = /the whole is in (\S+)$/.exec(r.output)?.[1];
+  if (path) saved.push(path);
+  expect(r.output.split("\n").slice(0, 9)).toEqual([...Array.from({ length: 8 }, (_, i) => `line ${i}`), `…12 more lines of output before the error; the whole is in ${path}`]);
+  expect(readFileSync(String(path), "utf8").split("\n")).toHaveLength(20);
+  expect(r.error).toStartWith("Error: boom");
+});
+
+// On 10-22 getTab(745000) failed "getTab is not defined", and
+// researchFinalTab.snapshot() "is not a function".
+test.each([
+  ["a global", "getTab(745000)", "hint: did you mean getTabs?"],
+  ["a page's method", "await openTab('https://example.com')\nawait page.screenshoot()", "hint: did you mean page.screenshot()?"],
+  ["a page's method on what is not a page", "const row = { id: 7 }\nawait row.snapshot()", "hint: row is not a page; openTab(url) or attachBrowserTab(id) gives one, with snapshot()"],
+])("a name a script got wrong, %s, gets its nearest", async (_, code, hint) => {
+  expect((await session().repl.run(code)).error).toEndWith(hint);
+});
+
+test("page.snapshot reads the page as snapshot(page) does", async () => {
+  const { repl } = session();
+  expect(await repl.run("await openTab('https://example.com')\nconst snap = await page.snapshot()\nsnap.tree")).toEqual({ output: "title: Example\nurl: https://example.com\nheading \"Example\"" });
 });
 
 test("page.fill types the text into the target it names", async () => {

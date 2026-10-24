@@ -82,6 +82,12 @@ test("a parameter the tool does not take fails before the page is asked, naming 
   expect(sent).toEqual([]);
 });
 
+// On 10-22 map {max_chars, output_dir} failed on max_chars, and the next
+// call on output_dir.
+test("every parameter the tool does not take is named at once, each with its nearest", () => {
+  expect(() => checkCall(TOOLS, "select", { tab: 7, optoin: "Blue", snapshto: true, color: "red" }, true)).toThrow("unknown parameters for select: optoin (did you mean option?), snapshto (did you mean snapshot?), color (params: tab, ref, option, snapshot)");
+});
+
 // Names agents wrote in the 09-27 to 09-30 logs, and map's script on
 // 10-05, each a failed call.
 test.each([
@@ -100,6 +106,7 @@ test.each([
   ["download", "path", "out"],
   ["passwords", "account", "username"],
   ["map", "script", "expression"],
+  ["download", "out_dir", "out"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });

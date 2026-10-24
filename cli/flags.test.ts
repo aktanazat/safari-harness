@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -100,4 +100,17 @@ test("a JSON object is still a call's arguments", async () => {
   calls.length = 0;
   expect(await safari(["call", "dialog", '{"do":"read","tab":7}'])).toEqual({ err: "", code: 0 });
   expect(calls).toEqual([{ tool: "dialog", args: { do: "read", tab: 7 } }]);
+});
+
+// On 10-22 two agents' --steps-file held the MCP call's object, as the run
+// guide shows it, and was refused: "run needs steps".
+test.each([
+  ["a bare array", '[{"tool": "info", "args": {"tab": 7}}]'],
+  ["the MCP call's object", '{"steps": [{"tool": "info"}], "tab": 7}'],
+])("run --steps-file holding %s runs its steps", async (_shape, json) => {
+  calls.length = 0;
+  const file = join(home, "steps.json");
+  writeFileSync(file, json);
+  expect(await safari(["run", "--steps-file", file])).toEqual({ err: "", code: 0 });
+  expect(calls.filter((c) => c.tool === "info")).toEqual([{ tool: "info", args: { tab: 7 } }]);
 });

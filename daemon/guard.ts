@@ -43,11 +43,12 @@ export function nameIn(names: string[], name: string): string | undefined {
 // action, code, note, mode, and js each failed a call in the 09-27 to
 // 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
 // 10-07 net's query, the part of the address it keeps; in the 10-12 to
-// 10-16 logs shot's path and passwords' account; on 10-05 map's script.
+// 10-16 logs shot's path and passwords' account; on 10-05 map's script;
+// on 10-22 download's out_dir.
 const ALIASES: [string, string, string[]?][] = [
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
   ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
-  ["path", "out", ["shot", "shots", "download"]], ["account", "username", ["passwords"]],
+  ["path", "out", ["shot", "shots", "download"]], ["outDir", "out", ["download"]], ["account", "username", ["passwords"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do
@@ -84,7 +85,7 @@ function takenBy(tools: Record<string, Tool>, tool: string): Taken {
 }
 
 function meant({ taken, aliases }: Taken, key: string): [string, Param] | undefined {
-  const real = nameIn(Object.keys(taken), key) ?? aliases.find(([alias]) => alias === key)?.[1];
+  const real = nameIn(Object.keys(taken), key) ?? aliases.find(([alias]) => nameIn([alias], key))?.[1];
   return real === undefined ? undefined : [real, taken[real]];
 }
 
@@ -101,8 +102,10 @@ export type Checked = { tool: string; args: Record<string, unknown>; notes: stri
 const answersPage = new WeakSet<Checked>();
 
 // The tool and arguments a call means. A model's call may name either in
-// another way, and each one taken so is noted; a name the tool does not
-// take fails the call. Calls the harness makes itself are taken as written.
+// another way, and each one taken so is noted; names the tool does not
+// take fail the call, all named at once: on 10-22 map {max_chars,
+// output_dir} took two calls to learn that neither was map's.
+// Calls the harness makes itself are taken as written.
 export function checkCall(tools: Record<string, Tool>, name: string, given: Record<string, unknown>, model: boolean): Checked {
   const names = Object.keys(tools);
   const tool = model ? nameIn(names, name) : Object.hasOwn(tools, name) ? name : undefined;
@@ -116,6 +119,7 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
   const taken = takenBy(tools, tool);
   const args: Record<string, unknown> = {};
   const from: Record<string, string> = {};
+  const unknown: string[] = [];
   for (const [key, value] of Object.entries(reshaped(tool, given, notes))) {
     if (value === undefined) continue;
     // A run gives every step the tab its latest open made, else the last
@@ -124,13 +128,26 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
     if (real === undefined) {
       const miss = missFor(tool, key);
       if (miss) throw new Error(miss);
-      const near = nearest(key, [...taken.params, ...taken.aliases.map(([alias]) => alias)]);
-      throw new Error(`unknown parameter ${key} for ${tool}${near ? `; did you mean ${near}?` : ""} (params: ${taken.params.join(", ") || "none"})`);
+      unknown.push(key);
+      continue;
     }
     if (Object.hasOwn(args, real)) throw new Error(`${from[real]} and ${key} both name ${real} for ${tool}; pass one`);
     if (real !== key) notes.push(`used ${real} for ${key}`);
     args[real] = value;
     from[real] = key;
+  }
+  if (unknown.length) {
+    const known = [...taken.params, ...taken.aliases.map(([alias]) => alias)];
+    const params = `(params: ${taken.params.join(", ") || "none"})`;
+    if (unknown.length === 1) {
+      const near = nearest(unknown[0], known);
+      throw new Error(`unknown parameter ${unknown[0]} for ${tool}${near ? `; did you mean ${near}?` : ""} ${params}`);
+    }
+    const each = unknown.map((key) => {
+      const near = nearest(key, known);
+      return near ? `${key} (did you mean ${near}?)` : key;
+    });
+    throw new Error(`unknown parameters for ${tool}: ${each.join(", ")} ${params}`);
   }
   const checked = { tool, args, notes };
   if (Object.hasOwn(tools[tool].params, "snapshot")) answersPage.add(checked);

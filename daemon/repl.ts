@@ -15,6 +15,7 @@ import { invoke as defaultInvoke, type Invoke } from "./call.ts";
 import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
+import { nearest } from "./guard.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
 import type { CaptureResult } from "./evidence.ts";
@@ -29,6 +30,10 @@ export const REPL_TIMEOUT_MS = 120_000;
 // minified source each, cut only where the MCP reply cuts (mcp-tools.ts).
 const SPILL_CHARS = 10_000;
 const SPILL_HEAD_CHARS = 2_000;
+// A failed run's output, and its error, past this many lines are cut to
+// them, the whole saved: on 10-22 a failed script's answer began with a
+// page's whole snapshot, its error at the end.
+const ERROR_LINES = 8;
 
 export type ReplResult = { output: string; error?: string };
 
@@ -37,6 +42,7 @@ type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; eff
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
 type SnapshotOptions = { interactive?: boolean; showHidden?: boolean; ref?: string; selector?: string; maxNodes?: number };
+type Snapshot = { tree: string; diff: string; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
 type PasteOptions = { html?: string; tsv?: string };
 
 const DOWNLOADS = nodePath.join(homedir(), "Downloads");
@@ -375,6 +381,11 @@ export class Page {
   async extract(opts: string | { selector?: string; query?: string; maxBytes?: number } = {}): Promise<unknown> {
     return this.call("extract", typeof opts === "string" ? { selector: opts } : opts);
   }
+  // page.snapshot(options), as snapshot(page, options): on 10-22 a script
+  // called it so and failed "is not a function".
+  snapshot(opts: SnapshotOptions = {}): Promise<Snapshot> {
+    return this.session.snapshot(this, opts);
+  }
 
   locator(target: string): Locator {
     return new Locator(this, targetOf(target));
@@ -563,6 +574,9 @@ export class Page {
   }
 }
 
+// The names a page and a locator answer to, for an error's nearest.
+const PAGE_METHODS = [...Object.getOwnPropertyNames(Page.prototype), ...Object.getOwnPropertyNames(Locator.prototype)].filter((n) => n !== "constructor");
+
 type FetchInit = { method?: string; headers?: unknown; body?: unknown };
 
 // A value from the session's own V8 context, copied into this one so it
@@ -610,6 +624,14 @@ function errorText(e: unknown): string {
   if (name === "AggregateError" && errors.length) return errors.map(syntaxError).join("\n");
   if (name === "BuildMessage") return syntaxError(e);
   return `${name}: ${String(e.message)}`;
+}
+
+// text's first lines, and the file the whole of it was saved to.
+async function cutLines(text: string, what: string, lines = ERROR_LINES): Promise<string> {
+  const all = text.split("\n");
+  if (all.length <= lines) return text;
+  const path = await saveAnswer(text);
+  return `${all.slice(0, lines).join("\n")}\n…${all.length - lines} more lines of ${what}; the whole is in ${path}`;
 }
 
 // A parse error with its line, column, and the line itself. On 10-01 and
@@ -791,24 +813,41 @@ export class ReplSession {
     } catch (e) {
       const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
       const text = errorText(e);
-      // Scripts written for the page reach for its globals, which only the page has.
-      const hint = /^ReferenceError: (document|window|localStorage|location) is not defined/.test(text)
-        ? "\nscripts run outside the page; read it with page.evaluate(() => ...)"
-        : this.#page === undefined && /\(evaluating 'page\./.test(text)
-          ? "\nhint: no page yet: openTab(url) or attachBrowserTab(id) first"
-          : "";
-      return { output: await this.#flush(), error: `${text}${where ? `\nat ${where} of the script` : ""}${hint}` };
+      const output = await this.#flush(ERROR_LINES);
+      const error = this.#quiet ? text : await cutLines(text, "the error");
+      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}` };
     } finally {
       clearTimeout(timer);
     }
   }
 
-  // The run's output; past SPILL_CHARS, saved whole and its head returned
-  // with the path. A person reads a quiet session's output, not a file.
-  async #flush(): Promise<string> {
+  // What to do about an error: scripts written for the page reach for its
+  // globals, which only the page has, and a name a script got wrong gets
+  // its nearest: on 10-22 getTab(745000) failed "getTab is not defined",
+  // and a page from listBrowserTabs() "snapshot is not a function".
+  #hint(text: string): string {
+    if (/^ReferenceError: (document|window|localStorage|location) is not defined/.test(text)) return "\nscripts run outside the page; read it with page.evaluate(() => ...)";
+    if (this.#page === undefined && /\(evaluating 'page\./.test(text)) return "\nhint: no page yet: openTab(url) or attachBrowserTab(id) first";
+    const name = /^ReferenceError: ([\w$]+) is not defined/.exec(text)?.[1];
+    const global = name === undefined ? undefined : nearest(name, Object.keys(this.#g));
+    if (global !== undefined) return `\nhint: did you mean ${global}?`;
+    const [, on, method] = /^TypeError: (.+?)\.([\w$]+) is not a function/.exec(text) ?? [];
+    if (method === undefined) return "";
+    if (PAGE_METHODS.includes(method)) return `\nhint: ${on} is not a page; openTab(url) or attachBrowserTab(id) gives one, with ${method}()`;
+    // a short name is near too many others: map is not tap
+    const near = method.length > 4 ? nearest(method, PAGE_METHODS) : undefined;
+    return near === undefined ? "" : `\nhint: did you mean ${on}.${near}()?`;
+  }
+
+  // The run's output; past SPILL_CHARS, or past lines, saved whole and its
+  // head returned with the path. A person reads a quiet session's output,
+  // not a file.
+  async #flush(lines = Infinity): Promise<string> {
     const text = this.#out.join("\n");
     this.#out = [];
-    if (this.#quiet || text.length <= SPILL_CHARS) return text;
+    if (this.#quiet) return text;
+    if (text.split("\n").length > lines) return cutLines(text, "output before the error", lines);
+    if (text.length <= SPILL_CHARS) return text;
     const path = await saveAnswer(text);
     return `${text.slice(0, SPILL_HEAD_CHARS)}\n…cut at ${SPILL_HEAD_CHARS} of ${text.length} characters; the whole output is in ${path}: grep it or read the part you need`;
   }
@@ -927,7 +966,7 @@ export class ReplSession {
     this.#forget(p);
   }
 
-  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<{ tree: string; diff: string; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string }> {
+  async snapshot(page: unknown, opts: SnapshotOptions = {}): Promise<Snapshot> {
     if (!(page instanceof Page)) throw new TypeError("snapshot(page, options): pass a page from openTab() or attachBrowserTab()");
     let root = opts.selector;
     if (root === undefined && opts.ref !== undefined) {

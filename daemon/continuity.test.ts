@@ -164,3 +164,15 @@ test("a call that opts out of news leaves the agent's popup for its next call", 
   expect(await runAs(agent.pid, () => callTool("info", { tab: opener }, false, false))).not.toHaveProperty("popup");
   expect(await as("info", { tab: opener })).toMatchObject({ popup: { tab: 280, url: "https://login.example/" } });
 });
+
+// On 10-22 two agents each wrote their own Instagram post collector, about
+// 13 evals between them, and neither saved it as a reader.
+test("a model's third eval on one site in a task hints, once, to save the script as a reader", async () => {
+  const tab = await open();
+  const hints: unknown[] = [];
+  for (let i = 0; i < 4; i++) {
+    const answer = await runAs(agent.pid, () => callTool("eval", { tab, expression: "document.title" }, true));
+    hints.push(answer && typeof answer === "object" && "hint" in answer ? answer.hint : undefined);
+  }
+  expect(hints).toEqual([undefined, undefined, 'a third eval on a.example: save a script you run again as a reader, learn {site: "a.example", reader: "<name>", expression}, then eval {tab, reader: "<name>"}', undefined]);
+});

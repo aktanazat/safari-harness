@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ownerOf } from "./owner.ts";
 import { HarnessError, readFailure } from "./failures.ts";
-import { affectsPage } from "./lanes.ts";
+import { affectsPage, withQueued } from "./lanes.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -144,11 +144,17 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const task = currentTask();
   const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   const effectful = affectsPage(tool, args);
+  const sent = Date.now();
   let res = await attempt(base, body, effectful);
-  if (typeof res === "string") {
+  const missed = typeof res === "string" ? res : undefined;
+  let waited = 0;
+  if (missed !== undefined) {
     // a deploy's restart may outlast launchd's, up to the 503 wait
-    const ms = Math.max(BACK_MS[res], Math.min((deployingFor() ?? 0) * 1000, BACK_MS.restarting));
-    if (await back(base, ms)) res = await attempt(base, body, effectful);
+    const ms = Math.max(BACK_MS[missed], Math.min((deployingFor() ?? 0) * 1000, BACK_MS.restarting));
+    if (await back(base, ms)) {
+      waited = Date.now() - sent;
+      res = await attempt(base, body, effectful);
+    }
   }
   if (typeof res === "string") {
     const left = deployingFor();
@@ -162,5 +168,5 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
     if (failure) throw new HarnessError(failure.code, failure.message, { retryable: failure.retryable, effect: failure.effect, next: failure.next });
     throw new HarnessError("command_failed", out.error ?? "rpc failed", { effect: effectful ? "possibly_effected" : "none", next: effectful ? "read the page before repeating the action" : "check the error before trying again" });
   }
-  return out.value;
+  return missed === undefined ? out.value : withQueued(out.value, waited, missed === "restarting" ? "the daemon restarting, as a deploy does" : "the daemon starting", sent);
 }

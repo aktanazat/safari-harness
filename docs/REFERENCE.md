@@ -287,14 +287,16 @@ answer says what was used in a `note`: another case, or `-` for `_`
 (`browsing-history`, `max_bytes`), and names models reach for: `go` or
 `action` for `do`, `value` for `option`, `query` for `text`, `note` for
 `fact`, `code` or `js` for `expression`, `selector` for `root`, `x`/`y` for
-`dx`/`dy`, `files` for `paths`, click's or hover's `text` for `ref`, and
-net's `query` for `url`, each only on a tool that takes the second and
-not the first. `real_input
+`dx`/`dy`, `files` for `paths`, click's or hover's `text` for `ref`,
+net's `query` for `url`, and download's `out_dir` for `out`, each only on
+a tool that takes the second and not the first. `real_input
 {type: "…"}` is `do: "type"` with that text, `do: "press"` is
 `do: "key"`, and `net {start: true}` is `do: "start"`. A parameter the
 tool does not take fails the call before anything runs, with the closest
 one: "unknown parameter optoin for select; did you mean option? (params:
-tab, ref, option, snapshot)"; `snapshot {url}` and `extract {url}` say to
+tab, ref, option, snapshot)"; several such parameters fail together, each
+with its closest (`unknown parameters for select: optoin (did you mean
+option?), color (params: …)`); `snapshot {url}` and `extract {url}` say to
 open the page first, and `scroll {to}` scrolls to the top or bottom. The CLI
 takes tools the same way (`safari
 browsing-history`, `safari real-input`), and the first word after a tool
@@ -475,7 +477,10 @@ carrying the page in context.
   Another acting call on that tab waits its turn, up to 10 s, then fails
   with "tab N is busy with click from omp pid P for S s". Reads, `wait`,
   and `handoff` never wait, and a `run`'s steps take the tab one at a
-  time. Open your own tab rather than share one.
+  time. Open your own tab rather than share one. A call that waited a
+  second or more for its turn (a tab, the end of your last turn, the
+  daemon restarting in a deploy) says so in a `note`: `this call waited
+  64 s for its turn (…), from 05:27:41 UTC`.
 - A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
   egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
   once real input worked there: `learn {site, real: true}` (CLI `safari
@@ -949,7 +954,8 @@ true}`, with no address, then one
 line: `the user has N other tabs; pass host: "github.com" (CLI --site
 github.com) to see those on a site, or all: true`. `host` (CLI `--site
 github.com`; `--host` names another Mac) lists his tabs on
-that site and its subdomains; `all` (CLI `--all`) lists every tab. His
+that site and its subdomains; `all` (CLI `--all`) lists every tab, and
+with `host` every tab on that site, yours and other agents' too. His
 tabs never show a query string or fragment. The user at his own
 terminal, and a caller with no agent behind it, get the full list.
 
@@ -1040,7 +1046,8 @@ in step M`, and one naming a tab the run did not open gets a note. Every
 tool but `repl` can be a step, `real_input`,
 `handoff`, and the Messages tools included. From a shell, steps whose text
 holds quotes go in a file (`safari run --steps-file steps.json`) or on
-stdin (`--steps -`); a bare JSON array as the argument works too. An MCP
+stdin (`--steps -`); a bare JSON array as the argument works too, and the
+file may hold the MCP shape, `{"steps": [...], "tab": N}`, as well. An MCP
 call passes an object, `{"steps": [...]}`: the client refuses a bare list.
 With `real: true`, a run sends its steps' `click` and `type` on a ref as
 real input, as on a site marked for it (`safari guide reference acting`).
@@ -1374,6 +1381,9 @@ words the page will show.
   a second `eval` (`await window.__r`) once it has answered.
 - `innerText` reading empty on a page that shows text means a shadow root:
   `sh.text(sh.q(selector))`, or `snapshot`/`extract`.
+- A model's third `eval` on one site in a task carries a `hint` to save a
+  script it runs again as a reader (`learn {site, reader, expression}`,
+  then `eval {tab, reader}`), once per site and task.
 
 ## shot
 
@@ -2047,6 +2057,11 @@ without it.
   one that opens a page fails with the page's address, and a file the site
   sent then is in `~/Downloads`. On your own tab, `download` then answers
   with that file, as it answers any file it saves, instead of an error.
+- `urls: [...]` (CLI `safari download <url> <url>... --out dir`) saves
+  several files into the folder `out` names (`~/Downloads` unless it
+  does), each as `01-<name>`, `02-<name>`… so a second run writes over the
+  first. The first goes alone, then four at a time; the answer is
+  `{folder, files}`, a failed one in its place as `{url, error}`.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
   download still under way when the action ends is waited for up to 30 s;
@@ -2391,6 +2406,10 @@ Read it before working on that site.
   `my.uscis.gov`'s); by name (`safari guide slack`), those of every host
   its guide covers. `safari guide sites` ends with the hosts that have
   notes or readers.
+- Several topics print in one call, each in turn: `safari guide repl x
+  linkedin`; a word that names nothing says so in its place.
+- `safari guide google` and `safari guide search` print the Google search
+  guide, with a line naming google's other guides.
 
 ## replay
 
@@ -2522,6 +2541,10 @@ daemon, model training or approval bypass is added.
   10,000 to 20,000 loads, their addresses cut as answers are, in
   `~/.local/share/safari-harness/loads-<port>.jsonl`. It reads Safari's
   history file, so the terminal needs Full Disk Access.
+- `any: ["mexidol", "mildronate"]` (CLI `safari history-search --any
+  mexidol mildronate`) searches several texts in one call: each row says
+  the `term` it holds, `limit` counts for each term, and `noMatch` lists the
+  terms no address held.
 
 ## imessage_chats
 

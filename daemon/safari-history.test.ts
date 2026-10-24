@@ -66,3 +66,23 @@ test("visits to the daemon's own pages are left out of browsing_history and coun
   const db = historyWith(dir, [{ url: `${daemonHttp()}/space?id=1&name=agent%201`, at: Date.now() - 60_000, title: "agent 1" }]);
   expect(browsingHistory({}, { history: db, loads: join(dir, "loads.jsonl") })).toEqual({ history: [], agentVisitsLeftOut: 1 });
 });
+
+// On 10-22 an agent looked up eight drug names in his history, one call each.
+test("any finds the visits holding any of several texts, each with the one it holds, and names those none held", () => {
+  const dir = mkdtempSync(join(tmpdir(), "safari-history-"));
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const db = historyWith(dir, [
+    { url: "https://pharmacy.example/mildronate", at: now - 3_000, title: "Buy" },
+    { url: "https://news.example/a", at: now - 2_000, title: "Mexidol review" },
+    { url: "https://news.example/b", at: now - 1_000, title: "Weather" },
+  ]);
+  const answer = browsingHistory({ any: ["Mexidol", "mildronate", "phenibut"] }, { history: db, loads: join(dir, "loads.jsonl") });
+  expect(answer).toEqual({
+    history: [
+      { title: "Mexidol review", url: "https://news.example/a", lastVisit: new Date(now - 2_000).toISOString(), visits: 1, term: "mexidol" },
+      { title: "Buy", url: "https://pharmacy.example/mildronate", lastVisit: new Date(now - 3_000).toISOString(), visits: 1, term: "mildronate" },
+    ],
+    noMatch: ["phenibut"],
+    agentVisitsLeftOut: 0,
+  });
+});

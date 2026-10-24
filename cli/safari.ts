@@ -142,6 +142,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari download <ref|url> [--out file] [--tab N]
                                              save a file into ~/Downloads; a url needs
                                              no tab, a tab alone saves the file it shows
+  safari download <url> <url>... [--out dir] save each as 01-name, 02-name... in dir
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
@@ -157,7 +158,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              (a file.pdf needs no tab)
   safari window <width> <height> --tab N     resize the tab's window to that size
   safari window --size 390x844 --tab N       the same, as WIDTHxHEIGHT
-  safari history-search [text]               search Safari browsing history
+  safari history-search [text] [--any a b c] search Safari browsing history; --any: any of several texts
   safari fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card
   safari fill login [--bitwarden] [--user name] --tab N
@@ -1014,7 +1015,8 @@ async function main() {
     }
     case "download": {
       const target = positional[0];
-      if (target !== undefined && /^https?:/.test(target)) args.url = target;
+      if (positional.length > 1) args.urls = positional;
+      else if (target !== undefined && /^https?:/.test(target)) args.url = target;
       else if (target !== undefined) args.ref = target;
       break;
     }
@@ -1038,7 +1040,12 @@ async function main() {
       args.height = Number(wh[1]);
       break;
     }
-    case "history-search": case "browsing-history": args = { text: positional.join(" ") || undefined }; break;
+    case "history-search": case "browsing-history": {
+      // --any a b c: each word a text of its own, as in browsing_history's any
+      const any = flag("any", rest);
+      args = any === undefined || any.startsWith("[") ? { text: positional.join(" ") || undefined } : { any: [any, ...positional] };
+      break;
+    }
     case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
     case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
     case "ask": args.question = positional.join(" "); break;
@@ -1046,12 +1053,16 @@ async function main() {
       // Steps from a file, or stdin for --steps -, need no shell quoting:
       // an apostrophe in one step's text broke an agent's quoted JSON (09-29).
       // A bare JSON array is the steps too: `run --json '[…]'` failed then.
+      // A file may hold the MCP call's object, {"steps": […], "tab": N}, as
+      // the guide shows it: two agents' files so were refused (10-22).
       const file = flag("steps-file", rest);
       const bare = positional[0]?.trimStart().startsWith("[") ? positional.join(" ") : undefined;
       const steps = file !== undefined ? await Bun.file(resolve(file)).text() : flag("steps", rest) === "-" ? await readStdin() : bare;
       if (steps === undefined) break;
       try {
-        args.steps = JSON.parse(steps);
+        const parsed: unknown = JSON.parse(steps);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "steps" in parsed) args = { ...parsed, ...args };
+        else args.steps = parsed;
       } catch (e) {
         fail(`the steps are not JSON (${e instanceof Error ? e.message : String(e)}): give an array like [{"tool": "open", "args": {"url": "…"}}]`, 2);
       }
