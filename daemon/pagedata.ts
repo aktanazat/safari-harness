@@ -21,6 +21,8 @@ export type DomData = {
   microdata?: Json[];
   meta?: JsonObject;
   next?: Json;
+  // Next.js app router's flight rows, the strings of self.__next_f joined
+  flight?: string;
   // Nuxt 3's payload from its script tag, in devalue's flat form
   nuxt?: Json;
   scripts?: Json[];
@@ -34,11 +36,12 @@ export type PageGlobals = { values?: JsonObject; tooBig?: Record<string, number>
 // A source without data was too big to send; only its size is known.
 type Source = { name: string; bytes: number; data?: Json };
 
-type Step = string | number;
+// key, a list's item, or ..key: every value under key at any depth
+type Step = string | number | { any: string };
 
 // The order sources are listed in: what the page declares first, then its
 // framework state, then the loose JSON of its script tags and attributes.
-const SOURCES = ["jsonld", "microdata", "meta", "next", "nuxt", "remix", "apollo", "state", "scripts", "attrs"];
+const SOURCES = ["jsonld", "microdata", "meta", "next", "flight", "nuxt", "remix", "apollo", "state", "scripts", "attrs"];
 
 // Keys whose values are credentials a page keeps in its markup or state
 // (a meta csrf-token, a CSRF field in __NEXT_DATA__): they stay in the page.
@@ -69,6 +72,7 @@ function mergeSources(dom: DomData, page: PageGlobals): Source[] {
     // Next.js reads its own script tag; the global stands in only where a
     // page has removed the tag after starting.
     next: dom.next ?? globals.next,
+    flight: dom.flight === undefined ? undefined : flightProps(dom.flight),
     // Nuxt 3 keeps its payload in a script tag and only its config in
     // __NUXT__; Nuxt 2 keeps it all in __NUXT__.
     nuxt: dom.nuxt === undefined ? globals.nuxt : unflatten(dom.nuxt),
@@ -145,8 +149,78 @@ function unflatten(flat: Json): Json | undefined {
   return at(0);
 }
 
-// A pick path as steps: dotted keys, [n] for a list's item, and ["key"] for
-// a key with a dot, bracket, or quote in it.
+// Next.js's app router streams a page as React flight rows, "<hex id>:"
+// and a row: T<hex length>, and that many bytes of text; a capital letter
+// and its line (I a module, HL a hint, E an error); else JSON to the end
+// of its line. A row that does not parse is skipped.
+function flightRows(text: string): Map<string, Json> {
+  const bytes = Buffer.from(text);
+  const rows = new Map<string, Json>();
+  let at = 0;
+  while (at < bytes.length) {
+    const colon = bytes.indexOf(":", at);
+    if (colon < 0) break;
+    const id = bytes.toString("latin1", at, colon).trim();
+    const length = bytes[colon + 1] === 0x54 ? /^[0-9a-f]+(?=,)/.exec(bytes.toString("latin1", colon + 2, colon + 12))?.[0] : undefined;
+    if (length !== undefined) {
+      const start = colon + 3 + length.length;
+      at = start + parseInt(length, 16);
+      rows.set(id, bytes.toString("utf8", start, at));
+      continue;
+    }
+    const end = bytes.indexOf("\n", colon);
+    const line = bytes.toString("utf8", colon + 1, end < 0 ? bytes.length : end);
+    at = end < 0 ? bytes.length : end + 1;
+    if (/^[A-Z]/.test(line)) continue;
+    try {
+      rows.set(id, JSON.parse(line) as Json);
+    } catch {
+      // a row of a kind not read here
+    }
+  }
+  return rows;
+}
+
+// The props of each client component in the flight rows, in page order:
+// an element is ["$", type, key, props], and a client component's type is
+// "$L<id>" (or "$<id>"). Children are left out (they are elements, read in
+// their turn), and "$<id>" references to other rows are filled in.
+function flightProps(text: string): Json[] {
+  const rows = flightRows(text);
+  const open = new Set<string>();
+  const fill = (v: Json): Json => {
+    if (typeof v === "string") {
+      if (v.startsWith("$$")) return v.slice(1);
+      const id = /^\$([0-9a-f]+)$/.exec(v)?.[1];
+      const row = id === undefined || open.has(id) ? undefined : rows.get(id);
+      if (id === undefined || row === undefined) return v;
+      open.add(id);
+      const filled = fill(row);
+      open.delete(id);
+      return filled;
+    }
+    if (Array.isArray(v)) return v.map(fill);
+    return v === null || typeof v !== "object" ? v : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
+  };
+  const props: Json[] = [];
+  const walk = (v: Json): void => {
+    if (Array.isArray(v)) {
+      const [tag, type, , own] = v;
+      if (tag === "$" && typeof type === "string" && own !== null && typeof own === "object" && !Array.isArray(own)) {
+        const { children, ...rest } = own;
+        if (/^\$L?[0-9a-f]+$/.test(type) && Object.keys(rest).length) props.push(fill(rest));
+        Object.values(rest).forEach(walk);
+        if (children !== undefined) walk(children);
+      } else v.forEach(walk);
+    } else if (v !== null && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  rows.forEach(walk);
+  return props;
+}
+
+// A pick path as steps: dotted keys, [n] for a list's item, ["key"] for a
+// key with a dot, bracket, or quote in it, and ..key for every value under
+// key at any depth, as a list.
 const STEP = /^(?:([^.[\]"]+)|\[(\d+)\]|\[("(?:[^"\\]|\\.)*")\])/;
 
 function parsePick(path: string): Step[] {
@@ -154,14 +228,18 @@ function parsePick(path: string): Step[] {
   const steps: Step[] = [];
   let rest = path;
   for (;;) {
+    const any = steps.length > 0 && rest.startsWith("..");
+    if (any) rest = rest.slice(2);
     // a dot comes between two steps, except before a bracket
-    if (steps.length && !rest.startsWith("[")) {
+    else if (steps.length && !rest.startsWith("[")) {
       if (!rest.startsWith(".")) throw bad(`cannot read "${rest}"`);
       rest = rest.slice(1);
     }
     const m = STEP.exec(rest);
     if (!m) throw bad(rest ? `cannot read "${rest}"` : steps.length ? "it ends in a dot" : "it is empty");
-    steps.push(m[1] ?? (m[2] !== undefined ? Number(m[2]) : (JSON.parse(m[3]) as string)));
+    const step = m[1] ?? (m[2] !== undefined ? Number(m[2]) : (JSON.parse(m[3]) as string));
+    if (any && typeof step === "number") throw bad(`..${m[0]}: .. takes a key`);
+    steps.push(any ? { any: String(step) } : step);
     rest = rest.slice(m[0].length);
     if (!rest) return steps;
   }
@@ -170,12 +248,23 @@ function parsePick(path: string): Step[] {
 const PLAIN = /^[^.[\]"]+$/;
 
 function pathText(steps: Step[]): string {
-  return steps.map((s, i) => (typeof s === "number" ? `[${s}]` : PLAIN.test(s) ? `${i ? "." : ""}${s}` : `[${JSON.stringify(s)}]`)).join("");
+  return steps.map((s, i) => (typeof s === "number" ? `[${s}]` : typeof s === "object" ? `..${s.any}` : PLAIN.test(s) ? `${i ? "." : ""}${s}` : `[${JSON.stringify(s)}]`)).join("");
+}
+
+// Every value under key in v at any depth, in document order.
+function under(v: Json, key: string): Json[] {
+  if (Array.isArray(v)) return v.flatMap((x) => under(x, key));
+  if (v === null || typeof v !== "object") return [];
+  return Object.entries(v).flatMap(([k, x]) => [...(k === key ? [x] : []), ...under(x, key)]);
 }
 
 // The member a step names: a list's item by index (as a number or digits),
 // an object's key; undefined when there is none.
 function member(v: Json, step: Step): { value: Json } | undefined {
+  if (typeof step === "object") {
+    const found = under(v, step.any);
+    return found.length ? { value: found } : undefined;
+  }
   if (Array.isArray(v)) {
     const i = typeof step === "number" ? step : /^\d+$/.test(step) ? Number(step) : -1;
     return i >= 0 && i < v.length ? { value: v[i] } : undefined;
@@ -242,7 +331,7 @@ function picked(sources: Source[], pick: string, max: number): Record<string, un
   const trail: Step[] = [source.name];
   for (const step of rest) {
     const next = member(value, step);
-    if (!next) throw new Error(`pick: ${pathText(trail)} has no ${typeof step === "number" ? `[${step}]` : JSON.stringify(step)}; ${contents(value)}`);
+    if (!next) throw new Error(`pick: ${pathText(trail)} has no ${typeof step === "number" ? `[${step}]` : typeof step === "object" ? `${JSON.stringify(step.any)} at any depth` : JSON.stringify(step)}; ${contents(value)}`);
     value = next.value;
     trail.push(step);
   }

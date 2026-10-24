@@ -1261,14 +1261,17 @@ a shop, recipe, or article page it often holds the price, stock, or author
 without a snapshot. Values under names like token or csrf read `[hidden]`.
 Past `max` bytes (default 20000) the sources that fit come back whole and
 the rest are listed with their size and top keys; call again with `pick`, a
-path such as `next.props.pageProps.items[0]`, to read one part.
+path such as `next.props.pageProps.items[0]`, to read one part. `..key` in
+a path takes every value under that key at any depth, as a list:
+`flight..price[0]`.
 
 Read a page's framework state (Next.js, Nuxt, Apollo, Redux) with `data`
 and `pick`, never by pulling `outerHTML` or a `<script>` through `eval`:
 `safari data --tab N --pick 'state.$_search.gridData.data'` read
-Poshmark's listings. A Next.js page that ships flight data
-(`self.__next_f`) instead of `__NEXT_DATA__` shows none here; the site's
-guide says where to look.
+Poshmark's listings. A Next.js app-router page has no `__NEXT_DATA__`; its
+`self.__next_f` stream comes back as `flight`, the props of each client
+component in page order (Depop's price and shipping are in
+`flight..price`).
 
 ## eval
 

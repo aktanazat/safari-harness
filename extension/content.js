@@ -4027,6 +4027,7 @@
       microdata: [...document.querySelectorAll("[itemscope]:not([itemprop])")].slice(0, DATA_MAX_ITEMS).map((el) => microItem(el, 0)),
       meta: metaTags(),
       next: parseJson(document.getElementById("__NEXT_DATA__")?.textContent),
+      flight: nextFlight(),
       nuxt: parseJson(document.getElementById("__NUXT_DATA__")?.textContent),
       scripts: jsonScripts(),
       attrs: jsonAttributes(),
@@ -4044,6 +4045,18 @@
       }
     }
     return out;
+  }
+
+  // Next.js's app router has no __NEXT_DATA__: it streams the page in
+  // self.__next_f.push([1, "…"]) scripts, whose strings joined are its
+  // flight rows (the daemon reads them, daemon/pagedata.ts).
+  function nextFlight() {
+    const rows = [...document.scripts].filter((s) => !s.src && s.textContent.includes("self.__next_f.push(")).flatMap((s) => {
+      const t = s.textContent;
+      const push = parseJson(t.slice(t.indexOf("push(") + 5, t.lastIndexOf(")")));
+      return Array.isArray(push) && push[0] === 1 && typeof push[1] === "string" ? [push[1]] : [];
+    });
+    return rows.length ? rows.join("") : undefined;
   }
 
   // A missing or malformed one reads as nothing.
