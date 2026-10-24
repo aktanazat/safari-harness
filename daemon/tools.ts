@@ -127,11 +127,10 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
       (mine.calls ??= new Set()).add(call.pending);
       call.tabs.add(mine);
     }
-    // used counts in minutes (IDLE_MS): writing the file for each call
-    // rewrote every tab at every call
-    const stale = Date.now() - mine.used >= 60_000;
+    // used counts in minutes (IDLE_MS), so the file is written only once
+    // the time it holds for this tab is a minute behind
     mine.used = Date.now();
-    if (stale) save();
+    if (mine.used - (written.get(mine) ?? 0) >= 60_000) save();
   }
   return now;
 }
@@ -295,6 +294,8 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // of those closes threw, and when the next may go (sweepOnce).
 type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
+// the used time the file of tabs holds for each, as last written (save)
+const written = new WeakMap<HarnessTab, number>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
 let sweeper: Timer | undefined;
@@ -744,6 +745,7 @@ function save() {
     const pending = `${tabsFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, tabs, closed, keepers: Object.fromEntries(keepers) }), { mode: 0o600 });
     renameSync(pending, tabsFile);
+    for (const t of harnessTabs.values()) written.set(t, t.used);
   } catch (e) {
     console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
   }
