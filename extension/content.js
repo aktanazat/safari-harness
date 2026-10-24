@@ -1425,8 +1425,8 @@
       : submit ? submitOutcome(submit)
       : clicked ? linkOutcome(clicked, clickedLink)
       : null;
-    // the window.open said so already
-    if (expect === "tab" && !popped) announceTab();
+    // the window.open said so already, and a link's click says so itself
+    if (expect === "tab" && !popped && !clickedLink) announceTab();
     return expect ? { ...res, expect } : res;
   }
 
@@ -2021,6 +2021,13 @@
   // coming (tabs a page opens, in background.js).
   const announceTab = () => { api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {}); };
   document.addEventListener("__sh_popup", announceTab, { signal: life.signal });
+  // A click on a link that opens another tab says so too, a real one
+  // included: on 10-24 real_input's answer named no tab its link opened.
+  // Read once the click is done, when the page has had its say.
+  addEventListener("click", (e) => {
+    const link = e.composedPath().find((el) => el instanceof Element && el.matches("a[href], area[href]"));
+    if (link) setTimeout(() => { if (linkOutcome(e, link) === "tab") announceTab(); });
+  }, { capture: true, signal: life.signal });
   function catchDownloads(on) {
     document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
   }

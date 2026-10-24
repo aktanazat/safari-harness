@@ -1101,6 +1101,25 @@ benchRows("content.js in WebKit", [
       },
     ],
   },
+  // On 10-24 a real_input click on a target=_blank link opened a tab its
+  // answer never named: only window.open and the harness's own clicks said
+  // a tab was coming. A click no action wraps stands in for the real one.
+  {
+    name: "a click on a link that opens a tab, outside any action, announces the tab",
+    page: "popup.html",
+    steps: [
+      { op: "eval", args: ["document.getElementById('newtab').click(), true"], answer: { value: { ok: true, result: true } } },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
+    ],
+  },
+  {
+    name: "the harness's click on a link that opens a tab announces it once",
+    page: "popup.html",
+    steps: [
+      { op: "click", args: ["New tab"], answer: { value: { expect: "tab" } } },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
+    ],
+  },
   {
     name: "a wait the old copy still held ends at a takeover, and stops watching the page",
     page: "popup.html",

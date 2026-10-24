@@ -1919,7 +1919,7 @@ does (`safari guide reference acting`), files it downloaded included.
   typing stops there, the call fails saying how many characters went in,
   and he keeps what he brought forward. Let him finish before typing
   again; typing at a ref replaces the field. The answer carries `popup` for a tab
-  the action opened (a sign-in window), once Safari has reported it; one
+  the action opened (a sign-in window, a link's new tab), once Safari has reported it; one
   it reports later comes in your next result. The app running the MCP
   server or CLI needs Accessibility permission.
 - Text typed at a ref is set through Safari's accessibility tree and
