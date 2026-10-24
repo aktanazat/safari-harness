@@ -473,7 +473,10 @@ carrying the page in context.
   Another acting call on that tab waits its turn, up to 10 s, then fails
   with "tab N is busy with click from omp pid P for S s". Reads, `wait`,
   and `handoff` never wait, and a `run`'s steps take the tab one at a
-  time. Open your own tab rather than share one.
+  time. Open your own tab rather than share one. A call that waited a
+  second or more for its turn (a tab, the end of your last turn, the
+  daemon restarting in a deploy) says so in a `note`: `this call waited
+  64 s for its turn (…), from 05:27:41 UTC`.
 - A site whose controls ignore scripted input (on 09-30 EOIR's Submit,
   egov.uscis.gov's Check Status, a field on my.uscis.gov) can be marked
   once real input worked there: `learn {site, real: true}` (CLI `safari

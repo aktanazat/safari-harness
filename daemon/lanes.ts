@@ -58,6 +58,30 @@ type Lane = { holder: Holder; waiting: Turn[] };
 const lanes = new Map<number, Lane>();
 const heldLanes = new AsyncLocalStorage<{ tab: number; lane: Lane; active: boolean; owner: number | undefined }[]>();
 
+// What a call waited on for its turn: a lane here, its agent's last turn
+// ending (tools.ts callTool), the daemon restarting (rpc.ts).
+type Queue = { ms: number; on: string[] };
+const queues = new AsyncLocalStorage<Queue>();
+
+// Runs a call that arrived at arrived, which before waited for on, and
+// notes its waits in its answer (withQueued).
+export async function queuing(arrived: number, run: () => Promise<unknown>, before = 0, on = ""): Promise<unknown> {
+  const queue: Queue = { ms: before, on: before > 0 ? [on] : [] };
+  return withQueued(await queues.run(queue, run), queue.ms, queue.on.join(", "), arrived);
+}
+
+// A call that waited a second or more for its turn says how long, on what,
+// and when it arrived, in a note every answer's text shows: on 10-22 three
+// calls sent together each took 64 s, one a wait whose answer said 48 ms,
+// and nothing told where the time went. An answer that is not an object
+// (a list, a text) keeps its shape.
+export function withQueued(result: unknown, ms: number, on: string, arrived: number): unknown {
+  if (ms < 1000 || !result || typeof result !== "object" || Array.isArray(result)) return result;
+  const text = `this call waited ${Math.round(ms / 1000)} s for its turn (${on}), from ${new Date(arrived).toISOString().slice(11, 19)} UTC`;
+  const had = "note" in result ? result.note : undefined;
+  return { ...result, note: had === undefined ? text : `${String(had)}; ${text}` };
+}
+
 // Runs a call, in its tab's lane when it acts, after the acting calls
 // already queued on that tab. A tab that does not resolve gets no lane:
 // the tool reports its own error.
@@ -68,7 +92,14 @@ export async function inLane<T>(tool: string, args: Record<string, unknown>, res
   const inherited = heldLanes.getStore() ?? [];
   const held = inherited.find((held) => held.active && held.tab === tab && held.lane === lanes.get(tab) && held.owner === currentOwner());
   if (held) return run();
+  const asked = Date.now();
+  const before = lanes.get(tab)?.holder.tool;
   const lane = await enter(tab, tool, currentOwner());
+  const queue = queues.getStore();
+  if (queue && before !== undefined) {
+    queue.ms += Date.now() - asked;
+    queue.on.push(`tab ${tab}'s ${before}`);
+  }
   const scope = { tab, lane, active: true, owner: currentOwner() };
   try {
     return await heldLanes.run([...inherited, scope], run);

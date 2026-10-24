@@ -73,7 +73,9 @@ test("acting calls on a tab another call is acting on wait their turns in order;
   expect(await elsewhere).toMatchObject({ ok: true });
 });
 
-test("a call that has waited just under 10 s still gets the tab when it frees", async () => {
+// On 10-22 three calls sent together each took 64 s, and nothing in their
+// answers said where the time went.
+test("a call that has waited just under 10 s still gets the tab when it frees, and its answer says what it waited on", async () => {
   jest.useFakeTimers();
   const page = safari();
   const first = as(agent.pid, "click", { tab: 7, ref: "1" });
@@ -82,8 +84,8 @@ test("a call that has waited just under 10 s still gets the tab when it frees", 
   await settled();
   jest.advanceTimersByTime(9_999);
   page.answer("7 click 1");
-  await first;
-  expect(await second).toMatchObject({ ok: true });
+  expect(await first).not.toHaveProperty("note");
+  expect(await second).toMatchObject({ ok: true, note: expect.stringMatching(/^this call waited 10 s for its turn \(tab 7's click\), from \d\d:\d\d:\d\d UTC$/) });
   expect(page.sent).toEqual(["7 click 1", "7 type 2"]);
 });
 

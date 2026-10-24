@@ -32,6 +32,24 @@ test("a call a restarting daemon turned away goes through, once, when it is back
   expect(d.calls).toHaveLength(2);
 });
 
+// On 10-22 three calls sent together each took 64 s, one of them a wait
+// whose answer said 48 ms, and nothing told where the time went.
+test("a call held a second or more while the daemon restarted says so in its answer", async () => {
+  const up = Date.now() + 1_100;
+  let calls = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      if (new URL(req.url).pathname === "/health") return Response.json(Date.now() < up ? { stopping: "deploy" } : { ok: true });
+      calls++;
+      return calls === 1 ? Response.json({ ok: false, restarting: true }, { status: 503 }) : Response.json({ ok: true, value: { ok: true } });
+    },
+  });
+  servers.push(server);
+  process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
+  expect(await rpc("info", { tab: 1 })).toEqual({ ok: true, note: expect.stringMatching(/^this call waited 1 s for its turn \(the daemon restarting, as a deploy does\), from \d\d:\d\d:\d\d UTC$/) });
+});
+
 test("a call made while no daemon listens goes through when one starts", async () => {
   const gone = daemon([]).server;
   const free = gone.port;

@@ -14,7 +14,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ownerOf } from "./owner.ts";
 import { HarnessError, readFailure } from "./failures.ts";
-import { affectsPage } from "./lanes.ts";
+import { affectsPage, withQueued } from "./lanes.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -122,8 +122,14 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const task = currentTask();
   const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
   const effectful = affectsPage(tool, args);
+  const sent = Date.now();
   let res = await attempt(base, body, effectful);
-  if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body, effectful);
+  const missed = typeof res === "string" ? res : undefined;
+  let waited = 0;
+  if (missed !== undefined && (await back(base, BACK_MS[missed]))) {
+    waited = Date.now() - sent;
+    res = await attempt(base, body, effectful);
+  }
   if (res === "refused") throw new HarnessError("unavailable", `safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`, { effect: "none", retryable: true, next: "check safari status and start the daemon if needed" });
   if (res === "restarting") throw new HarnessError("unavailable", `the safari daemon at ${base} is restarting and did not answer again within ${BACK_MS.restarting / 1000} s; check it with: safari status`, { effect: "none", retryable: true, next: "wait for the daemon to finish restarting" });
   const out = (await res.json()) as { ok: boolean; value?: unknown; error?: string; failure?: unknown };
@@ -132,5 +138,5 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
     if (failure) throw new HarnessError(failure.code, failure.message, { retryable: failure.retryable, effect: failure.effect, next: failure.next });
     throw new HarnessError("command_failed", out.error ?? "rpc failed", { effect: effectful ? "possibly_effected" : "none", next: effectful ? "read the page before repeating the action" : "check the error before trying again" });
   }
-  return out.value;
+  return missed === undefined ? out.value : withQueued(out.value, waited, missed === "restarting" ? "the daemon restarting, as a deploy does" : "the daemon starting", sent);
 }

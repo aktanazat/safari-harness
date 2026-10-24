@@ -23,7 +23,7 @@ import { errorPage, guideFor } from "./site-guides.ts";
 import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { followPages, mapPages, MAP_MAX_URLS, type Listing, type Page } from "./map.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
-import { acts, affectsPage, inLane } from "./lanes.ts";
+import { acts, affectsPage, inLane, queuing } from "./lanes.ts";
 import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactUrl, tabSecrets, unsecret } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
@@ -3146,15 +3146,22 @@ export function formatResult(value: unknown): string {
 // real_input's steps do (input.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const owner = currentOwner();
-  if (owner === undefined || calling.getStore()?.live) return invokeTool(name, args, model, news);
+  if (calling.getStore()?.live) return invokeTool(name, args, model, news);
+  const arrived = Date.now();
+  if (owner === undefined) return queuing(arrived, () => invokeTool(name, args, model, news));
   const task = currentTask();
   const key = taskKey(owner, task);
+  let ended = 0;
   for (;;) {
     const ending = endingTurns.get(owner) ?? endingTurns.get(key);
     if (!ending) break;
     await ending;
+    ended = Date.now() - arrived;
   }
-  if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
+  if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) {
+    await sweepingTabs;
+    ended = Date.now() - arrived;
+  }
   const settled = Promise.withResolvers<void>();
   const epoch = randomUUID();
   const aggregate = callsFor(owner, epoch);
@@ -3170,7 +3177,7 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   save();
   const call = { live: true, pending: settled.promise, tabs: new Set<HarnessTab>() };
   try {
-    return await calling.run(call, () => invokeTool(name, args, model, news));
+    return await calling.run(call, () => queuing(arrived, () => invokeTool(name, args, model, news), ended, "your last turn's tabs closing"));
   } finally {
     call.live = false;
     for (const tab of call.tabs) {
