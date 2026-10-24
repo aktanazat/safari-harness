@@ -34,7 +34,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { uncover } from "./place.ts";
-import { groupsOff, readQueue } from "./groups.ts";
+import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
 import { closeTab, endUntrackedTurns, type TabInfo } from "./tools.ts";
@@ -388,7 +388,9 @@ async function end(space: Space) {
   if (space.group === "grouped" || space.group === "making") {
     closing.set(space.name, space);
     save();
-    if (space.group === "making" && taskTracked?.(space.owner) !== false) return;
+    // A keeper still making the group gets to finish its step: a window
+    // closed under it leaves a group the next keeper waits on.
+    if (space.group === "making" && (taskTracked?.(space.owner) !== false || keeperRunning())) return;
   }
   ended.add(space);
   save();
@@ -448,7 +450,7 @@ async function sweepOnce() {
       const id = new URL(tab.url).searchParams.get("id");
       if (!id) continue;
       const space = registered.get(id);
-      if ((!space || taskTracked?.(space.owner) === false) && making.size === 0) {
+      if ((!space || (taskTracked?.(space.owner) === false && !(space.group === "making" && keeperRunning()))) && making.size === 0) {
         const key = space ?? `${tab.id}:${id}`;
         const failed = unclosed.get(key);
         if (failed && (failed.tries > CLOSE_RETRY_MS.length || Date.now() < failed.at)) continue;

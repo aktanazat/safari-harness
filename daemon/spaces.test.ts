@@ -7,7 +7,7 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { changeQueue, files, readQueue } from "./groups.ts";
 import { tracksOwner } from "./mission.ts";
-import { runAs } from "./owner.ts";
+import { alive, runAs } from "./owner.ts";
 import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
@@ -949,3 +949,86 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
     await owner.exited;
   }
 });
+
+// Every window state, restart, and owner kind, and what cleanup leaves of
+// the window once its agent's task ends: on 10-23 an ended agent's windows
+// stayed open through a daemon restart and an extension reload, and a
+// window closed under the keeper while it made the window's group (HD-3).
+// Each case writes the saved records itself, so no other daemon's sweep
+// closes its page first.
+const STATES = ["making", "active", "closing", "ended", "kept"] as const;
+const RESTARTS = ["none", "daemon", "Safari", "extension"] as const;
+const OWNERS = ["main", "helper", "CLI", "untracked"] as const;
+type Outcome = "closed" | "open" | "released" | "closed by the keeper";
+const OUTCOMES: Record<(typeof STATES)[number], Record<(typeof OWNERS)[number], Outcome>> = {
+  // The keeper's step on the window goes on; its answer ends the window.
+  making: { main: "closed by the keeper", helper: "closed by the keeper", CLI: "closed by the keeper", untracked: "closed by the keeper" },
+  active: { main: "closed", helper: "closed", CLI: "closed", untracked: "closed" },
+  // The group goes to the keeper, which deletes it.
+  closing: { main: "released", helper: "released", CLI: "released", untracked: "released" },
+  ended: { main: "closed", helper: "closed", CLI: "closed", untracked: "closed" },
+  // A page kept for the user holds a living agent's window; an exited
+  // agent's label closes beside it.
+  kept: { main: "open", helper: "open", CLI: "closed", untracked: "open" },
+};
+const CASES = STATES.flatMap((state) => RESTARTS.flatMap((restart) => OWNERS.map((owner) => ({ state, restart, owner, outcome: OUTCOMES[state][owner] }))))
+  .map((c, i) => ({ ...c, port: 47400 + i }));
+
+test.each(CASES)("a $state window of a $owner agent after a $restart restart: $outcome", async ({ state, restart, owner: kind, outcome, port }) => {
+  const s = safari();
+  const proc = agent();
+  const pid = proc.pid;
+  const task = kind === "main" ? "main" : kind === "helper" ? "helper" : undefined;
+  const lost = restart === "daemon" || kind === "untracked";
+  const window = (task: string | undefined, group: Spaces.Space["group"], extra: string[] = []) => {
+    const id = `table-${port}-${task ?? "cli"}`;
+    const windowId = next++;
+    const size = { width: 1000 + (port % 250), height: task === "main" && kind === "helper" ? 900 : 800 };
+    const name = `${task ?? "cli"} (agent ${pid})`;
+    const proof = `proof-${id}`;
+    const page = { id: next++, url: `http://127.0.0.1:${port}/space?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`, windowId, active: true, history: { safariHarnessSpace: proof } };
+    s.tabs.set(page.id, page);
+    for (const url of extra) {
+      const t = { id: next++, url, windowId, active: false };
+      s.tabs.set(t.id, t);
+    }
+    const record: Spaces.Space = { key: task === undefined ? `${pid}:` : JSON.stringify([pid, task, ""]), id, window: windowId, name, size, owner: pid, ...(task === undefined ? {} : { task }), group, used: Date.now(), proof };
+    return record;
+  };
+  const saved: { spaces: Spaces.Space[]; closing: Spaces.Space[]; ended: Spaces.Space[] } = { spaces: [], closing: [], ended: [] };
+  if (kind === "helper") saved.spaces.push(window("main", "waiting", ["https://main.example/working"]));
+  const own = window(task, state === "making" ? "making" : state === "closing" ? "grouped" : "waiting", state === "kept" ? ["https://kept.example/"] : []);
+  if (state === "closing") saved.closing.push(own);
+  else if (state === "ended") saved.ended.push(own);
+  else saved.spaces.push(own);
+  const pages = [...s.tabs.values()].filter((t) => t.url.includes("/space?")).map((t) => t.url);
+  const open = (url: string) => [...s.tabs.values()].some((t) => t.url === url);
+  const path = join(dir, `table-${port}.json`);
+  writeFileSync(path, JSON.stringify({ version: 2, ...saved }));
+  if (state === "making") writeFileSync(files.keeper, String(process.pid));
+  const daemon = await daemonOn(port, `table-${port}`);
+  try {
+    daemon.loadSpaces(path, (o) => (o !== pid ? true : !alive(pid) ? false : lost ? undefined : true));
+    if (restart === "Safari") s.relaunch();
+    if (restart === "extension") s.reload();
+    if (kind === "CLI") {
+      proc.kill();
+      await proc.exited;
+    }
+    await daemon.turnEnded(kind === "untracked" ? pid + 1 : pid, task);
+    if (outcome === "closed by the keeper") {
+      expect(open(pages.at(-1)!)).toBe(true);
+      expect(await daemon.spaceTool({ op: "plain", name: own.name, why: "the group took no name" })).toEqual({ ok: true });
+    }
+    if (outcome === "released") expect(await daemon.spaceTool({ op: "release", name: own.name })).toMatchObject({ ok: true, left: 0 });
+    else expect(open(pages.at(-1)!)).toBe(outcome === "open");
+    expect(open("https://his.example/")).toBe(true);
+    if (state === "kept") expect(open("https://kept.example/")).toBe(true);
+    if (kind === "helper") expect(open(pages[0]) && open("https://main.example/working")).toBe(true);
+  } finally {
+    rmSync(files.keeper, { force: true });
+    proc.kill();
+    await proc.exited;
+    await daemon.turnEnded(pid);
+  }
+}, 15_000);
