@@ -3391,6 +3391,15 @@
     }).filter((c) => c.url);
   }
 
+  // The sides an image service's address asks for, w and h (or width and
+  // height), when it names both: a lazy picture not yet drawn has no other
+  // size. On 10-24 Unsplash's 32 px avatars were listed as pictures.
+  function askedSides(src) {
+    const q = new URL(src).searchParams;
+    const sides = [Number(q.get("w") ?? q.get("width")), Number(q.get("h") ?? q.get("height"))];
+    return sides.every((n) => n > 0) ? sides : [];
+  }
+
   function pictureOf(img) {
     const attr = (name) => imageAddress(img.getAttribute(name));
     const sources = img.parentElement?.tagName === "PICTURE" ? [...img.parentElement.querySelectorAll("source")] : [];
@@ -3408,7 +3417,8 @@
       : !full && widest?.url === src && widest.w ? { width: widest.w, ...(ratio ? { height: Math.round(widest.w * ratio) } : {}) } : {};
     if (!full) {
       const r = img.getBoundingClientRect();
-      const sides = (src === shown ? [img.naturalWidth, img.naturalHeight, r.width, r.height] : [size.width, aw, ah]).filter((n) => n > 0);
+      const measured = (src === shown ? [img.naturalWidth, img.naturalHeight, r.width, r.height] : [size.width, aw, ah]).filter((n) => n > 0);
+      const sides = measured.length ? measured : askedSides(src);
       if (sides.length && Math.max(...sides) < ICON_PX) return null;
     }
     const alt = clip(img.alt || img.getAttribute("aria-label") || img.title || "", 200);

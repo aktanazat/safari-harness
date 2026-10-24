@@ -1345,7 +1345,8 @@ prints a message a line, after who wrote it.
 `src` is the full image a picture links to or names in a zoom attribute,
 else its widest `srcset` candidate, else a lazy image's real address
 (`data-src` and kin), else what it shows; CSS backgrounds count too.
-Icons (no side 100 px or more) and repeats are left out. Without
+Icons (no side 100 px or more; for an image not yet drawn, the `w` and `h`
+its address asks for) and repeats are left out. Without
 `selector`, the page's `og:image` and JSON-LD images follow, `from`
 naming which. `query` and `maxBytes` narrow the list. `map` with `as:
 "images"` reads it per page.

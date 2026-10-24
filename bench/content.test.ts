@@ -902,6 +902,7 @@ benchRows("content.js in WebKit", [
       answer: { value: { title: "Wool coat", truncated: false, images: [
         { src: "https://img.invalid/coat-1600.jpg", alt: "Front of the coat", width: 1600, height: 2400 },
         { src: "https://img.invalid/coat-side.jpg?w=1200", alt: "Side" },
+        { src: "https://img.invalid/coat-lining.jpg", alt: "Lining" },
         { src: "https://img.invalid/coat-back-full.jpg", alt: "Back" },
         { src: "https://img.invalid/banner.jpg" },
         { src: "https://img.invalid/og/cover.jpg", from: "og:image" },
