@@ -66,6 +66,16 @@ const fixtures: { name: string; facts: PageFacts; kind: PageKind }[] = [
     kind: "error",
   },
   {
+    name: "GitHub's not-found page as a snapshot: a search box under a title that says so",
+    facts: { url: "https://github.com/nobody-here/nope", title: "Page not found · GitHub", text: '[1] link "Skip to content"\nbanner "Global navigation menu"\n  [2] button "Open menu"\nmain\n  img "404 “This is not the web page you are looking for”"\n  [3] label "Find code, projects, and people on GitHub:"\n  [4] textbox "Find code, projects, and people on GitHub:"\n  [5] button "Search"\n  [6] link "Contact Support" https://support.github.com/?tags=dotcom-404\ncontentinfo\n  h2 "Footer"\n  © 2026 GitHub, Inc.' },
+    kind: "error",
+  },
+  {
+    name: "MDN's not-found page as extract reads it, menus and a copyright line included",
+    facts: { url: "https://developer.mozilla.org/en-US/docs/nope", title: "Page not found | MDN", text: "HTML\n\nCSS\n\nJS\n\nWeb APIs\n\nPage not found\n\nGo back to the home page\n\nYour blueprint for a better internet.\n\nMDN\nAbout\nBlog\nMozilla careers\n\nPortions of this content are ©1998–2026 by individual mozilla.org contributors. Content available under a Creative Commons license." },
+    kind: "error",
+  },
+  {
     name: "Safari's failed-open page without readable body text",
     facts: { url: "https://offline.example/", title: "Failed to open page" },
     kind: "error",
@@ -183,6 +193,16 @@ const fixtures: { name: string; facts: PageFacts; kind: PageKind }[] = [
   {
     name: "an article about an outage rather than an error page",
     facts: { ...article, title: "Something went wrong", text: `Something went wrong\n${articleText}` },
+    kind: "content",
+  },
+  {
+    name: "a short page whose title names 404 inside a longer phrase",
+    facts: { url: "https://docs.example/errors/404", title: "Fixing 404 errors | Example Docs", text: 'h1 "Fixing 404 errors"\nCheck the address first.\n[1] link "Next: redirects"' },
+    kind: "content",
+  },
+  {
+    name: "a question page titled with the error it asks about",
+    facts: { url: "https://qa.example/questions/1/nginx-404", title: "nginx - 404 Not Found - Q&A", text: "nginx - 404 Not Found\n\nI set up nginx in front of my app, and every request to /api answers 404 Not Found although the app itself answers. What is wrong with my location block?\n\n[1] button \"Answer\"" },
     kind: "content",
   },
   {

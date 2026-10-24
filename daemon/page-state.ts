@@ -38,6 +38,10 @@ const REGION = /^(?:sorry[,!.]?\s*)?(?:(?:this|our) (?:site|website|service|cont
 const CONSENT = /^(?:before you continue(?: to .+)?|we value your privacy|your privacy choices|privacy (?:and|&) cookie preferences|cookie (?:consent|preferences)|consent required)\s*[.!]?$/i;
 const CHOICE = /^(?:accept all(?: cookies)?|reject (?:all|optional)(?: cookies)?|agree|i agree|i disagree|disagree|manage (?:options|preferences|cookies)|more options|customi[sz]e(?: cookies)?|only necessary(?: cookies)?)\s*[.!]?$/i;
 const ERROR = /^(?:(?:error\s*)?(?:400|401|403|404|408|410|429|451|500|502|503|504)(?:\s*[-:–—]?\s*(?:bad request|unauthorized|forbidden|not found|request timeout|gone|too many requests|unavailable for legal reasons|internal server error|bad gateway|service unavailable|gateway timeout))?|(?:page|file) not found|something went wrong|access denied|forbidden|service unavailable|internal server error|bad gateway|failed to open page|error page)\s*[.!]?$/i;
+// A title part that names the page missing. Safari gives a page read no
+// HTTP status (27.0.1's navigation timing has no responseStatus), so the
+// title is the page's own word for it: "Page not found · GitHub".
+const NOT_FOUND = /^(?:(?:error )?404(?: error)?|(?:404 )?(?:page |file )?not found|this page could not be found)[.!]?$/i;
 const LOADING = /^(?:loading(?: (?:content|page|results))?|please wait|signing in|redirecting)\s*[.!…]*$/i;
 const OUTLINE = /^(?:\[[\w:.-]+\]\s*)?(h[1-6]|heading|form|dialog|alertdialog|button|link|textbox|label|checkbox|radio|combobox|main|article|navigation|banner)(?:\s+|$)(?:\[[\w:.-]+\]\s*)?/i;
 type Line = { label: string; role: string; indent: number };
@@ -54,12 +58,23 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 
+function notFound(title: string): boolean {
+  return title.split(/\s*[·|:•–—]\s*|\s+-\s+/).some((part) => NOT_FOUND.test(part.trim()));
+}
+
+// Whether the page runs as prose, as an article does; a wall or a missing
+// page says one short thing. A cookie notice or a copyright line is not its
+// prose: on 10-24 MDN's not-found page read with "Portions of this content
+// are ©1998–2026 by individual mozilla.org contributors. Content …".
+function proseHeavy(lines: Line[]): boolean {
+  const prose = lines.filter((line) => line.role === "" && line.label.length >= 100 && !line.label.includes("©")
+    && !/^(?:we use (?:cookies|data)|by (?:clicking|continuing|signing)|cookies (?:and|are)|to (?:learn more|find out more)|our (?:privacy|cookie) policy)\b/i.test(line.label));
+  return prose.some((line) => line.label.length >= 280 || /[.!?]["”']?\s+[A-Z]/.test(line.label)) || prose.length >= 2;
+}
+
 function wallKind(lines: Line[], title: string, url: string): PageKind | undefined {
   const labels = lines.map((line) => line.label);
-  if (labels.join("\n").length > 3000) return undefined;
-  const prose = lines.filter((line) => line.role === "" && line.label.length >= 100
-    && !/^(?:we use (?:cookies|data)|by (?:clicking|continuing|signing)|cookies (?:and|are)|to (?:learn more|find out more)|our (?:privacy|cookie) policy)\b/i.test(line.label));
-  if (prose.some((line) => line.label.length >= 280 || /[.!?]["”']?\s+[A-Z]/.test(line.label)) || prose.length >= 2) return undefined;
+  if (labels.join("\n").length > 3000 || proseHeavy(lines)) return undefined;
   const titleHead = title.replace(/’/g, "'").split(/\s+[|–—-]\s+/)[0].trim();
   const primary = lines.find((line) => /^(?:h1|heading|dialog|alertdialog)$/.test(line.role))
     ?? lines.find((line) => /^(?:h[2-6]|form)$/.test(line.role)) ?? lines.find((line) => line.role === "");
@@ -113,6 +128,7 @@ export function classifyPage(facts: PageFacts): PageState {
   }
   const wall = wallKind(lines, facts.title, facts.url);
   if (wall) return state(wall);
+  if (notFound(facts.title) && !proseHeavy(lines)) return state("error");
   if (lines.every((line) => LOGIN.test(line.label) || PAY_ACTION.test(line.label) || CONSENT.test(line.label) || ERROR.test(line.label)
     || /^(?:main|article|error|unavailable|access restricted|verify (?:you are|you're) human)\s*[.!?]?$/i.test(line.label))) return state("unjudged");
   return state("content");
