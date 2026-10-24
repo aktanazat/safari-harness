@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
 import { callTool, formatResult } from "./tools.ts";
 import { followPages, mapPages, type Listing, type Page } from "./map.ts";
+import { runAs } from "./owner.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
@@ -19,8 +20,19 @@ const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
-// eBay's error page, as its guide names it (docs/sites/ebay.md).
+// eBay's error page, as its guide names it (docs/sites/ebay.md); FLAKY's
+// goes when it loads again, as eBay's searches' did in the October hunts
+// (AkylHunts AH4).
 const ERRORED = "https://ebay.com/sch/i.html?_nkw=lamp";
+const FLAKY = "https://ebay.com/sch/i.html?_nkw=desk";
+// A page not found that answers a load with HTTP 200 and a fetch with 404,
+// as moved pages did on 10-23 (K4).
+const MISSING = "https://missing.example/";
+// Words no page shows, for a wait.
+const ABSENT = "Sold out";
+// Google's results pages (K12); CAPTCHA's goes to Google's reCAPTCHA page.
+const SEARCH = "https://www.google.com/search?q=";
+const CAPTCHA = `${SEARCH}captcha`;
 
 // Pages whose read takes 31.5 s, as each of six Yelp pages' eval did on
 // 09-30 (01a0f031).
@@ -36,8 +48,9 @@ const LISTED = ["https://shop.example/item/1", "https://shop.example/help", "htt
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
 // once, a SLOW page's after SLOW_MS, or, while holding, when the test lets
-// them. A wait is answered at once, found on every page but LOST, except
-// SILENT's, held. Waits and reads are noted in order.
+// them. A wait is answered at once, found on every page but LOST, and for
+// ABSENT on none, except SILENT's, held. Waits and reads are noted in
+// order, and each load (an open, a goto) with its time.
 const tabs = new Map<number, { id: number; windowId: unknown; url: string; title: string }>();
 const opened: number[] = [];
 const closed: number[] = [];
@@ -50,28 +63,45 @@ let holding = false;
 let stuck: string | undefined;
 let nextTab = 0;
 const probes = new Map<number, number>();
+const loaded: [string, number][] = [];
 
 const evaluate = historyFixture();
-function read(tab: number): { value?: unknown; error?: string } {
+function read(tab: number, op: string): { value?: unknown; error?: string } {
   const url = tabs.get(tab)?.url ?? "";
   readUrls.push(url);
   asked.push(`read ${url}`);
   if (url === GONE) return { error: "no tab" };
   if (url === EMPTY) return { value: { error: "no content root" } };
   if (url === LISTING) return { value: { ok: true, result: LISTED } };
+  if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
+  if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
+  if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
+}
+
+// A load of url, noted; the title it shows: FLAKY's first is its error page.
+function load(url: string): string {
+  const first = !loaded.some(([u]) => u === url);
+  loaded.push([url, performance.now()]);
+  return url === LOST || url === MISSING ? "Page Not Found" : url === ERRORED || (url === FLAKY && first) ? "Error Page | eBay" : "Page";
 }
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
   if (op === "windows.open") {
-    tabs.set(900, { id: 900, windowId: 1, url: String(args[0]), title: "Page" });
+    tabs.set(900, { id: 900, windowId: 1, url: String(args[0]), title: load(String(args[0])) });
     return { value: { windowId: 1, tabId: 900 } };
   }
   if (op === "tabs.list") return { value: [...tabs.values()] };
   if (op === "tabs.open") {
-    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: args[0] === LOST ? "Page Not Found" : args[0] === ERRORED ? "Error Page | eBay" : "Page" };
+    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: load(String(args[0])) };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
+    return { value: tab };
+  }
+  if (op === "tabs.navigate") {
+    const tab = tabs.get(Number(args[0]));
+    if (!tab) return { error: "no tab" };
+    Object.assign(tab, { url: String(args[1]), title: load(String(args[1])) });
     return { value: tab };
   }
   if (op === "tabs.close") {
@@ -87,6 +117,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const seen = (probes.get(tab) ?? 0) + 1;
     probes.set(tab, seen);
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
+    if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
     return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
   return { value: { ok: true } };
@@ -106,12 +137,12 @@ connect({
       const [selector, want] = args[2] as [string | null, { text?: string }];
       asked.push(`wait ${url} for ${want.text ?? selector}`);
       if (url === SILENT) return void unanswered.push(() => reply({ value: { found: true } }));
-      return reply({ value: { found: url !== LOST } });
+      return reply({ value: { found: url !== LOST && want.text !== ABSENT } });
     }
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
-    if (holding) held.push(() => reply(read(Number(args[0]))));
-    else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]))), SLOW_MS);
-    else reply(read(Number(args[0])));
+    if (holding) held.push(() => reply(read(Number(args[0]), String(args[1]))));
+    else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]), String(args[1]))), SLOW_MS);
+    else reply(read(Number(args[0]), String(args[1])));
   },
   close() {},
 });
@@ -141,7 +172,7 @@ async function waited<T>(run: Promise<T>): Promise<T> {
 // map as its tool runs it: each page's open, read, and close go through callTool
 const map = async (args: Record<string, unknown>) => (await mapPages(args, callTool)).pages;
 const urls = (n: number) => Array.from({ length: n }, (_, i) => `https://shop.example/item/${i}`);
-const savedPath = (p: Page) => (p.ok && p.value && typeof p.value === "object" && "saved" in p.value && typeof p.value.saved === "string" ? p.value.saved : "");
+const savedPath = (p: Page) => (p.value && typeof p.value === "object" && "saved" in p.value && typeof p.value.saved === "string" ? p.value.saved : "");
 
 // Lets the held reads answer a batch at a time until the map is done, and
 // returns how many reads were in flight at each batch.
@@ -201,12 +232,21 @@ test("each page carries the title its tab opened with", async () => {
 });
 
 // 10-16: a hunt's eBay searches answered "Error Page | eBay", which an
-// agent read as no listings (HuntsUsage).
-test("a page that opened as its site's error page fails with open's warning, and is not read", async () => {
+// agent read as no listings (HuntsUsage); in the October hunts the same
+// searches loaded when opened again, and two agents wrote loops of their
+// own to ask again (AkylHunts AH4).
+test("a page that opens as its site's error page is loaded again 2 s and then 5 s later: read once it loads, failed with open's warning if it never does", async () => {
+  jest.useFakeTimers();
   readUrls.length = 0;
-  const pages = await map({ urls: [ERRORED, "https://shop.example/a"] });
-  expect(pages[0]).toMatchObject({ url: ERRORED, ok: false, error: expect.stringContaining("answered with its error page") });
-  expect(readUrls).toEqual(["https://shop.example/a"]);
+  const from = loaded.length;
+  const [flaky, errored, other] = await waited(map({ urls: [FLAKY, ERRORED, "https://shop.example/a"] }));
+  expect(flaky).toMatchObject({ url: FLAKY, ok: true, retried: 1, value: { text: `text of ${FLAKY}` } });
+  expect(errored).toMatchObject({ url: ERRORED, ok: false, retried: 2, error: expect.stringContaining("answered with its error page") });
+  expect(other).not.toHaveProperty("retried");
+  expect(readUrls.toSorted()).toEqual([FLAKY, "https://shop.example/a"].toSorted());
+  const [first, second, third] = loaded.slice(from).filter(([url]) => url === ERRORED).map(([, at]) => at);
+  expect(second - first).toBeGreaterThanOrEqual(2000);
+  expect(third - second).toBeGreaterThanOrEqual(5000);
 });
 
 test("every tab map opens is closed, a failed page's and a bot check's included", async () => {
@@ -315,15 +355,16 @@ test("an address Safari cannot show fails in its place before a tab opens for it
 
 // omp's MCP client ends a call at 60 s: on 09-30 a map of six pages whose
 // reads took 31.5 s each, three at once, lost all six there (01a0f031).
-test("a map whose pages run long answers within 60 s with the pages it read, names the rest unfinished, and begins no more", async () => {
+test("a map whose pages run long answers within 60 s with the pages it read, names the rest unfinished and gives their addresses to map next, and begins no more", async () => {
   jest.useFakeTimers();
   const before = opened.length;
   const slow = Array.from({ length: 9 }, (_, i) => `${SLOW}${i}`);
   const began = performance.now();
-  const pages = await waited(map({ urls: slow, concurrency: 3 }));
+  const { pages, urls: left } = await waited(mapPages({ urls: slow, concurrency: 3 }, callTool));
   expect(performance.now() - began).toBeLessThan(60_000);
   expect(pages.map((p) => [p.url, p.ok])).toEqual(slow.map((url, i) => [url, i < 3]));
   expect(pages.slice(3).map((p) => (p.ok ? "read" : p.error))).toEqual(Array(6).fill(expect.stringMatching(/unfinished.*again/)));
+  expect(left).toEqual(slow.slice(3));
   // The three still being read go on, each closing its tab as it ends; the
   // three not begun never open.
   for (let i = 0; i < 40; i++) {
@@ -365,7 +406,7 @@ test("with save, a map past its time writes a file for each page it answers with
   await Bun.sleep(100);
   const saved = pages.map(savedPath);
   expect(saved.map((path) => path !== "")).toEqual([true, true, true, false, false, false]);
-  expect(readdirSync(dir).map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
+  expect(readdirSync(dir).filter((name) => name !== "index.json").map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
 });
 
 // In the two weeks of logs before 10-19 an agent copied a map's addresses
@@ -411,4 +452,126 @@ test("map refuses a follow it cannot use before opening a page, and a listing wi
   const [none] = (await followPages({ urls: ["https://shop.example/a"], follow: { match: "/\\/item\\//" } }, callTool)).pages;
   expect(none).toMatchObject({ ok: false, error: "no link on it to its own site matched /\\/item\\//" });
   expect(opened.length - before).toBe(1);
+});
+
+// On 10-23 saved maps counted three pages not found, three raw 404s, and
+// an API's rate limit as read (K4).
+test("a page that reads as an error page, or answers an HTTP error, fails, saved or not, with its read beside the error", async () => {
+  const answer = await mapPages({ urls: [MISSING, "https://shop.example/a"] }, callTool);
+  expect(answer.pages[0]).toMatchObject({ url: MISSING, ok: false, error: expect.stringContaining('an error page, "Page Not Found", not the page asked for'), value: { text: expect.stringContaining("has moved") } });
+  expect(formatResult(answer)).toStartWith("2 pages: 1 read, 1 failed\n");
+  const [fetched] = await map({ urls: [MISSING], what: "fetch" });
+  expect(fetched).toMatchObject({ ok: false, error: expect.stringContaining("an error page (HTTP 404)"), failure: { code: "not_content" } });
+  const [saved] = await map({ urls: [MISSING], save: mkdtempSync(join(tmpdir(), "map-")) });
+  expect(saved).toMatchObject({ ok: false, value: { pageState: { kind: "error" } } });
+  expect(readFileSync(savedPath(saved), "utf8")).toContain("has moved");
+});
+
+// In the October hunts an agent read a folder's files to learn which of
+// its pages had failed, and keyed its retries on the addresses inside
+// eBay's, as its files held only the expression's value (AkylHunts AH5).
+test("with save to a folder, map keeps an index.json there of every page, failed ones too, and an eval's file holds the page it came from", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "map-"));
+  const answer = await mapPages({ urls: [GONE, "https://shop.example/a"], what: "eval", expression: "cards()", save: dir }, callTool);
+  const [gone, read] = answer.pages as Page[];
+  expect(answer.index).toBe(join(dir, "index.json"));
+  expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8"))).toEqual([
+    { url: GONE, title: "Page", ok: false, ms: expect.any(Number), error: gone.ok ? "" : gone.error },
+    { url: "https://shop.example/a", title: "Page", ok: true, ms: expect.any(Number), saved: savedPath(read) },
+  ]);
+  expect(JSON.parse(readFileSync(savedPath(read), "utf8"))).toEqual({ url: "https://shop.example/a", title: "Page", ok: true, ms: read.ms, value: { cards: 2 } });
+  await mapPages({ urls: [GONE], what: "eval", expression: "cards()", save: dir }, callTool);
+  expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")).map((e: { url: string }) => e.url)).toEqual(["https://shop.example/a", GONE]);
+});
+
+// A task's agents, as omp names one: [session, agent].
+const as = (agent: string, args: Record<string, unknown>, pid = process.pid) => runAs(pid, () => waited(mapPages(args, callTool)), JSON.stringify(["s1", agent]));
+
+// On 10-23 a kernel research task's 1526 loads covered 1016 addresses, and
+// 297 of them read a page another of its agents had read (K9).
+test("a page this task read in the last 10 minutes is answered from that read, saying whose; fresh, another task, or 10 minutes on loads it again", async () => {
+  jest.useFakeTimers();
+  const page = "https://shop.example/kept";
+  readUrls.length = 0;
+  await as("Lead", { urls: [page] });
+  const again = await as("Helper", { urls: [page, "https://shop.example/new"] });
+  expect(again.pages[0]).toMatchObject({ ok: true, ms: 0, from: expect.stringMatching(/^from Lead's read \d+ s ago$/), value: { text: `text of ${page}` } });
+  expect(formatResult(again)).toStartWith("2 pages: 2 read, 0 failed; 1 from this task's reads of the last 10 minutes (fresh: true reads them again)\n");
+  expect(readUrls).toEqual([page, "https://shop.example/new"]);
+  await as("Helper", { urls: [page], fresh: true });
+  await as("Other", { urls: [page] }, process.ppid);
+  expect(readUrls).toEqual([page, "https://shop.example/new", page, page]);
+  setSystemTime(new Date(Date.now() + 11 * 60_000));
+  try {
+    await as("Helper", { urls: [page] });
+  } finally {
+    setSystemTime();
+  }
+  expect(readUrls).toHaveLength(5);
+});
+
+// On 10-22 five agents of a shopping task met Yelp's DataDome check six
+// times in 2 h 22 min (SR-2).
+test("a site that showed this task a bot check is not loaded again, saying who met it; fresh, or another task, loads it", async () => {
+  jest.useFakeTimers();
+  await as("SacCake", { urls: [WALLED] });
+  const before = opened.length;
+  const [page] = (await as("Lead", { urls: [`${WALLED}menu`] })).pages;
+  expect(page).toMatchObject({ ok: false, challenge: { kind: "cloudflare", where: "page" }, error: expect.stringMatching(/^walled\.example showed a cloudflare bot check to SacCake \d+ s ago, so it was not loaded again: .*fresh: true loads it anyway$/) });
+  expect(opened.length).toBe(before);
+  await as("Lead", { urls: [WALLED], fresh: true });
+  await as("Other", { urls: [WALLED] }, process.ppid);
+  expect(opened.length).toBe(before + 2);
+});
+
+// On 10-22 a map of four Google searches met four reCAPTCHA pages (K12).
+test("map loads a search engine's results pages one at a time, 3 s apart, and its other pages without waiting", async () => {
+  jest.useFakeTimers();
+  const from = loaded.length;
+  const searches = ["a", "b", "c"].map((q) => `${SEARCH}${q}`);
+  await waited(map({ urls: [...searches, "https://shop.example/c"] }));
+  const at = new Map(loaded.slice(from));
+  const when = (url: string) => at.get(url) ?? Number.NaN;
+  expect(when(searches[1]) - when(searches[0])).toBeGreaterThanOrEqual(3000);
+  expect(when(searches[2]) - when(searches[1])).toBeGreaterThanOrEqual(3000);
+  expect(when("https://shop.example/c") - when(searches[0])).toBeLessThan(3000);
+});
+
+test("once a search of a map meets a bot check, the map loads none of that site's searches after it", async () => {
+  jest.useFakeTimers();
+  const from = loaded.length;
+  const searches = [CAPTCHA, `${SEARCH}d`, `${SEARCH}e`];
+  const { pages } = await as("Lead", { urls: searches });
+  expect(pages.map((p) => [p.ok, "challenge" in p ? p.challenge?.kind : undefined])).toEqual([[false, "recaptcha"], [false, "recaptcha"], [false, "recaptcha"]]);
+  expect(pages[2]).toMatchObject({ error: expect.stringMatching(/^google\.com showed a recaptcha bot check to you \d+ s ago, so it was not loaded again/) });
+  expect(loaded.slice(from).map(([url]) => url)).toEqual([CAPTCHA]);
+});
+
+// In a shopping task on 10-22 three maps with follow waited for a
+// listing's heading on every page they followed, and each ran out its 50 s
+// (SR-1).
+test("with follow, wait holds each page followed, a note says so when none of them showed it, and the links past max come back as urls", async () => {
+  const answer = await followPages({ urls: [LISTING], follow: { match: "/\\/item\\//", max: 2 }, wait: { text: ABSENT } }, callTool);
+  expect(answer.pages).toMatchObject([{ url: LISTING, ok: true, items: [{ ok: false }, { ok: false }], unread: 1 }]);
+  expect(answer.note).toStartWith("wait holds each page followed, not the listing");
+  expect(answer.urls).toEqual(["https://www.shop.example/item/3"]);
+  expect(formatResult(answer)).toContain('map them next: {"urls":["https://www.shop.example/item/3"]}');
+});
+
+// On 10-23 seven map answers were cut at a reply's 30,000 characters, and
+// three of their pages did not show at all (K6).
+test("a map answer past a reply's length lists every page first, and gives each a share: a short page whole, a long one cut saying where", async () => {
+  const long = `text ${"x".repeat(40_000)}`;
+  const pages: Page[] = [
+    { url: "https://shop.example/1", ok: true, ms: 5, value: long },
+    { url: "https://shop.example/2", ok: true, ms: 5, value: "short" },
+    { url: GONE, ok: false, ms: 5, error: "no tab" },
+    { url: "https://shop.example/3", ok: true, ms: 5, value: long },
+  ];
+  const text = formatResult({ pages }, 30_000);
+  expect(text.length).toBeLessThanOrEqual(30_000);
+  expect(text).toContain(["- https://shop.example/1: read, 40005 characters", "- https://shop.example/2: read, 5 characters", `- ${GONE}: failed: no tab`, "- https://shop.example/3: read, 40005 characters"].join("\n"));
+  expect(text).toContain("## https://shop.example/2 (5 ms)\nshort\n\n");
+  expect(text.match(/\n…cut at \d+ of 40005 characters/g)).toHaveLength(2);
+  expect(text).toContain("## https://shop.example/3 (5 ms)\ntext xxx");
 });

@@ -72,6 +72,8 @@ daemon/
                     and first 500 characters
   map.ts            map: one read of each of up to 20 pages, a few at a time,
                     each in a background tab that closes after
+  reads.ts          a task's map reads of the last 10 minutes, and the bot
+                    checks its sites showed it, so neither is loaded again
   mission.ts        live task controls and bounded private history; a fresh
                     view is required after the user gives control back
   mission-history.ts private restart-safe history and optional action pictures

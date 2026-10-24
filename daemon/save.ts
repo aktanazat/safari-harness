@@ -4,7 +4,7 @@
 // of its whole text, and it is read past the limit a reply is cut at; the
 // agent reads the parts it needs from the file.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { withPageState } from "./page-state.ts";
@@ -129,4 +129,37 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
     ...(r.memoryReceipt ? { memoryReceipt: r.memoryReceipt } : {}),
     ...(typeof r.memoryWarning === "string" ? { memoryWarning: r.memoryWarning } : {}),
   };
+}
+
+// A folder's index.json: each page a map saved there, or failed to, by
+// address; a later map's entry for an address takes the place of the
+// earlier. One map writes it at a time. A file there of another shape is
+// left as it is.
+const indexing = new Map<string, Promise<string>>();
+export function writeIndex(dir: string, entries: { url: string }[]): Promise<string> {
+  const path = join(dir, "index.json");
+  const written = (indexing.get(path) ?? Promise.resolve(path)).catch(() => path).then(async () => {
+    const text = await readFile(path, "utf8").catch((e: unknown) => {
+      if (e instanceof Error && "code" in e && e.code === "ENOENT") return "[]";
+      throw e;
+    });
+    let before: unknown;
+    try {
+      before = JSON.parse(text);
+    } catch {}
+    if (!Array.isArray(before)) throw new Error(`${path} is not a map's index, so it was left as it is`);
+    const byUrl = new Map(before.map((entry: { url?: unknown }) => [entry?.url, entry]));
+    for (const entry of entries) {
+      byUrl.delete(entry.url);
+      byUrl.set(entry.url, entry);
+    }
+    await mkdir(dir, { recursive: true });
+    await writeFile(path, JSON.stringify([...byUrl.values()], null, 1));
+    return path;
+  });
+  indexing.set(path, written);
+  void written.finally(() => {
+    if (indexing.get(path) === written) indexing.delete(path);
+  }).catch(() => {});
+  return written;
 }
