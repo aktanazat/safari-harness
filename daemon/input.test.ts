@@ -111,6 +111,7 @@ function mac(page: Page = {}): Mac {
         if (page.opens && page.owner !== undefined) setTimeout(queuePopup, 100, page.owner, page.opens);
         return answer({ errors: page.errors ?? [], ...(page.opens ? { tab: true } : {}) });
       }
+      if (dom === "tabIntent") return answer(page.popup !== undefined);
       if (dom === "typeMark") {
         const [ref, , append] = args[2];
         // a box of the row, by the class the row's mark gave it
@@ -183,7 +184,7 @@ function mac(page: Page = {}): Mac {
       // the helper's closing F20, which the page counts
       marks++;
       selected = false;
-      if (page.popup && page.owner !== undefined) queuePopup(page.owner, page.popup);
+      if (page.popup && page.owner !== undefined) setImmediate(queuePopup, page.owner, page.popup);
     }
     return {};
   });
@@ -496,10 +497,7 @@ test("a caller run checks later arguments before sending any real input", async 
   expect({ helper: m.helper, page: m.asked }).toEqual({ helper: [], page: [] });
 });
 
-// A sign-in button opens its window as the real mouse clicks it. Before,
-// the daemon calls real_input made after the click took that news and
-// dropped it, so the agent never heard of the window.
-test("a real click's answer carries the tab its action opened", async () => {
+test("a native click waits for its announced popup before answering", async () => {
   const owner = Bun.spawn(["sleep", "60"]);
   try {
     mac({ owner: owner.pid, popup: { tab: 22, url: "https://accounts.example/" } });

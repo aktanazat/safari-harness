@@ -686,9 +686,10 @@ both ends. The production helper remains Swift.
 
 `bun run check` runs live checks in real Safari, mostly against disposable local
 pages. Its sign-in form check uses a public HTTPS frame, because insecure pages
-must not accept saved logins. It closes its tabs and local servers. The opt-in
-`--restart`, `--before-install`, and `--after-install` checks exercise service
-restarts or reloads.
+must not accept saved logins. It closes its tabs after a complete run and its
+local servers when the process exits. The opt-in `--restart`,
+`--before-install`, and `--after-install` checks exercise service restarts
+or reloads.
 
 `bun run check:research` exercises the research features against real Safari
 with local synthetic pages and fictional secrets. It verifies protected pixels

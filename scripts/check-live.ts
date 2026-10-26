@@ -135,7 +135,7 @@ process.on("exit", () => { mainSite.stop(true); otherSite.stop(true); });
 const FORM = '<label>Size <select id=s><option value="">pick</option><option value="7">US 7</option><option value="8">US 8</option></select></label>' +
   "<div id=h role=button tabindex=0>Menu</div><div id=hout></div><div id=kout></div>" +
   "<label>Photo <input type=file id=f></label><div id=fout></div>" +
-  `<a href="${ELSEWHERE}">Next page</a> <a href="${ELSEWHERE}" target=_blank>Elsewhere</a>`;
+  `<a href="${ELSEWHERE}">Next page</a>`;
 const FORM_JS = `
   document.getElementById("h").addEventListener("mouseenter", () => { document.getElementById("hout").textContent = "hovered"; });
   document.addEventListener("keydown", (e) => { document.getElementById("kout").textContent = "key " + e.key + " " + e.code + " shift=" + e.shiftKey + " alt=" + e.altKey + " meta=" + e.metaKey; });
@@ -144,8 +144,6 @@ const FORM_JS = `
     const f = e.target.files[0];
     document.getElementById("fout").textContent = "got " + f.name + " " + (await f.text()).trim();
   })`;
-
-const TAB_OPS = { tabs: async () => (await call("tabs")).tabs as Tab[], activate: (tab: number) => call("activate", { tab }) };
 
 await withPage(FORM, FORM_JS, async (tab) => {
   const snap = (await call("snapshot", { tab })).snapshot as string;
@@ -183,20 +181,6 @@ await withPage(FORM, FORM_JS, async (tab) => {
     await call("eval", { tab, expression: 'document.getElementById("fout").textContent' }));
   await Bun.file(file).delete();
 
-  const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
-  const scripted = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
-  if (scripted.newTab) {
-    check("a click that opens a tab reports newTab", scripted.newTab.url === ELSEWHERE, scripted);
-    await call("close", { tab: scripted.newTab.id });
-  } else {
-    check("a blocked scripted popup says how to open it", /real_input/.test(scripted.next ?? ""), scripted);
-    const opened = await inFront(tab, TAB_OPS, () => invoke("real_input", { tab, do: "click", ref: refOf(snap, /"Elsewhere"/) }, true)) as { popup?: { tab: number; url: string } };
-    check("a real click that opens a tab reports its popup", opened.popup?.url === ELSEWHERE, opened);
-    if (opened.popup) await call("close", { tab: opened.popup.tab });
-  }
-  const activeNow = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
-  check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
-
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
   check("a click that loads a page reports navigated", nav.navigated?.url === ELSEWHERE, nav);
   const back = await call("history", { tab, do: "back" });
@@ -204,6 +188,38 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const fwd = await call("history", { tab, do: "forward", snapshot: true });
   check("snapshot: true returns the page the action led to", fwd.page?.url === ELSEWHERE && /documentation examples/i.test(fwd.page.snapshot ?? ""), fwd);
 });
+
+// A real popup belongs to the agent that opened the tab, not to the
+// anonymous caller used by the other synthetic page checks.
+const ownTabs = async () => (await invoke("tabs", {}, true) as { tabs: (Tab & { url?: string; windowId?: number })[] }).tabs;
+const popupBefore = new Set((await ownTabs()).map((t) => t.id));
+const popupTab = (await invoke("open", { url: HOME, background: true }, true) as { id: number }).id;
+const popupWindow = (await ownTabs()).find((t) => t.id === popupTab)?.windowId;
+try {
+  await invoke("eval", { tab: popupTab, expression: `(document.body.innerHTML = ${JSON.stringify(`<a id=elsewhere href="${ELSEWHERE}" target=_blank>Elsewhere</a>`)}, 1)` }, true);
+  const userFront = (await ownTabs()).find((t) => t.front)?.id;
+  const scripted = await invoke("click", { tab: popupTab, ref: "#elsewhere" }, true) as { newTab?: { id: number; url: string }; next?: string };
+  if (scripted.newTab) {
+    check("a click that opens a tab reports newTab", scripted.newTab.url === ELSEWHERE, scripted);
+    await invoke("close", { tab: scripted.newTab.id }, true);
+  } else {
+    check("a blocked scripted popup says how to open it", /real_input/.test(scripted.next ?? ""), scripted);
+    const ops = { tabs: ownTabs, activate: (tab: number) => invoke("activate", { tab }, true) };
+    const opened = await inFront(popupTab, ops, () => invoke("real_input", { tab: popupTab, do: "click", ref: "#elsewhere" }, true)) as { popup?: { tab: number; url: string } };
+    check("a real click that opens a tab reports its popup", opened.popup?.url === ELSEWHERE, opened);
+    if (opened.popup) await invoke("close", { tab: opened.popup.tab }, true);
+  }
+  const activeNow = (await ownTabs()).find((t) => t.front)?.id;
+  check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
+} finally {
+  for (const t of (await ownTabs()).filter((t) => !popupBefore.has(t.id) && (t.id === popupTab || t.url?.startsWith(ELSEWHERE)))) {
+    await invoke("close", { tab: t.id }, true);
+  }
+  if (popupWindow !== undefined) {
+    const space = (await ownTabs()).find((t) => !popupBefore.has(t.id) && t.windowId === popupWindow && t.url?.startsWith(`${new URL(HTTP).origin}/space?`));
+    if (space) await invoke("close", { tab: space.id }, true);
+  }
+}
 
 // ---------- several steps in one call ----------
 
@@ -255,6 +271,8 @@ check("a page tool without tab is an error, not a read of the front tab", untarg
 // that were in front. Our tab sits in an agent window, which never holds
 // the user's front tab, even raised: "front" names the tab he was on. A
 // failure prints only whose tab it was; his page is never read.
+const TAB_OPS = { tabs: async () => (await call("tabs")).tabs as Tab[], activate: (tab: number) => call("activate", { tab }) };
+
 await withPage("<p>front check</p>", 'document.title = "front check"', async (tab) => {
   const rows = await inFront(tab, TAB_OPS, async () => (await call("tabs")).tabs as (Tab & { windowId: number })[]);
   const ours = rows.find((t) => t.id === tab);
