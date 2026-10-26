@@ -761,6 +761,14 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
     return { value: { ok: true } };
   }
   const { frameId, args } = frame ? { frameId: frame, args: domArgs } : frameOf(domArgs);
+  if (domOp === "tabIntent") {
+    const top = await toTab(tabId, domOp, args, timeoutMs);
+    if (top?.value === true) return top;
+    const tokens = await frameTokens(tabId).catch(() => new Map());
+    if (tokens.size === 0) return top;
+    const frames = await Promise.all([...tokens.values()].map((id) => toTab(tabId, domOp, args, timeoutMs, id).catch(() => null)));
+    return { value: frames.some((result) => result?.value === true) };
+  }
   if (domOp === "snapshot") {
     const identify = args?.[0]?.identifyDocument === true;
     const beforeDocument = identify ? await upgradeDocumentId(tabId) : undefined;

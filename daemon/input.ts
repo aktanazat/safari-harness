@@ -133,7 +133,7 @@ async function clickAt(tab: number, a: Record<string, unknown>, count: number, b
   const at = { x: Math.round(area.x + cx * scale), y: Math.round(area.y + cy * scale) };
   const since = Date.now();
   await post(tab, ["click", String(at.x), String(at.y), "--count", String(count), "--button", button], false);
-  await rpc("popup_intent", { tab, since, ...(a.ref === undefined ? {} : { ref: a.ref }) }).catch(() => {});
+  await rpc("popup_intent", { tab, since }).catch(() => {});
   return at;
 }
 

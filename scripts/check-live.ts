@@ -20,7 +20,7 @@ const HTTP = "http://127.0.0.1:37334/rpc";
 // When this run began: the pages it opens are visited after.
 const STARTED = Date.now();
 
-type Tab = { id: number; active: boolean; front?: boolean };
+type Tab = { id: number; active: boolean; front?: boolean; shown?: boolean };
 
 async function call(tool: string, args: Record<string, unknown> = {}): Promise<any> {
   const res = await fetch(HTTP, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool, args }) });
@@ -191,9 +191,9 @@ await withPage(FORM, FORM_JS, async (tab) => {
 
 // A real popup belongs to the agent that opened the tab, not to the
 // anonymous caller used by the other synthetic page checks.
-const ownTabs = async () => (await invoke("tabs", {}, true) as { tabs: (Tab & { url?: string; windowId?: number })[] }).tabs;
+const ownTabs = async (all = false) => (await invoke("tabs", all ? { all: true } : {}, true) as { tabs: (Tab & { url?: string; windowId?: number })[] }).tabs;
 const popupBefore = new Set((await ownTabs()).map((t) => t.id));
-const popupTab = (await invoke("open", { url: HOME, background: true }, true) as { id: number }).id;
+const popupTab = (await invoke("open", { url: HOME, background: true, new: true }, true) as { id: number }).id;
 const popupWindow = (await ownTabs()).find((t) => t.id === popupTab)?.windowId;
 try {
   await invoke("eval", { tab: popupTab, expression: `(document.body.innerHTML = ${JSON.stringify(`<a id=elsewhere href="${ELSEWHERE}" target=_blank>Elsewhere</a>`)}, 1)` }, true);
@@ -216,7 +216,7 @@ try {
     await invoke("close", { tab: t.id }, true);
   }
   if (popupWindow !== undefined) {
-    const space = (await ownTabs()).find((t) => !popupBefore.has(t.id) && t.windowId === popupWindow && t.url?.startsWith(`${new URL(HTTP).origin}/space?`));
+    const space = (await ownTabs(true)).find((t) => !popupBefore.has(t.id) && t.windowId === popupWindow && t.url?.startsWith(`${new URL(HTTP).origin}/space?`));
     if (space) await invoke("close", { tab: space.id }, true);
   }
 }
@@ -993,7 +993,9 @@ function pngSize(bytes: Uint8Array): { w: number; h: number } {
 }
 
 await withPage('<button id=b style="width:200px;height:50px">Shot</button><div style="height:4000px"></div><p>end</p>', "", async (tab) => {
-  const front = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
+  const before = (await call("tabs")).tabs as Tab[];
+  const front = before.find((t) => t.front)?.id;
+  const shown = before.find((t) => t.shown)?.id;
   const app = await frontApp();
   await inFront(tab, TAB_OPS, async () => {
     const view = pngSize(await Bun.file((await call("shot", { tab })).path).bytes());
@@ -1003,8 +1005,10 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
     check("shot of a ref is that element's size", Math.abs(one.w / one.h - 4) < 0.3 && one.w < view.w, { view, one });
     check("shot fullPage is taller than the viewport", whole.h > view.h * 2 && whole.w === view.w, { view, whole, full });
   });
-  const after = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
-  check("shots give the user's front tab and app back", after === front && (await frontApp()) === app, { front, after, app });
+  const current = (await call("tabs")).tabs as Tab[];
+  const after = current.find((t) => t.front)?.id;
+  const shownAfter = current.find((t) => t.shown)?.id;
+  check("shots give the user's front tab and app back", shown !== undefined && shownAfter === shown && after === front && (await frontApp()) === app, { front, after, shown, shownAfter, app });
 });
 
 // ---------- real input ----------
