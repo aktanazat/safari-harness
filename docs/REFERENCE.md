@@ -2530,10 +2530,13 @@ The tab must be a recent background tab this agent opened, never `front`.
    start check passes. `params` lists field names, not values.
 2. Do the authorized task through the normal tools. Supported actions are
    `type`, `click`, `select`, `press` and same-origin public-path `goto`.
-3. `playbooks {do: "save", tab, selector: "#results"}` requires the end check
-   to be observed now. `text` may be used instead, but it must be a generic
-   status, never a parameter value or private message. A failed action,
-   challenge, unsupported action or missing end check saves nothing.
+3. `playbooks {do: "save", tab, selector: "#results",
+   resultSelector: "#results"}` requires the end check and one nonempty
+   result element to be observed now. `resultSelector` is optional; it stores
+   the structural selector, never the page's text. `text` may be used instead
+   of the end selector, but it must be a generic status, never a parameter
+   value or private message. A failed action, challenge, unsupported action,
+   missing end check or missing result saves nothing.
 4. `playbooks {do: "run", url: "https://example.com/", goal: "Search the
    catalog", vars: {q: "shoes"}}` filters verified recordings by the exact
    public starting path and supplied parameter names. `tab` may supply
@@ -2542,6 +2545,10 @@ The tab must be a recent background tab this agent opened, never `front`.
 The existing recording format and folder hold the playbook. The goal and
 control names must be generic, without personal text. The playbook keeps
 no input value, page title, nearby text, private URL query or fragment.
+If saved with `resultSelector`, a replay reads that one element after the end
+check and returns its current text as `value`. Empty, ambiguous or oversized
+results stop the replay without claiming success. This makes a read-only
+playbook useful as a repeatable lookup without storing the first result.
 Only uniquely named native controls in the top document can be learned;
 their existing fingerprints are used without storing surrounding content.
 Frames, shadow controls, real input, append typing, arbitrary JS and
@@ -2549,7 +2556,8 @@ helpers that hide actions invalidate the session rather than produce a
 partial recipe. `run` batches pass their individual supported steps through
 the same learning boundary.
 
-`playbooks {do: "list"}` lists validated learned runs and their gates.
+`playbooks {do: "list"}` lists validated learned runs, their gates and whether
+they return a result.
 `playbooks {do: "cancel", tab}` discards a session. Sessions expire after
 30 minutes. `recordings show/rm` reads or removes a saved playbook as usual.
 
@@ -2589,7 +2597,7 @@ The CLI accepts the same arguments as flags:
 
 ```
 safari playbooks learn --tab N --goal "Search the catalog" --params '["q"]' --before '{"selector":"#search"}'
-safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+safari playbooks save --tab N --selector '#results[data-ready="yes"]' --result-selector '#results'
 safari playbooks run --url https://example.com/ --goal "Search the catalog" --vars '{"q":"shoes"}' --json
 ```
 

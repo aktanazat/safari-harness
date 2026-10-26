@@ -25,7 +25,7 @@ const goal = "Search the catalog";
 const field = { type: "search", autocomplete: "off", name: "q", id: "query", label: "Search" };
 const fp = (role: string, tag: string, name = "Search") => ({ role, tag, name, near: "", path: "", index: 0, count: 1 });
 const rec = (steps: unknown[] = [{ kind: "type", url, field, param: "q", target: fp("searchbox", "input") }, { kind: "click", url, target: fp("button", "button") }]) => ({ url, source: "agent", verified: true, goal, params: ["q"], before: { selector: "#search" }, verify: { selector: "#results" }, steps });
-function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; before?: boolean; after?: boolean; failedAction?: boolean; challenge?: boolean } = {}) {
+function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; before?: boolean; after?: boolean; failedAction?: boolean; challenge?: boolean; resultCount?: number } = {}) {
   let typed = ""; let clicked = 0;
   const calls: string[] = []; const modelCalls: string[] = [];
   const call = async (tool: string, a: Record<string, unknown>, model = false): Promise<unknown> => {
@@ -38,6 +38,7 @@ function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boole
       case "snapshot": return { url, snapshot: '[1] searchbox "Search"\n[2] button "Search"' };
       case "eval": {
         const expression = String(a.expression);
+        if (expression.includes("document.querySelectorAll(")) return { ok: true, result: { count: options.resultCount ?? 1, text: `Found ${typed}` } };
         const input = expression.includes('ref=\\"1\\"') || expression.includes('ref="1"');
         const f = input ? { ...field, ...(options.secret ? { type: "password" } : {}) } : { type: options.submit ? "submit" : "button", autocomplete: "", name: "", id: "go", label: "Search" };
         return { ok: true, result: { ref: input ? "1" : "2", role: input ? "searchbox" : "button", name: expression.includes("getRootNode") ? "Search" : f.name, tag: input ? "input" : "button", field: f, type: f.type, autocomplete: f.autocomplete, submit: options.submit && !input, href: null } };
@@ -59,12 +60,12 @@ function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boole
   return { call, calls, modelCalls, state: () => ({ typed, clicked }) };
 }
 const virtualClock = () => { let now = 0; return { now: () => now, sleep: async (ms: number) => { now += ms; } }; };
-async function learn() {
+async function learn(resultSelector?: string) {
   await invoke("open", { url, background: true }, true);
   await invoke("playbooks", { do: "learn", tab: 7, goal, params: ["q"], before: { selector: "#search" } }, true);
   await invoke("type", { tab: 7, ref: 1, text: "private input value" }, true);
   await invoke("click", { tab: 7, ref: 2 }, true);
-  return await invoke("playbooks", { do: "save", tab: 7, selector: "#results" }, true) as { name: string; verified: boolean };
+  return await invoke("playbooks", { do: "save", tab: 7, selector: "#results", ...(resultSelector ? { resultSelector } : {}) }, true) as { name: string; verified: boolean };
 }
 
 test("an opted-in verified run stores only named parameters and replays with one advisory choice and no agent-written browser actions", async () => {
@@ -85,6 +86,20 @@ test("an opted-in verified run stores only named parameters and replays with one
   expect(JSON.stringify(choices)).not.toContain("new current value");
   expect(choices).toHaveLength(1);
   expect(p.modelCalls).toEqual([]);
+});
+
+test("a learned lookup returns the current page's result without saving the example result", async () => {
+  const p = fixture(); const saved = await learn("#results");
+  const disk = readFileSync(join(home, "recordings", `${saved.name}.json`), "utf8");
+  expect(disk).not.toContain("Found private input value");
+  const result = await playbooksTool({ do: "run", goal, url, vars: { q: "pears" } }, p.call, async () => ({ code: 0, stdout: "p1\t0.95", stderr: "" }));
+  expect(result).toMatchObject({ ok: true, verified: true, value: "Found pears" });
+});
+
+test("an ambiguous result stops a learned lookup without claiming success", async () => {
+  const options = { resultCount: 1 }; const p = fixture(options); const saved = await learn("#results");
+  options.resultCount = 2;
+  expect(await replay({ name: saved.name, vars: { q: "pears" } }, p.call)).toMatchObject({ ok: false, error: expect.stringContaining("exactly one element") });
 });
 
 test("a failed end check stores no playbook", async () => {

@@ -8,7 +8,7 @@ import { dataFile } from "./phone.ts";
 import { agentOf, rpc } from "./rpc.ts";
 import { assertAgentRecording, checkOf, gateOfStep, listRecordings, loadRecording, playbookUrl, publicLabel, saveRecording } from "./recordings.ts";
 import type { AgentRecording, AgentStep, Check } from "./recordings.ts";
-import { replay } from "./replay.ts";
+import { readPlaybookResult, replay } from "./replay.ts";
 import type { Tool } from "./tools.ts";
 
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -227,10 +227,11 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
         if (!session) throw new Error("this tab has no opted-in learn session");
         if (session.failed || Date.now() - session.startedAt > MAX_AGE) throw new Error(session.failed ?? "learning expired");
         const verify = checkOf({ ...(a.text === undefined ? {} : { text: a.text }), ...(a.selector === undefined ? {} : { selector: a.selector }) });
-        const rec = { url: session.url, goal: session.goal, params: session.params, before: session.before, startedAt: session.startedAt, steps: session.steps, source: "agent", verified: true, verify };
+        const rec = { url: session.url, goal: session.goal, params: session.params, before: session.before, startedAt: session.startedAt, steps: session.steps, source: "agent", verified: true, verify, ...(a.resultSelector === undefined ? {} : { resultSelector: publicLabel(a.resultSelector) }) };
         assertAgentRecording(rec);
         const end = fields(await call("wait", { tab: session.tab, ...verify, ms: 1000 }));
         if (end.found !== true || end.challenge) throw new Error("the run is not verified; no playbook was stored");
+        if (rec.resultSelector) await readPlaybookResult(call, session.tab, rec.resultSelector);
         const name = saveRecording(rec);
         remove(path);
         return { ok: true, name, verified: true, params: rec.params, steps: rec.steps.length };
@@ -240,7 +241,7 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
       return listRecordings().flatMap(({ name }) => {
         const rec = loadRecording(name);
         if (fields(rec).source !== "agent") return [];
-        try { assertAgentRecording(rec); return [{ name, goal: rec.goal, url: rec.url, params: rec.params, steps: rec.steps.length, gates: rec.steps.flatMap((s, i) => { const gate = gateOfStep(s); return gate ? [{ step: i + 1, gate }] : []; }) }]; }
+        try { assertAgentRecording(rec); return [{ name, goal: rec.goal, url: rec.url, params: rec.params, steps: rec.steps.length, returnsResult: rec.resultSelector !== undefined, gates: rec.steps.flatMap((s, i) => { const gate = gateOfStep(s); return gate ? [{ step: i + 1, gate }] : []; }) }]; }
         catch { return []; }
       });
     case "run": {
@@ -284,7 +285,7 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
 
 export const PLAYBOOK_TOOLS: Record<string, Tool> = {
   playbooks: {
-    desc: "Opt in to learning authorized agent actions on your own background tab. Use a generic goal, declared parameter names and a start check. Save only after an observed end check. run uses Jev for advisory matching, then the existing replay with live checks and owner gates. No values or private page content are stored; unknown work abstains.",
+    desc: "Opt in to learning authorized agent actions on your own background tab. Use a generic goal, declared parameter names and a start check. Save only after an observed end check. An optional result selector returns live text after replay. run uses Jev for advisory matching, then the existing replay with live checks and owner gates. No values or private page content are stored; unknown work abstains.",
     params: {
       do: { type: "string", enum: ["learn", "save", "cancel", "list", "run"] },
       tab: { type: "number", description: "your background tab, for learn/save/cancel or run page context; never front" },
@@ -294,6 +295,7 @@ export const PLAYBOOK_TOOLS: Record<string, Tool> = {
       url: { type: "string", description: "public starting page for run" },
       text: { type: "string", description: "generic end text for save, never a parameter value" },
       selector: { type: "string", description: "structural end selector for save" },
+      resultSelector: { type: "string", description: "optional unique structural selector for the live result text; no result value is stored" },
       vars: { type: "object", description: "current parameter values for run; never stored or sent to Jev" },
     },
     run: (a) => playbooksTool(a),

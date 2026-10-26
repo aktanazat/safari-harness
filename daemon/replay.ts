@@ -67,6 +67,14 @@ function varsOf(v: unknown, steps: unknown[]): Record<string, string> {
   return vars as Record<string, string>;
 }
 
+export async function readPlaybookResult(call: Call, tab: unknown, selector: string): Promise<string> {
+  const result = fields(fields(await call("eval", { tab, expression: `(() => { const matches = document.querySelectorAll(${JSON.stringify(selector)}); return {count: matches.length, text: matches.length === 1 ? matches[0].innerText : null}; })()` })).result);
+  if (result.count !== 1) throw new Error("the result selector must match exactly one element");
+  const text = result.text;
+  if (typeof text !== "string" || !text.trim() || text.length > 20_000) throw new Error("the result is empty or too large to return");
+  return text.replace(/\s+/g, " ").trim();
+}
+
 export async function replay(a: Record<string, unknown>, call: Call, clock: Clock = REAL): Promise<Replayed> {
   const rec = loadRecording(a.name);
   let learned: AgentRecording | undefined;
@@ -187,6 +195,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
       const checked = await call("wait", { tab, ...learned.verify, ms: FIND_MS });
       wallOf(checked, tab);
       shown(checked, "the end condition was not verified", "whether the end condition holds is unknown; it was not verified");
+      if (learned.resultSelector) value = await readPlaybookResult(call, tab, learned.resultSelector);
     }
   } catch (e) {
     return failed(e, tab, at, rec.steps[at - 1], quiet, done, call);

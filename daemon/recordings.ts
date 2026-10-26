@@ -54,7 +54,7 @@ function isRecording(v: unknown): v is Recording {
 // opt out of validation by skipping the playbooks tool.
 export type Check = { text?: string; selector?: string };
 export type AgentStep = { kind: string; url: string; target?: Fingerprint; field?: Field; param?: string; key?: string; from?: string; gate?: string; href?: string };
-export type AgentRecording = Recording & { source: "agent"; verified: true; goal: string; params: string[]; before: Check; verify: Check; steps: AgentStep[] };
+export type AgentRecording = Recording & { source: "agent"; verified: true; goal: string; params: string[]; before: Check; verify: Check; resultSelector?: string; steps: AgentStep[] };
 
 export function checkOf(v: unknown): Check {
   if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("a check needs text or selector");
@@ -99,10 +99,11 @@ export function gateOfStep(s: AgentStep): string | undefined {
 export function assertAgentRecording(raw: Recording): asserts raw is AgentRecording {
   const r = raw as Recording & Record<string, unknown>;
   if (r.source !== "agent" || r.verified !== true) throw new Error("the agent run is not verified");
-  if (Object.keys(r).some((k) => !["url", "steps", "startedAt", "source", "verified", "goal", "params", "before", "verify"].includes(k))) throw new Error("the agent recording contains unrecognized data");
+  if (Object.keys(r).some((k) => !["url", "steps", "startedAt", "source", "verified", "goal", "params", "before", "verify", "resultSelector"].includes(k))) throw new Error("the agent recording contains unrecognized data");
   publicLabel(r.goal);
   if (playbookUrl(r.url) !== r.url) throw new Error("agent recordings keep no URL query or fragment");
   for (const c of [checkOf(r.before), checkOf(r.verify)]) for (const text of Object.values(c)) publicLabel(text);
+  if (r.resultSelector !== undefined) publicLabel(r.resultSelector);
   if (!Array.isArray(r.params) || !r.params.every((p) => typeof p === "string" && /^[a-zA-Z][\w-]{0,63}$/.test(p))
     || new Set(r.params).size !== r.params.length || !r.steps.length) throw new Error("the agent run needs steps and named parameters");
   const used = new Set<string>();

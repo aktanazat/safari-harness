@@ -215,7 +215,8 @@ const USAGE = `safari — drive Safari from the terminal
                       --params '["q"]' --before '{"selector":"#search"}'
                                              opt in to your agent's verified actions
   safari playbooks save --tab N --selector '#results[data-ready="yes"]'
-                                             save only after the end check is observed
+                      [--result-selector '#results']
+                                             verify the end state; optionally return result text
   safari playbooks list | cancel --tab N
   safari playbooks run --url https://example.com/ --goal "Search the catalog"
                       --vars '{"q":"shoes"}'
