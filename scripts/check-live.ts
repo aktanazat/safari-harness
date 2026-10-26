@@ -122,6 +122,7 @@ const mainSite = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     return new Response("method not allowed", { status: 405 });
   }
   if (path === "/nope") return new Response(`<!doctype html><title>Not found</title><p>${"The requested local resource does not exist. ".repeat(9)}</p>`, { status: 404, headers: { "content-type": "text/html" } });
+  if (path === "/popup-frame") return new Response(`<a id="frameElsewhere" href="${ELSEWHERE}" target="_blank">Frame elsewhere</a>`, { headers: { "content-type": "text/html" } });
   return new Response(domainPage, { headers: { "content-type": "text/html" } });
 } });
 const otherSite = Bun.serve({ hostname: "localhost", port: 0, fetch: () =>
@@ -198,17 +199,22 @@ const popupWindow = (await ownTabs()).find((t) => t.id === popupTab)?.windowId;
 try {
   await invoke("eval", { tab: popupTab, expression: `(document.body.innerHTML = ${JSON.stringify(`<a id=elsewhere href="${ELSEWHERE}" target=_blank>Elsewhere</a>`)}, 1)` }, true);
   const userFront = (await ownTabs()).find((t) => t.front)?.id;
+  const ops = { tabs: ownTabs, activate: (tab: number) => invoke("activate", { tab }, true) };
   const scripted = await invoke("click", { tab: popupTab, ref: "#elsewhere" }, true) as { newTab?: { id: number; url: string }; next?: string };
   if (scripted.newTab) {
     check("a click that opens a tab reports newTab", scripted.newTab.url === ELSEWHERE, scripted);
     await invoke("close", { tab: scripted.newTab.id }, true);
   } else {
     check("a blocked scripted popup says how to open it", /real_input/.test(scripted.next ?? ""), scripted);
-    const ops = { tabs: ownTabs, activate: (tab: number) => invoke("activate", { tab }, true) };
     const opened = await inFront(popupTab, ops, () => invoke("real_input", { tab: popupTab, do: "click", ref: "#elsewhere" }, true)) as { popup?: { tab: number; url: string } };
     check("a real click that opens a tab reports its popup", opened.popup?.url === ELSEWHERE, opened);
     if (opened.popup) await invoke("close", { tab: opened.popup.tab }, true);
   }
+  await invoke("eval", { tab: popupTab, expression: `(document.body.innerHTML = ${JSON.stringify(`<iframe src="${HOME}popup-frame" style="width:500px;height:300px"></iframe>`)}, 1)` }, true);
+  await invoke("wait", { tab: popupTab, text: "Frame elsewhere", ms: 5000 }, true);
+  const framed = await inFront(popupTab, ops, () => invoke("real_input", { tab: popupTab, do: "click", ref: "#frameElsewhere" }, true)) as { popup?: { tab: number; url: string } };
+  check("a real click inside a frame reports its popup", framed.popup?.url === ELSEWHERE, framed);
+  if (framed.popup) await invoke("close", { tab: framed.popup.tab }, true);
   const activeNow = (await ownTabs()).find((t) => t.front)?.id;
   check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
 } finally {
