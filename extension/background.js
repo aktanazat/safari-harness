@@ -127,7 +127,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "tabIntent", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable"]);
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -761,6 +761,14 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
     return { value: { ok: true } };
   }
   const { frameId, args } = frame ? { frameId: frame, args: domArgs } : frameOf(domArgs);
+  if (domOp === "tabIntent") {
+    const top = await toTab(tabId, domOp, args, timeoutMs);
+    if (top?.value === true) return top;
+    const tokens = await frameTokens(tabId).catch(() => new Map());
+    if (tokens.size === 0) return top;
+    const frames = await Promise.all([...tokens.values()].map((id) => toTab(tabId, domOp, args, timeoutMs, id).catch(() => null)));
+    return { value: frames.some((result) => result?.value === true) };
+  }
   if (domOp === "snapshot") {
     const identify = args?.[0]?.identifyDocument === true;
     const beforeDocument = identify ? await upgradeDocumentId(tabId) : undefined;
