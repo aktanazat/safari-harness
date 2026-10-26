@@ -7,15 +7,18 @@
 // bot checks work as they do for one. A bot check is the user's to clear
 // (handoff), never replay's.
 
+import { createHmac, randomBytes } from "node:crypto";
 import type { Challenge } from "./challenge.ts";
 import type { Clock } from "./downloads.ts";
 import { isFingerprint, lookalikeKey, matchFingerprint, unmatched, type Candidate } from "./fingerprint.ts";
-import { assertAgentRecording, gateOfStep, loadRecording, playbookUrl } from "./recordings.ts";
-import type { AgentRecording, AgentStep } from "./recordings.ts";
+import { assertAgentRecording, gateOfStep, loadRecording, outputOf, playbookUrl, readOnlySearchSubmit } from "./recordings.ts";
+import type { AgentRecording, AgentStep, AppliedInput, PlaybookOutput } from "./recordings.ts";
 
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 type Fields = Record<string, unknown>;
-export type Replayed = { ok: boolean; name: string; steps: number; failedAt?: number; error?: string; tab?: unknown; url?: unknown; title?: unknown; value?: string; challenge?: Challenge; gate?: string; verified?: boolean };
+export type PlaybookRow = Record<string, string>;
+type OutputContext = { origin?: string; applied?: AppliedInput; vars?: Record<string, string>; allowEmpty?: boolean };
+export type Replayed = { ok: boolean; name: string; steps: number; failedAt?: number; error?: string; tab?: unknown; url?: unknown; title?: unknown; value?: string; rows?: PlaybookRow[]; challenge?: Challenge; gate?: string; verified?: boolean };
 
 // How long a step's target may take to show on a page still loading or
 // drawing, and how often it is looked for meanwhile.
@@ -67,12 +70,100 @@ function varsOf(v: unknown, steps: unknown[]): Record<string, string> {
   return vars as Record<string, string>;
 }
 
+export function fingerprintRows(rows: PlaybookRow[], salt: string): string {
+  return createHmac("sha256", salt).update(JSON.stringify(rows)).digest("hex");
+}
+
 export async function readPlaybookResult(call: Call, tab: unknown, selector: string): Promise<string> {
   const result = fields(fields(await call("eval", { tab, expression: `(() => { const matches = document.querySelectorAll(${JSON.stringify(selector)}); return {count: matches.length, text: matches.length === 1 ? matches[0].innerText : null}; })()` })).result);
   if (result.count !== 1) throw new Error("the result selector must match exactly one element");
   const text = result.text;
   if (typeof text !== "string" || !text.trim() || text.length > 20_000) throw new Error("the result is empty or too large to return");
   return text.replace(/\s+/g, " ").trim();
+}
+
+function inputApplied(hash: unknown, applied: AppliedInput, vars: Record<string, string>): boolean {
+  const value = vars[applied.param];
+  if (typeof value !== "string" || typeof hash !== "string" || (hash !== "" && !hash.startsWith("#"))) throw new Error("the applied-input check could not read the current input state");
+  let decoded: string;
+  try { decoded = decodeURIComponent(hash.slice(1)); }
+  catch { throw new Error("the applied-input state is not a valid encoded fragment"); }
+  return decoded === `${applied.prefix ?? ""}${value}`;
+}
+
+// Wait only on an observed input marker, never repeat the action that
+// should have applied it. A quiet end check follows before reading rows.
+export async function waitForAppliedInput(call: Call, tab: unknown, applied: AppliedInput, vars: Record<string, string>, origin: string, clock: Clock = REAL): Promise<void> {
+  const deadline = clock.now() + FIND_MS;
+  for (;;) {
+    const answer = await call("eval", { tab, expression: "({origin: location.origin, hash: location.hash})" });
+    wallOf(answer, tab);
+    const result = fields(fields(answer).result);
+    if (result.origin !== origin) throw new Error("the page left the learned origin before the input was verified");
+    if (inputApplied(result.hash, applied, vars)) return;
+    if (clock.now() >= deadline) throw new Error("the new input was not applied; no result was returned and no action was retried");
+    await clock.sleep(POLL_MS);
+  }
+}
+
+// Public selectors describe structure only. Values are read together from
+// the live DOM and never written back into the recording.
+export async function readPlaybookOutput(call: Call, tab: unknown, output: PlaybookOutput, context: OutputContext = {}): Promise<PlaybookRow[]> {
+  const contract = outputOf(output);
+  const answer = await call("eval", { tab, expression: `(() => {
+    const output = ${JSON.stringify(contract)};
+    try {
+      const elements = Array.from(document.querySelectorAll(output.rows));
+      if ((!elements.length && !${context.allowEmpty === true}) || elements.length > 200) return {error: "the output selector must match between 1 and 200 rows"};
+      const visible = el => el instanceof HTMLElement && el.getClientRects().length > 0 &&
+        !el.closest('[hidden], [aria-hidden="true"], [inert]') && !["hidden", "collapse"].includes(getComputedStyle(el).visibility);
+      const selected = new Set(elements);
+      const rows = [];
+      let size = 0;
+      for (const row of elements) {
+        if (!visible(row) || row.closest('[aria-busy="true"]')) return {error: "an output row is hidden or still loading"};
+        for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+          if (selected.has(parent)) return {error: "the output selector matches nested rows"};
+        }
+        const values = [];
+        for (const [name, selector] of Object.entries(output.fields)) {
+          const matches = selector === ":scope" ? [row] : Array.from(row.querySelectorAll(selector));
+          if (matches.length !== 1) return {error: "each output field must match exactly one element in every row"};
+          const el = matches[0];
+          if (!visible(el) || el.closest("input, textarea, select, option, script, style, template, iframe, object, embed") ||
+            typeof el.innerText !== "string") return {error: "each output field must be visible page text, not a form value or hidden content"};
+          const text = el.innerText.replace(/\\s+/g, " ").trim();
+          if (text.length > 2000) return {error: "an output field exceeds 2000 characters"};
+          size += text.length;
+          if (size > 100000) return {error: "the output exceeds 100000 characters"};
+          values.push([name, text]);
+        }
+        if (values.every(([, text]) => !text)) return {error: "an output row has no visible text"};
+        rows.push(Object.fromEntries(values));
+      }
+      return {rows, origin: location.origin, hash: ${context.applied ? "location.hash" : "null"}};
+    } catch {
+      return {error: "the output contains an invalid or unusable CSS selector"};
+    }
+  })()` });
+  wallOf(answer, tab);
+  const result = fields(fields(answer).result);
+  if (typeof result.error === "string") throw new Error(result.error);
+  if (context.origin !== undefined && result.origin !== context.origin) throw new Error("the output page left the learned origin");
+  if (context.applied && !inputApplied(result.hash, context.applied, context.vars ?? {})) throw new Error("the page no longer shows the supplied input; no result was returned");
+  if (!Array.isArray(result.rows) || (!result.rows.length && !context.allowEmpty) || result.rows.length > 200) throw new Error("the output did not return between 1 and 200 typed rows");
+  const names = Object.keys(contract.fields);
+  let size = 0;
+  const rows: PlaybookRow[] = [];
+  for (const value of result.rows) {
+    const row = fields(value);
+    if (Object.keys(row).length !== names.length || names.some((name) => !Object.hasOwn(row, name)
+      || typeof row[name] !== "string" || row[name].length > 2000) || names.every((name) => !String(row[name]).trim())) throw new Error("the live output does not match its declared fields");
+    size += Object.values(row).reduce<number>((total, text) => total + String(text).length, 0);
+    if (size > 100_000) throw new Error("the output exceeds 100000 characters");
+    rows.push(row as PlaybookRow);
+  }
+  return rows;
 }
 
 export async function replay(a: Record<string, unknown>, call: Call, clock: Clock = REAL): Promise<Replayed> {
@@ -90,6 +181,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
   let at = 0; // the step running; 0 while the first page opens
   let quiet: number | undefined; // the latest step whose action the page ignored
   let value: string | undefined;
+  let rows: PlaybookRow[] | undefined;
 
   // The ref of the one element a step's fingerprint names on the page now.
   const find = async (s: Fields): Promise<unknown> => {
@@ -131,13 +223,11 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
     const target = async () => {
       const ref = await find(s);
       if (learned) {
-        // A safe-looking control can become a submit button, secret field,
-        // or different link without changing its accessible name.
         if (!/^\d+$/.test(String(ref))) throw new Error("the live target is not a top-document ref");
         const selector = `[data-sh-ref="${String(ref)}"]`;
-        const live = fields(fields(await call("eval", { tab, expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? {type: el.type || el.localName, autocomplete: el.getAttribute("autocomplete") || "", name: el.getAttribute("name") || "", submit: el.type === "submit", href: el.localName === "a" ? el.href : null} : null; })()` })).result);
+        const live = fields(fields(await call("eval", { tab, expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; const form = el.type === "submit" ? el.form : null; return {type: el.type || el.localName, autocomplete: el.getAttribute("autocomplete") || "", name: el.getAttribute("name") || "", submit: el.type === "submit", searchForm: form ? {method: el.hasAttribute("formmethod") ? el.formMethod : form.method, action: el.hasAttribute("formaction") ? el.formAction : form.action, inputs: Array.from(form.elements).filter(input => input.localName === "input" && ["text", "search"].includes(input.type)).map(input => ({name: input.name, id: input.id, type: input.type}))} : null, href: el.localName === "a" ? el.href : null}; })()` })).result);
         if (typeof live.type !== "string") throw new Error("the live control disappeared");
-        if (live.submit === true) throw new Gated("send or submit");
+        if (live.submit === true && !readOnlySearchSubmit(String(fields(s.target).name ?? ""), live.searchForm, learned.steps.slice(0, at - 1), learned.url)) throw new Gated("send or submit");
         if ((s.href ?? null) !== live.href) throw new Error("the link destination changed; no action was replayed");
         if (s.kind === "type" || s.kind === "select") {
           const original = fields(s.field);
@@ -186,16 +276,24 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
       wallOf(before, tab);
       shown(before, "the start condition is missing; no steps were replayed", "whether the start condition holds is unknown; no steps were replayed");
     }
+    const salt = learned?.applied && learned.output ? randomBytes(16).toString("hex") : undefined;
+    const baseline = salt && learned?.output ? fingerprintRows(await readPlaybookOutput(call, tab, learned.output, { allowEmpty: true }), salt) : undefined;
     for (const [i, s] of rec.steps.entries()) {
       at = i + 1;
       await step(fields(s));
     }
     if (learned) {
       at = rec.steps.length + 1;
-      const checked = await call("wait", { tab, ...learned.verify, ms: FIND_MS });
+      const origin = new URL(learned.url).origin;
+      if (learned.applied) await waitForAppliedInput(call, tab, learned.applied, vars, origin, clock);
+      const checked = await call("wait", { tab, ...learned.verify, ...(learned.applied ? { quiet: true } : {}), ms: FIND_MS });
       wallOf(checked, tab);
       shown(checked, "the end condition was not verified", "whether the end condition holds is unknown; it was not verified");
       if (learned.resultSelector) value = await readPlaybookResult(call, tab, learned.resultSelector);
+      if (learned.output) {
+        rows = await readPlaybookOutput(call, tab, learned.output, { origin, applied: learned.applied, vars });
+        if (salt && fingerprintRows(rows, salt) === baseline) throw new Error("the result rows did not change after the new search; no result was returned");
+      }
     }
   } catch (e) {
     return failed(e, tab, at, rec.steps[at - 1], quiet, done, call);
@@ -203,7 +301,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
   // The tab it opened is done with; a close that fails leaves it to close
   // with the caller's other tabs.
   if (!given) await call("close", { tab }).catch(() => {});
-  return { ok: true, ...done, ...(value === undefined ? {} : { value }), ...(learned ? { verified: true } : {}) };
+  return { ok: true, ...done, ...(value === undefined ? {} : { value }), ...(rows === undefined ? {} : { rows }), ...(learned ? { verified: true } : {}) };
 }
 
 // A wait the page gave no answer by its end (unanswered: wait in tools.ts)

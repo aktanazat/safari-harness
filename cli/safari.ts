@@ -184,6 +184,13 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari do "<task>" [--tab N] [--steps 30] [--model m]
                                              run the agent loop (local model); prints its session
+  safari mint "<task>" --url <url> --example '{"query":"sample"}'
+                      [--from <name>] [--steps 30] [--model m]
+                                             learn one live read-only example; return its
+                                             saved verified name and checked result
+  safari mint start "<task>" --url <url> --example '<json>'
+                                             start the same work in a durable session
+  safari mint get|cancel <id>                read or stop that authoring session
   safari session list | show <id>            agent sessions, newest first; one's transcript
   safari session resume <id> ["<prompt>"]    go on with a session
   safari session steer <id> "<text>"         tell a running session now (cuts in)
@@ -213,10 +220,13 @@ const USAGE = `safari — drive Safari from the terminal
                                              exits 1 when a step fails
   safari playbooks learn --tab N --goal "Search the catalog"
                       --params '["q"]' --before '{"selector":"#search"}'
-                                             opt in to your agent's verified actions
+                      [--output '{"rows":"tr.item","fields":{"title":".title"}}']
+                                             opt in; capture starting rows for searches
   safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+                      [--output '{"rows":"tr.item","fields":{"title":".title"}}']
+                      [--applied '{"param":"q","in":"hash","prefix":"search/"}']
                       [--result-selector '#results']
-                                             verify the end state; optionally return result text
+                                             verify new results; optionally return rows
   safari playbooks list | cancel --tab N
   safari playbooks run --url https://example.com/ --goal "Search the catalog"
                       --vars '{"q":"shoes"}'
@@ -501,10 +511,58 @@ function showEvent(ev: AgentEvent) {
 
 async function runAndReport(rec: SessionRecord, argv: string[]) {
   const { runSession } = await import("../daemon/sessions.ts");
-  const done = await runSession(rec, { apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: Number(flag("steps", argv) ?? 30), onEvent: showEvent });
+  const steps = Number(flag("steps", argv) ?? 30);
+  if (rec.mint && (!Number.isInteger(steps) || steps < 1)) fail("steps must be a positive whole number", 2);
+  const done = await runSession(rec, {
+    apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: steps,
+    onEvent: rec.mint ? () => {} : showEvent,
+  });
+  if (rec.mint) {
+    if (done.status === "done" && done.mint?.result) return answer({ ...done.mint.result, session: done.id });
+    return answer({ ok: false, session: done.id, status: done.status, error: done.mint?.failure ?? done.answer ?? "no verified tool was saved" });
+  }
   if (done.status !== "done") console.error(`session ${done.id} ${done.status}; go on with: safari session resume ${done.id} "<prompt>"`);
   console.log(done.answer ?? "");
   if (done.status !== "done") process.exit(1);
+}
+
+async function mintCommand(argv: string[], host: string) {
+  const flags = ["url", "example", "from", "steps", "model", "host", "json", "quiet"];
+  for (const [i, arg] of argv.entries()) {
+    if (arg.startsWith("--") && !isFlagValue(i, argv) && !flags.includes(arg.slice(2).split("=")[0])) fail(`mint takes no ${arg.split("=")[0]}; see: safari mint --help`, 2);
+  }
+  if (host !== "local") fail("mint needs the owner's Safari on this Mac; use --host local", 2);
+  const pos = argv.filter((arg, i) => !arg.startsWith("--") && !isFlagValue(i, argv));
+  if (pos[0] === "get" || pos[0] === "cancel") {
+    if (pos.length !== 2) fail("usage: safari mint get|cancel <id>", 2);
+    const { MINT_TOOLS } = await import("../daemon/mint.ts");
+    return answer(await MINT_TOOLS.mint.run({ do: pos[0], id: pos[1] }));
+  }
+  const background = pos[0] === "start";
+  if (background) pos.shift();
+  let url = flag("url", argv);
+  if (url === undefined) {
+    const at = pos.findIndex((word) => /^https?:\/\//.test(word));
+    if (at >= 0) [url] = pos.splice(at, 1);
+  }
+  const task = pos.join(" ").trim();
+  const sample = flag("example", argv);
+  if (!task || !url || sample === undefined) fail("usage: safari mint <task> --url <url> --example '<json>' [--from <name>]", 2);
+  let example: unknown;
+  try { example = JSON.parse(sample); }
+  catch { fail("example must be a JSON object mapping public parameter names to text", 2); }
+  const { MINT_TOOLS, mintRequest } = await import("../daemon/mint.ts");
+  const request = mintRequest(url, example, flag("from", argv));
+  const steps = Number(flag("steps", argv) ?? 30);
+  if (!Number.isInteger(steps) || steps < 1) fail("steps must be a positive whole number", 2);
+  if (background) return answer(await MINT_TOOLS.mint.run({ do: "start", task, ...request, steps, model: flag("model", argv) }));
+  const { newSession } = await import("../daemon/sessions.ts");
+  const rec = await newSession(task, {
+    host, model: flag("model", argv) ?? process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
+    baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1", mint: request,
+  });
+  console.error(`session ${rec.id}; stop it with: safari session stop ${rec.id}`);
+  return runAndReport(rec, argv);
 }
 
 async function sessionCommand(argv: string[]) {
@@ -515,7 +573,10 @@ async function sessionCommand(argv: string[]) {
     case undefined:
     case "list": {
       const recs = await listSessionRecords();
-      if (json) return print(recs.map(({ messages, ...r }) => ({ ...r, status: statusOf({ ...r, messages }), steps: messages.filter((m) => m.role === "assistant").length })));
+      if (json) return print(recs.map(({ messages, mint, ...r }) => ({
+        ...r, ...(mint ? { answer: undefined, kind: "mint", ...(mint.result ? { saved: mint.result.name, revision: mint.result.revision } : {}) } : {}),
+        status: statusOf({ ...r, messages }), steps: messages.filter((m) => m.role === "assistant").length,
+      })));
       if (!recs.length) return console.log("no sessions yet; start one with: safari do \"<task>\"");
       for (const r of recs) console.log(`${r.id}  ${statusOf(r).padEnd(12)} ${r.updated.slice(0, 16).replace("T", " ")}  ${r.task.replace(/\s+/g, " ").slice(0, 70)}`);
       return;
@@ -525,6 +586,7 @@ async function sessionCommand(argv: string[]) {
     case "resume": {
       const rec = await loadSession(id ?? "");
       if (isRunning(rec)) fail(`session ${rec.id} is running; talk to it with: safari session steer ${rec.id} "<text>"`);
+      if (rec.mint && (rec.mint.result || rec.mint.failure || rec.mint.pendingAction)) fail(`this authoring session cannot be replayed or repaired; review its result and start a new safari mint request${rec.mint.result ? ` with --from ${rec.mint.result.name}` : ""}`, 2);
       const last = rec.messages.at(-1);
       if (text) rec.messages.push({ role: "user", content: text });
       else if (last?.role === "assistant" && !last.tool_calls?.length) fail(`session ${rec.id} has answered; give it a prompt: safari session resume ${rec.id} "<prompt>"`, 2);
@@ -852,6 +914,8 @@ async function main() {
     console.log(`watch, pause, or stop them: ${daemonHttp()}/agents`);
     return;
   }
+
+  if (cmd === "mint") return mintCommand(rest, host);
 
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");

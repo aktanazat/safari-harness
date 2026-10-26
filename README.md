@@ -552,47 +552,61 @@ forget removes local text, summaries and notes. Forget invalidates unfinished
 saves and summaries. Prior chats, provider copies and OS backups are outside
 that local deletion boundary.
 
-### Verified agent playbooks
+### Private website tools
 
-An agent can opt in before a task on its own background tab. It declares a
-generic goal, parameter names and a start check. Only successful supported
-actions become steps. An observed end check is required before storage.
+`safari mint` uses a configured tool-calling model to complete one read-only
+example in a separate Safari tab. It saves a reusable tool only after checking
+the live result, and returns the saved name and revision rather than the
+model's claim. Without a provider, it fails without publishing a tool. Set
+`SAFARI_MODEL_BASE` and `SAFARI_MODEL`; set `SAFARI_MODEL_KEY` if required.
 
 ```
-safari playbooks learn --tab N --goal "Search the catalog" --params '["q"]' --before '{"selector":"#search"}'
-# Do the authorized task with type/click/select/press/goto.
-safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+safari mint "search messages and return subject and date" \
+  --url https://mail.google.com/mail/u/0/ --example '{"query":"newer_than:1d"}'
+safari playbooks run --name NAME --vars '{"query":"newer_than:2d"}' --json
+safari mint start "search messages and return subject and date" \
+  --url https://mail.google.com/mail/u/0/ --example '{"query":"newer_than:1d"}'
+safari mint get SESSION_ID
+safari mint cancel SESSION_ID
+```
+
+The named run reads the current page and returns checked text or rows without
+calling a model. Input-driven rows currently need one public parameter, an
+exact observed URL-fragment marker for that input, and rows that differ from
+the page before the search. An unchanged result refuses verification, even
+when two searches legitimately return identical rows. Other search patterns
+are not published as verified structured tools yet. An empty field in an
+otherwise meaningful row remains an empty string.
+
+To teach a tool without `mint`, opt in on an agent-owned background tab,
+perform the authorized actions, and save with a live end check. `bindings`
+maps a public parameter to the observed control name when they differ.
+
+```
+safari playbooks learn --tab N --goal "Search mail" --params '["query"]' \
+  --bindings '{"query":"q"}' --before '{"selector":"input[name=q]"}' \
+  --output '{"rows":".ae4.UI.aZ6 tr.zA","fields":{"subject":"span.bog","date":"td.xW span[title]"}}'
+# Type the example and click the observed search control.
+safari playbooks save --tab N --selector '.ae4.UI.aZ6 tr.zA' \
+  --output '{"rows":".ae4.UI.aZ6 tr.zA","fields":{"subject":"span.bog","date":"td.xW span[title]"}}' \
+  --applied '{"param":"query","in":"hash","prefix":"search/"}' \
+  --example '{"query":"newer_than:1d"}'
 safari playbooks list
-safari playbooks run --url https://example.com/ --goal "Search the catalog" --vars '{"q":"shoes"}'
 ```
 
-The existing recordings folder holds these playbooks. Input values, page
-titles, surrounding page text and URL query/fragment values are not kept.
-Use only generic control labels, public paths and structural checks.
-Private or secret-bearing tasks are not suitable for learning.
+For an explicit change, pass `--from NAME` to `mint` or `from` to
+`playbooks learn`. A fresh passing example creates a new revision and keeps
+older names available. `playbooks restore --name PRIOR --vars ...` checks a
+prior revision for that call only; it does not change the current default.
 
-Fixed validation filters candidates by the exact page and parameter names.
-The installed `jev` client chooses one or abstains. Parameter values never
-go to Jev. A choice is not approval: replay checks the start and end, finds
-each control again, and stops on drift, ambiguity, changed fields, bot
-checks and send/spend/delete/stop/account/sign-in boundaries. It leaves a
-stopped tab open for manual review. There is no approval flag bypass.
-
-When the task already names a learned playbook, use
-`safari replay <name> --vars '{"q":"shoes"}' --json`. This skips Jev's
-selection, not the recording validation, live checks, end check or approval
-gates. Check `ok: true` and `verified: true` before calling the learned task
-complete. An ordinary toolbar recording does not have that learned end check.
-
-Fewer outer tool requests are not proof of faster completion, lower cost or
-lower memory use. Include selection, replay, final checks and cleanup when
-comparing workflows.
-
-`safari playbooks cancel --tab N` discards an unfinished learn session.
-Learning expires after 30 minutes. Arbitrary JS, real input, frames, shadow
-controls, append typing and helpers that hide their actions cannot be
-learned. Use the normal agent when the tool abstains or stops. No browser
-listener, automatic retry, routine or background learning is installed.
+The reusable recording holds no input values, page text, URL query or
+fragment. The private learning session keeps a salted digest of the starting
+rows, not their text. The private authoring session retains its example and
+transcript in owner-only files. Replay checks the live controls, the input
+marker and the changed result rows again. A changed page, bot check, missing
+input marker, secret or owner-approval boundary stops without an automatic
+repair or blind retry. Only a named run skips model selection; goal-based
+matching still asks Jev to choose or abstain.
 
 
 ### MCP

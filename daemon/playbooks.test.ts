@@ -25,23 +25,25 @@ const goal = "Search the catalog";
 const field = { type: "search", autocomplete: "off", name: "q", id: "query", label: "Search" };
 const fp = (role: string, tag: string, name = "Search") => ({ role, tag, name, near: "", path: "", index: 0, count: 1 });
 const rec = (steps: unknown[] = [{ kind: "type", url, field, param: "q", target: fp("searchbox", "input") }, { kind: "click", url, target: fp("button", "button") }]) => ({ url, source: "agent", verified: true, goal, params: ["q"], before: { selector: "#search" }, verify: { selector: "#results" }, steps });
-function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; before?: boolean; after?: boolean; failedAction?: boolean; challenge?: boolean; resultCount?: number } = {}) {
-  let typed = ""; let clicked = 0;
+function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; searchForm?: { method: string; action: string; inputs: { name: string; id: string; type: string }[] }; before?: boolean; after?: boolean; failedAction?: boolean; challenge?: boolean; resultCount?: number; rows?: { before: string; after: string } } = {}) {
+  let typed = ""; let clicked = 0; let searched = false;
   const calls: string[] = []; const modelCalls: string[] = [];
   const call = async (tool: string, a: Record<string, unknown>, model = false): Promise<unknown> => {
     calls.push(tool); if (model) modelCalls.push(tool);
     switch (tool) {
-      case "open": case "goto": return { id: 7, url, ...(options.challenge ? { challenge: { kind: "captcha", where: "page" } } : {}) };
+      case "open": case "goto": searched = false; return { id: 7, url, ...(options.challenge ? { challenge: { kind: "captcha", where: "page" } } : {}) };
       case "info": return { url };
       case "real_site": return undefined;
       case "news": return {};
       case "snapshot": return { url, snapshot: '[1] searchbox "Search"\n[2] button "Search"' };
       case "eval": {
         const expression = String(a.expression);
+        if (options.rows && expression.includes("const output =")) return { ok: true, result: { rows: [{ subject: searched ? options.rows.after : options.rows.before }], origin: new URL(url).origin, hash: searched ? `#search/${typed}` : "" } };
+        if (expression.includes("({origin: location.origin, hash: location.hash})")) return { ok: true, result: { origin: new URL(url).origin, hash: searched ? `#search/${typed}` : "" } };
         if (expression.includes("document.querySelectorAll(")) return { ok: true, result: { count: options.resultCount ?? 1, text: `Found ${typed}` } };
         const input = expression.includes('ref=\\"1\\"') || expression.includes('ref="1"');
         const f = input ? { ...field, ...(options.secret ? { type: "password" } : {}) } : { type: options.submit ? "submit" : "button", autocomplete: "", name: "", id: "go", label: "Search" };
-        return { ok: true, result: { ref: input ? "1" : "2", role: input ? "searchbox" : "button", name: expression.includes("getRootNode") ? "Search" : f.name, tag: input ? "input" : "button", field: f, type: f.type, autocomplete: f.autocomplete, submit: options.submit && !input, href: null } };
+        return { ok: true, result: { ref: input ? "1" : "2", role: input ? "searchbox" : "button", name: expression.includes("getRootNode") ? "Search" : f.name, tag: input ? "input" : "button", field: f, type: f.type, autocomplete: f.autocomplete, submit: options.submit && !input, searchForm: options.searchForm ?? null, href: null } };
       }
       case "lookalikes": {
         const target = a.target as { role: string; tag: string; name: string };
@@ -50,7 +52,7 @@ function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boole
         return options.ambiguous ? [c, { ...c, ref: "3" }] : [c];
       }
       case "type": typed = String(a.text); return { ok: !options.failedAction, kept: !options.failedAction };
-      case "click": clicked++; return { ok: true, effect: { added: 1 } };
+      case "click": clicked++; searched = true; return { ok: true, effect: { added: 1 } };
       case "wait": return { found: a.selector === "#search" ? options.before !== false : options.after !== false };
       case "close": return { ok: true };
       default: throw new Error(`fixture does not implement ${tool}`);
@@ -163,6 +165,39 @@ test("a button that becomes a submit control stops at an owner gate", async () =
   const p = fixture({ submit: true }); const name = saveRecording({ ...rec([{ kind: "click", url, target: fp("button", "button") }]), params: [] });
   expect(await replay({ name }, p.call)).toMatchObject({ ok: false, gate: "send or submit" });
   expect(p.state().clicked).toBe(0);
+});
+test("a bound GET search submit replays, but changing the form to POST stops before clicking", async () => {
+  const options = { submit: true, searchForm: { method: "get", action: url, inputs: [{ name: "q", id: "query", type: "search" }] } };
+  const p = fixture(options);
+  const saved = await learn();
+  expect(loadRecording(saved.name).steps[1]).not.toHaveProperty("gate");
+  expect(await replay({ name: saved.name, vars: { q: "pears" } }, p.call)).toMatchObject({ ok: true, verified: true });
+  const clicked = p.state().clicked;
+  options.searchForm.method = "post";
+  expect(await replay({ name: saved.name, vars: { q: "pears" } }, p.call)).toMatchObject({ ok: false, failedAt: 2, gate: "send or submit" });
+  expect(p.state().clicked).toBe(clicked);
+});
+
+test("a delayed search cannot publish or return the previous result rows", async () => {
+  const options = { rows: { before: "old result", after: "old result" }, submit: true, searchForm: { method: "get", action: url, inputs: [{ name: "q", id: "query", type: "search" }] } };
+  const p = fixture(options);
+  const output = { rows: ".item", fields: { subject: ".subject" } };
+  const applied = { param: "q", in: "hash", prefix: "search/" };
+  await invoke("open", { url, background: true }, true);
+  await invoke("playbooks", { do: "learn", tab: 7, goal, params: ["q"], before: { selector: "#search" }, output }, true);
+  await invoke("type", { tab: 7, ref: 1, text: "pears" }, true);
+  await invoke("click", { tab: 7, ref: 2 }, true);
+  const save = { do: "save", tab: 7, selector: "#results", output, applied, example: { q: "pears" } };
+  await expect(invoke("playbooks", save, true)).rejects.toThrow("result rows did not change");
+  expect(await playbooksTool({ do: "list" })).toEqual([]);
+  options.rows.after = "new result";
+  const saved = await invoke("playbooks", save, true) as { name: string };
+  expect(readFileSync(join(home, "recordings", `${saved.name}.json`), "utf8")).not.toContain("new result");
+  expect(await replay({ name: saved.name, vars: { q: "apples" } }, p.call)).toMatchObject({ ok: true, verified: true, rows: [{ subject: "new result" }] });
+  options.rows.after = "old result";
+  const stale = await replay({ name: saved.name, vars: { q: "plums" } }, p.call);
+  expect(stale).toMatchObject({ ok: false, error: expect.stringContaining("result rows did not change") });
+  expect(stale).not.toHaveProperty("verified");
 });
 test("a missing start condition leaves all actions untouched", async () => {
   const p = fixture({ before: false }); const name = saveRecording(rec());

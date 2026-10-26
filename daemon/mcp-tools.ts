@@ -71,7 +71,11 @@ const SESSION_NOTES: Record<string, string> = {
 // (01a0f145, 09-30).
 function published(t: Tool) {
   const schema = inputSchema(t);
-  return t.required?.includes("do") ? { ...schema, required: t.required.filter((k) => k !== "do") } : schema;
+  const entries = Object.entries(schema.properties);
+  const properties = entries.some(([, param]) => param.description === "")
+    ? Object.fromEntries(entries.map(([name, param]) => [name, param.description === "" ? { ...param, description: undefined } : param]))
+    : schema.properties;
+  return { ...schema, properties, ...(t.required?.includes("do") ? { required: t.required.filter((k) => k !== "do") } : {}) };
 }
 
 // Caller tools run in the server's process, not in the daemon: it inherits

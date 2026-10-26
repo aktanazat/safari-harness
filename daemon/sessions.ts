@@ -4,10 +4,11 @@
 // messages from its inbox folder between steps; each message is a file of
 // its own, written whole and then renamed in, so none is lost or half read.
 
-import { mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { firstMessages, runAgent, type AgentEvent, type AgentStatus, type ChatMsg, type Control } from "./agent.ts";
+import { firstMessages, runAgent, type AgentConfig, type AgentEvent, type AgentStatus, type ChatMsg, type Control } from "./agent.ts";
+import { mintMessages, runMintAgent, type MintRequest, type MintState } from "./mint.ts";
 
 export const SESSIONS_DIR = join(homedir(), ".local/share/safari-harness/sessions");
 
@@ -23,6 +24,7 @@ export type SessionRecord = {
   baseUrl: string;
   answer?: string;
   messages: ChatMsg[];
+  mint?: MintState;
 };
 
 const recordPath = (id: string) => join(SESSIONS_DIR, `${id}.json`);
@@ -44,9 +46,11 @@ export async function loadSession(id: string): Promise<SessionRecord> {
 
 async function save(rec: SessionRecord): Promise<void> {
   rec.updated = new Date().toISOString();
-  await mkdir(SESSIONS_DIR, { recursive: true });
+  await mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  await chmod(SESSIONS_DIR, 0o700);
   const tmp = `${recordPath(rec.id)}.${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(rec));
+  await writeFile(tmp, JSON.stringify(rec), { mode: 0o600 });
+  await chmod(tmp, 0o600);
   await rename(tmp, recordPath(rec.id));
 }
 
@@ -73,9 +77,14 @@ export async function listSessionRecords(): Promise<SessionRecord[]> {
   return recs.filter((r): r is SessionRecord => r !== null).sort((a, b) => b.updated.localeCompare(a.updated));
 }
 
-export async function newSession(task: string, opts: { tab?: number; host: string; model: string; baseUrl: string }): Promise<SessionRecord> {
+export async function newSession(task: string, opts: { tab?: number; host: string; model: string; baseUrl: string; mint?: MintRequest }): Promise<SessionRecord> {
   const now = new Date().toISOString();
-  const rec: SessionRecord = { id: crypto.randomUUID().replaceAll("-", "").slice(0, 8), task, created: now, updated: now, status: "running", host: opts.host, model: opts.model, baseUrl: opts.baseUrl, messages: firstMessages(task, opts.tab) };
+  const rec: SessionRecord = {
+    id: crypto.randomUUID().replaceAll("-", "").slice(0, 8), task, created: now, updated: now, status: "running",
+    host: opts.host, model: opts.model, baseUrl: opts.baseUrl,
+    messages: opts.mint ? mintMessages(task, opts.mint) : firstMessages(task, opts.tab),
+    ...(opts.mint ? { mint: { ...opts.mint } } : {}),
+  };
   await save(rec);
   return rec;
 }
@@ -86,9 +95,10 @@ export async function sendControl(id: string, c: Control): Promise<void> {
   const rec = await loadSession(id);
   if (!isRunning(rec)) throw new Error(`session ${id} is not running (${statusOf(rec)}); go on with: safari session resume ${id} "<prompt>"`);
   const dir = inboxOf(id);
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
   const name = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-  await writeFile(join(dir, `.${name}`), JSON.stringify(c));
+  await writeFile(join(dir, `.${name}`), JSON.stringify(c), { mode: 0o600 });
   await rename(join(dir, `.${name}`), join(dir, `${name}.json`));
 }
 
@@ -142,6 +152,7 @@ export async function runSession(rec: SessionRecord, opts: {
   apiKey?: string;
   maxSteps: number;
   onEvent: (ev: AgentEvent) => void;
+  onStart?: () => void;
   prompt?: string;
   shouldStop?: () => Promise<boolean>;
   maxTimeMs?: number;
@@ -164,7 +175,8 @@ export async function runSession(rec: SessionRecord, opts: {
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
     try {
-      const result = await runAgent(rec.messages, {
+      opts.onStart?.();
+      const cfg: AgentConfig = {
         baseUrl: rec.baseUrl,
         model: rec.model,
         apiKey: opts.apiKey,
@@ -176,7 +188,8 @@ export async function runSession(rec: SessionRecord, opts: {
           return controls;
         },
         save: () => save(rec),
-      });
+      };
+      const result = rec.mint ? await runMintAgent(rec.messages, cfg, rec.mint) : await runAgent(rec.messages, cfg);
       rec.status = result.status;
       rec.answer = result.answer;
     } catch (e) {

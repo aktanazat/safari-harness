@@ -1,18 +1,19 @@
 // Only opted-in agent calls on one named tab are learned. There is no
 // browser listener: the caller observes its own invoke calls, not the user.
 // The daemon and extension need no restart to try this caller-side tool.
+import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { alive } from "./owner.ts";
 import { dataFile } from "./phone.ts";
 import { agentOf, rpc } from "./rpc.ts";
-import { assertAgentRecording, checkOf, gateOfStep, listRecordings, loadRecording, playbookUrl, publicLabel, saveRecording } from "./recordings.ts";
-import type { AgentRecording, AgentStep, Check } from "./recordings.ts";
-import { readPlaybookResult, replay } from "./replay.ts";
+import { appliedOf, assertAgentRecording, checkOf, gateOfStep, listPlaybooks, loadPlaybook, outputOf, playbookUrl, publicLabel, readOnlySearchSubmit, saveRecording } from "./recordings.ts";
+import type { AgentRecording, AgentStep, Check, PlaybookOutput } from "./recordings.ts";
+import { fingerprintRows, readPlaybookOutput, readPlaybookResult, replay, waitForAppliedInput } from "./replay.ts";
 import type { Tool } from "./tools.ts";
 
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
-type Learning = { tab: number; url: string; goal: string; params: string[]; before: Check; startedAt: number; steps: AgentStep[]; failed?: string };
+type Learning = { tab: number; url: string; goal: string; params: string[]; bindings?: Record<string, string>; from?: string; before: Check; baseline?: { output: PlaybookOutput; salt: string; digest: string }; startedAt: number; steps: AgentStep[]; failed?: string };
 type Choice = { code: number; stdout: string; stderr: string };
 type Judge = (criteria: Record<string, string>, state: { goal: string; origin: string; params: string[] }) => Promise<Choice>;
 const fields = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -112,7 +113,12 @@ const CONTROL = String.raw`(() => {
   }
   if (!name) name = (el.getAttribute('title') || '').trim();
   const field = {type:el.type || el.localName, autocomplete:el.getAttribute('autocomplete') || '', name:el.getAttribute('name') || '', id:el.id || '', label:name};
-  return {ref:el.getAttribute('data-sh-ref'), role, name, tag:el.localName, field, submit:el.type === 'submit', href:el.tagName === 'A' ? el.href : null};
+  const form = el.type === 'submit' ? el.form : null;
+  const searchForm = form ? {method: el.hasAttribute('formmethod') ? el.formMethod : form.method,
+    action: el.hasAttribute('formaction') ? el.formAction : form.action,
+    inputs: Array.from(form.elements).filter(input => input.localName === 'input' && ['text', 'search'].includes(input.type))
+      .map(input => ({name: input.name, id: input.id, type: input.type}))} : null;
+  return {ref:el.getAttribute('data-sh-ref'), role, name, tag:el.localName, field, submit:el.type === 'submit', searchForm, href:el.tagName === 'A' ? el.href : null};
 })()`;
 
 async function captured(tool: string, a: Record<string, unknown>, session: Learning, call: Call): Promise<AgentStep> {
@@ -135,14 +141,17 @@ async function captured(tool: string, a: Record<string, unknown>, session: Learn
   if (tool === "type" || tool === "select") {
     const f = fields(c.field);
     s.field = { type: String(f.type), autocomplete: String(f.autocomplete), name: String(f.name), id: String(f.id), label: name };
-    s.param = [s.field.name, s.field.id, s.field.label].find((key) => session.params.includes(key));
-    if (!s.param) throw new Error("declare the field's parameter name before learning");
+    const identifiers = [s.field.name, s.field.id, s.field.label];
+    const matched = session.params.filter((param) => identifiers.includes(session.bindings && Object.hasOwn(session.bindings, param) ? session.bindings[param] : param));
+    if (matched.length !== 1) throw new Error("bind exactly one declared public parameter to this control's name, id, or label before learning");
+    s.param = matched[0];
+    if (session.steps.some((step) => step.param === s.param)) throw new Error("each public parameter can be bound to only one learned input action");
     if (a.secret || a.text === "{{code}}") s.gate = "sign-in or secret";
     const value = tool === "type" ? a.text : a.option;
     if (typeof value === "string" && value.length && JSON.stringify({ ...s, goal: session.goal, before: session.before }).includes(value)) throw new Error("an input value appeared in the learned labels; use generic labels");
   }
   if (tool === "press") s.key = typeof a.key === "string" ? a.key : undefined;
-  if (c.submit === true) s.gate = "send or submit";
+  if (c.submit === true && !readOnlySearchSubmit(name, c.searchForm, session.steps, session.url)) s.gate = "send or submit";
   if (typeof c.href === "string") {
     const destination = playbookUrl(c.href);
     if (new URL(destination).origin !== new URL(session.url).origin || c.href !== destination) throw new Error("the link carries private values or leaves the learned origin");
@@ -151,6 +160,24 @@ async function captured(tool: string, a: Record<string, unknown>, session: Learn
   }
   s.gate ??= gateOfStep(s);
   return s;
+}
+
+// Autonomous authoring must inspect the exact next action, not treat the
+// model's claimed intent as authority. Ordinary learning remains opt-in to
+// an already authorized task; this stricter preflight is read-only.
+export async function inspectLearnedAction(tool: string, a: Record<string, unknown>, call: Call = rpc): Promise<AgentStep> {
+  const { path } = await scope(a.tab);
+  return locked(path, async () => {
+    const session = read<Learning>(path);
+    if (!session || session.tab !== a.tab) throw new Error("the action needs this tab's opted-in learn session");
+    if (session.failed || Date.now() - session.startedAt > MAX_AGE) throw new Error(session.failed ?? "learning expired");
+    if (!["click", "type", "select", "press", "goto"].includes(tool)) throw new Error("autonomous authoring cannot learn this action");
+    if (["click", "type"].includes(tool) && typeof await call("real_site", { tab: a.tab }) === "string") throw new Error("this site needs a manual real-input action");
+    const step = await captured(tool, a, session, call);
+    const gate = gateOfStep(step);
+    if (gate) throw new Error(`this action needs the owner's ${gate} handoff; no autonomous action was allowed`);
+    return step;
+  });
 }
 
 export async function learnAgentAction(tool: string, a: Record<string, unknown>, run: () => Promise<unknown>, call: Call = rpc, real = false): Promise<unknown> {
@@ -206,14 +233,30 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
         const held = read<Record<string, number>>(tabsPath(owner)) ?? {};
         if (!held[String(a.tab)] || Date.now() - held[String(a.tab)] > MAX_AGE) throw new Error("learn only a background tab this agent opened recently");
         const goal = publicLabel(a.goal);
-        if (!Array.isArray(a.params) || !a.params.every((p) => typeof p === "string" && /^[a-zA-Z][\w-]{0,63}$/.test(p)) || new Set(a.params).size !== a.params.length) throw new Error("params must list unique field names, never values");
+        if (!Array.isArray(a.params) || !a.params.every((p) => typeof p === "string" && /^[a-zA-Z][\w-]{0,63}$/.test(p)) || new Set(a.params).size !== a.params.length) throw new Error("params must list unique public parameter names, never values");
+        const params: string[] = a.params;
+        let bindings: Record<string, string> | undefined;
+        if (a.bindings !== undefined) {
+          if (!a.bindings || typeof a.bindings !== "object" || Array.isArray(a.bindings)) throw new Error("bindings must map declared public parameters to public control names, ids, or labels");
+          const entries = Object.entries(a.bindings);
+          if (entries.some(([param]) => !params.includes(param))) throw new Error("bindings can name only declared public parameters");
+          const resolved = Object.fromEntries(entries.map(([param, value]) => [param, publicLabel(value)]));
+          const controls = params.map((param) => Object.hasOwn(resolved, param) ? resolved[param] : param);
+          bindings = resolved;
+          if (new Set(controls).size !== controls.length) throw new Error("each public parameter must bind a distinct control");
+        }
+        const prior = a.from === undefined ? undefined : loadPlaybook(a.from);
         const before = checkOf(a.before);
         for (const label of Object.values(before)) publicLabel(label);
         const url = playbookUrl(fields(await call("info", { tab: a.tab })).url);
+        if (prior && new URL(prior.recording.url).origin !== new URL(url).origin) throw new Error("learn a changed tool only on its existing origin");
         const start = fields(await call("wait", { tab: a.tab, ...before, ms: 1000 }));
         if (start.found !== true || start.challenge) throw new Error("the start condition is not verified");
-        write(path, { tab: a.tab, url, goal, params: a.params, before, startedAt: Date.now(), steps: [] });
-        return { ok: true, learning: true, tab: a.tab, params: a.params };
+        const output = a.output === undefined ? undefined : outputOf(a.output);
+        const salt = output ? randomBytes(16).toString("hex") : undefined;
+        const baseline = output && salt ? { output, salt, digest: fingerprintRows(await readPlaybookOutput(call, a.tab, output, { allowEmpty: true }), salt) } : undefined;
+        write(path, { tab: a.tab, url, goal, params, ...(bindings === undefined ? {} : { bindings }), ...(prior ? { from: prior.name } : {}), before, ...(baseline ? { baseline } : {}), startedAt: Date.now(), steps: [] });
+        return { ok: true, learning: true, tab: a.tab, params, ...(prior ? { from: prior.name, tool: prior.tool } : {}) };
       });
     }
     case "cancel": {
@@ -227,24 +270,60 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
         if (!session) throw new Error("this tab has no opted-in learn session");
         if (session.failed || Date.now() - session.startedAt > MAX_AGE) throw new Error(session.failed ?? "learning expired");
         const verify = checkOf({ ...(a.text === undefined ? {} : { text: a.text }), ...(a.selector === undefined ? {} : { selector: a.selector }) });
-        const rec = { url: session.url, goal: session.goal, params: session.params, before: session.before, startedAt: session.startedAt, steps: session.steps, source: "agent", verified: true, verify, ...(a.resultSelector === undefined ? {} : { resultSelector: publicLabel(a.resultSelector) }) };
+        const rec: AgentRecording = { url: session.url, goal: session.goal, params: session.params, before: session.before, startedAt: session.startedAt, steps: session.steps, source: "agent", verified: true, verify,
+          ...(a.resultSelector === undefined ? {} : { resultSelector: publicLabel(a.resultSelector) }),
+          ...(a.output === undefined ? {} : { output: outputOf(a.output) }),
+          ...(a.applied === undefined ? {} : { applied: appliedOf(a.applied, session.params) }) };
         assertAgentRecording(rec);
-        const end = fields(await call("wait", { tab: session.tab, ...verify, ms: 1000 }));
+        let example: Record<string, string> | undefined;
+        if (a.example !== undefined) {
+          const values = fields(a.example);
+          if (!a.example || typeof a.example !== "object" || Array.isArray(a.example)
+            || Object.keys(values).length !== session.params.length || session.params.some((param) => !Object.hasOwn(values, param))
+            || !Object.values(values).every((value) => typeof value === "string")) throw new Error("example must supply text for every declared public parameter, and no other names");
+          example = values as Record<string, string>;
+        }
+        if (rec.applied && !example) throw new Error("save needs call-time example values to verify the applied input; no values will be stored");
+        const origin = new URL(session.url).origin;
+        if (rec.applied) await waitForAppliedInput(call, session.tab, rec.applied, example ?? {}, origin);
+        const end = fields(await call("wait", { tab: session.tab, ...verify, ...(rec.applied ? { quiet: true } : {}), ms: rec.applied ? 10_000 : 1000 }));
         if (end.found !== true || end.challenge) throw new Error("the run is not verified; no playbook was stored");
-        if (rec.resultSelector) await readPlaybookResult(call, session.tab, rec.resultSelector);
-        const name = saveRecording(rec);
+        const value = rec.resultSelector ? await readPlaybookResult(call, session.tab, rec.resultSelector) : undefined;
+        const rows = rec.output ? await readPlaybookOutput(call, session.tab, rec.output, { origin, applied: rec.applied, vars: example }) : undefined;
+        if (rec.applied && rows) {
+          if (!session.baseline || JSON.stringify(session.baseline.output) !== JSON.stringify(rec.output)) throw new Error("declare output during learn so the previous results can be checked before searching");
+          if (fingerprintRows(rows, session.baseline.salt) === session.baseline.digest) throw new Error("the result rows did not change after the new search; no playbook was stored");
+        }
+        const name = saveRecording(rec, session.from, example);
+        const saved = loadPlaybook(name);
         remove(path);
-        return { ok: true, name, verified: true, params: rec.params, steps: rec.steps.length };
+        return { ok: true, name, tool: saved.tool, revision: saved.revision, verified: true, params: rec.params, steps: rec.steps.length,
+          ...(value === undefined ? {} : { value }), ...(rows === undefined ? {} : { rows }) };
       });
     }
     case "list":
-      return listRecordings().flatMap(({ name }) => {
-        const rec = loadRecording(name);
-        if (fields(rec).source !== "agent") return [];
-        try { assertAgentRecording(rec); return [{ name, goal: rec.goal, url: rec.url, params: rec.params, steps: rec.steps.length, returnsResult: rec.resultSelector !== undefined, gates: rec.steps.flatMap((s, i) => { const gate = gateOfStep(s); return gate ? [{ step: i + 1, gate }] : []; }) }]; }
-        catch { return []; }
-      });
+      return listPlaybooks().map(({ name, tool, revision, recording: rec, revisions }) => ({
+        name, tool, revision, currentRevision: name, revisions, goal: rec.goal, url: rec.url, params: rec.params, steps: rec.steps.length,
+        returnsResult: rec.resultSelector !== undefined, returnsRows: rec.output !== undefined, outputFields: Object.keys(rec.output?.fields ?? {}),
+        gates: rec.steps.flatMap((s, i) => { const gate = gateOfStep(s); return gate ? [{ step: i + 1, gate }] : []; }),
+      }));
+    case "restore":
     case "run": {
+      const vars = fields(a.vars);
+      if (a.vars !== undefined && (a.vars === null || Array.isArray(a.vars) || typeof a.vars !== "object" || !Object.values(vars).every((v) => typeof v === "string"))) return abstain("vars must map parameter names to text");
+      if (a.name !== undefined || a.do === "restore") {
+        const selected = loadPlaybook(a.name);
+        const rec = selected.recording;
+        if (a.url !== undefined && playbookUrl(a.url) !== rec.url) return abstain("the named playbook does not match the requested starting page");
+        if (!rec.params.every((param) => Object.hasOwn(vars, param)) || !Object.keys(vars).every((param) => rec.params.includes(param))) return abstain("supply exactly the named playbook's public parameters");
+        const result = await replay({ name: selected.name, vars: a.vars }, call);
+        if (a.do === "restore") {
+          const current = listPlaybooks().find((p) => p.tool === selected.tool);
+          return { ...result, tool: selected.tool, revision: selected.revision, restored: result.ok, defaultUnchanged: true, currentRevision: current?.name,
+            note: "this call selected and replayed the named revision only; the default was not changed, and a lasting replacement needs a fresh learn from session" };
+        }
+        return { ...result, tool: selected.tool, revision: selected.revision, matched: true };
+      }
       const goal = publicLabel(a.goal);
       if (a.url === undefined) {
         const { owner } = await scope(a.tab);
@@ -252,15 +331,8 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
         if (!held[String(a.tab)] || Date.now() - held[String(a.tab)] > MAX_AGE) return abstain("the page context is not a recent background tab of this agent");
       }
       const url = playbookUrl(a.url ?? fields(await call("info", { tab: a.tab })).url);
-      const vars = fields(a.vars);
-      if (a.vars !== undefined && (a.vars === null || Array.isArray(a.vars) || typeof a.vars !== "object" || !Object.values(vars).every((v) => typeof v === "string"))) return abstain("vars must map parameter names to text");
-      const candidates: { name: string; rec: AgentRecording }[] = [];
-      for (const { name } of listRecordings()) {
-        const rec = loadRecording(name);
-        if (fields(rec).source !== "agent") continue;
-        try { assertAgentRecording(rec); } catch { continue; }
-        if (rec.url === url && rec.params.every((p) => Object.hasOwn(vars, p)) && Object.keys(vars).every((p) => rec.params.includes(p))) candidates.push({ name, rec });
-      }
+      const candidates = listPlaybooks().filter(({ recording: rec }) => rec.url === url
+        && rec.params.every((p) => Object.hasOwn(vars, p)) && Object.keys(vars).every((p) => rec.params.includes(p))).map(({ name, tool, revision, recording: rec }) => ({ name, tool, revision, rec }));
       if (!candidates.length) return abstain("no verified playbook matches this page and these parameter names");
       // Short neutral labels keep storage names out of the judge's task.
       // It compares intent only; every safety decision belongs to replay.
@@ -277,26 +349,32 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
       if (!chosen || extra !== undefined || !Number.isFinite(confidence) || confidence > 1 || confidence < 0) return abstain("Jev returned an unrecognized choice or invalid confidence");
       if (confidence < 0.8) return { ...abstain("Jev's confidence is below the required 0.8"), confidence };
       // Jev only chooses. Replay owns validation, live checks and gates.
-      return { ...await replay({ name: chosen.name, vars: a.vars }, call), matched: true, confidence };
+      return { ...await replay({ name: chosen.name, vars: a.vars }, call), tool: chosen.tool, revision: chosen.revision, matched: true, confidence };
     }
-    default: throw new Error("do must be learn, save, cancel, list, or run");
+    default: throw new Error("do must be learn, save, cancel, list, run, or restore");
   }
 }
 
 export const PLAYBOOK_TOOLS: Record<string, Tool> = {
   playbooks: {
-    desc: "Opt in to learning authorized agent actions on your own background tab. Use a generic goal, declared parameter names and a start check. Save only after an observed end check. An optional result selector returns live text after replay. run uses Jev for advisory matching, then the existing replay with live checks and owner gates. No values or private page content are stored; unknown work abstains.",
+    desc: "Learn, run or restore a private tool. Named runs need no model.",
     params: {
-      do: { type: "string", enum: ["learn", "save", "cancel", "list", "run"] },
-      tab: { type: "number", description: "your background tab, for learn/save/cancel or run page context; never front" },
-      goal: { type: "string", description: "generic task, without input values or private content" },
-      params: { type: "array", items: { type: "string" }, description: "parameter names only, for learn" },
-      before: { type: "object", description: 'start check for learn: {"selector":"#search"} or {"text":"Search"}' },
-      url: { type: "string", description: "public starting page for run" },
-      text: { type: "string", description: "generic end text for save, never a parameter value" },
-      selector: { type: "string", description: "structural end selector for save" },
-      resultSelector: { type: "string", description: "optional unique structural selector for the live result text; no result value is stored" },
-      vars: { type: "object", description: "current parameter values for run; never stored or sent to Jev" },
+      do: { type: "string", enum: ["learn", "save", "cancel", "list", "run", "restore"], description: "" },
+      tab: { type: "number", description: "" },
+      name: { type: "string", description: "" },
+      from: { type: "string", description: "" },
+      goal: { type: "string", description: "" },
+      params: { type: "array", items: { type: "string" }, description: "" },
+      bindings: { type: "object", description: "" },
+      before: { type: "object", description: "" },
+      url: { type: "string", description: "" },
+      text: { type: "string", description: "" },
+      selector: { type: "string", description: "" },
+      resultSelector: { type: "string", description: "" },
+      output: { type: "object", description: '{"rows":"tr.item","fields":{"title":".title"}}' },
+      applied: { type: "object", description: '{"param":"query","in":"hash","prefix":"search/"}' },
+      example: { type: "object", description: "live inputs" },
+      vars: { type: "object", description: "" },
     },
     run: (a) => playbooksTool(a),
   },

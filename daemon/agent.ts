@@ -13,6 +13,7 @@ import { IMESSAGE_READ_TOOLS } from "./imessage.ts";
 import { HISTORY_TOOLS } from "./safari-history.ts";
 import { FILL_TOOLS } from "./fill.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
+import { PLAYBOOK_TOOLS } from "./playbooks.ts";
 import { noGuide, siteGuide } from "./guides.ts";
 import { invoke } from "./call.ts";
 
@@ -46,6 +47,9 @@ export type AgentConfig = {
   inbox?: () => Promise<Control[]>;
   // The conversation after each step, to keep.
   save?: (messages: ChatMsg[]) => Promise<void>;
+  // A scoped task can narrow the callable tools without changing safari do.
+  tools?: Record<string, Tool>;
+  recall?: boolean;
 };
 
 const SYSTEM_PROMPT = `You are a browser agent controlling Safari on macOS through tools.
@@ -131,17 +135,18 @@ const CONTEXT_TOOLS: Record<string, Tool> = {
 // The loop runs unattended, so it gets the Messages read tools but not send;
 // handoff alerts only the user's own phone, when they are away. Its small
 // local model takes one step per turn (see the rules), so no run.
-const ALL_TOOLS: Record<string, Tool> = {
+export const ALL_TOOLS: Record<string, Tool> = {
   ...Object.fromEntries(Object.entries(TOOLS).filter(([name, t]) => name !== "run" && !t.hidden)),
   ...IMESSAGE_READ_TOOLS,
   ...HISTORY_TOOLS,
   ...FILL_TOOLS,
   ...HANDOFF_TOOLS,
+  ...PLAYBOOK_TOOLS,
   ...CONTEXT_TOOLS,
 };
 
-function toolSchemas() {
-  return Object.entries(ALL_TOOLS).map(([name, t]) => ({
+function toolSchemas(tools: Record<string, Tool>) {
+  return Object.entries(tools).map(([name, t]) => ({
     type: "function" as const,
     function: { name, description: t.desc, parameters: inputSchema(t) },
   }));
@@ -206,6 +211,7 @@ async function withBrowserContext(messages: ChatMsg[]): Promise<ChatMsg[]> {
 export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{ answer: string; status: AgentStatus }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`;
+  const tools = cfg.tools ?? ALL_TOOLS;
   const queued: string[] = [];
   const steers: string[] = [];
   let stopped = false;
@@ -236,7 +242,7 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
     if (stopped) return { answer, status: "stopped" };
     joinSteers();
     trimMessages(messages);
-    const body = { model: cfg.model, messages: await withBrowserContext(messages), tools: toolSchemas(), tool_choice: "auto", stream: false };
+    const body = { model: cfg.model, messages: cfg.recall === false ? messages : await withBrowserContext(messages), tools: toolSchemas(tools), tool_choice: "auto", stream: false };
     // A steer or stop that arrives while the model thinks cuts the reply short.
     const cut = new AbortController();
     let watching = true;
@@ -276,13 +282,13 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
         const name = call.function.name;
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; } catch { /* tolerate */ }
-        if (!Object.hasOwn(ALL_TOOLS, name)) {
+        if (!Object.hasOwn(tools, name)) {
           cfg.onEvent({ type: "tool", name, args, ok: false, error: "unknown tool" });
           messages.push({ role: "tool", tool_call_id: call.id, content: `error: unknown tool ${name}` });
           continue;
         }
         try {
-          const value = await runTool(name, args);
+          const value = await (cfg.tools ? tools[name].run(args) : runTool(name, args));
           cfg.onEvent({ type: "tool", name, args, ok: true, result: value });
           messages.push({ role: "tool", tool_call_id: call.id, content: formatResult(value, 30_000).slice(0, 30_000) });
         } catch (e) {

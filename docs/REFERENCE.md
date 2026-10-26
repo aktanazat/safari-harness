@@ -2519,90 +2519,115 @@ one-time code, card, or hidden field keeps only its kind.
   steps, `do: "rm"` deletes one. `safari record list | show <name> | rm
   <name>` does the same.
 
+## mint
+
+`mint` authors one private, read-only website tool from a plain task, a site
+URL and one example map. It uses the configured tool-calling model and a new
+background tab in the owner's Safari. It publishes only an opted-in recording
+with a live end check and a checked example result. A model's final sentence
+alone is not proof. Without a model provider, no tool is published.
+
+```
+safari mint "search messages and return subject and date" \
+  --url https://mail.google.com/mail/u/0/ --example '{"query":"newer_than:1d"}'
+safari mint start "search messages and return subject and date" \
+  --url https://mail.google.com/mail/u/0/ --example '{"query":"newer_than:1d"}'
+safari mint get SESSION_ID
+safari mint cancel SESSION_ID
+```
+
+The MCP caller tool has `mint {do: "start", task, url, example, from?, steps?,
+model?}`, then `mint {do: "get" | "cancel", id}`. `start` acknowledges a
+running session, not a saved tool. `get` returns its status or the actual
+verified recording name, tool identity, revision and checked example result.
+`cancel` stops that session; it cannot undo an action. A foreground CLI run
+waits for publication or fails with a nonzero exit. The provider uses
+`SAFARI_MODEL_BASE`, `SAFARI_MODEL` and, when needed, `SAFARI_MODEL_KEY`.
+
+The authoring agent can inspect the assigned tab, navigate public paths,
+enter the supplied examples and use observed read-only search controls. It
+cannot inspect the owner's tabs, execute arbitrary JavaScript, call site
+write APIs, fill secrets or recursively mint. Each action is checked
+against the live control before it happens. A GET search form is permitted
+only when its named Search/Find button belongs to the same-origin form
+containing the public input just typed; other submit controls remain gated.
+Unclear actions, changes of tab, bot checks and uncertain results stop
+publication without retry. The session retains the example and transcript
+in owner-only files; the reusable recording stores neither.
+
+`--from NAME` explicitly authors a new version of a previously verified
+tool on the same origin. A failed or stopped authoring session cannot
+silently resume as a replay or repair; start a new request.
+
 ## playbooks
 
-`playbooks` learns only opted-in calls the agent makes through the harness.
-It does not watch the owner's browsing, keyboard, screens or Safari events.
-The tab must be a recent background tab this agent opened, never `front`.
+`playbooks` also supports manual, opted-in learning. The tab must be a recent
+background tab this agent opened, never `front`. It does not watch the
+owner's browsing or Safari events.
 
-1. `playbooks {do: "learn", tab, goal: "Search the catalog", params: ["q"],
-   before: {selector: "#search"}}` starts learning on that one tab after the
-   start check passes. `params` lists field names, not values.
-2. Do the authorized task through the normal tools. Supported actions are
-   `type`, `click`, `select`, `press` and same-origin public-path `goto`.
-3. `playbooks {do: "save", tab, selector: "#results",
-   resultSelector: "#results"}` requires the end check and one nonempty
-   result element to be observed now. `resultSelector` is optional; it stores
-   the structural selector, never the page's text. `text` may be used instead
-   of the end selector, but it must be a generic status, never a parameter
-   value or private message. A failed action, challenge, unsupported action,
-   missing end check or missing result saves nothing.
-4. `playbooks {do: "run", url: "https://example.com/", goal: "Search the
-   catalog", vars: {q: "shoes"}}` filters verified recordings by the exact
-   public starting path and supplied parameter names. `tab` may supply
-   page context instead of `url`; replay still opens its own background tab.
+1. `playbooks {do: "learn", tab, goal: "Search mail", params: ["query"],
+   bindings: {query: "q"}, before: {selector: "input[name=q]"},
+   output: {rows: ".ae4.UI.aZ6 tr.zA",
+   fields: {subject: "span.bog", date: "td.xW span[title]"}}, from?}`
+   verifies the start page and records only a salted digest of its starting
+   rows. For input-driven structured results, the same output must be
+   declared again at save. `bindings` names the actual unique field without
+   changing the public parameter key. `from` selects a prior verified name
+   for a fresh version.
+2. Perform the authorized task through `type`, `click`, `select`, `press` or
+   same-origin public-path `goto`. Failed and unsupported actions invalidate
+   the learning session.
+3. `playbooks {do: "save", tab, selector: ".ae4.UI.aZ6 tr.zA",
+   output: {rows: ".ae4.UI.aZ6 tr.zA",
+   fields: {subject: "span.bog", date: "td.xW span[title]"}},
+   applied: {param: "query", in: "hash", prefix: "search/"},
+   example: {query: "newer_than:1d"}}` verifies the result and returns
+   checked live rows. `text` may replace the end selector when it is a
+   generic status; `resultSelector` can return one nonempty text value.
+   No live result or input value is copied into the recording.
+4. `playbooks {do: "run", name, vars: {query: "newer_than:2d"}}`
+   reopens the site and checks every action and the result without a model.
+   `do: "restore"` with an older `name` runs that revision for this call
+   only, leaving the current default unchanged.
 
-The existing recording format and folder hold the playbook. The goal and
-control names must be generic, without personal text. The playbook keeps
-no input value, page title, nearby text, private URL query or fragment.
-If saved with `resultSelector`, a replay reads that one element after the end
-check and returns its current text as `value`. Empty, ambiguous or oversized
-results stop the replay without claiming success. This makes a read-only
-playbook useful as a repeatable lookup without storing the first result.
-Only uniquely named native controls in the top document can be learned;
-their existing fingerprints are used without storing surrounding content.
-Frames, shadow controls, real input, append typing, arbitrary JS and
-helpers that hide actions invalidate the session rather than produce a
-partial recipe. `run` batches pass their individual supported steps through
-the same learning boundary.
+Input-driven structured rows currently require exactly one public parameter
+and an observed URL-fragment marker. The decoded fragment must equal the
+public prefix plus that run's value, both when saved and after replay. The
+result rows must differ from the rows before the action, or verification
+refuses even if identical rows are a legitimate answer. A different marker,
+unchanged rows, a stale page or an unsupported multi-input search refuses
+verified output. Selectors must identify 1–200 visible, nonnested rows with
+1–20 fields, each uniquely visible within its row. Each field is at most
+2,000 characters and the total is at most 100,000. An empty field is valid
+when another field in its row has text. Hidden content, form values,
+ambiguous fields, still-loading rows and wholly empty rows fail.
 
-`playbooks {do: "list"}` lists validated learned runs, their gates and whether
-they return a result.
-`playbooks {do: "cancel", tab}` discards a session. Sessions expire after
-30 minutes. `recordings show/rm` reads or removes a saved playbook as usual.
+`playbooks {do: "list"}` shows only the newest verified revision per tool,
+including its prior names, public parameters, output fields and gates.
+The existing recordings directory is the only version store. A successful
+`learn from` appends an immutable revision; old names remain runnable.
+`playbooks {do: "cancel", tab}` discards unfinished learning, which also
+expires after 30 minutes. `recordings show/rm` still owns the stored files.
 
-The installed `jev choice` client sees only generic goals, origin and
-parameter names. It never receives current parameter values or page
-content. `none`, a low-confidence/unrecognized answer, a missing client or
-an exit failure returns `{ok: false, abstained: true, reason, hint}` without
-opening a tab. Exit 2 explicitly means the answer did not come from Jev.
-Continue with the normal agent; do not invent a substitute match.
-
-A Jev choice is advisory, never permission. Existing replay validates the
-recording again, checks the start path and condition, reacquires each
-unique target and checks its current field/link facts before acting. It
-stops on drift, ambiguity, unkept input, a bot check or a missing end
-condition. Success includes `verified: true`; a stopped replay leaves its
-tab open and says why.
-
-If the task already selected a saved learned playbook, use
-`replay {name, vars: {q: "shoes"}}` directly instead of asking Jev to choose
-again. The same learned-recording validation, live checks, gates and end
-condition still apply. Require both `ok: true` and `verified: true` in the
-final receipt; an ordinary toolbar recording has no learned end condition.
-
-Do not treat fewer outer requests as a speed, cost or memory result. A
-workflow comparison must include selection, actions, final checks and
-owned cleanup. Existing scripts remain the right tool for flows that
-cannot be learned.
-
-Send, spend, delete, stop, account-setting, sign-in, secret, submit and
-Enter boundaries stop before their step with `gate`. No `approved` flag
-bypasses this stop. Review the live page, show the exact proposed action
-to the owner where needed, and continue manually only after approval.
-CAPTCHAs and sign-in handoffs remain the owner's. Unverified agent
-recordings cannot be stored or replayed, including via direct `replay`.
-
-The CLI accepts the same arguments as flags:
+Goal- and page-based `run` uses Jev only to advise which current tool to
+choose. Jev receives generic goals, origin and parameter names, never
+parameter values or page contents. An unknown or low-confidence choice
+abstains without opening a tab. A named `run` or `restore` skips Jev entirely.
+Every replay still checks its saved schema, public starting page, unique
+live controls, field and link facts, owner gates, applied input, end
+condition and current output. It stops on drift, ambiguity, bot checks or
+unkept input, leaving a failed tab for inspection. Send, spend, delete,
+account-setting, sign-in, secret and ordinary submit actions require an
+owner handoff; no approval flag bypasses that gate. Frames, shadow
+controls, real input, append typing, arbitrary JavaScript and helper
+actions cannot be learned into a partial tool.
 
 ```
-safari playbooks learn --tab N --goal "Search the catalog" --params '["q"]' --before '{"selector":"#search"}'
-safari playbooks save --tab N --selector '#results[data-ready="yes"]' --result-selector '#results'
-safari playbooks run --url https://example.com/ --goal "Search the catalog" --vars '{"q":"shoes"}' --json
+safari playbooks run --name NAME --vars '{"query":"newer_than:2d"}' --json
+safari playbooks restore --name PRIOR --vars '{"query":"newer_than:2d"}' --json
 ```
 
-An abstain or stopped run exits 1. No automatic discovery retry, routine,
-daemon, model training or approval bypass is added.
+An abstain or failed run exits 1. No automatic repair or retry occurs.
 
 ## browsing_history
 

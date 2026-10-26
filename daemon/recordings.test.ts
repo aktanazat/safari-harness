@@ -1,9 +1,9 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as phone from "./phone.ts";
-import { saveRecording } from "./recordings.ts";
+import { listPlaybooks, loadRecording, saveRecording } from "./recordings.ts";
 
 // Each test saves into a folder of its own.
 function scratch(): string {
@@ -69,4 +69,25 @@ test("what is not a recording is refused and nothing is written", () => {
   const dir = scratch();
   expect(() => saveRecording({ title: "no url", steps: [] })).toThrow("not a recording: it needs a url and steps");
   expect(() => statSync(dir)).toThrow();
+});
+
+test("a changed tool keeps its prior revision and rejects example text in the next publication", () => {
+  const dir = scratch();
+  const url = "https://catalog.example/";
+  const record = {
+    url, source: "agent", verified: true, goal: "Search products", params: ["query"],
+    before: { selector: "#search" }, verify: { selector: "#results" },
+    steps: [{ kind: "type", url, param: "query",
+      field: { type: "search", autocomplete: "", name: "q", id: "", label: "Search" },
+      target: { role: "searchbox", name: "Search", tag: "input", near: "", path: "", index: 0, count: 1 } }],
+  };
+  const first = saveRecording(record);
+  const second = saveRecording({ ...record, goal: "Find products" }, first);
+  expect(listPlaybooks()).toMatchObject([{ name: second, revision: 2, revisions: [
+    { name: second, revision: 2, current: true },
+    { name: first, revision: 1, current: false },
+  ] }]);
+  expect(loadRecording(first)).toMatchObject({ goal: "Search products", version: { revision: 1 } });
+  expect(() => saveRecording({ ...record, goal: "Search pears" }, second, { query: "pears" })).toThrow("example value appeared");
+  expect(readdirSync(dir)).toHaveLength(2);
 });
