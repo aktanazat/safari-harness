@@ -4820,6 +4820,7 @@
     locate,
     pressMark,
     pressDone,
+    tabIntent: (since) => tabSaid >= since,
     typeMark,
     typeField,
     sendButton,

@@ -3056,6 +3056,19 @@ export const TOOLS: Record<string, Tool> = {
       return done;
     },
   },
+  popup_intent: {
+    desc: "Wait for a tab a native click's page said it opened.",
+    params: { tab: TAB, since: { type: "number" }, ref: REF },
+    required: ["tab", "since"],
+    hidden: true,
+    run: async (a) => {
+      const frame = typeof a.ref === "string" ? /^f(\d+):/.exec(a.ref) : null;
+      const said = await bridge.tab(await resolveTab(a.tab), "tabIntent", [num(a.since, "since")], 3000, frame ? Number(frame[1]) : 0);
+      const owner = currentOwner();
+      if (said === true && owner !== undefined) await popupWaiting(owner, POPUP_REPORT_MS);
+      return { tab: said === true };
+    },
+  },
   // The field marked for the helper's setvalue, focused, with its window's
   // size (typeMark in content.js).
   type_mark: {

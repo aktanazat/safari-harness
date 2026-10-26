@@ -131,7 +131,9 @@ async function clickAt(tab: number, a: Record<string, unknown>, count: number, b
     throw new Error(`Safari's front window shows a page of another size than tab ${tab}'s (another window or a panel came in front), so no input was sent; try again, and if a prompt is showing, the user must answer it (handoff)`);
   }
   const at = { x: Math.round(area.x + cx * scale), y: Math.round(area.y + cy * scale) };
+  const since = Date.now();
   await post(tab, ["click", String(at.x), String(at.y), "--count", String(count), "--button", button], false);
+  await rpc("popup_intent", { tab, since, ...(a.ref === undefined ? {} : { ref: a.ref }) }).catch(() => {});
   return at;
 }
 

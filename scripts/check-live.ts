@@ -7,8 +7,8 @@
 //   bun scripts/check-live.ts --before-install   then a deploy that changes
 //   bun scripts/check-live.ts --after-install    the extension, then this
 //
-// Pages are built inside example.com with eval, so the checks do not depend on
-// any site's markup changing.
+// Most checks serve both sites locally, so page content, status codes and
+// script policy stay under this check's control; sign-in needs a secure frame.
 
 import { existsSync, readFileSync } from "node:fs";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
@@ -41,21 +41,18 @@ function refOf(snap: string, pattern: RegExp): string {
   return line.match(/\[(\d+)\]/)![1];
 }
 
-// Runs `body` in a fresh background tab on example.com with `html` as its page.
-// Links in the fixtures lead only to example.org, so any example.org tab that
-// appears meanwhile is ours, even when a failing check lost track of it.
-// The site's own styles go too: since its 2026 redesign they stretch the
-// body to the window's height and more, so a printed fixture took 2 pages.
+// Runs `body` in a fresh background tab on the local site. Links in the
+// fixtures lead only to the second local site, so stray tabs are ours.
 async function withPage(html: string, setup: string, body: (tab: number) => Promise<void>) {
   const before = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
-  const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
+  const tab = (await call("open", { url: HOME, background: true })).id as number;
   try {
     await call("eval", { tab, expression: `(() => { document.querySelectorAll("style").forEach((s) => s.remove()); document.body.innerHTML = ${JSON.stringify(html)}; ${setup}; return 1; })()` });
     await body(tab);
   } finally {
     await call("close", { tab });
     const strays = ((await call("tabs")).tabs as (Tab & { url: string })[])
-      .filter((t) => !before.has(t.id) && t.url.startsWith("https://example.org/"));
+      .filter((t) => !before.has(t.id) && t.url.startsWith(ELSEWHERE));
     for (const t of strays) await call("close", { tab: t.id });
   }
 }
@@ -115,12 +112,30 @@ if (phase === "--after-install") {
   process.exit(failed ? 1 : 0);
 }
 
+const domainPage = '<!doctype html><html><head><title>Example Domain</title><link rel="icon" href="data:,"></head>' +
+  '<body><h1>Example Domain</h1><p>This local page stands in for public documentation examples and is long enough to test clipped responses.</p></body></html>';
+let receiptPosts = 0;
+const mainSite = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+  const path = new URL(request.url).pathname;
+  if (path === "/nope-receipt" && request.method === "POST") {
+    receiptPosts++;
+    return new Response("method not allowed", { status: 405 });
+  }
+  if (path === "/nope") return new Response(`<!doctype html><title>Not found</title><p>${"The requested local resource does not exist. ".repeat(9)}</p>`, { status: 404, headers: { "content-type": "text/html" } });
+  return new Response(domainPage, { headers: { "content-type": "text/html" } });
+} });
+const otherSite = Bun.serve({ hostname: "localhost", port: 0, fetch: () =>
+  new Response('<!doctype html><title>Other local site</title><h1>Documentation examples</h1><a href="/more">Learn more</a>', { headers: { "content-type": "text/html" } }) });
+const HOME = `http://127.0.0.1:${mainSite.port}/`;
+const ELSEWHERE = `http://localhost:${otherSite.port}/`;
+process.on("exit", () => { mainSite.stop(true); otherSite.stop(true); });
+
 // ---------- actions ----------
 
 const FORM = '<label>Size <select id=s><option value="">pick</option><option value="7">US 7</option><option value="8">US 8</option></select></label>' +
   "<div id=h role=button tabindex=0>Menu</div><div id=hout></div><div id=kout></div>" +
   "<label>Photo <input type=file id=f></label><div id=fout></div>" +
-  '<a href="https://example.org/">Next page</a> <a href="https://example.org/" target=_blank>Elsewhere</a>';
+  `<a href="${ELSEWHERE}">Next page</a> <a href="${ELSEWHERE}" target=_blank>Elsewhere</a>`;
 const FORM_JS = `
   document.getElementById("h").addEventListener("mouseenter", () => { document.getElementById("hout").textContent = "hovered"; });
   document.addEventListener("keydown", (e) => { document.getElementById("kout").textContent = "key " + e.key + " " + e.code + " shift=" + e.shiftKey + " alt=" + e.altKey + " meta=" + e.metaKey; });
@@ -129,6 +144,8 @@ const FORM_JS = `
     const f = e.target.files[0];
     document.getElementById("fout").textContent = "got " + f.name + " " + (await f.text()).trim();
   })`;
+
+const TAB_OPS = { tabs: async () => (await call("tabs")).tabs as Tab[], activate: (tab: number) => call("activate", { tab }) };
 
 await withPage(FORM, FORM_JS, async (tab) => {
   const snap = (await call("snapshot", { tab })).snapshot as string;
@@ -167,25 +184,32 @@ await withPage(FORM, FORM_JS, async (tab) => {
   await Bun.file(file).delete();
 
   const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
-  const opened = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
-  check("a click that opens a tab reports newTab", opened.newTab?.url === "https://example.org/", opened);
-  if (opened.newTab) await call("close", { tab: opened.newTab.id });
+  const scripted = await call("click", { tab, ref: refOf(snap, /"Elsewhere"/) });
+  if (scripted.newTab) {
+    check("a click that opens a tab reports newTab", scripted.newTab.url === ELSEWHERE, scripted);
+    await call("close", { tab: scripted.newTab.id });
+  } else {
+    check("a blocked scripted popup says how to open it", /real_input/.test(scripted.next ?? ""), scripted);
+    const opened = await inFront(tab, TAB_OPS, () => invoke("real_input", { tab, do: "click", ref: refOf(snap, /"Elsewhere"/) }, true)) as { popup?: { tab: number; url: string } };
+    check("a real click that opens a tab reports its popup", opened.popup?.url === ELSEWHERE, opened);
+    if (opened.popup) await call("close", { tab: opened.popup.tab });
+  }
   const activeNow = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   check("a new tab from a background tab leaves the user's tab in front", activeNow === userFront, { userFront, activeNow });
 
   const nav = await call("click", { tab, ref: refOf(snap, /"Next page"/) });
-  check("a click that loads a page reports navigated", nav.navigated?.url === "https://example.org/", nav);
+  check("a click that loads a page reports navigated", nav.navigated?.url === ELSEWHERE, nav);
   const back = await call("history", { tab, do: "back" });
-  check("back reports the previous page", back.navigated?.url === "https://example.com/", back);
+  check("back reports the previous page", back.navigated?.url === HOME, back);
   const fwd = await call("history", { tab, do: "forward", snapshot: true });
-  check("snapshot: true returns the page the action led to", fwd.page?.url === "https://example.org/" && /documentation examples/.test(fwd.page.snapshot ?? ""), fwd);
+  check("snapshot: true returns the page the action led to", fwd.page?.url === ELSEWHERE && /documentation examples/i.test(fwd.page.snapshot ?? ""), fwd);
 });
 
 // ---------- several steps in one call ----------
 
 const tabsBefore = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
 const read = await call("run", { steps: [
-  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "open", args: { url: HOME, background: true } },
   { tool: "eval", args: { expression: "document.title" } },
   { tool: "close" },
 ] });
@@ -196,7 +220,7 @@ check("run opens, reads, and closes its own tab in one call",
 
 // After a failing step, later steps must not act on the page.
 const stopped = await call("run", { steps: [
-  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "open", args: { url: HOME, background: true } },
   { tool: "click", args: { ref: "999" } },
   { tool: "eval", args: { expression: 'document.title = "later step ran"' } },
 ] });
@@ -210,7 +234,7 @@ check("run stops at the first failing step and says so",
 // A failed run must not leave its tab open: close steps still run.
 const before2 = new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
 const cleaned = await call("run", { steps: [
-  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "open", args: { url: HOME, background: true } },
   { tool: "click", args: { ref: "999" } },
   { tool: "eval", args: { expression: "1" } },
   { tool: "close" },
@@ -231,7 +255,6 @@ check("a page tool without tab is an error, not a read of the front tab", untarg
 // that were in front. Our tab sits in an agent window, which never holds
 // the user's front tab, even raised: "front" names the tab he was on. A
 // failure prints only whose tab it was; his page is never read.
-const TAB_OPS = { tabs: async () => (await call("tabs")).tabs as Tab[], activate: (tab: number) => call("activate", { tab }) };
 await withPage("<p>front check</p>", 'document.title = "front check"', async (tab) => {
   const rows = await inFront(tab, TAB_OPS, async () => (await call("tabs")).tabs as (Tab & { windowId: number })[]);
   const ours = rows.find((t) => t.id === tab);
@@ -243,7 +266,7 @@ await withPage("<p>front check</p>", 'document.title = "front check"', async (ta
 // A close of a tab the harness closed already succeeds at once and says
 // when (closeTab): on 10-16 `safari close 5203` failed after the repl had
 // closed it.
-const closed = (await call("open", { url: "https://example.com/", background: true })).id as number;
+const closed = (await call("open", { url: HOME, background: true })).id as number;
 await call("close", { tab: closed });
 const closeStart = Date.now();
 const closedAgain = await call("close", { tab: closed });
@@ -261,23 +284,23 @@ await withPage(`<button id=b onclick="this.textContent = 'pressed'">Press</butto
   const start = Date.now();
   const url = await call("info", { tab }).then((v: { url: string }) => v.url, (e: Error) => e.message);
   const ms = Date.now() - start;
-  check("a page whose script stopped answering gets a fresh one at once", url.startsWith("https://example.com/") && ms < 2000, { url, ms });
+  check("a page whose script stopped answering gets a fresh one at once", url.startsWith(HOME) && ms < 2000, { url, ms });
   await call("click", { tab, ref });
   const text = (await call("eval", { tab, expression: "document.getElementById('b').textContent" })).result;
   check("a ref from before the fresh script still works", text === "pressed", text);
 });
 
 // An action that loads a page answers with that page, and runs once.
-await withPage('<form action="https://example.org/" method=get><input name=q value=x aria-label=Query><button>Go</button></form>', "", async (tab) => {
+await withPage(`<form action="${ELSEWHERE}" method=get><input name=q value=x aria-label=Query><button>Go</button></form>`, "", async (tab) => {
   const clicked = await call("click", { tab, ref: refOf((await call("snapshot", { tab })).snapshot, /button "Go"/) });
-  check("a click that submits a form reports the page it loaded", String(clicked?.navigated?.url).startsWith("https://example.org/?q=x"), clicked);
+  check("a click that submits a form reports the page it loaded", String(clicked?.navigated?.url).startsWith(`${ELSEWHERE}?q=x`), clicked);
 });
-await withPage('<form action="https://example.com/" method=get><input type=hidden name=sent value=1><button>Send</button></form>', "", async (tab) => {
+await withPage(`<form action="${HOME}" method=get><input type=hidden name=sent value=1><button>Send</button></form>`, "", async (tab) => {
   const evaled = await call("eval", { tab, expression: "(localStorage.shEvalRuns = String(Number(localStorage.shEvalRuns || 0) + 1), document.forms[0].submit(), 'sent')" }).then((v) => v, (e: Error) => e.message);
   const runs = (await call("eval", { tab, expression: "(() => { const n = localStorage.shEvalRuns; localStorage.removeItem('shEvalRuns'); return n; })()" })).result;
   check("an eval that submits a form answers, and runs once", typeof evaled === "object" && runs === "1", { evaled, runs });
 });
-await withPage('<form action="https://example.org/" method=get><input name=q aria-label=Query><button>Go</button></form>', "", async (tab) => {
+await withPage(`<form action="${ELSEWHERE}" method=get><input name=q aria-label=Query><button>Go</button></form>`, "", async (tab) => {
   const snap = (await call("snapshot", { tab })).snapshot;
   const r = await call("run", { steps: [
     { tool: "type", args: { tab, ref: refOf(snap, /textbox "Query"/), text: "y" } },
@@ -285,7 +308,7 @@ await withPage('<form action="https://example.org/" method=get><input name=q ari
     { tool: "info", args: { tab } },
   ] });
   check("a run types, submits, and reads the page the submit loaded",
-    r.steps.length === 3 && r.steps.every((s: { error?: string }) => !s.error) && String(r.steps[2].value?.url).startsWith("https://example.org/?q=y"), r);
+    r.steps.length === 3 && r.steps.every((s: { error?: string }) => !s.error) && String(r.steps[2].value?.url).startsWith(`${ELSEWHERE}?q=y`), r);
 });
 
 // ---------- acting without a snapshot ----------
@@ -350,7 +373,7 @@ await withPage('<button id=later>Later</button> <a id=app href="shnohandler-zz:a
 // daemon/receipt.ts): nothing, with what to try; a menu it opened; a
 // request of the page's that failed, listed first.
 const RECEIPT_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
-  { textContent: 'document.getElementById("menu").onclick = (e) => { e.currentTarget.setAttribute("aria-expanded", "true"); document.getElementById("m").hidden = false; }; document.getElementById("save").onclick = () => { fetch("/nope-receipt", { method: "POST" }).catch(() => {}); };' }))`;
+  { textContent: 'document.getElementById("menu").onclick = (e) => { e.currentTarget.setAttribute("aria-expanded", "true"); document.getElementById("m").hidden = false; }; document.getElementById("save").onclick = () => { setTimeout(() => { fetch("/?receipt-ok"); fetch("/nope-receipt", { method: "POST" }).catch(() => {}); }, 20); };' }))`;
 
 await withPage('<button id=idle>Nothing</button> <button id=menu aria-expanded=false aria-controls=m>Menu</button> <ul id=m hidden><li>One</li></ul> <button id=save>Save</button>', RECEIPT_JS, async (tab) => {
   const idle = await call("click", { tab, ref: "#idle" });
@@ -359,9 +382,10 @@ await withPage('<button id=idle>Nothing</button> <button id=menu aria-expanded=f
   const menu = await call("click", { tab, ref: "#menu" });
   check("a click that opens a menu reports the control's new state",
     (menu.effect?.states ?? []).some((s: string) => s.includes("now expanded")), menu);
+  const before = receiptPosts;
   const save = await call("click", { tab, ref: "#save" });
-  check("a click whose request fails lists the failure first",
-    save.effect?.net?.[0] === "failed: POST /nope-receipt 405", save);
+  check("a click lists its failed request before its successful request",
+    receiptPosts === before + 1 && save.effect?.net?.[0] === "failed: POST /nope-receipt 405" && save.effect.net.includes("GET / 200"), { receiptPosts, save });
 });
 
 // Waits on what the page shows: text spaced otherwise, text that leaves,
@@ -427,7 +451,7 @@ const COUNT_JS = (out: string) => `
   const timer = () => { timers++; show(); if (timers < 40) setTimeout(timer, 20); };
   setTimeout(timer, 20);`;
 const COUNT_TOP_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(COUNT_JS('document.getElementById("run")'))} }))`;
-const COUNT_FRAME_JS = `const f = document.createElement("iframe"); f.src = "https://example.com/";
+const COUNT_FRAME_JS = `const f = document.createElement("iframe"); f.src = ${JSON.stringify(HOME)};
   f.onload = () => { f.contentDocument.head.appendChild(Object.assign(f.contentDocument.createElement("script"), { textContent: ${JSON.stringify(COUNT_JS('parent.document.getElementById("run")'))} })); };
   document.body.appendChild(f)`;
 
@@ -463,9 +487,9 @@ await withPage(`<p id="flash"></p>`, FLASH_JS, async (tab) => {
 await withPage("<p>start</p>", "setTimeout(() => location.reload(), 300)", async (tab) => {
   const pending = call("wait", { tab, text: "never shown", ms: 5000 }).catch((e: Error) => e.message);
   await Bun.sleep(1500);
-  await call("eval", { tab, expression: `(() => { setTimeout(() => { location.href = "https://example.org/"; }, 200); return 1; })()` });
+  await call("eval", { tab, expression: `(() => { setTimeout(() => { location.href = ${JSON.stringify(ELSEWHERE)}; }, 200); return 1; })()` });
   const r = await pending;
-  check("wait lasts through two navigations and gives the page the tab landed on", r?.found === false && r.url === "https://example.org/", r);
+  check("wait lasts through two navigations and gives the page the tab landed on", r?.found === false && r.url === ELSEWHERE, r);
 });
 
 // ---------- shadow roots ----------
@@ -537,7 +561,7 @@ await withPage("<button id=go>Load</button><p id=out></p>", PAGE_CALLS_JS, async
     net = (await call("net", { tab, do: "read" })).entries;
     logs = (await call("console", { tab, do: "read" })).entries;
   }
-  const seen = net.map((e) => `${e.kind} ${e.method} ${new URL(e.url, "https://example.com/").search}`).sort();
+  const seen = net.map((e) => `${e.kind} ${e.method} ${new URL(e.url, HOME).search}`).sort();
   check("net and console record the page's own requests and logs",
     JSON.stringify(seen) === JSON.stringify(["fetch POST ?page-fetch", "xhr GET ?page-xhr"]) && /^page fetch \d+$/.test(logs[0]?.text ?? ""),
     { net, logs });
@@ -564,8 +588,7 @@ await withPage(POINTER, POINTER_JS, async (tab) => {
 
 // The page keeps its own copy of fetch and calls it before any net start
 // (CVS's insurance form did). net still sees the calls, with the start of
-// each body, and the page still reads each whole body. The braces keep the
-// copy's name off the page's globals: example.com's script declares f.
+// each body, and the page still reads each whole body.
 const LOAD_CALLS = '{ const f = window.fetch; window.got = {}; f("/nope").then((r) => r.text()).then((t) => { got.missing = t.length; });' +
   ' f("data:text/plain," + "a".repeat(100000)).then((r) => r.text()).then((t) => { got.long = t.length; }); }';
 const LOAD_CALLS_JS = `document.head.appendChild(Object.assign(document.createElement("script"), { textContent: ${JSON.stringify(LOAD_CALLS)} }))`;
@@ -578,7 +601,7 @@ await withPage("<p>calls</p>", LOAD_CALLS_JS, async (tab) => {
     net = (await call("net", { tab, do: "read" })).entries;
     got = (await call("eval", { tab, page: true, expression: "window.got" })).result ?? {};
   }
-  const missing = net.find((e) => e.url === "https://example.com/nope");
+  const missing = net.find((e) => e.url === `${HOME}nope`);
   const long = net.find((e) => e.url.startsWith("data:text/plain,"));
   check("net shows requests from before any start, made with the page's own copy of fetch, with the start of each body",
     missing?.status === 404 && /^<!doctype html>/i.test(missing.body ?? "") && long?.status === 200 && long.body === "a".repeat(300) + "…", net);
@@ -715,7 +738,7 @@ function inWindowHolding(title: string, command: string): string {
 // inline; a cross-origin frame runs its own copy, and its lines come back
 // under the <iframe> with refs naming the frame.
 const FRAMES = `<iframe id=inner srcdoc="<button onclick='this.textContent=&quot;inner clicked&quot;'>Inner button</button>" style="width:300px;height:80px"></iframe>` +
-  '<iframe id=outer src="https://example.org/" style="width:500px;height:300px;margin-left:40px"></iframe>';
+  `<iframe id=outer src="${ELSEWHERE}" style="width:500px;height:300px;margin-left:40px"></iframe>`;
 
 await withPage(FRAMES, "", async (tab) => {
   let s = "";
@@ -735,9 +758,17 @@ await withPage(FRAMES, "", async (tab) => {
   const f = frame.result as { x: number; y: number; w: number; h: number };
   check("locate places a cross-origin frame's element inside that frame's box",
     box.x > f.x && box.y > f.y && box.x + box.width < f.x + f.w && box.y + box.height < f.y + f.h, { box, frame: f });
-  // Apple's sign-in form is a frame from another site: the login goes to
-  // that frame, as its own site's. An f<id>: expression runs in that frame.
-  const id = Number(ref.match(/^f(\d+):/)![1]);
+});
+
+// A sign-in form in a secure frame belongs to the frame's site, not the
+// local page embedding it. Only this security check needs a public HTTPS page.
+await withPage('<iframe id=secure src="https://example.org/" style="width:500px;height:300px"></iframe>', "", async (tab) => {
+  let snapshot = "";
+  for (let i = 0; i < 30 && !/\[f\d+:\d+\]/.test(snapshot); i++) {
+    await Bun.sleep(200);
+    snapshot = (await call("snapshot", { tab })).snapshot;
+  }
+  const id = Number(snapshot.match(/\[f(\d+):\d+\]/)![1]);
   await call("eval", { tab, expression: `f${id}:(() => { document.body.insertAdjacentHTML("beforeend", "<form><input name=username autocomplete=username><input type=password name=password></form>"); return 1; })()` });
   const form = await call("login_form", { tab });
   check("a sign-in form in an embedded frame belongs to that frame's own site",
@@ -748,7 +779,7 @@ await withPage(FRAMES, "", async (tab) => {
 
 // A frame that loads while a wait runs joins it: sign-in frames load last.
 await withPage("<p>no frame yet</p>", "", async (tab) => {
-  await call("eval", { tab, page: true, expression: "setTimeout(() => { const f = document.createElement('iframe'); f.src = 'https://example.org/'; document.body.append(f); }, 1000), 1" });
+  await call("eval", { tab, page: true, expression: `setTimeout(() => { const f = document.createElement('iframe'); f.src = ${JSON.stringify(ELSEWHERE)}; document.body.append(f); }, 1000), 1` });
   const late = await call("wait", { tab, text: "Learn more", ms: 10000 });
   check("wait finds text in a frame that loads while it runs", late.found === true && late.waitedMs >= 500, late);
 });
@@ -836,7 +867,7 @@ const FILE_DIR = `/private/var/tmp/safari-harness-check-${process.pid}`;
 await withPage(FILES, "", async (tab) => {
   const link = await call("download", { tab, ref: "#dl", out: `${FILE_DIR}/hello.txt` });
   const blob = await call("download", { tab, ref: "#blob", out: `${FILE_DIR}/made.txt` });
-  const url = await call("download", { tab, url: "https://example.com/", out: `${FILE_DIR}/page.html` });
+  const url = await call("download", { tab, url: HOME, out: `${FILE_DIR}/page.html` });
   check("download saves a data link, a file the page builds on click, and a url",
     await Bun.file(link.path).text() === "hello world" && await Bun.file(blob.path).text() === "blob body" &&
     (await Bun.file(url.path).text()).includes("<title>Example Domain</title>"), { link, blob, url });
@@ -944,12 +975,18 @@ function pngSize(bytes: Uint8Array): { w: number; h: number } {
 }
 
 await withPage('<button id=b style="width:200px;height:50px">Shot</button><div style="height:4000px"></div><p>end</p>', "", async (tab) => {
-  const view = pngSize(await Bun.file((await call("shot", { tab })).path).bytes());
-  const one = pngSize(await Bun.file((await call("shot", { tab, ref: "#b" })).path).bytes());
-  const full = await call("shot", { tab, fullPage: true });
-  const whole = pngSize(await Bun.file(full.path).bytes());
-  check("shot of a ref is that element's size", Math.abs(one.w / one.h - 4) < 0.3 && one.w < view.w, { view, one });
-  check("shot fullPage is taller than the viewport", whole.h > view.h * 2 && whole.w === view.w, { view, whole, full });
+  const front = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
+  const app = await frontApp();
+  await inFront(tab, TAB_OPS, async () => {
+    const view = pngSize(await Bun.file((await call("shot", { tab })).path).bytes());
+    const one = pngSize(await Bun.file((await call("shot", { tab, ref: "#b" })).path).bytes());
+    const full = await call("shot", { tab, fullPage: true });
+    const whole = pngSize(await Bun.file(full.path).bytes());
+    check("shot of a ref is that element's size", Math.abs(one.w / one.h - 4) < 0.3 && one.w < view.w, { view, one });
+    check("shot fullPage is taller than the viewport", whole.h > view.h * 2 && whole.w === view.w, { view, whole, full });
+  });
+  const after = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
+  check("shots give the user's front tab and app back", after === front && (await frontApp()) === app, { front, after, app });
 });
 
 // ---------- real input ----------
@@ -981,7 +1018,7 @@ await withPage(TRUST, "", async (tab) => {
 // run takes every tool: a real_input step runs in this process, and the run
 // goes step by step from here.
 const mixed = await invoke("run", { steps: [
-  { tool: "open", args: { url: "https://example.com/", background: true } },
+  { tool: "open", args: { url: HOME, background: true } },
   { tool: "eval", args: { expression: `(() => { document.body.innerHTML = ${JSON.stringify(TRUST)}; return 1; })()` } },
   { tool: "real_input", args: { do: "click", ref: "#b" } },
   { tool: "eval", args: { expression: "document.getElementById('b').dataset.trusted" } },
@@ -1012,8 +1049,8 @@ await withPage(SHOWN, SHOWN_JS, async (tab) => {
 // Runs in this process: reading History.db needs the terminal's Full Disk
 // Access. The pages these checks opened are an agent's visits, not the
 // user's: none shows as his since the run began, and they are counted.
-const answer = (await CALLER_TOOLS.browsing_history.run({ text: "example.com", days: 1 })) as { history: { url: string; lastVisit: string }[]; agentVisitsLeftOut: number };
-const ours = answer.history.filter((p) => p.url === "https://example.com/" && Date.parse(p.lastVisit) >= STARTED);
+const answer = (await CALLER_TOOLS.browsing_history.run({ text: new URL(HOME).hostname, days: 1 })) as { history: { url: string; lastVisit: string }[]; agentVisitsLeftOut: number };
+const ours = answer.history.filter((p) => p.url === HOME && Date.parse(p.lastVisit) >= STARTED);
 check("browsing_history leaves out the pages these checks opened, and counts them", ours.length === 0 && answer.agentVisitsLeftOut > 0, { ours, agentVisitsLeftOut: answer.agentVisitsLeftOut });
 
 // ---------- tabs close with the program that opened them ----------
@@ -1072,12 +1109,12 @@ function openedTab(line = ""): number {
 // outlive a look after that.
 const CLI = new URL("../cli/safari.ts", import.meta.url).pathname;
 async function openFromChild(keep: boolean): Promise<number> {
-  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json", ...(keep ? ["--keep"] : [])];
+  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--json", ...(keep ? ["--keep"] : [])];
   const { lines, ended } = await agentProgram(`const r = Bun.spawnSync(${JSON.stringify(argv)}); process.stdout.write((r.stdout.toString().trim() || r.stderr.toString().trim().replaceAll("\\n", " ")) + "\\n")`, 1);
   await ended;
   return openedTab(lines[0]);
 }
-const tabIds = async () => new Set(((await call("tabs")) as Tab[]).map((t) => t.id));
+const tabIds = async () => new Set(((await call("tabs")).tabs as Tab[]).map((t) => t.id));
 const [owned, kept] = await Promise.all([openFromChild(false), openFromChild(true)]);
 try {
   let ownedLeft = true;
@@ -1104,7 +1141,7 @@ try {
   const title = `check-live-sheet-${Date.now()}`;
   const osa = (script: string) => Bun.spawnSync(["osascript", "-e", `tell application "System Events" to tell process "Safari" to ${script}`], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
   const win = `(first window whose name is "${title}")`;
-  const tab = (await call("open", { url: "https://example.com/", background: true })).id as number;
+  const tab = (await call("open", { url: HOME, background: true })).id as number;
   try {
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
@@ -1131,15 +1168,15 @@ try {
 // agent exits, its tabs close and its window with them.
 type Placed = { id: number; windowId?: number; front?: boolean };
 async function agentWithTabs() {
-  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--json"];
+  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--json"];
   const { pid, lines } = await agentProgram(`for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 2);
   return { pid, ids: lines.map((line) => openedTab(line)) };
 }
 const appBefore = await frontApp();
-const userWindow = ((await call("tabs")) as Placed[]).find((t) => t.front)?.windowId;
+const userWindow = ((await call("tabs")).tabs as Placed[]).find((t) => t.front)?.windowId;
 const agents = await Promise.all([agentWithTabs(), agentWithTabs()]);
 try {
-  const placed = (await call("tabs")) as Placed[];
+  const placed = (await call("tabs")).tabs as Placed[];
   const [wa, wb] = agents.map((a) => [...new Set(a.ids.map((id) => placed.find((t) => t.id === id)?.windowId))]);
   check("each agent's tabs share one window of its own, not the user's", wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { wa, wb, userWindow });
   const appAfter = await frontApp();
@@ -1148,7 +1185,7 @@ try {
   let left = true;
   for (let waited = 0; left && waited < 20000; waited += 1000) {
     await Bun.sleep(1000);
-    left = ((await call("tabs")) as Placed[]).some((t) => t.windowId === wa[0] || t.windowId === wb[0]);
+    left = ((await call("tabs")).tabs as Placed[]).some((t) => t.windowId === wa[0] || t.windowId === wb[0]);
   }
   check("an agent's window closes once the agent exits", !left, { wa, wb });
 } finally {
@@ -1164,7 +1201,7 @@ try {
 // goes. While he works the groups wait, and the check says so, not failing.
 type SpaceRow = { name: string; group: string; ended: boolean };
 async function agentWithGroup(task: string) {
-  const argv = [process.execPath, CLI, "open", "https://example.com/", "--bg", "--group", task, "--json"];
+  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--group", task, "--json"];
   const { pid, lines } = await agentProgram(`process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 1);
   const opened: unknown = lines[0]?.startsWith("{") ? JSON.parse(lines[0]) : null;
   const space = opened && typeof opened === "object" && "space" in opened ? opened.space : null;
@@ -1226,7 +1263,7 @@ await withPage(LISTING, "", async (tab) => {
 // go on through the rest: on Wikipedia's World War II article it parsed
 // 5,010 link addresses for 600 printed lines, 40% of a warm snapshot.
 const LINK_COUNT = 2000;
-const LINKS = Array.from({ length: LINK_COUNT }, (_, i) => `<p><a href="https://example.org/${i}">Link ${i}</a></p>`).join("");
+const LINKS = Array.from({ length: LINK_COUNT }, (_, i) => `<p><a href="${ELSEWHERE}${i}">Link ${i}</a></p>`).join("");
 const COUNT_URLS = "const U = URL; window.__urls = 0; window.URL = new Proxy(U, { construct(t, a) { window.__urls++; return new t(...a); } })";
 
 await withPage(LINKS, COUNT_URLS, async (tab) => {
