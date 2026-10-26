@@ -551,15 +551,14 @@ async function mintCommand(argv: string[], host: string) {
   let example: unknown;
   try { example = JSON.parse(sample); }
   catch { fail("example must be a JSON object mapping public parameter names to text", 2); }
-  const { MINT_TOOLS, mintRequest } = await import("../daemon/mint.ts");
+  const { MINT_TOOLS, mintProvider, mintRequest } = await import("../daemon/mint.ts");
   const request = mintRequest(url, example, flag("from", argv));
   const steps = Number(flag("steps", argv) ?? 30);
   if (!Number.isInteger(steps) || steps < 1) fail("steps must be a positive whole number", 2);
   if (background) return answer(await MINT_TOOLS.mint.run({ do: "start", task, ...request, steps, model: flag("model", argv) }));
   const { newSession } = await import("../daemon/sessions.ts");
   const rec = await newSession(task, {
-    host, model: flag("model", argv) ?? process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
-    baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1", mint: request,
+    host, ...mintProvider(flag("model", argv)), mint: request,
   });
   console.error(`session ${rec.id}; stop it with: safari session stop ${rec.id}`);
   return runAndReport(rec, argv);

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { AgentConfig, AgentStatus, ChatMsg } from "./agent.ts";
 import { assertAgentRecording, loadRecording, playbookUrl, secretOfField } from "./recordings.ts";
 import { checkCall } from "./guard.ts";
-import type { AgentRecording } from "./recordings.ts";
+import type { AgentRecording, AgentStep } from "./recordings.ts";
 import type { Tool } from "./tools.ts";
 
 export type MintRequest = { url: string; example: Record<string, string>; from?: string };
@@ -33,7 +33,7 @@ Complete one live example, then publish only through playbooks save:
 - Use element to inspect public name/id/label attributes, sanitized result structure (what: "html") and selector counts. Its structural view contains only structural attributes, not element text or input values. Arbitrary JavaScript and site API writes are unavailable.
 - Before the first action, call playbooks with do: "learn", that tab, a short generic goal, params containing exactly the example map's keys, a structural live before check, and the structured output selector and fields if the search returns rows. Declare the same output in save so the harness can tell new results from old ones. Never copy an example value or private page content into a goal, label, binding, check or selector.
 - If a public parameter differs from its control's observed name/id/label, pass bindings mapping that public parameter to the observed control identifier. Never silently rename the public parameter. Do not guess an ambiguous control.
-- For --from, the harness supplies the prior name to learn. This is an explicit new version, not a replay or automatic repair. Never run a prior tool.
+- For --from, the harness supplies the prior name and public input bindings to learn, plus verified selector hints. Confirm hints against this live page. This is an explicit new version, not a replay or automatic repair. Never run a prior tool.
 - Enter only the supplied example values into their intended fields. Perform the task once. Prefer a named read-only search control rather than Enter, which can submit a write.
 - Inspect the actual result. For tabular data, save with output: {rows: "observed row selector", fields: {publicField: "observed selector within each row"}}. Otherwise use a unique resultSelector when result text is useful. Observe and check selectors before saving.
 - For parameterized structured results, observe how the live page proves it applied the input. Pass applied: {param: "public parameter", in: "hash", prefix: "observed generic fragment prefix"} when that exact decoded fragment equals prefix plus the example value. The prefix must contain no example value. If no supported applied-input proof exists, do not publish stale results as a successful search.
@@ -61,6 +61,14 @@ export function mintRequest(url: unknown, example: unknown, from?: unknown): Min
     if (new URL(prior.url).origin !== new URL(url).origin) throw new Error("the prior tool belongs to a different site");
   }
   return { url, example: { ...example } as Record<string, string>, ...(typeof from === "string" ? { from } : {}) };
+}
+
+export function mintProvider(model?: string): { model: string; baseUrl: string } {
+  const baseUrl = process.env.SAFARI_MODEL_BASE;
+  return {
+    model: model ?? process.env.SAFARI_MODEL ?? (baseUrl ? "gemma4:12b-mlx" : "opencode-go/claude-haiku-5-5"),
+    baseUrl: baseUrl ?? "omp://subscription",
+  };
 }
 
 export function mintMessages(task: string, request: MintRequest): ChatMsg[] {
@@ -97,10 +105,11 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
   // agent -> call -> caller -> mint while the modules are initializing.
   const { invoke } = await import("./call.ts");
   const { ALL_TOOLS, runAgent } = await import("./agent.ts");
-  const { TOOLS } = await import("./tools.ts");
+  const { TOOLS, pageRead } = await import("./tools.ts");
   const { inspectLearnedAction } = await import("./playbooks.ts");
   let modelFailure: string | undefined;
   let lastFailure: string | undefined;
+  let publicationFailure: string | undefined;
   const failed = (error: string, status: AgentStatus = "failed") => ({ answer: JSON.stringify({ ok: false, error, ...(state.tab ? { tab: state.tab } : {}) }), status });
   const stop = (message: string): never => { state.failure = message; throw new Error(message); };
 
@@ -120,7 +129,13 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
     }
     const page = fields(await invoke("info", { tab: state.tab }));
     if (page.replaced || typeof page.url !== "string" || new URL(page.url).origin !== new URL(state.url).origin) throw new Error("the authoring tab changed or left the requested site; no task was published");
-    messages[0] = { role: "system", content: `${MINT_PROMPT}\n\nThe harness assigned tab ${state.tab}. Pass tab ${state.tab} to every page tool. Public parameters: ${JSON.stringify(Object.keys(state.example))}.` };
+    const prior = state.from ? loadRecording(state.from) : undefined;
+    const inheritedBindings = prior && Object.fromEntries(prior.steps.flatMap((step) =>
+      step.param && step.field && Object.hasOwn(state.example, step.param)
+        ? [[step.param, step.field.name || step.field.id || step.field.label] as const] : []));
+    const priorHint = prior ? { before: prior.before, verify: prior.verify, output: prior.output, applied: prior.applied, bindings: inheritedBindings } : undefined;
+    if (priorHint) publicMetadata(priorHint, state.example);
+    messages[0] = { role: "system", content: `${MINT_PROMPT}\n\nThe harness assigned tab ${state.tab}. Pass tab ${state.tab} to every page tool. Public parameters: ${JSON.stringify(Object.keys(state.example))}.${priorHint ? ` Previous verified public selectors (confirm them on this live page): ${JSON.stringify(priorHint)}.` : ""}` };
 
     const call = async (name: string, given: Record<string, unknown>): Promise<unknown> => {
       if (state.result) throw new Error("a verified tool was already saved; this example is complete");
@@ -138,8 +153,9 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
           if (!Array.isArray(args.params) || args.params.length !== params.length
             || !args.params.every((key) => typeof key === "string" && params.includes(key))) throw new Error("learn must keep exactly the public parameter names from example");
           if (args.from !== undefined && args.from !== state.from) throw new Error("changing a prior tool requires an explicit --from request");
-          publicMetadata({ goal: args.goal, before: args.before, bindings: args.bindings, output: args.output }, state.example);
-          const result = await invoke(name, args, true);
+          const learnArgs = { ...args, ...(state.from ? { from: state.from } : {}), ...(args.bindings === undefined && inheritedBindings && Object.keys(inheritedBindings).length ? { bindings: inheritedBindings } : {}) };
+          publicMetadata({ goal: learnArgs.goal, before: learnArgs.before, bindings: learnArgs.bindings, output: learnArgs.output }, state.example);
+          const result = await invoke(name, learnArgs, true);
           if (fields(result).learning !== true || fields(result).ok === false) throw new Error("the browser did not opt into learning");
           state.learning = true;
           return result;
@@ -208,19 +224,27 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
         return invoke(name, args, true);
       }
       if (Object.hasOwn(ACTIONS, name)) {
+        args = checkCall(TOOLS, name, args, true).args;
+        pageRead(args.snapshot);
         if (!state.learning) throw new Error("opt into playbooks learn before taking an action");
         if (!state.observed) throw new Error("read a fresh snapshot before the next action");
         if (args.secret !== undefined || args.append === true || args.text === "{{code}}") stop("secret entry and appended typing need the owner; no tool was published");
+        let step: AgentStep;
+        try { step = await inspectLearnedAction(name, args); }
+        catch (error) {
+          const reason = reasonOf(error);
+          if (reason.includes("handoff") || reason.includes("manual real-input action")) stop(reason);
+          throw error;
+        }
+        const destination = new URL(step.href ?? step.url);
+        if (SIGN_OUT.test(step.target?.name ?? "") || SIGN_OUT.test(decodeURIComponent(destination.pathname + destination.hash))) stop("mint cannot sign the owner out");
+        const readControl = step.target?.role === "searchbox" || step.field?.type === "search" || READ_CONTROL.test(step.target?.name ?? "");
+        if (step.kind !== "navigate" && !(step.kind === "click" && step.target?.role === "link" && step.href) && !readControl) stop("this control's effect is not clearly read-only; the owner must review it before any action");
+        if ((name === "type" || name === "select") && (step.param === undefined || args[name === "type" ? "text" : "option"] !== state.example[step.param])) stop("the live field does not bind the supplied example to its public parameter");
         state.pendingAction = true;
         state.observed = false;
         await cfg.save?.(messages);
         try {
-          const step = await inspectLearnedAction(name, args);
-          const destination = new URL(step.href ?? step.url);
-          if (SIGN_OUT.test(step.target?.name ?? "") || SIGN_OUT.test(decodeURIComponent(destination.pathname + destination.hash))) stop("mint cannot sign the owner out");
-          const readControl = step.target?.role === "searchbox" || step.field?.type === "search" || READ_CONTROL.test(step.target?.name ?? "");
-          if (step.kind !== "navigate" && !(step.kind === "click" && step.target?.role === "link" && step.href) && !readControl) stop("this control's effect is not clearly read-only; the owner must review it before any action");
-          if ((name === "type" || name === "select") && (step.param === undefined || args[name === "type" ? "text" : "option"] !== state.example[step.param])) stop("the live field does not bind the supplied example to its public parameter");
           const result = await invoke(name, args, true);
           const receipt = fields(result);
           if (receipt.ok === false || receipt.found === false || receipt.kept === false || receipt.invalid || receipt.challenge || receipt.popup || receipt.newTab || receipt.replaced || receipt.effect === "none" || receipt.effect === "possibly_effected") stop("the example action failed, changed tabs or has an uncertain outcome; review it before starting another request");
@@ -237,11 +261,22 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
     };
 
     const tools = Object.fromEntries(Object.entries({ ...ALL_TOOLS, element: TOOLS.element }).filter(([name]) => Object.hasOwn(AGENT_NAMES, name)).map(([name, tool]) => [name, { ...tool, run: async (args: Record<string, unknown>) => {
-      try { return await call(name, args); }
-      catch (error) { lastFailure = reasonOf(error); throw error; }
+      try {
+        const value = await call(name, args);
+        lastFailure = undefined;
+        return value;
+      } catch (error) {
+        lastFailure = reasonOf(error);
+        if (name === "playbooks" && args.do === "save") publicationFailure = lastFailure;
+        throw error;
+      }
     } }]));
     const result = await runAgent(messages, {
       ...cfg, tools, recall: false,
+      finalCheck: () => state.result || state.failure || publicationFailure || lastFailure ? undefined
+        : state.learning ? "No playbooks save returned a verified name. Continue the observed example and save its checked result."
+        : state.observed ? "No playbooks learn call has returned an error. Inspect the result structure if needed, then call playbooks learn before typing or clicking."
+        : "No snapshot has returned an error. Call snapshot on the assigned tab before judging whether learning is possible.",
       inbox: async () => [...((await cfg.inbox?.()) ?? []), ...(state.result || state.failure ? [{ kind: "stop" as const }] : [])],
       onEvent: (event) => {
         if (event.type === "error") modelFailure = event.text;
@@ -252,9 +287,9 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
       savedRecording(state.result.name, state);
       return { answer: JSON.stringify(state.result), status: "done" };
     }
-    const provider = modelFailure && /model (?:error|endpoint)|empty completion/.test(modelFailure)
-      ? `${modelFailure}; configure an available provider with SAFARI_MODEL_BASE, SAFARI_MODEL and SAFARI_MODEL_KEY; no fallback was used` : undefined;
-    const error = state.failure ?? provider ?? modelFailure ?? lastFailure ?? (result.status === "stopped" ? "authoring was stopped before a verified tool was saved" : "the model finished without saving a verified tool");
+    const provider = modelFailure && /remote model failed|model (?:error|endpoint)|empty completion/.test(modelFailure)
+      ? modelFailure : undefined;
+    const error = state.failure ?? provider ?? publicationFailure ?? lastFailure ?? modelFailure ?? (result.status === "stopped" ? "authoring was stopped before a verified tool was saved" : "the model finished without saving a verified tool");
     if (result.status !== "stopped") state.failure = error;
     return failed(error, result.status === "stopped" && !state.failure ? "stopped" : "failed");
   } catch (error) {
@@ -300,8 +335,7 @@ async function mintTool(args: Record<string, unknown>): Promise<unknown> {
   const request = mintRequest(args.url, args.example, args.from);
   const steps = stepLimit(args.steps);
   const rec = await newSession(args.task, {
-    host: "local", model: typeof args.model === "string" ? args.model : process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
-    baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1", mint: request,
+    host: "local", ...mintProvider(typeof args.model === "string" ? args.model : undefined), mint: request,
   });
   const child = spawn(process.execPath, [import.meta.path, rec.id, String(steps)], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], env: process.env });
   const { promise, resolve, reject } = Promise.withResolvers<void>();

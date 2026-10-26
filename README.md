@@ -554,11 +554,14 @@ that local deletion boundary.
 
 ### Private website tools
 
-`safari mint` uses a configured tool-calling model to complete one read-only
-example in a separate Safari tab. It saves a reusable tool only after checking
+`safari mint` uses the existing remote model subscription to complete one
+read-only example in a separate Safari tab. The task, example and inspected
+page details are sent to that model provider; saved tools and browser tabs
+remain private to this Mac. It saves a reusable tool only after checking
 the live result, and returns the saved name and revision rather than the
-model's claim. Without a provider, it fails without publishing a tool. Set
-`SAFARI_MODEL_BASE` and `SAFARI_MODEL`; set `SAFARI_MODEL_KEY` if required.
+model's claim. No key needs to be copied. An unavailable model fails without
+publishing a tool. A custom compatible endpoint can instead use
+`SAFARI_MODEL_BASE`, `SAFARI_MODEL` and, if required, `SAFARI_MODEL_KEY`.
 
 ```
 safari mint "search messages and return subject and date" \

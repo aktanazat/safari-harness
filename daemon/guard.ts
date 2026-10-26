@@ -133,7 +133,7 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
     }
     if (Object.hasOwn(args, real)) throw new Error(`${from[real]} and ${key} both name ${real} for ${tool}; pass one`);
     if (real !== key) notes.push(`used ${real} for ${key}`);
-    args[real] = value;
+    args[real] = real === "ref" && typeof value === "string" && /^\[(?:\d+|f\d+:\d+)\]$/.test(value) ? value.slice(1, -1) : value;
     from[real] = key;
   }
   if (unknown.length) {

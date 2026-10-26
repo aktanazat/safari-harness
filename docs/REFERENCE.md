@@ -2522,10 +2522,13 @@ one-time code, card, or hidden field keeps only its kind.
 ## mint
 
 `mint` authors one private, read-only website tool from a plain task, a site
-URL and one example map. It uses the configured tool-calling model and a new
-background tab in the owner's Safari. It publishes only an opted-in recording
-with a live end check and a checked example result. A model's final sentence
-alone is not proof. Without a model provider, no tool is published.
+URL and one example map. By default it uses the remote model subscription
+already available on this Mac, without copying an access key. The task,
+example and inspected page details are sent to that provider; browser tabs
+and saved tools stay local. It uses a new background tab in the owner's
+Safari and publishes only an opted-in recording with a live end check and
+a checked example result. A model's final sentence alone is not proof.
+Without an available model, no tool is published.
 
 ```
 safari mint "search messages and return subject and date" \
@@ -2541,8 +2544,9 @@ model?}`, then `mint {do: "get" | "cancel", id}`. `start` acknowledges a
 running session, not a saved tool. `get` returns its status or the actual
 verified recording name, tool identity, revision and checked example result.
 `cancel` stops that session; it cannot undo an action. A foreground CLI run
-waits for publication or fails with a nonzero exit. The provider uses
-`SAFARI_MODEL_BASE`, `SAFARI_MODEL` and, when needed, `SAFARI_MODEL_KEY`.
+waits for publication or fails with a nonzero exit. Set `SAFARI_MODEL_BASE`
+and `SAFARI_MODEL` to use another compatible endpoint; set
+`SAFARI_MODEL_KEY` when it requires an access key.
 
 The authoring agent can inspect the assigned tab, navigate public paths,
 enter the supplied examples and use observed read-only search controls. It

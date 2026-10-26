@@ -37,11 +37,17 @@ export type Control = { kind: "steer" | "queue" | "stop"; text?: string };
 
 export type AgentStatus = "done" | "stopped" | "failed" | "out of steps";
 
+export type AgentToolSchema = { type: "function"; function: { name: string; description: string; parameters: { type: string; properties: Tool["params"]; required?: string[] } } };
+export type AgentCompletionRequest = { model: string; messages: ChatMsg[]; tools: AgentToolSchema[]; tool_choice: string; stream: boolean };
+export type AgentCompletion = (body: AgentCompletionRequest, signal: AbortSignal) => Promise<ChatMsg>;
+
 export type AgentConfig = {
   baseUrl: string;      // e.g. http://127.0.0.1:11434/v1
   model: string;        // e.g. gemma4:12b-mlx
   apiKey?: string;
+  complete?: AgentCompletion;
   maxSteps: number;
+  finalCheck?: (answer: string) => string | undefined;
   onEvent: (ev: AgentEvent) => void;
   // Messages sent to the loop while it runs; each is returned once.
   inbox?: () => Promise<Control[]>;
@@ -242,7 +248,7 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
     if (stopped) return { answer, status: "stopped" };
     joinSteers();
     trimMessages(messages);
-    const body = { model: cfg.model, messages: cfg.recall === false ? messages : await withBrowserContext(messages), tools: toolSchemas(tools), tool_choice: "auto", stream: false };
+    const body: AgentCompletionRequest = { model: cfg.model, messages: cfg.recall === false ? messages : await withBrowserContext(messages), tools: toolSchemas(tools), tool_choice: "auto", stream: false };
     // A steer or stop that arrives while the model thinks cuts the reply short.
     const cut = new AbortController();
     let watching = true;
@@ -252,15 +258,22 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
         if (watching && (await takeInbox())) cut.abort();
       }
     })();
-    let resp: Response | null = null;
     let failure = "";
-    try {
-      resp = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: cut.signal });
-      if (!resp.ok) failure = `model error ${resp.status}: ${(await resp.text()).slice(0, 400)}`;
-    } catch (e) {
-      if (!cut.signal.aborted) failure = `model endpoint unreachable: ${String(e)}`;
+    let msg: ChatMsg | undefined;
+    if (cfg.complete) {
+      try { msg = await cfg.complete(body, cut.signal); }
+      catch (e) { if (!cut.signal.aborted) failure = `remote model failed: ${String(e instanceof Error ? e.message : e)}`; }
+    } else {
+      let resp: Response | null = null;
+      try {
+        resp = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: cut.signal });
+        if (!resp.ok) failure = `model error ${resp.status}: ${(await resp.text()).slice(0, 400)}`;
+      } catch (e) {
+        if (!cut.signal.aborted) failure = `model endpoint unreachable: ${String(e)}`;
+      }
+      const data = resp && !failure && !cut.signal.aborted ? ((await resp.json().catch(() => null)) as { choices?: { message: ChatMsg }[] } | null) : null;
+      msg = data?.choices?.[0]?.message;
     }
-    const data = resp && !failure && !cut.signal.aborted ? ((await resp.json().catch(() => null)) as { choices?: { message: ChatMsg }[] } | null) : null;
     watching = false;
     await watcher;
     if (stopped) return { answer, status: "stopped" };
@@ -269,7 +282,6 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
       cfg.onEvent({ type: "error", text: failure });
       return { answer, status: "failed" };
     }
-    const msg = data?.choices?.[0]?.message;
     if (!msg) {
       cfg.onEvent({ type: "error", text: "empty completion" });
       return { answer, status: "failed" };
@@ -302,6 +314,13 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
     }
 
     answer = (msg.content ?? "").trim();
+    const correction = cfg.finalCheck?.(answer);
+    if (correction) {
+      messages.pop();
+      messages.push({ role: "user", content: correction });
+      await cfg.save?.(messages);
+      continue;
+    }
     cfg.onEvent({ type: "answer", text: answer });
     await cfg.save?.(messages);
     await takeInbox();

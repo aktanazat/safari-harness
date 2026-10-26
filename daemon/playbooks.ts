@@ -209,7 +209,7 @@ export async function learnAgentAction(tool: string, a: Record<string, unknown>,
       if (step && !s.failed) s.steps.push(step);
       write(path, s);
       return result;
-    } catch (e) { s.failed = "an agent action failed"; write(path, s); throw e; }
+    } catch (e) { if (!readOnly) { s.failed = "an agent action failed"; write(path, s); } throw e; }
   });
 }
 

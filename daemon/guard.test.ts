@@ -76,6 +76,12 @@ test("a name written another way runs, with a note saying what was used", async 
   expect(sent).toEqual(["7 select 3 Blue"]);
 });
 
+test("a snapshot ref copied with its display brackets reaches the observed control", async () => {
+  const sent = safari(() => ({ value: { ok: true } }));
+  expect(await model(108, "click", { tab: 7, ref: "[6]" })).toMatchObject({ ok: true });
+  expect(sent).toEqual(["7 click 6"]);
+});
+
 test("a parameter the tool does not take fails before the page is asked, naming the nearest one", async () => {
   const sent = safari(() => ({ value: { ok: true } }));
   await expect(model(105, "select", { tab: 7, ref: "3", optoin: "Blue" })).rejects.toThrow("unknown parameter optoin for select; did you mean option? (params: tab, ref, option, snapshot)");

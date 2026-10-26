@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { firstMessages, runAgent, type AgentConfig, type AgentEvent, type AgentStatus, type ChatMsg, type Control } from "./agent.ts";
 import { mintMessages, runMintAgent, type MintRequest, type MintState } from "./mint.ts";
+import { ompCompletion } from "./omp-provider.ts";
 
 export const SESSIONS_DIR = join(homedir(), ".local/share/safari-harness/sessions");
 
@@ -180,6 +181,7 @@ export async function runSession(rec: SessionRecord, opts: {
         baseUrl: rec.baseUrl,
         model: rec.model,
         apiKey: opts.apiKey,
+        ...(rec.mint && rec.baseUrl === "omp://subscription" ? { complete: ompCompletion } : {}),
         maxSteps: opts.maxSteps,
         onEvent: opts.onEvent,
         inbox: async () => {

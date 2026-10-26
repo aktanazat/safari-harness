@@ -25,7 +25,7 @@ const goal = "Search the catalog";
 const field = { type: "search", autocomplete: "off", name: "q", id: "query", label: "Search" };
 const fp = (role: string, tag: string, name = "Search") => ({ role, tag, name, near: "", path: "", index: 0, count: 1 });
 const rec = (steps: unknown[] = [{ kind: "type", url, field, param: "q", target: fp("searchbox", "input") }, { kind: "click", url, target: fp("button", "button") }]) => ({ url, source: "agent", verified: true, goal, params: ["q"], before: { selector: "#search" }, verify: { selector: "#results" }, steps });
-function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; searchForm?: { method: string; action: string; inputs: { name: string; id: string; type: string }[] }; before?: boolean; after?: boolean; failedAction?: boolean; challenge?: boolean; resultCount?: number; rows?: { before: string; after: string } } = {}) {
+function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boolean; submit?: boolean; searchForm?: { method: string; action: string; inputs: { name: string; id: string; type: string }[] }; before?: boolean; after?: boolean; failedAction?: boolean; failedRead?: boolean; challenge?: boolean; resultCount?: number; rows?: { before: string; after: string } } = {}) {
   let typed = ""; let clicked = 0; let searched = false;
   const calls: string[] = []; const modelCalls: string[] = [];
   const call = async (tool: string, a: Record<string, unknown>, model = false): Promise<unknown> => {
@@ -35,7 +35,7 @@ function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boole
       case "info": return { url };
       case "real_site": return undefined;
       case "news": return {};
-      case "snapshot": return { url, snapshot: '[1] searchbox "Search"\n[2] button "Search"' };
+      case "snapshot": if (options.failedRead) { options.failedRead = false; throw new Error("read interrupted"); } return { url, snapshot: '[1] searchbox "Search"\n[2] button "Search"' };
       case "eval": {
         const expression = String(a.expression);
         if (options.rows && expression.includes("const output =")) return { ok: true, result: { rows: [{ subject: searched ? options.rows.after : options.rows.before }], origin: new URL(url).origin, hash: searched ? `#search/${typed}` : "" } };
@@ -88,6 +88,16 @@ test("an opted-in verified run stores only named parameters and replays with one
   expect(JSON.stringify(choices)).not.toContain("new current value");
   expect(choices).toHaveLength(1);
   expect(p.modelCalls).toEqual([]);
+});
+
+test("a failed read does not poison an opted-in example before its first action", async () => {
+  fixture({ failedRead: true });
+  await invoke("open", { url, background: true }, true);
+  await invoke("playbooks", { do: "learn", tab: 7, goal, params: ["q"], before: { selector: "#search" } }, true);
+  await expect(invoke("snapshot", { tab: 7 }, true)).rejects.toThrow("read interrupted");
+  await invoke("type", { tab: 7, ref: 1, text: "pears" }, true);
+  await invoke("click", { tab: 7, ref: 2 }, true);
+  expect(await invoke("playbooks", { do: "save", tab: 7, selector: "#results" }, true)).toMatchObject({ verified: true });
 });
 
 test("a learned lookup returns the current page's result without saving the example result", async () => {
