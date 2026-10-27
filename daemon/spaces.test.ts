@@ -9,7 +9,7 @@ import { changeQueue, files, readQueue } from "./groups.ts";
 import { recent } from "./journal.ts";
 import { tracksOwner } from "./mission.ts";
 import { alive, runAs } from "./owner.ts";
-import { closeManagedWindow, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { closeManagedWindow, loadSpaces, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -311,6 +311,73 @@ test("a task shares one window across named and default opens while another task
   expect(new Set([...s.tabs.values()].map((tab) => tab.windowId)).size).toBe(3);
 });
 
+test("parallel helpers of one project share a window without sharing their tabs or cleanup", async () => {
+  const s = safari();
+  const a = agent();
+  const main = JSON.stringify(["project-window", "Main"]);
+  const first = JSON.stringify(["helper-one", "First", "project-window"]);
+  const second = JSON.stringify(["helper-two", "Second", "project-window"]);
+  const open = (task: string, url: string) => runAs(a.pid, () => callTool("open", { url, background: true }), task) as Promise<{ id: number; windowId: number }>;
+  const parent = await open(main, "https://research.example/main");
+  const one = await open(first, "https://research.example/first");
+  const two = await open(second, "https://research.example/second");
+  expect(new Set([parent.windowId, one.windowId, two.windowId])).toEqual(new Set([parent.windowId]));
+  expect([...s.tabs.values()].filter((tab) => tab.url.includes("/space?"))).toHaveLength(1);
+  const listed = await runAs(a.pid, () => callTool("tabs", {}), first) as { tabs: { id: number }[] };
+  expect(listed.tabs.map((tab) => tab.id)).toEqual([one.id]);
+  await endTurn(a.pid, undefined, first);
+  expect(s.tabs.has(one.id)).toBe(false);
+  expect(s.tabs.has(parent.id)).toBe(true);
+  expect(s.tabs.has(two.id)).toBe(true);
+  a.kill();
+});
+
+test("restoring identical addresses from different helpers never assigns either tab to the other", async () => {
+  const s = safari();
+  const a = agent();
+  const first = JSON.stringify(["helper-one", "First", "project-restore"]);
+  const second = JSON.stringify(["helper-two", "Second", "project-restore"]);
+  const open = (task: string) => runAs(a.pid, () => callTool("open", { url: "https://research.example/shared", background: true }), task);
+  await open(first);
+  const secondPage = await open(second) as { id: number };
+  s.relaunch();
+  const restoredFirst = [...s.tabs.values()].find((tab) => tab.url === "https://research.example/shared")!;
+  s.tabs.delete(restoredFirst.id);
+  s.tabs.set(secondPage.id, { ...restoredFirst, id: secondPage.id });
+  setSystemTime(new Date(Date.now() + 1000));
+  connect(s.sock);
+  setSystemTime();
+  await runAs(a.pid, () => callTool("tabs", { all: true }), first);
+  const restored = [...s.tabs.values()].filter((tab) => tab.url === "https://research.example/shared").map((tab) => tab.id);
+  expect(restored).toHaveLength(2);
+  await endTurn(a.pid, undefined, first);
+  expect(restored.every((id) => s.tabs.has(id))).toBe(true);
+  const secondView = await runAs(a.pid, () => callTool("tabs", {}), second) as { tabs: { id: number }[] };
+  expect(secondView.tabs.some((tab) => restored.includes(tab.id))).toBe(false);
+  a.kill();
+});
+
+test("after Safari restarts, distinct helper pages in one window retain separate completion ownership", async () => {
+  const s = safari();
+  const a = agent();
+  const first = JSON.stringify(["helper-one", "First", "project-restart"]);
+  const second = JSON.stringify(["helper-two", "Second", "project-restart"]);
+  const open = (task: string, url: string) => runAs(a.pid, () => callTool("open", { url, background: true }), task);
+  await open(first, "https://research.example/first");
+  await open(second, "https://research.example/second");
+  s.relaunch();
+  setSystemTime(new Date(Date.now() + 1000));
+  connect(s.sock);
+  setSystemTime();
+  await runAs(a.pid, () => callTool("tabs", {}), first);
+  const restored = [...s.tabs.values()].filter((tab) => tab.url.startsWith("https://research.example/"));
+  expect(restored).toHaveLength(2);
+  await endTurn(a.pid, undefined, first);
+  expect(s.tabs.has(restored.find((tab) => tab.url.endsWith("/first"))!.id)).toBe(false);
+  expect(s.tabs.has(restored.find((tab) => tab.url.endsWith("/second"))!.id)).toBe(true);
+  a.kill();
+});
+
 test("a saved task window from the old per-group layout is reused after restart", async () => {
   const s = safari();
   const before = await daemonOn(47367, "legacy-group-before");
@@ -322,6 +389,33 @@ test("a saved task window from the old per-group layout is reused after restart"
   const reused = await runAs(process.pid, () => after.spaceWindow(), "legacy-restored");
   expect(reused.window).toBe(opened.window);
   expect(new Set([...s.tabs.values()].map((tab) => tab.windowId)).size).toBe(2);
+});
+
+test("an older task window still recovers its tabs beside a new helper window", async () => {
+  const s = safari();
+  const a = agent();
+  const main = JSON.stringify(["mixed-project", "Main"]);
+  const helper = JSON.stringify(["mixed-helper", "Helper", "mixed-project"]);
+  const window = next++;
+  const marker = next++;
+  const space: Spaces.Space = { key: JSON.stringify([a.pid, main, ""]), id: "mixed-legacy", window, name: "mixed-legacy", size: { width: 1100, height: 800 }, owner: a.pid, task: main, group: "plain" };
+  s.tabs.set(marker, { id: marker, url: "http://127.0.0.1:37334/space?id=mixed-legacy&name=mixed-legacy&size=1100x800", windowId: window, active: false });
+  const path = join(dir, "mixed-legacy.json");
+  writeFileSync(path, JSON.stringify({ version: 2, spaces: [space] }));
+  loadSpaces(path, () => true);
+  const open = (task: string, url: string) => runAs(a.pid, () => callTool("open", { url, background: true }), task);
+  await open(main, "https://research.example/legacy");
+  await open(helper, "https://research.example/helper");
+  s.relaunch();
+  setSystemTime(new Date(Date.now() + 1000));
+  connect(s.sock);
+  setSystemTime();
+  await runAs(a.pid, () => callTool("tabs", {}), main);
+  const restored = [...s.tabs.values()].find((tab) => tab.url === "https://research.example/legacy")!;
+  await endTurn(a.pid, undefined, main);
+  expect(s.tabs.has(restored.id)).toBe(false);
+  expect([...s.tabs.values()].some((tab) => tab.url === "https://research.example/helper")).toBe(true);
+  a.kill();
 });
 
 test("a stale saved group does not hide another live window of the same task", async () => {

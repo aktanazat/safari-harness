@@ -15,7 +15,7 @@ import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
-import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -292,7 +292,7 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // started again (restored). done: cleanup was explicitly admitted for it.
 // failed: its last close at a turn's end did not close it; retry: how many
 // of those closes threw, and when the next may go (sweepOnce).
-type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
+type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 // the used time the file of tabs holds for each, as last written (save)
 const written = new WeakMap<HarnessTab, number>();
@@ -739,7 +739,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.ambiguousRestore ? { ambiguousRestore: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -805,7 +805,10 @@ function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): v
     if (!moveKept(from, to)) continue;
     owned = true;
     const held = harnessTabs.get(to);
-    if (held) held.seen = bridge.extensionInfo?.connectedAt;
+    if (held) {
+      held.seen = bridge.extensionInfo?.connectedAt;
+      delete held.ambiguousRestore;
+    }
     void bridge.request("dialogs", [to, { accept: false, text: null }]).catch(() => {});
   }
   if (owned) save();
@@ -820,49 +823,87 @@ function sighted(tabs: TabInfo[]): void {
   const now = bridge.extensionInfo?.connectedAt;
   const listed = new Map(tabs.map((t) => [t.id, t]));
   const owners = ownersByPage(tabs);
+  let reconnecting = false;
+  for (const tab of harnessTabs.values()) {
+    if (tab.seen === now) continue;
+    reconnecting = true;
+    break;
+  }
+  const legacyTasks = reconnecting ? new Set([...owners.values()].filter((owner) => !owner.family).map((owner) => JSON.stringify([owner.owner, owner.task]))) : undefined;
+  const familyOwners = reconnecting ? new Map<string, string>() : undefined;
+  if (familyOwners) {
+    let ambiguous = false;
+    for (const t of harnessTabs.values()) {
+      if (t.owner === undefined || t.url === undefined || t.task === undefined || legacyTasks?.has(JSON.stringify([t.owner, t.task]))) continue;
+      const key = JSON.stringify([t.owner, taskFamily(t.task), t.url]);
+      if (t.ambiguousRestore) familyOwners.set(key, "");
+      else if (!familyOwners.has(key)) familyOwners.set(key, t.task);
+      else if (familyOwners.get(key) !== t.task) {
+        familyOwners.set(key, "");
+        ambiguous = true;
+      }
+    }
+    if (ambiguous) {
+      for (const t of harnessTabs.values()) {
+        if (t.owner !== undefined && t.url !== undefined && t.task !== undefined &&
+            familyOwners.get(JSON.stringify([t.owner, taskFamily(t.task), t.url])) === "") t.ambiguousRestore = true;
+      }
+      save();
+    }
+  }
   let changed = false;
-  const lost: [number, HarnessTab][] = [];
+  const missing: [number, HarnessTab][] = [];
   for (const [id, t] of harnessTabs) {
     const shown = listed.get(id);
     const owner = shown?.windowId === undefined ? undefined : owners.get(shown.windowId);
-    if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owner?.owner === t.owner && owner?.task === t.task))) {
+    const sameFamily = t.seen !== now && owner?.family === true && owner.task === taskFamily(t.task) &&
+      familyOwners?.get(JSON.stringify([t.owner, owner.task, t.url])) === t.task &&
+      !legacyTasks?.has(JSON.stringify([t.owner, t.task]));
+    const matchesWindow = owner?.family === true ? sameFamily : owner?.task === t.task;
+    if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owner?.owner === t.owner && matchesWindow))) {
       changed ||= t.url !== shown.url || t.seen !== now;
       t.url = shown.url;
       t.seen = now;
       t.unsafe = shown.url !== undefined && resumeAddress(shown.url) === undefined ? true : undefined;
-    } else if (t.seen !== now && t.owner !== undefined && t.url !== undefined && !t.closing) lost.push([id, t]);
+    } else if (t.seen !== now && t.owner !== undefined && t.url !== undefined && !t.closing) missing.push([id, t]);
   }
   if (changed) save();
-  if (lost.length > 0) restored(lost, tabs);
+  for (let i = missing.length - 1; i >= 0; i--) {
+    const [id, t] = missing[i];
+    if (!t.ambiguousRestore) continue;
+    lost(id, false);
+    missing.splice(i, 1);
+  }
+  if (missing.length > 0) restored(missing, tabs);
 }
 
-// A Safari that starts again (a crash, an update) restores its windows
-// with every tab under a new id, and nothing told the daemon which is
-// which: on 10-05 three restarts left one agent's tabs behind each time,
-// never closed, in windows that read as the user's, 22 of them by the
-// afternoon. An agent's window is known by its page (spaces.ts), and in it
-// a lost tab by the page it showed: a restored tab no one holds that shows
-// it is that tab, unless more show it than were lost (one kept for the
-// user among them), when they all stay his.
 function restored(lost: [number, HarnessTab][], tabs: TabInfo[]): void {
   const owners = ownersByPage(tabs);
+  const markers = [...owners.values()];
   const free = new Map<string, number[]>();
   for (const t of tabs) {
     const owner = t.windowId === undefined ? undefined : owners.get(t.windowId);
     if (owner?.owner === undefined || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
-    const key = JSON.stringify([owner.owner, owner.task ?? null, t.url]);
+    const key = JSON.stringify([owner.owner, owner.task ?? null, owner.family === true ? "family" : "legacy", t.url]);
     free.set(key, [...(free.get(key) ?? []), t.id]);
   }
   const was = new Map<string, number[]>();
   for (const [id, t] of lost) {
-    const key = JSON.stringify([t.owner, t.task ?? null, t.url]);
+    if (t.ambiguousRestore) continue;
+    const legacy = markers.some((marker) => marker.owner === t.owner && marker.task === t.task && marker.family !== true);
+    const family = taskFamily(t.task);
+    const grouped = markers.some((marker) => marker.owner === t.owner && marker.task === family && marker.family === true);
+    if (!legacy && !grouped) continue;
+    const key = JSON.stringify([t.owner, legacy ? t.task ?? null : family ?? null, legacy ? "legacy" : "family", t.url]);
     was.set(key, [...(was.get(key) ?? []), id]);
   }
   const moved = new Map<number, number>();
   const order = (x: number, y: number) => x - y;
+  // Two helpers with the same address cannot be distinguished after Safari
+  // restores their tabs under new ids; leave both alone rather than trade owners.
   for (const [key, olds] of was) {
     const now = free.get(key) ?? [];
-    if (now.length === 0 || now.length > olds.length) continue;
+    if (now.length === 0 || now.length > olds.length || new Set(olds.map((id) => harnessTabs.get(id)?.task)).size > 1) continue;
     olds.sort(order);
     for (const [i, to] of now.toSorted(order).entries()) moved.set(olds[i], to);
   }

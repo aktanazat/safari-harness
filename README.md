@@ -201,18 +201,20 @@ owned tab IDs with a call-generation token; it never closes a page.
 it; unrelated helpers do not. A request without a preparation is rejected.
 omp tags browser calls with the session and agent identity (a helper's
 with its lead's session too), including calls through the CLI and shared
-REPLs. Each helper's final `agent_end` releases only its pages and empty
-windows. Main-session completion or process exit
-also releases any abandoned descendants. Identically named groups in
-different tasks still get separate windows. Clicked pages, filled fields,
-site-global tabs and an agent page in front are included. Pages explicitly
-kept for the user, pending handoffs and personal tabs stay protected.
-Cleanup waits for a task's in-flight calls and any shared reads using its
-pages, not for unrelated sibling work. Existing omp processes retain their
-loaded extension; new sessions load this task-aware completion hook.
-Background handoff polling does not keep a finished call alive. Recovery
-after a Safari restart distinguishes identical URLs by the task in each
-registered window.
+REPLs. The main task and its direct helpers use tabs in one project window.
+Each helper's final `agent_end` releases only its pages. The shared window
+stays while another helper still has pages; an empty window closes.
+Main-session completion or process exit also releases abandoned descendants.
+Different projects get different windows, even when they use the same group
+name. Clicked pages, filled fields, site-global tabs and an agent page in
+front are included. Pages explicitly kept for the user, pending handoffs
+and personal tabs stay protected. Cleanup waits for a task's in-flight calls
+and shared reads using its pages, not for unrelated sibling work. Existing
+omp processes retain their loaded extension; new sessions load this
+task-aware completion hook. Background handoff polling does not keep a
+finished call alive. After Safari restarts, a restored tab is reattached
+only when its helper can be identified; identical addresses from different
+helpers stay open and unclaimed rather than crossing ownership.
 
 Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
 with the existing form, front-page, kept-page and handoff protections.

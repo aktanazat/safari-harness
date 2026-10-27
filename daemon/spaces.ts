@@ -35,7 +35,7 @@ import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
 import { closeTab, endUntrackedTurns, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -142,20 +142,30 @@ function spaceKey(group: string | undefined, isolated = false): string {
   const owner = currentOwner();
   const task = currentTask();
   if (task === undefined) return `${owner ?? "daemon"}:${group ?? ""}`;
-  return JSON.stringify(isolated ? [owner ?? null, task, "", group ?? ""] : [owner ?? null, task, ""]);
+  return isolated ? JSON.stringify([owner ?? null, task, "", group ?? ""]) : JSON.stringify([owner ?? null, taskFamily(task), "family"]);
 }
 
 function* matchingSpaces(key: string, isolated = false): Generator<Space> {
   const found = spaces.get(key);
-  if (found) yield found;
+  if (found) {
+    yield found;
+    return;
+  }
   const owner = currentOwner();
   const task = currentTask();
   if (task === undefined || isolated) return;
   for (const space of spaces.values()) {
-    if (space === found || space.owner !== owner || space.task !== task) continue;
+    if (space.owner !== owner || space.task !== task) continue;
     const parts = JSON.parse(space.key) as unknown;
-    if (Array.isArray(parts) && parts.length === 3) yield space;
+    if (Array.isArray(parts) && parts.length === 3 && parts[2] !== "family") yield space;
   }
+}
+
+function matchesSpaceTask(space: Space, owner: number | undefined, task?: string): boolean {
+  if (matchesTask(space, owner, task)) return true;
+  if (task === undefined || space.owner !== owner || space.task !== taskFamily(task)) return false;
+  const parts = JSON.parse(space.key) as unknown;
+  return Array.isArray(parts) && parts[2] === "family";
 }
 
 // The calling agent's window for group, never a new one: on 10-23 each
@@ -195,7 +205,7 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
       const w = (await bridge.request("windows.open", [page, size])) as { windowId: number; tabId: number };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size, owner, ...(task === undefined ? {} : { task }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      const space: Space = { key, id, window: w.windowId, name, size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
@@ -580,7 +590,7 @@ async function stillOpen(listed: TabInfo[] | undefined): Promise<TabInfo[] | und
 
 export function turnResumed(owner: number | undefined, task?: string): void {
   let changed = false;
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) {
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesSpaceTask(s, owner, task)) {
     // used counts in minutes (sweepOnce), so the file is written only once
     // the time it holds for this window is a minute behind
     if (s.done || Date.now() - (written.get(s) ?? 0) >= 60_000) changed = true;
@@ -593,7 +603,7 @@ export function turnResumed(owner: number | undefined, task?: string): void {
 // The runtime admitted cleanup of this owner's disposable tabs (endTurn,
 // tools.ts). Its windows can end only when nothing but their marker remains.
 export async function turnEnded(owner: number | undefined, task?: string): Promise<void> {
-  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesTask(s, owner, task)) s.done = true;
+  for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (matchesSpaceTask(s, owner, task)) s.done = true;
   save();
   if (spaces.size > 0 || ended.size > 0) sweepSoon();
   if (spaceSweeping) await spaceSweeping;
@@ -616,12 +626,16 @@ export function spaceEnded(id: string): boolean {
 
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
-export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task">> {
-  const owners = new Map<number, Pick<Space, "owner" | "task">>();
+export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task"> & { family?: true }> {
+  const owners = new Map<number, Pick<Space, "owner" | "task"> & { family?: true }>();
+  const byId = new Map([...spaces.values()].map((space) => [space.id, space]));
   for (const t of tabs) {
     const p = pageAt(t);
-    const owner = p === undefined ? undefined : spaceById(p.id);
-    if (p !== undefined && owner?.owner !== undefined) owners.set(p.window, owner);
+    const space = p === undefined ? undefined : byId.get(p.id);
+    if (p !== undefined && space?.owner !== undefined) {
+      const parts = space.task === undefined ? undefined : JSON.parse(space.key) as unknown;
+      owners.set(p.window, { owner: space.owner, task: space.task, ...(Array.isArray(parts) && parts[2] === "family" ? { family: true } : {}) });
+    }
   }
   return owners;
 }
@@ -629,7 +643,12 @@ export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" |
 // The agent windows open now, and whose each is (tabs-view.ts): a tab in
 // one is that agent's.
 export function windowOwners(task?: string): Map<number, number | undefined> {
-  return new Map([...spaces.values()].map((s) => [s.window, task === undefined || s.task === task ? s.owner : undefined]));
+  return new Map([...spaces.values()].map((s): [number, number | undefined] => {
+    if (task === undefined) return [s.window, s.owner];
+    if (s.task !== task) return [s.window, undefined];
+    const parts = JSON.parse(s.key) as unknown;
+    return [s.window, Array.isArray(parts) && parts[2] === "family" ? undefined : s.owner];
+  }));
 }
 
 // A window its agent sized (tools.ts viewport), which its keeper finds by

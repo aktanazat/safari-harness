@@ -76,24 +76,27 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
   `window` take only a tab id.
-- Every tab you open goes into a Safari window of your own, never into his
-  windows or tab groups. It opens behind his without taking focus. A task
-  shares one window even if later calls use a different `group` or omit it.
+- Every tab you open goes into a Safari window for your project, never into
+  the user's windows or tab groups. The main task and its direct parallel
+  helpers share that window, even when they use different group names.
+  Each helper still owns its own tabs; finishing one does not close the
+  others. It opens behind the user's window without taking focus.
   For calls without a task identity, each `group` gets its own window and
   ungrouped tabs share one. The window opens on a page titled with its first
   group's name (or "agent") and your process id; ", window 2" and up
   distinguish a group of that name still awaiting deletion. This labels
-  the window for him, keeps it yours when the extension reloads or Safari
-  starts again, and lets him pause or stop you
+  the window for the user, keeps it yours when the extension reloads or
+  Safari starts again, and lets the user pause or stop you
   (`safari guide reference mission control`). The daemon keeps its windows
   across its own restarts, so your next tab still joins yours. When Safari
-  starts again, the tabs it restores in your window stay yours: an id you
-  held leads to its tab's new one (`replaced` in the next result says so),
-  and they close as your other tabs do.
-- Once that window holds three of your tabs, it becomes a Safari tab group
-  of the same name the first time he has left the keyboard and mouse alone
-  for 30 seconds; a window with fewer stays plain and closes with your
-  tabs. `open` says which under `space`: `group` is `waiting`,
+  starts again, the harness reconnects only tabs whose helper it can identify.
+  If two helpers had the same address, both tabs stay open rather than being
+  assigned to the wrong helper.
+- Once that window holds three of the project's tabs, it becomes a Safari
+  tab group of the same name the first time the user has left the keyboard
+  and mouse alone for 30 seconds; a window with fewer stays plain and closes
+  with its tabs.
+  `open` says which under `space`: `group` is `waiting`,
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
   `bun run helpers` has not built scripts/spaces, or groups are off); a
@@ -106,9 +109,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   while it is there, and each agent is told why once, not on every open.
 - A finished task needs no `close` call. The [cleanup and recovery
   rules](#cleanup-authority) apply to agent tabs opened through MCP, the
-  CLI, a `repl --session`, or site globals. Empty agent windows close at
-  completion; later tab-group bookkeeping does not keep an ended window
-  open. A protected or user-owned tab keeps its window.
+  CLI, a `repl --session`, or site globals. Empty project windows close
+  after their tabs are gone; later tab-group bookkeeping does not keep an
+  ended window open. A protected or user-owned tab keeps its window.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -954,8 +957,8 @@ have, use `safari goto <url> --tab N`.
   `127.0.0.1:37334`) open in your agent window if you have one, else as a
   plain tab of yours: never a new agent window.
 - `keep: true` (CLI `--keep`) leaves the tab open for the user past your
-  turn (`safari guide keep`); `group` (CLI `--group trip`) gives a task a
-  window of its own (`safari guide reference lifecycle`).
+  turn (`safari guide keep`); `group` (CLI `--group trip`) names the project's
+  shared window (`safari guide reference lifecycle`).
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers. `open` and
   `goto` also wait up to 5 s while the page says it is loading (as
