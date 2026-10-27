@@ -228,6 +228,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari replay <name> [--tab N] [--vars '{"field":"text"}'] [--json]
                                              do a recording again in a background tab;
                                              exits 1 when a step fails
+  safari playbooks preview --tab N --output '{"rows":"tr.item","fields":{"title":".title"}}'
+                                             check rows on the current page without replaying actions
   safari playbooks learn --tab N --goal "Search the catalog"
                       --params '["q"]' --before '{"selector":"#search"}'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']

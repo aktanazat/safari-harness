@@ -157,7 +157,7 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number): P
         await Bun.sleep(pause);
         if (over || Date.now() >= end) return;
         known = recalled(urls[i], job);
-        result = known ? { page: known, disconnected: false } : await visit(urls[i], job);
+        result = known ? { page: known, disconnected: false } : await visit(urls[i], job, true);
       }
       if (over) return;
       const { page } = result;
@@ -319,7 +319,7 @@ function recalled(url: string, job: Job): Page | undefined {
 // One page, start to end; it answers for every failure, its tab's close
 // included, so one page never takes the others down with it. A page that
 // opens as its site's error page is loaded again after each of RETRY_MS.
-async function visit(url: string, job: Job): Promise<{ page: Page; disconnected: boolean }> {
+async function visit(url: string, job: Job, recovering = false): Promise<{ page: Page; disconnected: boolean }> {
   const started = performance.now();
   let opened: Opened | undefined;
   let outcome: Outcome;
@@ -334,8 +334,9 @@ async function visit(url: string, job: Job): Promise<{ page: Page; disconnected:
     }
     outcome = await readTab(opened, url, job);
   } catch (e) {
-    disconnected = DISCONNECTED.test(messageOf(e));
-    outcome = { ok: false, error: messageOf(e), failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
+    const error = messageOf(e);
+    disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
+    outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
   }
   const ms = Math.round(performance.now() - started);
   const tab = opened?.id;

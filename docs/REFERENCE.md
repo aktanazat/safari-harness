@@ -447,13 +447,14 @@ carrying the page in context.
   tab first.
 - A refused click names the cause when the target is hidden, disabled,
   covered, or has no clickable point. A hidden checkbox or radio button
-  may name its visible label; click that label separately, subject to
-  the same cover and disabled checks. A zero-opacity control that a
-  snapshot offered during an animation may need its tab in front. Only
-  when no click event was sent, `click` briefly presents the tab while
-  the user is idle and tries that same control once more in the same
-  document, then restores the previous app and tab. It never does this
-  for a static hidden control, a cover, or a disabled field.
+  may name its visible label; click that label separately, keeping its
+  `fN:` prefix if it is in a frame. The label still gets cover and
+  disabled checks. A zero-opacity control that a snapshot offered during
+  an animation may need its tab in front. Only when no click event was
+  sent, `click` briefly presents the tab while the user is idle and
+  tries that same control once more in the same document, then restores
+  the previous app and tab. It never does this for a static hidden
+  control, a cover, or a disabled field.
 - Every action reports what it caused: `navigated` (this tab loaded a new
   page) or `newTab`. Pass `snapshot: true` (CLI `--snapshot`) to get the
   page after it in the same call, `snapshot: "words"` (CLI
@@ -1138,10 +1139,13 @@ first line counts the pages read and failed.
   is loaded again 2 s and then 5 s later, and `retried` says how often;
   one that stays an error page fails with open's warning.
 - If Safari's extension disconnects during a read, map resumes only
-  unanswered read-only pages while the original 50 s remain. Completed
-  pages stay in their original order and are not loaded again. An
-  `eval` supplied by the caller or a fetch that may change the page is
-  never repeated after a disconnect; its effect must be checked first.
+  unanswered read-only pages while the original 50 s remain. A temporary
+  "extension not connected" answer after that disconnect keeps those
+  safe reads pending; an initial not-connected answer does not start a
+  retry. Completed pages stay in their original order and are not
+  loaded again. An `eval` supplied by the caller or a fetch that may
+  change the page is never repeated after a disconnect; its effect
+  must be checked first.
 - A PDF, downloaded or shown in Safari's viewer, is read with `pdf {do:
   "read", url}` for `extract`; its value is the PDF's text.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
@@ -1625,11 +1629,12 @@ deleting and account changes retain the usual approval boundaries.
 ## video
 
 `video {tab, ref, do:"inspect"}` reads real decoded video metadata in a
-task-owned tab. With one HTML video in the selected document, omit `ref`
-and `selector`; with more than one, choose one explicitly, including a
-framed ref when needed. `do:"frames", times:[0.2,1.4]` waits up to 6 s
-for decoded, seekable media without starting or reloading playback, then
-pauses and seeks to one to eight finite, nonnegative times. Each moment
+task-owned tab. With one HTML video in the selected document, including
+open shadow roots, omit `ref` and `selector`; with more than one, choose
+one explicitly, including a framed ref when needed.
+`do:"frames", times:[0.2,1.4]` waits up to 6 s for decoded, seekable
+media without starting or reloading playback, then pauses and seeks to
+one to eight finite, nonnegative times. Each moment
 comes through the normal protected screenshot path. Returned frames
 include independent receipts, requested and settled times, sanitized
 source metadata, and an honest timestamp basis. These are observations,
@@ -1640,6 +1645,9 @@ window forward so Safari can paint it, then returns the previous Safari tab
 and front app even if capture fails. It does not move the window to another
 display. Do not call `activate` first: that separate command deliberately
 leaves the window in front.
+
+Automatic foreground steps from the harness take turns. Each returns
+the previous app and tab before the next one presents its target.
 
 The tool attempts to restore position, play/pause, rate and mute only while
 its document, media and task still match. Human takeover or media changes
@@ -2144,6 +2152,11 @@ safari request_catalog list
 safari request_catalog forget --name catalog-items
 ```
 
+From MCP, call `run` with one step, for example
+`{"steps":[{"tool":"request_catalog","args":{"do":"list"}}]}`.
+This occasional writer stays off the default tool list; `run` uses the
+same arguments as the CLI.
+
 Save requires the observed complete JSON response and a passing
 nonempty field/type check. It makes a fresh page request and checks the
 same result before saving. Run needs an owned tab on that origin and
@@ -2642,6 +2655,12 @@ silently resume as a replay or repair; start a new request.
 `playbooks` also supports manual, opted-in learning. The tab must be a recent
 background tab this agent opened, never `front`. It does not watch the
 owner's browsing or Safari events.
+
+`playbooks {do: "preview", tab, output: {rows: "tr.item",
+fields: {title: ".title"}}}` checks and returns visible rows from the
+current owned page without replaying any action or storing a routine.
+Adjust selectors and preview again before learning; an empty, hidden,
+loading, ambiguous or changed page returns no accepted rows.
 
 1. `playbooks {do: "learn", tab, goal: "Search mail", params: ["query"],
    bindings: {query: "q"}, before: {selector: "input[name=q]"},

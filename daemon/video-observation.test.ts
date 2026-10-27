@@ -124,6 +124,17 @@ describe.skipIf(!runner)("video observations in real WebKit", () => {
     } finally { await page.close(); }
   }, 20000);
 
+  test("default inspection refuses light and open-shadow videos instead of silently choosing one", async () => {
+    const page = await fixture();
+    try {
+      const before = await page.evaluate(mediaState);
+      await page.evaluate("document.body.appendChild(document.createElement('div')).attachShadow({mode:'open'}).appendChild(document.createElement('video'))");
+      await expect(page.tool.run({ tab: 7 })).rejects.toThrow("multiple HTML videos are loaded");
+      expect(await page.evaluate(mediaState)).toEqual(before);
+      await expect(page.tool.run({ tab: 7, ref: "#movie" })).resolves.toMatchObject({ status: "inspected", source: { width: 160, height: 96 } });
+    } finally { await page.close(); }
+  }, 20000);
+
   test("a refused protected capture restores the original paused position, rate and mute", async () => {
     const page = await fixture();
     try {

@@ -170,7 +170,7 @@ async function upgradeParentPoint(tabId, frameId, initial, deadline, candidates,
 async function upgradeFrameClick(tabId, op, args, deadline, frameId, kept) {
   if (frameId === 0 || !(op === "click" || op === "downloadClick" || op === "select" && args[1] !== undefined)) return;
   const candidates = [0, ...(await frameTokens(tabId)).values()];
-  const probe = await toTab(tabId, "clickProbe", [args[0], op === "select" ? "select" : "click"], deadline - Date.now(), frameId, kept);
+  const probe = await toTab(tabId, "clickProbe", [args[0], op === "select" ? "select" : "click", op === "click" ? args[1] : undefined], deadline - Date.now(), frameId, kept);
   if (probe?.error) return probe;
   await upgradeParentPoint(tabId, frameId, probe.value, deadline, candidates);
   return probe;

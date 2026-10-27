@@ -268,6 +268,16 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
+    name: "a styled hidden checkbox points to its visible label without toggling until that label is clicked",
+    page: targets,
+    steps: [
+      { op: "click", args: ["#checkbox"], answer: { error: expect.stringContaining("click its label ["), failure: { ...unsent, retryable: false, next: "click the visible label instead" } } },
+      evaluate("document.getElementById('checkbox').checked", false),
+      { op: "click", args: ["#checkbox-label"], answer: { value: { ok: true } } },
+      evaluate("document.getElementById('checkbox').checked", true),
+    ],
+  },
+  {
     name: "a visible label still toggles its styled hidden checkbox",
     page: targets,
     steps: [
@@ -600,31 +610,49 @@ benchRows("replacement identity in WebKit", [
 
 type FrameReply = { value?: { x: number; y: number; frame: string }; error?: string };
 
+type WebKitRequest = <T = FrameReply>(message: object) => Promise<T>;
+
+async function withWebKit<T>(run: (request: WebKitRequest) => Promise<T>): Promise<T> {
+  const process = Bun.spawn([runner, join(import.meta.dir, "..", "extension")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const errors = new Response(process.stderr).text();
+  const reader = process.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  const request: WebKitRequest = async <R>(message: object): Promise<R> => {
+    process.stdin.write(JSON.stringify(message) + "\n");
+    for (;;) {
+      const end = buffered.indexOf("\n");
+      if (end >= 0) {
+        const line = buffered.slice(0, end);
+        buffered = buffered.slice(end + 1);
+        return JSON.parse(line) as R;
+      }
+      const next = await reader.read();
+      if (next.done) throw new Error("the WebKit fixture closed before answering");
+      buffered += decoder.decode(next.value, { stream: true });
+    }
+  };
+  try {
+    const result = await run(request);
+    process.stdin.end();
+    expect(await process.exited).toBe(0);
+    expect(await errors).toBe("");
+    return result;
+  } finally {
+    if (process.exitCode === null) {
+      process.kill();
+      await process.exited;
+    }
+    await reader.cancel();
+    await errors;
+  }
+}
+
 describe.skipIf(!runner)("cross-origin frame checks", () => {
   test.each([true, false])("a cross-origin frame's parent checks its cover before dispatch (covered=%s)", async (covered) => {
-    const root = join(import.meta.dir, "..");
     const fixture = pathToFileURL(join(import.meta.dir, "fixtures", "click-safety-frame-parent.html")).href + (covered ? "" : "?clear");
     const child = pathToFileURL(join(import.meta.dir, "fixtures", "click-safety-frame-child.html")).href;
-    const process = Bun.spawn([runner, join(root, "extension")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    const errors = new Response(process.stderr).text();
-    const reader = process.stdout.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
-    const request = async (message: object): Promise<FrameReply> => {
-      process.stdin.write(JSON.stringify(message) + "\n");
-      for (;;) {
-        const end = buffered.indexOf("\n");
-        if (end >= 0) {
-          const line = buffered.slice(0, end);
-          buffered = buffered.slice(end + 1);
-          return JSON.parse(line) as FrameReply;
-        }
-        const next = await reader.read();
-        if (next.done) throw new Error("the WebKit fixture closed before answering its frame check");
-        buffered += decoder.decode(next.value, { stream: true });
-      }
-    };
-    try {
+    await withWebKit(async (request) => {
       expect(await request({ load: fixture, frames: 1 })).toMatchObject({ url: fixture });
       const probe = await request({ op: "clickProbe", frame: child, args: ["#frame-action"] });
       if (!probe.value) throw new Error(probe.error || "the frame's target has no safe click point");
@@ -639,16 +667,24 @@ describe.skipIf(!runner)("cross-origin frame checks", () => {
         : { value: { found: true, x: expect.any(Number), y: expect.any(Number) } });
       if (!covered) expect(await request({ op: "click", frame: child, args: ["#frame-action"] })).toMatchObject({ value: { ok: true } });
       expect(await request({ op: "eval", frame: child, args: ["document.getElementById('frame-action').dataset.clicks"] })).toMatchObject({ value: { result: covered ? "0" : "1" } });
-      process.stdin.end();
-      expect(await process.exited).toBe(0);
-      expect(await errors).toBe("");
-    } finally {
-      if (process.exitCode === null) {
-        process.kill();
-        await process.exited;
-      }
-      await reader.cancel();
-      await errors;
-    }
+    });
+  }, 20_000);
+
+  test("a guarded click and its frame probe refuse a replaced control without delivering an event", async () => {
+    const fixture = pathToFileURL(join(import.meta.dir, "fixtures", targets)).href;
+    await withWebKit(async (request) => {
+      expect(await request({ load: fixture })).toMatchObject({ url: fixture });
+      await request({ op: "snapshot" });
+      const marker = await request<{ value: { result: { token: string; ref: string } } }>({
+        op: "eval", args: ["({token:window.__safariHarnessFrame,ref:document.getElementById('descendant').getAttribute('data-sh-ref')})"],
+      });
+      const { token, ref } = marker.value.result;
+      expect(ref).toMatch(/^\d+$/);
+      await request({ op: "eval", args: ["(()=>{const old=document.getElementById('descendant');const next=old.cloneNode(true);document.body.dataset.guardClicks='0';next.addEventListener('click',()=>document.body.dataset.guardClicks=String(Number(document.body.dataset.guardClicks)+1));old.replaceWith(next);return true})()"] });
+      const opts = { expectedDocument: token, expectedTarget: ref };
+      expect(await request({ op: "click", args: ["#descendant", opts] })).toMatchObject({ error: "the target changed before the click; re-run snapshot" });
+      expect(await request({ op: "clickProbe", args: ["#descendant", "click", opts] })).toMatchObject({ error: "the target changed before the click; re-run snapshot" });
+      expect(await request({ op: "eval", args: ["document.body.dataset.guardClicks"] })).toMatchObject({ value: { result: "0" } });
+    });
   }, 20_000);
 });

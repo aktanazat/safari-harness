@@ -224,6 +224,72 @@ test("a map whose every page the extension left unanswered fails as a whole, ext
   expect((await mapPages({ urls: urls(3) }, oneOwn)).pages.map((p) => p.ok)).toEqual([false, false, false]);
 });
 
+test("a disconnected batch resumes only unread safe pages and never replays an uncertain action", async () => {
+  jest.useFakeTimers();
+  const addresses = urls(3);
+  const attempts = new Map<string, number>();
+  const read: string[] = [];
+  const lost = "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again";
+  const call = async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "open") {
+      const url = String(args.url);
+      const count = (attempts.get(url) ?? 0) + 1;
+      attempts.set(url, count);
+      if (url === addresses[2] && count === 1) throw new Error(lost);
+      return { id: addresses.indexOf(url) + 1, url };
+    }
+    if (tool === "extract") {
+      read.push(addresses[Number(args.tab) - 1]);
+      return { text: "read" };
+    }
+    return { ok: true };
+  };
+  const safe = await waited(mapPages({ urls: addresses, what: "extract", fresh: true }, call));
+  expect(safe.pages.map((page) => [page.url, page.ok])).toEqual(addresses.map((url) => [url, true]));
+  expect(read.sort()).toEqual(addresses.slice().sort());
+  expect(addresses.map((url) => attempts.get(url))).toEqual([1, 1, 2]);
+  expect(safe.urls).toBeUndefined();
+
+  let actions = 0;
+  const unsafe = await mapPages({ urls: [addresses[0]], what: "eval", expression: "document.querySelector('button').click()", fresh: true },
+    async (tool) => {
+      if (tool === "open") return { id: 1, url: addresses[0] };
+      if (tool === "eval") { actions++; throw new Error(lost); }
+      return { ok: true };
+    });
+  expect(actions).toBe(1);
+  expect(unsafe.pages[0]).toMatchObject({ ok: false, failure: { effect: "possibly_effected" } });
+  expect(unsafe.urls).toBeUndefined();
+});
+
+test("map keeps a safe read pending through a reconnect, but never retries a first not-connected answer", async () => {
+  jest.useFakeTimers();
+  const url = urls(1)[0];
+  const disconnected = "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again";
+  const notConnected = "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
+  let opens = 0;
+  const recovered = await waited(mapPages({ urls: [url], what: "extract", fresh: true }, async (tool) => {
+    if (tool === "open") {
+      opens++;
+      if (opens < 3) throw new Error(opens === 1 ? disconnected : notConnected);
+      return { id: 1, url };
+    }
+    if (tool === "extract") return { text: "reconnected" };
+    return { ok: true };
+  }));
+  expect(recovered.pages).toMatchObject([{ ok: true, value: { text: "reconnected" } }]);
+  expect(opens).toBe(3);
+  expect(recovered.urls).toBeUndefined();
+
+  let initialOpens = 0;
+  const unavailable = await mapPages({ urls: [url], what: "extract", fresh: true }, async (tool) => {
+    if (tool === "open") { initialOpens++; throw new Error(notConnected); }
+    return { ok: true };
+  });
+  expect(unavailable.pages[0]).toMatchObject({ ok: false, error: notConnected });
+  expect(initialOpens).toBe(1);
+});
+
 // On 10-23 a map of two leaflet PDFs waited 36 s on each to read nothing
 // (SR-7).
 test("a PDF page is read through pdf, whether Safari downloads it or shows it in its viewer", async () => {

@@ -1484,11 +1484,17 @@
   // Only a refusal before the first event may be tried again. Scroll-driven
   // layout and a foreground fade can settle without changing the DOM, so the
   // final check also runs at the end of the existing short wait.
+  function expectedClick(el, opts, prior) {
+    if (opts?.expectedDocument && opts.expectedDocument !== frameToken) return { error: "the target document changed before the click; re-run snapshot", failure: UNSENT };
+    if (opts?.expectedTarget && (!prior?.isConnected || el !== prior)) return { error: "the target changed before the click; re-run snapshot", failure: UNSENT };
+    return null;
+  }
   const UNSEEN_MS = 500;
   function clickShown(ref, opts) {
-    if (opts?.expectedDocument && opts.expectedDocument !== frameToken) return { error: "the target document changed before the click; re-run snapshot", failure: UNSENT };
+    const prior = opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
     const el = resolve(ref, true);
-    if (opts?.expectedTarget && (!el || el !== resolve(opts.expectedTarget, true))) return { error: "the target changed before the click; re-run snapshot", failure: UNSENT };
+    const guard = expectedClick(el, opts, prior);
+    if (guard) return guard;
     const once = () => afterward(() => withOutcome(() => click(ref, el)), opts);
     const first = once();
     if (!first?.unseen || first.failure?.effect !== "none") return first;
@@ -1680,12 +1686,15 @@
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
     return { ok: true };
   }
-  function clickProbe(ref, kind = "click") {
+  function clickProbe(ref, kind = "click", opts) {
+    const prior = kind === "click" && opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
     const target = resolve(ref, kind === "click");
+    const guard = kind === "click" ? expectedClick(target, opts, prior) : null;
+    if (guard) return guard;
     const el = kind === "select" ? fieldOf(target) : target;
     if (!el) return missing(ref);
     const point = clickPoint(el);
-    if (point.error) return point;
+    if (point.error) return point.recovery === "present" ? refused(el, point) : point;
     let { x, y } = point;
     for (let doc = el.ownerDocument; doc !== document;) {
       const frame = doc.defaultView?.frameElement;
