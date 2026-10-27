@@ -11,7 +11,7 @@ AWS event pages (`events.builder.aws.com/<code>`) sign in with an AWS Builder ID
 - A new browser is asked for a code after the password. The mail comes from `no-reply@login.awsapps.com` (not signin.aws), subject "Verify your identity": 6 digits, valid 10 minutes, a new one after 60 seconds. Type it with `secret: "page"` from the opened mail.
 
 ## Resetting the password
-- "Forgot password?" switches the page to "Forgot password" / "Security check" at the same address: "Please click verify to start your security challenge", with Verify and Continue. Verify opens a captcha: hand it to the user with `handoff` and `until: "Check your inbox"`, since the address does not change.
+- "Forgot password?" switches the page to "Forgot password" / "Security check" at the same address: "Please click verify to start your security challenge", with Verify and Continue. Verify opens a captcha. Wait for the page to change; if it stays, report that the reset cannot continue without a human check rather than sending a handoff.
 - A check left open expires: the page then says "Something went wrong. It's not you, it's us." and "Invalid captcha". Open the event link again for a fresh check.
 - The mail comes from `no-reply@signin.aws`, subject "Password reset requested", with a link to `/platform/<id>/resetpassword`. Open it in the same tab; its two password fields take the new password. A "Password updated" mail follows.
 

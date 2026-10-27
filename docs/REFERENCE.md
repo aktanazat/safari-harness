@@ -596,23 +596,17 @@ check, no solving services.
   Cloudflare Turnstile), and `"block"` when the site has turned the
   browser away: no one can clear that, so report it.
 - `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check,
-  which often lets Safari through by itself, and answer with the page behind
-  it; a `challenge: {kind: "cloudflare", where: "page"}` was still up at 8 s.
-  `handoff` on that wall waits up to 35 s more before it calls the user, and
-  answers `{done: true, byItself: true}`, with no notice or alert, when the
-  page lets Safari through meanwhile.
+  which often lets Safari through by itself. If it persists, wait for the
+  page to change in the open tab, then use another source or report that the
+  page is unavailable.
 - `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
   merely loads AWS's scripts. Its silent wall, which Safari passes by
   itself, counts only in a web read's HTML (omp).
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
-- `handoff {tab, why}` hands the tab to the user (`safari guide handoff`).
-- Write `why` for the user: what to do and on which site ("Cars.com wants a
-  human check before it shows the listing").
-- Use `handoff` for any step only the user can take in the tab: a passkey or
-  Touch ID prompt, a code read off his card, a consent screen.
-- A routine runs with nobody watching: it calls `handoff` once, so he is
-  alerted if he is away, and reports the check if it is still there.
+- `handoff {tab, why}` is for other steps only the user can take in the tab,
+  such as a passkey or Touch ID prompt, a code read off his card, or consent.
+  Do not hand off bot checks.
 - To find a picture on a normal page, search Google Images in your own tab
   and read the results with `shot --annotate` and `extract`, or read the
   image's own address from a snapshot.

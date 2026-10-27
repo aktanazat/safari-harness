@@ -34,7 +34,7 @@ export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 // in October never opened the page (harness-audit), and on 10-23 the
 // Lancet's check that stood through map's 9 s let a tab opened later in.
 const CHECKED: Record<"page" | "block", string> = {
-  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters",
+  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in Safari; if it remains, use another permitted source or report that the page is unavailable",
   block: "the site turns the browser away; the user cannot clear that either",
 };
 

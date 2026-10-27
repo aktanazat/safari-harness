@@ -4,8 +4,7 @@
 // while the page draws; one still missing, or one of several the matcher
 // cannot tell apart, stops the replay at its step. It acts through the
 // tools, as an agent would, so lanes, tab ownership, action receipts, and
-// bot checks work as they do for one. A bot check is the user's to clear
-// (handoff), never replay's.
+// bot checks work as they do for one. Replay stops at a bot check.
 
 import { createHmac, randomBytes } from "node:crypto";
 import type { Challenge } from "./challenge.ts";
@@ -37,7 +36,7 @@ class Wall extends Error {
   constructor(readonly challenge: Challenge, tab: unknown) {
     super(challenge.where === "block"
       ? `the site blocks this browser (${challenge.kind}); the user cannot clear that either`
-      : `the page shows a bot check (${challenge.kind}); hand tab ${String(tab)} to the user with handoff, then replay again with tab: ${String(tab)}`);
+      : `the page shows a bot check (${challenge.kind}); wait for the page to clear in Safari, then retry with tab: ${String(tab)}; otherwise use another permitted source`);
   }
 }
 

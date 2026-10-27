@@ -13,5 +13,5 @@ TikTok tells scripted clicks from real ones. This guide marks tiktok.com for rea
 - "Continue with Google" opens Google's sign-in in a new window. A passkey or Touch ID prompt there is the user's to clear: use `handoff`.
 
 ## Bot checks
-- A "Drag the puzzle piece" check can show on a page's first load, as it did on a TikTok Shop search on 10-07. It is TikTok's own and may come with no `challenge` in the result: when a snapshot shows it, `handoff` all the same, then load the page again.
+- A "Drag the puzzle piece" check can show on a page's first load, as it did on a TikTok Shop search on 10-07. It is TikTok's own and may come with no `challenge` in the result: when a snapshot shows it, wait for the page to change; if it persists, use another source or report the blocked page rather than handing it off.
 - Never drag the piece or click inside the check. Real input, which this site gets for every click, does not make that allowed.
