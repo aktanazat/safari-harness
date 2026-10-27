@@ -7,7 +7,7 @@ export type VideoObservationPermit = { signal: AbortSignal; check(): void; relea
 export type VideoObservationDependencies = {
   call(tool: string, args: Fields): Promise<unknown>;
   admit(tab: number, acting: boolean): Promise<VideoObservationPermit>;
-  present<T>(tab: number, act: () => Promise<T>): Promise<T>;
+  present<T>(tab: number, check: () => void, act: () => Promise<T>): Promise<T>;
 };
 export type VideoSource = {
   document: string;
@@ -168,6 +168,7 @@ async function inVideoDocument(input: { operation: string; target: string; time?
 }
 
 export function createVideoTool(dependencies: VideoObservationDependencies): Tool {
+  let foreground = Promise.resolve();
   return {
     hidden: true,
     desc: "Inspect a currently loaded HTML video or capture up to eight settled visible moments with protected screenshot receipts. No downloading or transcript substitution. Frames temporarily seek, then restore playback only while this task still owns the unchanged document.",
@@ -219,33 +220,38 @@ export function createVideoTool(dependencies: VideoObservationDependencies): Too
       };
       try {
         if (operation === "inspect") return await evaluate("inspect");
-        return await dependencies.present(tab, async () => {
-          try {
-            check();
-            dispatched = true;
-            await evaluate("begin");
-            for (const time of times as number[]) {
-              const settled = await evaluate("seek", time);
+        const visible = foreground.then(() => {
+          check();
+          return dependencies.present(tab, check, async () => {
+            try {
               check();
-              const capture = object(await dependencies.call("shot", { tab, ref: target, live: true }), "protected video capture");
-              if (typeof capture.path !== "string" || !capture.evidence || typeof capture.evidence !== "object") throw new HarnessError("privacy", "video capture returned no protected evidence receipt", { retryable: false });
-              await evaluate("verify");
-              frames.push({ requestedTime: time, actualTime: Number(settled.actualTime), timestampBasis: String(settled.timestampBasis), source: object(settled.source, "settled video source") as VideoSource, capture: capture as CaptureResult });
+              dispatched = true;
+              await evaluate("begin");
+              for (const time of times as number[]) {
+                const settled = await evaluate("seek", time);
+                check();
+                const capture = object(await dependencies.call("shot", { tab, ref: target, live: true }), "protected video capture");
+                if (typeof capture.path !== "string" || !capture.evidence || typeof capture.evidence !== "object") throw new HarnessError("privacy", "video capture returned no protected evidence receipt", { retryable: false });
+                await evaluate("verify");
+                frames.push({ requestedTime: time, actualTime: Number(settled.actualTime), timestampBasis: String(settled.timestampBasis), source: object(settled.source, "settled video source") as VideoSource, capture: capture as CaptureResult });
+              }
+            } catch (error) { failure = error; }
+            finally {
+              if (original && restoreAllowed) {
+                try { restoration = await evaluate("restore"); }
+                catch (error) { restoration = { restored: false, reason: error instanceof Error ? error.message : String(error) }; }
+              }
+              else if (original) restoration = { restored: false, reason: "human or page intervention; playback was left with the user" };
             }
-          } catch (error) { failure = error; }
-          finally {
-            if (original && restoreAllowed) {
-              try { restoration = await evaluate("restore"); }
-              catch (error) { restoration = { restored: false, reason: error instanceof Error ? error.message : String(error) }; }
+            if (failure !== undefined) {
+              const known = failureOf(failure, { effectful: dispatched });
+              throw new HarnessError(known.code, `${known.message}; restoration: ${JSON.stringify(restoration)}`, { effect: dispatched ? "possibly_effected" : known.effect, retryable: false, next: known.next });
             }
-            else if (original) restoration = { restored: false, reason: "human or page intervention; playback was left with the user" };
-          }
-          if (failure !== undefined) {
-            const known = failureOf(failure, { effectful: dispatched });
-            throw new HarnessError(known.code, `${known.message}; restoration: ${JSON.stringify(restoration)}`, { effect: dispatched ? "possibly_effected" : known.effect, retryable: false, next: known.next });
-          }
-          return { status: "captured", frames, restoration } satisfies VideoFramesResult;
+            return { status: "captured", frames, restoration } satisfies VideoFramesResult;
+          });
         });
+        foreground = visible.then(() => {}, () => {});
+        return await visible;
       } finally {
         permit.release();
       }

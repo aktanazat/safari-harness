@@ -57,10 +57,17 @@ async function fixture() {
     return reply;
   };
   const evaluate = async (expression: string): Promise<unknown> => fields((await request({ op: "eval", args: [expression], timeout: 12000 })).value).result;
-  const control = { held: false, released: false, captures: 0, beforeCapture: async () => {} };
+  const control = { held: false, released: false, captures: 0, visible: 0, maxVisible: 0, beforePresent: async () => {}, beforeCapture: async () => {} };
   const tool = createVideoTool({
     admit: async () => ({ signal: new AbortController().signal, check() { if (control.held) throw new HarnessError("stopped", "the user took control"); }, release() { control.released = true; } }),
-    present: async (_tab, act) => act(),
+    present: async (_tab, check, act) => {
+      await control.beforePresent();
+      check();
+      control.visible++;
+      control.maxVisible = Math.max(control.maxVisible, control.visible);
+      try { return await act(); }
+      finally { control.visible--; }
+    },
     call: async (name, args) => {
       if (name === "eval") return fields((await request({ op: "eval", args: [args.expression], timeout: 12000 })).value);
       if (name !== "shot") throw new Error(`unexpected video tool ${name}`);
@@ -95,7 +102,7 @@ async function fixture() {
 const mediaState = "({time:document.querySelector('#movie').currentTime,paused:document.querySelector('#movie').paused,rate:document.querySelector('#movie').playbackRate,muted:document.querySelector('#movie').muted})";
 
 describe("video observation input contract", () => {
-  const unavailable = createVideoTool({ call: async () => { throw new Error("invalid input crossed the browser boundary"); }, admit: async () => { throw new Error("invalid input reached admission"); }, present: async (_tab, act) => act() });
+  const unavailable = createVideoTool({ call: async () => { throw new Error("invalid input crossed the browser boundary"); }, admit: async () => { throw new Error("invalid input reached admission"); }, present: async (_tab, check, act) => { check(); return act(); } });
   test.each([
     ["empty times", []], ["more than eight moments", Array.from({ length: 9 }, (_, n) => n)],
     ["negative time", [-1]], ["nonfinite time", [Infinity]], ["not numeric", ["1"]],
@@ -156,6 +163,37 @@ describe.skipIf(!runner)("video observations in real WebKit", () => {
       expect(await page.evaluate(mediaState)).toMatchObject({ time: 1.4, paused: true });
       expect(page.control.captures).toBe(1);
       expect(page.control.released).toBe(true);
+    } finally { await page.close(); }
+  }, 20000);
+
+  test("two captures do not compete for the foreground and both leave playback unchanged", async () => {
+    const page = await fixture();
+    try {
+      const before = await page.evaluate(mediaState);
+      const results = await Promise.allSettled([
+        page.tool.run({ tab: 7, ref: "#movie", do: "frames", times: [0.2] }),
+        page.tool.run({ tab: 8, ref: "#movie", do: "frames", times: [1.4] }),
+      ]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "privacy" });
+      }
+      expect(page.control.maxVisible).toBe(1);
+      expect(page.control.captures).toBe(2);
+      expect(await page.evaluate(mediaState)).toEqual(before);
+    } finally { await page.close(); }
+  }, 20000);
+
+  test("a paused task does not present or change the video after its idle wait", async () => {
+    const page = await fixture();
+    try {
+      const before = await page.evaluate(mediaState);
+      page.control.beforePresent = async () => { page.control.held = true; };
+      await expect(page.tool.run({ tab: 7, ref: "#movie", do: "frames", times: [1.4] })).rejects.toMatchObject({ code: "stopped" });
+      expect(page.control.visible).toBe(0);
+      expect(page.control.captures).toBe(0);
+      expect(page.control.released).toBe(true);
+      expect(await page.evaluate(mediaState)).toEqual(before);
     } finally { await page.close(); }
   }, 20000);
 
