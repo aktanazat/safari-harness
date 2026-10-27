@@ -1832,6 +1832,7 @@ async function readableHtml(html: string) {
   let title = "", content = "", ignored = 0, login = false;
   await new HTMLRewriter()
     .on("script,style,noscript,svg,nav,footer,aside,[hidden],dialog:not([open])", { element(element) { ignored++; element.onEndTag(() => { ignored--; }); } })
+    .on("title", { text(chunk) { title += chunk.text; } })
     .on("h1,h2,h3,h4,p,li,br,div,section,article,tr", { element() { if (!ignored) content += "\n"; } })
     .on("form", { element(element) {
       if (ignored) return;
