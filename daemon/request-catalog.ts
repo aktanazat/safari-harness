@@ -94,12 +94,13 @@ function checkedJson(text: unknown, check: Check): CheckedJson {
 async function contextOf(tab: unknown, call: Call): Promise<Context> {
   if (!Number.isSafeInteger(tab) || Number(tab) <= 0 || process.env.SAFARI_HARNESS_REMOTE) throw new Error("request catalog reads need one local numeric tab owned by this agent, never front");
   const context = fields(await call("request_catalog_context", { tab }));
-  if (context.tab !== tab || typeof context.url !== "string" || !URL.canParse(context.url)
+  if (!Number.isSafeInteger(context.tab) || Number(context.tab) <= 0
+    || typeof context.url !== "string" || !URL.canParse(context.url)
     || context.ready !== "complete" || typeof context.timeOrigin !== "number" || !Number.isFinite(context.timeOrigin)
     || context.timeOrigin <= 0 || context.timeOrigin > Date.now()) throw new Error("the owned tab did not provide a complete, identifiable document");
   const url = new URL(context.url);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("the owned tab needs an ordinary site page without URL credentials");
-  return { tab: Number(tab), url: context.url, ready: "complete", timeOrigin: context.timeOrigin };
+  return { tab: Number(context.tab), url: context.url, ready: "complete", timeOrigin: context.timeOrigin };
 }
 
 async function unchanged(context: Context, call: Call): Promise<void> {

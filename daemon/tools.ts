@@ -1831,14 +1831,14 @@ function decodedHtml(text: string): string {
 async function readableHtml(html: string) {
   let title = "", content = "", ignored = 0, login = false;
   await new HTMLRewriter()
-    .on("script,style,noscript,svg,nav,footer,aside", { element(element) { ignored++; element.onEndTag(() => { ignored--; }); } })
+    .on("script,style,noscript,svg,nav,footer,aside,[hidden],dialog:not([open])", { element(element) { ignored++; element.onEndTag(() => { ignored--; }); } })
     .on("h1,h2,h3,h4,p,li,br,div,section,article,tr", { element() { if (!ignored) content += "\n"; } })
     .on("form", { element(element) {
+      if (ignored) return;
       const action = URL.parse(element.getAttribute("action") ?? "", "https://example.invalid");
       if (action && /\/(?:login|log-in|signin|sign-in)(?:\/|$)/i.test(action.pathname)) login = true;
     } })
-    .on("input[type=password]", { element() { login = true; } })
-    .on("title", { text(chunk) { title += chunk.text; } })
+    .on("input[type=password]", { element() { if (!ignored) login = true; } })
     .on("body", { text(chunk) { if (!ignored) content += chunk.text; } })
     .transform(new Response(html)).text();
   const visible = decodedHtml(content).replace(/[^\S\n]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -1865,7 +1865,14 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
       const held = harnessTabs.get(t.id);
       return held && matchesTask(held, owner, task) && URL.parse(t.url ?? "")?.origin === requested.origin;
     });
-    tab = found?.id ?? (await openTab(`${requested.origin}/`, true)).id;
+    if (found) tab = found.id;
+    else {
+      const opened = await openTab(`${requested.origin}/`, true);
+      tab = opened.id;
+      own(tab, owner, task);
+      harnessTabs.get(tab)!.url = opened.url;
+      save();
+    }
   }
   const page = (await relay(tab, "tabInfo")) as { url?: string };
   if (URL.parse(page.url ?? "")?.origin !== requested.origin) throw new HarnessError("unavailable", "the owned site tab moved to another site; open a signed-in page there first");
