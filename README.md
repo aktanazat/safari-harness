@@ -34,10 +34,10 @@ daemon/
                     terminal's permissions (Messages, browsing history, the
                     real mouse and keyboard); a `run` with one of them runs
                     its steps from the caller too
-  spaces.ts         each agent's own Safari window, opened behind the user's,
-                    one per task (`open --group`), on a page titled with it
-  place.ts          moves an agent's window where no other window covers it:
-                    a new one, and one whose shot did not paint
+  spaces.ts         each task's own Safari window, opened behind the user's;
+                    named and default opens of one task share it
+  place.ts          briefly moves a covered owned window for a screenshot,
+                    then restores its place
   groups.ts         makes a window its task's Safari tab group, and deletes
                     the group after, only while the user is away from the keys
   keeper.ts         runs groups.ts from the agent's terminal, which has the

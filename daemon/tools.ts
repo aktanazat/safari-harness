@@ -150,9 +150,9 @@ function webAddress(url: unknown): string {
 // Every tab opens in a window of the calling agent's own (spaces.ts), which
 // the result names. The extension answers an owned tab's dialogs, keeps it
 // running while hidden, and lets the daemon close it (background.js).
-export async function openTab(url: string, background = false, group?: string, owned = background): Promise<TabInfo & { space: SpaceNote }> {
+export async function openTab(url: string, background = false, group?: string, owned = background, isolated = false): Promise<TabInfo & { space: SpaceNote }> {
   const address = webAddress(url);
-  return openIn(group, await spaceWindow(group), address, background, owned);
+  return openIn(group, await spaceWindow(group, undefined, isolated), address, background, owned, isolated);
 }
 
 // The daemon's own pages (mission.ts): an agent's open of one goes in its
@@ -168,16 +168,16 @@ function daemonPage(address: string): boolean {
 // found." after the agent's window closed, 8.7 s each (S99PartC). The space
 // is found again, in a new window when its own is gone, and the open tried
 // once more. No space opens a plain tab.
-async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space: SpaceNote }>;
-async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space?: SpaceNote }>;
-async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean): Promise<TabInfo & { space?: SpaceNote }> {
+async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean, isolated?: boolean): Promise<TabInfo & { space: SpaceNote }>;
+async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean, isolated?: boolean): Promise<TabInfo & { space?: SpaceNote }>;
+async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean, isolated = false): Promise<TabInfo & { space?: SpaceNote }> {
   if (space === undefined) return (await bridge.request("tabs.open", [address, background, undefined, owned])) as TabInfo;
   let t: TabInfo;
   try {
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   } catch (e) {
     if (!(e instanceof Error) || !/Window not found/i.test(e.message)) throw e;
-    space = await spaceWindow(group, space);
+    space = await spaceWindow(group, space, isolated);
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   }
   return { ...t, space: spaceNote(space) };
@@ -1835,12 +1835,9 @@ const UNSEEN: Record<"covered" | "hidden", string> = {
 // annotate draws the snapshot's refs on the page for the capture; fullPage
 // scrolls and stitches (sticky headers repeat). The extension ends the
 // page's finite animations first, up to 1 s, so a shot shows where they
-// land; live leaves them running. WebKit draws nothing in a window other
-// windows cover whole, so its page never paints there (place.ts): when the
-// tab's window is the calling agent's own, or a window its page opened that
-// holds only its tabs, it moves where nothing covers it and the shot goes
-// through the whole gate once more; with no room on any display, the error
-// says so. Any other window stays where it is, and the error names activate.
+// land; live leaves them running. WebKit does not paint a fully covered
+// window. An owned window may move for a retry, then returns to its place.
+// Other windows stay where they are.
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
   try {
     try {
@@ -1854,10 +1851,19 @@ export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capt
       const owner = currentOwner();
       const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
       if (!mine) throw error;
-      const where = await uncover(tab).catch(() => undefined);
-      if (where === "covered" || where === "hidden") throw new HarnessError("unavailable", UNSEEN[where], { effect: "none", next: "activate brings your window in front, where it paints (the user sees it), then shot again; or read the page with snapshot or extract" });
-      if (where !== "moved") throw error;
-      return await shotOnce(tab, opts);
+      const restore = await uncover(tab).catch(() => undefined);
+      if (restore === "covered" || restore === "hidden") throw new HarnessError("unavailable", UNSEEN[restore], { effect: "none", next: "activate brings your window in front, where it paints (the user sees it), then shot again; or read the page with snapshot or extract" });
+      if (typeof restore !== "function") throw error;
+      try {
+        return await shotOnce(tab, opts);
+      } finally {
+        await restore().catch((e: unknown) => {
+          note("window not restored after screenshot", { tab, error: e instanceof Error ? e.message : String(e) });
+          throw new HarnessError("unavailable", "the screenshot window could not return to its original place", {
+            effect: "possibly_effected", next: "check the Safari window before another screenshot; it may still be visible",
+          });
+        });
+      }
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("screenshot privacy:")) {
@@ -1982,7 +1988,7 @@ export async function shots(opts: { urls?: unknown; widths?: unknown; out?: unkn
   const widths = [...new Set(opts.widths.map((w) => num(w, "width")))];
   const stems = stemsOf(urls);
   await mkdir(dir, { recursive: true });
-  const t = await openTab("about:blank", true, "shots");
+  const t = await openTab("about:blank", true, "shots", true, true);
   own(t.id, currentOwner());
   const files: (({ url: string; width: number } & CaptureResult) | { url: string; width: number; error: string; failure: Failure })[] = [];
   const why = async (e: unknown) => {

@@ -77,15 +77,15 @@ Safari is the user's everyday browser, so treat his tabs as his.
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
   `window` take only a tab id.
 - Every tab you open goes into a Safari window of your own, never into his
-  windows or tab groups. It opens behind his without taking focus, where no
-  other window covers it when a display has room. `group` on
-  `open` (CLI `--group trip`) gives one task a window of its own; without it
-  all your tabs share one. The window opens on a page titled with the task's
-  name (the group, or "agent", and your process id, then ", window 2" and up
-  while a group of that name from before a restart is still to be deleted),
-  which labels it for him and keeps it yours when the extension reloads or
-  Safari starts again; it also shows him what you do there and lets him
-  pause or stop you (`safari guide reference mission control`). The daemon keeps its windows
+  windows or tab groups. It opens behind his without taking focus. A task
+  shares one window even if later calls use a different `group` or omit it.
+  For calls without a task identity, each `group` gets its own window and
+  ungrouped tabs share one. The window opens on a page titled with its first
+  group's name (or "agent") and your process id; ", window 2" and up
+  distinguish a group of that name still awaiting deletion. This labels
+  the window for him, keeps it yours when the extension reloads or Safari
+  starts again, and lets him pause or stop you
+  (`safari guide reference mission control`). The daemon keeps its windows
   across its own restarts, so your next tab still joins yours. When Safari
   starts again, the tabs it restores in your window stay yours: an id you
   held leads to its tab's new one (`replaced` in the next result says so),
@@ -1473,9 +1473,10 @@ guarantee.
 Safari draws nothing in a window other windows cover whole, so its page
 never passes the privacy gate's paint check. When that window is yours,
 or a window your page opened (a popup) holding only your tabs, `shot`
-moves it, without focus, to where it shows and captures through the
-whole gate once more; no other window moves. With no room on any display,
-or a window minimized or on another desktop, it fails with code
+briefly moves it, without focus, to where it shows, captures through the
+whole gate once more, then restores its place; no other window moves.
+If no display has room, or the window is minimized or on another desktop,
+it fails with code
 `unavailable` and a message saying so. Read the page with `snapshot` or
 `extract` then. Another window's page that did not paint fails with
 `next` naming `activate`, which brings it in front (the user sees it).
@@ -1514,7 +1515,8 @@ For several viewport widths, use `shots`.
 ## shots
 
 `shots {urls, widths, out, fullPage?, tiles?, tileHeight?}` captures each
-address at each width in one owned tab and window, then closes them.
+address at each width in one temporary window, separate from your task's
+working tabs, then closes its capture tab.
 CLI: `safari shots --widths 390,1440 --out DIR --tiles URL...`.
 Each successful `files` item includes `{url, width, path, evidence}`,
 using the same privacy gate, window move and immutable receipts as `shot`.
