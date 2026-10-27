@@ -33,15 +33,15 @@ function object(value: unknown, label: string): Fields {
 }
 
 // Each evaluation owns and removes its own hooks. Nothing is installed between calls.
-async function inVideoDocument(input: { operation: string; target?: string; time?: number; times?: number[]; expected?: Checkpoint; original?: Checkpoint }, helpers?: { resolve(target: string): Element | null }) {
+async function inVideoDocument(input: { operation: string; target?: string; time?: number; times?: number[]; expected?: Checkpoint; original?: Checkpoint }, helpers?: { resolve(target: string): Element | null; qa(selector: string): Element[] }) {
   const unavailable = (reason: string): never => { throw new Error(`video unavailable: ${reason}`); };
-  if (typeof helpers?.resolve !== "function") return unavailable("isolated ref resolution is unavailable; page-world evaluation is not permitted");
+  if (typeof helpers?.resolve !== "function" || typeof helpers.qa !== "function") return unavailable("isolated ref resolution is unavailable; page-world evaluation is not permitted");
   const resolver = helpers;
   const resolveTarget = () => {
     if (input.target) return resolver.resolve(input.target);
-    const videos = document.querySelectorAll("video");
+    const videos = resolver.qa("video");
     if (videos.length > 1) return unavailable("multiple HTML videos are loaded; choose the intended video with a snapshot ref or selector");
-    return videos.item(0);
+    return videos[0] ?? null;
   };
   const element = resolveTarget();
   if (!(element instanceof HTMLVideoElement)) return unavailable("no accessible HTML video was found; embedded players require a readable frame ref");

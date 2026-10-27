@@ -1071,9 +1071,10 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
       return await relay(tab, "click", opts.noWaitAfter === true ? [ref, { noWaitAfter: true }] : [ref]);
     } catch (error) {
       if (!(error instanceof HarnessError) || error.effect !== "none" || error.recovery?.kind !== "present") throw error;
-      const { document, target } = error.recovery;
+      const { document, target, frame } = error.recovery;
+      const retryRef = frame === undefined || (typeof ref === "string" && /^f\d+:/.test(ref)) ? ref : `f${frame}:${ref}`;
       return inFront(tab, { tabs: listTabs, activate: activateTab },
-        () => relay(tab, "click", [ref, opts.noWaitAfter === true
+        () => relay(tab, "click", [retryRef, opts.noWaitAfter === true
           ? { noWaitAfter: true, expectedDocument: document, expectedTarget: target }
           : { expectedDocument: document, expectedTarget: target }]));
     }

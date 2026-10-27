@@ -137,16 +137,25 @@ export async function show(tab: number, ops: TabOps, check?: () => void): Promis
 // which asks him to act, shows the tab at once.
 const PAUSE_MS = 1000;
 const PAUSE_MAX_MS = 10000;
+let presentation = Promise.resolve();
 
 export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>, check?: () => void): Promise<T> {
-  const paused = await input(["idle", String(PAUSE_MS), String(PAUSE_MAX_MS)], PAUSE_MAX_MS + 5000);
-  if (!(paused && typeof paused === "object" && "idle" in paused && paused.idle === true)) {
-    throw new Error(`the user kept typing or clicking for ${PAUSE_MAX_MS / 1000} s, so the tab stayed behind his app and nothing was done; try again in a moment`);
-  }
-  const giveBack = await show(tab, ops, check);
+  const previous = presentation;
+  const done = Promise.withResolvers<void>();
+  presentation = done.promise;
+  await previous;
   try {
-    return await act();
+    const paused = await input(["idle", String(PAUSE_MS), String(PAUSE_MAX_MS)], PAUSE_MAX_MS + 5000);
+    if (!(paused && typeof paused === "object" && "idle" in paused && paused.idle === true)) {
+      throw new Error(`the user kept typing or clicking for ${PAUSE_MAX_MS / 1000} s, so the tab stayed behind his app and nothing was done; try again in a moment`);
+    }
+    const giveBack = await show(tab, ops, check);
+    try {
+      return await act();
+    } finally {
+      await giveBack();
+    }
   } finally {
-    await giveBack();
+    done.resolve();
   }
 }

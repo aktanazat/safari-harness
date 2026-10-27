@@ -793,7 +793,7 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
     const tokens = await frameTokens(tabId).catch(() => new Map());
     for (const id of tokens.values()) {
       const r = await send(id).catch(() => null);
-      if (r && !(typeof r.error === "string" && MISS.test(r.error))) return r;
+      if (r && !(typeof r.error === "string" && MISS.test(r.error))) return prefixed(r, id);
     }
   }
   if (domOp === "extract") res = await extractFrames(tabId, res, (args && args[0]) || {});
@@ -840,7 +840,13 @@ async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
 // script knows only the ref: a stale ref it reports, or a heal it made,
 // gets the frame's prefix back, so the agent reads the ref it sent.
 function prefixed(res, frameId) {
-  if (res && typeof res.error === "string") return { ...res, error: res.error.replace(/^stale ref (\d+)/, `stale ref f${frameId}:$1`) };
+  if (res && typeof res.error === "string") {
+    const error = res.error
+      .replace(/^stale ref (\d+)/, `stale ref f${frameId}:$1`)
+      .replace(/click its label \[(\d+)\]/, `click its label [f${frameId}:$1]`);
+    return { ...res, error, ...(res.failure?.effect === "none" && res.failure?.recovery === "present"
+      ? { failure: { ...res.failure, frame: frameId } } : {}) };
+  }
   const healed = res && res.value && res.value.healed;
   if (!healed) return res;
   return { ...res, value: { ...res.value, healed: { ref: `f${frameId}:${healed.ref}`, now: `f${frameId}:${healed.now}` } } };
