@@ -441,6 +441,15 @@ carrying the page in context.
   page enables its button once its form is complete; a few enable one only
   while its window is in front, as GitHub's Authorize does: `activate` the
   tab first.
+- A refused click names the cause when the target is hidden, disabled,
+  covered, or has no clickable point. A hidden checkbox or radio button
+  may name its visible label; click that label separately, subject to
+  the same cover and disabled checks. A zero-opacity control that a
+  snapshot offered during an animation may need its tab in front. Only
+  when no click event was sent, `click` briefly presents the tab while
+  the user is idle and tries that same control once more in the same
+  document, then restores the previous app and tab. It never does this
+  for a static hidden control, a cover, or a disabled field.
 - Every action reports what it caused: `navigated` (this tab loaded a new
   page) or `newTab`. Pass `snapshot: true` (CLI `--snapshot`) to get the
   page after it in the same call, `snapshot: "words"` (CLI
@@ -1124,6 +1133,11 @@ first line counts the pages read and failed.
 - A page that opens as its site's error page (eBay's "Error Page | eBay")
   is loaded again 2 s and then 5 s later, and `retried` says how often;
   one that stays an error page fails with open's warning.
+- If Safari's extension disconnects during a read, map resumes only
+  unanswered read-only pages while the original 50 s remain. Completed
+  pages stay in their original order and are not loaded again. An
+  `eval` supplied by the caller or a fetch that may change the page is
+  never repeated after a disconnect; its effect must be checked first.
 - A PDF, downloaded or shown in Safari's viewer, is read with `pdf {do:
   "read", url}` for `extract`; its value is the PDF's text.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
@@ -1607,12 +1621,15 @@ deleting and account changes retain the usual approval boundaries.
 ## video
 
 `video {tab, ref, do:"inspect"}` reads real decoded video metadata in a
-task-owned tab. Supply exactly one `ref` or `selector`, including a framed
-ref when needed. `do:"frames", times:[0.2,1.4]` pauses and seeks to one to
-eight finite, nonnegative times, then captures each moment through the
-normal protected screenshot path. Returned frames include independent
-receipts, requested and settled times, sanitized source metadata, and an
-honest timestamp basis. These are observations, not a transcript.
+task-owned tab. With one HTML video in the selected document, omit `ref`
+and `selector`; with more than one, choose one explicitly, including a
+framed ref when needed. `do:"frames", times:[0.2,1.4]` waits up to 6 s
+for decoded, seekable media without starting or reloading playback, then
+pauses and seeks to one to eight finite, nonnegative times. Each moment
+comes through the normal protected screenshot path. Returned frames
+include independent receipts, requested and settled times, sanitized
+source metadata, and an honest timestamp basis. These are observations,
+not a transcript.
 
 Frame capture waits until the user stops typing, briefly brings the video
 window forward so Safari can paint it, then returns the previous Safari tab
@@ -1624,6 +1641,12 @@ The tool attempts to restore position, play/pause, rate and mute only while
 its document, media and task still match. Human takeover or media changes
 stop restoration rather than overwrite the user. DRM exposed by Safari,
 live streams, unseekable moments and undecoded frames refuse observation.
+
+If media has not decoded without playback, use the player's own controls
+to load a frame before trying again; the tool does not start it for you.
+If the page keeps changing during protected capture, video reports that
+privacy failure rather than bypassing the check or substituting text.
+
 Inaccessible protection cannot always be identified; no protected-playback
 bypass is claimed. No canvas export, page-pixel extraction, downloaded
 video substitute or automatic provider upload is used.

@@ -19,5 +19,10 @@ Public auctions; search and item pages read without signing in. Notes from one h
 
 ## Readers
 Shipped with the harness; run with `eval {tab, reader}` or `map {urls, what: "eval", reader}`.
-- `search` on a listing page: `showing`, `total` (0 on an empty search), and `rows` (id, url, title, price, bids, time left, full-size image).
+- `search` on a listing page: `status` is `ready` or `empty`, `total` is
+  zero only when the page explicitly reports no results, `showing` is
+  the result count text when present, and `rows` contain valid item ids,
+  urls, titles, prices, bids, time left, and full-size images. `skipped`
+  counts unreadable cards. A page still loading or whose count and cards
+  disagree fails instead of returning an empty result or an invalid url.
 - `item` on an /item/ page: title, price, minimum bid, bids, time left, end time, shipping, handling, seller, description, and full-size images.

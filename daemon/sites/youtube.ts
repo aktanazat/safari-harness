@@ -204,9 +204,12 @@ const SHOW_BUTTON = (flexy: string) => `${flexy} ytd-video-description-transcrip
 const until = (cond: string, ms: number) => `(() => {
   const { promise, resolve } = Promise.withResolvers();
   const value = () => { try { return ${cond}; } catch { return null; } };
-  const finish = (v) => { watcher.disconnect(); clearTimeout(timer); resolve(v); };
-  const watcher = new MutationObserver(() => { const v = value(); if (v) finish(v); });
-  const timer = setTimeout(() => finish(null), ${ms});
+  const events = ["yt-page-data-updated", "yt-navigate-finish"];
+  const finish = (v) => { watcher.disconnect(); clearTimeout(timer); for (const event of events) document.removeEventListener(event, check); resolve(v); };
+  const check = () => { const v = value(); if (v) finish(v); };
+  const watcher = new MutationObserver(check);
+  const timer = setTimeout(() => finish(value() || null), ${ms});
+  for (const event of events) document.addEventListener(event, check);
   const first = value();
   if (first) finish(first);
   else watcher.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
@@ -262,29 +265,30 @@ async function readPanel(kit: SiteKit, id: string, was = ""): Promise<Panel> {
 async function openTranscript(kit: SiteKit, id: string): Promise<Panel> {
   await kit.tab(ORIGIN, TAB_URL);
   const flexy = `ytd-watch-flexy[video-id=${JSON.stringify(id)}]`;
-  const go = `(() => {
-    ${NO_PLAY}
-    if (location.pathname === "/watch" && new URLSearchParams(location.search).get("v") === ${JSON.stringify(id)}) return "there";
+  // A watch renderer may have error data while the app is still upgrading.
+  // Wait for the app's navigation handler and initial response, not for a
+  // renderer belonging to the deliberately unavailable bootstrap video.
+  await kit.eval(ORIGIN, `(() => { ${NO_PLAY} })()`, { page: true });
+  const settled = await kit.eval(ORIGIN, until(`(() => {
     const app = document.querySelector("ytd-app");
-    if (!app || typeof app.resolveCommand !== "function") throw new Error("the YouTube page did not load its app");
-    setTimeout(() => app.resolveCommand({ watchEndpoint: { videoId: ${JSON.stringify(id)} }, commandMetadata: { webCommandMetadata: { url: ${JSON.stringify(`/watch?v=${id}`)}, webPageType: "WEB_PAGE_TYPE_WATCH", rootVe: 3832 } } }), 0);
-    return "going";
-  })()`;
-  // A new tab's app is still rendering its own first page for a moment
-  // after it opens, and drops a navigation asked for before then: the page
-  // lands back on the empty watch layout. The app's own watch data in the
-  // page marks the end of that.
-  const settled = await kit.eval(ORIGIN, until(`(() => { const page = document.querySelector("ytd-watch-flexy"); return page && page.data && "settled"; })()`, 15000), { page: true });
-  if (!settled) throw new Error("the YouTube page did not finish loading in time");
-  // The helper's own wait tool talks to the tab's content script, which
-  // Safari may hold up across the app's navigation, so the waiting happens
-  // in the page. The app sometimes drops a navigation asked for while it
-  // is still settling: asking again is what a second click would do.
-  let loaded: unknown = null;
-  for (let attempt = 0; attempt < 3 && !loaded; attempt++) {
-    await kit.eval(ORIGIN, go, { page: true });
-    loaded = await kit.eval(ORIGIN, until(`document.querySelector(${JSON.stringify(`${flexy} ytd-watch-metadata`)}) && "loaded"`, 15000), { page: true });
-  }
+    return app && app.data && app.data.response && !app.hasPendingNavigation && typeof app.onYtNavigate === "function" && "ready";
+  })()`, 15000), { page: true });
+  if (!settled) throw new Error("the YouTube page did not become ready for in-page navigation in time");
+  await kit.eval(ORIGIN, `(() => {
+    if (!window.__safariHarnessNoPlay) throw new Error("the YouTube helper tab lost its playback block before navigation");
+    if (location.pathname === "/watch" && new URLSearchParams(location.search).get("v") === ${JSON.stringify(id)}) return;
+    const app = document.querySelector("ytd-app");
+    if (!app || typeof app.onYtNavigate !== "function") throw new Error("the YouTube app is not ready for in-page navigation");
+    // This is the event YouTube's own links send. resolveCommand belongs
+    // to its command service, not to ytd-app. Never reload to reach a video:
+    // that would discard the playback block before the player loads.
+    app.dispatchEvent(new CustomEvent("yt-navigate", { bubbles: true, composed: true, detail: {
+      endpoint: { watchEndpoint: { videoId: ${JSON.stringify(id)} }, commandMetadata: { webCommandMetadata: { url: ${JSON.stringify(`/watch?v=${id}`)}, webPageType: "WEB_PAGE_TYPE_WATCH", rootVe: 3832 } } },
+    } }));
+  })()`, { page: true });
+  // Send navigation once; a timeout does not prove the first request had
+  // no effect. Watch the target page rather than retrying a page change.
+  const loaded = await kit.eval(ORIGIN, until(`document.querySelector(${JSON.stringify(`${flexy} ytd-watch-metadata`)}) && "loaded"`, 15000), { page: true });
   if (!loaded) throw new Error(`the YouTube watch page for ${id} did not load in time`);
   // Whether the video has a transcript comes from the watch data the page
   // renders, not from the DOM: the last video's description, its
@@ -295,18 +299,19 @@ async function openTranscript(kit: SiteKit, id: string): Promise<Panel> {
     const data = page && page.data;
     const watch = data && data.currentVideoEndpoint && data.currentVideoEndpoint.watchEndpoint;
     if (!watch || watch.videoId !== ${JSON.stringify(id)}) return null;
+    if (!data.contents || !data.contents.twoColumnWatchNextResults || !data.contents.twoColumnWatchNextResults.results) return null;
     const transcript = (data.engagementPanels || []).some((p) => p.engagementPanelSectionListRenderer && p.engagementPanelSectionListRenderer.targetId === ${JSON.stringify(TRANSCRIPT_PANEL)});
     if (transcript && !document.querySelector(${JSON.stringify(SHOW_BUTTON(flexy))})) return null;
     return { transcript, blocked: !!window.__safariHarnessNoPlay };
   })()`, 10000), { page: true });
   if (!state) throw new Error(`the YouTube watch page for ${id} did not finish loading in time`);
-  if (!state.transcript) throw new Error(`YouTube video ${id} has no transcript`);
-  // a page the app reloaded rather than navigated has lost the playback
-  // switch, and the player may have started: stop it, then say so
+  // A lost playback block is a navigation failure, not proof that a
+  // half-rendered or reloaded page has no transcript.
   if (!state.blocked) {
     await kit.eval(ORIGIN, `(() => { ${NO_PLAY} const player = document.getElementById("movie_player"); if (player && typeof player.pauseVideo === "function") player.pauseVideo(); })()`, { page: true });
     throw new Error(`the YouTube tab reloaded on its way to ${id}, which may have started the video; try again`);
   }
+  if (!state.transcript) throw new Error(`YouTube video ${id} has no transcript`);
   await kit.eval(ORIGIN, `(() => {
     const panel = document.querySelector(${JSON.stringify(PANEL)});
     const d = ${PANEL_DATA};

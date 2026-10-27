@@ -1065,7 +1065,19 @@ export function refLines(lines: string[]): string[] {
 
 export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
-  if (opts.ref !== undefined) return relay(tab, "click", opts.noWaitAfter === true ? [opts.ref, { noWaitAfter: true }] : [opts.ref]);
+  const ref = opts.ref;
+  if (ref !== undefined) {
+    try {
+      return await relay(tab, "click", opts.noWaitAfter === true ? [ref, { noWaitAfter: true }] : [ref]);
+    } catch (error) {
+      if (!(error instanceof HarnessError) || error.effect !== "none" || error.recovery?.kind !== "present") throw error;
+      const { document, target } = error.recovery;
+      return inFront(tab, { tabs: listTabs, activate: activateTab },
+        () => relay(tab, "click", [ref, opts.noWaitAfter === true
+          ? { noWaitAfter: true, expectedDocument: document, expectedTarget: target }
+          : { expectedDocument: document, expectedTarget: target }]));
+    }
+  }
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
   throw new HarnessError("invalid_argument", "click needs ref or x+y");
 }

@@ -1470,7 +1470,10 @@
     const a = el.closest("a[href]");
     const doc = el.ownerDocument.URL.split("#")[0];
     const to = a && !a.closest("[aria-disabled=true], [inert]") && /^https?:/.test(a.href) && a.href.split("#")[0] !== doc ? a.href : null;
-    return { ...res, error: to ? `${res.error}; it links to ${to}, which goto opens` : res.error, failure: UNSENT };
+    const { next, recovery, ...detail } = res;
+    const failure = next ? { ...UNSENT, retryable: false, next } : UNSENT;
+    if (recovery === "present") Object.assign(failure, { recovery, document: frameToken, target: ensureRef(el) });
+    return { ...detail, error: to ? `${res.error}; it links to ${to}, which goto opens` : res.error, failure };
   }
 
   function click(ref, el = resolve(ref, true)) {
@@ -1478,27 +1481,57 @@
     return clickElement(el);
   }
 
-  // A target with no box even scrolled into view may get one once the page
-  // answers the scroll (rows it draws as they come into view): it is tried
-  // once more when the page next changes, or after UNSEEN_MS.
+  // Only a refusal before the first event may be tried again. Scroll-driven
+  // layout and a foreground fade can settle without changing the DOM, so the
+  // final check also runs at the end of the existing short wait.
   const UNSEEN_MS = 500;
   function clickShown(ref, opts) {
+    if (opts?.expectedDocument && opts.expectedDocument !== frameToken) return { error: "the target document changed before the click; re-run snapshot", failure: UNSENT };
     const el = resolve(ref, true);
+    if (opts?.expectedTarget && (!el || el !== resolve(opts.expectedTarget, true))) return { error: "the target changed before the click; re-run snapshot", failure: UNSENT };
     const once = () => afterward(() => withOutcome(() => click(ref, el)), opts);
     const first = once();
-    if (!first?.unseen) return first;
+    if (!first?.unseen || first.failure?.effect !== "none") return first;
     return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(once);
   }
 
+  function hiddenClick(el, cause, node = el) {
+    // A styled checkbox's hidden input is not its pointer target. Name the
+    // associated label, but leave its hit-test to a separate, explicit click.
+    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => shown(label) && !clickBlocked(label)) : [];
+    if (labels.length === 1) return { error: `that control is not visible (${cause}); click its label [${ensureRef(labels[0])}] instead`, reason: "label", next: "click the visible label instead" };
+    // A snapshot keeps a transparent control that is fading in. Clicking it
+    // must still wait for ink; Safari can freeze that fade in a hidden tab.
+    const fading = cause === "opacity: 0" && node.getAnimations().some((animation) => animation.playState === "running" && animation.effect?.getKeyframes().some((frame) => frame.opacity !== undefined));
+    if (fading) {
+      if (node.ownerDocument.hidden) return { error: "that target is not visible: an opacity animation is running in this hidden tab; present this tab, then click again", reason: "background_animation", next: "present this tab, then click again", recovery: "present" };
+      return { error: "that target is not visible yet: its opacity animation has not finished; wait for it to appear before clicking", reason: "animation", next: "wait for the control to appear before clicking", unseen: true };
+    }
+    return { error: `that target is not visible (${cause}); open or show that control before clicking`, reason: "hidden", next: "open or show the control before clicking" };
+  }
+
   function clickBlocked(el) {
-    if (!el.isConnected) return "that target left the page; re-run snapshot";
+    if (!el.isConnected) return { error: "that target left the page; re-run snapshot", reason: "detached" };
     const control = el.tagName === "LABEL" ? el.control : el;
-    if (control?.matches(":disabled")) return typedForm(control) ? TYPING_UNTAKEN : "that control is disabled, so a click would do nothing: the page enables it once its form is complete, or, on a few sites, once its window is in front (call activate)";
-    if ((el.ownerDocument.defaultView || window).getComputedStyle(el).visibility !== "visible") return "that target is not visible; re-run snapshot to choose a visible control";
+    if (control?.matches(":disabled")) {
+      const typingUntaken = typedForm(control);
+      return { error: typingUntaken ? TYPING_UNTAKEN : "that control is disabled; complete its form or wait for the page to enable it before clicking", reason: "disabled", next: typingUntaken ? "type into the form with real_input type and ref, then click again" : "complete the form or wait for the page to enable the control" };
+    }
+    // A label must not activate a field disabled by ARIA or an inert wrapper,
+    // even when that field is hidden and the label is elsewhere on the page.
+    for (const target of control && control !== el ? [control, el] : [el]) {
+      for (let node = target; node; node = node.assignedSlot ?? parentOf(node)) {
+        if (node.inert) return { error: "that control is inert; close the active dialog or wait for the page to enable it", reason: "inert", next: "close the active dialog or wait for the page to enable the control" };
+        if (node.getAttribute("aria-disabled") === "true" || node.matches(":disabled")) return { error: "that control is disabled; wait for the page to enable it before clicking", reason: "disabled", next: "wait for the page to enable the control before clicking" };
+      }
+    }
+    const visibility = (el.ownerDocument.defaultView || window).getComputedStyle(el).visibility;
+    if (visibility !== "visible") return hiddenClick(el, `visibility: ${visibility}`);
     for (let node = el; node; node = node.assignedSlot ?? parentOf(node)) {
-      if (node.inert || node.getAttribute("aria-disabled") === "true" || node.matches(":disabled")) return "that control is disabled or inert; the page must enable it before it can be used";
       const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
-      if (style.display === "none" || Number(style.opacity) === 0 || style.contentVisibility === "hidden") return "that target is not visible; re-run snapshot to choose a visible control";
+      if (style.display === "none") return hiddenClick(el, "display: none", node);
+      if (Number(style.opacity) === 0) return hiddenClick(el, "opacity: 0", node);
+      if (style.contentVisibility === "hidden") return hiddenClick(el, "content-visibility: hidden", node);
     }
     return null;
   }
@@ -1534,7 +1567,7 @@
       try { frame = view.frameElement; } catch { return null; }
       if (!frame) return null;
       const blocked = clickBlocked(frame);
-      if (blocked) return { error: blocked };
+      if (blocked) return blocked;
       let point = framePoint(frame, { x, y });
       if (point.error) return point;
       if (scroll) {
@@ -1544,7 +1577,7 @@
       }
       ({ x, y } = point);
       const hit = deepPoint(x, y, frame.ownerDocument);
-      if (!hit || !insideTarget(frame, hit)) return { error: hit ? `that frame is covered by ${named(hit)}; dismiss the cover before clicking` : "that frame is outside the visible page; scroll it into view before clicking" };
+      if (!hit || !insideTarget(frame, hit)) return hit ? { error: `that frame is covered by ${named(hit)}; dismiss the cover before clicking`, reason: "covered", next: "dismiss the cover before clicking" } : { error: "that frame is outside the visible page; scroll it into view before clicking", reason: "no_area", next: "scroll the frame into view before clicking" };
       view = frame.ownerDocument.defaultView;
     }
     return null;
@@ -1554,14 +1587,17 @@
   // controls clipped by a scroll pane. Never send events through a cover.
   function clickPoint(el, scroll = true) {
     const blocked = clickBlocked(el);
-    if (blocked) return { error: blocked };
+    if (blocked && !blocked.unseen) return blocked;
     if (scroll) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    const afterScroll = clickBlocked(el);
+    if (afterScroll) return afterScroll;
     const view = el.ownerDocument.defaultView || window;
     const doc = el.ownerDocument, root = doc.documentElement;
     const rootStyle = view.getComputedStyle(root);
     const targetStyle = view.getComputedStyle(el);
     let cover = null;
     let boxes = 0;
+    let points = 0;
     for (const rect of el.getClientRects()) {
       if (++boxes > 32) break;
       let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
@@ -1607,6 +1643,7 @@
       if (right <= left || bottom <= top) continue;
       for (const [fx, fy] of [[0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]]) {
         const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+        points += 1;
         const hit = deepPoint(x, y, el.ownerDocument);
         if (hit && insideTarget(el, hit)) {
           const stopped = clickBlocked(hit);
@@ -1615,13 +1652,15 @@
             if (coveredFrame) return coveredFrame;
             return { hit, x, y };
           }
-          return { error: stopped };
+          return stopped;
         }
         cover ??= hit;
       }
     }
-    if (cover) return { error: `that target is covered by ${named(cover)}; dismiss the cover or re-run snapshot before clicking` };
-    return { error: scroll ? "that target has no visible clickable area, even scrolled into view; re-run snapshot" : "that target has no visible clickable area; scroll it into view or re-run snapshot", unseen: true };
+    if (targetStyle.pointerEvents === "none") return { error: "that target does not receive pointer events; click its visible interactive control instead", reason: "pointer_events", next: "click the visible interactive control instead" };
+    if (cover) return { error: `that target is covered by ${named(cover)}; dismiss the cover before clicking`, reason: "covered", next: "dismiss the cover before clicking" };
+    if (points) return { error: "that target has a visible box but Safari returned no hit-test target; wait for the page to draw before clicking", reason: "unpainted", next: "wait for the page to draw before clicking", unseen: true };
+    return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
   }
 
   function clickElement(el, stopAfterEvent = null) {
@@ -1632,9 +1671,9 @@
     const clicked = fireClick(point.hit, point.x, point.y, () => {
       checks += 1;
       const blocked = clickBlocked(el) || clickBlocked(point.hit);
-      if (blocked) return { error: blocked };
+      if (blocked) return blocked;
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
-      if (!hit || !insideTarget(el, hit)) return { error: `that target became covered${hit ? ` by ${named(hit)}` : ""}; re-run snapshot before clicking` };
+      if (!hit || !insideTarget(el, hit)) return { error: `that target became covered${hit ? ` by ${named(hit)}` : ""}; dismiss the cover before clicking again`, reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
       return frameCover(el.ownerDocument, point.x, point.y);
     }, stopAfterEvent);
     if (clicked.error) return checks === 1 ? refused(el, clicked) : clicked;
@@ -1663,7 +1702,7 @@
     const frame = deepQueryAll("iframe, frame").find((el) => childToken.get(el) === token);
     if (!frame) return { found: false };
     const blocked = clickBlocked(frame);
-    if (blocked) return { found: true, blocker: blocked };
+    if (blocked) return { found: true, blocker: blocked.error };
     let mapped = framePoint(frame, point);
     if (mapped.error) return { found: true, blocker: mapped.error };
     if (opts.scroll !== false) {
@@ -1689,7 +1728,7 @@
     const hit = deepPoint(x, y);
     if (!hit) return { error: "no visible target at those native drag coordinates" };
     const blocked = clickBlocked(hit);
-    if (blocked) return { error: blocked };
+    if (blocked) return blocked;
     const covered = frameCover(document, x, y, false);
     return covered || { x, y };
   }
@@ -3074,7 +3113,7 @@
     el ??= document.body;
     if (el !== document.body && el !== document.documentElement) {
       const blocked = clickBlocked(el);
-      if (blocked) return { error: blocked };
+      if (blocked) return blocked;
     }
     watchTarget(el);
     const { key, flags } = parseKey(spec);
