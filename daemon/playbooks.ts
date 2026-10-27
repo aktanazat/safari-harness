@@ -226,6 +226,16 @@ const abstain = (reason: string) => ({ ok: false, abstained: true, reason, hint:
 
 export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc, judge: Judge = jev): Promise<unknown> {
   switch (a.do ?? "list") {
+    case "preview": {
+      const { owner } = await scope(a.tab);
+      const held = read<Record<string, number>>(tabsPath(owner)) ?? {};
+      if (!held[String(a.tab)] || Date.now() - held[String(a.tab)] > MAX_AGE) throw new Error("preview needs a recent background tab this agent opened");
+      const before = fields(await call("info", { tab: a.tab })).url;
+      const url = playbookUrl(before);
+      const rows = await readPlaybookOutput(call, a.tab, outputOf(a.output), { origin: new URL(url).origin });
+      if (fields(await call("info", { tab: a.tab })).url !== before) throw new Error("the page changed during preview; no rows were returned");
+      return { ok: true, tab: a.tab, url, rows };
+    }
     case "learn": {
       const { path, owner } = await scope(a.tab);
       return locked(path, async () => {
@@ -351,15 +361,15 @@ export async function playbooksTool(a: Record<string, unknown>, call: Call = rpc
       // Jev only chooses. Replay owns validation, live checks and gates.
       return { ...await replay({ name: chosen.name, vars: a.vars }, call), tool: chosen.tool, revision: chosen.revision, matched: true, confidence };
     }
-    default: throw new Error("do must be learn, save, cancel, list, run, or restore");
+    default: throw new Error("do must be preview, learn, save, cancel, list, run, or restore");
   }
 }
 
 export const PLAYBOOK_TOOLS: Record<string, Tool> = {
   playbooks: {
-    desc: "Learn, run or restore a private tool. Named runs need no model.",
+    desc: "Preview checked rows on your current page without replay, then learn, run or restore a private tool. Named runs need no model.",
     params: {
-      do: { type: "string", enum: ["learn", "save", "cancel", "list", "run", "restore"], description: "" },
+      do: { type: "string", enum: ["preview", "learn", "save", "cancel", "list", "run", "restore"], description: "" },
       tab: { type: "number", description: "" },
       name: { type: "string", description: "" },
       from: { type: "string", description: "" },

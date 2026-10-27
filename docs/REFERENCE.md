@@ -76,24 +76,27 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
   `window` take only a tab id.
-- Every tab you open goes into a Safari window of your own, never into his
-  windows or tab groups. It opens behind his without taking focus. A task
-  shares one window even if later calls use a different `group` or omit it.
+- Every tab you open goes into a Safari window for your project, never into
+  the user's windows or tab groups. The main task and its direct parallel
+  helpers share that window, even when they use different group names.
+  Each helper still owns its own tabs; finishing one does not close the
+  others. It opens behind the user's window without taking focus.
   For calls without a task identity, each `group` gets its own window and
   ungrouped tabs share one. The window opens on a page titled with its first
   group's name (or "agent") and your process id; ", window 2" and up
   distinguish a group of that name still awaiting deletion. This labels
-  the window for him, keeps it yours when the extension reloads or Safari
-  starts again, and lets him pause or stop you
+  the window for the user, keeps it yours when the extension reloads or
+  Safari starts again, and lets the user pause or stop you
   (`safari guide reference mission control`). The daemon keeps its windows
   across its own restarts, so your next tab still joins yours. When Safari
-  starts again, the tabs it restores in your window stay yours: an id you
-  held leads to its tab's new one (`replaced` in the next result says so),
-  and they close as your other tabs do.
-- Once that window holds three of your tabs, it becomes a Safari tab group
-  of the same name the first time he has left the keyboard and mouse alone
-  for 30 seconds; a window with fewer stays plain and closes with your
-  tabs. `open` says which under `space`: `group` is `waiting`,
+  starts again, the harness reconnects only tabs whose helper it can identify.
+  If two helpers had the same address, both tabs stay open rather than being
+  assigned to the wrong helper.
+- Once that window holds three of the project's tabs, it becomes a Safari
+  tab group of the same name the first time the user has left the keyboard
+  and mouse alone for 30 seconds; a window with fewer stays plain and closes
+  with its tabs.
+  `open` says which under `space`: `group` is `waiting`,
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
   `bun run helpers` has not built scripts/spaces, or groups are off); a
@@ -106,9 +109,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   while it is there, and each agent is told why once, not on every open.
 - A finished task needs no `close` call. The [cleanup and recovery
   rules](#cleanup-authority) apply to agent tabs opened through MCP, the
-  CLI, a `repl --session`, or site globals. Empty agent windows close at
-  completion; later tab-group bookkeeping does not keep an ended window
-  open. A protected or user-owned tab keeps its window.
+  CLI, a `repl --session`, or site globals. Empty project windows close
+  after their tabs are gone; later tab-group bookkeeping does not keep an
+  ended window open. A protected or user-owned tab keeps its window.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.
@@ -230,8 +233,12 @@ rules](#cleanup-authority); it is not a list of windows kept alive.
 - Saved history keeps no typed text, expressions, page bodies, selectors,
   titles, credentials, or full addresses. It retains the tool, tab,
   timing, outcome, failure code, and capture summaries with only the
-  source origin. The live view can show more context, with secrets
-  removed; those details do not become durable history.
+  source origin.
+- A failed call may also keep the page's origin and masked path depth,
+  up to five failed request statuses and three uncaught error classes
+  from that tab. The saved context includes no response bodies, full
+  paths, queries, fragments, stacks, or raw error messages. If the tab
+  changed or an observer refused, the context says what is unavailable.
 - History survives daemon restarts in a private file. It retains at most
   100 tasks, 200 calls per task, 2 MiB, and 30 days. Restarted tasks are
   read-only and interrupted calls stay marked interrupted. Old controls
@@ -950,8 +957,8 @@ have, use `safari goto <url> --tab N`.
   `127.0.0.1:37334`) open in your agent window if you have one, else as a
   plain tab of yours: never a new agent window.
 - `keep: true` (CLI `--keep`) leaves the tab open for the user past your
-  turn (`safari guide keep`); `group` (CLI `--group trip`) gives a task a
-  window of its own (`safari guide reference lifecycle`).
+  turn (`safari guide keep`); `group` (CLI `--group trip`) names the project's
+  shared window (`safari guide reference lifecycle`).
 - `open`, `goto`, `history`, and any action that loads a page return once the
   new page is readable, without waiting for its ads and trackers. `open` and
   `goto` also wait up to 5 s while the page says it is loading (as
@@ -2116,6 +2123,56 @@ without it.
   '<json>'` for a POST. The tab is one of yours on that site, so the
   request carries its cookies and passes its CORS rules.
 
+## authenticated_read
+
+`safari read https://example.com/account --expect "known content"` makes
+one GET from an agent-owned tab on that origin and returns the readable
+text without navigating to the requested address. Omit `--tab` to reuse
+an owned tab on that site, or open its root in a background tab. Pass
+`--format raw` for unmodified HTML or JSON; `--max-bytes` defaults to
+50,000 and accepts at most 2,000,000.
+
+The reply includes status, content type, final address, `source: "page"`,
+and `auth: "unverified"` unless `--expect` matched the response. A
+matching phrase yields `auth: "content_matched"`; it checks content, not
+which account supplied it. A sign-in page, challenge, loading shell,
+cross-origin redirect, failed status, or unreadable file is not a
+successful read. Unlike `fetch`, `read` never retries outside the
+page without its sign-in. Use `download` for files and a normal `open`
+when the page needs clicks.
+
+## request_catalog
+
+An owned page's `net read` shows the GETs it made. To save one queryless,
+same-origin JSON GET for later, use its index in the unfiltered list and
+its exact `t` timestamp:
+
+```
+safari request_catalog save --tab N --name catalog-items \
+  --request I --observed-at T --field data.items --type array
+safari request_catalog run --tab N --name catalog-items
+safari request_catalog list
+safari request_catalog forget --name catalog-items
+```
+
+From MCP, call `run` with one step, for example
+`{"steps":[{"tool":"request_catalog","args":{"do":"list"}}]}`.
+This occasional writer stays off the default tool list; `run` uses the
+same arguments as the CLI.
+
+Save requires the observed complete JSON response and a passing
+nonempty field/type check. It makes a fresh page request and checks the
+same result before saving. Run needs an owned tab on that origin and
+checks the original status, content type, JSON root and field again.
+A changed or unreadable result comes back with `ok: false`; the saved
+check stays unchanged. Runs return the checked field's current value.
+
+The private catalog holds at most 50 records. It stores the route,
+status, field and shape, but no URL query, headers, cookies, raw body,
+result values, or scripts. It does not grant authority for a site action
+and cannot run against the user's front tab or a remote browser. Use
+`forget` before saving a changed request under the same name.
+
 ## download
 
 - `download` saves a file into `~/Downloads` and returns its path: pass the
@@ -2602,6 +2659,12 @@ silently resume as a replay or repair; start a new request.
 background tab this agent opened, never `front`. It does not watch the
 owner's browsing or Safari events.
 
+`playbooks {do: "preview", tab, output: {rows: "tr.item",
+fields: {title: ".title"}}}` checks and returns visible rows from the
+current owned page without replaying any action or storing a routine.
+Adjust selectors and preview again before learning; an empty, hidden,
+loading, ambiguous or changed page returns no accepted rows.
+
 1. `playbooks {do: "learn", tab, goal: "Search mail", params: ["query"],
    bindings: {query: "q"}, before: {selector: "input[name=q]"},
    output: {rows: ".ae4.UI.aZ6 tr.zA",
@@ -2645,6 +2708,13 @@ The existing recordings directory is the only version store. A successful
 `learn from` appends an immutable revision; old names remain runnable.
 `playbooks {do: "cancel", tab}` discards unfinished learning, which also
 expires after 30 minutes. `recordings show/rm` still owns the stored files.
+
+A new version retains the public parameter names and the existing start,
+end, and result checks of both its selected source and the current
+default. Checks may be strengthened and safe actions may change, but
+dropping a check or changing a public input requires a separately
+authored tool. Publication refuses a broken contract before writing a
+revision.
 
 Goal- and page-based `run` uses Jev only to advise which current tool to
 choose. Jev receives generic goals, origin and parameter names, never

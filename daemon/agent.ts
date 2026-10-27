@@ -14,6 +14,7 @@ import { HISTORY_TOOLS } from "./safari-history.ts";
 import { FILL_TOOLS } from "./fill.ts";
 import { HANDOFF_TOOLS } from "./handoff.ts";
 import { PLAYBOOK_TOOLS } from "./playbooks.ts";
+import { REQUEST_CATALOG_TOOLS } from "./request-catalog.ts";
 import { noGuide, siteGuide } from "./guides.ts";
 import { invoke } from "./call.ts";
 
@@ -148,6 +149,7 @@ export const ALL_TOOLS: Record<string, Tool> = {
   ...FILL_TOOLS,
   ...HANDOFF_TOOLS,
   ...PLAYBOOK_TOOLS,
+  ...REQUEST_CATALOG_TOOLS,
   ...CONTEXT_TOOLS,
 };
 

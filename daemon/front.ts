@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
 export const SAFARI = "com.apple.Safari";
 
-// Runs the helper and parses its one JSON line; failures carry its stderr.
+// Runs the helper and parses its one JSON line.
 // Typed text goes on stdin, unchanged and without an added newline: cards
 // use this path too, and process arguments expose their digits (09-30).
 export async function input(args: string[], timeout = 10000, stdin?: string, completion?: () => Promise<boolean>): Promise<unknown> {
@@ -61,8 +61,10 @@ export async function input(args: string[], timeout = 10000, stdin?: string, com
     if (completion && !handshake) throw new Error("native paste did not confirm its completion handshake");
     return JSON.parse(stdout.trim().split("\n").at(-1) ?? "");
   } catch (e) {
-    const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr).trim() : "";
-    throw new Error(`input ${args[0]} failed: ${stderr || (e instanceof Error ? e.message : String(e))}`);
+    const error = e && typeof e === "object" ? e as { stderr?: string; code?: string | number; signal?: string; killed?: boolean; message?: string } : undefined;
+    const stderr = error?.stderr?.trim();
+    const reason = [error?.code === undefined ? undefined : typeof error.code === "number" ? `exit ${error.code}` : `code ${error.code}`, error?.signal ? `signal ${error.signal}` : undefined, error?.killed ? "helper stopped" : undefined].filter(Boolean).join(", ");
+    throw new Error(`input ${args[0]} failed: ${stderr || reason || (e instanceof Error ? e.message : String(e))}`);
   }
 }
 
@@ -85,9 +87,9 @@ export function onRaised(listener: () => void): void {
 }
 
 export async function raiseSafari(): Promise<void> {
+  await input(["activate", SAFARI]);
   raisedAt = Date.now();
   heard();
-  await input(["activate", SAFARI]);
 }
 
 // The bundle id of the app in front.

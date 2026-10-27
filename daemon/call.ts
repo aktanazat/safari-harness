@@ -115,6 +115,7 @@ async function runHere(tool: string, args: Record<string, unknown>, model: boole
   }
   const { secret: _secret, from: _from, from_selector: _fromSelector, env: _env, ...rest } = call.args;
   const remote = process.env.SAFARI_HARNESS_REMOTE;
+  if (remote && call.tool === "request_catalog") throw new Error("request catalog requires local Safari and its owned tab");
   const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));
   const result = await (coded ? typeSecret(call.args, model, (text) => run({ ...rest, text }), caller) : run(call.args));
   return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;

@@ -68,7 +68,8 @@ daemon/
   playbooks.ts      opt-in agent runs stored as verified, parameterized
                     recordings; Jev chooses, replay checks live targets and
                     stops before any approval or sign-in boundary
-  save.ts           save on extract, snapshot, eval, and fetch: the whole
+  request-catalog.ts private checked JSON GETs saved from observed page traffic
+  save.ts           save on extract, snapshot, eval, fetch, and read: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
   map.ts            map: one read of each of up to 20 pages, a few at a time,
@@ -200,18 +201,20 @@ owned tab IDs with a call-generation token; it never closes a page.
 it; unrelated helpers do not. A request without a preparation is rejected.
 omp tags browser calls with the session and agent identity (a helper's
 with its lead's session too), including calls through the CLI and shared
-REPLs. Each helper's final `agent_end` releases only its pages and empty
-windows. Main-session completion or process exit
-also releases any abandoned descendants. Identically named groups in
-different tasks still get separate windows. Clicked pages, filled fields,
-site-global tabs and an agent page in front are included. Pages explicitly
-kept for the user, pending handoffs and personal tabs stay protected.
-Cleanup waits for a task's in-flight calls and any shared reads using its
-pages, not for unrelated sibling work. Existing omp processes retain their
-loaded extension; new sessions load this task-aware completion hook.
-Background handoff polling does not keep a finished call alive. Recovery
-after a Safari restart distinguishes identical URLs by the task in each
-registered window.
+REPLs. The main task and its direct helpers use tabs in one project window.
+Each helper's final `agent_end` releases only its pages. The shared window
+stays while another helper still has pages; an empty window closes.
+Main-session completion or process exit also releases abandoned descendants.
+Different projects get different windows, even when they use the same group
+name. Clicked pages, filled fields, site-global tabs and an agent page in
+front are included. Pages explicitly kept for the user, pending handoffs
+and personal tabs stay protected. Cleanup waits for a task's in-flight calls
+and shared reads using its pages, not for unrelated sibling work. Existing
+omp processes retain their loaded extension; new sessions load this
+task-aware completion hook. Background handoff polling does not keep a
+finished call alive. After Safari restarts, a restored tab is reattached
+only when its helper can be identified; identical addresses from different
+helpers stay open and unclaimed rather than crossing ownership.
 
 Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
 with the existing form, front-page, kept-page and handoff protections.
@@ -377,6 +380,7 @@ safari shot --full --tiles --tab 7     # readable overlapping pieces; original r
 safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
 safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf
 safari fetch /api/me --tab 7           # a request with the page's cookies
+safari read https://example.com/ --tab 7 --expect "Example Domain"  # readable page text; no target navigation
 safari dialog accept --tab 7           # answer confirms with OK from now on
 safari window 390 844 --tab 7          # a phone-width window for your tab
 safari close 7                         # else it closes when omp's turn ends, or the program that opened it exits
@@ -599,8 +603,10 @@ safari playbooks list
 
 For an explicit change, pass `--from NAME` to `mint` or `from` to
 `playbooks learn`. A fresh passing example creates a new revision and keeps
-older names available. `playbooks restore --name PRIOR --vars ...` checks a
-prior revision for that call only; it does not change the current default.
+older names available. It must retain the public inputs and existing start
+and result checks of both the selected older version and the current
+default. `playbooks restore --name PRIOR --vars ...` checks a prior revision
+for that call only; it does not change the current default.
 
 The reusable recording holds no input values, page text, URL query or
 fragment. The private learning session keeps a salted digest of the starting

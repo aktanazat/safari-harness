@@ -26,12 +26,13 @@ import { onRaised } from "./front.ts";
 import { removeCapture, verifyEvidence } from "./evidence.ts";
 import { failureOf, HarnessError } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
-import { captureSummaries, MissionHistory, type CaptureSummary, type HistoryPicture } from "./mission-history.ts";
+import { captureSummaries, failureContextSummary, historyToolName, MissionHistory, type CaptureSummary, type FailureContext, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
+import { closeTabsOf, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
+import { unsecret } from "./redact.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -60,6 +61,7 @@ type Call = {
   code?: string;
   evidence?: CaptureSummary[];
   picture?: HistoryPicture;
+  failureContext?: FailureContext;
   pendingNative?: boolean;
 };
 
@@ -99,7 +101,7 @@ const agents = new Map<number, Agent>();
 const nobody = fresh();
 let history = new MissionHistory();
 let historyError: string | undefined;
-const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean; trustedInspection: boolean }>();
+const scope = new AsyncLocalStorage<{ agent: Agent; call: Call; delegated: boolean; nested: boolean; trustedInspection: boolean; tab?: number }>();
 const spaceAgents = new Map<string, string>();
 
 // A living owner without a runtime record is unknown after a restart or
@@ -134,7 +136,7 @@ function remember(agent: Agent): void {
       pictures: agent.pictures,
       ...(agent.inspectionOnly ? { inspectionOnly: true } : {}),
       calls: agent.calls.map((c) => ({
-        t: c.t, tool: c.tool, tab: c.tab, ms: c.ms, code: c.code, evidence: c.evidence, picture: c.picture,
+        t: c.t, tool: c.tool, tab: c.tab, ms: c.ms, code: c.code, evidence: c.evidence, picture: c.picture, failureContext: c.failureContext,
         outcome: c.pendingNative ? agent.ended === undefined ? "running" : "interrupted" : c.ms === undefined ? "running" : c.error ? "failed" : "done",
       })),
     });
@@ -233,13 +235,15 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   const agent = recordOf(owner);
   const withheld: string[] = [];
   const call: Call = { t: Date.now(), tool: cut(tool, 40), args: cut(argsOf(args, withheld), 300), ...tabOf(args.tab) };
-  agent.calls.push(call);
-  if (agent.calls.length > KEPT) agent.calls.splice(0, agent.calls.length - KEPT);
+  if (tool !== "news") {
+    agent.calls.push(call);
+    if (agent.calls.length > KEPT) agent.calls.splice(0, agent.calls.length - KEPT);
+  }
   agent.running.add(call);
   agent.last = call.t;
   const began = performance.now();
   let ran = false;
-  const context = { agent, call, delegated: false, nested: false, trustedInspection: parent?.trustedInspection === true || tool === "video" && (args.do === undefined || args.do === "inspect") };
+  const context = { agent, call, delegated: false, nested: false, trustedInspection: parent?.trustedInspection === true || tool === "video" && (args.do === undefined || args.do === "inspect"), tab: call.tab };
   remember(agent);
   try {
     return await scope.run(context, async () => {
@@ -247,6 +251,10 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
       ran = true;
       const value = await execute(agent, tool, args, () => run(), false, () => context.delegated);
       Object.assign(call, outcomeOf(tool, value, withheld));
+      if (value && typeof value === "object" && ("ok" in value && value.ok === false || "isError" in value && value.isError === true || "error" in value && typeof value.error === "string")) {
+        call.code = failureOf(value, { effectful: affectsPage(tool, args) }).code;
+        call.error = call.code;
+      }
       const evidence = captureSummaries(value);
       if (evidence.length) call.evidence = evidence;
       return value;
@@ -259,7 +267,9 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
     call.ms = Math.round(performance.now() - began);
     agent.running.delete(call);
     agent.last = Date.now();
+    if (call.error && context.tab !== undefined) call.tab = context.tab;
     remember(agent);
+    if (call.error) void failureContextAfter(agent, call, context.tab ?? call.tab, agent.last);
     // A tab a call in flight opened after the user stopped its agent is marked
     // too: it closes with the others when the agent's turn ends.
     if (ran && owner !== undefined && agent.stopped !== undefined && agents.get(owner) === agent) closeTabsOf(owner);
@@ -280,6 +290,7 @@ export async function missionCall<T>(tool: string, args: Record<string, unknown>
   const needsTab = affectsPage(tool, args) || wholeView(tool, args);
   const tab = needsTab && args.tab !== undefined && args.tab !== null ? await resolveTab(args.tab) : undefined;
   const pinned = tab === undefined ? args : { ...args, tab };
+  if (tab !== undefined) context.tab = tab;
   if (context.agent.owner !== undefined && !completesNative(context.agent, tool, pinned)) await admit(context.agent, context.call);
   return execute(context.agent, tool, pinned, () => run(pinned), true, () => context.nested);
 }
@@ -358,9 +369,11 @@ export async function finishNativeAction(tab: number, permit: string, uncertain:
     view.revision = ++agent.revision;
     view.all = true;
     call.code = "effect_unknown";
+    call.tab = tab;
     call.error = "native input result is unknown";
   }
   call.ms = Math.max(0, Date.now() - call.t);
+  if (uncertain) void failureContextAfter(agent, call, tab, Date.now());
   if (!view.stale && !view.all && !view.retries.size && !view.native.size) agent.views.delete(tab);
   if (picture) await pictureAfter(agent, call, tab, uncertain);
   else delete call.picture;
@@ -407,6 +420,41 @@ async function pictureAfter(agent: Agent, call: Call, tab: number, uncertain = f
     call.picture = { id, missing: failureOf(e, { effectful: false }).code === "privacy" ? "privacy guard refused capture" : "capture unavailable" };
     if (receipt) await removeCapture(receipt).catch(() => { historyError = "An unused picture could not be removed."; });
   }
+}
+
+async function failureContextAfter(agent: Agent, call: Call, tab: number | undefined, at: number): Promise<void> {
+  let page: unknown;
+  let network: unknown[] | undefined;
+  let errors: unknown[] | undefined;
+  const readable = () => bridge.connected && agent.calls.includes(call) && agent.hold === undefined && agent.stopped === undefined && agent.ended === undefined && tab !== undefined && followTab(tab) === tab;
+  try {
+    if (tab !== undefined && tab > 0 && readable()) {
+      const before = (await tabList(0))?.find((t) => t.id === tab)?.url;
+      if (before && readable()) {
+        const [net, logged] = (await Promise.allSettled([netRead({ tab }), consoleRead({ tab })])).map((result) => {
+          const value: unknown = result.status === "fulfilled" ? result.value : undefined;
+          return value && typeof value === "object" && "entries" in value && Array.isArray(value.entries) ? value.entries : undefined;
+        });
+        const after = (await tabList(0))?.find((t) => t.id === tab)?.url;
+        if (readable() && before === after) {
+          page = unsecret(tab, before);
+          network = net;
+          errors = logged;
+        }
+      }
+    }
+  } catch {
+    page = undefined;
+    network = undefined;
+    errors = undefined;
+  }
+  if (!agent.calls.includes(call)) return;
+  const unavailable: FailureContext["unavailable"] = [];
+  if (page === undefined) unavailable.push("page");
+  if (network === undefined) unavailable.push("network");
+  if (errors === undefined) unavailable.push("console");
+  call.failureContext = failureContextSummary({ at, tab, page, network, console: errors, unavailable }, call.t, call.ms ?? 0);
+  remember(agent);
 }
 
 const OBSERVATIONS: Record<string, true> = { snapshot: true, extract: true, shot: true };
@@ -784,9 +832,9 @@ function publicRecentTab(tab: RecentTab): RecentTabSummary {
   };
 }
 
-function publicCall<T extends { picture?: HistoryPicture }>(call: T, mission: string) {
+function publicCall<T extends { tool: string; picture?: HistoryPicture }>(call: T, mission: string) {
   const { picture, ...rest } = call;
-  return { ...rest, ...(picture ? { picture: "missing" in picture ? picture : { id: picture.id, capture: picture.capture }, mission } : {}) };
+  return { ...rest, tool: historyToolName(call.tool), ...(picture ? { picture: "missing" in picture ? picture : { id: picture.id, capture: picture.capture }, mission } : {}) };
 }
 
 async function historyRows(url: URL): Promise<Response> {
@@ -820,7 +868,7 @@ async function overview(): Promise<Overview> {
     const last = a.calls.at(-1);
     return {
       ...summaryOf(a),
-      last: last ? { ...last, picture: undefined } : null,
+      last: last ? { ...last, tool: historyToolName(last.tool), picture: undefined } : null,
       tasks: mine.map((w) => ({ id: w.id, name: w.name })),
       // On 10-07 an agent showed 0 tabs while one it opened sat in a window
       // apart from its own.
@@ -1091,6 +1139,10 @@ header p a, .tasks a, .windows h3 a, .foot a { display: inline-flex; min-height:
 .picture { grid-column: 2; margin: 0.4rem 0; min-width: 0; }
 .picture img { display: block; max-width: 100%; max-height: 32rem; height: auto; object-fit: contain; border: 1px solid var(--line); }
 .picture figcaption { color: var(--muted); font-size: 0.85rem; }
+.failure-context { grid-column: 2 / -1; margin: 0.25rem 0 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.failure-context > div { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0.5rem; }
+.failure-context dt { color: var(--muted); }
+.failure-context dd { margin: 0; }
 `;
 
 // Static, so the page's CSP names it by hash; what it shows comes from the
@@ -1298,6 +1350,27 @@ const SCRIPT = String.raw`
     if (c.title || c.url) li.append(make("div", "where", [c.title, c.url].filter(Boolean).join(" · ")));
     if (c.ms !== undefined) li.append(make("span", "took", c.ms < 1000 ? c.ms + " ms" : (c.ms / 1000).toFixed(1) + " s"));
     if (c.evidence) for (const e of c.evidence) li.append(make("div", "where", "Saved capture · " + e.width + " × " + e.height + (e.url ? " · " + e.url : "") + " · " + e.sha256.slice(0, 12)));
+    if (state === "failed" && c.failureContext) {
+      const context = c.failureContext;
+      const details = make("dl", "failure-context");
+      details.setAttribute("aria-label", "Failure context");
+      const add = (label, values) => {
+        const row = make("div");
+        const value = make("dd");
+        if (Array.isArray(values)) {
+          const list = make("ul");
+          list.setAttribute("role", "list");
+          list.append(...values.map((text) => make("li", "", text)));
+          value.append(list);
+        } else value.textContent = values;
+        row.append(make("dt", "", label), value);
+        details.append(row);
+      };
+      add("Page", context.page ? context.page.origin + context.page.path : "Unavailable");
+      add("Network", context.unavailable.includes("network") ? "Unavailable" : context.network.length ? context.network.map((e) => clock(e.t) + " · " + e.method + " " + e.origin + e.path + " · " + [e.status, e.error].filter((value) => value !== undefined).join(" · ")) : "No recent failures");
+      add("Console", context.unavailable.includes("console") ? "Unavailable" : context.console.length ? context.console.map((e) => clock(e.t) + " · " + e.error) : "No uncaught errors");
+      li.append(details);
+    }
     if (c.picture) {
       const figure = make("figure", "picture");
       if (c.picture.missing) figure.append(make("figcaption", "", "No picture · " + c.picture.missing));
