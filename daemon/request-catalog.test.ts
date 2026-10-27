@@ -23,11 +23,12 @@ test("a saved observed GET refuses changed results and stores no response values
     };
     const saved = await requestCatalogTool({ do: "save", name: "items", tab, request: 0, observedAt: at, field: "items", type: "array" }, call);
     const first = await requestCatalogTool({ do: "run", name: "items", tab }, call);
+    const alias = await requestCatalogTool({ do: "run", name: "items", tab: 6 }, call);
     current = JSON.stringify({ items: [] });
     const changed = await requestCatalogTool({ do: "run", name: "items", tab }, call);
     const listed = await requestCatalogTool({ do: "list" }, call);
     const stored = readFileSync(dataFile("request-catalog/catalog.json"), "utf8");
-    console.log(JSON.stringify({ saved, first, changed, listed, stored }));
+    console.log(JSON.stringify({ saved, first, alias, changed, listed, stored }));
   `;
   const child = Bun.spawn([process.execPath, "-e", script], {
     env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
@@ -38,6 +39,7 @@ test("a saved observed GET refuses changed results and stores no response values
     const result = JSON.parse(text);
     expect(result.saved).toMatchObject({ ok: true, saved: true, check: { passed: true } });
     expect(result.first).toMatchObject({ ok: true, value: [{ title: "Result" }], check: { passed: true } });
+    expect(result.alias).toMatchObject({ ok: true, value: [{ title: "Result" }], check: { passed: true } });
     expect(result.changed).toMatchObject({ ok: false, reason: expect.stringContaining("empty") });
     expect(result.listed.entries).toHaveLength(1);
     expect(result.stored).not.toContain("private fixture value");
