@@ -235,8 +235,10 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   const agent = recordOf(owner);
   const withheld: string[] = [];
   const call: Call = { t: Date.now(), tool: cut(tool, 40), args: cut(argsOf(args, withheld), 300), ...tabOf(args.tab) };
-  agent.calls.push(call);
-  if (agent.calls.length > KEPT) agent.calls.splice(0, agent.calls.length - KEPT);
+  if (tool !== "news") {
+    agent.calls.push(call);
+    if (agent.calls.length > KEPT) agent.calls.splice(0, agent.calls.length - KEPT);
+  }
   agent.running.add(call);
   agent.last = call.t;
   const began = performance.now();
