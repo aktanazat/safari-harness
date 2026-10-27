@@ -268,6 +268,16 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
+    name: "a styled hidden checkbox points to its visible label without toggling until that label is clicked",
+    page: targets,
+    steps: [
+      { op: "click", args: ["#checkbox"], answer: { error: expect.stringContaining("click its label ["), failure: { ...unsent, retryable: false, next: "click the visible label instead" } } },
+      evaluate("document.getElementById('checkbox').checked", false),
+      { op: "click", args: ["#checkbox-label"], answer: { value: { ok: true } } },
+      evaluate("document.getElementById('checkbox').checked", true),
+    ],
+  },
+  {
     name: "a visible label still toggles its styled hidden checkbox",
     page: targets,
     steps: [
