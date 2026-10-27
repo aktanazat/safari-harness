@@ -60,6 +60,7 @@ async function fixture() {
   const control = { held: false, released: false, captures: 0, beforeCapture: async () => {} };
   const tool = createVideoTool({
     admit: async () => ({ signal: new AbortController().signal, check() { if (control.held) throw new HarnessError("stopped", "the user took control"); }, release() { control.released = true; } }),
+    present: async (_tab, act) => act(),
     call: async (name, args) => {
       if (name === "eval") return fields((await request({ op: "eval", args: [args.expression], timeout: 12000 })).value);
       if (name !== "shot") throw new Error(`unexpected video tool ${name}`);
@@ -94,7 +95,7 @@ async function fixture() {
 const mediaState = "({time:document.querySelector('#movie').currentTime,paused:document.querySelector('#movie').paused,rate:document.querySelector('#movie').playbackRate,muted:document.querySelector('#movie').muted})";
 
 describe("video observation input contract", () => {
-  const unavailable = createVideoTool({ call: async () => { throw new Error("invalid input crossed the browser boundary"); }, admit: async () => { throw new Error("invalid input reached admission"); } });
+  const unavailable = createVideoTool({ call: async () => { throw new Error("invalid input crossed the browser boundary"); }, admit: async () => { throw new Error("invalid input reached admission"); }, present: async (_tab, act) => act() });
   test.each([
     ["empty times", []], ["more than eight moments", Array.from({ length: 9 }, (_, n) => n)],
     ["negative time", [-1]], ["nonfinite time", [Infinity]], ["not numeric", ["1"]],

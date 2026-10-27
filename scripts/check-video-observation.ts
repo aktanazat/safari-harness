@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { inFront } from "../daemon/front.ts";
+import { frontApp, inFront } from "../daemon/front.ts";
 import { removeCapture, verifyEvidence, type CaptureResult } from "../daemon/evidence.ts";
 import type { VideoFramesResult, VideoSource } from "../daemon/video-observation.ts";
 
@@ -64,14 +64,15 @@ try {
   assert.equal(before.source.height, 96);
   assert.equal(before.source.duration, 2);
   assert.ok(!JSON.stringify(before).includes("private-video-query"));
-  const captured = await inFront(tab, {
-    tabs: async () => (await call<{ tabs: { id: number; windowId?: number; active?: boolean; front?: boolean }[] }>("tabs")).tabs,
-    activate: (id) => call("activate", { tab: id }),
-  }, async () => {
-    const result = await call<VideoFramesResult>("video", { tab, ref: "#movie", do: "frames", times: [0.2, 1.4] });
-    captures.push(...result.frames.map((frame) => frame.capture));
-    return result;
-  });
+  const appBefore = await frontApp();
+  const tabsBefore = await call<{ tabs: { id: number; front?: boolean }[] }>("tabs");
+  const captured = await call<VideoFramesResult>("video", { tab, ref: "#movie", do: "frames", times: [0.2, 1.4] });
+  captures.push(...captured.frames.map((frame) => frame.capture));
+  assert.equal(await frontApp(), appBefore, "video left Safari in front of the user's app");
+  if (appBefore === "com.apple.Safari") {
+    const tabsAfter = await call<{ tabs: { id: number; front?: boolean }[] }>("tabs");
+    assert.equal(tabsAfter.tabs.find((entry) => entry.front)?.id, tabsBefore.tabs.find((entry) => entry.front)?.id, "video left its window in front of the user's Safari window");
+  }
   assert.equal(captured.status, "captured");
   assert.equal(captured.frames.length, 2);
   assert.equal(captured.restoration.restored, true);
