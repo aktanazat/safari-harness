@@ -8,8 +8,9 @@ import { runAs } from "./owner.ts";
 import { callTool, loadTabs } from "./tools.ts";
 
 const origin = "https://account.example";
-const dashboard = '<html><body><main><h1>Active orders</h1><p>Account dashboard has three active orders ready for shipment.</p></main><dialog><form action="/login"><input type="password"></form></dialog></body></html>';
+const dashboard = '<html><head><title>Account dashboard</title></head><body><main><h1>Active orders</h1><p>Account dashboard has three active orders ready for shipment.</p></main><dialog><form action="/login"><input type="password"></form></dialog></body></html>';
 const signIn = '<html><body><main><h1>Sign in</h1><form action="/login"><input type="password"></form></main></body></html>';
+const titleOnly = '<html><head><title>Sign in</title></head><body><main><h1>Active orders</h1><p>Sign-in preview, not an account session.</p></main></body></html>';
 
 test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog without accepting a login page", async () => {
   const home = mkdtempSync(join(tmpdir(), "authenticated-read-"));
@@ -35,7 +36,8 @@ test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog
         if (action === "tabInfo") value = tabs.get(tab);
         else if (action === "fetch") {
           const url = String(input[0]);
-          value = { status: 200, url, type: "text/html", text: url.endsWith("/visible-login") ? signIn : dashboard };
+          const text = url.endsWith("/visible-login") ? signIn : url.endsWith("/title-only") ? titleOnly : dashboard;
+          value = { status: 200, url, type: "text/html", text };
         } else if (action === "eval") value = { result: true };
       }
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
@@ -43,12 +45,13 @@ test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog
     close() {},
   });
   try {
-    const first = await runAs(agent.pid, () => callTool("authenticated_read", { url: `${origin}/incidental`, expect: "Active orders" })) as { tab: number; content: string };
-    expect(first).toMatchObject({ tab: 102, content: expect.stringContaining("Account dashboard") });
+    const first = await runAs(agent.pid, () => callTool("authenticated_read", { url: `${origin}/incidental`, expect: "Active orders" })) as { tab: number; title: string; content: string };
+    expect(first).toMatchObject({ tab: 102, title: "Account dashboard", content: expect.stringContaining("Account dashboard") });
     const explicit = await runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/incidental`, expect: "Active orders" })) as { tab: number };
     const repeated = await runAs(agent.pid, () => callTool("authenticated_read", { url: `${origin}/incidental`, expect: "Active orders" })) as { tab: number };
     expect([explicit.tab, repeated.tab, opens]).toEqual([first.tab, first.tab, 1]);
     await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/visible-login`, expect: "Active orders" }))).rejects.toThrow("sign-in, challenge, or loading page");
+    await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/title-only`, expect: "Active orders" }))).rejects.toThrow("sign-in, challenge, or loading page");
   } finally {
     agent.kill();
     await agent.exited;
