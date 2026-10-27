@@ -1,7 +1,7 @@
 export type FailureCode = "stale_view" | "effect_unknown" | "privacy" | "blocked" | "not_content" | "timeout" | "unavailable" | "aborted" | "invalid_argument" | "command_failed" | "stopped" | "waiting_for_human";
 export type FailureEffect = "none" | "possibly_effected";
 export type Failure = { ok: false; code: FailureCode; retryable: boolean; effect: FailureEffect; message: string; next: string };
-type FailureOptions = { retryable?: boolean; effect?: FailureEffect; next?: string };
+type FailureOptions = { retryable?: boolean; effect?: FailureEffect; next?: string; recovery?: { kind: "present"; document: string; target: string; frame?: number } };
 
 const DEFAULTS: Record<FailureCode, { effect: FailureEffect; retryable: boolean; next: string }> = {
   stale_view: { effect: "none", retryable: true, next: "read a fresh snapshot of this tab before acting again." },
@@ -23,6 +23,7 @@ export class HarnessError extends Error {
   readonly retryable: boolean;
   readonly effect: FailureEffect;
   readonly next: string;
+  readonly recovery?: { kind: "present"; document: string; target: string; frame?: number };
 
   constructor(code: FailureCode, message: string, options: FailureOptions = {}) {
     super(message);
@@ -31,6 +32,7 @@ export class HarnessError extends Error {
     this.effect = options.effect ?? DEFAULTS[code].effect;
     this.retryable = options.retryable ?? (this.effect === "none" && DEFAULTS[code].retryable);
     this.next = options.next ?? (this.effect === "possibly_effected" ? DEFAULTS.effect_unknown.next : DEFAULTS[code].next);
+    this.recovery = this.effect === "none" ? options.recovery : undefined;
   }
 }
 
@@ -53,7 +55,16 @@ export function readFailure(value: unknown): Failure | undefined {
 // was: content.js marks a click it refused before sending any event.
 export function answeredError(message: string, failure: unknown): Error {
   const f = fields(failure);
-  return f && isCode(f.code) && (f.effect === "none" || f.effect === "possibly_effected") ? new HarnessError(f.code, message, { effect: f.effect }) : new Error(message);
+  if (!f || !isCode(f.code) || (f.effect !== "none" && f.effect !== "possibly_effected")) return new Error(message);
+  return new HarnessError(f.code, message, {
+    effect: f.effect,
+    retryable: f.retryable === false ? false : undefined,
+    next: typeof f.next === "string" ? f.next : undefined,
+    recovery: f.code === "stale_view" && f.effect === "none" && f.recovery === "present"
+      && typeof f.document === "string" && f.document.length > 0 && typeof f.target === "string" && f.target.length > 0
+      && (f.frame === undefined || (typeof f.frame === "number" && Number.isSafeInteger(f.frame) && f.frame > 0))
+      ? { kind: "present", document: f.document, target: f.target, frame: typeof f.frame === "number" ? f.frame : undefined } : undefined,
+  });
 }
 
 function diagnosticCode(value: Record<string, unknown>): FailureCode | undefined {

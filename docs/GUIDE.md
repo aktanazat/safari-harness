@@ -142,9 +142,9 @@ Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and
   never read its answer from a screenshot. A `challenge` from `map`:
   `open` the page in a tab and `wait` a few seconds for its text, since
-  many checks clear by themselves there. One still up in a tab:
-  `handoff {tab, why}` if the page matters. `where: "block"` cannot be
-  cleared: report it.
+  many checks clear by themselves there. If one persists, use another
+  permitted source; if the exact page is essential, report the limitation
+  without asking the user to clear it. `where: "block"` cannot be cleared.
 
 Privacy and care
 - List his tabs only when the task is about a page he has open.

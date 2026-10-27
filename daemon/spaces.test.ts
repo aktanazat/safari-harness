@@ -300,6 +300,48 @@ test("each agent's tabs open in a window of its own, never the user's, and a tas
   b.kill();
 });
 
+test("a task shares one window across named and default opens while another task stays separate", async () => {
+  const s = safari();
+  const first = await runAs(process.pid, () => openTab("https://example.com/first", true), "browserbase-first");
+  const named = await runAs(process.pid, () => openTab("https://example.com/named", true, "browserbase-videos"), "browserbase-first");
+  const again = await runAs(process.pid, () => openTab("https://example.com/again", true), "browserbase-first");
+  const other = await runAs(process.pid, () => openTab("https://example.com/other", true), "browserbase-second");
+  expect([named.windowId, again.windowId]).toEqual([first.windowId, first.windowId]);
+  expect(other.windowId).not.toBe(first.windowId);
+  expect(new Set([...s.tabs.values()].map((tab) => tab.windowId)).size).toBe(3);
+});
+
+test("a saved task window from the old per-group layout is reused after restart", async () => {
+  const s = safari();
+  const before = await daemonOn(47367, "legacy-group-before");
+  const opened = await runAs(process.pid, () => before.spaceWindow("videos"), "legacy-restored");
+  const path = join(dir, "legacy-group.json");
+  writeFileSync(path, JSON.stringify({ version: 2, spaces: [{ ...opened, key: JSON.stringify([process.pid, "legacy-restored", "videos"]) }] }));
+  const after = await daemonOn(47367, "legacy-group-after");
+  after.loadSpaces(path, () => true);
+  const reused = await runAs(process.pid, () => after.spaceWindow(), "legacy-restored");
+  expect(reused.window).toBe(opened.window);
+  expect(new Set([...s.tabs.values()].map((tab) => tab.windowId)).size).toBe(2);
+});
+
+test("a stale saved group does not hide another live window of the same task", async () => {
+  const s = safari();
+  const before = await daemonOn(47368, "legacy-stale-before");
+  const task = "legacy-stale";
+  const stale = await runAs(process.pid, () => before.spaceWindow("old"), task);
+  s.tabs.delete(pageIn(s.tabs, stale.window)!.id);
+  const id = "live-legacy";
+  const marker = s.ops["windows.open"]([`http://127.0.0.1:47368/space?id=${id}&name=live&size=1001x780`]) as { windowId: number };
+  const live = { ...stale, id, name: "live", window: marker.windowId, proof: undefined, key: JSON.stringify([process.pid, task, "new"]) };
+  const path = join(dir, "legacy-stale.json");
+  writeFileSync(path, JSON.stringify({ version: 2, spaces: [{ ...stale, key: JSON.stringify([process.pid, task, "old"]) }, live] }));
+  const after = await daemonOn(47368, "legacy-stale-after");
+  after.loadSpaces(path, () => true);
+  const reused = await runAs(process.pid, () => after.spaceWindow("new"), task);
+  expect(reused.window).toBe(live.window);
+  expect(new Set([...s.tabs.values()].map((tab) => tab.windowId)).size).toBe(2);
+});
+
 test("an exited agent's kept page and window remain intact without disposable completion authority", async () => {
   const s = safari();
   const c = agent();

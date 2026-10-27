@@ -1,16 +1,5 @@
-// Where an agent's window shows its page. WebKit draws nothing in a window
-// other windows cover whole: its frame callbacks wait, so the paint check
-// before every screenshot (background.js) never passes. On 10-22 Safari had
-// opened every agent window at one place on the display above, each over
-// the ones before it, and every agent's shots but the front one's failed
-// "the protected page did not paint" until its window was moved by hand.
-// An agent's new window (spaces.ts), and the calling agent's own window
-// when its shot did not paint (tools.ts, captureTab), move where no window
-// in front of them covers any of them, or else where the most of them
-// shows. No other window moves. scripts/input lists every app's windows on
-// screen front to back, in global points from the main display's top-left;
-// a tab's window is the Safari window of its size, which no other window
-// has (spaces.ts nextSize, background.js "window").
+// WebKit stops painting a page when another window covers its whole window.
+// Only an owned screenshot may briefly move that window to make it paint.
 
 import { bridge } from "./bridge.ts";
 import { input } from "./front.ts";
@@ -106,17 +95,24 @@ async function onScreen(tab: number): Promise<Here | "hidden" | undefined> {
   return { at, front: windows.slice(0, mine[0]), behind: windows.slice(mine[0] + 1), screen: screen.frame, screens };
 }
 
-// Moves tab's window, without focus, where it shows (showingSpot): "moved";
-// "shown" when it is there already; "covered" when too little of it would
-// show anywhere; "hidden" when it is not on screen; undefined when its
-// window cannot be told or moved. left and top count from the top-left of
-// the display it is on, as Safari's windows.update counts them.
-export async function uncover(tab: number): Promise<"moved" | "shown" | "covered" | "hidden" | undefined> {
+// A screenshot may temporarily move its owned window where Safari can paint
+// it. Return a restoration step only when it moved; a user who moves the
+// window during capture keeps their chosen position.
+export async function uncover(tab: number): Promise<(() => Promise<void>) | "shown" | "covered" | "hidden" | undefined> {
   const here = await onScreen(tab);
   if (here === undefined || here === "hidden") return here;
   const to = showingSpot(here);
   if (!to) return "covered";
   if (to.x === here.at.x && to.y === here.at.y) return "shown";
   await bridge.request("windows.frame", [tab, { left: Math.round(to.x - here.screen.x), top: Math.round(to.y - here.screen.y) }], FRAME_MS);
-  return "moved";
+  const placed = await onScreen(tab);
+  if (placed === undefined || placed === "hidden") {
+    await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - here.screen.x), top: Math.round(here.at.y - here.screen.y) }], FRAME_MS);
+    return undefined;
+  }
+  return async () => {
+    const now = await onScreen(tab);
+    if (now === undefined || now === "hidden" || now.at.x !== placed.at.x || now.at.y !== placed.at.y) return;
+    await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - now.screen.x), top: Math.round(here.at.y - now.screen.y) }], FRAME_MS);
+  };
 }

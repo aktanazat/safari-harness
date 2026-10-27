@@ -33,8 +33,8 @@ const UNPAINTED = "screenshot privacy: the protected page did not paint";
 const shared = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
 
-// windows front to back; tabs, each in a window; owners, each window's agent.
-function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>) {
+// Windows front to back; tabs, each in a window; owners, each window's agent.
+function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0) {
   const urlOf = (tab: number) => `https://page.example/${tab}`;
   const windowOf = (tab: number) => windows.find((w) => w.id === tabs[tab])!;
   connect({
@@ -54,8 +54,9 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
         const w = windowOf(tab);
         const bounds = args[1] as { left: number; top: number } | undefined;
         if (bounds) {
+          moves?.push({ ...w });
           const on = [MAIN, ABOVE].reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
-          Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top });
+          Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top + (moves?.length === 1 ? moveOffset : 0) });
         }
         return reply({ value: { width: w.width, height: w.height, state: "normal" } });
       }
@@ -82,13 +83,15 @@ afterEach(() => {
   mock.restore();
 });
 
-test("a shot whose window another agent's covers moves that window alone where nothing covers it, and captures its page", async () => {
+test.each([0, 30])("a covered owned window returns to its original place after Safari shifts its screenshot position by %i points", async (offset) => {
   const theirs = { id: 3, safari: true, ...SAFARI_PUT, width: 1001, height: 780 };
-  const windows = mac([{ ...HIS }, { ...theirs }, { id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 }], { 11: 1, 21: 2, 31: 3 }, { 2: 7, 3: 8 });
+  const moves: Rect[] = [];
+  const windows = mac([{ ...HIS }, { ...theirs }, { id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 }], { 11: 1, 21: 2, 31: 3 }, { 2: 7, 3: 8 }, moves, offset);
   const capture = await runAs(7, () => captureTab(21));
   expect(capture.source.url).toBe("https://page.example/21");
-  const ours = byId(windows, 2);
-  expect([shared(ours, HIS), shared(ours, theirs)]).toEqual([0, 0]);
+  expect(moves).toHaveLength(2);
+  expect([shared(moves[1], HIS), shared(moves[1], theirs)]).toEqual([0, 0]);
+  expect(byId(windows, 2)).toEqual({ id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 });
   expect([byId(windows, 1), byId(windows, 3)]).toEqual([HIS, theirs]);
 });
 
@@ -99,17 +102,17 @@ test("a shot whose page did not paint leaves a window that is not the caller's w
   expect(byId(windows, 2)).toEqual(theirs);
 });
 
-// On 10-23 a shot of a console popup the page opened failed "did not
-// paint" after 9.5 s; after activate the same shot took 0.3 s.
-test("a shot of a popup window the caller's page opened moves that window where it shows, and captures its page", async () => {
+test("a popup window returns to its original place after its page is captured", async () => {
   const popup = { id: 5, safari: true, x: 200, y: 200, width: 600, height: 500 };
-  const windows = mac([{ ...HIS }, { ...popup }], { 11: 1, 51: 5 }, {});
+  const moves: Rect[] = [];
+  const windows = mac([{ ...HIS }, { ...popup }], { 11: 1, 51: 5 }, {}, moves);
   const state = join(mkdtempSync(join(tmpdir(), "place-")), "tabs.json");
   writeFileSync(state, JSON.stringify({ 51: process.pid }));
   loadTabs(state);
   const capture = await runAs(process.pid, () => captureTab(51));
   expect(capture.source.url).toBe("https://page.example/51");
-  expect([shared(byId(windows, 5), HIS), byId(windows, 1)]).toEqual([0, HIS]);
+  expect(moves).toHaveLength(2);
+  expect([shared(moves[1], HIS), byId(windows, 5), byId(windows, 1)]).toEqual([0, popup, HIS]);
 });
 
 test("a shot whose window no display has room to show says it is covered, and moves nothing", async () => {
@@ -121,15 +124,15 @@ test("a shot whose window no display has room to show says it is covered, and mo
   expect(byId(windows, 2)).toEqual(ours);
 });
 
-test("an agent's new window, which Safari opens over another agent's, moves where neither that window nor the user's covers any of it", async () => {
+test("opening an agent window leaves it behind the user's windows where Safari placed it", async () => {
   const older = { id: 2, safari: true, ...SAFARI_PUT, width: 1000, height: 780 };
-  const windows = mac([{ ...HIS }, { ...older }], { 11: 1, 21: 2 }, { 2: 8 });
-  // A module of its own keeps this agent's window out of other files'
-  // records (spaces.test.ts does the same).
+  const moves: Rect[] = [];
+  const windows = mac([{ ...HIS }, { ...older }], { 11: 1, 21: 2 }, { 2: 8 }, moves);
+  // Isolate this window from other tests' module records.
   const fresh = (await import(`./spaces.ts?place`)) as typeof spaces;
   const space = await runAs(process.pid, () => fresh.spaceWindow("place"));
   const opened = byId(windows, space.window);
-  expect([shared(opened, HIS), shared(opened, older)]).toEqual([0, 0]);
-  expect(shared(opened, ABOVE.visible) + shared(opened, MAIN.visible)).toBe(opened.width * opened.height);
+  expect(opened).toEqual({ id: space.window, safari: true, ...SAFARI_PUT, width: space.size.width, height: space.size.height });
+  expect(moves).toEqual([]);
   expect(byId(windows, 2)).toEqual(older);
 });

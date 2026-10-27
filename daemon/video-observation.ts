@@ -7,6 +7,7 @@ export type VideoObservationPermit = { signal: AbortSignal; check(): void; relea
 export type VideoObservationDependencies = {
   call(tool: string, args: Fields): Promise<unknown>;
   admit(tab: number, acting: boolean): Promise<VideoObservationPermit>;
+  present<T>(tab: number, check: () => void, act: () => Promise<T>): Promise<T>;
 };
 export type VideoSource = {
   document: string;
@@ -32,13 +33,19 @@ function object(value: unknown, label: string): Fields {
 }
 
 // Each evaluation owns and removes its own hooks. Nothing is installed between calls.
-async function inVideoDocument(input: { operation: string; target: string; time?: number; times?: number[]; expected?: Checkpoint; original?: Checkpoint }, helpers?: { resolve(target: string): Element | null }) {
+async function inVideoDocument(input: { operation: string; target?: string; time?: number; times?: number[]; expected?: Checkpoint; original?: Checkpoint }, helpers?: { resolve(target: string): Element | null; qa(selector: string): Element[] }) {
   const unavailable = (reason: string): never => { throw new Error(`video unavailable: ${reason}`); };
-  if (typeof helpers?.resolve !== "function") return unavailable("isolated ref resolution is unavailable; page-world evaluation is not permitted");
-  const element = helpers.resolve(input.target);
-  if (!(element instanceof HTMLVideoElement)) return unavailable("the target is not an accessible HTML video element; embedded players require a readable frame ref");
+  if (typeof helpers?.resolve !== "function" || typeof helpers.qa !== "function") return unavailable("isolated ref resolution is unavailable; page-world evaluation is not permitted");
+  const resolver = helpers;
+  const resolveTarget = () => {
+    if (input.target) return resolver.resolve(input.target);
+    const videos = resolver.qa("video");
+    if (videos.length > 1) return unavailable("multiple HTML videos are loaded; choose the intended video with a snapshot ref or selector");
+    return videos[0] ?? null;
+  };
+  const element = resolveTarget();
+  if (!(element instanceof HTMLVideoElement)) return unavailable("no accessible HTML video was found; embedded players require a readable frame ref");
   const video = element;
-  const rawSource = video.currentSrc;
   const documentTime = performance.timeOrigin;
   const safeAddress = (raw: string): string | null => {
     if (!raw) return null;
@@ -60,7 +67,41 @@ async function inVideoDocument(input: { operation: string; target: string; time?
   if (input.operation === "inspect") return { status: "inspected", source: metadata() };
   if (metadata().protected) return unavailable("encrypted/protected media cannot provide trustworthy visible-frame evidence");
   if (video.srcObject) return unavailable("live media streams cannot be sampled by a finite timestamp");
-  if (video.error || !rawSource || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return unavailable("the loaded media has no decoded frame");
+  if (input.operation === "ready") {
+    const initialSource = video.currentSrc;
+    const initialPaused = video.paused, initialRate = video.playbackRate, initialMuted = video.muted;
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const removals: (() => void)[] = [];
+    const listen = (target: EventTarget, name: string, listener: EventListener, capture = false) => {
+      target.addEventListener(name, listener, capture);
+      removals.push(() => target.removeEventListener(name, listener, capture));
+    };
+    const fail = (reason: string) => reject(new Error(`video unavailable: ${reason}`));
+    const ready = () => {
+      try {
+        if (!video.isConnected || video.ownerDocument !== document || resolveTarget() !== video || performance.timeOrigin !== documentTime || (initialSource && video.currentSrc !== initialSource)) return fail("the selected media changed while waiting for a decoded frame");
+        if (video.paused !== initialPaused || video.playbackRate !== initialRate || video.muted !== initialMuted) return fail("human or page intervention while waiting for media; playback was left with the user");
+        if (metadata().protected) return fail("encrypted/protected media cannot provide trustworthy visible-frame evidence");
+        if (video.srcObject) return fail("live media streams cannot be sampled by a finite timestamp");
+        if (video.error) return fail(`media decoding failed (media error ${video.error.code}); check the player's own error before another observation`);
+        if (video.currentSrc && video.readyState >= 2 && video.videoWidth && video.videoHeight && video.seekable.length && !video.seeking) resolve();
+      } catch (error) { reject(error); }
+    };
+    const timer = window.setTimeout(() => fail(`the loaded media has no decoded, seekable frame after 6 seconds (readyState ${video.readyState}, networkState ${video.networkState}, preload ${video.preload}); let the player's own controls load a frame before another observation; playback was not started or reloaded`), 6000);
+    try {
+      for (const event of ["loadedmetadata", "loadeddata", "canplay", "progress", "durationchange", "seeked", "error", "play", "pause", "ratechange", "volumechange", "emptied", "encrypted"]) listen(video, event, ready);
+      for (const event of ["pointerdown", "keydown", "touchstart", "wheel"]) listen(document, event, ((event: Event) => { if (event.isTrusted) fail("human intervention while waiting for media; playback was left with the user"); }) as EventListener, true);
+      listen(window, "pagehide", () => fail("the document changed while waiting for media"));
+      ready();
+      await promise;
+    } finally {
+      clearTimeout(timer);
+      for (const remove of removals) remove();
+    }
+    return { status: "ready", source: metadata() };
+  }
+  const rawSource = video.currentSrc;
+  if (video.error || !rawSource || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return unavailable("the loaded media has no decoded frame; let the player's own controls load a frame before another observation");
   if (!crypto.subtle) return unavailable("a private media identity check is unavailable");
   const identity = Promise.withResolvers<ArrayBuffer>();
   const cancelIdentity = (event: Event) => { if (event.isTrusted) identity.reject(new Error("video unavailable: human intervention during media identification")); };
@@ -79,7 +120,7 @@ async function inVideoDocument(input: { operation: string; target: string; time?
   const current = checkpoint();
   const expected = input.expected;
   if (expected && (expected.document !== current.document || expected.media !== current.media || expected.paused !== current.paused || expected.rate !== current.rate || expected.muted !== current.muted || Math.abs(expected.time - current.time) > 0.001)) return unavailable("document or media state changed; playback was left with the user");
-  if (video.currentSrc !== rawSource || helpers.resolve(input.target) !== video || video.ownerDocument !== document || !video.isConnected) return unavailable("the selected media changed during inspection");
+  if (video.currentSrc !== rawSource || resolveTarget() !== video || video.ownerDocument !== document || !video.isConnected) return unavailable("the selected media changed during inspection");
   if (input.operation === "verify") return { source: metadata(), checkpoint: checkpoint() };
   if (input.operation === "begin") {
     if (!input.times?.every((time) => metadata().seekable.some(([start, end]) => time >= start && time < end))) return unavailable("a requested timestamp is outside the currently seekable media");
@@ -117,11 +158,11 @@ async function inVideoDocument(input: { operation: string; target: string; time?
     rejectResume?.(new Error(`video unavailable: ${reason}`));
   };
   const valid = () => {
-    if (interrupted || !video.isConnected || video.ownerDocument !== document || helpers?.resolve(input.target) !== video || video.currentSrc !== rawSource || video.srcObject || performance.timeOrigin !== documentTime) return unavailable("the video or document changed");
+    if (interrupted || !video.isConnected || video.ownerDocument !== document || resolveTarget() !== video || video.currentSrc !== rawSource || video.srcObject || performance.timeOrigin !== documentTime) return unavailable("the video or document changed");
     if (!video.paused || video.playbackRate !== current.rate || video.muted !== current.muted || metadata().protected || video.error) return unavailable("media state changed outside this observation");
   };
   const paint = () => {
-    if (completed || video.seeking) return;
+    if (completed || video.seeking || video.readyState < 2 || !video.videoWidth || !video.videoHeight || Math.abs(video.currentTime - time) > 0.05) return;
     if (raf) cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => { raf = requestAnimationFrame(() => finish()); });
   };
@@ -130,9 +171,11 @@ async function inVideoDocument(input: { operation: string; target: string; time?
     listen(window, "pagehide", interrupt);
     const mediaListeners = removals.length;
     listen(video, "seeked", paint);
+    listen(video, "loadeddata", paint);
+    listen(video, "canplay", paint);
     listen(video, "error", () => finish("media decoding failed"));
     for (const event of ["play", "ratechange", "volumechange", "emptied", "encrypted"]) listen(video, event, () => { try { valid(); } catch { interrupt(); } });
-    timer = window.setTimeout(() => finish("the frame did not seek and paint within 4 seconds"), 4000);
+    timer = window.setTimeout(() => finish(`the frame did not seek and paint within 4 seconds (readyState ${video.readyState}, seeking ${video.seeking}); no frame was captured`), 4000);
     if (typeof video.requestVideoFrameCallback === "function") frame = video.requestVideoFrameCallback((_now, info) => { frame = 0; frameTime = info.mediaTime; if (!video.seeking) paint(); });
     if (Math.abs(video.currentTime - time) > 0.000001) video.currentTime = time;
     else paint();
@@ -167,13 +210,14 @@ async function inVideoDocument(input: { operation: string; target: string; time?
 }
 
 export function createVideoTool(dependencies: VideoObservationDependencies): Tool {
+  let foreground = Promise.resolve();
   return {
     hidden: true,
-    desc: "Inspect a currently loaded HTML video or capture up to eight settled visible moments with protected screenshot receipts. No downloading or transcript substitution. Frames temporarily seek, then restore playback only while this task still owns the unchanged document.",
+    desc: "Inspect a currently loaded HTML video or wait for decoded media and capture up to eight settled visible moments with protected screenshot receipts. A single HTML video is selected automatically. No preparatory playback, downloading or transcript substitution. Frames temporarily seek, then restore playback only while this task still owns the unchanged document.",
     params: {
       tab: { type: "number", description: "exact tab opened by this caller" },
-      ref: { type: "string", description: "video snapshot ref or CSS selector; frame refs are supported" },
-      selector: { type: "string", description: "CSS selector instead of ref" },
+      ref: { type: "string", description: "video snapshot ref or CSS selector; frame refs are supported; omit when the document has one video" },
+      selector: { type: "string", description: "CSS selector instead of ref; omit when the document has one video" },
       do: { type: "string", enum: ["inspect", "frames"], description: "default inspect" },
       times: { type: "array", items: { type: "number" }, description: "frames only: one to eight finite nonnegative times in seconds" },
     },
@@ -183,13 +227,13 @@ export function createVideoTool(dependencies: VideoObservationDependencies): Too
       const tab = Number(args.tab);
       const operation = args.do ?? "inspect";
       if (operation !== "inspect" && operation !== "frames") throw new HarnessError("invalid_argument", "video do must be inspect or frames");
-      if ((args.ref === undefined) === (args.selector === undefined)) throw new HarnessError("invalid_argument", "video needs exactly one ref or selector");
+      if (args.ref !== undefined && args.selector !== undefined) throw new HarnessError("invalid_argument", "video accepts only one ref or selector");
       const target = args.ref ?? args.selector;
-      if (typeof target !== "string" || !target.trim() || target.length > 4096) throw new HarnessError("invalid_argument", "video target must be a nonempty ref or selector");
+      if (target !== undefined && (typeof target !== "string" || !target.trim() || target.length > 4096)) throw new HarnessError("invalid_argument", "video target must be a nonempty ref or selector");
       if (operation === "inspect" && args.times !== undefined) throw new HarnessError("invalid_argument", "times is only valid for video frames");
       const times = args.times;
       if (operation === "frames" && (!Array.isArray(times) || times.length < 1 || times.length > 8 || times.some((time) => typeof time !== "number" || !Number.isFinite(time) || time < 0))) throw new HarnessError("invalid_argument", "video frames needs one to eight finite nonnegative times in seconds");
-      const [, frame = "0", localTarget] = /^(?:f(\d+):)?([\s\S]*)$/.exec(target)!;
+      const [, frame = "0", localTarget] = /^(?:f(\d+):)?([\s\S]*)$/.exec(target ?? "")!;
       const prefix = frame === "0" ? "" : `f${frame}:`;
       const permit = await dependencies.admit(tab, operation === "frames");
       let original: Checkpoint | undefined;
@@ -202,10 +246,10 @@ export function createVideoTool(dependencies: VideoObservationDependencies): Too
       const check = () => { permit.signal.throwIfAborted(); permit.check(); };
       const evaluate = async (action: string, time?: number): Promise<Fields> => {
         check();
-        const input = { operation: action, target: localTarget, time, times, expected, original };
+        const input = { operation: action, target: localTarget || undefined, time, times, expected, original };
         const result = object(await dependencies.call("eval", { tab, expression: `${prefix}(${inVideoDocument.toString()})(${JSON.stringify(input)}, typeof sh === "undefined" ? undefined : sh)`, timeoutMs: action === "restore" ? 12500 : 8500 }).catch((error: unknown) => {
           if (error instanceof Error && error.message.includes("human intervention")) restoreAllowed = false;
-          if (error instanceof Error && error.message.includes("video unavailable:")) throw new HarnessError("unavailable", error.message, { effect: "none", retryable: false });
+          if (error instanceof Error && error.message.includes("video unavailable:")) throw new HarnessError("unavailable", error.message, { effect: "none", retryable: false, next: "inspect the player's current state before another video call; use its own controls if loading requires playback; do not download or bypass protected media" });
           throw error;
         }), "video evaluation");
         const value = object(result.result, "video document");
@@ -217,32 +261,53 @@ export function createVideoTool(dependencies: VideoObservationDependencies): Too
         return value;
       };
       try {
-        check();
         if (operation === "inspect") return await evaluate("inspect");
-        dispatched = true;
-        await evaluate("begin");
-        for (const time of times as number[]) {
-          const settled = await evaluate("seek", time);
+        const visible = foreground.then(() => {
           check();
-          const capture = object(await dependencies.call("shot", { tab, ref: target, live: true }), "protected video capture");
-          if (typeof capture.path !== "string" || !capture.evidence || typeof capture.evidence !== "object") throw new HarnessError("privacy", "video capture returned no protected evidence receipt", { retryable: false });
-          await evaluate("verify");
-          frames.push({ requestedTime: time, actualTime: Number(settled.actualTime), timestampBasis: String(settled.timestampBasis), source: object(settled.source, "settled video source") as VideoSource, capture: capture as CaptureResult });
-        }
-      } catch (error) { failure = error; }
-      finally {
-        if (original && restoreAllowed) {
-          try { restoration = await evaluate("restore"); }
-          catch (error) { restoration = { restored: false, reason: error instanceof Error ? error.message : String(error) }; }
-        }
-        else if (original) restoration = { restored: false, reason: "human or page intervention; playback was left with the user" };
+          return dependencies.present(tab, check, async () => {
+            try {
+              check();
+              await evaluate("ready");
+              dispatched = true;
+              await evaluate("begin");
+              for (const time of times as number[]) {
+                const settled = await evaluate("seek", time);
+                check();
+                // A bare "video" resolves matching page text before CSS in the shared screenshot resolver.
+                const capture = object(await dependencies.call("shot", { tab, ref: target ?? "video:is(video)", live: true }).catch((error: unknown) => {
+                  const known = failureOf(error, { effectful: false });
+                  if (known.code !== "privacy" || !/the page (?:kept changing|changed) during capture/.test(known.message)) throw error;
+                  throw new HarnessError("privacy", known.message.includes("kept changing")
+                    ? "video frame capture refused: the page kept changing even after the protected screenshot paused media and animations; no frame evidence was returned"
+                    : "video frame capture refused: the page changed during the protected screenshot privacy check; no frame evidence was returned", {
+                    effect: "none", retryable: false,
+                    next: "only attempt video frames again after this player and its surrounding page settle naturally; a page that keeps updating cannot safely provide protected frame evidence; do not disable privacy checks or substitute downloads or transcripts",
+                  });
+                }), "protected video capture");
+                if (typeof capture.path !== "string" || !capture.evidence || typeof capture.evidence !== "object") throw new HarnessError("privacy", "video capture returned no protected evidence receipt", { retryable: false });
+                await evaluate("verify");
+                frames.push({ requestedTime: time, actualTime: Number(settled.actualTime), timestampBasis: String(settled.timestampBasis), source: object(settled.source, "settled video source") as VideoSource, capture: capture as CaptureResult });
+              }
+            } catch (error) { failure = error; }
+            finally {
+              if (original && restoreAllowed) {
+                try { restoration = await evaluate("restore"); }
+                catch (error) { restoration = { restored: false, reason: error instanceof Error ? error.message : String(error) }; }
+              }
+              else if (original) restoration = { restored: false, reason: "human or page intervention; playback was left with the user" };
+            }
+            if (failure !== undefined) {
+              const known = failureOf(failure, { effectful: dispatched });
+              throw new HarnessError(known.code, `${known.message}; restoration: ${JSON.stringify(restoration)}`, { effect: dispatched ? "possibly_effected" : known.effect, retryable: false, next: known.next });
+            }
+            return { status: "captured", frames, restoration } satisfies VideoFramesResult;
+          });
+        });
+        foreground = visible.then(() => {}, () => {});
+        return await visible;
+      } finally {
         permit.release();
       }
-      if (failure !== undefined) {
-        const known = failureOf(failure, { effectful: dispatched });
-        throw new HarnessError(known.code, `${known.message}; restoration: ${JSON.stringify(restoration)}`, { effect: dispatched ? "possibly_effected" : known.effect, retryable: false, next: known.next });
-      }
-      return { status: "captured", frames, restoration } satisfies VideoFramesResult;
     },
   };
 }

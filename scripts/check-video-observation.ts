@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { inFront } from "../daemon/front.ts";
+import { frontApp, inFront } from "../daemon/front.ts";
 import { removeCapture, verifyEvidence, type CaptureResult } from "../daemon/evidence.ts";
 import type { VideoFramesResult, VideoSource } from "../daemon/video-observation.ts";
 
@@ -43,38 +43,24 @@ try {
     return new Response(request.method === "HEAD" ? null : media.slice(start, end + 1), { status: 206, headers });
   } });
   tab = (await call<{ id: number }>("open", { url: `http://127.0.0.1:${server.port}/video-observation.html`, background: true, new: true })).id;
-  await inFront(tab, {
-    tabs: async () => (await call<{ tabs: { id: number; windowId?: number; active?: boolean; front?: boolean }[] }>("tabs")).tabs,
-    activate: (id) => call("activate", { tab: id }),
-  }, async () => {
-    try {
-      await call("wait", { tab, any: ["video decoded", "video failed"], ms: 6000 });
-      const state = await call<{ result: { state: string; readyState: number; networkState: number; error: number | null } }>("eval", { tab, expression: "({state:document.querySelector('#state').textContent,readyState:document.querySelector('#movie').readyState,networkState:document.querySelector('#movie').networkState,error:document.querySelector('#movie').error?.code??null})" });
-      assert.equal(state.result.state, "video decoded", JSON.stringify(state.result));
-      assert.ok(state.result.readyState >= 2, "the checked-in media has no decoded frame");
-      assert.equal(state.result.error, null);
-    } catch (error) {
-      const diagnostic = await call("eval", { tab, expression: "({state:document.querySelector('#state')?.textContent,readyState:document.querySelector('#movie')?.readyState,networkState:document.querySelector('#movie')?.networkState,error:document.querySelector('#movie')?.error?.code??null})" }).catch((inspectionError: unknown) => inspectionError instanceof Error ? inspectionError.message : String(inspectionError));
-      throw new Error(`checked-in video did not decode: ${JSON.stringify(diagnostic)}`, { cause: error });
-    }
-  });
-  const before = await call<{ status: string; source: VideoSource }>("video", { tab, ref: "#movie", do: "inspect" });
+  const before = await call<{ status: string; source: VideoSource }>("video", { tab, do: "inspect" });
   assert.equal(before.status, "inspected");
-  assert.equal(before.source.width, 160);
-  assert.equal(before.source.height, 96);
-  assert.equal(before.source.duration, 2);
   assert.ok(!JSON.stringify(before).includes("private-video-query"));
-  const captured = await inFront(tab, {
-    tabs: async () => (await call<{ tabs: { id: number; windowId?: number; active?: boolean; front?: boolean }[] }>("tabs")).tabs,
-    activate: (id) => call("activate", { tab: id }),
-  }, async () => {
-    const result = await call<VideoFramesResult>("video", { tab, ref: "#movie", do: "frames", times: [0.2, 1.4] });
-    captures.push(...result.frames.map((frame) => frame.capture));
-    return result;
-  });
+  const appBefore = await frontApp();
+  const tabsBefore = await call<{ tabs: { id: number; front?: boolean }[] }>("tabs");
+  const captured = await call<VideoFramesResult>("video", { tab, do: "frames", times: [0.2, 1.4] });
+  captures.push(...captured.frames.map((frame) => frame.capture));
+  assert.equal(await frontApp(), appBefore, "video left Safari in front of the user's app");
+  if (appBefore === "com.apple.Safari") {
+    const tabsAfter = await call<{ tabs: { id: number; front?: boolean }[] }>("tabs");
+    assert.equal(tabsAfter.tabs.find((entry) => entry.front)?.id, tabsBefore.tabs.find((entry) => entry.front)?.id, "video left its window in front of the user's Safari window");
+  }
   assert.equal(captured.status, "captured");
   assert.equal(captured.frames.length, 2);
   assert.equal(captured.restoration.restored, true);
+  assert.equal(captured.frames[0].source.width, 160);
+  assert.equal(captured.frames[0].source.height, 96);
+  assert.equal(captured.frames[0].source.duration, 2);
   for (const [index, frame] of captured.frames.entries()) {
     const requested = [0.2, 1.4][index];
     assert.equal(frame.requestedTime, requested);
@@ -85,6 +71,8 @@ try {
     const verified = await verifyEvidence(frame.capture.evidence.path);
     assert.equal(verified.evidence.sha256, frame.capture.evidence.sha256);
     assert.ok(verified.evidence.crop, "video evidence was not cropped through the protected target");
+    assert.equal(verified.evidence.crop.width, 320, "protected evidence cropped page text instead of the displayed video");
+    assert.equal(verified.evidence.crop.height, 192, "protected evidence did not retain the displayed video's height");
     const decoded = Bun.spawn([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", "crop=iw/2:ih/2:iw/4:ih/4,scale=1:1", "-frames:v", "1", "-threads", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { stdin: verified.image, stdout: "pipe", stderr: "pipe", timeout: 10000 });
     const [code, rgb, diagnostic] = await Promise.all([decoded.exited, new Response(decoded.stdout).arrayBuffer(), new Response(decoded.stderr).text()]);
     assert.equal(code, 0, `verified screenshot colour inspection failed: ${diagnostic}`);
@@ -121,7 +109,7 @@ try {
     await verifyEvidence(playing.frames[0].capture.evidence.path);
     await call("eval", { tab, expression: "document.querySelector('#movie').pause()" });
   });
-  console.log(JSON.stringify({ passed: 4, failed: 0, scenarios: ["checked-in media produces verified red and blue protected frames", "original paused position restored", "unseekable time refused without mutation", "original playing state and rate restored"], frames: captured.frames.map((frame) => ({ requestedSeconds: frame.requestedTime, actualSeconds: frame.actualTime, timestampBasis: frame.timestampBasis })) }));
+  console.log(JSON.stringify({ passed: 4, failed: 0, scenarios: ["video selects and prepares checked-in media without helper playback or readiness waits, producing verified red and blue protected frames", "original paused position restored", "unseekable time refused without mutation", "original playing state and rate restored"], frames: captured.frames.map((frame) => ({ requestedSeconds: frame.requestedTime, actualSeconds: frame.actualTime, timestampBasis: frame.timestampBasis })) }));
 } finally {
   try { if (tab !== undefined) await call("close", { tab }); }
   finally {

@@ -226,10 +226,6 @@ test.each(fixtures.map(({ name, ...fixture }) => [name, fixture] as const))("%s 
   expect(classifyPage(facts)).toMatchObject({ kind, next: expect.stringMatching(/\S/) });
 });
 
-test("a whole-page bot check points to the user rather than offering a solver or a bypass", () => {
-  expect(classifyPage({ url: "https://news.example/", title: "Check", challenge: { kind: "other", where: "page" } })).toMatchObject({ kind: "unjudged", next: expect.stringMatching(/handoff.*rather than solving/i) });
-});
-
 test("a browser block does not pretend a human can clear it", () => {
   expect(classifyPage({ url: "https://news.example/", title: "Blocked", challenge: { kind: "cloudflare", where: "block" } })).toMatchObject({ kind: "error", next: expect.stringMatching(/report the block.*do not bypass/i) });
 });

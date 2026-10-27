@@ -26,7 +26,7 @@ async function fixture(mode: string, directory?: string): Promise<Record<string,
 test("helper completion closes only its own window while unrelated task calls leave its admission valid", async () => {
   expect(await fixture("helper-isolation")).toMatchObject({
     separateWindows: true,
-    afterHelper: { first: false, firstWindow: false, second: true, main: true, kept: true, personal: true },
+    afterHelper: { first: false, firstWindow: true, second: true, main: true, kept: true, personal: true },
     afterMain: { main: false, second: false, kept: true, personal: true },
     receipt: { closed: 1, retained: 0, failed: 0 },
   });
@@ -47,7 +47,7 @@ test("helper completion does not wait for a busy sibling on a different page", a
 test("a helper's deferred completion survives restart and a sibling's next call", async () => {
   const directory = mkdtempSync(join(import.meta.dir, "../.build/lifecycle-test-")); directories.push(directory);
   expect(await fixture("helper-seed", directory)).toEqual({ deferred: true, retained: 1 });
-  expect(await fixture("helper-restart", directory)).toEqual({ first: false, firstWindow: false, second: true, main: true, kept: true, personal: true });
+  expect(await fixture("helper-restart", directory)).toEqual({ first: false, firstWindow: true, second: true, main: true, kept: true, personal: true });
 });
 
 test("a returned background handoff cannot block helper completion and stays protected until the user finishes", async () => {

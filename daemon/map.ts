@@ -34,7 +34,7 @@ export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 // in October never opened the page (harness-audit), and on 10-23 the
 // Lancet's check that stood through map's 9 s let a tab opened later in.
 const CHECKED: Record<"page" | "block", string> = {
-  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters",
+  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in Safari; if it remains, use another permitted source or report that the page is unavailable",
   block: "the site turns the browser away; the user cannot clear that either",
 };
 
@@ -73,7 +73,7 @@ type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
 // whatever this task has read or met, and the key its reads are kept by.
-type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; fresh?: boolean; key?: string; call: Call };
+type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; fresh?: boolean; key?: string; readOnly?: true; call: Call };
 type Opened = { id: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string; file?: string };
 // What map answers: its pages; the addresses it did not read (past follow's
 // max, or past its 50 s), for the next map; the folder's index.json.
@@ -84,6 +84,8 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 // A page that failed because the extension answered nothing (bridge.ts),
 // and the kind of request it left unanswered.
 const UNANSWERED = /extension request (\S+) timed out|extension stuck: .*? none of the last \d+ (\S+) requests/;
+
+const DISCONNECTED = /^(?:the Safari extension (?:disconnected|restarted) before it answered\b|Safari was not running: it is starting in the background, and its extension did not connect within \d+ s; try again$)/;
 
 function readOf(what: unknown): SaveKind {
   const read = READS.find((r) => r === what);
@@ -131,6 +133,8 @@ function jobOf(a: Record<string, unknown>, call: Call): { urls: string[]; job: J
 async function readAll(urls: string[], job: Job, atOnce: number, end: number): Promise<{ pages: Page[]; left: string[] }> {
   const pages: Page[] = [];
   const began: number[] = [];
+  const disconnected: boolean[] = [];
+  const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
   // The pages' files being written, which the answer waits on.
   const writing: Promise<void>[] = [];
   let next = 0;
@@ -146,8 +150,19 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number): P
       }
       if (over) return;
       began[i] = performance.now();
-      const page = known ?? (await visit(urls[i], job));
+      let result = known ? { page: known, disconnected: false } : await visit(urls[i], job);
+      for (let retry = 0; result.disconnected && !effectful && !over; retry++) {
+        const pause = Math.max(RETRY_MS[Math.min(retry, RETRY_MS.length - 1)], searchGap(urls[i]));
+        if (Date.now() + pause >= end) break;
+        await Bun.sleep(pause);
+        if (over || Date.now() >= end) return;
+        known = recalled(urls[i], job);
+        result = known ? { page: known, disconnected: false } : await visit(urls[i], job, true);
+      }
       if (over) return;
+      const { page } = result;
+      page.ms = Math.round(performance.now() - began[i]);
+      disconnected[i] = result.disconnected;
       const { target } = job;
       if (target && page.value !== undefined) {
         const written = savePage(page, job, target).then((saved) => {
@@ -166,7 +181,6 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number): P
   await Promise.race([Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker)), late]);
   clearTimeout(timer);
   await Promise.all(writing);
-  const effectful = affectsPage(job.read, job.args);
   const answered = urls.map((url, i) => pages[i] ?? unfinished(url, began[i], began[i] !== undefined && effectful));
   // An extension that answers nothing fails each page alike, and a list of
   // failed pages read as a map that worked: on 10-13 two maps took 30 s
@@ -174,7 +188,7 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number): P
   const unanswered = answered.map((p) => (p.ok ? null : UNANSWERED.exec(p.error)));
   const [first] = unanswered;
   if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the Safari extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); map again in a minute, and if it fails the same way, tell the user Safari is not answering`);
-  return { pages: answered, left: urls.filter((_, i) => pages[i] === undefined && (began[i] === undefined || !effectful)) };
+  return { pages: answered, left: urls.filter((_, i) => (pages[i] === undefined && began[i] === undefined) || (!effectful && (pages[i] === undefined || disconnected[i]))) };
 }
 
 // How long url waits for its turn to load: a search engine's results page
@@ -203,7 +217,7 @@ export async function followPages(a: Record<string, unknown>, call: Call): Promi
   const end = Date.now() + BUDGET_MS;
   // A selector is waited for, as a page's script may draw the list after
   // it loads; a regex reads the links there are once the page has loaded.
-  const listed = await readAll(urls, { ...(typeof match === "string" ? { wait: { selector: match } } : {}), waited: `a link matching ${String(match)}`, read: "eval", args: { expression: linksIn(match) }, fresh: job.fresh, call }, atOnce, end);
+  const listed = await readAll(urls, { ...(typeof match === "string" ? { wait: { selector: match } } : {}), waited: `a link matching ${String(match)}`, read: "eval", args: { expression: linksIn(match) }, readOnly: true, fresh: job.fresh, call }, atOnce, end);
   const seen = new Set(urls);
   const past: string[] = [];
   let left = max;
@@ -238,7 +252,7 @@ export async function followPages(a: Record<string, unknown>, call: Call): Promi
     if (matched === 0) return { ...about, ok: false, error: `no link on it to its own site matched ${String(match)}` };
     return { ...about, ok: true, items: items.pages.slice(at, (at += links.length)), ...(unread ? { unread } : {}) };
   });
-  const unreadUrls = [...items.left, ...past];
+  const unreadUrls = [...listed.left, ...items.left, ...past];
   const { index, note } = await indexed(job.target, items.pages);
   const missed = job.wait !== undefined && items.pages.length > 0 && items.pages.every((p) => !p.ok && p.error.startsWith(MISSED));
   const notes = [...(missed ? [FOLLOWED_WAIT] : []), ...(note ? [note] : [])];
@@ -305,11 +319,12 @@ function recalled(url: string, job: Job): Page | undefined {
 // One page, start to end; it answers for every failure, its tab's close
 // included, so one page never takes the others down with it. A page that
 // opens as its site's error page is loaded again after each of RETRY_MS.
-async function visit(url: string, job: Job): Promise<Page> {
+async function visit(url: string, job: Job, recovering = false): Promise<{ page: Page; disconnected: boolean }> {
   const started = performance.now();
   let opened: Opened | undefined;
   let outcome: Outcome;
   let retried = 0;
+  let disconnected = false;
   try {
     // open and goto answer {id, url, title, challenge?, ok?, warning?} or throw; callTool types every answer unknown
     opened = (await job.call("open", { url, background: true })) as Opened;
@@ -319,7 +334,9 @@ async function visit(url: string, job: Job): Promise<Page> {
     }
     outcome = await readTab(opened, url, job);
   } catch (e) {
-    outcome = { ok: false, error: messageOf(e), failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
+    const error = messageOf(e);
+    disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
+    outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
   }
   const ms = Math.round(performance.now() - started);
   const tab = opened?.id;
@@ -328,7 +345,7 @@ async function visit(url: string, job: Job): Promise<Page> {
   const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(opened?.title ? { title: opened.title } : {}) };
   const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(closeError === undefined ? {} : { closeError }) };
   if (outcome.ok && job.key !== undefined && keeps(page)) keep(job.key, url, { ok: true, value: outcome.value, ...about });
-  return page;
+  return { page, disconnected };
 }
 
 async function readTab(opened: Opened, url: string, { wait, waited, read, args, target, call }: Job): Promise<Outcome> {

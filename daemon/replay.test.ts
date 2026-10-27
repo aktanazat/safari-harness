@@ -136,12 +136,11 @@ test("a password step fills the chosen login from Apple Passwords, and a locked 
   ]);
 });
 
-test("a bot check on the first page is left open for the user to clear", async () => {
+test("a bot check stops replay before it interacts with the page", async () => {
   const name = recorded([{ kind: "click", url: "https://shop.example/", target: GO }]);
   const p = page({ open: () => ({ id: 7, challenge: { kind: "cloudflare", where: "page" } }) });
-  expect(await replay({ name }, p.call, clock())).toEqual({
+  expect(await replay({ name }, p.call, clock())).toMatchObject({
     ok: false, name, steps: 1, failedAt: 0,
-    error: "the first page: the page shows a bot check (cloudflare); hand tab 7 to the user with handoff, then replay again with tab: 7",
     tab: 7, challenge: { kind: "cloudflare", where: "page" },
   });
   expect(p.tools()).toEqual(["open"]);

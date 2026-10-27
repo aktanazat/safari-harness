@@ -33,7 +33,6 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
-import { uncover } from "./place.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, watchOwner } from "./owner.ts";
@@ -139,16 +138,30 @@ async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
   return owned;
 }
 
-function spaceKey(group: string | undefined): string {
+function spaceKey(group: string | undefined, isolated = false): string {
   const owner = currentOwner();
   const task = currentTask();
-  return task === undefined ? `${owner ?? "daemon"}:${group ?? ""}` : JSON.stringify([owner ?? null, task, group ?? ""]);
+  if (task === undefined) return `${owner ?? "daemon"}:${group ?? ""}`;
+  return JSON.stringify(isolated ? [owner ?? null, task, "", group ?? ""] : [owner ?? null, task, ""]);
+}
+
+function* matchingSpaces(key: string, isolated = false): Generator<Space> {
+  const found = spaces.get(key);
+  if (found) yield found;
+  const owner = currentOwner();
+  const task = currentTask();
+  if (task === undefined || isolated) return;
+  for (const space of spaces.values()) {
+    if (space === found || space.owner !== owner || space.task !== task) continue;
+    const parts = JSON.parse(space.key) as unknown;
+    if (Array.isArray(parts) && parts.length === 3) yield space;
+  }
 }
 
 // The calling agent's window for group, never a new one: on 10-23 each
 // open of /agents from an agent made it a window of its own (tools.ts).
 export function heldSpace(group?: string): Space | undefined {
-  return spaces.get(spaceKey(group));
+  return matchingSpaces(spaceKey(group)).next().value;
 }
 
 // The window an open by the calling agent goes in, made when it has none
@@ -157,21 +170,22 @@ export function heldSpace(group?: string): Space | undefined {
 // 5000ms" on a Mac too loaded for Safari to list its tabs in 5 s (smoke run
 // after the deploy). Only lost, the window an open just found gone, is then
 // made anew. A stuck extension's error still fails the open at once.
-export async function spaceWindow(group?: string, lost?: Space): Promise<Space> {
+export async function spaceWindow(group?: string, lost?: Space, isolated = false): Promise<Space> {
   const owner = currentOwner();
   const task = currentTask();
-  const key = spaceKey(group);
-  const had = spaces.get(key);
-  const inWindow = had && (await located(had).catch((e: unknown) => {
-    if (e instanceof TimedOut) return undefined;
-    throw e;
-  }));
-  if (had && (inWindow === undefined ? had !== lost : inWindow.length > 0)) {
-    delete had.done;
-    save();
-    return had;
+  const key = spaceKey(group, isolated);
+  for (const had of matchingSpaces(key, isolated)) {
+    const inWindow = await located(had).catch((e: unknown) => {
+      if (e instanceof TimedOut) return undefined;
+      throw e;
+    });
+    if (inWindow === undefined ? had !== lost : inWindow.length > 0) {
+      delete had.done;
+      save();
+      return had;
+    }
+    await end(had);
   }
-  if (had) await end(had);
   let made = making.get(key);
   if (!made) {
     made = (async () => {
@@ -187,9 +201,6 @@ export async function spaceWindow(group?: string, lost?: Space): Promise<Space> 
       sweepSoon();
       save();
       await identify(space, w.tabId);
-      // Safari opens each new window at one place, over the ones before it
-      // (place.ts).
-      await uncover(w.tabId).catch(() => undefined);
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();

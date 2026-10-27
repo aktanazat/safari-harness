@@ -97,7 +97,7 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
 export function classifyPage(facts: PageFacts): PageState {
   const state = (kind: PageKind): PageState => ({ kind, next: NEXT[kind] });
   if (facts.challenge?.where === "block") return { kind: "error", next: "the site blocks this browser; report the block and do not bypass it." };
-  if (facts.challenge?.where === "page") return { kind: "unjudged", next: "the page shows a bot check; hand it to the user with handoff rather than solving it." };
+  if (facts.challenge?.where === "page") return { kind: "unjudged", next: "the page shows a bot check; wait for it to clear in Safari, then use another permitted source if it persists." };
   if (/^safari-resource:.*errorpage/i.test(facts.url) || /^safari-resource:/i.test(facts.title) || facts.title === "Failed to open page") return state("error");
   const status = facts.status;
   if (status !== undefined && Number.isInteger(status)) {

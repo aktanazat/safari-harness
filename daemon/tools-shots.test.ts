@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { captureFixture, connect } from "./fake-safari.ts";
-import { callTool, captureTab } from "./tools.ts";
+import { runAs } from "./owner.ts";
+import { callTool, captureTab, openTab } from "./tools.ts";
 import { verifyEvidence, type CaptureResult } from "./evidence.ts";
 import { keepSecret, tabSecrets } from "./redact.ts";
 
@@ -105,6 +106,27 @@ test("batch captures leave no owned tab open after saving their evidence", async
   const before = new Set(tabs.keys());
   await callTool("shots", { urls: [HOME, CART], widths: [390, 1440], out: freshOut() });
   expect(new Set(tabs.keys())).toEqual(before);
+});
+
+test("batch screenshots size their own window without resizing the task's open pages", async () => {
+  const task = "shots-window-isolation";
+  const open = await runAs(process.pid, () => openTab(HOME, true), task);
+  const originalWidth = windowWidth.get(open.windowId);
+  const otherWindows = new Set(windowWidth.keys());
+  const result = await runAs(process.pid, () => callTool("shots", { urls: [CART], widths: [390], out: freshOut() }), task) as { files: Shot[] };
+  expect(result.files[0]).toHaveProperty("path");
+  expect(windowWidth.get(open.windowId)).toBe(originalWidth);
+  expect(tabs.get(open.id)?.windowId).toBe(open.windowId);
+  expect([...windowWidth].filter(([id, width]) => !otherWindows.has(id) && width === 390)).toHaveLength(1);
+});
+
+test("a later normal open never inherits the batch screenshot's temporary window", async () => {
+  const task = "shots-first";
+  await runAs(process.pid, () => callTool("shots", { urls: [CART], widths: [390], out: freshOut() }), task);
+  const captureWindows = new Set(windowWidth.keys());
+  const open = await runAs(process.pid, () => openTab(HOME, true), task);
+  expect(captureWindows.has(open.windowId)).toBe(false);
+  expect(windowWidth.get(open.windowId)).toBe(1000);
 });
 
 test("a page that fails to load is a miss in its place at each width, and the other pages are still shot", async () => {

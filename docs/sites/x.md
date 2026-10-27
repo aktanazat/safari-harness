@@ -14,8 +14,8 @@ Signed out, the global throws "not signed in to x.com in Safari". If Safari is o
 - "Add an existing account" goes to /i/jf/onboarding/web?mode=login, which shows a choice of sign-in options before any username field. Snapshot it before you wait for a field.
 
 ## Bot checks
-- X can ask for an image puzzle on a sign-in or sign-up: a count on the left to match against pictures on the right. It is the user's: `handoff`, and hand it off even when the result names no `challenge`.
-- A Cloudflare check on /account/access is his too: `handoff`, never a click in its box, real input included.
+- X can ask for an image puzzle on sign-in or sign-up: a count on the left to match against pictures on the right. If it persists after waiting in the tab, report that sign-in needs a human check rather than handing it off.
+- A Cloudflare check on /account/access may clear by itself. If it stays, use another permitted source or report the inaccessible page; never click in its box, real input included.
 
 ## In safari repl
 The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state. The paged reads (`getTimeline`, `search`, `getUserTweets`, `getBookmarks`) answer `nextCursor` for the next page; past the last page X repeats the cursor it was asked with, and that page comes back with no `nextCursor`.
