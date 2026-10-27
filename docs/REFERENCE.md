@@ -1143,7 +1143,7 @@ first line counts the pages read and failed.
   read. Open that page in a tab and `wait` a few seconds for its text:
   many checks clear by themselves in a real Safari tab (the Lancet's,
   still up after map's 9 s on 10-23, let a tab opened later through).
-  `handoff` it only if the check still stands and the page matters. A
+  If it remains, use another permitted source or report the unavailable page. A
   check in a box on a page that otherwise reads normally is noted beside
   the page's value. Once a site showed your task a check, its pages are
   not loaded again for 10 minutes: each fails at once with `challenge` and
@@ -2508,9 +2508,9 @@ one-time code, card, or hidden field keeps only its kind.
   picks one of several), and a code step its verification code; a locked vault
   fails that step with how to pair. A card or hidden field fails its step:
   replay never types one.
-- A bot check stops it with the tab left open: hand the tab to the user with
-  `handoff`, then `replay` again with `tab`. A site that blocks this browser is
-  reported, not handed off.
+- A bot check stops it with the tab left open: wait for the page to clear
+  in Safari, then replay with `tab`; otherwise use another permitted source
+  or report the limitation. A browser-wide block cannot be cleared.
 - `safari replay <name> --json` prints one JSON line and exits 0 only when
   every step went through, so a watch routine's `--replay <name>` reads the
   value a replay ends on.
