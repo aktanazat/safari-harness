@@ -71,6 +71,8 @@ try {
     const verified = await verifyEvidence(frame.capture.evidence.path);
     assert.equal(verified.evidence.sha256, frame.capture.evidence.sha256);
     assert.ok(verified.evidence.crop, "video evidence was not cropped through the protected target");
+    assert.equal(verified.evidence.crop.width, 320, "protected evidence cropped page text instead of the displayed video");
+    assert.equal(verified.evidence.crop.height, 192, "protected evidence did not retain the displayed video's height");
     const decoded = Bun.spawn([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", "crop=iw/2:ih/2:iw/4:ih/4,scale=1:1", "-frames:v", "1", "-threads", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { stdin: verified.image, stdout: "pipe", stderr: "pipe", timeout: 10000 });
     const [code, rgb, diagnostic] = await Promise.all([decoded.exited, new Response(decoded.stdout).arrayBuffer(), new Response(decoded.stderr).text()]);
     assert.equal(code, 0, `verified screenshot colour inspection failed: ${diagnostic}`);

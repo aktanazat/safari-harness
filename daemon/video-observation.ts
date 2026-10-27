@@ -273,7 +273,8 @@ export function createVideoTool(dependencies: VideoObservationDependencies): Too
               for (const time of times as number[]) {
                 const settled = await evaluate("seek", time);
                 check();
-                const capture = object(await dependencies.call("shot", { tab, ref: target ?? "video", live: true }).catch((error: unknown) => {
+                // A bare "video" resolves matching page text before CSS in the shared screenshot resolver.
+                const capture = object(await dependencies.call("shot", { tab, ref: target ?? "video:is(video)", live: true }).catch((error: unknown) => {
                   const known = failureOf(error, { effectful: false });
                   if (known.code !== "privacy" || !/the page (?:kept changing|changed) during capture/.test(known.message)) throw error;
                   throw new HarnessError("privacy", known.message.includes("kept changing")
