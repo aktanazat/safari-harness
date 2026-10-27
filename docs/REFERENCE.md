@@ -1614,6 +1614,12 @@ normal protected screenshot path. Returned frames include independent
 receipts, requested and settled times, sanitized source metadata, and an
 honest timestamp basis. These are observations, not a transcript.
 
+Frame capture waits until the user stops typing, briefly brings the video
+window forward so Safari can paint it, then returns the previous Safari tab
+and front app even if capture fails. It does not move the window to another
+display. Do not call `activate` first: that separate command deliberately
+leaves the window in front.
+
 The tool attempts to restore position, play/pause, rate and mute only while
 its document, media and task still match. Human takeover or media changes
 stop restoration rather than overwrite the user. DRM exposed by Safari,

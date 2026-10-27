@@ -2954,7 +2954,7 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "width", "height"],
     run: (a) => viewport(a as { tab: number; width: number; height: number }),
   },
-  video: createVideoTool({ call: (tool, args) => callTool(tool, args, false, false), admit: admitPageObservation }),
+  video: createVideoTool({ call: (tool, args) => callTool(tool, args, false, false), admit: admitPageObservation, present: (tab, check, act) => inFront(tab, { tabs: listTabs, activate: activateTab }, act, check) }),
   input_state: inputStateTool(),
   native_preflight: {
     desc: "Check native drag or paste targets without scrolling or sending input.",

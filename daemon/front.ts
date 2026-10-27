@@ -108,7 +108,7 @@ export function notify(text: string): void {
 // an error would invite a retry that repeats it. A user who brought another
 // app forward meanwhile keeps it: on 10-07 he went back to his terminal
 // mid-reply, and giving back raised Safari again before his app.
-export async function show(tab: number, ops: TabOps): Promise<() => Promise<void>> {
+export async function show(tab: number, ops: TabOps, check?: () => void): Promise<() => Promise<void>> {
   const [bundleId, tabs] = await Promise.all([frontApp(), ops.tabs()]);
   const target = tabs.find((t) => t.id === tab);
   if (!target) throw new Error(`no tab ${tab}`);
@@ -118,6 +118,7 @@ export async function show(tab: number, ops: TabOps): Promise<() => Promise<void
     for (const t of back) if (t) await ops.activate(t.id).catch(() => {});
     if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
   };
+  check?.();
   try {
     await ops.activate(tab);
     await raiseSafari();
@@ -137,12 +138,12 @@ export async function show(tab: number, ops: TabOps): Promise<() => Promise<void
 const PAUSE_MS = 1000;
 const PAUSE_MAX_MS = 10000;
 
-export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>): Promise<T> {
+export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>, check?: () => void): Promise<T> {
   const paused = await input(["idle", String(PAUSE_MS), String(PAUSE_MAX_MS)], PAUSE_MAX_MS + 5000);
   if (!(paused && typeof paused === "object" && "idle" in paused && paused.idle === true)) {
     throw new Error(`the user kept typing or clicking for ${PAUSE_MAX_MS / 1000} s, so the tab stayed behind his app and nothing was done; try again in a moment`);
   }
-  const giveBack = await show(tab, ops);
+  const giveBack = await show(tab, ops, check);
   try {
     return await act();
   } finally {
