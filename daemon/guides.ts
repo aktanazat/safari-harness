@@ -54,8 +54,10 @@ function sections(md: string): Section[] {
   return out;
 }
 
-// real-input and Real_Input name real_input.
-const toolName = (name: string) => name.toLowerCase().replace(/-/g, "_");
+const toolName = (name: string) => {
+  const tool = name.toLowerCase().replace(/-/g, "_");
+  return tool === "read" ? "authenticated_read" : tool;
+};
 
 // A tool by its name, else the idea whose heading starts with the words,
 // else the first whose heading holds them.

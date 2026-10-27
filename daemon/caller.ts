@@ -14,6 +14,7 @@ import { HANDOFF_TOOLS } from "./handoff.ts";
 import { ASK_TOOLS } from "./ask.ts";
 import { PLAYBOOK_TOOLS } from "./playbooks.ts";
 import { MINT_TOOLS } from "./mint.ts";
+import { REQUEST_CATALOG_TOOLS } from "./request-catalog.ts";
 
 // Each group's label prefixes its tools' descriptions: "[Messages] ...".
 export const CALLER_GROUPS: { label: string; tools: Record<string, Tool> }[] = [
@@ -25,6 +26,7 @@ export const CALLER_GROUPS: { label: string; tools: Record<string, Tool> }[] = [
   { label: "Safari", tools: ASK_TOOLS },
   { label: "Safari", tools: PLAYBOOK_TOOLS },
   { label: "Safari", tools: MINT_TOOLS },
+  { label: "Safari", tools: REQUEST_CATALOG_TOOLS },
 ];
 
 export const CALLER_TOOLS: Record<string, Tool> = Object.fromEntries(CALLER_GROUPS.flatMap((g) => Object.entries(g.tools)));

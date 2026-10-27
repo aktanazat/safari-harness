@@ -71,6 +71,11 @@ Turns
   exit 1 when it misses. Never `>/dev/null`, which hides the miss too.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
+- A signed-in page by URL: `safari read URL --expect "known text"` reuses
+  your tab on that site without navigating to the URL. The expected text
+  checks the returned content, not account identity. It never falls back
+  to an anonymous request. For a JSON request the page made that you need
+  to run again, read `safari guide request_catalog`.
 - `innerText` empty on a page that shows text: shadow DOM. Read it with
   `snapshot` or `extract`, or `sh.text(sh.q(selector))` in `eval`.
 - Photo addresses: `extract {as: "images"}`, not srcset scripts. A PDF:

@@ -1,8 +1,3 @@
-// save: a read (extract, snapshot, eval, fetch) writes its whole output to a
-// file and answers with only the file's path, its size, and its first 500
-// characters. A long page then costs a model a few lines of context instead
-// of its whole text, and it is read past the limit a reply is cut at; the
-// agent reads the parts it needs from the file.
 
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -15,7 +10,7 @@ const HEAD_CHARS = 500;
 // a week of them.
 const KEPT_MS = 7 * 24 * 60 * 60_000;
 
-export type SaveKind = "extract" | "snapshot" | "eval" | "fetch";
+export type SaveKind = "extract" | "snapshot" | "eval" | "fetch" | "authenticated_read";
 
 // A file at this path, or a new file in this folder, named for the page's
 // host and the time.
@@ -28,6 +23,7 @@ export type Target = { path: string } | { dir: string };
 const LIMITS: Record<SaveKind, Record<string, number>> = {
   extract: { maxBytes: 2_000_000 },
   fetch: { maxBytes: 2_000_000 },
+  authenticated_read: { maxBytes: 2_000_000 },
   snapshot: { maxNodes: 10_000 },
   eval: {},
 };
@@ -50,10 +46,8 @@ export function targetOf(save: unknown, as: "file" | "folder"): Target {
 
 type File = { body: string | Uint8Array; ext: string };
 
-// What each read writes: extract its text (its tables as JSON), snapshot its
-// outline, fetch the body as sent, eval its value (a string as it is; an
-// expression with no value, such as a statement, as null).
 function fileOf(kind: SaveKind, r: Record<string, unknown>): File {
+  if (kind === "authenticated_read" && typeof r.content === "string") return { body: r.content, ext: r.format === "raw" ? extOf(r.type) : "txt" };
   if (kind === "snapshot" && r.update !== undefined) return { body: JSON.stringify(r, null, 1), ext: "json" };
   if (kind === "snapshot" && typeof r.snapshot === "string") return { body: r.snapshot, ext: "txt" };
   if (kind === "extract" && typeof r.text === "string") return { body: r.text, ext: "txt" };
@@ -78,7 +72,7 @@ function hostOf(url: string): string {
 async function write(target: Target, url: string, file: File): Promise<string> {
   if ("path" in target) {
     await mkdir(dirname(target.path), { recursive: true });
-    await writeFile(target.path, file.body);
+    await writeFile(target.path, file.body, { mode: 0o600 });
     return target.path;
   }
   await mkdir(target.dir, { recursive: true });
@@ -88,7 +82,7 @@ async function write(target: Target, url: string, file: File): Promise<string> {
   for (let n = 1; ; n++) {
     const path = join(target.dir, `${stem}${n === 1 ? "" : `-${n}`}.${file.ext}`);
     try {
-      await writeFile(path, file.body, { flag: "wx" });
+      await writeFile(path, file.body, { flag: "wx", mode: 0o600 });
     } catch (e) {
       if (!(e instanceof Error && "code" in e && e.code === "EEXIST")) throw e;
       continue;
@@ -141,6 +135,7 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
     ...(typeof r.type === "string" ? { type: r.type } : {}),
     bytes: typeof file.body === "string" ? Buffer.byteLength(file.body) : file.body.byteLength,
     head: text.slice(0, HEAD_CHARS),
+    ...(kind === "authenticated_read" ? { source: r.source, auth: r.auth, format: r.format, requestedUrl: r.requestedUrl, tab: r.tab } : {}),
     ...(r.truncated === true ? { truncated: true } : {}),
     ...(r.challenge ? { challenge: r.challenge } : {}),
     ...(pageState ? { pageState } : {}),

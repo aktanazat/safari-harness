@@ -12,15 +12,20 @@ const PICTURES = 100;
 const PICTURE_BYTES = 128 * 1024 * 1024;
 const AGE_MS = 30 * 24 * 60 * 60_000;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const TOOLS: Record<string, true> = Object.fromEntries("run tabs open close keep goto activate snapshot click type press select hover upload history scroll eval fetch download dialog extract map follow info wait data handoff_wait net console cookies shot shots pdf window locate resolve_tab real_site select_tab press_mark press_done type_mark type_field type_send element autofill login_form login_fill card_form card_fill card_phone passwords learn replay recordings lookalikes keep_secret report real_input action_admit action_finish input_state audit react site_actions video native_preflight unknown".split(" ").map((name) => [name, true as const]));
+const TOOLS: Record<string, true> = Object.fromEntries("run tabs open close keep goto activate snapshot click type press select hover upload history scroll eval fetch authenticated_read request_catalog request_catalog_context download dialog extract map follow info wait data handoff_wait net console cookies shot shots pdf window locate resolve_tab real_site select_tab press_mark press_done type_mark type_field type_send element autofill login_form login_fill card_form card_fill card_phone passwords learn replay recordings lookalikes keep_secret report real_input action_admit action_finish input_state audit react site_actions video native_preflight unknown".split(" ").map((name) => [name, true as const]));
 const PROCESSES: Record<string, true> = { omp: true, claude: true, codex: true, bun: true, node: true, python: true, python3: true, sleep: true };
 const CODES: Record<string, true> = Object.fromEntries("stale_view effect_unknown privacy blocked not_content timeout unavailable aborted invalid_argument command_failed stopped waiting_for_human".split(" ").map((name) => [name, true as const]));
 const STATUSES: Record<string, true> = { working: true, "waiting on the user": true, paused: true, "user is driving": true, stopped: true, ended: true };
 const GAPS: Record<string, true> = { "capture unavailable": true, "privacy guard refused capture": true, "task is paused or ended": true, "picture exceeded size limit": true, "picture expired": true, "action result is unknown": true, "picture saving stopped": true };
+const FAILURE_BYTES = 4096;
+const METHODS = new Set("GET HEAD POST PUT PATCH DELETE OPTIONS CONNECT TRACE".split(" "));
+const ERROR_CLASSES = new Set("Error EvalError RangeError ReferenceError SyntaxError TypeError URIError AggregateError AbortError NetworkError SecurityError TimeoutError".split(" "));
 
 export type CaptureSummary = { sha256: string; capturedAt: string; width: number; height: number; masked: number; url?: string; tiles?: number };
 export type HistoryPicture = { id: string; missing: string } | { id: string; capture: CaptureSummary; receipt: string; bytes: number };
-export type HistoryCall = { t: number; tool: string; args: string; tab?: number; ms?: number; outcome: "running" | "done" | "failed" | "interrupted"; code?: string; evidence?: CaptureSummary[]; picture?: HistoryPicture };
+export type FailurePage = { origin: string; path: string };
+export type FailureContext = { at: number; tab?: number; page?: FailurePage; network: (FailurePage & { t: number; method: string; status?: number; error?: string })[]; console: { t: number; error: string }[]; unavailable: ("page" | "network" | "console")[] };
+export type HistoryCall = { t: number; tool: string; args: string; tab?: number; ms?: number; outcome: "running" | "done" | "failed" | "interrupted"; code?: string; evidence?: CaptureSummary[]; picture?: HistoryPicture; failureContext?: FailureContext };
 export type MissionRecord = { id: string; owner: number | null; process: string | null; since: number; active: number; raised: number; status: string; ended?: number; interrupted?: true; controls: false; spaces: string[]; pictures: boolean; inspectionOnly?: true; calls: HistoryCall[] };
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -28,6 +33,60 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const time = (value: unknown): value is number => count(value) && value > 0 && value <= 8_640_000_000_000_000;
+
+export function historyToolName(tool: string): string {
+  return tool === "request_catalog_context" ? "request_catalog" : tool;
+}
+
+function failurePage(value: unknown): FailurePage | undefined {
+  const o = object(value);
+  const raw = typeof value === "string" ? value : typeof o?.origin === "string" && typeof o.path === "string" ? o.origin + o.path : undefined;
+  if (raw === undefined || raw.length > 8192) return undefined;
+  const url = URL.parse(raw);
+  if (!url || url.protocol !== "http:" && url.protocol !== "https:" || url.origin.length > 200) return undefined;
+  const segments = url.pathname.split("/").filter(Boolean);
+  const path = segments.length ? "/" + segments.slice(0, 8).map(() => "…").join("/") + (segments.length > 8 ? "/…" : "") : "/";
+  return { origin: url.origin, path };
+}
+
+function errorClass(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const name = /^(?:(?:Uncaught(?: \(in promise\))?|Unhandled Promise Rejection)\s*:?\s*)?([A-Za-z]+Error|Error)\b/i.exec(value.slice(0, 120))?.[1];
+  return name && ERROR_CLASSES.has(name) ? name : fallback;
+}
+
+export function failureContextSummary(value: unknown, started: number, duration: number): FailureContext | undefined {
+  const o = object(value);
+  if (!o || !time(o.at) || o.at < started || o.at > started + duration + 1000) return undefined;
+  const at = o.at;
+  const tab = count(o.tab) && o.tab > 0 ? o.tab : undefined;
+  const from = Math.max(started - 5000, at - 30_000);
+  const recent = (t: unknown): t is number => time(t) && t >= from && t <= at;
+  const page = tab === undefined ? undefined : failurePage(o.page);
+  const network: FailureContext["network"] = [];
+  if (tab !== undefined && Array.isArray(o.network)) for (const raw of o.network.slice(-100)) {
+    const entry = object(raw);
+    if (!entry || !recent(entry.t) || typeof entry.method !== "string" || !METHODS.has(entry.method)) continue;
+    const location = failurePage(entry.url ?? entry);
+    if (!location) continue;
+    const status = count(entry.status) && (entry.status === 0 || entry.status >= 100) && entry.status <= 599 ? entry.status : undefined;
+    const failed = typeof entry.error === "string" && entry.error.length > 0;
+    if (!failed && status !== 0 && (status === undefined || status < 400)) continue;
+    network.push({ ...location, t: entry.t, method: entry.method, ...(status === undefined ? {} : { status }), ...(failed || status === 0 ? { error: errorClass(entry.error, "NetworkError") } : {}) });
+  }
+  const errors: FailureContext["console"] = [];
+  if (tab !== undefined && Array.isArray(o.console)) for (const raw of o.console.slice(-100)) {
+    const entry = object(raw);
+    if (!entry || !recent(entry.t) || entry.uncaught !== true && !(typeof entry.error === "string" && ERROR_CLASSES.has(entry.error))) continue;
+    errors.push({ t: entry.t, error: errorClass(entry.error ?? entry.text, "Error") });
+  }
+  const unavailable: FailureContext["unavailable"] = [];
+  if (Array.isArray(o.unavailable)) for (const name of ["page", "network", "console"] as const) if (o.unavailable.includes(name)) unavailable.push(name);
+  if (!page && !unavailable.includes("page")) unavailable.push("page");
+  if (tab === undefined) for (const name of ["network", "console"] as const) if (!unavailable.includes(name)) unavailable.push(name);
+  const summary: FailureContext = { at, ...(tab === undefined ? {} : { tab }), ...(page ? { page } : {}), network: network.sort((a, b) => a.t - b.t).slice(-5), console: errors.sort((a, b) => a.t - b.t).slice(-3), unavailable };
+  return Buffer.byteLength(JSON.stringify(summary)) <= FAILURE_BYTES ? summary : undefined;
+}
 
 function capture(value: unknown): CaptureSummary | undefined {
   const o = object(value);
@@ -74,13 +133,14 @@ function picture(value: unknown, mission: string, root: string): HistoryPicture 
 function call(value: unknown, mission: string, root: string): HistoryCall | undefined {
   const o = object(value);
   if (!o || !time(o.t)) return undefined;
-  const tool = typeof o.tool === "string" && Object.hasOwn(TOOLS, o.tool) ? o.tool : "unknown";
+  const tool = typeof o.tool === "string" && Object.hasOwn(TOOLS, o.tool) ? historyToolName(o.tool) : "unknown";
   const tab = count(o.tab) && o.tab > 0 ? o.tab : undefined;
   const outcome = o.outcome === "done" || o.outcome === "failed" || o.outcome === "interrupted" ? o.outcome : "running";
   const code = typeof o.code === "string" && Object.hasOwn(CODES, o.code) ? o.code : undefined;
   const evidence = Array.isArray(o.evidence) ? o.evidence.slice(0, 16).map(capture).filter((e): e is CaptureSummary => e !== undefined) : [];
   const saved = picture(o.picture, mission, root);
-  return { t: o.t, tool, args: tab === undefined ? "" : `tab=${tab}`, ...(tab === undefined ? {} : { tab }), ...(count(o.ms) ? { ms: Math.min(o.ms, 86_400_000) } : {}), outcome, ...(code ? { code } : {}), ...(evidence.length ? { evidence } : {}), ...(saved ? { picture: saved } : {}) };
+  const failureContext = outcome === "failed" && count(o.ms) ? failureContextSummary(o.failureContext, o.t, o.ms) : undefined;
+  return { t: o.t, tool, args: tab === undefined ? "" : `tab=${tab}`, ...(tab === undefined ? {} : { tab }), ...(count(o.ms) ? { ms: Math.min(o.ms, 86_400_000) } : {}), outcome, ...(code ? { code } : {}), ...(evidence.length ? { evidence } : {}), ...(saved ? { picture: saved } : {}), ...(failureContext && failureContext.tab === tab ? { failureContext } : {}) };
 }
 
 function record(value: unknown, root: string, restarted = false): MissionRecord | undefined {

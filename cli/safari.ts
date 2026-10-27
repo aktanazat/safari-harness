@@ -97,7 +97,7 @@ const USAGE = `safari — drive Safari from the terminal
   hover upload) and wait take --snapshot to print the page after them too,
   or --snapshot=<words> for only its lines that have those words.
 
-  Reads (snapshot eval extract fetch) take --save to write the whole output
+  Reads (snapshot eval extract fetch read) take --save to write the whole output
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
   (or --save <file>, for a path starting with / ./ or ../), and print only
   its path, size, and first 500 characters.
@@ -146,6 +146,16 @@ const USAGE = `safari — drive Safari from the terminal
   safari dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
   safari fetch <url> --tab N                 request a URL with the page's cookies
+  safari read <url> [--tab N] [--expect text]
+                                             readable text without navigating to the URL;
+                                             --expect checks content, not account identity;
+                                             --format raw keeps HTML or JSON unchanged
+  safari request_catalog list                list privately saved JSON reads
+  safari request_catalog save --tab N --name NAME --request I --observed-at T --field F --type array
+                                             check and save an observed GET
+  safari request_catalog run --tab N --name NAME
+                                             rerun its unchanged result check
+  safari request_catalog forget --name NAME  delete its private record
   safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
@@ -398,7 +408,7 @@ const SNAPSHOT_HOW = "also print the page after it; --snapshot=<words> prints on
 
 // The tool a command runs, where its name differs, and a tool's name
 // however it is written (real-input for real_input).
-const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings" };
+const ALIAS: Record<string, string> = { focus: "activate", back: "history", forward: "history", reload: "history", clickat: "click", "history-search": "browsing_history", "browsing-history": "browsing_history", record: "recordings", read: "authenticated_read" };
 
 const toolName = (cmd: string): string | undefined => (Object.hasOwn(ALIAS, cmd) ? ALIAS[cmd] : nameIn([...Object.keys(TOOLS), ...Object.keys(CALLER_TOOLS)], cmd));
 
@@ -1089,7 +1099,7 @@ async function main() {
       if (positional[0]) args.do = positional[0];
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
-    case "fetch": args.url = positional[0]; break;
+    case "fetch": case "read": args.url = positional[0]; break;
     case "map": args.urls = positional; break;
     case "pdf": {
       args.do = positional[0] ?? "save";

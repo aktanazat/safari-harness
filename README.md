@@ -68,7 +68,8 @@ daemon/
   playbooks.ts      opt-in agent runs stored as verified, parameterized
                     recordings; Jev chooses, replay checks live targets and
                     stops before any approval or sign-in boundary
-  save.ts           save on extract, snapshot, eval, and fetch: the whole
+  request-catalog.ts private checked JSON GETs saved from observed page traffic
+  save.ts           save on extract, snapshot, eval, fetch, and read: the whole
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
   map.ts            map: one read of each of up to 20 pages, a few at a time,
@@ -377,6 +378,7 @@ safari shot --full --tiles --tab 7     # readable overlapping pieces; original r
 safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
 safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf
 safari fetch /api/me --tab 7           # a request with the page's cookies
+safari read https://example.com/ --tab 7 --expect "Example Domain"  # readable page text; no target navigation
 safari dialog accept --tab 7           # answer confirms with OK from now on
 safari window 390 844 --tab 7          # a phone-width window for your tab
 safari close 7                         # else it closes when omp's turn ends, or the program that opened it exits
@@ -599,8 +601,10 @@ safari playbooks list
 
 For an explicit change, pass `--from NAME` to `mint` or `from` to
 `playbooks learn`. A fresh passing example creates a new revision and keeps
-older names available. `playbooks restore --name PRIOR --vars ...` checks a
-prior revision for that call only; it does not change the current default.
+older names available. It must retain the public inputs and existing start
+and result checks of both the selected older version and the current
+default. `playbooks restore --name PRIOR --vars ...` checks a prior revision
+for that call only; it does not change the current default.
 
 The reusable recording holds no input values, page text, URL query or
 fragment. The private learning session keeps a salted digest of the starting

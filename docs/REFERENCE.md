@@ -230,8 +230,12 @@ rules](#cleanup-authority); it is not a list of windows kept alive.
 - Saved history keeps no typed text, expressions, page bodies, selectors,
   titles, credentials, or full addresses. It retains the tool, tab,
   timing, outcome, failure code, and capture summaries with only the
-  source origin. The live view can show more context, with secrets
-  removed; those details do not become durable history.
+  source origin.
+- A failed call may also keep the page's origin and masked path depth,
+  up to five failed request statuses and three uncaught error classes
+  from that tab. The saved context includes no response bodies, full
+  paths, queries, fragments, stacks, or raw error messages. If the tab
+  changed or an observer refused, the context says what is unavailable.
 - History survives daemon restarts in a private file. It retains at most
   100 tasks, 200 calls per task, 2 MiB, and 30 days. Restarted tasks are
   read-only and interrupted calls stay marked interrupted. Old controls
@@ -2108,6 +2112,51 @@ without it.
   '<json>'` for a POST. The tab is one of yours on that site, so the
   request carries its cookies and passes its CORS rules.
 
+## authenticated_read
+
+`safari read https://example.com/account --expect "known content"` makes
+one GET from an agent-owned tab on that origin and returns the readable
+text without navigating to the requested address. Omit `--tab` to reuse
+an owned tab on that site, or open its root in a background tab. Pass
+`--format raw` for unmodified HTML or JSON; `--max-bytes` defaults to
+50,000 and accepts at most 2,000,000.
+
+The reply includes status, content type, final address, `source: "page"`,
+and `auth: "unverified"` unless `--expect` matched the response. A
+matching phrase yields `auth: "content_matched"`; it checks content, not
+which account supplied it. A sign-in page, challenge, loading shell,
+cross-origin redirect, failed status, or unreadable file is not a
+successful read. Unlike `fetch`, `read` never retries outside the
+page without its sign-in. Use `download` for files and a normal `open`
+when the page needs clicks.
+
+## request_catalog
+
+An owned page's `net read` shows the GETs it made. To save one queryless,
+same-origin JSON GET for later, use its index in the unfiltered list and
+its exact `t` timestamp:
+
+```
+safari request_catalog save --tab N --name catalog-items \
+  --request I --observed-at T --field data.items --type array
+safari request_catalog run --tab N --name catalog-items
+safari request_catalog list
+safari request_catalog forget --name catalog-items
+```
+
+Save requires the observed complete JSON response and a passing
+nonempty field/type check. It makes a fresh page request and checks the
+same result before saving. Run needs an owned tab on that origin and
+checks the original status, content type, JSON root and field again.
+A changed or unreadable result comes back with `ok: false`; the saved
+check stays unchanged. Runs return the checked field's current value.
+
+The private catalog holds at most 50 records. It stores the route,
+status, field and shape, but no URL query, headers, cookies, raw body,
+result values, or scripts. It does not grant authority for a site action
+and cannot run against the user's front tab or a remote browser. Use
+`forget` before saving a changed request under the same name.
+
 ## download
 
 - `download` saves a file into `~/Downloads` and returns its path: pass the
@@ -2637,6 +2686,13 @@ The existing recordings directory is the only version store. A successful
 `learn from` appends an immutable revision; old names remain runnable.
 `playbooks {do: "cancel", tab}` discards unfinished learning, which also
 expires after 30 minutes. `recordings show/rm` still owns the stored files.
+
+A new version retains the public parameter names and the existing start,
+end, and result checks of both its selected source and the current
+default. Checks may be strengthened and safe actions may change, but
+dropping a check or changing a public input requires a separately
+authored tool. Publication refuses a broken contract before writing a
+revision.
 
 Goal- and page-based `run` uses Jev only to advise which current tool to
 choose. Jev receives generic goals, origin and parameter names, never

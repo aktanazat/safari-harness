@@ -202,19 +202,36 @@ function stem(url: string, startedAt: number): string {
   return `${host}-${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}`;
 }
 
+function assertRevisionContract(next: AgentRecording, previous: AgentRecording): void {
+  if (next.params.length !== previous.params.length || previous.params.some((param) => !next.params.includes(param))) throw new Error("a changed tool must retain its public parameter names");
+  if ((previous.before.text !== undefined && next.before.text !== previous.before.text)
+    || (previous.before.selector !== undefined && next.before.selector !== previous.before.selector)) throw new Error("a changed tool must retain its verified start condition");
+  if ((previous.verify.text !== undefined && next.verify.text !== previous.verify.text)
+    || (previous.verify.selector !== undefined && next.verify.selector !== previous.verify.selector)) throw new Error("a changed tool must retain its verified end condition");
+  if (previous.resultSelector !== undefined && next.resultSelector !== previous.resultSelector) throw new Error("a changed tool must retain its verified result selector");
+  if (previous.output && (!next.output || next.output.rows !== previous.output.rows
+    || Object.entries(previous.output.fields).some(([name, selector]) => next.output?.fields[name] !== selector))) throw new Error("a changed tool must retain its verified output rows and fields");
+  if (previous.applied && (!next.applied || next.applied.param !== previous.applied.param
+    || next.applied.in !== previous.applied.in || (next.applied.prefix ?? "") !== (previous.applied.prefix ?? ""))) throw new Error("a changed tool must retain its applied-input check");
+}
+
 // Revisions are immutable recordings too. The catalog is derived from these
 // files, never from a mutable current-version index.
 export function saveRecording(raw: unknown, from?: string, example?: Record<string, string>): string {
   if (!isRecording(raw)) throw new Error("not a recording: it needs a url and steps");
   const agent = "source" in raw && raw.source === "agent";
+  if (from !== undefined && !agent) throw new Error("only verified agent recordings can have revisions");
+  const prior = from === undefined ? undefined : loadPlaybook(from);
+  const latest = prior && listPlaybooks().find((p) => p.tool === prior.tool);
   if (agent) {
     assertAgentRecording(raw);
     if (raw.version !== undefined) throw new Error("revision metadata belongs to the recording store; use learn from a prior name");
+    if (prior) {
+      assertRevisionContract(raw, prior.recording);
+      if (latest && latest.name !== prior.name) assertRevisionContract(raw, latest.recording);
+    }
   }
-  if (from !== undefined && !agent) throw new Error("only verified agent recordings can have revisions");
-  const prior = from === undefined ? undefined : loadPlaybook(from);
   if (prior && new URL(raw.url).origin !== new URL(prior.recording.url).origin) throw new Error("a changed tool must stay on its learned origin");
-  const latest = prior && listPlaybooks().find((p) => p.tool === prior.tool);
   const nextRevision = prior ? Math.max(prior.revision, latest ? latest.revision : 0) + 1 : 1;
   const dir = dataFile("recordings");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
