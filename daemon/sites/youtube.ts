@@ -197,7 +197,6 @@ const NO_PLAY = `if (!window.__safariHarnessNoPlay) {
 
 const TRANSCRIPT_PANEL = "engagement-panel-searchable-transcript";
 const PANEL = `ytd-engagement-panel-section-list-renderer[target-id="${TRANSCRIPT_PANEL}"]`;
-const SHOW_BUTTON = (flexy: string) => `${flexy} ytd-video-description-transcript-section-renderer button`;
 
 // Waits in the page until cond (an expression) gives a value, watching the
 // DOM rather than a timer: Safari slows a hidden tab's timers down.
@@ -220,8 +219,9 @@ const until = (cond: string, ms: number) => `(() => {
 // menu, and the first segment's target (video id, track, times), which
 // tells whose transcript the panel holds.
 const PANEL_DATA = `(() => {
-  const list = document.querySelector("ytd-transcript-segment-list-renderer");
-  const footer = document.querySelector("ytd-transcript-footer-renderer");
+  const panel = document.querySelector(${JSON.stringify(PANEL)});
+  const list = panel && panel.querySelector("ytd-transcript-segment-list-renderer");
+  const footer = panel && panel.querySelector("ytd-transcript-footer-renderer");
   const rows = (list && list.data && list.data.initialSegments) || [];
   const segments = rows.map((r) => r.transcriptSegmentRenderer).filter(Boolean);
   if (!segments.length) return null;
@@ -290,10 +290,9 @@ async function openTranscript(kit: SiteKit, id: string): Promise<Panel> {
   // no effect. Watch the target page rather than retrying a page change.
   const loaded = await kit.eval(ORIGIN, until(`document.querySelector(${JSON.stringify(`${flexy} ytd-watch-metadata`)}) && "loaded"`, 15000), { page: true });
   if (!loaded) throw new Error(`the YouTube watch page for ${id} did not load in time`);
-  // Whether the video has a transcript comes from the watch data the page
-  // renders, not from the DOM: the last video's description, its
-  // transcript button included, stays in the page for a moment after the
-  // new video's title shows.
+  // Transcript availability comes from this video's completed watch data,
+  // not a description button left behind by the previous video. Its newer
+  // button can open a start-only summary panel instead of timed captions.
   const state = await kit.eval<{ transcript: boolean; blocked: boolean }>(ORIGIN, until(`(() => {
     const page = document.querySelector(${JSON.stringify(flexy)});
     const data = page && page.data;
@@ -301,7 +300,8 @@ async function openTranscript(kit: SiteKit, id: string): Promise<Panel> {
     if (!watch || watch.videoId !== ${JSON.stringify(id)}) return null;
     if (!data.contents || !data.contents.twoColumnWatchNextResults || !data.contents.twoColumnWatchNextResults.results) return null;
     const transcript = (data.engagementPanels || []).some((p) => p.engagementPanelSectionListRenderer && p.engagementPanelSectionListRenderer.targetId === ${JSON.stringify(TRANSCRIPT_PANEL)});
-    if (transcript && !document.querySelector(${JSON.stringify(SHOW_BUTTON(flexy))})) return null;
+    const app = document.querySelector("ytd-app");
+    if (transcript && (!document.querySelector(${JSON.stringify(PANEL)}) || !app || typeof app.handleShowEngagementPanelEndpoint !== "function")) return null;
     return { transcript, blocked: !!window.__safariHarnessNoPlay };
   })()`, 10000), { page: true });
   if (!state) throw new Error(`the YouTube watch page for ${id} did not finish loading in time`);
@@ -312,14 +312,28 @@ async function openTranscript(kit: SiteKit, id: string): Promise<Panel> {
     throw new Error(`the YouTube tab reloaded on its way to ${id}, which may have started the video; try again`);
   }
   if (!state.transcript) throw new Error(`YouTube video ${id} has no transcript`);
-  await kit.eval(ORIGIN, `(() => {
+  await kit.eval(ORIGIN, `(async () => {
+    const app = document.querySelector("ytd-app");
     const panel = document.querySelector(${JSON.stringify(PANEL)});
+    const definition = panel && panel.data;
+    if (!definition || definition.targetId !== ${JSON.stringify(TRANSCRIPT_PANEL)}) throw new Error("the YouTube page did not provide its timed transcript panel");
     const d = ${PANEL_DATA};
-    const open = panel && panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED";
-    // a panel left open from the last video does not refill by itself
-    if (open && !(d && d.first.startsWith(${JSON.stringify(`${id}.`)}))) { const close = panel.querySelector("#visibility-button button"); if (close) close.click(); }
-    else if (open) return;
-    document.querySelector(${JSON.stringify(SHOW_BUTTON(flexy))}).click();
+    const open = panel.getAttribute("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED";
+    if (open && d && d.first.startsWith(${JSON.stringify(`${id}.`)})) return;
+    if (open) {
+      // A panel left open for another video must close before its own
+      // on-show continuation runs again. Use the site's declared command,
+      // not a click on a hidden or covered control.
+      const close = definition.header && definition.header.engagementPanelTitleHeaderRenderer && definition.header.engagementPanelTitleHeaderRenderer.visibilityButton && definition.header.engagementPanelTitleHeaderRenderer.visibilityButton.buttonRenderer;
+      if (!close || close.isDisabled || !close.command || typeof app.handleCommandWithCommandHandler !== "function") throw new Error("the YouTube timed transcript panel could not close its previous video");
+      app.handleCommandWithCommandHandler(close.command, panel);
+      const hidden = await ${until(`panel.getAttribute("visibility") !== "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED" && "hidden"`, 5000)};
+      if (!hidden) throw new Error("the YouTube timed transcript panel did not close its previous video in time");
+    }
+    // The watch response declares this precise, language-aware panel even
+    // when its description button now opens the modern summary. Let the
+    // app show it and attest its own transcript request.
+    app.handleShowEngagementPanelEndpoint({ showEngagementPanelEndpoint: { identifier: { tag: ${JSON.stringify(TRANSCRIPT_PANEL)} } } });
   })()`, { page: true });
   return readPanel(kit, id);
 }
