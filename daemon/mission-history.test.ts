@@ -90,6 +90,29 @@ test("durable history defaults to structural fields and drops typed values, page
   expect(shown.calls[1].tool).toBe("unknown");
 });
 
+test("a failed call retains the HTTP failure and error class without private page details", () => {
+  const path = join(folder(), "history.json");
+  const history = new MissionHistory(path, () => now);
+  history.save(mission({ calls: [{
+    t: now, ms: 100, tool: "click", tab: 7, outcome: "failed", code: "stale_view",
+    failureContext: {
+      at: now + 100, tab: 7, page: "https://fixture.example/private/profile?token=hidden",
+      network: [{ t: now + 90, method: "GET", url: "https://fixture.example/api/private?key=hidden", status: 503 }],
+      console: [{ t: now + 95, uncaught: true, error: "TypeError: private-balance" }], unavailable: [],
+    },
+  }] }));
+  const context = history.list()[0].calls[0].failureContext;
+  expect(context).toMatchObject({
+    page: { origin: "https://fixture.example", path: "/…/…" },
+    network: [{ method: "GET", path: "/…/…", status: 503 }],
+    console: [{ error: "TypeError" }],
+    unavailable: [],
+  });
+  const saved = readFileSync(path, "utf8");
+  for (const secret of ["private", "profile", "hidden", "private-balance"]) expect(saved).not.toContain(secret);
+  expect(new MissionHistory(path, () => now + 200).list()[0].calls[0].failureContext).toEqual(context);
+});
+
 test("capture summaries come only from actual evidence results and never collect screenshot bytes or page text", () => {
   const evidence = { ...summary, privacy: { masked: 2 }, title: "not retained", path: "/private/raw.png", url: "https://example.com/path?token=not-retained" };
   expect(captureSummaries({ snapshot: "page text", data: PIXEL, sha256: summary.sha256 })).toEqual([]);

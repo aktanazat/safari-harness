@@ -83,6 +83,8 @@ test("a changed tool keeps its prior revision and rejects example text in the ne
   };
   const first = saveRecording(record);
   const second = saveRecording({ ...record, goal: "Find products" }, first);
+  expect(() => saveRecording({ ...record, before: { selector: "#wrong-start" } }, second)).toThrow("verified start condition");
+  expect(() => saveRecording({ ...record, verify: { selector: "#wrong-end" } }, second)).toThrow("verified end condition");
   expect(listPlaybooks()).toMatchObject([{ name: second, revision: 2, revisions: [
     { name: second, revision: 2, current: true },
     { name: first, revision: 1, current: false },
