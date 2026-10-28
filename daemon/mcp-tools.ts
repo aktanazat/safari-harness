@@ -6,8 +6,11 @@
 
 import { join } from "node:path";
 import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
-import { CALLER_GROUPS } from "./caller.ts";
+import { CALLER_GROUPS, CALLER_TOOLS } from "./caller.ts";
 import { invoke } from "./call.ts";
+import { checkCall } from "./guard.ts";
+import { HarnessError, readFailure } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
 import { saveAnswer } from "./save.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
 import { withTask } from "./rpc.ts";
@@ -94,6 +97,7 @@ export function listTools(): unknown[] {
 // answers past 10 000 made up half of the 3 M characters ten sessions read.
 // A map's answer is fitted page by page (formatResult's max).
 const REPLY_CHARS = 30_000;
+const RUN_STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
 
 // A call's answer as the client reads it; a failed call throws.
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -102,10 +106,35 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
   return withTask(task, async () => {
     const value = name === "repl" ? await REPL_TOOL.run(input) : await invoke(name, input, true);
     const text = formatResult(value);
-    if (text.length <= REPLY_CHARS) return text;
-    const path = await saveAnswer(text);
-    const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
-    return `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
+    let answer = text;
+    if (text.length > REPLY_CHARS) {
+      const path = await saveAnswer(text);
+      const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
+      answer = `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
+    }
+    const runSteps: unknown[] | undefined = name === "run" && value !== null && typeof value === "object"
+      && "steps" in value && Array.isArray(value.steps) ? value.steps : undefined;
+    const failed = runSteps?.find((step) => step !== null && typeof step === "object" && "error" in step);
+    if (failed && typeof failed === "object") {
+      const failure = "failure" in failed ? readFailure(failed.failure) : undefined;
+      const acted = runSteps?.some((step) => {
+        if (step === null || typeof step !== "object" || !("value" in step) || !("step" in step) || typeof step.step !== "number") return false;
+        const request: unknown = Array.isArray(input.steps) ? input.steps[step.step - 1] : undefined;
+        if (request === null || typeof request !== "object" || !("tool" in request) || typeof request.tool !== "string") return false;
+        const stepArgs = "args" in request && request.args !== null && typeof request.args === "object" && !Array.isArray(request.args)
+          ? request.args as Record<string, unknown> : {};
+        const checked = checkCall(RUN_STEP_TOOLS, request.tool, stepArgs, true);
+        return checked.tool === "open" || affectsPage(checked.tool, checked.args);
+      });
+      const uncertain = runSteps?.some((step) => step !== null && typeof step === "object" && "failure" in step
+        && readFailure(step.failure)?.effect === "possibly_effected");
+      const effect = acted || uncertain ? "possibly_effected" : "none";
+      throw new HarnessError(failure?.code ?? "command_failed", answer, {
+        effect, retryable: effect === "none" ? failure?.retryable : false,
+        next: effect === "none" ? failure?.next : undefined,
+      });
+    }
+    return answer;
   });
 }
 

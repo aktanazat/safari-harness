@@ -250,12 +250,12 @@ export async function makeGroup(h: Helper, window: number, name: string): Promis
   const named = (await h("name", { window, name })) as Answer & { named?: string | null };
   const hidden = await h("sidebar", { window, show: false });
   const state = (await h("state", { window })) as Answer & { shown?: string | null };
-  if (named.ok && hidden.ok && state.shown === name) return { done: true };
-  // The group is made but not as named: it is deleted by the name Safari
-  // gave it, which no other group may have. One that stays, or whose name
-  // is not known, turns group work off until a person has looked.
+  if (named.ok && hidden.ok && state.ok && state.shown === name) return { done: true };
   const made = state.shown || named.named || undefined;
-  const why = named.ok ? `the window shows ${made ?? "no group"}, not ${name}` : (named.error ?? "the new group took no name");
+  const why = !named.ok ? (named.error ?? "the new group took no name")
+    : !hidden.ok ? (hidden.error ?? "the sidebar did not hide")
+    : !state.ok ? (state.error ?? "the window state could not be read")
+    : `the window shows ${made ?? "no group"}, not ${name}`;
   const undone = made === undefined ? undefined : await deleteGroup(h, window, made);
   if (undone?.done) return stop(why);
   turnOff(`${why}, and its new group ${made ?? ""} is left${undone ? ` (${undone.why})` : ""}`);

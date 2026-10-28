@@ -176,3 +176,47 @@ test("a call that names do as action passes the listed required parameters, and 
   expect(checkCall(CALLER_TOOLS, "real_input", real, true).args).toEqual({ tab: 451444, do: "click", ref: "17" });
   expect(checkCall(TOOLS, "history", back, true).args).toEqual({ tab: 7, do: "back" });
 });
+
+test("an MCP run that stops on a failed step signals failure", async () => {
+  const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], {
+    env: { ...process.env, SAFARI_HARNESS_REMOTE: "1" },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  server.stdin.write(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name: "run", arguments: { steps: [{ tool: "not-a-safari-tool" }] } },
+  }) + "\n");
+  server.stdin.end();
+  const [out, err, exit] = await Promise.all([new Response(server.stdout).text(), new Response(server.stderr).text(), server.exited]);
+  expect(exit).toBe(0);
+  expect(err).toBe("");
+  const reply = JSON.parse(out.trim()) as { result: { isError?: boolean; content: { text: string }[] } };
+  expect(reply.result.isError).toBe(true);
+  expect(reply.result.content[0]?.text).toContain("[1 not-a-safari-tool] error:");
+});
+
+test("a nested run is rejected before any outer step acts", async () => {
+  const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], {
+    env: { ...process.env, SAFARI_HARNESS_REMOTE: "1" },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  server.stdin.write(JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name: "run", arguments: { steps: [
+      { tool: "run", args: { steps: [{ tool: "not-a-safari-tool" }] } },
+      { tool: "tabs" },
+    ] } },
+  }) + "\n");
+  server.stdin.end();
+  const [out, err, exit] = await Promise.all([new Response(server.stdout).text(), new Response(server.stderr).text(), server.exited]);
+  expect(exit).toBe(0);
+  expect(err).toBe("");
+  const reply = JSON.parse(out.trim()) as { result: { isError?: boolean; content: { text: string }[] } };
+  expect(reply.result.isError).toBe(true);
+  expect(reply.result.content[0]?.text).toContain("a run cannot contain another run");
+  expect(reply.result.content[0]?.text).toContain("stopped: the 1 other step did not run");
+});

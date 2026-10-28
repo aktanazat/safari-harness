@@ -3723,6 +3723,7 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
       const step = stepOf(raw);
       tool = step.tool;
       if (tool.toLowerCase() === "repl") throw new Error("repl is its own call, not a run step: call repl {code} (in a shell, safari repl) apart from the run");
+      if (tool.toLowerCase() === "run") throw new Error("a run cannot contain another run: put those steps directly in the outer run");
       planned.push({ ...step, checked: check(tool, step.args) });
     } catch (e) {
       return { steps: [{ step: i + 1, tool, error: e instanceof Error ? e.message : String(e), failure: failureOf(e, { effectful: false }) }], notRun: steps.length - 1 };

@@ -202,6 +202,14 @@ test("a window made while the user types stays plain, and becomes its task's gro
   expect(Object.keys(readQueue())).toEqual([TRIP]);
 });
 
+test("a failed sidebar hide reports the failed step, not identical group names", async () => {
+  const { h } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+  const failedHide: Helper = (op, args) => op === "sidebar" && args?.show === false
+    ? Promise.resolve({ ok: false, error: "the sidebar could not hide" }) : h(op, args);
+  const result = await makeGroup(failedHide, 7, TRIP);
+  expect(result).toMatchObject({ done: false, why: "the sidebar could not hide" });
+});
+
 // Its agent exits between the keeper's look at the windows and its first
 // step: the daemon has closed the window, and a group made now would stay.
 test("a window that ended after the keeper looked gets no group", async () => {
