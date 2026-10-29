@@ -36,7 +36,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, windowPageClosed, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, linkDropped, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -410,14 +410,21 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
 // window's close failed 69 times in 5.7 min, one try each sweep, each a
 // wait in the extension's queue, and a page left after its third try
 // stayed open until the daemon started again. A page already gone is
-// closed.
+// closed. A close the extension's link took down with it was never
+// answered: the sweep stops there, and the next connection's sweep asks
+// again at once (onConnect in tools.ts). On 10-28 and 10-29 the journal
+// noted 149 agents' cleanups failed by a dropped link in 18 hours.
 const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
 const SLOW_RETRY_MS = 15 * 60_000;
 const unclosed = new Map<Space | string, { tries: number; at: number }>();
 
+export function closeRetryMs(tries: number): number {
+  return CLOSE_RETRY_MS[tries - 1] ?? SLOW_RETRY_MS;
+}
+
 function failedClose(key: Space | string, name: string, error: string): void {
   const tries = (unclosed.get(key)?.tries ?? 0) + 1;
-  const wait = CLOSE_RETRY_MS[tries - 1] ?? SLOW_RETRY_MS;
+  const wait = closeRetryMs(tries);
   unclosed.set(key, { tries, at: Date.now() + wait });
   note("window not closed", { name, error, retryS: wait / 1000 });
 }
@@ -446,6 +453,7 @@ async function end(space: Space) {
   if (!space.done || (taskTracked?.(space.owner) !== false && inWindow.some(t => !isPage(t, space)))) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
+    const link = bridge.extensionInfo?.connectedAt;
     try {
       await bridge.request("dialogs", [page.id, { accept: false, text: null }]);
       if (!space.done) return;
@@ -460,6 +468,7 @@ async function end(space: Space) {
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (!why.startsWith("that tab is gone")) {
+        if (linkDropped(link)) throw e;
         failedClose(space, space.name, why);
         return;
       }
@@ -481,7 +490,8 @@ let spaceSweeping: Promise<void> | undefined;
 let sweepAgain = false;
 
 // A sweep asked for while one runs runs again after it: the one running may
-// have listed Safari before the change that asked.
+// have listed Safari before the change that asked. One the extension's link
+// took down ends there, for the next connection's.
 export function sweep(): Promise<void> {
   if (spaceSweeping) {
     sweepAgain = true;
@@ -490,7 +500,12 @@ export function sweep(): Promise<void> {
   spaceSweeping = (async () => {
     do {
       sweepAgain = false;
-      await sweepOnce();
+      const link = bridge.extensionInfo?.connectedAt;
+      try {
+        await sweepOnce();
+      } catch (e) {
+        if (!linkDropped(link)) throw e;
+      }
     } while (sweepAgain);
   })().finally(() => { spaceSweeping = undefined; });
   return spaceSweeping;
@@ -518,6 +533,7 @@ async function sweepOnce() {
         const key = space ?? `${tab.id}:${id}`;
         const failed = unclosed.get(key);
         if (failed && Date.now() < failed.at) continue;
+        const link = bridge.extensionInfo?.connectedAt;
         try {
           const result = await closeTab(tab.id, space ? "with its window, as its agent's task ended" : "with its window, as no record names it") as { ok?: boolean } | null;
           if (result?.ok === true) unclosed.delete(key);
@@ -525,6 +541,7 @@ async function sweepOnce() {
         } catch (e) {
           const why = e instanceof Error ? e.message : String(e);
           if (why.startsWith("that tab is gone")) unclosed.delete(key);
+          else if (linkDropped(link)) throw e;
           else failedClose(key, space?.name ?? "untracked agent status", why);
         }
       }

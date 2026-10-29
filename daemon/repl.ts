@@ -1067,14 +1067,18 @@ export class ReplSession {
     return res;
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  // asked: the session was ended on request (safari repl --close), so the
+  // pages its scripts changed close too, as at a turn's end; ended by itself
+  // (30 minutes unused, its agent's exit) it leaves those be. A tab kept for
+  // the user, or handed to him, stays either way (close in tools.ts).
+  async close(asked = false): Promise<{ closed: number }> {
+    if (this.closed) return { closed: 0 };
     this.closed = true;
-    await this.kit.close();
-    await Promise.all([...this.#owned].map((id) => this.call("close", { tab: id, held: true }).catch(() => {})));
+    const answers = [...(await this.kit.close()), ...(await Promise.all([...this.#owned].map((id) => this.call("close", { tab: id, held: true, ...(asked ? { ended: true } : {}) }).catch(() => undefined))))] as ({ ok?: boolean; kept?: true; protected?: unknown } | null | undefined)[];
     this.#owned.clear();
     this.tabs.length = 0;
     this.#page = undefined;
+    return { closed: answers.filter((a) => a?.ok === true && !a.kept && a.protected === undefined).length };
   }
 
   #globals(): Record<string, unknown> {

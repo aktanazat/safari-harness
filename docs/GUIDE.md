@@ -17,7 +17,8 @@ Tabs
   closes disposable agent tabs and their empty windows, including clicked
   pages, filled fields, site-global tabs and an agent page in front. A
   task's last call is never `close`. Pages explicitly kept for him and
-  pending handoffs stay protected. `keep` only a page he still needs; do
+  pending handoffs stay protected; a handoff tab whose agent exits before
+  he finishes is his, never closed. `keep` only a page he still needs; do
   not keep a finished result unless he asked to leave it open.
 - Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
   even if you clicked them. Unsent forms and his front tab stay during idle

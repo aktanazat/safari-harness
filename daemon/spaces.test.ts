@@ -1036,6 +1036,29 @@ test("an ended window whose page Safari will not close is asked again after one,
   expect({ tries, ended: spaceEnded(w.id) }).toEqual({ tries: [0, 60_000, 180_000, 420_000, 1_320_000], ended: true });
 });
 
+// On 10-28 and 10-29 the journal noted 149 agents' cleanups failed by the
+// extension's link dropping in 18 hours.
+test("an ended window whose page close the extension's link took down closes as soon as it connects again", async () => {
+  const s = safari();
+  const a = agent();
+  const t = await runAs(a.pid, () => openTab("https://dropped.example/", true));
+  const page = pageIn(s.tabs, t.windowId)!;
+  const close = s.ops["tabs.close"];
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== page.id) return close(args);
+    s.ops["tabs.close"] = close;
+    bridge.detach(s.sock);
+    throw new Error("never answered: the link is down");
+  };
+  await callTool("close", { tab: t.id });
+  a.kill();
+  await a.exited;
+  await turnEnded(a.pid);
+  expect(s.closed).not.toContain(page.id);
+  connect(s.sock);
+  await until(() => s.closed.includes(page.id));
+});
+
 // On 10-23 ended agents' windows stayed open through restarts, and nothing
 // in safari status --journal said so.
 test("a window that holds only its page five minutes after its task ended is noted in the journal once", async () => {
