@@ -820,16 +820,18 @@ async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
     if (inner && inner.text) parts.push({ name, inner });
   }
   if (!parts.length) return { ...res, value: own };
-  const { note, hint, ...rest } = own;
-  const text = [own.text, ...parts.map((p) => `${p.name}:\n${p.inner.text}`)].filter(Boolean).join("\n\n");
+  const { note, hint, total: _, ...rest } = own;
+  const pieces = [...(own.text ? [{ text: own.text, total: own.total ?? own.text.length }] : []), ...parts.map((p) => ({ text: `${p.name}:\n${p.inner.text}`, total: p.name.length + 2 + (p.inner.total ?? p.inner.text.length) }))];
+  const total = pieces.reduce((n, p) => n + p.total, 2 * (pieces.length - 1));
   const notes = [own.text ? note : undefined, ...parts.map((p) => p.inner.note)].filter(Boolean);
   const limit = opts.maxBytes || 20000;
   return {
     ...res,
     value: {
       ...rest,
-      text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
-      truncated: text.length > limit || parts.some((p) => p.inner.truncated),
+      text: pieces.map((p) => p.text).join("\n\n").slice(0, Math.max(limit, opts.whole || 0)),
+      truncated: total > limit,
+      ...(total > limit ? { total } : {}),
       ...(notes.length ? { note: notes.join("; ") } : {}),
       ...(own.text && hint ? { hint } : {}),
     },

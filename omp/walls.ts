@@ -21,8 +21,6 @@ const COPY_MS = 20_000;
 // How long Safari's copy waits for an app's loading line to go, inside
 // COPY_MS: confex's program drew in 3.2 s once Safari waited (10-24).
 const LOADING_MS = 10_000;
-// A reply keeps 30 000 characters, as the MCP server's do (mcp-tools.ts).
-const REPLY_CHARS = 30_000;
 // Below these, a page that names a wall is the wall, not an article about one.
 const SHELL_CHARS = 1500;
 const JS_SHELL_CHARS = 500;
@@ -262,7 +260,7 @@ async function safariCopy(url: string, task: string | undefined, wait: Record<st
     // Loaded here, not at the top: tools.ts brings the daemon's whole tool
     // graph, 36-57 ms and 33 MB more in every omp process at its start
     // (measured 10-23), for a path few runs take.
-    const { formatResult } = await import("../daemon/tools.ts");
+    const { formatResult, REPLY_CHARS } = await import("../daemon/tools.ts");
     const whole = formatResult(answer.value);
     if (whole.length <= REPLY_CHARS) return { loaded, check, text: whole };
     const { saveAnswer } = await import("../daemon/save.ts");

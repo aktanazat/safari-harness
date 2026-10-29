@@ -406,8 +406,8 @@ test.each([
   { tool: "snapshot", args: { root: "main" }, value: fullView },
   { tool: "snapshot", args: { interactive: true }, value: fullView },
   { tool: "snapshot", args: { diff: true }, value: fullView },
-  { tool: "snapshot", args: { maxNodes: 1 }, value: fullView },
-  { tool: "extract", args: { maxBytes: 10 }, value: { text: "Continue", truncated: false } },
+  { tool: "extract", args: {}, value: { text: "Continue", truncated: true } },
+  { tool: "extract", args: {}, value: { text: "Continue", truncated: true, total: 3_000_000, saved: "/saved/book.txt" } },
   { tool: "snapshot", args: {}, value: { ...fullView, truncated: true } },
   { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "delta", revision: "new-revision", baseRevision: "old-revision", edits: [{ start: 0, deleteCount: 1, lines: ["Continue"] }] } } },
   { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "unchanged", revision: "old-revision", baseRevision: "old-revision" } } },
@@ -454,6 +454,25 @@ test("an uncertain identical action is blocked until observation, without blocki
   await expect(call(a.pid, "click", { tab })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
   await expect(call(a.pid, "click", { tab })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
   await call(a.pid, "snapshot", { tab });
+  await expect(action()).rejects.toMatchObject({ code: "timeout" });
+  expect(sent).toBe(2);
+});
+
+// On 10-29 a click on GitHub's "Load more" lost its reply, and every whole
+// read after it came back cut at its limit, so none released the click.
+test.each([
+  { tool: "extract", args: {}, value: { text: "Load more", truncated: true, total: 189_269, saved: "/saved/long.example.txt" } },
+  { tool: "extract", args: { maxBytes: 200_000 }, value: { text: "Load more", truncated: false } },
+  { tool: "snapshot", args: { maxNodes: 5000 }, value: fullView },
+])("after an uncertain action, a whole $tool read releases it, and the same read narrowed by query does not", async ({ tool, args, value }) => {
+  const a = agent();
+  const tab = await open(a.pid, "https://long.example/");
+  let sent = 0;
+  const action = () => observedCall(a.pid, "click", { tab, ref: 9 }, async () => { sent++; throw new HarnessError("timeout", "reply lost after dispatch"); });
+  await expect(action()).rejects.toMatchObject({ effect: "possibly_effected" });
+  await observedCall(a.pid, tool, { ...args, tab, query: "Load more" }, async () => value);
+  await expect(action()).rejects.toMatchObject({ code: "effect_unknown" });
+  await observedCall(a.pid, tool, { ...args, tab }, async () => value);
   await expect(action()).rejects.toMatchObject({ code: "timeout" });
   expect(sent).toBe(2);
 });

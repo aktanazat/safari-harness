@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { callTool } from "./tools.ts";
+import { callTool, formatResult } from "./tools.ts";
 
 // A page longer than the 20,000 characters extract answers with by default,
 // with characters UTF-8 writes in two bytes.
@@ -14,18 +14,22 @@ const VALUES: Record<string, unknown> = { html: "<p>hi</p>", rows: [{ a: 1 }] };
 const LIMITED = "https://shop.example/api/limited";
 const LIMITED_BODY = '{"error":"rate limited"}';
 
-// A stand-in extension for tab 1, cutting text the way content.js does. The
-// ops the page is asked to run are noted.
+// The page's text as content.js answers extract: up to the reply's limit
+// (maxBytes), or on to whole for the saved folder, with the whole's length
+// when it is past the limit.
+function extractOf(opts: Record<string, unknown>) {
+  const limit = Number(opts.maxBytes) || 20000;
+  return { url: "https://shop.example/items", title: "Items", text: TEXT.slice(0, Math.max(limit, Number(opts.whole) || 0)), truncated: TEXT.length > limit, ...(TEXT.length > limit ? { total: TEXT.length } : {}) };
+}
+
+// A stand-in extension for tab 1. The ops the page is asked to run are
+// noted.
 const asked: string[] = [];
 function answer(op: string, args: unknown[]): unknown {
   if (op !== "relay") return [];
   const [, dom, [opts]] = args as [number, string, [Record<string, unknown>]];
   asked.push(dom);
-  if (dom === "extract") {
-    if (opts.selector === "#none") return { error: "no content root" };
-    const limit = Number(opts.maxBytes) || 20000;
-    return { url: "https://shop.example/items", title: "Items", text: TEXT.length > limit ? `${TEXT.slice(0, limit)}\n…truncated` : TEXT, truncated: TEXT.length > limit };
-  }
+  if (dom === "extract") return opts.selector === "#none" ? { error: "no content root" } : extractOf(opts);
   if (dom === "eval") return { ok: true, result: VALUES[String(opts)] };
   if (opts === LIMITED) return { status: 429, url: LIMITED, type: "application/json", text: LIMITED_BODY, truncated: false };
   return { status: 200, url: "https://shop.example/api", type: "application/json", text: "{}", truncated: false };
@@ -110,6 +114,46 @@ test("a read saved to the saved folder deletes the reads saved there over a week
 test("a read saved to a folder the caller named leaves that folder's old files alone", async () => {
   const { folder, path } = await saveWithOldFiles(`(await save.saveOutput("extract", { text: "new", url: "https://shop.example/" }, { dir: folder }, async () => "")).saved`);
   expect(readdirSync(folder).sort()).toEqual([basename(path), "old.txt", "recent.txt"].sort());
+});
+
+// A read past the reply's limit saves to the saved folder unasked, so it
+// runs in a process of its own with a scratch HOME, against the same page;
+// it prints the reply and the saved folder's files.
+async function readInScratchHome(args: Record<string, unknown>): Promise<{ reply: Record<string, unknown>; files: string[] }> {
+  const home = mkdtempSync(join(tmpdir(), "save-home-"));
+  homes.push(home);
+  const at = (file: string) => JSON.stringify(join(import.meta.dir, file));
+  const code = `import { bridge } from ${at("bridge.ts")};
+import { connect } from ${at("fake-safari.ts")};
+import { callTool } from ${at("tools.ts")};
+import { SAVED_DIR } from ${at("save.ts")};
+import { existsSync, readdirSync } from "node:fs";
+const TEXT = ${JSON.stringify(TEXT)};
+const extractOf = ${extractOf.toString()};
+connect({ send(data) { const { id, op, args } = JSON.parse(data); bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? extractOf(args[2][0]) : [] })); }, close() {} });
+const reply = await callTool("extract", ${JSON.stringify(args)});
+console.log(JSON.stringify({ reply, files: existsSync(SAVED_DIR) ? readdirSync(SAVED_DIR) : [] }));`;
+  const proc = Bun.spawn([process.execPath, "-e", code], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "inherit" });
+  return JSON.parse(await new Response(proc.stdout).text());
+}
+
+// On 10-29 default reads kept 3.8 to 21.7% of long pages, and said only
+// that they were cut.
+test("a read past the reply's limit answers with its start and the whole text's length, and saves all of it where the reply says", async () => {
+  const { reply, files } = await readInScratchHome({ tab: 1 });
+  expect(reply).toMatchObject({ text: TEXT.slice(0, 20000), truncated: true, total: TEXT.length });
+  expect(files).toEqual([basename(String(reply.saved))]);
+  expect(readFileSync(String(reply.saved), "utf8")).toBe(TEXT);
+  expect(formatResult(reply)).toContain(String(reply.saved));
+});
+
+// secret.ts reads the page that shows a sign-in code so: the code must
+// never reach a file.
+test("a read with save: false past the limit is cut, and writes nothing", async () => {
+  const { reply, files } = await readInScratchHome({ tab: 1, save: false });
+  expect(reply).toMatchObject({ text: TEXT.slice(0, 20000), truncated: true });
+  expect(reply).not.toHaveProperty("saved");
+  expect(files).toEqual([]);
 });
 
 // The daemon's folder is not the caller's; and a request that changes

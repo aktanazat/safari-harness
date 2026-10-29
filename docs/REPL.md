@@ -97,7 +97,9 @@ process-wide ownership.
   each read the address once more). A move after that shows with the next
   call; a bare `sleep(ms)` makes none.
 - `page.extract(selector?)`, or `page.extract({selector, query})`, returns
-  `{url, title, text, truncated}`: the words are in `.text`.
+  `{url, title, text, truncated}`: the words are in `.text`. Past 20,000
+  characters (`maxBytes`) `.text` holds the start, `.total` counts the
+  whole, and `.saved` is the file that holds all of it.
 - With agent research saving enabled, eligible `snapshot` and `extract`
   results also contain `memoryReceipt`. Select useful sources with
   `await saveSource(read.memoryReceipt.id, "why this source matters")`.

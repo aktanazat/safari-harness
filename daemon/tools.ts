@@ -20,7 +20,7 @@ import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
-import { saveOutput, targetOf, withLimit, type SaveKind } from "./save.ts";
+import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAnswer, type Page } from "./map.ts";
 import { met } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
@@ -1312,11 +1312,15 @@ async function runReader(tab: number | undefined, name: string, timeoutMs?: numb
 
 // as: "table" reads the page's tables and repeated card lists as rows,
 // as: "chat" a chat's messages, each with who wrote it, and as: "images"
-// the addresses of its pictures.
-export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string }) {
+// the addresses of its pictures. Text past maxBytes is read whole, up to
+// SAVED_CHARS, for the saved folder (fit); a secret's source and a read
+// with save: false keep only what the reply shows.
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; save?: unknown }) {
   const tab = await resolveTab(opts.tab);
   const strict = "strict_selector" in opts && opts.strict_selector === true;
-  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>);
+  const whole = strict || opts.save === false ? undefined : SAVED_CHARS;
+  const limit = opts.maxBytes || 20000;
+  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>);
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // GitHub's file page draws its code where extract does not read, so it
@@ -1324,11 +1328,24 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   // 15% of the file (K7). Its raw file is read in its place.
   if ("text" in page && opts.selector === undefined && opts.query === undefined && (opts.as ?? "text") === "text") {
     const file = GITHUB_FILE.exec(page.url);
-    if (file) return shieldExtract({ ...page, ...(await rawFile(tab, `https://github.com/${file[1]}/raw/${file[2]}`, opts.maxBytes ?? 20000)) });
+    if (file) {
+      const raw = await rawFile(tab, `https://github.com/${file[1]}/raw/${file[2]}`, whole ?? limit);
+      return fit(shieldExtract({ ...page, ...raw, ...(raw.text === undefined ? {} : { total: undefined }) }), limit, whole);
+    }
   }
   // as: "table" answers rows, not text
-  const out = "text" in page ? shieldExtract(page) : "messages" in page ? shieldChat(page) : page;
+  const out = "text" in page ? await fit(shieldExtract(page), limit, whole) : "messages" in page ? shieldChat(page) : page;
   return missed ? { ...out, note: missed } : out;
+}
+
+// Text read past the reply's limit: the reply keeps its first limit
+// characters and the whole text's length, and the saved folder the text;
+// a raw file whose read stopped at whole (rawFile) has no known length.
+// On 10-29 default reads kept 3.8 to 21.7% of long pages, and said only
+// truncated: true.
+async function fit(page: Extract, limit: number, whole: number | undefined): Promise<Extract> {
+  if (whole === undefined || page.text.length <= limit) return page;
+  return { ...page, text: page.text.slice(0, limit), truncated: true, total: page.total ?? (page.truncated ? undefined : page.text.length), saved: await saveAnswer(page.text, page.url) };
 }
 
 const GITHUB_FILE = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/blob\/([^?#]+)/;
@@ -3072,9 +3089,10 @@ export const TOOLS: Record<string, Tool> = {
       expression: { type: "string", description: "JS, for eval (or reader)" },
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
-      as: { type: "string", enum: ["text", "table", "images"], description: "for extract" },
+      maxBytes: { type: "number" },
+      as: { type: "string", enum: ["text", "table", "images"] },
       concurrency: { type: "number", description: "default 6 (max)" },
-      save: { description: "true, or an absolute folder: a file per page" },
+      save: { description: "true or an absolute folder: a file per page" },
       follow: { type: "object", description: `links matching CSS or /regex/, max ${MAP_MAX_URLS}` },
       fresh: { type: "boolean", description: "ignore this task's reads of the last 10 min" },
     },
@@ -3502,13 +3520,22 @@ export function inputSchema(tool: Tool) {
 }
 
 type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; documentId?: string; update?: SnapshotUpdate; challenge?: Challenge; guide?: string; notes?: string };
-type Extract = Shielded & { url: string; title: string; text: string };
+type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string };
 // a chat's messages, oldest first, and how many earlier ones were left out
 type Chat = Shielded & { url: string; title: string; messages: { from: string; text: string }[]; earlier?: number };
 
+// The line under text cut at its limit: how much of it shows, and where
+// the whole is, or how to read more.
+function cutLine(text: string, v: { truncated?: boolean; total?: number; saved?: string }): string {
+  if (v.truncated !== true) return "";
+  const shown = `${text.length}${v.total === undefined ? "" : ` of ${v.total}`} characters`;
+  if (v.saved === undefined) return `\n…showing the first ${shown}; maxBytes (up to ${SAVED_CHARS}) or save reads more`;
+  return `\n…showing ${shown}; ${v.total === undefined || v.total > SAVED_CHARS ? `the first ${SAVED_CHARS}` : "full text"} in ${v.saved}`;
+}
+
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings. max: the
-// characters a reply keeps (mcp-tools.ts), which a map's answer is fitted
+// characters a reply keeps (REPLY_CHARS), which a map's answer is fitted
 // to page by page.
 export function formatResult(value: unknown, max = Infinity): string {
   // Notes, hints, and optional-memory warnings stay visible beside every read shape.
@@ -3528,14 +3555,14 @@ export function formatResult(value: unknown, max = Infinity): string {
     const v = value as Partial<Snapshot & Extract & Chat & Steps> & { page?: unknown; pages?: (Page | Listing)[]; tables?: unknown[]; images?: { src: string; alt?: string; width?: number; height?: number; from?: string }[] };
     const warn = `${stateLine(value)}${v.addressedToAI ? `${addressedNote(v.addressedToAI)}\n` : ""}`;
     if (typeof v.snapshot === "string") {
-      const note = v.truncated ? "; truncated: narrow with query or root" : "";
+      const note = v.truncated ? "; truncated: narrow with query or root, raise maxNodes, or save it to a file" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
       const notes = `${v.guide ? `guide: ${v.guide}\n` : ""}${v.notes ? `${v.notes}\n` : ""}`;
       const update = v.update ? `update: ${JSON.stringify(v.update)}\n` : "";
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       return `${JSON.stringify(rest)}\n\n${text}`;
@@ -3568,6 +3595,20 @@ export function formatResult(value: unknown, max = Infinity): string {
     }
   }
   return JSON.stringify(value, null, 1);
+}
+
+// A reply (MCP, and the agent loop's tool results) keeps an answer's first
+// 30 000 characters; a longer answer is saved whole, and the reply says
+// where. The cut was 100 000 characters and said nothing; on 10-01 and
+// 10-02, 82 answers past 10 000 made up half of the 3 M characters ten
+// sessions read. A map's answer is fitted page by page (formatResult's max).
+export const REPLY_CHARS = 30_000;
+export async function replyText(value: unknown): Promise<string> {
+  const text = formatResult(value);
+  if (text.length <= REPLY_CHARS) return text;
+  const path = await saveAnswer(text);
+  const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
+  return `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
 }
 
 // A model's call (its own, or a step of its run) is checked and watched

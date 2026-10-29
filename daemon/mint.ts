@@ -144,7 +144,7 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
       if (name === "site_guide") return ALL_TOOLS.site_guide.run(given);
       if (given.tab !== undefined && given.tab !== state.tab) throw new Error("use only this run's assigned background tab");
       if (given.save !== undefined || given.front === true) throw new Error("mint reads its private tab without saving page files or taking the owner's front tab");
-      let args: Record<string, unknown> = { ...given, tab: state.tab };
+      let args: Record<string, unknown> = { ...given, tab: state.tab, ...(name === "extract" ? { save: false } : {}) };
 
       if (name === "playbooks") {
         if (args.do === "learn") {

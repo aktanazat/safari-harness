@@ -1,0 +1,8 @@
+<!doctype html>
+<title>Long page</title>
+<main><p id="text"></p></main>
+<script>
+  // LONG in content.test.ts: 82,892 characters, past the 20,000 extract
+  // answers with.
+  document.getElementById("text").textContent = Array.from({ length: 3000 }, (_, i) => `Line ${i + 1} of the long page.`).join(" ");
+</script>

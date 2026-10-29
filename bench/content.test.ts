@@ -8,6 +8,9 @@ const SMALL_BODY = "small-" + "s".repeat(5000);
 const LARGE_BODY = "large-" + "l".repeat(100_000);
 const loggedAs = (body: string) => ({ url: `data:text/plain,${body}`.slice(0, 500) + "…", t: 1000 });
 
+// long.html's text.
+const LONG = Array.from({ length: 3000 }, (_, i) => `Line ${i + 1} of the long page.`).join(" ");
+
 // Counts, in content.js's world, the names it reads from here on: it reads
 // a link's name from the link's innerText.
 const COUNT_NAMES = `(() => {
@@ -864,6 +867,16 @@ benchRows("content.js in WebKit", [
     name: "extract reads the main region as drawn: shadow text in, hidden text and one-pixel decoys out",
     page: "extract.html",
     steps: [{ op: "extract", answer: { value: { text: "Pricing\n\nPro costs $12 a month.\n\nCode: BENCH\n\nBilled yearly" } } }],
+  },
+  // On 10-29 default reads kept 3.8 to 21.7% of long pages, and the rest
+  // was lost; the daemon saves it from the same read (tools.ts fit).
+  {
+    name: "extract of a page past its limit answers its start and the whole text's length, and reads on to whole for the daemon to save",
+    page: "long.html",
+    steps: [
+      { op: "extract", answer: { value: { text: LONG.slice(0, 20_000), truncated: true, total: LONG.length } } },
+      { op: "extract", args: [{ whole: 2_000_000 }], answer: { value: { text: LONG, truncated: true, total: LONG.length } } },
+    ],
   },
   {
     name: "extract of a page that builds its body after it loads waits for the body",

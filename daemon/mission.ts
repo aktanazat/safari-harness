@@ -33,6 +33,7 @@ import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById,
 import { closeTabsOf, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 import { unsecret } from "./redact.ts";
+import { SAVED_CHARS } from "./save.ts";
 
 // What a held call answers: each tells the agent what to do next.
 const PAUSED = "the user paused this task from its window; wait a minute, then call again";
@@ -515,17 +516,24 @@ function invalidate(agent: Agent, tab: number, retry?: string): void {
 }
 
 function wholeView(tool: string, args: Record<string, unknown>): boolean {
-  return Object.hasOwn(OBSERVATIONS, tool) && args.query === undefined && args.root === undefined && args.selector === undefined && args.pick === undefined && args.ref === undefined && args.as === undefined && args.maxNodes === undefined && args.maxBytes === undefined && args.diff !== true && args.interactive !== true;
+  return Object.hasOwn(OBSERVATIONS, tool) && args.query === undefined && args.root === undefined && args.selector === undefined && args.pick === undefined && args.ref === undefined && args.as === undefined && args.diff !== true && args.interactive !== true;
 }
 
 function observed(tool: string, args: Record<string, unknown>, value: unknown): boolean {
   if (!wholeView(tool, args) || value === null || value === undefined) return false;
   if (typeof value !== "object") return tool === "extract" && typeof value === "string";
   if ("ok" in value && value.ok === false || "isError" in value && value.isError === true || "error" in value) return false;
-  if ("truncated" in value && value.truncated === true || "cut" in value && !!value.cut) return false;
+  if ("cut" in value && !!value.cut) return false;
+  // An extract cut at its limit whose whole text went to the saved folder
+  // (tools.ts fit) saw the whole page; one past SAVED_CHARS did not. On
+  // 10-29 a read after GitHub's "Load more" was cut at 20,011 characters,
+  // and nothing an agent could read released the action after it.
+  const savedWhole = tool === "extract" && "saved" in value && typeof value.saved === "string" && "total" in value && typeof value.total === "number" && value.total <= SAVED_CHARS;
+  if ("truncated" in value && value.truncated === true && !savedWhole) return false;
   if ("unchanged" in value && value.unchanged === true) return false;
   if (tool === "snapshot" && "update" in value && value.update && typeof value.update === "object" && "kind" in value.update && value.update.kind !== "full") return false;
   if (tool === "shot") return captureSummaries(value).length > 0;
+  if ("saved" in value && typeof value.saved === "string") return true;
   if (tool === "snapshot") return "snapshot" in value && typeof value.snapshot === "string";
   return tool === "extract" && "text" in value && typeof value.text === "string";
 }

@@ -81,7 +81,7 @@ function heldValue(name: unknown, caller: CallerEnv | undefined): string {
 async function shownCode(from: unknown, selector: unknown, model: boolean): Promise<string> {
   if (typeof from !== "number") throw new Error('secret "page" needs from: the tab that shows the code, such as the opened email');
   if (selector !== undefined && (typeof selector !== "string" || !selector.trim())) throw new Error("from_selector must be a nonempty CSS selector for one email or message");
-  const page = await rpc("extract", { tab: from, ...(selector === undefined ? {} : { selector, strict_selector: true }) }, model);
+  const page = await rpc("extract", { tab: from, save: false, ...(selector === undefined ? {} : { selector, strict_selector: true }) }, model);
   const shown = page && typeof page === "object" && "text" in page && typeof page.text === "string" ? page.text : "";
   const mixed = [...shown.matchAll(/(?<![\w.,:/-])(?=[A-Z\d]*\d)(?=[A-Z\d]*[A-Z])[A-Z\d]{6,8}(?![\w.,:/-])/g)].filter((m) => {
     const lines = shown.slice(0, m.index).split("\n");

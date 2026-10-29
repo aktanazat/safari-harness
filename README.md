@@ -71,7 +71,8 @@ daemon/
   request-catalog.ts private checked JSON GETs saved from observed page traffic
   save.ts           save on extract, snapshot, eval, fetch, and read: the whole
                     output goes to a file, and the reply is its path, size,
-                    and first 500 characters
+                    and first 500 characters; an extract past its limit keeps
+                    its whole text there too
   map.ts            map: one read of each of up to 20 pages, a few at a time,
                     each reader in a background tab of its own that loads its
                     next page and closes as map answers
@@ -368,7 +369,7 @@ safari select 5 "US 8" --tab 7         # dropdown option by label
 safari upload ~/photo.jpg --tab 7      # the page's file input
 safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
-safari extract --tab 7
+safari extract --tab 7                 # the first 20,000 characters; a longer page's whole text goes to a file it names
 safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
 safari extract --as table --tab 7      # tables and product lists as rows of JSON
 safari extract --as images --tab 7     # full-size picture addresses, one a line

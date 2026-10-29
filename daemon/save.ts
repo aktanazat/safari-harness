@@ -17,13 +17,14 @@ export type SaveKind = "extract" | "snapshot" | "eval" | "fetch" | "authenticate
 export type Target = { path: string } | { dir: string };
 
 // A saved read goes to a file, not into a model's context, so it is read
-// far past the limit a reply keeps to. The ceiling is one message between
-// the extension and the daemon: Bun's server drops the extension's
-// connection at a message over 16 MB, and a character can take 3 bytes.
+// far past the limit a reply keeps to. One message between the extension
+// and the daemon carries it: an answer past MESSAGE_MAX (bridge.ts) fails
+// its call, and a character can take 3 bytes.
+export const SAVED_CHARS = 2_000_000;
 const LIMITS: Record<SaveKind, Record<string, number>> = {
-  extract: { maxBytes: 2_000_000 },
-  fetch: { maxBytes: 2_000_000 },
-  authenticated_read: { maxBytes: 2_000_000 },
+  extract: { maxBytes: SAVED_CHARS },
+  fetch: { maxBytes: SAVED_CHARS },
+  authenticated_read: { maxBytes: SAVED_CHARS },
   snapshot: { maxNodes: 10_000 },
   eval: {},
 };
@@ -105,10 +106,11 @@ export async function pruneSaved(): Promise<void> {
   }));
 }
 
-// An answer longer than a reply keeps (mcp-tools.ts), whole, in the saved
-// folder; returns its path.
-export function saveAnswer(text: string): Promise<string> {
-  return write({ dir: SAVED_DIR }, "", { body: text, ext: "txt" });
+// Text longer than a reply keeps, whole, in the saved folder, named for
+// url's host: an answer (replyText in tools.ts, repl.ts) or a page's text
+// cut at extract's limit (fit in tools.ts). Returns its path.
+export function saveAnswer(text: string, url = ""): Promise<string> {
+  return write({ dir: SAVED_DIR }, url, { body: text, ext: "txt" });
 }
 
 // The read's result, written to target. An error the page answered with is

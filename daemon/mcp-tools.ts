@@ -5,13 +5,12 @@
 // exports of newer ones: keep their names and signatures as they are.
 
 import { join } from "node:path";
-import { TOOLS, codeFrom, formatResult, inputSchema, type Tool } from "./tools.ts";
+import { TOOLS, codeFrom, inputSchema, replyText, type Tool } from "./tools.ts";
 import { CALLER_GROUPS, CALLER_TOOLS } from "./caller.ts";
 import { invoke } from "./call.ts";
 import { checkCall } from "./guard.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
-import { saveAnswer } from "./save.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
 import { withTask } from "./rpc.ts";
 
@@ -91,12 +90,6 @@ export function listTools(): unknown[] {
   ];
 }
 
-// A reply keeps an answer's first 30 000 characters, as the agent loop's
-// does (agent.ts); a longer answer is saved whole, and the reply says where.
-// The cut was 100 000 characters and said nothing; on 10-01 and 10-02, 82
-// answers past 10 000 made up half of the 3 M characters ten sessions read.
-// A map's answer is fitted page by page (formatResult's max).
-const REPLY_CHARS = 30_000;
 const RUN_STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
 
 // A call's answer as the client reads it; a failed call throws.
@@ -105,13 +98,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
   const task = typeof __safariTask === "string" && __safariTask.trim() ? __safariTask : undefined;
   return withTask(task, async () => {
     const value = name === "repl" ? await REPL_TOOL.run(checkCall({ repl: REPL_TOOL }, name, input, true).args) : await invoke(name, input, true);
-    const text = formatResult(value);
-    let answer = text;
-    if (text.length > REPLY_CHARS) {
-      const path = await saveAnswer(text);
-      const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
-      answer = `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
-    }
+    const answer = await replyText(value);
     const runSteps: unknown[] | undefined = name === "run" && value !== null && typeof value === "object"
       && "steps" in value && Array.isArray(value.steps) ? value.steps : undefined;
     const failed = runSteps?.find((step) => step !== null && typeof step === "object" && "error" in step);
