@@ -3425,7 +3425,7 @@
       ...(loading ? { loading: true } : {}),
       ...(opts.query && !text ? regexHint(opts.query) : {}),
       ...(frames.length ? { frames } : {}),
-      ...(opts.strict_selector === true ? {} : unread(at.root, opts, harvest?.g)),
+      ...(opts.strict_selector === true ? {} : unread(at.root, harvest?.g)),
     };
   }
 
@@ -3445,10 +3445,15 @@
   const END_MS = 3000;
   const GATHER_CHARS = 2000000;
 
+  // gatherStop counts up, and each gather begun before it stops between
+  // its clicks and scroll steps: the task's pause, Take over, inspect-only
+  // or stop asked it to (withGather in mission.ts).
+  let gatherStops = 0;
+
   // A control that adds more of the list it is in, by its name: "Load
   // more", "Show 5 more replies", "View older messages", "12 more
   // comments"; never "More" alone, a menu's name.
-  const EXPANDS = /^(?:(?:load|show|view|see|read)\s+(?:\d[\d,.]*\s+)?(?:more|older|earlier|previous|hidden|remaining)\b(?:\s+[\w()-]+){0,2}|\d[\d,.]*\s+more(?:\s+[\w()-]+){1,2})\s*[.…]*$/i;
+  const EXPANDS = /^(?:(?:load|show|view|see)\s+(?:\d[\d,.]*\s+)?(?:more|older|earlier|previous|hidden|remaining)\b(?:\s+[\w()-]+){0,2}|\d[\d,.]*\s+more(?:\s+[\w()-]+){1,2})\s*[.…]*$/i;
 
   // The controls under root that add more of its list, drawn, in page
   // order. A link counts only when it goes nowhere ("#", javascript:), a
@@ -3460,6 +3465,7 @@
       && !(el.form && el.type !== "button")
       && !/^(?:true|menu|listbox|tree|grid|dialog)$/.test(el.getAttribute("aria-haspopup") ?? "")
       && el.getAttribute("aria-expanded") !== "true"
+      && !(el.tagName === "SUMMARY" && el.parentElement.open)
       && EXPANDS.test(norm(accessibleName(el)))
       && shown(el));
   }
@@ -3480,18 +3486,19 @@
   // has (aria-rowcount, aria-setsize; -1 is a length still unknown, as a
   // feed says), or a box five views tall or more, its own or the page's,
   // that draws only the items near its view (sparse). Answers the items'
-  // parent, the box that scrolls them (null: the window), and why.
+  // parent, the box that scrolls them (null: the window), the size it
+  // declares, and why.
   function partList(root) {
     for (const grid of root.querySelectorAll("[aria-rowcount]")) {
       const size = Number(grid.getAttribute("aria-rowcount"));
       const rows = grid.querySelectorAll("[role=row], tr");
-      if (rows.length && (size === -1 || size > rows.length)) return { list: rows[rows.length - 1].parentElement, box: scrollerOf(grid), reason: `a grid of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} rows`} that draws ${rows.length}` };
+      if (rows.length && (size === -1 || size > rows.length)) return { list: rows[rows.length - 1].parentElement, box: scrollerOf(grid), size, reason: `a grid of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} rows`} that draws ${rows.length}` };
     }
     const sets = Map.groupBy([...root.querySelectorAll("[aria-setsize]")].filter((el) => /^(?:article|listitem|row)$/.test(getExplicitRole(el) ?? "")), (el) => el.parentElement);
     for (const [list, items] of sets) {
       const sizes = items.map((el) => Number(el.getAttribute("aria-setsize")));
       const size = sizes.includes(-1) ? -1 : Math.max(...sizes);
-      if (size === -1 || size > items.length) return { list, box: scrollerOf(list), reason: `a list of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} items`} that draws ${items.length}` };
+      if (size === -1 || size > items.length) return { list, box: scrollerOf(list), size, reason: `a list of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} items`} that draws ${items.length}` };
     }
     const around = [];
     for (let el = root; el && el !== document.body && el !== document.documentElement; el = el.parentElement) around.push(el);
@@ -3619,13 +3626,14 @@
   // is ready, until none is left; scroll scrolls the box that holds its
   // list, or the window, most of a view at a time, and takes each item it
   // draws once (itemKey), until the list's end brings nothing for END_MS.
-  // Both stop at the call's time, the text ceiling, or max items, and a
-  // click that would leave the page stops them. The view stays where they
-  // leave it, so a call that ran out of time goes on from there. collect:
-  // take the items after an expand alone too.
+  // Both stop at the call's time, the text ceiling, max items, or a
+  // gatherStop, and a click that would leave the page stops them. The view
+  // stays where they leave it, so a call that ran out of time goes on from
+  // there. collect: take the items after an expand alone too.
   async function gather(root, opts, collect) {
     const until = Date.now() + Math.min(Number(opts.ms) || GATHER_MS, 110000);
     const left = () => Math.max(0, until - Date.now());
+    const stops = gatherStops;
     const spent = new Set();
     const items = new Map();
     const seen = new WeakMap();
@@ -3637,6 +3645,7 @@
     let steps = 0;
     let rested = false;
     let stopped = "";
+    let refused = "";
     const members = () => {
       if (opts.item) return deepQueryAll(opts.item, root);
       if (!list?.isConnected) list = (part = partList(root))?.list ?? listIn(root);
@@ -3655,14 +3664,20 @@
         items.set(key ?? text, key ? { key, text } : { text });
       }
     };
-    // One click and the wait for what it adds: "clicked", "waited" (none
-    // was ready), "" (none is left), or "left".
+    // One click and the wait for what it adds, its toggle to open, or the
+    // control to go: "clicked", "waited" (none was ready), "" (none is
+    // left), or "left". refused: why the last control it gave up on was
+    // not clicked.
     const expand = async () => {
       const all = expanders(root, spent);
       const el = all.find((c) => !clickBlocked(c));
       if (!el) {
         const loading = all.filter(loadingMore);
-        for (const c of all) if (!loading.includes(c)) spent.add(c);
+        for (const c of all) {
+          if (loading.includes(c)) continue;
+          spent.add(c);
+          refused = clickBlocked(c).error;
+        }
         if (!loading.length) return "";
         if (!(await whenPage(() => loading.some((c) => !loadingMore(c)), Math.min(MORE_MS, left())))) for (const c of loading) spent.add(c);
         return "waited";
@@ -3672,11 +3687,12 @@
       if (res.left) return "left";
       if (res.error) {
         spent.add(el);
+        refused = res.error;
         return "waited";
       }
       clicks++;
-      const grew = () => root.textContent.length > before && !loadingMore(el);
-      if (!grew() && !(await whenPage(grew, Math.min(MORE_MS, left())))) spent.add(el);
+      const done = () => !el.isConnected || el.getAttribute("aria-expanded") === "true" || (el.tagName === "SUMMARY" && el.parentElement.open) || (root.textContent.length > before && !loadingMore(el));
+      if (!done() && !(await whenPage(done, Math.min(MORE_MS, left())))) spent.add(el);
       return "clicked";
     };
     // One scroll and the wait for what it draws; false at the list's end
@@ -3705,6 +3721,10 @@
     if (opts.scroll) take();
     const first = [...items.values()].map((item) => item.text);
     for (;;) {
+      if (gatherStops !== stops) {
+        stopped = "user";
+        break;
+      }
       if (!left()) {
         stopped = "time";
         break;
@@ -3743,28 +3763,31 @@
     }
     if (collect && !opts.scroll) take();
     const count = collect || opts.scroll ? items.size : members().filter((el) => el.textContent.trim()).length || null;
-    return { items: [...items.values()], first, clicks, steps, stopped, spent, count, expand: !!opts.expand, scroll: !!opts.scroll };
+    return { items: [...items.values()], first, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll };
   }
 
   // What expand and scroll did, as a read reports it: "expanded 8 times,
   // 498 items, stopped: none left".
   function gathered(g) {
-    const stopped = { "none left": "none left", "nothing new": "nothing new", time: "out of time, and extract again goes on from here", max: "at the limit", left: "a click would have left the page" }[g.stopped];
-    return [g.expand ? `expanded ${g.clicks} time${g.clicks === 1 ? "" : "s"}` : "", g.scroll ? `scrolled ${g.steps} time${g.steps === 1 ? "" : "s"}` : "", g.count === null ? "" : `${g.count.toLocaleString("en-US")} items`, `stopped: ${stopped}`].filter(Boolean).join(", ");
+    const stopped = { "none left": "stopped: none left", "nothing new": "stopped: nothing new", time: "stopped: out of time, and extract again goes on from here", max: "stopped: at the limit", left: "stopped: a click would have left the page", user: "stopped by the user" }[g.stopped];
+    return [g.expand ? `expanded ${g.clicks} time${g.clicks === 1 ? "" : "s"}` : "", g.scroll ? `scrolled ${g.steps} time${g.steps === 1 ? "" : "s"}` : "", g.count === null ? "" : `${g.count.toLocaleString("en-US")} items`, stopped].filter(Boolean).join(", ");
   }
 
   // What a read of root leaves out, and what reads it; after expand or
-  // scroll, what they did, and what they left unless they finished.
-  function unread(root, opts, g) {
-    const done = g && (g.stopped === "none left" || g.stopped === "nothing new");
+  // scroll, what they did, and what they left: the controls still on the
+  // page unless expand clicked them all (with why it could not click the
+  // last it gave up on), and a list scrolled to its end that declares more
+  // items than it gave.
+  function unread(root, g) {
     const left = [];
-    const part = done && opts.scroll ? null : partList(root);
-    if (part) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
-    const more = done && opts.expand ? [] : expanders(root, g?.spent);
+    const ended = g?.scroll && g.stopped === "nothing new";
+    const part = partList(root);
+    if (part && (!ended || part.size > g.items.length)) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
+    const more = g?.expand && g.stopped === "none left" ? [] : expanders(root);
     if (more.length) {
       const held = heldBack(more[0]);
       const name = `"${clip(accessibleName(more[0]), 40)}"`;
-      left.push([`${more.length === 1 ? `a ${name} control` : `${more.length} controls such as ${name}`}${held ? ` (${held})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
+      left.push([`${more.length === 1 ? `a ${name} control` : `${more.length} controls such as ${name}`}${held ? ` (${held})` : ""}${g?.refused ? `, which expand could not click (${g.refused})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
     }
     return {
       ...(g ? { harvested: gathered(g) } : {}),
@@ -3788,7 +3811,7 @@
     if (!root) return noMatch("selector", opts.selector);
     const asked = { ...opts, scroll: opts.scroll ?? !opts.expand };
     const g = await gather(root, asked, true);
-    return { url: location.href, title: document.title, items: g.items, ...unread(root, asked, g) };
+    return { url: location.href, title: document.title, items: g.items, ...unread(root, g) };
   }
 
   // ---------- images ----------
@@ -5180,6 +5203,10 @@
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract: (opts) => memoryRead(extract, opts),
     harvest: harvestList,
+    gatherStop: () => {
+      gatherStops++;
+      return { ok: true };
+    },
     data: pageData,
     tabInfo,
     eval: (src) => {
@@ -5257,8 +5284,9 @@
     record,
     netBody,
   };
-  // Ops that may raise a dialog; the page's dialogs are armed while they run.
-  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download"]);
+  // Ops that may raise a dialog, and extract when it gathers (expand,
+  // scroll): the page's dialogs are armed while they run.
+  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download", "harvest"]);
 
   // Runs an op with dialogs armed, and returns the dialogs it raised with
   // its result.
@@ -5318,8 +5346,9 @@
     let out;
     healedNow = null;
     adopt(msg.kept);
+    const armed = DIALOG_OPS.has(msg.op) || (msg.op === "extract" && (msg.args?.[0]?.expand === true || msg.args?.[0]?.scroll === true));
     try {
-      out = DIALOG_OPS.has(msg.op) ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
+      out = armed ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
     } catch (e) {
       return Promise.resolve({ id: msg.id, error: unsecret(String(e && e.message || e)) });
     } finally {

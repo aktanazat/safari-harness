@@ -36,7 +36,7 @@ import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { partialRead, withPageState, stateLine } from "./page-state.ts";
-import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, withTaskCancellation } from "./mission.ts";
+import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
 import { createVideoTool } from "./video-observation.ts";
@@ -1325,6 +1325,14 @@ async function runReader(tab: number | undefined, name: string, timeoutMs?: numb
 // GATHER_MS), and the read after them takes its own time.
 const GATHER_RELAY_MS = 40_000;
 
+// A gather runs in its page until it ends, or until the task's pause, Take
+// over, inspect-only or stop ends it there (gatherStop in content.js).
+function gathering<T>(tab: number, run: () => Promise<T>): Promise<T> {
+  return withGather(() => {
+    relay(tab, "gatherStop").catch(() => {});
+  }, run);
+}
+
 // The site reader that reads whole a list its page draws in part, named in
 // the hint of a read that left some of it (incomplete).
 function listReader(url: string): string | undefined {
@@ -1351,7 +1359,9 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   const strict = "strict_selector" in opts && opts.strict_selector === true;
   const whole = strict || opts.save === false ? undefined : SAVED_CHARS;
   const limit = opts.maxBytes || 20000;
-  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true }], opts.expand === true || opts.scroll === true ? GATHER_RELAY_MS : undefined) as Promise<Extract | Chat | { tables: unknown[] }>);
+  const gathers = opts.expand === true || opts.scroll === true;
+  const ask = (selector: string | undefined) => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true }], gathers ? GATHER_RELAY_MS : undefined) as Promise<Extract | Chat | { tables: unknown[] }>;
+  const read = (selector: string | undefined) => researchRead(tab, () => (gathers ? gathering(tab, () => ask(selector)) : ask(selector)));
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // GitHub's file page draws its code where extract does not read, so it
@@ -3132,7 +3142,8 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
     run: async (a) => {
       const ms = Math.min(a.ms === undefined ? 25_000 : num(a.ms, "ms"), 90_000);
-      const list = await relay(await resolveTab(a.tab), "harvest", [{ selector: a.selector, item: a.item, key: a.key, expand: a.expand, scroll: a.scroll, max: a.max, ms }], ms + 15_000) as Harvest;
+      const tab = await resolveTab(a.tab);
+      const list = await gathering(tab, () => relay(tab, "harvest", [{ selector: a.selector, item: a.item, key: a.key, expand: a.expand, scroll: a.scroll, max: a.max, ms }], ms + 15_000)) as Harvest;
       return shieldItems(withReader(list));
     },
   },

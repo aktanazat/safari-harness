@@ -617,6 +617,27 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+// A gather clicks Load more and scrolls as it reads: asked again of the
+// page it went to, it would gather that page too, and harvest's answer
+// would come back as an action's.
+test.each([
+  ["harvest", "expand"],
+  ["extract", "expand"],
+  ["extract", "scroll"],
+] as const)("%s with %s, whose page navigates while it gathers, is not sent again and names where the page went", async (op, how) => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const first = tab.doc;
+  const next = new Doc("https://example.org/");
+  first.does = () => {
+    b.navigate(tab, next);
+    return never();
+  };
+  expect((await b.ask(tab, op, [{ [how]: true }])).error).toContain("https://example.org/");
+  expect(first.ran).toEqual([op]);
+  expect(next.ran).toEqual([]);
+});
+
 // 10-28 to 10-29 the link dropped 533 times, it seems at one answer over
 // what the daemon reads, each drop failing every request on it (MESSAGE_MAX
 // in bridge.ts).
@@ -1701,6 +1722,20 @@ test("extract reads an embedded frame shown in what it read, which the page cann
   expect(await b.ask(tab, "extract", [{ query: "documents" }])).toEqual({
     value: { url: tab.doc.url, title: "Adorama", text: 'iframe "SheerID Verification Form":\nAdd documents', truncated: false },
   });
+});
+
+// A gather clicks and scrolls the page it reads; each frame asked to gather
+// too would click and scroll on the same call's time.
+test("extract that gathers reads an embedded frame plain", async () => {
+  const { b, tab, form } = await sheerid();
+  tab.doc.does = (op) => (op === "extract" ? { url: tab.doc.url, title: "Adorama", text: "Thread", truncated: false, frames: [{ token: "sheerid", name: "frame" }] } : { url: tab.doc.url });
+  const asked: unknown[] = [];
+  form.does = (op, m) => {
+    if (op === "extract") asked.push(m.args?.[0]);
+    return { url: form.url, title: "SheerID", text: "Add documents", truncated: false };
+  };
+  await b.ask(tab, "extract", [{ expand: true, scroll: true }]);
+  expect(asked).toEqual([expect.objectContaining({ expand: false, scroll: false })]);
 });
 
 // On 10-29 a javadoc frameset's read cut each frame at the limit on its

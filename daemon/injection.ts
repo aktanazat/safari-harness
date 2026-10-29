@@ -39,11 +39,16 @@ export function shieldChat<T extends { title: string; messages: { from: string; 
   return { ...chat, title: title.text, messages: messages.map(({ places: _, ...m }) => m), ...(places ? { addressedToAI: places } : {}) };
 }
 
-export function shieldItems<T extends { title: string; items: { text: string }[] }>(list: T): T & Shielded {
-  const title = markLines(list.title, false);
-  const marked = list.items.map((item) => markLines(item.text, false));
-  const places = marked.reduce((n, m) => n + m.places, title.places);
-  return { ...list, title: title.text, items: list.items.map((item, i) => ({ ...item, text: marked[i].text })), ...(places ? { addressedToAI: places } : {}) };
+export function shieldItems<T extends { title: string; items: { text: string; key?: string }[] }>(list: T): T & Shielded {
+  let places = 0;
+  const mark = (text: string) => {
+    const marked = markLines(text, false);
+    places += marked.places;
+    return marked.text;
+  };
+  const title = mark(list.title);
+  const items = list.items.map((item) => ({ ...item, text: mark(item.text), ...(item.key === undefined ? {} : { key: mark(item.key) }) }));
+  return { ...list, title, items, ...(places ? { addressedToAI: places } : {}) };
 }
 
 // Unicode tag characters draw nothing, yet a model reads the ASCII they

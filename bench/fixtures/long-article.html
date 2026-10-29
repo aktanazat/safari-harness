@@ -2,7 +2,8 @@
 <title>A long article</title>
 <!-- An essay of 80 paragraphs, many views tall, read whole by a plain
      read: a code listing in a box of its own that scrolls, links and a
-     menu button named like Load more, and a table. Nothing is held back. -->
+     menu button named like Load more, a Read more toggle over text already
+     on the page, and a table. Nothing is held back. -->
 <style>
   p { line-height: 1.6; }
   pre { max-height: 300px; overflow: auto; }
@@ -16,6 +17,8 @@
       <thead><tr><th>Year</th><th>Pages read</th></tr></thead>
       <tbody id="years"></tbody>
     </table>
+    <p id="aside">An aside the page shows one line of until it is opened; all of it is on the page already.</p>
+    <button type="button" aria-expanded="false" aria-controls="aside">Read more</button>
     <p><a href="next.html">Read more</a> · <a href="archive.html">Show more articles</a></p>
     <button type="button" aria-haspopup="menu">More</button>
   </article>

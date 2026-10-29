@@ -90,12 +90,13 @@ type Agent = {
   ended?: number;
   waiting: Set<() => void>;
   actions: Set<AbortController>;
+  gathers: Set<() => void>;
   unwatch?: () => void;
 };
 
 function fresh(owner?: number): Agent {
   const now = Date.now();
-  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, inspectionOnly: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set(), actions: new Set() };
+  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, inspectionOnly: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set(), actions: new Set(), gathers: new Set() };
 }
 
 const agents = new Map<number, Agent>();
@@ -303,6 +304,16 @@ export async function withTaskCancellation<T>(run: (signal: AbortSignal) => Prom
   context.agent.actions.add(controller);
   try { return await run(controller.signal); }
   finally { context.agent.actions.delete(controller); }
+}
+// A gather (extract with expand or scroll, harvest) clicks and scrolls its
+// page for up to 25 s: the task's pause, Take over, inspect-only and stop
+// end it there (stop).
+export async function withGather<T>(stop: () => void, run: () => Promise<T>): Promise<T> {
+  const agent = scope.getStore()?.agent;
+  if (!agent) return run();
+  agent.gathers.add(stop);
+  try { return await run(); }
+  finally { agent.gathers.delete(stop); }
 }
 export async function admitPageObservation(tab: number, acting: boolean): Promise<{ signal: AbortSignal; check(): void; release(): void }> {
   const context = scope.getStore();
@@ -989,7 +1000,10 @@ async function control(owner: number | undefined, action: unknown, from: string,
     case "inspect_off":
       agent.inspectionOnly = action === "inspect_on";
       agent.revision++;
-      if (agent.inspectionOnly) for (const action of agent.actions) action.abort();
+      if (agent.inspectionOnly) {
+        for (const action of agent.actions) action.abort();
+        for (const stop of agent.gathers) stop();
+      }
       note(agent.inspectionOnly ? "task inspect-only" : "task actions allowed", { owner, from });
       break;
     case "pictures_on":
@@ -998,10 +1012,12 @@ async function control(owner: number | undefined, action: unknown, from: string,
       break;
     case "pause":
       agent.hold = "paused";
+      for (const stop of agent.gathers) stop();
       note("agent paused", { owner, from });
       break;
     case "drive": {
       agent.hold = "driving";
+      for (const stop of agent.gathers) stop();
       const taking = raise(agent, window);
       agent.takeovers.add(taking);
       try {
@@ -1027,6 +1043,7 @@ async function control(owner: number | undefined, action: unknown, from: string,
     case "stop":
       agent.stopped = Date.now();
       for (const action of agent.actions) action.abort();
+      for (const stop of agent.gathers) stop();
       release(agent);
       closeTabsOf(owner);
       note("agent stopped", { owner, from });

@@ -3,7 +3,9 @@
 <!-- A thread of 300 comments that shows its first 20 and last 10 and loads
      the rest 60 at a time from a Load more button, disabled while it loads,
      as GitHub's issue timeline does. A link and a form's submit button
-     named like it lead elsewhere: each records a click and goes nowhere. -->
+     named like it lead elsewhere: each records a click and goes nowhere.
+     ?delay=MS sets how long a load takes (50 ms unless set), and ?cover
+     lays a banner over the whole page, as a cookie wall does. -->
 <style>.comment { padding: 8px; border-bottom: 1px solid #ddd; }</style>
 <main>
   <h1>Issue 1: everything at once</h1>
@@ -14,6 +16,7 @@
 <script>
   const TOTAL = 300;
   const TAIL = 291;
+  const options = new URLSearchParams(location.search);
   const timeline = document.getElementById("timeline");
   const comment = (n) => {
     const div = document.createElement("div");
@@ -36,12 +39,18 @@
       if (next >= TAIL) return more.remove();
       left.textContent = `${TAIL - next} remaining items`;
       button.disabled = false;
-    }, 50);
+    }, Number(options.get("delay") ?? 50));
   });
   for (const id of ["link", "submit"]) {
     document.getElementById(id).addEventListener("click", (e) => {
       e.preventDefault();
       document.body.dataset.used = `${document.body.dataset.used ?? ""} ${id}`.trim();
     });
+  }
+  if (options.has("cover")) {
+    const cover = document.createElement("div");
+    cover.textContent = "We use cookies";
+    cover.style.cssText = "position: fixed; inset: 0; background: rgb(0 0 0 / 40%);";
+    document.body.append(cover);
   }
 </script>

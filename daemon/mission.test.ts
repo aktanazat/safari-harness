@@ -76,7 +76,12 @@ function safari() {
   const sock: ExtSocket = {
     send(data) {
       const { id, op, args } = JSON.parse(data) as { id?: string; op: string; args: unknown[] };
-      if (id !== undefined) queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...answer(op, args) })));
+      if (id === undefined) return;
+      const answered = answer(op, args);
+      const reply = (out: object) => bridge.handleMessage(JSON.stringify({ id, ...out }));
+      // a gather answers once it ends
+      if ("value" in answered && answered.value instanceof Promise) void answered.value.then((value) => reply({ value }));
+      else queueMicrotask(() => reply(answered));
     },
     close() {},
   };
@@ -1104,6 +1109,36 @@ test.each([true, false])("unresponsive-page recovery respects inspect-only=%s wi
     s.ops.relay = relay!;
     if (navigate) s.ops["tabs.navigate"] = navigate;
     else delete s.ops["tabs.navigate"];
+  }
+});
+
+// A gather clicks and scrolls its page for up to 25 s (content.js gather):
+// the user's pause, Take over, inspect-only and stop end it there.
+test.each(["pause", "drive", "inspect_on", "stop"])("%s ends a gather running in the task's tab", async (action) => {
+  const a = agent();
+  const tab = await open(a.pid, `https://gathering.example/${action}`);
+  const relay = s.ops.relay;
+  const reached = Promise.withResolvers<void>();
+  const stopped = Promise.withResolvers<void>();
+  const stops: unknown[] = [];
+  s.ops.relay = (args) => {
+    if (args[1] === "gatherStop") {
+      stops.push(args[0]);
+      stopped.resolve();
+      return { ok: true };
+    }
+    if (args[0] !== tab || args[1] !== "extract") return relay!(args);
+    reached.resolve();
+    return stopped.promise.then(() => ({ url: "https://gathering.example/", title: "Thread", text: "Comment 1", truncated: false, harvested: "expanded 1 time, stopped by the user" }));
+  };
+  try {
+    const reading = call(a.pid, "extract", { tab, expand: true }).catch(() => {});
+    await reached.promise;
+    expect((await press(pageOf(tab), action)).status).toBe(200);
+    await reading;
+    expect(stops).toEqual([tab]);
+  } finally {
+    s.ops.relay = relay!;
   }
 });
 

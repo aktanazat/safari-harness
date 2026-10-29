@@ -8,15 +8,16 @@ import { runner } from "./bench.ts";
 // it left some, and expand or scroll must bring back nearly all of them.
 const address = (page: string) => pathToFileURL(join(import.meta.dir, "fixtures", page)).href;
 
-async function replies(page: string, steps: Record<string, unknown>[]): Promise<unknown[]> {
-  const requests = [{ load: address(page), frames: 0 }, ...steps];
+async function replies(page: string, steps: Record<string, unknown>[], query = ""): Promise<unknown[]> {
+  const url = address(page) + query;
+  const requests = [{ load: url, frames: 0 }, ...steps];
   const proc = Bun.spawn([runner, join(import.meta.dir, "..", "extension")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(requests.map((request) => JSON.stringify(request) + "\n").join(""));
   proc.stdin.end();
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) throw new Error(`the WebKit bench exited ${code}: ${err.trim()}`);
   const [loaded, ...answers] = out.trim().split("\n").map((line) => JSON.parse(line) as unknown);
-  expect(loaded).toMatchObject({ url: address(page) });
+  expect(loaded).toMatchObject({ url });
   return answers;
 }
 
@@ -42,6 +43,38 @@ describe.skipIf(!runner)("whole lists in real WebKit", () => {
     expect(whole.value.incomplete).toBeUndefined();
     // the link and the submit button named like Load more stay unclicked
     expect(after.value).toEqual({ url: address(page), used: "" });
+  }, 60_000);
+
+  test("a Load more that expand cannot click stays in incomplete, with why", async () => {
+    const [read] = await replies("load-more.html", [{ op: "extract", args: [{ expand: true, maxBytes: 200_000 }], timeout: 40_000 }], "?cover") as [Read];
+    expect(read.value.incomplete?.reason).toMatch(/"Load more".*covered by/);
+  }, 60_000);
+
+  test("a feed scrolled to an end that still declares more posts stays in incomplete", async () => {
+    const [read] = await replies("infinite-scroll.html", [{ op: "extract", args: [{ scroll: true, maxBytes: 200_000 }], timeout: 40_000 }], "?stall=100") as [Read];
+    expect(read.value.harvested).toContain("stopped: nothing new");
+    expect(read.value.incomplete?.hint).toContain("scroll: true");
+  }, 60_000);
+
+  test("a gatherStop ends a gather running in the page", async () => {
+    // Each load takes 600 ms, so the stop comes a click or two in. The page
+    // runs on WebKit's own clock, which no fake reaches: left alone, the
+    // gather has all 300 about 3 s in, so the count 4 s on shows whether it
+    // stopped.
+    const [, stop, count] = await replies("load-more.html", [
+      { op: "extract", args: [{ expand: true, maxBytes: 200_000 }], timeout: 1000 },
+      { op: "gatherStop" },
+      { pageEval: "const { promise, resolve } = Promise.withResolvers(); setTimeout(resolve, 4000); await promise; return document.querySelectorAll('.comment').length;" },
+    ], "?delay=600") as [unknown, { value: unknown }, { value: number }];
+    expect(stop.value).toEqual({ ok: true });
+    expect(count.value).toBeGreaterThan(30);
+    expect(count.value).toBeLessThan(300);
+  }, 60_000);
+
+  test("Show more toggles over text already on the page each count once they open", async () => {
+    const [read] = await replies("toggles.html", [{ op: "extract", args: [{ expand: true }], timeout: 40_000 }]) as [Read];
+    expect(read.value.harvested).toContain("expanded 6 times");
+    expect(read.value.harvested).toContain("stopped: none left");
   }, 60_000);
 
   test("the repl's harvest returns each member of a virtualized list once", async () => {

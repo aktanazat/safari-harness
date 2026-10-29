@@ -191,7 +191,16 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "tabIntent", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "tabIntent", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable", "gatherStop"]);
+// extract with expand or scroll, and harvest, click and scroll the page as
+// they read it. One whose page goes on is not asked again of the new page,
+// which it would gather too: it fails, naming where the page went.
+const gathers = (op, args) => op === "harvest" || (op === "extract" && (args?.[0]?.expand === true || args?.[0]?.scroll === true));
+async function wentOn(tabId, deadline) {
+  await waitReady(tabId, deadline - Date.now());
+  const { url } = await api.tabs.get(tabId);
+  return new Error(`the page went to ${url} while expand or scroll gathered it, which lost what they had gathered: read the new page, or go back and call again`);
+}
 // How long an action's predicted change may take to start (see withOutcome
 // in content.js): a load or tab it surely began, or a move the page's script
 // may make. Anything else returns at once.
@@ -303,6 +312,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
     } catch (e) {
       if (e.timedOut && op === "eval") throw await ranPast(tabId, timeoutMs, args[0]);
       if (!e.navigated) throw e;
+      if (sent && gathers(op, args)) throw await wentOn(tabId, deadline);
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
     }
@@ -869,7 +879,8 @@ async function relayOp(tabId, domOp, domArgs, timeoutMs, frame) {
 // the frame's own, under the <iframe>'s name: a page cannot read a frame of
 // another site, and SheerID's form open over Adorama read as the empty
 // dialog it sat in (10-19). A frame's lines stand in for the notes of a
-// page that had none of its own.
+// page that had none of its own. A frame is read plain: expand and scroll
+// gather the page alone.
 async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
   const value = res && res.value;
   if (!value || !Array.isArray(value.frames)) return res;
@@ -880,7 +891,7 @@ async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
   for (const { token, name } of frames) {
     const frameId = tokens.get(token);
     if (frameId === undefined) continue;
-    const read = await toTab(tabId, "extract", [{ ...opts, selector: undefined }], 10000, frameId).catch(() => null);
+    const read = await toTab(tabId, "extract", [{ ...opts, selector: undefined, expand: false, scroll: false }], 10000, frameId).catch(() => null);
     const inner = (await extractFrames(tabId, read, opts, tokens, depth + 1))?.value;
     if (inner && inner.text) parts.push({ name, inner });
   }

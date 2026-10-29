@@ -1422,19 +1422,29 @@ for a GitHub issue's comments, `x.getUserTweets` for an X profile,
 
 - `expand: true` clicks the list's "Load more", "Show 12 more replies" or
   "View older messages" controls until none is left, each once what it
-  loads has come (up to 5 s a click). It clicks only buttons that submit
-  no form and links that go nowhere (`#`), never one that opens a menu or
-  dialog; a click that would load another page is stopped and ends it.
+  loads has come or it has opened (up to 5 s a click). It clicks only
+  buttons that submit no form and links that go nowhere (`#`), never one
+  that opens a menu or dialog; a click that would load another page is
+  stopped and ends it. A control it could not click, one under a cookie
+  banner say, stays in `incomplete` with why.
 - `scroll: true` scrolls the list's box, or the window, most of a view at
   a time and keeps each item once, until the list's end brings nothing
   new for 3 s. With both, it also clicks the controls the scroll uncovers.
+  A list that still declares more items than it gave stays in
+  `incomplete`.
 - Both stop after 25 s or 2,000,000 characters, and `harvested` says what
   they did: `expanded 8 times, 498 items, stopped: none left`. One that
   ran out of time says so and leaves the view where it stopped, so the
   same call again goes on from there. `maxBytes` still bounds the text;
   pass a larger one, or `save`, for a long list.
-- A task allowed only to inspect pages cannot use them: they click and
-  scroll.
+- They gather the page itself; an embedded frame's text is read as it
+  stands. A dialog their clicks raise comes back in `dialogs`, as an
+  action's does, and a page that goes elsewhere while they run ends the
+  call with an error naming the new address.
+- Pause, Take over, inspect-only and Stop end a running one where it is:
+  `harvested` says `stopped by the user`, and `incomplete` names what it
+  left. A task allowed only to inspect pages cannot start one: they click
+  and scroll.
 
 ### Tables and card lists as rows
 
