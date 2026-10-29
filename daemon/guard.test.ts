@@ -94,6 +94,12 @@ test("every parameter the tool does not take is named at once, each with its nea
   expect(() => checkCall(TOOLS, "select", { tab: 7, optoin: "Blue", snapshto: true, color: "red" }, true)).toThrow("unknown parameters for select: optoin (did you mean option?), snapshto (did you mean snapshot?), color (params: tab, ref, option, snapshot)");
 });
 
+// maxChars, guessed in the 10-15 to 10-28 logs, is five letters from
+// maxBytes, which map takes for each page's read but does not list.
+test("a wrong parameter name too far from every real one names the one that shares its words", () => {
+  expect(() => checkCall(TOOLS, "map", { urls: ["https://example.com/"], maxChars: 5000 }, true)).toThrow("unknown parameter maxChars for map; did you mean maxBytes? (params: urls,");
+});
+
 // Names agents wrote in the 09-27 to 09-30 logs, and map's script on
 // 10-05, each a failed call.
 test.each([

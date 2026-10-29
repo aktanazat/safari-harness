@@ -44,7 +44,7 @@ import { inputStateTool } from "./input-state.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { copyFile, writeFile, mkdtemp, mkdir, readdir, unlink } from "node:fs/promises";
+import { copyFile, writeFile, mkdtemp, mkdir, readdir, readFile, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 
@@ -1955,6 +1955,15 @@ function absoluteOut(out: unknown): string | undefined {
   return path;
 }
 
+// Code a call names by file: script pasted into JSON arguments broke 41
+// calls in the 10-15 to 10-28 logs (repl 18, map 12) on its quotes and
+// backslashes.
+export async function codeFrom(file: unknown): Promise<string> {
+  const path = str(file, "file");
+  if (!isAbsolute(path)) throw new Error(`file must be an absolute path, not ${path}`);
+  return readFile(path, "utf8");
+}
+
 type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean; tiles?: boolean; tileHeight?: number };
 
 // One shot through the extension's privacy gate (background.js,
@@ -2927,16 +2936,16 @@ export const TOOLS: Record<string, Tool> = {
   },
   eval: {
     desc: "Run JS/await in DOM or site world (page:true). Prefer extract {query} over stale selectors. sh.q/qa shadow DOM; sh.text/jsonld/scripts/wait. Split work over timeoutMs.",
-    params: { tab: TAB, expression: { type: "string", description: "JS code" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, save: SAVE },
+    params: { tab: TAB, expression: { type: "string", description: "JS (or file: path)" }, file: { type: "string" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, save: SAVE },
     required: ["tab"],
-    run: saving("eval", (a) => {
+    run: saving("eval", async (a) => {
       const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
-      if (a.reader === undefined) {
-        if (a.expression === undefined) throw new Error("eval needs expression, or reader: a script saved with learn");
-        return evaluate({ tab: a.tab as number | undefined, expression: str(a.expression, "expression"), page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
-      }
-      if (a.expression !== undefined) throw new Error("give expression or reader, not both");
-      return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
+      const given = [a.expression, a.file, a.reader].filter((v) => v !== undefined).length;
+      if (given === 0) throw new Error("eval needs expression, file (the code's absolute path), or reader: a script saved with learn");
+      if (given > 1) throw new Error("give one of expression, file, or reader");
+      if (a.reader !== undefined) return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
+      const expression = a.file === undefined ? str(a.expression, "expression") : await codeFrom(a.file);
+      return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
     }),
   },
   fetch: {

@@ -303,10 +303,13 @@ a tool that takes the second and not the first. `real_input
 `do: "key"`, and `net {start: true}` is `do: "start"`. A parameter the
 tool does not take fails the call before anything runs, with the closest
 one: "unknown parameter optoin for select; did you mean option? (params:
-tab, ref, option, snapshot)"; several such parameters fail together, each
-with its closest (`unknown parameters for select: optoin (did you mean
-option?), color (params: …)`); `snapshot {url}` and `extract {url}` say to
-open the page first, and `scroll {to}` scrolls to the top or bottom. The CLI
+tab, ref, option, snapshot)"; closest is a slip of a letter or two, else
+the one sharing a word (`maxChars` names `maxBytes`); several such
+parameters fail together, each with its closest (`unknown parameters for
+select: optoin (did you mean option?), color (params: …)`). The `repl`
+tool's parameters are checked the same way. `snapshot {url}` and `extract
+{url}` say to open the page first, and `scroll {to}` scrolls to the top or
+bottom. The CLI
 takes tools the same way (`safari
 browsing-history`, `safari real-input`), and the first word after a tool
 that takes `do` is its `do` (`safari passwords status`). A CLI flag no
@@ -1233,7 +1236,9 @@ clients may cut one at 60 s, so split long waits across calls. `safari
 guide repl` has the whole API and what to do when a run goes wrong.
 
 From a shell, pass a script with `safari repl --session <name> --file
-/absolute/script.js`. The REPL provides `fs` and `path`; it does not provide
+/absolute/script.js`; the `repl` tool takes `file` with a script's absolute
+path in place of `code`, so its quotes and lines need no JSON escaping. The
+REPL provides `fs` and `path`; it does not provide
 `require`, `process` or `Bun`. Page globals belong in `page.evaluate`, not
 in the script's outer environment.
 
@@ -1440,10 +1445,11 @@ page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
 script files and inline scripts for a string or regex (an API path, an
 error message) and returns `{found: [{file, text}], searched, unread}`
 with `around` characters each side (200; `max` 20 matches), and
-`sh.wait(ms)` pauses (25 s at most). From a shell or another program,
-hand over a script with `safari eval --file path` (or pipe it in)
-instead of escaping it onto one line; `--save <path>` names the file
-the answer goes to. A script that does not parse fails with the error
+`sh.wait(ms)` pauses (25 s at most). Code with quotes or several lines
+goes in a file: `eval {tab, file}` takes its absolute path in place of
+`expression`, and from a shell or another program `safari eval --file
+path` (or pipe it in), instead of escaping it onto one line; `--save
+<path>` names the file the answer goes to. A script that does not parse fails with the error
 in its statements. Code gets 30 s: past that the error says your code
 ran long, and that the page answered. In a tab behind another in its
 window, it adds that a video's `play()` and an animation never settle
@@ -2238,7 +2244,8 @@ and cannot run against the user's front tab or a remote browser. Use
   is read is saved as the page it moved to. `do: "read"` returns a PDF's
   text page by page: a local `path`, a web `url` (fetched with the user's
   cookies, for a PDF Safari downloads rather than shows), or the PDF the
-  tab shows.
+  tab shows. A path or a url needs no tab: `safari pdf read file.pdf`,
+  `safari pdf read https://…/paper.pdf`, or `safari pdf --do read --url …`.
 
 ## cookies
 

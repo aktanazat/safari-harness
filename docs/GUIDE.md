@@ -97,8 +97,9 @@ Turns
   inspect a fresh snapshot before retrying with `real_input`. Never retry
   an uncertain send, purchase or submit blindly. If real input works,
   `learn {site, real: true}` before changing the account, network or cookies.
-- Run `safari` commands in the foreground; never start one in the
-  background and poll it.
+- Prefer the safari tools to the CLI. From bash, a `safari map` or
+  `repl` that may run past 25 s starts in the background at once (omp
+  `async: true`); its result arrives by itself, so never poll it.
 
 When a call fails
 - `effect: "possibly_effected"` means the action may already have happened.
