@@ -130,7 +130,7 @@ test("a GET the page's rules refuse is asked again by the extension, saying so; 
   try {
     served = { url: RAW, type: "text/plain; charset=utf-8", body: Buffer.from(SOURCE) };
     fetched.length = 0;
-    expect(await pageFetch({ tab: 7, url: RAW })).toEqual({ status: 200, url: RAW, type: "text/plain; charset=utf-8", text: SOURCE, truncated: false, note: "the page's rules refused its own request, so this is the extension's, which carries none of the site's sign-in" });
+    expect(await pageFetch({ tab: 7, url: RAW })).toEqual({ status: 200, url: RAW, type: "text/plain; charset=utf-8", text: SOURCE, truncated: false, total: SOURCE.length, note: "the page's rules refused its own request, so this is the extension's, which carries none of the site's sign-in" });
     refuse = "download failed: HTTP 404";
     expect(await pageFetch({ tab: 7, url: RAW })).toMatchObject({ status: 404, text: "" });
     refuse = undefined;
