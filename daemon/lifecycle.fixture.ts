@@ -355,7 +355,9 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
     const tab = await open("refused"); refused = true;
     const receipt = await endTurn(owner);
     refused = false;
+    setSystemTime(new Date(Date.now() + 60_000));
     const retry = await endTurn(owner);
+    setSystemTime();
     console.log(JSON.stringify({ receipt, retry, remaining: tabs.has(tab.id) }));
   } else if (mode === "cancel") {
     const plain = await open("result");

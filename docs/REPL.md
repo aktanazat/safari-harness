@@ -18,7 +18,7 @@ safari repl --session work "console.log((await snapshot(p)).tree)"
 echo "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)" | safari repl --session work
 safari repl --session work --file /tmp/work.js   # in the message that writes it; the repl tool: {file}
 safari repl --list                  # sessions still running
-safari repl --close work            # end one; its tabs close
+safari repl --close work            # end one; its tabs close, kept ones stay
 ```
 
 Without `--session`, a call runs in your agent's own session, `agent-<pid>`:
@@ -63,8 +63,10 @@ process-wide ownership.
 
 - `openTab(url)` opens a background tab and returns a `Page`; it becomes
   `page`. `const page = await openTab(url)` works too, and keeps `page`
-  for later calls. Tabs a session opens close with it, but one kept for the user
-  (`keep`) stays. Using `page` before any tab is open or attached throws.
+  for later calls. Tabs a session opens close with it, site globals' tabs
+  included, but one kept for the user (`keep`) or handed to him stays. A
+  page your calls changed closes at `--close`; a session that ends by itself
+  leaves it to cleanup. Using `page` before any tab is open or attached throws.
   In a later call of the session, `openTab` of an address it opened before
   loads that tab again, unless it is kept, in front, or an action changed
   its page; `openTab(url, {new: true})` opens another.

@@ -112,11 +112,13 @@ export class SiteKit {
     this.lastRequest.set(key, Date.now());
   }
 
-  async close(): Promise<void> {
+  // Each tab's answer to its close (close in tools.ts). A site global's tab
+  // is its own, of no use once its session ends, even one its calls changed.
+  async close(): Promise<unknown[]> {
     const tabs = await Promise.allSettled(this.tabs.values());
     this.tabs.clear();
     // A tab already gone needs no closing, and no new tab to close.
-    await Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.send("close", { tab: t.value, held: true }).catch(() => {}) : undefined)));
+    return Promise.all(tabs.map((t) => (t.status === "fulfilled" ? this.send("close", { tab: t.value, held: true, ended: true }).catch(() => undefined) : undefined)));
   }
 }
 

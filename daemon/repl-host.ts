@@ -174,12 +174,14 @@ async function sweep(self: string): Promise<void> {
   }
 }
 
-// Ends session id: its tabs close. Its files stay in its folder.
+// Ends session id: its tabs close, the pages its scripts changed among
+// them; one kept for the user, or handed to him, stays. Its files stay in
+// its folder.
 export async function closeSession(id: string): Promise<string> {
   checkSessionId(id);
   if (!(await info(id))) return `no session ${id} is running`;
-  await ask(id, "/close", {});
-  return `session ${id} ended; its files stay in ${join(REPL_DIR, id)}`;
+  const { closed = 0 } = (await (await ask(id, "/close", {})).json()) as { closed?: number };
+  return `session ${id} ended: ${closed} tab${closed === 1 ? "" : "s"} closed; its files stay in ${join(REPL_DIR, id)}`;
 }
 
 async function serve(id: string, endsWith: number | undefined): Promise<void> {
@@ -216,8 +218,9 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
         return Response.json(sessionInfo);
       }
       if (route === "/close") {
+        const shut = await session.close(true);
         setTimeout(() => void end(), 10);
-        return Response.json({ ok: true });
+        return Response.json({ ok: true, ...shut });
       }
       if (route === "/run") {
         const { code, timeoutMs, caller, task } = (await req.json()) as { code: string; timeoutMs?: number; caller?: number; task?: string };

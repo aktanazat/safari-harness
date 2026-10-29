@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { closeRetryMs, closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
@@ -290,8 +290,9 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // daemon last listed, opened, or loaded it; seen: the extension connection
 // it was last listed or made on (bridge.extensionInfo), for a Safari that
 // started again (restored). done: cleanup was explicitly admitted for it.
-// failed: its last close at a turn's end did not close it; retry: how many
-// of those closes threw, and when the next may go (sweepOnce).
+// failed: its last close by a sweep did not close it; retry: how many of
+// those closes in a row failed or were refused, and when the next may go
+// (sweepOnce).
 type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 // the used time the file of tabs holds for each, as last written (save)
@@ -409,6 +410,14 @@ function reconnectedSince(t: HarnessTab): boolean {
 const LOST_RECONNECTED = "as the extension connected again (an extension reload, or Safari starting again after a crash or an update)";
 const LOST_OUTSIDE = "outside the harness (by the user, its window closing, or the page itself)";
 
+// Whether the extension's connection a request went out on (link, its
+// connectedAt) has ended since: a request it took down with it was never
+// answered, and goes again on the next one (sweepOnce here and in
+// spaces.ts).
+export function linkDropped(link: number | undefined): boolean {
+  return !bridge.connected || bridge.extensionInfo?.connectedAt !== link;
+}
+
 // A tab the harness holds that Safari says is gone is recorded as found
 // so, with the page it showed, and let go: on 10-16 eight such tabs stayed
 // their agents' until a sweep 20 minutes on (HuntsUsage). reopens: its
@@ -497,9 +506,20 @@ function orphan(owner: number) {
   void sweep();
 }
 
+// A tab its agent handed to the user (handoff_wait) and had not taken back
+// is his once that agent exits: no one is left to give it back to, and a
+// close would take it from under him. It leaves the harness as a kept one
+// does (keepTab). On 10-29 four such tabs, 13 to 137 hours old, held their
+// exited agents' cleanup open, which the journal noted failing 510 times
+// in 18 hours.
 function exited(owner: number) {
   watches.delete(owner);
   forgetPopups(owner);
+  for (const [tab, t] of harnessTabs) {
+    if (t.owner !== owner || !t.handoff) continue;
+    forget(tab);
+    note("tab released", { tab, owner, why: "its agent exited while the user had it" });
+  }
   orphan(owner);
   void endTurn(owner).catch(() => {});
 }
@@ -575,7 +595,13 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
     await drainTask(owner, task);
     if (task === undefined) conditionalCaptures.forgetCaller(owner);
     const before = tabsOpenedBy(owner, task);
-    for (const t of harnessTabs.values()) if (matchesTask(t, owner, task)) t.done = true;
+    for (const t of harnessTabs.values()) {
+      if (!matchesTask(t, owner, task)) continue;
+      // A wait an idle close set is not owed at the turn's end: the
+      // extension refuses only a close for idleness.
+      if (!t.done) delete t.retry;
+      t.done = true;
+    }
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
@@ -592,11 +618,13 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
 }
 
 // An absent runtime task is unknown, not proof that its durable tabs can
-// close without the extension's idle protections.
+// close without the extension's idle protections. An agent whose tabs all
+// wait on a close already admitted is not ended again: each end swept
+// Safari's tabs twice more, at every window sweep.
 export function endUntrackedTurns(tracked: (owner: number) => boolean | undefined): void {
   const owners = new Set<number>();
-  for (const { owner } of harnessTabs.values()) {
-    if (owner === undefined || owners.has(owner)) continue;
+  for (const { owner, done } of harnessTabs.values()) {
+    if (owner === undefined || done || owners.has(owner)) continue;
     owners.add(owner);
     if (tracked(owner) === false) void endTurn(owner).catch(e => {
       note("untracked agent cleanup failed", { owner, error: e instanceof Error ? e.message : String(e) });
@@ -638,14 +666,16 @@ function sweep(): Promise<void> {
   return sweepingTabs;
 }
 
-// A close at a turn's end that threw (the extension did not answer, or a
-// native sheet held the tab past its 15 s) goes again 1, 2, then 4 minutes
-// on, then not again this turn, as a window's page does (spaces.ts): on
-// 10-13 the daemon logged 69 failed closes in 5.7 minutes, every sweep
-// asking again, about 55 of them of tabs already gone (DaemonLogs). A tab
-// already gone is let go as found closed (lost); a refusal waits for the
-// next turn's end.
-const CLOSE_RETRY_MS = [60_000, 120_000, 240_000];
+// A close a sweep asked for that failed (a native sheet held the tab past
+// its 15 s, or the extension did not answer) or that the extension refused
+// (the tab held a form, a page it could not read, or was not its own) goes
+// again 1, 2, then 4 minutes on, then every 15, as a window's page does
+// (closeRetryMs in spaces.ts), until it closes or Safari no longer shows
+// it: on 10-13 the daemon logged 69 failed closes in 5.7 minutes, every
+// sweep asking again, about 55 of them of tabs already gone (DaemonLogs),
+// and on 10-29 the extension had answered 19,614 closes and opened 626
+// tabs in 14 hours (/health), a refusal setting no wait. A close the
+// extension's link took down goes again on the next connection.
 const IDLE_MS = 20 * 60_000;
 
 async function sweepOnce() {
@@ -659,7 +689,7 @@ async function sweepOnce() {
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
   const due = [...harnessTabs].filter(([tab, t]) => {
-    if (t.closing || t.calls?.size || (t.retry !== undefined && (t.retry.tries > CLOSE_RETRY_MS.length || now < t.retry.at)) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task))?.pending.size)) return false;
+    if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task))?.pending.size)) return false;
     const handoff = handoffs.get(tab);
     if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
     const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
@@ -670,6 +700,7 @@ async function sweepOnce() {
   for (const [, t] of due) t.closing = true;
   // what each showed, for a later call that names it (closedTabs)
   await Promise.all(due.map(async ([tab, t]) => {
+    const link = bridge.extensionInfo?.connectedAt;
     try {
       if (harnessTabs.get(tab) !== t) return;
       if (!shown.has(tab)) {
@@ -683,7 +714,7 @@ async function sweepOnce() {
         t.used = Date.now();
       } else if (res?.ok !== true) {
         if (res?.protected === "form") t.acted = true;
-        else t.failed = true;
+        closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
       } else {
         // Record the resume point before dropping ownership, in the same
         // file: the page it showed last listed, else last opened or loaded.
@@ -700,17 +731,22 @@ async function sweepOnce() {
         lost(tab, reconnectedSince(t));
         return;
       }
-      const tries = (t.retry?.tries ?? 0) + 1;
-      const wait = CLOSE_RETRY_MS[tries - 1];
-      t.retry = { tries, at: Date.now() + (wait ?? 0) };
-      t.failed = true;
-      console.error(`[safari-harness] closing tab ${tab} failed: ${message}; ${wait === undefined ? "not tried again this turn" : `trying again in ${wait / 1000} s`}`);
+      if (linkDropped(link)) console.error(`[safari-harness] closing tab ${tab} failed: ${message}; trying again on the next connection`);
+      else closeLater(tab, t, message);
     } finally {
       delete t.closing;
       save();
     }
   }));
   await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
+}
+
+function closeLater(tab: number, t: HarnessTab, why: string): void {
+  const tries = (t.retry?.tries ?? 0) + 1;
+  const wait = closeRetryMs(tries);
+  t.retry = { tries, at: Date.now() + wait };
+  t.failed = true;
+  console.error(`[safari-harness] closing tab ${tab} failed: ${why}; trying again in ${wait / 1000} s`);
 }
 
 function forget(tab: number) {
@@ -2835,18 +2871,22 @@ export const TOOLS: Record<string, Tool> = {
   // held: close it only while the harness still holds it. A repl session
   // closes the tabs it opened so as it ends (repl.ts): one kept for the user
   // since is his. On 10-02 a session that ended after 30 minutes unused
-  // closed the sign-up its agent had kept.
+  // closed the sign-up its agent had kept. ended: the session is over for
+  // good (ended on request, or the tab is a site global's own), and the tab
+  // closes as at a turn's end, a handoff still pending alone staying: on
+  // 10-29 safari repl --close left open the tabs of all 3 sessions tried,
+  // the x reader's own among them, each changed by the calls made in it.
   close: {
     desc: "Close a tab you opened.",
     params: { tab: OWN_TAB, window: { type: "number", description: "an ended agent's window" }, confirm: { type: "boolean", description: "the user said yes" } },
-    unlisted: { held: { type: "boolean", description: "only while the harness holds it: a kept tab stays" } },
+    unlisted: { held: { type: "boolean", description: "only while the harness holds it: a kept tab stays" }, ended: { type: "boolean", description: "with held: its session ended, so a page it changed closes too" } },
     run: async (a) => {
       if (a.window !== undefined) return closeWindow(num(a.window, "window"), a.confirm === true);
       const tab = num(a.tab, "tab");
       const mine = harnessTabs.get(followTab(tab));
       if (a.held === true && !mine) return { ok: true, kept: true };
-      if (a.held === true && (mine?.acted || mine?.handoff || mine?.unsafe || (mine?.url !== undefined && resumeAddress(mine.url) === undefined))) return { ok: true, protected: true };
-      return closeTab(tab, "by a close call", a.held === true ? "idle" : undefined);
+      if (a.held === true && (mine?.handoff || (a.ended !== true && (mine?.acted || mine?.unsafe || (mine?.url !== undefined && resumeAddress(mine.url) === undefined))))) return { ok: true, protected: true };
+      return closeTab(tab, "by a close call", a.held === true && a.ended !== true ? "idle" : undefined);
     },
   },
   keep: {

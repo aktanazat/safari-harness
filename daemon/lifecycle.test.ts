@@ -73,7 +73,7 @@ test.each(["inflight", "nested-run", "late-open"])("completion waits for %s work
   expect(await fixture(mode)).toMatchObject({ retainedWhileBusy: true, reportedWhileBusy: false, remaining: false, residentPages: 0, kept: true });
 });
 
-test("a refused automatic close remains tracked and closes on the next completion attempt", async () => {
+test("a refused automatic close remains tracked and closes on its next try, a minute on", async () => {
   expect(await fixture("refusal")).toMatchObject({ receipt: { closed: 0, retained: 1, failed: 1 }, retry: { closed: 1, retained: 0, failed: 0 }, remaining: false });
 });
 

@@ -132,6 +132,21 @@ test("a restarted daemon closes an exited agent's tabs by itself, never another 
   expect(JSON.parse(readFileSync(file, "utf8")).tabs).not.toHaveProperty("11");
 });
 
+// 10-29: four tabs agents had handed to the user were still theirs 13 to
+// 137 hours after they exited, and their cleanup ran again at every window
+// sweep, noted failing 510 times in 18 hours.
+test("a restarted daemon lets go of the tab an exited agent handed to the user, never closing it, and closes the agent's others", async () => {
+  const exited = Bun.spawnSync(["true"]).pid;
+  const file = join(mkdtempSync(join(tmpdir(), "harness-tabs-")), "tabs.json");
+  showing = [{ id: 13, url: "https://handed.example/" }, { id: 14, url: "https://done.example/" }];
+  writeFileSync(file, JSON.stringify({ version: 2, tabs: { 13: { owner: exited, used: Date.now(), handoff: true, done: true }, 14: { owner: exited, used: Date.now() } } }));
+  loadTabs(file);
+  await closedAs([14]);
+  await settled();
+  expect(closes.map(([tab]) => tab)).toEqual([14]);
+  expect(JSON.parse(readFileSync(file, "utf8")).tabs).not.toContainAnyKeys(["13", "14"]);
+});
+
 // An agent that is done need not spend a turn on close. One it asked to
 // keep is the user's.
 test("admitted cleanup after exit releases clicked pages and popups but preserves kept pages", async () => {
@@ -182,16 +197,34 @@ test("when an agent's turn ends its front page closes too, but kept pages and an
 });
 
 // 10-02: a repl session that ended after 30 minutes unused closed the
-// TikTok sign-up its agent had kept for the user from the CLI.
-test("a repl session's end closes the tabs it opened, but not one kept for the user", async () => {
+// TikTok sign-up its agent had kept for the user from the CLI. 10-29: the
+// x reader's own tab outlived its session, changed by the reader's calls.
+test("a repl session's end closes the tabs it opened and its site reader's, but not one kept for the user", async () => {
   const agent = keeper();
   const invoke = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   const repl = new ReplSession("kept", { cwd: mkdtempSync(join(tmpdir(), "repl-kept-")), invoke });
   await repl.run("await openTab('https://example.com/')\nawait openTab('https://example.com/')");
   const [done, kept] = repl.tabs.map((p) => p.id);
+  const reader = await repl.kit.tab("https://x.com");
+  await repl.kit.eval("https://x.com", "1");
   await invoke("keep", { tab: kept });
   await repl.close();
-  expect([gone.has(done), gone.has(kept)]).toEqual([true, false]);
+  expect([gone.has(done), gone.has(kept), gone.has(reader)]).toEqual([true, false, true]);
+  agent.kill();
+});
+
+// 10-29: safari repl --close left open the tabs of all 3 sessions tried,
+// each changed by the calls made in it.
+test("a repl session ended on request closes the pages its calls changed too, but not one kept for the user", async () => {
+  const agent = keeper();
+  const invoke = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  const repl = new ReplSession("asked", { cwd: mkdtempSync(join(tmpdir(), "repl-asked-")), invoke });
+  await repl.run("await openTab('https://example.com/')\nawait openTab('https://example.com/')");
+  const [changed, kept] = repl.tabs.map((p) => p.id);
+  await invoke("eval", { tab: changed, expression: "1" });
+  await invoke("keep", { tab: kept });
+  expect(await repl.close(true)).toEqual({ closed: 1 });
+  expect([gone.has(changed), gone.has(kept)]).toEqual([true, false]);
   agent.kill();
 });
 

@@ -156,13 +156,19 @@ Safari is the user's everyday browser, so treat his tabs as his.
   move it to make a group deletable. Use `keep` for a page he still needs,
   not to preserve an agent's finished work.
   Background handoff polling continues without holding a finished call's
-  cleanup open.
+  cleanup open. A handoff tab whose agent exits before he finishes is his:
+  the harness lets go of it (`tab released` in the journal) and never
+  closes it.
 - Ordinary idle cleanup is unchanged: eligible unused pages close after
   20 minutes. Existing protections for changed pages, unsent forms,
   site-global tabs, kept pages, pending handoffs and the front tab still
   apply to idle cleanup. A change, filled field, site-global tab or front
   position alone does not protect a disposable agent tab at completion
   or owner exit.
+- A close that fails, or that Safari refuses for an idle tab (a form, a
+  page it cannot read), is asked again 1, 2 and 4 minutes later, then
+  every 15 minutes, until the tab closes or Safari no longer shows it. A
+  close the extension's reconnect cut off goes again once it connects.
 - A recoverable tab's safe HTTP(S) address is retained for five minutes
   after closure, including across daemon restarts. Addresses with a
   fragment, userinfo or a known secret in the path or query are not saved;
@@ -1227,7 +1233,11 @@ session you start names, on a `hint:` line, the others your agent runs, so
 you go on in one of those instead. A session's relative paths begin in its
 own folder (`pwd`), not your shell's. The tabs its code opens are yours,
 including site-global tabs, and follow the [cleanup and recovery
-rules](#cleanup-authority). A session's page whose tab has closed drops
+rules](#cleanup-authority). A session's end closes its site-global tabs.
+`--close` also closes the pages its calls changed and says how many tabs
+it closed; a session that ends by itself (30 minutes unused, its agent's
+exit) leaves those to cleanup. A tab kept for the user, or handed to him
+and not yet finished, stays. A session's page whose tab has closed drops
 out of `tabs`; open it again in the same session. A site global whose tab
 is gone opens a new one once and runs the call again: that is fresh work,
 not restoration of the ended task or its in-page state. A call waits at
