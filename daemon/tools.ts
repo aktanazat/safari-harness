@@ -497,14 +497,14 @@ function own(tab: number, owner: number | undefined, task = currentTask()) {
 function remember(tab: number, owner: number | undefined, used = Date.now(), task?: string) {
   harnessTabs.set(tab, { owner, task, used, seen: bridge.extensionInfo?.connectedAt });
   if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => exited(owner)));
-  sweeper ??= setInterval(sweep, 60_000);
+  sweeper ??= setInterval(() => void sweep().catch(() => {}), 60_000);
   sweeper.unref();
 }
 
 function orphan(owner: number) {
   for (const t of harnessTabs.values()) if (t.owner === owner) t.orphan = true;
   save();
-  void sweep();
+  void sweep().catch(() => {});
 }
 
 // A tab its agent handed to the user (handoff_wait) and had not taken back
@@ -662,6 +662,9 @@ function keptBy(tab: number, keeper: number) {
   }));
 }
 
+// A timer or an event starts a sweep and goes on, catching what it throws:
+// a rejection no one caught, from the extension's link dropping under a
+// sweep, ended the daemon at 10-29 03:44Z.
 function sweep(): Promise<void> {
   sweepingTabs ??= sweepOnce().finally(() => { sweepingTabs = undefined; });
   return sweepingTabs;
@@ -822,7 +825,7 @@ bridge.onTab = (e) => {
 // A Safari that started again restored its tabs under new ids (sighted).
 // Durable ownership records, not an owner's exit, identify those resources.
 bridge.onConnect = () => {
-  if (harnessTabs.size > 0) void sweep();
+  if (harnessTabs.size > 0) void sweep().catch(() => {});
   void sweepSpaces().catch(() => {});
 };
 

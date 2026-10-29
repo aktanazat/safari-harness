@@ -3073,7 +3073,10 @@ before a task, never after a call that worked, never in a loop with
 ## status
 
 `safari status` shows the daemon's recent events, one a line: its starts
-and stops and why, the extension connecting and disconnecting, requests
+and stops and why, the extension connecting and disconnecting (with the
+close code, why: `too_large`, `restarted`, `quit`, or `dropped`, how long
+the link lived, and the requests it failed by kind), Safari loading the
+extension again (`restarted`), requests
 the extension never answered, the daemon asking a stuck extension to
 reload itself, and why, pages that got a fresh copy of the
 harness's script, pages it could not be put in, agent windows opening
@@ -3089,7 +3092,9 @@ Its first lines say whether the extension is connected, stuck (with how
 long since it last answered), or disconnected; whether phone alerts work
 (`phone alerts on`, how the last one went, or why they are off); when
 the live release is not on origin/master, how many commits ahead it is,
-as its deploy found it (`upstream` in `--json`); then the last few events.
+as its deploy found it (`upstream` in `--json`); the last 24 hours' calls,
+how many failed by code, and how many times the extension's link dropped
+by why (`calls` in `--json`); then the last few events.
 `safari status --journal` prints them all. "daemon not reachable" means
 nothing listens on the daemon's port: `safari daemon install`. No `status`
 check is needed before work: every tool says so when the extension is not
@@ -3119,3 +3124,12 @@ or two and asks for no password. Calls in flight fail and can be tried
 again; tab ids agents hold keep working. Turn the extension off and on in
 Safari Settings only when `safari doctor` still fails its round trip
 after a reload; that asks for the password.
+
+When the extension's link drops, a call in flight that only reads (a
+snapshot, an extract, a tab list) is sent once more on the link that
+comes back within 10 s. A call that acts is never sent again: it fails
+saying why the link dropped, which is an answer too large for it, the
+extension restarting, Safari quitting, or the link's close code. An
+answer over the 160 MB a message may hold fails only its own call, with
+`answer too large: N bytes (limit M)` and how to ask for less, and the
+link stays up.

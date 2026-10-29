@@ -11,6 +11,7 @@
 //     /rpc           {tool,args,caller} -> {ok,value|error}   (CLI + MCP client)
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
+//     /calls         the last 24 h of calls and the extension's drops (calls.ts)
 //     /turn-end/prepare {owner} drain and identify exact owned resources
 //     /turn-end      {owner,prepared} release after runtime authorization
 //     /shutdown      {reason} stop once the calls in flight finish
@@ -19,11 +20,12 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { bridge, DEFAULT_PORT } from "./bridge.ts";
+import { bridge, DEFAULT_PORT, MESSAGE_MAX } from "./bridge.ts";
 import { TOOLS, callTool, endTurn, prepareTurnEnd, loadTabs, type TurnPreparation } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
 import { passwords, BRIDGE_ORIGIN } from "./passwords.ts";
 import { note, openJournal, recent, trimLog } from "./journal.ts";
+import { lastDay, logCall, logDrop, openCalls } from "./calls.ts";
 import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, tracksOwner, watched } from "./mission.ts";
@@ -32,7 +34,7 @@ import { notify } from "./front.ts";
 import { loadSpaces } from "./spaces.ts";
 import { loadsFile, openLoads } from "./loads.ts";
 import { fromAutomation } from "./automation.ts";
-import { failureOf, HarnessError } from "./failures.ts";
+import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { openMissionHistory } from "./mission.ts";
 import { localRequest } from "./requests.ts";
@@ -57,6 +59,8 @@ const LOGS = join(homedir(), "Library", "Logs", "safari-harness");
 // 10-21: a week or so of it stays.
 trimLog(join(LOGS, "daemon.log"), 5000);
 const earlier = openJournal(join(LOGS, `journal-${httpPort}.jsonl`));
+openCalls(join(LOGS, `calls-${httpPort}.jsonl`));
+bridge.onDrop = logDrop;
 const last = earlier.at(-1);
 note("start", {
   pid: process.pid,
@@ -151,7 +155,13 @@ const server = Bun.serve<SocketScope>({
     }
     return new Response("not found", { status: 404 });
   },
+  // Bun's 16 MB defaults failed what the extension's link carries
+  // (MESSAGE_MAX in bridge.ts): past maxPayloadLength it closed the socket,
+  // and with more than backpressureLimit waiting to go out it dropped a send
+  // (10-29, Bun 1.4.2: two of three 20 MB sends in a row).
   websocket: {
+    maxPayloadLength: MESSAGE_MAX,
+    backpressureLimit: MESSAGE_MAX,
     open(ws) {
       if (ws.data.kind === "extension") bridge.attach(ws, ws.data.automation);
       else if (ws.data.kind === "passwords") passwords.attach(ws);
@@ -169,8 +179,8 @@ const server = Bun.serve<SocketScope>({
       const msg = safeParse(text);
       if (msg) handleCdp((obj) => ws.send(JSON.stringify(obj)), msg as CdpMsg, ws.data);
     },
-    close(ws) {
-      if (ws.data.kind === "extension") bridge.detach(ws);
+    close(ws, code, reason) {
+      if (ws.data.kind === "extension") bridge.detach(ws, code, reason);
       else if (ws.data.kind === "passwords") passwords.detach(ws);
       else stopConnPumps(ws.data.connId);
     },
@@ -216,13 +226,15 @@ const rpcServer = Bun.serve({
         inFlight,
         ...(stopping ? { stopping } : {}),
         // connected, stuck, how long since it answered, each kind's timeouts
-        // in a row (bridge.ts); an older daemon sends null while not connected
+        // in a row, its drops by why (bridge.ts); an older daemon sends null
+        // while not connected
         extension: bridge.health(),
         latency: bridge.latency(),
         tools: Object.keys(TOOLS),
         journal: recent(),
       });
     }
+    if (url.pathname === "/calls") return Response.json(lastDay());
     if (url.pathname === "/rpc" && req.method === "POST") {
       if (stopping) {
         const error = `the safari daemon is restarting (${stopping}); try again in a moment`;
@@ -243,20 +255,26 @@ const rpcServer = Bun.serve({
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
       }
       inFlight++;
+      const t = Date.now();
+      let owner: number | undefined;
+      let reply: { ok: true; value: unknown } | { ok: false; error: string; failure: Failure };
       try {
         // A call works for the agent above its caller, or for the caller
         // itself when it owns its calls: a named REPL session (rpc.ts).
         // news: false leaves the agent's news to a later call (rpc.ts).
         const pid = Number.isInteger(caller) && Number(caller) > 1 ? Number(caller) : undefined;
-        const owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
+        owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
         const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false), task));
-        return Response.json({ ok: true, value });
+        reply = { ok: true, value };
       } catch (e) {
         const failure = failureOf(e, { effectful: affectsPage(tool, args ?? {}) });
-        return Response.json({ ok: false, error: failure.message, failure });
+        reply = { ok: false, error: failure.message, failure };
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
       }
+      const text = JSON.stringify(reply);
+      logCall({ t, ms: Date.now() - t, owner, task, tool, args: args ?? {}, reply, bytes: Buffer.byteLength(text) });
+      return new Response(text, { headers: { "content-type": "application/json;charset=utf-8" } });
     }
     // The caller drains first, then releases the exact resources it was
     // given; a newer call in between invalidates the preparation.

@@ -617,6 +617,30 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+// 10-28 to 10-29 the link dropped 533 times, it seems at one answer over
+// what the daemon reads, each drop failing every request on it (MESSAGE_MAX
+// in bridge.ts).
+test("an answer over what the daemon reads fails its own request alone, and the link carries the next", async () => {
+  const b = await start();
+  const [link] = b.sockets;
+  link.onmessage({ data: JSON.stringify({ op: "limit", bytes: 4000 }) });
+  const frames: number[] = [];
+  const send = link.send.bind(link);
+  link.send = (data: string) => {
+    frames.push(Buffer.byteLength(data));
+    send(data);
+  };
+  const tab = b.open("https://example.com/");
+  // 2 bytes a character in UTF-8: 6 KB in 3,000 characters
+  tab.doc.does = (op) => (op === "extract" ? { text: "é".repeat(3000) } : { url: tab.doc.url });
+  const big = await b.ask(tab, "extract", [{}]);
+  expect(big.value).toBeUndefined();
+  expect(big.error).toContain("answer too large");
+  expect((await b.ask(tab, "tabInfo")).value).toEqual({ url: "https://example.com/" });
+  expect(Math.max(...frames)).toBeLessThanOrEqual(4000);
+  expect(b.sockets).toHaveLength(1);
+});
+
 // open loads an address in a tab it makes, and goto in the tab it is given.
 type Loader = { request(op: string, args: unknown[]): Promise<Answer>; open(url: string): Tab };
 const loads: [string, (b: Loader, url: string) => Promise<Answer>, number][] = [

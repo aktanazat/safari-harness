@@ -24,7 +24,7 @@ import { bridge } from "./bridge.ts";
 import { followTab } from "./continuity.ts";
 import { onRaised } from "./front.ts";
 import { removeCapture, verifyEvidence } from "./evidence.ts";
-import { failureOf, HarnessError } from "./failures.ts";
+import { failedValue, failureOf, HarnessError } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { captureSummaries, failureContextSummary, historyToolName, MissionHistory, type CaptureSummary, type FailureContext, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
@@ -252,7 +252,7 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
       ran = true;
       const value = await execute(agent, tool, args, () => run(), false, () => context.delegated);
       Object.assign(call, outcomeOf(tool, value, withheld));
-      if (value && typeof value === "object" && ("ok" in value && value.ok === false || "isError" in value && value.isError === true || "error" in value && typeof value.error === "string")) {
+      if (failedValue(value)) {
         call.code = failureOf(value, { effectful: affectsPage(tool, args) }).code;
         call.error = call.code;
       }

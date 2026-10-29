@@ -10,6 +10,14 @@ let ws = null;
 let reconnectTimer = null;
 let backoff = 500;
 let port = DEFAULT_PORT;
+// When this page started and the code its last socket closed with, which
+// each hello tells the daemon (bridge.ts).
+const started = Date.now();
+let closed = null;
+// The most one message to the daemon may hold, which it says in reply to
+// each hello: until then, Bun's default, which an older daemon keeps.
+const DEFAULT_MESSAGE_MAX = 16 * 1024 * 1024;
+let messageMax = DEFAULT_MESSAGE_MAX;
 
 function log(...a) { console.log("[sh-bg]", ...a); }
 
@@ -49,8 +57,9 @@ function connect() {
     ws = sock;
     sock.onopen = () => {
       backoff = 500;
+      messageMax = DEFAULT_MESSAGE_MAX;
       log("connected to daemon on", port);
-      send({ op: "hello", role: "extension", ua: navigator.userAgent });
+      send({ op: "hello", role: "extension", ua: navigator.userAgent, started, closed });
       if (awake.size > 0) send({ op: "ticks", on: true });
       sendRecordings().catch(() => {});
       if (adopted) adopted.then(sendIds, () => {});
@@ -60,13 +69,17 @@ function connect() {
       let msg;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
       if (msg.op === "tick") return tick();
+      if (msg.op === "limit") {
+        messageMax = msg.bytes;
+        return;
+      }
       // The daemon asks for this once the extension has answered nothing
       // for a minute, or when safari extension reload asks (bridge.ts):
       // Safari unloads it and loads it again, as turning it off and on in
       // Safari Settings does, but asks for no password (10-13). Nothing
       // answers it: this page goes with the reload.
       if (msg.op === "reload") return api.runtime.reload();
-      const answer = (obj) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(obj)); };
+      const answer = (obj) => sendOn(sock, obj, msg);
       handle(msg).then((value) => {
         if (msg.id !== undefined) answer({ id: msg.id, value });
       }, async (err) => {
@@ -81,6 +94,7 @@ function connect() {
     sock.onclose = (ev) => {
       if (ws !== sock) return;
       ws = null;
+      closed = ev.code;
       clearTimeout(memoryTimer);
       memoryPolicy = { enabled: false, sites: [], excludedSites: [] };
       memoryRevision = -1;
@@ -104,11 +118,61 @@ function scheduleReconnect() {
 }
 
 function send(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
+  return ws ? sendOn(ws, obj) : false;
+}
+
+// A message over messageMax is not sent: the daemon closed the socket at
+// one, failing every request on it (bridge.ts, MESSAGE_MAX). The answer to
+// a request (asked) goes as an error for that request alone, saying how to
+// ask for less.
+function sendOn(sock, obj, asked) {
+  if (sock.readyState !== WebSocket.OPEN) return false;
+  const text = JSON.stringify(obj);
+  const bytes = overLimit(text);
+  if (bytes === 0) {
+    sock.send(text);
     return true;
   }
-  return false;
+  log("not sent:", bytes, "bytes, over", messageMax, asked ? asked.op : obj.op);
+  if (!asked) return false;
+  sock.send(JSON.stringify({ id: asked.id, error: `answer too large: ${bytes} bytes (limit ${messageMax}); ${smaller(asked)}` }));
+  return true;
+}
+
+// text's UTF-8 bytes if over messageMax, else 0. Counting walks the whole
+// text, so one too short to be over (3 bytes a character at most) is not
+// counted.
+function overLimit(text) {
+  if (text.length * 3 <= messageMax) return 0;
+  let bytes = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    // a surrogate is half of a 4-byte character
+    if (c >= 0x80) bytes += c < 0x800 || (c >= 0xd800 && c <= 0xdfff) ? 1 : 2;
+  }
+  return bytes > messageMax ? bytes : 0;
+}
+
+// What a request too large to answer can ask for instead (sendOn).
+function smaller(msg) {
+  switch (msg.op === "relay" ? msg.args?.[1] : msg.op) {
+    case "extract":
+      return "read part of the page (selector) or set a smaller maxBytes";
+    case "snapshot":
+      return "set a smaller maxNodes";
+    case "fetch":
+      return "set a smaller maxBytes";
+    case "eval":
+    case "evalPage":
+      return "have the script return less";
+    case "shot":
+      return "capture an element (ref) or the screen, not the full page or tiles";
+    case "fetchFile":
+    case "download":
+      return "the file is too large to carry over the link";
+    default:
+      return "ask for less";
+  }
 }
 
 // keep the worker alive while connected
@@ -1137,8 +1201,9 @@ async function pageEval(src) {
 // Runs in the page's own world, so it must be self-contained: the state a
 // framework leaves in page globals, for the data tool, each as plain JSON
 // (Safari aborts on a NaN passed on, as for pageEval). One answer must stay
-// well under the 16 MB a message to the daemon may hold, so a value past
-// what is left of 4 million characters is only measured.
+// well under what a message to the daemon may hold (MESSAGE_MAX in
+// bridge.ts), so a value past what is left of 4 million characters is only
+// measured.
 function pageGlobals() {
   const read = {
     next: () => window.__NEXT_DATA__,

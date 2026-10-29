@@ -730,7 +730,7 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 // The extension's own events, which status lists: tab and window events
 // are not.
-const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
+const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, restarted: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
 
 async function main() {
   // This process ends with its answer, and a card's Touch ID prompt with
@@ -864,11 +864,13 @@ async function main() {
   // status: the daemon; its extension, stuck (connected, but its calls
   // time out), connected, or disconnected; whether alerts reach the user's
   // phone; how far the live release is ahead of origin/master, as its
-  // deploy found it (scripts/dev-install.sh); and the extension's own
-  // events of the last 10 minutes, 5 at most (--json: the whole health
-  // answer, with alerts and upstream). It printed every tab and window
-  // event, 2.2 KB for a yes or no, and said connected while every call
-  // timed out (S99PartC).
+  // deploy found it (scripts/dev-install.sh); the last 24 hours' calls,
+  // those that failed by code, and the extension's drops by why (calls.ts,
+  // which an older daemon lacks); and the extension's own events of the
+  // last 10 minutes, 5 at most (--json: the whole health answer, with
+  // alerts, upstream, and calls). It printed every tab and window event,
+  // 2.2 KB for a yes or no, and said connected while every call timed out
+  // (S99PartC).
   if (cmd === "status") {
     type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connected?: boolean; stuck?: boolean; sinceAnswerMs?: number | null; timeouts?: Record<string, number>; connectedAt?: number } | null; journal?: JournalEvent[] };
     type Upstream = { branch: string; ahead: number; master: string; at: string };
@@ -880,7 +882,8 @@ async function main() {
     } catch {
       upstream = undefined;
     }
-    if (json) return print({ ...h, alerts, ...(upstream ? { upstream } : {}) });
+    const calls = await fetch(`${daemonHttp()}/calls`).then((r) => r.ok ? r.json() as Promise<{ calls: number; failures: Record<string, number>; drops: Record<string, number> }> : undefined, () => undefined);
+    if (json) return print({ ...h, alerts, ...(upstream ? { upstream } : {}), ...(calls ? { calls } : {}) });
     const at = (t: string | number) => new Date(t).toLocaleString("sv").slice(5);
     console.log(`daemon ${h.pid ?? "running"}${h.stopping ? `, stopping: ${h.stopping}` : ""}, ${h.inFlight ?? 0} call(s) in flight${h.root ? `, running ${h.root} (code ${h.code})` : ""}`);
     const e = h.extension;
@@ -893,6 +896,13 @@ async function main() {
       : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`
       : "phone alerts on");
     if (upstream && upstream.ahead > 0) console.log(`live release is ${upstream.ahead} commit(s) ahead of origin/master, from branch ${upstream.branch}, as its deploy at ${at(upstream.at)} found it: merge it`);
+    if (calls) {
+      const tally = (counts: Record<string, number>) => {
+        const parts = Object.entries(counts).sort(([, a], [, b]) => b - a);
+        return `${parts.reduce((sum, [, n]) => sum + n, 0)}${parts.length ? ` (${parts.map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}`;
+      };
+      console.log(`last 24 h: ${calls.calls} calls; failed: ${tally(calls.failures)}; the extension's link dropped: ${tally(calls.drops)}`);
+    }
     const since = Date.now() - 10 * 60_000;
     const events = (h.journal ?? []).filter((ev) => Object.hasOwn(EXTENSION_EVENTS, ev.kind) && Date.parse(ev.t) >= since).slice(-5);
     for (const { t, kind, ...more } of events) console.log(`${at(t)}  ${kind}${Object.keys(more).length ? `  ${JSON.stringify(more)}` : ""}`);

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The CLI against a daemon that records each call and answers it from
-// answers[tool], else with ok, and answers /health with health().
+// answers[tool], else with ok, and answers /health with health(). It keeps
+// no call log: /calls is not found there.
 type Call = { tool: string; args: Record<string, unknown> };
 const calls: Call[] = [];
 let answers: Record<string, unknown> = {};
@@ -13,7 +14,9 @@ const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   async fetch(req) {
-    if (new URL(req.url).pathname === "/health") return health();
+    const path = new URL(req.url).pathname;
+    if (path === "/health") return health();
+    if (path === "/calls") return new Response("", { status: 404 });
     const { tool, args }: Call = await req.json();
     calls.push({ tool, args });
     return Response.json(Object.hasOwn(answers, tool) ? answers[tool] : { ok: true, value: { ok: true } });
