@@ -8,7 +8,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
+import { TOOLS, inputSchema, replyText, type Tool } from "./tools.ts";
 import { IMESSAGE_READ_TOOLS } from "./imessage.ts";
 import { HISTORY_TOOLS } from "./safari-history.ts";
 import { FILL_TOOLS } from "./fill.ts";
@@ -304,7 +304,7 @@ export async function runAgent(messages: ChatMsg[], cfg: AgentConfig): Promise<{
         try {
           const value = await (cfg.tools ? tools[name].run(args) : runTool(name, args));
           cfg.onEvent({ type: "tool", name, args, ok: true, result: value });
-          messages.push({ role: "tool", tool_call_id: call.id, content: formatResult(value, 30_000).slice(0, 30_000) });
+          messages.push({ role: "tool", tool_call_id: call.id, content: await replyText(value) });
         } catch (e) {
           const em = String(e instanceof Error ? e.message : e);
           cfg.onEvent({ type: "tool", name, args, ok: false, error: em });

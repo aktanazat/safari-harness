@@ -101,6 +101,8 @@ const USAGE = `safari — drive Safari from the terminal
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
   (or --save <file>, for a path starting with / ./ or ../), and print only
   its path, size, and first 500 characters.
+  extract and each map page print 20,000 characters (--max-bytes N for
+  more); a longer text is saved whole there too, and the read says where.
 
   safari eval <js> --tab N [--page] [--raw]  run JS, print the last value as JSON
                                              (--raw: the value alone, a string unquoted;
@@ -160,6 +162,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
                                              (--expression js, --as table, --concurrency 4,
+                                             --max-bytes N characters of each page,
                                              --wait '{"text":"Price"}' before each read,
                                              --follow '{"match":"a.item"}' to read the
                                              pages a listing links to, --fresh to read

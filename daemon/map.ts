@@ -502,10 +502,17 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
   const text = (bodies: string[], lines: string[]) => [...(lines.length ? [`${lines.join("\n")}\n\n`] : []), ...rows.map((r, i) => `${r.sep}${r.head}${bodies[i] ? `\n${bodies[i]}` : ""}`)].join("");
   const whole = text(rows.map((r) => r.body), top);
   if (whole.length <= max) return whole;
-  const index = rows.map((r) => {
+  // A page's size as its read found it: an extract cut at its limit keeps
+  // the whole text's length and its file (tools.ts fit), a saved read its
+  // file's bytes; on 10-29 a 237,685-byte page read as about 20,000.
+  const sizes = rows.map((r) => {
+    const v = "value" in r.page && r.page.value && typeof r.page.value === "object" ? r.page.value : {};
+    const saved = "saved" in v && typeof v.saved === "string" ? `, saved in ${v.saved}` : "";
+    return { of: "total" in v && typeof v.total === "number" ? `${v.total} characters` : "bytes" in v && typeof v.bytes === "number" ? `${v.bytes} bytes` : `${r.body.length} characters`, saved };
+  });
+  const index = rows.map((r, i) => {
     const p = r.page;
-    const saved = "value" in p && p.value && typeof p.value === "object" && "saved" in p.value ? `, saved in ${String(p.value.saved)}` : "";
-    const state = !p.ok ? `failed: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `read, ${r.body.length} characters${saved}`;
+    const state = !p.ok ? `failed: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `read, ${sizes[i].of}${sizes[i].saved}`;
     return `${"  ".repeat(r.depth)}- ${p.url}: ${state}`;
   });
   const lines = [...top, `each page below is cut to its share of ${max} characters:`, ...index];
@@ -519,5 +526,5 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     shares[i] = Math.min(rows[i].body.length, Math.max(0, Math.floor(room / (order.length - k))));
     room -= shares[i];
   });
-  return text(rows.map((r, i) => (shares[i] < r.body.length ? `${r.body.slice(0, shares[i])}\n…cut at ${shares[i]} of ${r.body.length} characters` : r.body)), lines);
+  return text(rows.map((r, i) => (shares[i] < r.body.length ? `${r.body.slice(0, shares[i])}\n…cut at ${shares[i]} of ${sizes[i].of}` : r.body)), lines);
 }

@@ -693,3 +693,12 @@ test("a map answer past a reply's length lists every page first, and gives each 
   expect(text.match(/\n…cut at \d+ of 40005 characters/g)).toHaveLength(2);
   expect(text).toContain("## https://shop.example/3 (5 ms)\ntext xxx");
 });
+
+// On 10-29 a map's list of pages gave a 237,685-byte page as about 20,000
+// characters: the part its read kept, not the page.
+test("a map answer past a reply's length gives a page cut at its limit its whole length and the file that holds it", () => {
+  const pages: Page[] = [1, 2].map((n) => ({ url: `https://shop.example/${n}`, ok: true, ms: 5, value: { url: `https://shop.example/${n}`, title: "Item", text: `text ${"x".repeat(19_995)}`, truncated: true, total: 237_685, saved: `/saved/item-${n}.txt` } }));
+  const text = formatResult({ pages }, 30_000);
+  expect(text).toContain("- https://shop.example/1: read, 237685 characters, saved in /saved/item-1.txt\n- https://shop.example/2: read, 237685 characters, saved in /saved/item-2.txt");
+  expect(text.match(/\n…cut at \d+ of 237685 characters/g)).toHaveLength(2);
+});

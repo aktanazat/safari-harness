@@ -216,7 +216,8 @@ rules](#cleanup-authority); it is not a list of windows kept alive.
   action does not continue blindly: read a fresh whole-page `snapshot`,
   `extract`, or uncropped `shot` of each task tab before acting on it again.
   This also applies to a task tab moved to another window. A read started
-  before takeover, a narrowed read, or a truncated read does not count.
+  before takeover, a narrowed read, or a read cut short does not count; an
+  `extract` cut at its limit whose whole text went to its `saved` file does.
 - Stop: every later call fails with "the user stopped this task from its
   window; stop and tell the user what you had done". Your tabs close; the
   window keeps its page, marked stopped, and goes two minutes later or
@@ -388,6 +389,17 @@ the sites, each with the harness's own reason and next step, never a
 page's words: a lead at its end, a helper at its first `yield`. A page
 its instructions said to leave may stay, and the reply says so.
 
+### How much a read returns
+
+| Read | Returns | For more |
+| --- | --- | --- |
+| `extract`, each `map` page | 20,000 characters, and the whole text, up to 2,000,000, in the file `saved` names | `maxBytes`, or read the file |
+| `snapshot` | 600 lines | `maxNodes`, or `save` (10,000 lines) |
+| `fetch`, `authenticated_read` | 50,000 characters | `maxBytes` (up to 2,000,000), or `save` |
+| `pdf` read | 200,000 characters | `maxBytes` |
+| `save` | 2,000,000 characters; `snapshot` 10,000 lines | `maxBytes` or `maxNodes` |
+| An MCP reply | 30,000 characters, and the whole answer in a file it names | narrow the read (`query`, `root`, `selector`) |
+
 ## Saving a read to a file
 
 `extract`, `snapshot`, `eval`, and `fetch` take `save`. The whole output goes
@@ -421,6 +433,12 @@ carrying the page in context.
   and the reply ends by saying so and where: read the part you need from
   that file, or narrow the read. A long `map` answer lists every page
   first, then gives each page an even share, and a page cut says where.
+- `extract`, and each `map` page, past its limit saves itself: its whole
+  text, up to 2,000,000 characters, goes to a new file in the saved
+  folder; the answer keeps the first 20,000 (or `maxBytes`), `total`
+  counts the whole, and `saved` names the file. Its last line says so:
+  `…showing 20000 of 189269 characters; full text in <path>`. `save:
+  false` writes nothing.
 
 ## Acting
 
@@ -1120,6 +1138,10 @@ time (`concurrency`, fewer if you ask). It returns `pages` in the order of
 with, and `finalUrl` when it opened at another address. The answer's
 first line counts the pages read and failed.
 
+- `maxBytes` sets how much of each page's text comes back (20,000
+  characters unless set); a longer page's whole text goes to a file,
+  which its `value.saved` names. When the answer outgrows a reply, its
+  list of pages gives each page's whole size and file.
 - `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":
   ".listing"}`, `{"quiet": true}`), holds each read until its page shows
   that. Pass it for pages whose script draws what you read after they
@@ -1333,7 +1355,9 @@ why beside the page's own read.
 `selector` (or `root`) narrows the read to one region (`safari guide
 snapshot`). A `query` that misses inside `selector` (or the section) but
 matches elsewhere on the page says how many lines it left out. `save`
-writes the read to a file (`safari guide reference saving`).
+writes the read to a file (`safari guide reference saving`). Text past
+`maxBytes` (20,000 characters unless set) is cut there, and the whole of
+it goes to the saved folder: `total` counts it and `saved` names the file.
 
 ### Tables and card lists as rows
 

@@ -3411,8 +3411,9 @@
     return {
       url: location.href,
       title: document.title,
-      text: text.length > limit ? text.slice(0, limit) + "\n…truncated" : text,
+      text: text.slice(0, Math.max(limit, opts.whole || 0)),
       truncated: text.length > limit,
+      ...(text.length > limit ? { total: text.length } : {}),
       ...(controls.length ? { controls } : {}),
       ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
       ...(loading ? { loading: true } : {}),

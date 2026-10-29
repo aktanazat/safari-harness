@@ -96,7 +96,7 @@ async function valueOf(tab: number, how: Exclude<How, "replay">, what: string): 
   if (how === "selector") {
     const seen = (await rpc("wait", { tab, selector: what, ms: SHOW_MS })) as { found?: boolean; challenge?: Challenge };
     if (!seen.found) return seen.challenge ? { challenge: seen.challenge } : {};
-    const got = (await rpc("extract", { tab, selector: what })) as { text?: unknown };
+    const got = (await rpc("extract", { tab, selector: what, save: false })) as { text?: unknown };
     return typeof got.text === "string" ? { value: got.text } : {};
   }
   if (how === "eval") {
@@ -109,7 +109,7 @@ async function valueOf(tab: number, how: Exclude<How, "replay">, what: string): 
   const re = new RegExp(what);
   const until = Date.now() + SHOW_MS;
   for (;;) {
-    const got = (await rpc("extract", { tab, selector: "body", maxBytes: 500_000 })) as { text?: unknown };
+    const got = (await rpc("extract", { tab, selector: "body", maxBytes: 500_000, save: false })) as { text?: unknown };
     const m = typeof got.text === "string" ? re.exec(got.text) : null;
     if (m) return { value: m[1] ?? m[0] };
     if (Date.now() >= until) return {};

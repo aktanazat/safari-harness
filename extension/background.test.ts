@@ -1679,6 +1679,19 @@ test("extract reads an embedded frame shown in what it read, which the page cann
   });
 });
 
+// On 10-29 a javadoc frameset's read cut each frame at the limit on its
+// own, and ended "â€¦truncated": the marker's UTF-8 read as Windows-1252.
+test("extract of a page and its frames past the limit answers their text up to what the daemon saves, cut once, and counts the whole", async () => {
+  const { b, tab, form } = await sheerid();
+  const own = "a".repeat(15_000);
+  const framed = "b".repeat(12_000);
+  tab.doc.does = (op) => (op === "extract" ? { url: tab.doc.url, title: "Adorama", text: own, truncated: false, frames: [{ token: "sheerid", name: "frame" }] } : { url: tab.doc.url });
+  form.does = () => ({ url: form.url, title: "SheerID", text: framed, truncated: false });
+  const whole = `${own}\n\nframe:\n${framed}`;
+  expect(await b.ask(tab, "extract", [{ whole: 2_000_000 }])).toEqual({ value: { url: tab.doc.url, title: "Adorama", text: whole, truncated: true, total: whole.length } });
+  expect(await b.ask(tab, "extract", [{}])).toEqual({ value: { url: tab.doc.url, title: "Adorama", text: whole.slice(0, 20_000), truncated: true, total: whole.length } });
+});
+
 type ShotResult = {
   data: string;
   screens?: number;

@@ -27,7 +27,7 @@ export const REPL_TIMEOUT_MS = 120_000;
 // A run's output past this many characters is saved whole, and the result
 // keeps its head and the file's path. On 10-14 one agent's 36 runs reading
 // Calendly's and Ashby's bundles printed 250 KB, two of them 30 KB of
-// minified source each, cut only where the MCP reply cuts (mcp-tools.ts).
+// minified source each, cut only where a reply cuts (replyText, tools.ts).
 const SPILL_CHARS = 10_000;
 const SPILL_HEAD_CHARS = 2_000;
 // A failed run's output, and its error, past this many lines are cut to
@@ -977,7 +977,7 @@ export class ReplSession {
     const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
     this.showNotes(snap);
     const lines = snap.snapshot.split("\n");
-    const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref)`] : [];
+    const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref, or raise maxNodes)`] : [];
     const warn = [stateLine(snap).trimEnd(), ...(snap.addressedToAI ? [addressedNote(snap.addressedToAI)] : []), ...(snap.memoryWarning ? [`memoryWarning: ${snap.memoryWarning}`] : [])].filter(Boolean);
     const tree = [`title: ${snap.title}`, `url: ${snap.url}`, ...warn, ...lines, ...cut].join("\n");
     const key = `${page.id}|${root ?? ""}|${opts.interactive ? 1 : 0}|${opts.showHidden ? 1 : 0}`;
