@@ -23,7 +23,7 @@ export type Account = { userId: string; name: string; email: string; spaces: { i
 
 async function post<T>(kit: SiteKit, endpoint: string, body: unknown, userId?: string): Promise<T> {
   await kit.tab(ORIGIN, TAB_URL);
-  await kit.pace("notion", PACE_MS);
+  await kit.turn(ORIGIN, PACE_MS);
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (userId) headers["x-notion-active-user-header"] = userId;
   return kit.json<T>(ORIGIN, `${API}/${endpoint}`, { method: "POST", headers, body: JSON.stringify(body) }, SITE);

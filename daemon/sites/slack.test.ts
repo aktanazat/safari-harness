@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Invoke } from "../call.ts";
+import { PACE_TOOL } from "../pace.ts";
 import { SiteKit } from "./kit.ts";
 import { slack } from "./slack.ts";
 
@@ -19,11 +20,13 @@ const FILE = { id: "F1", name: "image.png", mimetype: "image/png", size: PNG.len
 
 const dir = mkdtempSync("/private/var/tmp/slack-test-");
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
-// Requests are paced and a 429 is waited out, on the fake clock.
-beforeEach(() => {
+// Requests are paced and a 429 is waited out, on one fake clock for every
+// test: the daemon's pacer keeps its turns across clients (pace.ts), and
+// the daemon's clock never goes back.
+beforeAll(() => {
   jest.useFakeTimers();
 });
-afterEach(() => {
+afterAll(() => {
   jest.useRealTimers();
 });
 
@@ -32,6 +35,7 @@ function safari(methods: Record<string, object>, files: Served[]) {
   const fetched: { url: string; at: number }[] = [];
   const send: Invoke = async (tool, args) => {
     if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
     if (tool === "eval") {
       const method = /\/api\/([\w.]+)/.exec(String(args.expression))?.[1];
       if (method === undefined) return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM] } };

@@ -77,7 +77,10 @@ daemon/
                     each reader in a background tab of its own that loads its
                     next page and closes as map answers
   reads.ts          a task's map reads of the last 10 minutes, and the bot
-                    checks its sites showed it, so neither is loaded again
+                    checks its sites showed it, so neither is loaded again;
+                    a check that stays bars its host for every agent
+  pace.ts           one pacer by host for every agent and REPL session:
+                    turns apart, and holds until a rate limit resets
   mission.ts        live task controls and bounded private history; a fresh
                     view is required after the user gives control back
   mission-history.ts private restart-safe history and optional action pictures

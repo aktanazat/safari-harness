@@ -1968,7 +1968,9 @@
   // Requests from here carry the page's cookies, as the page's own would.
   // One to a site the page's own requests sent a sign-in header to goes
   // from the page's world with that header (signedFetch). base64 returns
-  // the body's bytes (a PDF, an image) instead of its text.
+  // the body's bytes (a PDF, an image) instead of its text. A text answer
+  // carries its length and the headers that say when to ask again.
+  const TOLD = /^(?:content-length|retry-after|(?:x-)?rate-?limit)/i;
   async function pageFetch(url, opts = {}) {
     const target = new URL(url, location.href);
     const limit = opts.maxBytes || 50000;
@@ -1984,13 +1986,15 @@
     if (opts.base64) {
       const blob = await res.blob();
       const kept = blob.size > limit ? blob.slice(0, limit) : blob;
-      return { ...head, headers: [...res.headers], data: await base64Of(kept), truncated: blob.size > limit };
+      return { ...head, headers: [...res.headers], data: await base64Of(kept), truncated: blob.size > limit, total: blob.size };
     }
     const text = await res.text();
     return {
       ...head,
+      headers: [...res.headers].filter(([name]) => TOLD.test(name)),
       text: text.length > limit ? text.slice(0, limit) : text,
       truncated: text.length > limit,
+      total: text.length,
     };
   }
 

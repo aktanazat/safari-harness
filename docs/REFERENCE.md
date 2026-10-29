@@ -276,6 +276,14 @@ repeating an uncertain action. `stale_view` means the user changed the
 tab; `effect_unknown` means an earlier action's result is not known.
 Privacy refusals do not authorize an unprotected screenshot.
 
+`rate_limited` comes from a REPL site global whose site answered 429 (too
+many requests) or said its limit was used up. `detail` is `{host,
+resetAt}`, the reset in epoch ms, and the message gives it as a time and
+in seconds. Until then every session's requests to that host wait, up to
+30 s, and past that fail at once with the same reset. A site that names
+no reset gets a back-off that doubles with each 429 in a row, up to 15
+minutes, and the message says so. Use another source meanwhile.
+
 unfinished native input is not retryable, and a page read cannot release
 its permit. if a tool dies before confirming a click or typing, do not
 repeat it. stop the agent and make sure its input has stopped before
@@ -648,6 +656,13 @@ check, no solving services.
   itself, counts only in a web read's HTML (omp).
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
+- A check that does not clear by itself (any but Cloudflare's "Just a
+  moment..." page, or a box in a page) is kept for every agent by host
+  for 10 minutes. Another agent's `open`, `goto`, or `map` of that host
+  fails at once with `blocked` and an error naming the check, when it
+  showed, and where to go instead (`web_search` for a search). `fresh:
+  true` loads it anyway, and a load the check is gone from clears it for
+  everyone.
 - `handoff {tab, why}` is for other steps only the user can take in the tab,
   such as a passkey or Touch ID prompt, a code read off his card, or consent.
   Do not hand off bot checks.
@@ -1208,8 +1223,9 @@ first line counts the pages read and failed.
   place as unfinished, and its address comes back in `urls`: map those
   again, in a call with fewer pages. One still being read goes on, and
   its tab closes when it ends; with `save`, it writes no file.
-- Google's and Bing's results pages load one at a time, 3 s apart, across
-  every map: a burst of searches meets a reCAPTCHA.
+- Each search engine's results pages (Google's, Bing's) load one at a
+  time, 3 s apart, across every map and the `googleSearch` global: a
+  burst of searches meets a reCAPTCHA.
 - A page your task (you and the agents you started) read the same way in
   the last 10 minutes is answered from that read, not loaded: `ms: 0`,
   and `from` says whose read and when (`from Lead's read 40 s ago`).
@@ -1225,7 +1241,8 @@ first line counts the pages read and failed.
   the page's value. Once a site showed your task a check, its pages are
   not loaded again for 10 minutes: each fails at once with `challenge` and
   an error naming who met it and when. Open that page in a tab as above,
-  or pass `fresh: true`.
+  or pass `fresh: true`. A check that does not clear by itself keeps its
+  site from every agent's maps the same way (bot checks, above).
 - A close the extension's dropped link left unanswered is asked again
   once the link is back; a tab that still would not close says why in
   `closeError`.
@@ -2162,7 +2179,11 @@ without it.
 
 - `fetch` requests a URL from the page with its cookies and returns status,
   type, and the text (50 KB unless `maxBytes`): an API read without
-  opening a page. `method` and `body` send a POST. To a site the page's own
+  opening a page. `total` is the whole text's length, and a text cut
+  short says `truncated: true` and prints `showing the first X of Y
+  characters`. `headers` holds the content-length, retry-after, and
+  rate-limit headers the page could read (another site's answer shows
+  few). `method` and `body` send a POST. To a site the page's own
   requests send an `Authorization` header to (an API that takes a token the
   page keeps, not cookies), it goes from the page's own world with that
   header, unless you give one; the answer carries a `note` saying so and

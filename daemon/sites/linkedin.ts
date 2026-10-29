@@ -8,8 +8,10 @@
 // and jobs go through the app's GraphQL, whose query ids the app's bundles
 // name; they are read from the bundles once per session (fetched, never
 // navigated to, so nothing is marked read). Requests are paced 1 to 1.75 s
-// apart; LinkedIn flags bursts hard, and this is the owner's real account.
+// apart across every agent (pace.ts); LinkedIn flags bursts hard, and this
+// is the owner's real account.
 
+import { rateLimited } from "../failures.ts";
 import { draftOrSend, NotSignedIn, type SiteKit } from "./kit.ts";
 
 const ORIGIN = "https://www.linkedin.com";
@@ -34,7 +36,7 @@ const QUERIES = {
 type Query = keyof typeof QUERIES;
 
 type Job = { method: string; path: string; body: string | null; query: string | null; discover: string[] };
-type Reply = { signedOut?: boolean; status: number; url: string; body: unknown; ids?: Record<string, string> };
+type Reply = { signedOut?: boolean; status: number; url: string; retryAfter?: string | null; body: unknown; ids?: Record<string, string> };
 
 // Runs in the tab. Plain script: nothing leaves but the response and the
 // query ids, which hold no secrets.
@@ -67,7 +69,7 @@ const run = async (job) => {
   const t = await r.text();
   let body = t.slice(0, 500);
   try { body = JSON.parse(t); } catch {}
-  return Object.assign({ status: r.status, url: r.url, body }, out);
+  return Object.assign({ status: r.status, url: r.url, retryAfter: r.headers.get("retry-after"), body }, out);
 };
 `;
 
@@ -351,7 +353,7 @@ export function linkedin(kit: SiteKit) {
 
   async function call(method: string, path: string, opts: { body?: string; query?: Query } = {}): Promise<unknown> {
     await kit.tab(ORIGIN, PARK_URL);
-    await kit.pace("linkedin", PACE_MIN_MS + Math.random() * PACE_JITTER_MS);
+    await kit.turn(ORIGIN, PACE_MIN_MS + Math.random() * PACE_JITTER_MS);
     const query = opts.query ?? null;
     const known = query ? ids.get(QUERIES[query]) : undefined;
     const job: Job = { method, path: known ? path.replace("QUERY_ID", known) : path, body: opts.body ?? null, query: known ? null : query && QUERIES[query], discover: Object.values(QUERIES) };
@@ -359,7 +361,8 @@ export function linkedin(kit: SiteKit) {
     if (r.ids) for (const [name, id] of Object.entries(r.ids)) ids.set(name, id);
     if (r.signedOut || r.status === 401 || r.status === 403 || /\/(login|uas\/login|authwall)/.test(r.url)) throw new NotSignedIn(SITE, r.signedOut ? "no session cookie" : r.status ? `HTTP ${r.status}` : "redirected to sign in");
     if (r.url.includes("/checkpoint/")) throw new Error("LinkedIn is challenging this account (redirected to a checkpoint); stop and sign in by hand before trying again");
-    if (r.status === 429) throw new Error("LinkedIn rate-limited this request (HTTP 429); wait a few minutes before trying again");
+    const limit = await kit.limited(ORIGIN, r.status, (name) => (name === "retry-after" ? r.retryAfter : null));
+    if (limit) throw rateLimited(limit.host, limit.resetAt, limit.guessed);
     if (r.status === 999) throw new Error("LinkedIn blocked this request (HTTP 999); stop for at least a minute before trying again");
     const body = r.body as Envelope | string;
     if (r.status < 200 || r.status >= 300) throw new Error(`LinkedIn answered HTTP ${r.status}${typeof body === "string" ? `: ${body.slice(0, 200)}` : ""}`);

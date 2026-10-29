@@ -22,7 +22,7 @@ import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites }
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAnswer, type Page } from "./map.ts";
-import { met } from "./reads.ts";
+import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, queuing } from "./lanes.ts";
 import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
@@ -41,6 +41,7 @@ import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdat
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
 import { createVideoTool } from "./video-observation.ts";
 import { inputStateTool } from "./input-state.ts";
+import { PACE_TOOL } from "./pace.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1038,6 +1039,13 @@ async function afterWall(t: TabInfo, tab: number): Promise<object> {
   return challenge ? { ...page, challenge } : page;
 }
 
+// A model's open or goto of a host that showed any agent a check that does
+// not clear by itself fails at once (reads.ts); fresh: true loads it anyway.
+function unwalled(url: string, fresh: unknown): void {
+  const wall = fromModel() && fresh !== true ? walled(url) : undefined;
+  if (wall) throw new HarnessError("blocked", wall.error, { next: wall.error });
+}
+
 // open, goto, and snapshot also carry what agents have learned about the
 // site: on the first result on it for each agent (notes.ts), and again on a
 // page not found, which a note may explain. The first result on a host
@@ -1891,9 +1899,9 @@ async function extensionFetch(url: string, opts: { maxBytes?: number; base64?: b
   const head = { ...(typeof f.status === "number" ? { status: f.status } : {}), url: f.url || url, type: f.type };
   const body = Buffer.from(f.data, "base64");
   const limit = opts.maxBytes || 50000;
-  if (opts.base64) return { ...head, data: body.subarray(0, limit).toString("base64"), truncated: body.length > limit, note };
+  if (opts.base64) return { ...head, data: body.subarray(0, limit).toString("base64"), truncated: body.length > limit, total: body.length, note };
   const text = body.toString("utf8");
-  return { ...head, text: text.slice(0, limit), truncated: text.length > limit, note };
+  return { ...head, text: text.slice(0, limit), truncated: text.length > limit, total: text.length, note };
 }
 
 function ownedReadTab(value: unknown): number {
@@ -2632,6 +2640,7 @@ export const TAB: Param = { description: 'open id or "front"' };
 export const SECRET_ENV: Param = { type: "string", description: "the CLI caller's environment variable for secret env" };
 // close, activate, and window act only on a tab the agent opened
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
+const FRESH: Param = { type: "boolean", description: "load a site that showed a check in the last 10 min anyway" };
 export const REF: Param = { description: "snapshot ref, CSS, visible text" };
 // A point of the tab's viewport in CSS px, as the page's clientX and
 // clientY count it: click's x and y, and real_input's (input.ts).
@@ -2867,11 +2876,12 @@ export const TOOLS: Record<string, Tool> = {
   open: {
     desc: 'Open a URL and wait until it is readable; pass its id as tab to later calls. tab "front": the user\'s front tab, when he asks about it.',
     params: { url: { type: "string", description: "address" }, background: { type: "boolean", description: "keep the current tab in front" }, group: { type: "string", description: "task name: a window of its own" }, keep: { type: "boolean", description: "leave it open for the user" }, new: { type: "boolean", description: "else your tab on its site is reused" }, snapshot: PAGE },
-    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" } },
+    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" }, fresh: FRESH },
     required: ["url"],
     run: async (a) => {
       pageRead(a.snapshot);
       const address = webAddress(a.url);
+      unwalled(address, a.fresh);
       const group = a.group === undefined ? undefined : str(a.group, "group");
       const space = daemonPage(address) ? heldSpace(group) : await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
@@ -2944,8 +2954,10 @@ export const TOOLS: Record<string, Tool> = {
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
+    unlisted: { fresh: FRESH },
     required: ["tab", "url"],
     run: action(async (a) => {
+      unwalled(str(a.url, "url"), a.fresh);
       const t = await navigate(a.tab, str(a.url, "url"));
       return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab)));
     }),
@@ -3224,6 +3236,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   video: createVideoTool({ call: (tool, args) => callTool(tool, args, false, false), admit: admitPageObservation, present: (tab, check, act) => inFront(tab, { tabs: listTabs, activate: activateTab }, act, check) }),
   input_state: inputStateTool(),
+  pace: PACE_TOOL,
   native_preflight: {
     desc: "Check native drag or paste targets without scrolling or sending input.",
     hidden: true,
@@ -3565,7 +3578,9 @@ export function formatResult(value: unknown, max = Infinity): string {
       if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
-      return `${JSON.stringify(rest)}\n\n${text}`;
+      const { total } = value as { total?: unknown };
+      const cut = v.truncated && typeof total === "number" ? `showing the first ${text.length} of ${total} characters; maxBytes or save reads more\n` : "";
+      return `${JSON.stringify(rest)}\n${cut}\n${text}`;
     }
     if (v.page !== undefined) {
       const { page, ...rest } = v;

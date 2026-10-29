@@ -456,7 +456,9 @@
     Reflect.apply(plain.fetch, window, [ask.url, { method: ask.method, headers, body: ask.body ?? undefined, credentials: "include" }])
       .then(async (res) => {
         const text = await res.text();
-        return { status: res.status, url: res.url, type: res.headers.get("content-type"), text: text.slice(0, ask.max), truncated: text.length > ask.max };
+        // the headers pageFetch in content.js keeps
+        const told = [...res.headers].filter(([name]) => /^(?:content-length|retry-after|(?:x-)?rate-?limit)/i.test(name));
+        return { status: res.status, url: res.url, type: res.headers.get("content-type"), headers: told, text: text.slice(0, ask.max), truncated: text.length > ask.max, total: text.length };
       })
       .catch((err) => ({ error: String(err && err.message || err) }))
       .then((answer) => tell("__sh_fetch_answer", { id: ask.id, answer }));

@@ -95,6 +95,11 @@ benchRows("content.js in WebKit", [
     page: "icon-links.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] link "Cart"\n[2] link "Help"' } } }],
   },
+  {
+    name: "a fetch cut at maxBytes says how long the whole text was",
+    page: "hidden.html",
+    steps: [{ op: "fetch", args: [`data:text/plain,${"x".repeat(100_006)}`, { maxBytes: 50_000 }], answer: { value: { truncated: true, total: 100_006 } } }],
+  },
   // Safari's side of this, a census lost to a microtask in the middle of a
   // read, is checked live (scripts/check-live.ts): this web view runs none
   // there.

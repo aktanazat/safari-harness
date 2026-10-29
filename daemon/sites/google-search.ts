@@ -50,7 +50,7 @@ export function googleSearch(kit: SiteKit) {
       const start = Math.max(0, Math.floor(opts.start ?? 0));
       const limit = opts.limit ?? PAGE_SIZE;
       const tab = await kit.tab(ORIGIN);
-      await kit.pace("google-search", 3000);
+      await kit.turn(ORIGIN, 3000);
       const url = `${ORIGIN}/search?q=${encodeURIComponent(q)}${start ? `&start=${start}` : ""}`;
       await kit.invoke("goto", { tab, url });
       const got = await kit.eval<Collected>(ORIGIN, COLLECT);
