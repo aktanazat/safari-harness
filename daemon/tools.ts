@@ -52,7 +52,7 @@ import { basename, dirname, extname, isAbsolute, join } from "node:path";
 // active tab of the window Safari shows in front, agent windows included;
 // partial: the step of the listing Safari's windows did not finish within
 // 2.5 s (background.js), when no tab says front or shown
-export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean; partial?: string };
+export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean; partial?: string; file?: "pdf" | "download" };
 
 type Relay = (tabId: number, op: string, args?: unknown[], timeoutMs?: number) => Promise<unknown>;
 const relay: Relay = (tabId, op, args = [], timeoutMs) => bridge.tab(tabId, op, args, timeoutMs);
@@ -2499,6 +2499,33 @@ function watched(run: (a: Record<string, unknown> & { tab: number }) => Promise<
   };
 }
 
+// ---------- Files an address opens ----------
+// An address Safari saves as a file shows no page: a tab open made stays
+// blank, and goto's keeps the page it had (background.js openedOrFile).
+// open and goto read the file in the same call: a PDF's text through pdf,
+// a text file's own text (one past FILE_TEXT_MAX cut, and saved whole to
+// ~/Downloads), any other saved there by its path; the blank tab closes.
+// The extension's fetch is the one that found the file (fileAt), so it
+// fetches it here. In the logs through 10-29 agents met that blank tab 56
+// times in 41 sessions, each a call more (friction).
+const FILE_TEXT_MAX = 50_000;
+const TEXT_TYPE = /^(?:text\/|application\/(?:json|xml|javascript|x-ndjson|[\w.+-]+\+(?:json|xml))\b)/i;
+
+async function fileOpened(t: TabInfo, close: boolean): Promise<unknown> {
+  const url = t.url ?? "";
+  let read: object;
+  if (t.file === "pdf") read = await pdf({ do: "read", url });
+  else {
+    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const text = TEXT_TYPE.test(f.type) ? Buffer.from(f.data, "base64").toString("utf8") : undefined;
+    if (text === undefined) read = { url, ...(await saveFile(f, url, undefined, DOWNLOADS)) };
+    else read = { url, type: f.type, text: text.slice(0, FILE_TEXT_MAX), ...(text.length > FILE_TEXT_MAX ? { truncated: true, total: text.length, saved: (await saveFile(f, url, undefined, DOWNLOADS)).path } : {}) };
+  }
+  if (!close) return beside({ id: t.id, ...read, file: t.file }, "note", `the address is a file, read here; tab ${t.id} still shows the page it had`);
+  await closeTab(t.id, "as its address was a file");
+  return beside({ ...read, file: t.file }, "note", "the address is a file, read here; the blank tab it opened closed");
+}
+
 // ---------- PDF ----------
 // save prints the page (its current HTML, against its own address) to a
 // PDF; read gives a PDF's text: a local path, a web address, or the PDF the
@@ -2835,6 +2862,7 @@ export const TOOLS: Record<string, Tool> = {
       if (reused) {
         const { tab: t, was } = reused;
         try {
+          if (t.file) return await fileOpened(t, false);
           const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
           return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
         } finally {
@@ -2852,6 +2880,7 @@ export const TOOLS: Record<string, Tool> = {
         if (held) held.url = t.url;
         if (a.site === true && held) held.site = true;
         save();
+        if (t.file) return await fileOpened(t, !a.keep);
         const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
         const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
         return had === undefined ? result : beside(result, "hint", had);
@@ -2899,7 +2928,10 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Load a URL in a tab and wait until it is readable.",
     params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
     required: ["tab", "url"],
-    run: action(async (a) => withNotes(flagged(await afterWall(await navigate(a.tab, str(a.url, "url")), a.tab)))),
+    run: action(async (a) => {
+      const t = await navigate(a.tab, str(a.url, "url"));
+      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab)));
+    }),
   },
   activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
   snapshot: {

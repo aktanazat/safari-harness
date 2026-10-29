@@ -946,10 +946,13 @@ have, use `safari goto <url> --tab N`.
   their own; `openTab` prints a `hint:` naming the tabs you had there:
   `goto` one of those next time, and close the one you are done with.
 - An address Safari downloads instead of showing (a PDF or other file
-  served as an attachment) leaves its tab with no address. `open` and
-  `goto` then answer within seconds with `file: "pdf"` or `file:
-  "download"`, and every read of that tab says at once to use `pdf {do:
-  "read", url}` or `download {url}`.
+  served as an attachment) shows no page. `open` and `goto` then read it
+  in the same call and answer with `file: "pdf"` or `file: "download"`:
+  a PDF's `text`, as `pdf {do: "read", url}` reads it; a text file's
+  `text`, cut at 50,000 characters (`truncated`, its `total`, and the
+  whole file `saved` in ~/Downloads); any other file saved in ~/Downloads,
+  with its `path`. The blank tab `open` made closes (`keep: true` leaves
+  it); `goto`'s tab keeps the page it had.
 - `open` and `goto` take a whole `http` or `https` address (or
   `about:blank`). Anything else fails before a tab opens: Safari opens no
   local file for the extension, so serve its folder
@@ -1123,8 +1126,11 @@ or one after a read, can still match text already shown.
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
 each with: `extract` (the default), `snapshot`, `eval` with `expression`,
 or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
-page opens in a background tab in your window, is read, and closes, 6 at a
-time (`concurrency`, fewer if you ask). It returns `pages` in the order of
+page is read in a background tab in your window, 6 at a time
+(`concurrency`, fewer if you ask): one tab for each page read at once,
+which loads the next page once its page is read, and closes when map
+answers. A load that never began opens the page in a new tab, so a page
+is never read as the one before it. It returns `pages` in the order of
 `urls`, each `{url, ok, value or error, ms}`, with the `title` it opened
 with, and `finalUrl` when it opened at another address. The answer's
 first line counts the pages read and failed.
@@ -1146,9 +1152,13 @@ first line counts the pages read and failed.
   counts the matching links past `max`. A selector is waited for, so a
   list a script draws late is still read; a listing on which nothing
   matches fails saying so. `wait` holds each item's read, not the
-  listing's; a `note` says so when none of them showed it. The 50 s cover
-  the listings and their pages together. The matching links past `max`,
-  and items the 50 s left unread, come back as `urls`, to map next.
+  listing's; a `note` says so when none of them showed it. While `max`
+  wants more links, a listing's next page (its link marked `rel=next`,
+  else the one that says next) is read as a listing too; `next` names the
+  next page left unread, and a `note` gives the map that goes on from it.
+  The 50 s cover the listings and their pages together. The matching
+  links past `max`, and items the 50 s left unread, come back as `urls`,
+  to map next.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
   reads as an error page (HTTP 400 or more, a page titled not found, a rate
@@ -1164,8 +1174,13 @@ first line counts the pages read and failed.
   loaded again. An `eval` supplied by the caller or a fetch that may
   change the page is never repeated after a disconnect; its effect
   must be checked first.
-- A PDF, downloaded or shown in Safari's viewer, is read with `pdf {do:
-  "read", url}` for `extract`; its value is the PDF's text.
+- A page that answers nothing in time (a dialog or a load holds it, or
+  Safari is slow) is read once more after the others. One that stalls
+  again fails with an error ending `map it again`, and its address comes
+  back in `urls`.
+- A PDF or other file Safari downloads is read as `open` reads it (see
+  [open](#open)); a PDF shown in Safari's viewer is read with `pdf {do:
+  "read", url}` for `extract`. Its value is the file's text, or its path.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
   with the pages read so far. A page not read by then is reported in its
   place as unfinished, and its address comes back in `urls`: map those
@@ -1189,7 +1204,9 @@ first line counts the pages read and failed.
   not loaded again for 10 minutes: each fails at once with `challenge` and
   an error naming who met it and when. Open that page in a tab as above,
   or pass `fresh: true`.
-- A tab that would not close says why in `closeError`.
+- A close the extension's dropped link left unanswered is asked again
+  once the link is back; a tab that still would not close says why in
+  `closeError`.
 - `save: true` (the saved folder) or an absolute folder writes each page's
   output to a file of its own there, as `save` does for one read; each
   `value` is then `{saved, bytes, head}`. A failed page's read is saved
