@@ -378,7 +378,7 @@ safari net read --body -1 --tab 7      # the latest request's whole body; or --b
 safari shot --out page.png --tab 7     # protected pixels and an immutable evidence receipt
 safari shot --full --tiles --tab 7     # readable overlapping pieces; original retained
 safari download "Export CSV" --tab 7   # the file that button makes, into ~/Downloads
-safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf
+safari pdf --out page.pdf --tab 7      # the page as PDF; safari pdf read file.pdf (or a url, no tab)
 safari fetch /api/me --tab 7           # a request with the page's cookies
 safari read https://example.com/ --tab 7 --expect "Example Domain"  # readable page text; no target navigation
 safari dialog accept --tab 7           # answer confirms with OK from now on

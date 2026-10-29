@@ -5,7 +5,7 @@
 // exports of newer ones: keep their names and signatures as they are.
 
 import { join } from "node:path";
-import { TOOLS, formatResult, inputSchema, type Tool } from "./tools.ts";
+import { TOOLS, codeFrom, formatResult, inputSchema, type Tool } from "./tools.ts";
 import { CALLER_GROUPS, CALLER_TOOLS } from "./caller.ts";
 import { invoke } from "./call.ts";
 import { checkCall } from "./guard.ts";
@@ -42,14 +42,14 @@ function connectionSession(make: () => ReplSession): ReplSession {
 }
 
 const REPL_TOOL: Tool = {
-  desc: "Run JS in Safari; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. p.waitForChange() for new lines. API, examples and site kits: safari guide <site|repl>.",
-  params: { code: { type: "string", description: "JavaScript; top-level await works" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit for this connection's own" } },
-  required: ["code"],
+  desc: "Run JS in Safari; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. p.waitForChange() for new lines. API and site kits: safari guide <site|repl>.",
+  params: { code: { type: "string", description: "JS, top-level await (or file: path)" }, file: { type: "string" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit: this connection's own" } },
   run: async (a) => {
     // The repl's modules (node:vm, the site kits) load on its first call:
     // most sessions never make one, and this server lives as long as its session.
     const [{ ReplSession }, { REPL_DIR, runInSession }] = await Promise.all([import("./repl.ts"), import("./repl-host.ts")]);
-    const code = String(a.code ?? "");
+    if ((a.code === undefined) === (a.file === undefined)) throw new Error("repl takes code, or file: the code's absolute path (one of them)");
+    const code = a.file === undefined ? String(a.code) : await codeFrom(a.file);
     const own = a.session === undefined;
     const r: ReplResult & { hint?: string } = own
       ? await connectionSession(() => new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)
@@ -104,7 +104,7 @@ export async function callTool(name: string, args: Record<string, unknown>): Pro
   const { __safariTask, ...input } = args;
   const task = typeof __safariTask === "string" && __safariTask.trim() ? __safariTask : undefined;
   return withTask(task, async () => {
-    const value = name === "repl" ? await REPL_TOOL.run(input) : await invoke(name, input, true);
+    const value = name === "repl" ? await REPL_TOOL.run(checkCall({ repl: REPL_TOOL }, name, input, true).args) : await invoke(name, input, true);
     const text = formatResult(value);
     let answer = text;
     if (text.length > REPLY_CHARS) {

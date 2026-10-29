@@ -1,4 +1,7 @@
 import { expect, jest, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { callTool } from "./tools.ts";
@@ -115,3 +118,16 @@ test("code past eval's limit gets the page's answer in either world, not the dae
   for (const page of [false, true]) expect(String(await pastLimit("new Promise(() => {})", page))).toMatch(/ran past/);
 });
 
+
+// Script pasted into JSON arguments broke 41 calls in the 10-15 to 10-28
+// logs on its quotes and backslashes; a file carries it as written.
+test("a model's eval given file runs the code in that file, quotes, backslashes and lines as written", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eval-file-"));
+  try {
+    const file = join(dir, "read.js");
+    writeFileSync(file, 'const s = "it\'s \\"quoted\\"";\nconst re = /\\d+/;\n[s, re.test("a1")]\n');
+    expect(((await callTool("eval", { tab: 7, file }, true)) as { result: unknown }).result).toEqual(['it\'s "quoted"', true]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

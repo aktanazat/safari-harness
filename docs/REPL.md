@@ -16,7 +16,7 @@ safari repl "console.log(await p.title())"   # your next call still has p
 safari repl --session work "const p = await openTab('https://example.com')"
 safari repl --session work "console.log((await snapshot(p)).tree)"
 echo "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)" | safari repl --session work
-safari repl --session work --file /tmp/work.js   # in the message that writes it
+safari repl --session work --file /tmp/work.js   # in the message that writes it; the repl tool: {file}
 safari repl --list                  # sessions still running
 safari repl --close work            # end one; its tabs close
 ```

@@ -20,7 +20,7 @@ import { TOOLS, formatResult, resolveTab, type Tool } from "../daemon/tools.ts";
 import { rowsOf } from "../daemon/tabs-view.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
+import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
 import { daemonHttp, deployingFor } from "../daemon/rpc.ts";
 import { alertHealth } from "../daemon/phone.ts";
@@ -164,9 +164,9 @@ const USAGE = `safari — drive Safari from the terminal
                                              --follow '{"match":"a.item"}' to read the
                                              pages a listing links to, --fresh to read
                                              pages this task read in the last 10 min again)
-  safari pdf [save|read] [file.pdf] [--out file.pdf] [--tab N]
+  safari pdf [save|read] [file.pdf|url] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
-                                             (a file.pdf needs no tab)
+                                             (a file.pdf or url needs no tab)
   safari window <width> <height> --tab N     resize the tab's window to that size
   safari window --size 390x844 --tab N       the same, as WIDTHxHEIGHT
   safari history-search [text] [--any a b c] search Safari browsing history; --any: any of several texts
@@ -454,7 +454,7 @@ function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unk
       const miss = missFor(tool, given);
       if (miss) fail(miss, 2);
       const listed = [...Object.keys(tools[tool].params), ...own];
-      const near = nearest(given, listed);
+      const near = closestParam(given, listed);
       fail(`${cmd} takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${listed.map((f) => `--${f}`).join(" ")}; safari ${cmd} --help says what each does)`, 2);
     }
     const [name, p] = found;
@@ -492,7 +492,7 @@ function commandHelp(cmd: string): string | null {
     if (name === "save" || paths.includes(name)) desc = `${(desc ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")}${name === "save" ? SAVE_HOW : " (a relative path is taken from the current folder)"}`;
     if (name === "snapshot") desc = SNAPSHOT_HOW;
     const value = name === "snapshot" ? "[=<words>]" : p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`;
-    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${value}${how ? ` (${how})` : ""}\n      ${desc}`;
+    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${value}${how ? ` (${how})` : ""}${desc ? `\n      ${desc}` : ""}`;
   });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
@@ -1104,8 +1104,10 @@ async function main() {
     case "fetch": case "read": args.url = positional[0]; break;
     case "map": args.urls = positional; break;
     case "pdf": {
-      args.do = positional[0] ?? "save";
-      if (positional[1]) args.path = positional[1];
+      // On 10-29 `pdf --do read --url` failed "tab is required": do was
+      // save before the flags were read.
+      if (positional[0] !== undefined) args.do = positional[0];
+      if (positional[1] !== undefined) args[/^https?:/.test(positional[1]) ? "url" : "path"] = positional[1];
       break;
     }
     case "window": {

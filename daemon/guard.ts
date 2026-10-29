@@ -137,14 +137,14 @@ export function checkCall(tools: Record<string, Tool>, name: string, given: Reco
     from[real] = key;
   }
   if (unknown.length) {
-    const known = [...taken.params, ...taken.aliases.map(([alias]) => alias)];
+    const known = [...Object.keys(taken.taken), ...taken.aliases.map(([alias]) => alias)];
     const params = `(params: ${taken.params.join(", ") || "none"})`;
     if (unknown.length === 1) {
-      const near = nearest(unknown[0], known);
+      const near = closestParam(unknown[0], known);
       throw new Error(`unknown parameter ${unknown[0]} for ${tool}${near ? `; did you mean ${near}?` : ""} ${params}`);
     }
     const each = unknown.map((key) => {
-      const near = nearest(key, known);
+      const near = closestParam(key, known);
       return near ? `${key} (did you mean ${near}?)` : key;
     });
     throw new Error(`unknown parameters for ${tool}: ${each.join(", ")} ${params}`);
@@ -200,6 +200,27 @@ export function nearest(name: string, names: string[]): string | undefined {
   }
   return best;
 }
+
+// The parameter a wrong name most likely meant: one a slip away, else the
+// one sharing most of its words. maxChars, a guess in the 10-15 to 10-28
+// logs, is five letters from maxBytes and was named nothing nearer.
+export function closestParam(name: string, params: string[]): string | undefined {
+  const near = nearest(name, params);
+  if (near !== undefined) return near;
+  const mine = new Set(wordsOf(name));
+  let best: string | undefined;
+  let most = 0;
+  for (const p of params) {
+    const shared = wordsOf(p).filter((w) => mine.has(w)).length;
+    if (shared > most) {
+      best = p;
+      most = shared;
+    }
+  }
+  return best;
+}
+
+const wordsOf = (name: string) => name.split(/[-_]|(?<=[a-z])(?=[A-Z])/).map((w) => w.toLowerCase()).filter((w) => w.length > 2);
 
 // The fewest letters added, dropped, or changed that make a into b.
 export function distance(a: string, b: string): number {

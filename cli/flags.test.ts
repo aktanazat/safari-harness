@@ -114,3 +114,13 @@ test.each([
   expect(await safari(["run", "--steps-file", file])).toEqual({ err: "", code: 0 });
   expect(calls.filter((c) => c.tool === "info")).toEqual([{ tool: "info", args: { tab: 7 } }]);
 });
+
+// On 10-29 `safari pdf --do read --url` failed "tab is required": the
+// command had sent do save, which prints a tab's page.
+test("pdf read with a url, as a flag or a word, asks for that address's text and no tab", async () => {
+  calls.length = 0;
+  const url = "https://arxiv.org/pdf/1706.03762";
+  expect(await safari(["pdf", "--do", "read", "--url", url])).toEqual({ err: "", code: 0 });
+  expect(await safari(["pdf", "read", url])).toEqual({ err: "", code: 0 });
+  expect(calls).toEqual([{ tool: "pdf", args: { do: "read", url } }, { tool: "pdf", args: { do: "read", url } }]);
+});
