@@ -7,6 +7,8 @@
 // until the owner approves it.
 
 import type { Invoke } from "../call.ts";
+import { rateLimited } from "../failures.ts";
+import type { Limit } from "../pace.ts";
 
 export class NotSignedIn extends Error {
   constructor(readonly site: string, detail = "") {
@@ -16,7 +18,23 @@ export class NotSignedIn extends Error {
 }
 
 export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number };
-export type FetchResult = { status: number; url: string; type: string | null; text: string; truncated: boolean };
+// headers: the response's content-length, retry-after, and rate-limit
+// headers, those the page could read (another origin exposes few); total:
+// the whole text's length, of which text holds the first maxBytes.
+export type FetchResult = { status: number; url: string; type: string | null; text: string; truncated: boolean; headers?: [string, string][]; total?: number };
+
+// The reset a response names, in epoch ms: Retry-After, in seconds or as a
+// date, or x-rate-limit-reset, in epoch seconds (X sends it with every API
+// answer, beside x-rate-limit-remaining: 10-29).
+function resetOf(header: (name: string) => string | null | undefined): number | undefined {
+  const after = header("retry-after");
+  if (after) {
+    const seconds = Number(after);
+    return Number.isFinite(seconds) ? Date.now() + seconds * 1000 : Date.parse(after) || undefined;
+  }
+  const reset = Number(header("x-rate-limit-reset"));
+  return reset > 0 ? reset * 1000 : undefined;
+}
 
 // The extension's answer for a tab that no longer exists (background.js):
 // the owner closed it, or it sat unused for 20 minutes (tools.ts).
@@ -28,7 +46,6 @@ export class SiteKit {
   private homes = new Map<string, string>();
   // The origin of every tab the kit opened, gone ones included.
   private origins = new Map<number, string>();
-  private lastRequest = new Map<string, number>();
   // Tool calls for the sites. A call on a kit tab that is gone never ran,
   // so it runs once more in the tab that takes its place; gone again, the
   // error stands.
@@ -83,9 +100,12 @@ export class SiteKit {
     return (await this.invoke("fetch", { tab, url, method: init.method, headers: init.headers, body: init.body, maxBytes: init.maxBytes ?? 20_000_000 })) as FetchResult;
   }
 
-  // fetch, parsed as JSON. 401 and 403 mean the session is gone.
+  // fetch, parsed as JSON. A 429 fails with rate_limited; 401 and 403 mean
+  // the session is gone.
   async json<T = unknown>(origin: string, url: string, init: FetchInit = {}, site = new URL(origin).hostname): Promise<T> {
     const res = await this.fetch(origin, url, init);
+    const limit = await this.limited(origin, res.status, (name) => res.headers?.find(([k]) => k.toLowerCase() === name)?.[1]);
+    if (limit) throw rateLimited(limit.host, limit.resetAt, limit.guessed);
     if (res.status === 401 || res.status === 403) throw new NotSignedIn(site, `HTTP ${res.status}`);
     if (res.status < 200 || res.status >= 300) throw new Error(`${site} answered HTTP ${res.status}: ${res.text.slice(0, 300)}`);
     if (res.truncated) throw new Error(`${site} sent more than ${init.maxBytes ?? 20_000_000} bytes`);
@@ -104,12 +124,26 @@ export class SiteKit {
     return r.result as T;
   }
 
-  // Waits until ms have passed since the last request under key, for sites
-  // that flag bursts of requests.
-  async pace(key: string, ms: number): Promise<void> {
-    const wait = (this.lastRequest.get(key) ?? 0) + ms - Date.now();
+  // Waits for host's turn, gap ms after the request before it from any
+  // agent or session (pace.ts); bucket names the one of host's limits the
+  // request falls under. A host still rate-limited past a short wait fails
+  // at once with rate_limited.
+  async turn(host: string, gap: number, bucket?: string): Promise<void> {
+    const t = (await this.invoke("pace", { host, gap, bucket })) as { at: number } | Limit;
+    if ("resetAt" in t) throw rateLimited(t.host, t.resetAt, t.guessed);
+    const wait = t.at - Date.now();
     if (wait > 0) await Bun.sleep(wait);
-    this.lastRequest.set(key, Date.now());
+  }
+
+  // The rate limit a response tells of, held for every agent and session:
+  // a 429's, until the reset it names, else for a back-off from backoff ms;
+  // and once a response leaves none of its window, until the window's
+  // reset. Answers the 429's hold.
+  async limited(host: string, status: number, header: (name: string) => string | null | undefined, bucket?: string, backoff?: number): Promise<Limit | undefined> {
+    const reset = resetOf(header);
+    if (status === 429) return (await this.invoke("pace", { do: "hold", host, bucket, until: reset, backoff })) as Limit;
+    if (reset !== undefined && header("x-rate-limit-remaining") === "0") await this.invoke("pace", { do: "hold", host, bucket, until: reset });
+    return undefined;
   }
 
   async close(): Promise<void> {

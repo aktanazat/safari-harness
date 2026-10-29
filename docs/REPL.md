@@ -195,7 +195,9 @@ action result is not safe to repeat until a fresh read shows what happened.
 - New windows: start `page.waitForEvent('popup')` before the click that
   opens one.
 - `fetch(url, init)` sends the request from a session tab on that site, with
-  its cookies, and returns a real `Response` (binary bodies included).
+  its cookies, and returns a real `Response` (binary bodies included). A
+  body past 50 MB is cut: `res.truncated` is true, and a `hint:` line gives
+  the whole size.
 
 ## Site globals
 
@@ -207,6 +209,20 @@ anything return a draft until called with `approved: true`.
 `googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`. `safari guide <site>`
 lists each one's methods under "In safari repl". A list comes with its
 paging: `gmail.search` answers `{results, hasMore, total, nextOffset}`.
+
+A site that rate-limits a global fails the call with `e.code ===
+"rate_limited"` and `e.detail` = `{host, resetAt}`, the reset in epoch ms.
+Every session's calls to that site wait for a reset at most 30 s away and
+fail at once before a later one:
+
+```js
+try {
+  await x.search("from:nasa");
+} catch (e) {
+  if (e.code !== "rate_limited") throw e;
+  console.log(`X takes searches again in ${Math.ceil((e.detail.resetAt - Date.now()) / 1000)} s`);
+}
+```
 
 ### Messages
 

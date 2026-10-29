@@ -9,6 +9,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { rateLimited } from "../failures.ts";
 import { NotSignedIn, draftOrSend, type SiteKit } from "./kit.ts";
 
 const SITE = "Slack";
@@ -24,9 +25,10 @@ const BOOT_MS = 60_000;
 const MAX_RESPONSE = 2_000_000;
 const PACE_MS = 200;
 // Slack answers a burst with HTTP 429 and, in Retry-After, the seconds to
-// wait: a request waits them and goes again, TRIES times in all. A page
-// reads only four of files.slack.com's headers (content-type among them,
-// 10-07), so a file's 429 may come without one: it waits RETRY_MS then.
+// wait: every agent waits them (pace.ts), and the request goes again,
+// TRIES times in all. A page reads only four of files.slack.com's headers
+// (content-type among them, 10-07), so a file's 429 may come without one:
+// the wait starts at RETRY_MS then.
 const TRIES = 3;
 const RETRY_MS = 5_000;
 // The most a download takes, as the REPL's own fetch: the bytes cross the
@@ -137,23 +139,22 @@ function requestExpr(teamId: string, method: string, params: Record<string, unkn
   })()`;
 }
 
-// One request in its turn (PACE_MS apart), sent again after a 429 once the
-// wait Slack names has passed: on 10-07 a burst of Akyl's image downloads
-// drew one.
-async function paced<T extends { status: number; retryAfter?: string | null }>(kit: SiteKit, what: string, send: () => Promise<T>): Promise<T> {
+// One request to host in its turn (PACE_MS apart), sent again after a 429
+// once the wait Slack names has passed: on 10-07 a burst of Akyl's image
+// downloads drew one.
+async function paced<T extends { status: number; retryAfter?: string | null }>(kit: SiteKit, host: string, send: () => Promise<T>): Promise<T> {
   for (let tried = 1; ; tried++) {
-    await kit.pace("slack", PACE_MS);
+    await kit.turn(host, PACE_MS);
     const answer = await send();
-    if (answer.status !== 429) return answer;
-    if (tried === TRIES) throw new Error(`Slack answered ${what} with 429 (too many requests) ${TRIES} times; wait a minute, then try again`);
-    const seconds = Number(answer.retryAfter ?? Number.NaN);
-    await Bun.sleep(Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : RETRY_MS);
+    const limit = await kit.limited(host, answer.status, (name) => (name === "retry-after" ? answer.retryAfter : null), undefined, RETRY_MS);
+    if (!limit) return answer;
+    if (tried === TRIES) throw rateLimited(limit.host, limit.resetAt, limit.guessed);
   }
 }
 
 async function call<T>(kit: SiteKit, teamId: string, method: string, params: Record<string, unknown>): Promise<T & ApiResponse> {
   if (!/^[a-zA-Z][\w.]*$/.test(method)) throw new Error(`"${method}" is not a Slack method name`);
-  const answer = await paced(kit, method, () => pageEval<Answer>(kit, requestExpr(teamId, method, params)));
+  const answer = await paced(kit, ORIGIN, () => pageEval<Answer>(kit, requestExpr(teamId, method, params)));
   if (answer.signedOut) throw new NotSignedIn(SITE, `workspace ${teamId} has no session`);
   if (answer.status === 401 || answer.status === 403) throw new NotSignedIn(SITE, `HTTP ${answer.status}`);
   if (answer.truncated) throw new Error(`Slack's ${method} answer is longer than ${MAX_RESPONSE} characters; ask for fewer items`);
@@ -307,7 +308,7 @@ function client(kit: SiteKit, workspace: Workspace) {
       if (!url) throw new Error(`Slack has no copy of file ${f.id} to download`);
       if ((f.size ?? 0) > FILE_MAX) throw new Error(`file ${f.id} has ${f.size} bytes; download takes at most ${FILE_MAX}`);
       const tab = await kit.tab(ORIGIN, PARK_URL);
-      const got = await paced(kit, `file ${f.id}`, async () => {
+      const got = await paced(kit, url, async () => {
         const r = (await kit.invoke("fetch", { tab, url, base64: true, maxBytes: FILE_MAX })) as FileAnswer;
         return { ...r, retryAfter: r.headers?.find(([name]) => name.toLowerCase() === "retry-after")?.[1] ?? null };
       });

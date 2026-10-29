@@ -1059,11 +1059,13 @@ export class ReplSession {
     if (!via) throw new Error("fetch sends the request from a page, with its cookies: open or attach a tab on that site first (openTab(url))");
     const headers = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers as Record<string, string> | undefined);
     if (init.body !== undefined && typeof init.body !== "string" && !(init.body instanceof URLSearchParams)) throw new Error("fetch body must be a string or URLSearchParams");
-    const r = (await this.call("fetch", { tab: via.id, url: url.href, method: init.method, headers, body: init.body === undefined ? undefined : String(init.body), base64: true, maxBytes: 50_000_000 })) as { status: number; url: string; headers?: [string, string][]; data: string; truncated: boolean };
+    const max = 50_000_000;
+    const r = (await this.call("fetch", { tab: via.id, url: url.href, method: init.method, headers, body: init.body === undefined ? undefined : String(init.body), base64: true, maxBytes: max })) as { status: number; url: string; headers?: [string, string][]; data: string; truncated: boolean; total?: number };
     const empty = r.status === 204 || r.status === 304 || (init.method ?? "GET").toUpperCase() === "HEAD";
     const res = new Response(empty ? null : Buffer.from(r.data, "base64"), { status: r.status, headers: r.headers });
     Object.defineProperty(res, "url", { value: r.url });
-    if (r.truncated) Object.defineProperty(res, "truncated", { value: true });
+    Object.defineProperty(res, "truncated", { value: r.truncated, enumerable: true });
+    if (r.truncated) this.showHint(`fetch kept the first ${max}${r.total === undefined ? "" : ` of ${r.total}`} bytes of ${url.host}'s answer; res.truncated is true`);
     return res;
   }
 

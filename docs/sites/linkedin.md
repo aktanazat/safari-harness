@@ -8,12 +8,12 @@ This is the user's real account, and LinkedIn restricts accounts that act in bur
 
 The global stops with an error instead of retrying when LinkedIn pushes back:
 - signed out or sent to a sign-in page: "not signed in to LinkedIn in Safari"; the user signs in again.
-- HTTP 429: rate-limited; wait a few minutes.
+- HTTP 429: the call fails with `rate_limited`, and every session's LinkedIn calls wait for the reset LinkedIn named (`e.detail.resetAt`), or a back-off from a minute when it named none.
 - HTTP 999: blocked; stop for at least a minute.
 - a redirect to a checkpoint page: the account is being challenged; stop and let the user sign in by hand.
 
 ## In safari repl
-The `linkedin` global reads LinkedIn through the session in Safari, from one background tab of its own, with the same requests the LinkedIn web app makes. Requests are paced 1 to 1.75 s apart on their own. Reading the inbox or a conversation this way marks nothing as read.
+The `linkedin` global reads LinkedIn through the session in Safari, from one background tab of its own, with the same requests the LinkedIn web app makes. Requests go out 1 to 1.75 s apart, across every session. Reading the inbox or a conversation this way marks nothing as read.
 - `linkedin.getMe()`: the signed-in member: name, headline, public id, profile url.
 - `linkedin.getProfile(publicIdOrUrl)`: a member's profile: headline, about, location, experience, education. LinkedIn may count this as a profile view the member can see.
 - `linkedin.searchPeople(query, {limit, start})`, `linkedin.searchCompanies(query, {limit, start})`: search results with a `total` and, when there is another page, the `nextStart` to pass as `start`.

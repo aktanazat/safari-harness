@@ -9,6 +9,7 @@
 // answers 404 without it. Nothing here marks notifications or messages
 // seen: the web app posts those cursors separately, and we never do.
 
+import { rateLimited } from "../failures.ts";
 import { draftOrSend, NotSignedIn, type SiteKit } from "./kit.ts";
 
 const ORIGIN = "https://x.com";
@@ -23,7 +24,7 @@ type Tx = { keyBytes: number[]; animationKey: string };
 
 type GraphqlJob = { kind: "graphql"; name: string; hint: string; variables: Record<string, unknown>; mutation: boolean; op: Op | null; tx: Tx | null };
 type RestJob = { kind: "rest"; method: string; path: string; query: Record<string, string>; body: string | null; tx: Tx | null };
-type Reply = { signedOut?: boolean; status: number; body: unknown; op?: Op; tx?: Tx };
+type Reply = { signedOut?: boolean; status: number; headers?: Record<string, string>; body: unknown; op?: Op; tx?: Tx };
 
 // Runs in the tab. Plain script: no template literals, nothing leaves but
 // the response (and the op / tx records, which hold no secrets).
@@ -103,7 +104,9 @@ const send = async (tx, method, path, query, body) => {
   if (body !== null) headers["content-type"] = body.startsWith("{") ? "application/json" : "application/x-www-form-urlencoded";
   const r = await fetch("https://x.com" + path + (qs ? "?" + qs : ""), { method, credentials: "include", headers, body: body === null ? undefined : body });
   const t = await r.text();
-  try { return { status: r.status, body: JSON.parse(t) }; } catch { return { status: r.status, body: t.slice(0, 500) }; }
+  const limits = {};
+  for (const k of ["retry-after", "x-rate-limit-remaining", "x-rate-limit-reset"]) { const v = r.headers.get(k); if (v !== null) limits[k] = v; }
+  try { return { status: r.status, headers: limits, body: JSON.parse(t) }; } catch { return { status: r.status, headers: limits, body: t.slice(0, 500) }; }
 };
 const run = async (job) => {
   if (!cookie("twid")) return { signedOut: true, status: 0, body: null };
@@ -271,15 +274,19 @@ export function x(kit: SiteKit) {
   const ops = new Map<string, Op>();
   let tx: Tx | null = null;
 
+  // X limits each operation on its own, 50 searches per 15 minutes, and
+  // says so on every answer (x-rate-limit-*: 10-29).
   async function call(job: GraphqlJob | RestJob): Promise<unknown> {
-    await kit.pace("x", 1000);
+    const bucket = job.kind === "graphql" ? job.name : job.path;
+    await kit.turn(SITE, 1000, bucket);
     const r = await kit.eval<Reply>(ORIGIN, `(async () => {${PAGE}\nreturn run(${JSON.stringify(job)});})()`);
     if (r.signedOut || r.status === 401) throw new NotSignedIn(SITE, r.signedOut ? "no session cookie" : "HTTP 401");
     if (r.tx) tx = r.tx;
     if (r.op && job.kind === "graphql") ops.set(job.name, r.op);
+    const limit = await kit.limited(SITE, r.status, (name) => r.headers?.[name], bucket);
+    if (limit) throw rateLimited(limit.host, limit.resetAt, limit.guessed);
     const body = r.body as { errors?: { message?: string; code?: number }[]; data?: unknown } | string;
     const errors = typeof body === "object" && body.errors?.length ? body.errors.map((e) => e.message ?? String(e.code)).join("; ") : "";
-    if (r.status === 429) throw new Error(`x.com rate-limited this request (HTTP 429); wait a few minutes`);
     if (r.status < 200 || r.status >= 300) throw new Error(`x.com answered HTTP ${r.status}${errors ? `: ${errors}` : typeof body === "string" ? `: ${body.slice(0, 200)}` : ""}`);
     if (typeof body === "object" && errors && body.data === undefined) throw new Error(`x.com refused the request: ${errors}`);
     return body;

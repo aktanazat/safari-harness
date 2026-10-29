@@ -1,13 +1,14 @@
 // What a task's agents read and met, for the task's later loads: map's
 // pages read in the last 10 minutes, and the bot checks sites showed. A
 // task is a session of the agent process its calls come from (owner.ts):
-// a lead and the helpers it started share one, and nothing passes to
-// another session or process. On 10-23 a kernel research task's 1526
-// loads covered 1016 addresses, and 297 of them read a page another of its
-// agents had read (K9); on 10-22 five agents of a shopping task met Yelp's
-// DataDome check six times in 2 h 22 min (SR-2).
+// a lead and the helpers it started share one, and nothing it read passes
+// to another session or process; only a check that does not clear by
+// itself is kept for every task, by host alone (walls). On 10-23 a kernel
+// research task's 1526 loads covered 1016 addresses, and 297 of them read
+// a page another of its agents had read (K9); on 10-22 five agents of a
+// shopping task met Yelp's DataDome check six times in 2 h 22 min (SR-2).
 
-import type { Challenge } from "./challenge.ts";
+import { passesByItself, type Challenge } from "./challenge.ts";
 import { currentOwner, currentTask, watchOwner } from "./owner.ts";
 import { site } from "./receipt.ts";
 
@@ -19,6 +20,11 @@ const MAX_CHARS = 32_000_000;
 type Kept = { owner: number; at: number; task?: string };
 const reads = new Map<string, Kept & { value: unknown; chars: number }>();
 const checks = new Map<string, Kept & { challenge: Challenge }>();
+// Every task's together, by host, naming no agent and no page: a check
+// that does not clear by itself in Safari, as any agent's open or map met
+// it. osha.gov's showed 34 times in 27 sessions, 25 of them one lead's
+// helpers on 10-28, and Google's reCAPTCHA 21 times in 13 (SafariFriction).
+const walls = new Map<string, { at: number; challenge: Challenge }>();
 let chars = 0;
 const watched = new Set<number>();
 
@@ -55,11 +61,15 @@ function keyOf(pid: number, ...parts: string[]): string {
   return JSON.stringify([pid, session, ...parts]);
 }
 
+function ago(at: number): string {
+  const s = Math.round((Date.now() - at) / 1000);
+  return s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+}
+
 // Which of the task's agents it was, as omp names a task [session, agent,
 // …] (omp/index.ts), and how long ago.
 function by(kept: Kept): { who: string; when: string } {
-  const s = Math.round((Date.now() - kept.at) / 1000);
-  const when = s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+  const when = ago(kept.at);
   if (kept.task !== undefined && kept.task === currentTask()) return { who: "you", when };
   let agent: unknown;
   try {
@@ -106,24 +116,28 @@ export function keep(read: string, url: string, value: unknown) {
 export function met(url: string, challenge: Challenge | null | undefined) {
   const pid = owner();
   const host = URL.parse(url)?.hostname;
-  if (pid === undefined || !host || challenge === undefined || challenge?.where === "box") return;
+  if (!host || challenge === undefined || challenge?.where === "box") return;
+  const wall = host.replace(/^www\./, "");
+  if (challenge === null) walls.delete(wall);
+  else if (!passesByItself(challenge)) walls.set(wall, { at: Date.now(), challenge });
+  if (pid === undefined) return;
   const key = keyOf(pid, site(host));
   if (challenge === null) checks.delete(key);
   else checks.set(key, { owner: pid, at: Date.now(), task: currentTask(), challenge });
 }
 
 // Why url is not loaded again: its site showed this task a check in the
-// last KEEP_MS.
+// last KEEP_MS, or its host showed any task one that stays (walled).
 export function checked(url: string): { error: string; challenge: Challenge } | undefined {
   const pid = owner();
   const host = URL.parse(url)?.hostname;
-  if (pid === undefined || !host) return undefined;
+  if (pid === undefined || !host) return walled(url);
   const key = keyOf(pid, site(host));
   const check = checks.get(key);
-  if (!check) return undefined;
+  if (!check) return walled(url);
   if (Date.now() - check.at > KEEP_MS) {
     checks.delete(key);
-    return undefined;
+    return walled(url);
   }
   const { who, when } = by(check);
   const { kind, where } = check.challenge;
@@ -131,4 +145,22 @@ export function checked(url: string): { error: string; challenge: Challenge } | 
     ? `${site(host)} turned the browser away (${kind}) for ${who} ${when}, so it was not loaded again; the user cannot clear that either: skip it`
     : `${site(host)} showed ${kind === "other" ? "a bot check" : `a ${kind} bot check`} to ${who} ${when}, so it was not loaded again: open it in a tab and wait a few seconds, since many checks clear on their own in Safari; if it remains, use another permitted source or report that the page is unavailable; fresh: true loads it anyway`;
   return { error, challenge: check.challenge };
+}
+
+// Why url is not loaded again: its host showed some agent a check that does
+// not clear by itself in the last KEEP_MS (met). Such a check waits for a
+// person, so another load only meets it again.
+export function walled(url: string): { error: string; challenge: Challenge } | undefined {
+  const host = URL.parse(url)?.hostname.replace(/^www\./, "");
+  const wall = host === undefined ? undefined : walls.get(host);
+  if (host === undefined || !wall) return undefined;
+  if (Date.now() - wall.at > KEEP_MS) {
+    walls.delete(host);
+    return undefined;
+  }
+  const { kind, where } = wall.challenge;
+  const error = where === "block"
+    ? `${host} turned this browser away (${kind}) ${ago(wall.at)}, so it was not loaded again; the user cannot clear that either: skip it`
+    : `${host} showed this browser ${kind === "other" ? "a bot check" : `a ${kind} bot check`} ${ago(wall.at)}, so it was not loaded again: that check does not clear by waiting; use another permitted source (web_search for a search) or report that the page is unavailable; fresh: true loads it anyway`;
+  return { error, challenge: wall.challenge };
 }

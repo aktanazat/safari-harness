@@ -1,7 +1,7 @@
-export type FailureCode = "stale_view" | "effect_unknown" | "privacy" | "blocked" | "not_content" | "timeout" | "unavailable" | "aborted" | "invalid_argument" | "command_failed" | "stopped" | "waiting_for_human";
+export type FailureCode = "stale_view" | "effect_unknown" | "privacy" | "blocked" | "not_content" | "timeout" | "unavailable" | "aborted" | "invalid_argument" | "command_failed" | "stopped" | "waiting_for_human" | "rate_limited";
 export type FailureEffect = "none" | "possibly_effected";
 export type Failure = { ok: false; code: FailureCode; retryable: boolean; effect: FailureEffect; message: string; next: string };
-type FailureOptions = { retryable?: boolean; effect?: FailureEffect; next?: string; recovery?: { kind: "present"; document: string; target: string; frame?: number } };
+type FailureOptions = { retryable?: boolean; effect?: FailureEffect; next?: string; recovery?: { kind: "present"; document: string; target: string; frame?: number }; detail?: { host: string; resetAt: number } };
 
 const DEFAULTS: Record<FailureCode, { effect: FailureEffect; retryable: boolean; next: string }> = {
   stale_view: { effect: "none", retryable: true, next: "read a fresh snapshot of this tab before acting again." },
@@ -16,6 +16,7 @@ const DEFAULTS: Record<FailureCode, { effect: FailureEffect; retryable: boolean;
   command_failed: { effect: "possibly_effected", retryable: false, next: "inspect the error and current state before choosing another action." },
   stopped: { effect: "none", retryable: false, next: "leave control with the user; resume only after a new takeover and fresh read." },
   waiting_for_human: { effect: "none", retryable: false, next: "wait for the user to finish the requested step, then read the page again." },
+  rate_limited: { effect: "none", retryable: true, next: "ask that site again after it resets (detail.resetAt, epoch ms); meanwhile use another source." },
 };
 
 export class HarnessError extends Error {
@@ -24,6 +25,8 @@ export class HarnessError extends Error {
   readonly effect: FailureEffect;
   readonly next: string;
   readonly recovery?: { kind: "present"; document: string; target: string; frame?: number };
+  // rate_limited: the host and when its limit resets, in epoch ms.
+  readonly detail?: { host: string; resetAt: number };
 
   constructor(code: FailureCode, message: string, options: FailureOptions = {}) {
     super(message);
@@ -33,7 +36,16 @@ export class HarnessError extends Error {
     this.retryable = options.retryable ?? (this.effect === "none" && DEFAULTS[code].retryable);
     this.next = options.next ?? (this.effect === "possibly_effected" ? DEFAULTS.effect_unknown.next : DEFAULTS[code].next);
     this.recovery = this.effect === "none" ? options.recovery : undefined;
+    this.detail = options.detail;
   }
+}
+
+// host's rate limit, as the site named it, or as the back-off the harness
+// keeps when it named none (pace.ts).
+export function rateLimited(host: string, resetAt: number, guessed = false): HarnessError {
+  const s = Math.max(0, Math.ceil((resetAt - Date.now()) / 1000));
+  const named = guessed ? `; ${host} named no reset time, so that is the harness's back-off` : "";
+  return new HarnessError("rate_limited", `${host} rate-limited this; it resets at ${new Date(resetAt).toISOString()} (in ${s} s)${named}`, { detail: { host, resetAt } });
 }
 
 function fields(value: unknown): Record<string, unknown> | undefined {

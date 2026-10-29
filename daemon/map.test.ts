@@ -665,6 +665,23 @@ test("once a search of a map meets a bot check, the map loads none of that site'
   expect(loaded.slice(from).map(([url]) => url)).toEqual([CAPTCHA]);
 });
 
+// osha.gov's check showed 34 times in 27 sessions, 25 of them one lead's
+// helpers on 10-28, and Google's reCAPTCHA 21 times in 13 (SafariFriction).
+test("a site whose check stays is not loaded for another task, which is told why and where to go instead; fresh loads it", async () => {
+  jest.useFakeTimers();
+  await as("Lead", { urls: [CAPTCHA], fresh: true }, process.pid, "s4");
+  const from = loaded.length;
+  const search = `${SEARCH}f`;
+  const wall = /^google\.com showed this browser a recaptcha bot check \d+ s ago, so it was not loaded again: .*web_search/;
+  const [page] = (await as("Other", { urls: [search] }, process.ppid)).pages;
+  expect(page).toMatchObject({ ok: false, challenge: { kind: "recaptcha" }, error: expect.stringMatching(wall) });
+  const opening = runAs(process.ppid, () => callTool("open", { url: search, background: true }, true), taskIn("s5", "Other"));
+  await expect(opening).rejects.toMatchObject({ code: "blocked", message: expect.stringMatching(wall) });
+  expect(loaded.length).toBe(from);
+  await as("Other", { urls: [search], fresh: true }, process.ppid);
+  expect(loaded.length).toBe(from + 1);
+});
+
 // In a shopping task on 10-22 three maps with follow waited for a
 // listing's heading on every page they followed, and each ran out its 50 s
 // (SR-1).
