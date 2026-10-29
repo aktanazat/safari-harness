@@ -86,7 +86,11 @@ export function withQueued(result: unknown, ms: number, on: string, arrived: num
 // already queued on that tab. A tab that does not resolve gets no lane:
 // the tool reports its own error.
 export async function inLane<T>(tool: string, args: Record<string, unknown>, resolve: (tab: unknown) => Promise<number>, run: () => Promise<T>): Promise<T> {
-  if (!acts(tool, args)) return run();
+  // extract's expand and scroll, and the repl's harvest, click and scroll
+  // the page as they read it: they take its lane, as acting calls do, yet
+  // stay reads for everything affectsPage decides.
+  const gathers = tool === "harvest" || (tool === "extract" && (args.expand === true || args.scroll === true));
+  if (!acts(tool, args) && !gathers) return run();
   const tab = await resolve(args.tab).catch(() => undefined);
   if (tab === undefined) return run();
   const inherited = heldLanes.getStore() ?? [];

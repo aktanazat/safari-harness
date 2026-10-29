@@ -109,6 +109,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              run up to 300 s, 30 when omitted;
                                              --reader name runs a script saved with learn)
   safari extract --tab N [--selector s]      readable text
+  safari extract --tab N --expand|--scroll   all of a thread or feed: clicks its Load
+                                             more, or scrolls and gathers its items
   safari extract --as table --tab N          tables and card lists as JSON rows
   safari extract --as chat --tab N           a chat's messages, each with who wrote it
   safari data --tab N [--pick path] [--max bytes]
@@ -492,7 +494,7 @@ function commandHelp(cmd: string): string | null {
     if (name === "save" || paths.includes(name)) desc = `${(desc ?? "path").replace(/\ban absolute\b/, "a").replace(/\babsolute /, "")}${name === "save" ? SAVE_HOW : " (a relative path is taken from the current folder)"}`;
     if (name === "snapshot") desc = SNAPSHOT_HOW;
     const value = name === "snapshot" ? "[=<words>]" : p.type === "boolean" ? "" : ` <${p.enum?.join("|") ?? p.type ?? "string"}>`;
-    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${value}${how ? ` (${how})` : ""}\n      ${desc}`;
+    return `  --${FLAG_FOR[cmd]?.[name] ?? name}${value}${how ? ` (${how})` : ""}${desc ? `\n      ${desc}` : ""}`;
   });
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }

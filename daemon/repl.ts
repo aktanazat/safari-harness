@@ -42,6 +42,7 @@ type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; eff
 type Saved = { path: string; name: string; size: number; type: string };
 type Waiter<T> = { resolve: (v: T) => void; reject: (e: Error) => void };
 type SnapshotOptions = { interactive?: boolean; showHidden?: boolean; ref?: string; selector?: string; maxNodes?: number };
+type HarvestOptions = { selector?: string; item?: string; key?: string; expand?: boolean; scroll?: boolean; max?: number; ms?: number };
 type Snapshot = { tree: string; diff: string; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
 type PasteOptions = { html?: string; tsv?: string };
 
@@ -377,14 +378,17 @@ export class Page {
     const r = (await this.call("eval", { expression: "document.documentElement.outerHTML" })) as { result: string };
     return r.result;
   }
-  // extract(selector), as the guide gives it, or extract({selector, query, maxBytes})
-  async extract(opts: string | { selector?: string; query?: string; maxBytes?: number } = {}): Promise<unknown> {
+  // extract(selector), as the guide gives it, or extract({selector, query, maxBytes, expand, scroll})
+  async extract(opts: string | { selector?: string; query?: string; maxBytes?: number; expand?: boolean; scroll?: boolean } = {}): Promise<unknown> {
     return this.call("extract", typeof opts === "string" ? { selector: opts } : opts);
   }
   // page.snapshot(options), as snapshot(page, options): on 10-22 a script
   // called it so and failed "is not a function".
   snapshot(opts: SnapshotOptions = {}): Promise<Snapshot> {
     return this.session.snapshot(this, opts);
+  }
+  harvest(opts: HarvestOptions = {}): Promise<unknown> {
+    return this.session.harvest(this, opts);
   }
 
   locator(target: string): Locator {
@@ -987,6 +991,11 @@ export class ReplSession {
     return { tree, diff, ...(snap.pageState ? { pageState: snap.pageState } : {}), ...(snap.memoryReceipt ? { memoryReceipt: snap.memoryReceipt } : {}), ...(snap.memoryWarning ? { memoryWarning: snap.memoryWarning } : {}) };
   }
 
+  async harvest(page: unknown, opts: HarvestOptions = {}): Promise<unknown> {
+    if (!(page instanceof Page)) throw new TypeError("harvest(page, options): pass a page from openTab() or attachBrowserTab()");
+    return page.call("harvest", opts);
+  }
+
   async annotatedScreenshot(page: unknown, opts: { path?: string } = {}): Promise<CaptureResult> {
     if (!(page instanceof Page)) throw new TypeError("annotatedScreenshot(page): pass a page from openTab() or attachBrowserTab()");
     if (![...this.#trees.keys()].some((k) => k.startsWith(`${page.id}|`))) await this.snapshot(page);
@@ -1089,6 +1098,7 @@ export class ReplSession {
       openTab: (url: string, opts?: { background?: boolean; new?: boolean }) => this.openTab(url, opts),
       closeTab: (p?: unknown) => this.closeTab(p),
       snapshot: (p: unknown, o?: SnapshotOptions) => this.snapshot(p, o),
+      harvest: (p: unknown, o?: HarvestOptions) => this.harvest(p, o),
       saveSource: (receipt: string, reason: string) => this.call("save_source", { receipt, reason }),
       annotatedScreenshot: (p: unknown, o?: { path?: string }) => this.annotatedScreenshot(p, o),
       fetch: (input: unknown, init?: FetchInit) => this.fetchFrom(undefined, input, init),

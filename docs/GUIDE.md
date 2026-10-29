@@ -80,6 +80,9 @@ Turns
   `snapshot` or `extract`, or `sh.text(sh.q(selector))` in `eval`.
 - Photo addresses: `extract {as: "images"}`, not srcset scripts. A PDF:
   `pdf {do: "read", url}`.
+- A read that says `incomplete` left part of a thread, feed, or list
+  undrawn. Do what its hint says: `extract {expand: true}` clicks its
+  Load more, `extract {scroll: true}` scrolls it, or the site's reader.
 - Screenshots of pages at several widths: one `shots` call
   (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of
   `window` and `shot`.

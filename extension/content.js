@@ -3381,6 +3381,8 @@
         return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
+    const harvest = opts.expand || opts.scroll ? await harvestIn(at.root, opts, read) : null;
+    if (harvest) read = harvest.read;
     const loading = waits && (read.filler || ariaBusy());
     let { text } = read;
     const notes = [at.note];
@@ -3418,7 +3420,370 @@
       ...(loading ? { loading: true } : {}),
       ...(opts.query && !text ? regexHint(opts.query) : {}),
       ...(frames.length ? { frames } : {}),
+      ...(opts.strict_selector === true ? {} : unread(at.root, opts, harvest?.g)),
     };
+  }
+
+  // ---------- whole lists ----------
+  // A read takes what the page has drawn, and on 10-29 three reads said
+  // they were whole that were not: a GitHub issue of 498 comments read as
+  // 2.6% of them (its "Load more" held 694 items back), a virtualized list
+  // of 1,000 rows as 16 (react-virtualized draws the rows near its view in
+  // 50,000 px), and an X profile as 2 posts (X keeps 5 to 13 at a time).
+  // A read says what it leaves (incomplete); expand and scroll get it.
+
+  // How long expand and scroll go on in one call, inside the 40 s extract
+  // gives them (tools.ts); how long a click, then the list's end, has to
+  // bring more; and the most text they gather, save's ceiling.
+  const GATHER_MS = 25000;
+  const MORE_MS = 5000;
+  const END_MS = 3000;
+  const GATHER_CHARS = 2000000;
+
+  // A control that adds more of the list it is in, by its name: "Load
+  // more", "Show 5 more replies", "View older messages", "12 more
+  // comments"; never "More" alone, a menu's name.
+  const EXPANDS = /^(?:(?:load|show|view|see|read)\s+(?:\d[\d,.]*\s+)?(?:more|older|earlier|previous|hidden|remaining)\b(?:\s+[\w()-]+){0,2}|\d[\d,.]*\s+more(?:\s+[\w()-]+){1,2})\s*[.…]*$/i;
+
+  // The controls under root that add more of its list, drawn, in page
+  // order. A link counts only when it goes nowhere ("#", javascript:), a
+  // button only when it submits no form, and neither when it opens a menu
+  // or dialog or is open already.
+  function expanders(root, spent) {
+    return deepQueryAll("button, [role=button], summary, input[type=button], a", root).filter((el) => !spent?.has(el)
+      && !(el.tagName === "A" && el.hasAttribute("href") && !/^\s*(?:#|javascript:)/i.test(el.getAttribute("href")))
+      && !(el.form && el.type !== "button")
+      && !/^(?:true|menu|listbox|tree|grid|dialog)$/.test(el.getAttribute("aria-haspopup") ?? "")
+      && el.getAttribute("aria-expanded") !== "true"
+      && EXPANDS.test(norm(accessibleName(el)))
+      && shown(el));
+  }
+
+  // A control still loading what its last click asked for.
+  const loadingMore = (el) => el.isConnected && (el.matches(":disabled") || el.getAttribute("aria-disabled") === "true" || el.getAttribute("aria-busy") === "true");
+
+  // What a control says it holds back, in its name or the few words
+  // around it: "694 remaining items", "3 hidden items", "12 more replies".
+  const HELD = /\d[\d,]*\s+(?:more|hidden|remaining)\b(?:\s+[a-z]+)?/i;
+  function heldBack(el) {
+    let held = HELD.exec(accessibleName(el))?.[0];
+    for (let box = el.parentElement; !held && box && box.textContent.length <= 300; box = box.parentElement) held = HELD.exec(norm(box.textContent))?.[0];
+    return held ?? "";
+  }
+
+  // A list under root drawn in part: one that declares more rows than it
+  // has (aria-rowcount, aria-setsize; -1 is a length still unknown, as a
+  // feed says), or a box five views tall or more, its own or the page's,
+  // that draws only the items near its view (sparse). Answers the items'
+  // parent, the box that scrolls them (null: the window), and why.
+  function partList(root) {
+    for (const grid of root.querySelectorAll("[aria-rowcount]")) {
+      const size = Number(grid.getAttribute("aria-rowcount"));
+      const rows = grid.querySelectorAll("[role=row], tr");
+      if (rows.length && (size === -1 || size > rows.length)) return { list: rows[rows.length - 1].parentElement, box: scrollerOf(grid), reason: `a grid of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} rows`} that draws ${rows.length}` };
+    }
+    const sets = Map.groupBy([...root.querySelectorAll("[aria-setsize]")].filter((el) => /^(?:article|listitem|row)$/.test(getExplicitRole(el) ?? "")), (el) => el.parentElement);
+    for (const [list, items] of sets) {
+      const sizes = items.map((el) => Number(el.getAttribute("aria-setsize")));
+      const size = sizes.includes(-1) ? -1 : Math.max(...sizes);
+      if (size === -1 || size > items.length) return { list, box: scrollerOf(list), reason: `a list of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} items`} that draws ${items.length}` };
+    }
+    const around = [];
+    for (let el = root; el && el !== document.body && el !== document.documentElement; el = el.parentElement) around.push(el);
+    for (const box of [...around, ...root.querySelectorAll("*")]) {
+      const part = box.clientHeight >= 100 && box.scrollHeight >= 5 * box.clientHeight && /^(?:auto|scroll|overlay)$/.test(getComputedStyle(box).overflowY) && sparse(box, box.scrollHeight);
+      if (part) return { ...part, box };
+    }
+    const height = document.scrollingElement?.scrollHeight ?? 0;
+    const part = height >= 5 * innerHeight && sparse(document.body, height);
+    return part && root.contains(part.list) ? { ...part, box: null } : null;
+  }
+
+  // Whether a box of height draws only the part of its list near its view:
+  // going down through the child that holds the list (the only one with
+  // anything in it, or one nearly as tall), its items span under three
+  // quarters of the height. A virtualized list stands empty space in for
+  // the rest, and an empty box (its spacer) is not an item.
+  function sparse(box, height) {
+    for (let el = box; ;) {
+      const kids = [...el.children].filter((k) => k.textContent.trim() || k.querySelector("img, video, canvas, svg"));
+      const rects = kids.map((k) => k.getBoundingClientRect());
+      const inner = kids.length === 1 ? 0 : rects.findIndex((r) => r.height >= 0.9 * height);
+      if (inner >= 0) {
+        el = kids[inner];
+        continue;
+      }
+      const placed = rects.filter((r) => r.height > 0);
+      if (placed.length < 3) return null;
+      const span = Math.max(...placed.map((r) => r.bottom)) - Math.min(...placed.map((r) => r.top));
+      return span < 0.75 * height ? { list: el, reason: `a list that draws only the ${placed.length} items near its view (${Math.round(height).toLocaleString("en-US")} px tall)` } : null;
+    }
+  }
+
+  // The box that scrolls el, or null when the window does.
+  function scrollerOf(el) {
+    for (let box = el; box && box !== document.body && box !== document.documentElement; box = box.parentElement) {
+      if (box.scrollHeight > box.clientHeight + 1 && /^(?:auto|scroll|overlay)$/.test(getComputedStyle(box).overflowY)) return box;
+    }
+    return null;
+  }
+
+  // The list under root a scroll gathers when none says it is drawn in
+  // part: the element with the most children alike (keyOf) that hold
+  // text, three or more.
+  function listIn(root) {
+    let best = null;
+    let most = 2;
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      if (el.childElementCount <= most || el.matches("select, datalist, svg, pre, code")) continue;
+      for (const alike of Map.groupBy(el.children, keyOf).values()) {
+        const held = alike.filter((k) => k.textContent.trim()).length;
+        if (held > most) {
+          most = held;
+          best = el;
+        }
+      }
+    }
+    return best;
+  }
+
+  // What makes an item the same one when the list draws it again: the
+  // link or text of key (CSS) in it, an index or key the list gave it, or
+  // its permalink (the link around its time: X's posts, GitHub's
+  // comments); else null, and its text tells it apart.
+  function itemKey(el, key) {
+    if (key) {
+      const at = el.matches(key) ? el : el.querySelector(key);
+      return at ? at.href || norm(at.textContent) || null : null;
+    }
+    for (const name of ["data-index", "aria-rowindex", "aria-posinset", "data-key", "data-id"]) {
+      const value = el.getAttribute(name);
+      if (value) return `${name}=${value}`;
+    }
+    return el.querySelector("a[href] time, a[href] relative-time")?.closest("a").href ?? null;
+  }
+
+  // The read's text with the list's drawn items, first to last, put back
+  // as every item gathered, the text around the list kept; the items
+  // alone when the read does not hold the drawn ones.
+  function spliced(text, first, items) {
+    const body = items.join("\n\n");
+    const head = first[0]?.split("\n")[0];
+    const tail = first.at(-1)?.split("\n").at(-1);
+    const from = head ? text.indexOf(head) : -1;
+    const to = tail ? text.lastIndexOf(tail) : -1;
+    if (from < 0 || to < from) return body;
+    return [text.slice(0, from).trim(), body, text.slice(to + tail.length).trim()].filter(Boolean).join("\n\n");
+  }
+
+  // Resolves once the page has changed nothing for ms, or after limit.
+  async function settled(ms, limit) {
+    for (const end = Date.now() + limit; Date.now() < end;) if (!(await whenPage(() => true, Math.min(ms, end - Date.now())))) return;
+  }
+
+  // Runs a click that must leave the page where it is: a link, form or
+  // script that would load another page, or another path of this one, is
+  // stopped, and the answer says so (left), as it says a popup opened.
+  function inPlace(act) {
+    let left = false;
+    const path = location.pathname;
+    const stay = (e) => {
+      if (e.defaultPrevented) return;
+      if (e.type === "navigate" && (!e.cancelable || (e.destination.sameDocument && new URL(e.destination.url).pathname === path))) return;
+      if (e.type === "click" && !e.composedPath().some((n) => n instanceof Element && n.matches("a[href], area[href]") && !/^\s*(?:#|javascript:)/i.test(n.getAttribute("href")))) return;
+      e.preventDefault();
+      left = true;
+    };
+    const popped = () => { left = true; };
+    navigation.addEventListener("navigate", stay);
+    addEventListener("submit", stay);
+    addEventListener("click", stay);
+    document.addEventListener("__sh_popup", popped);
+    try {
+      const res = act();
+      return left ? { ...res, left } : res;
+    } finally {
+      navigation.removeEventListener("navigate", stay);
+      removeEventListener("submit", stay);
+      removeEventListener("click", stay);
+      document.removeEventListener("__sh_popup", popped);
+    }
+  }
+
+  // expand clicks root's "Load more" controls one at a time, each once it
+  // is ready, until none is left; scroll scrolls the box that holds its
+  // list, or the window, most of a view at a time, and takes each item it
+  // draws once (itemKey), until the list's end brings nothing for END_MS.
+  // Both stop at the call's time, the text ceiling, or max items, and a
+  // click that would leave the page stops them. The view stays where they
+  // leave it, so a call that ran out of time goes on from there. collect:
+  // take the items after an expand alone too.
+  async function gather(root, opts, collect) {
+    const until = Date.now() + Math.min(Number(opts.ms) || GATHER_MS, 110000);
+    const left = () => Math.max(0, until - Date.now());
+    const spent = new Set();
+    const items = new Map();
+    const seen = new WeakMap();
+    let part;
+    let list = null;
+    let box;
+    let chars = 0;
+    let clicks = 0;
+    let steps = 0;
+    let rested = false;
+    let stopped = "";
+    const members = () => {
+      if (opts.item) return deepQueryAll(opts.item, root);
+      if (!list?.isConnected) list = (part = partList(root))?.list ?? listIn(root);
+      return list ? [...list.children] : [];
+    };
+    const take = () => {
+      for (const el of members()) {
+        const print = el.textContent;
+        if (!print.trim() || seen.get(el) === print) continue;
+        seen.set(el, print);
+        const text = tidyText(el).text;
+        const key = itemKey(el, opts.key);
+        const had = items.get(key ?? text);
+        if (!text || (had && had.text.length >= text.length)) continue;
+        chars += text.length - (had?.text.length ?? 0);
+        items.set(key ?? text, key ? { key, text } : { text });
+      }
+    };
+    // One click and the wait for what it adds: "clicked", "waited" (none
+    // was ready), "" (none is left), or "left".
+    const expand = async () => {
+      const all = expanders(root, spent);
+      const el = all.find((c) => !clickBlocked(c));
+      if (!el) {
+        const loading = all.filter(loadingMore);
+        for (const c of all) if (!loading.includes(c)) spent.add(c);
+        if (!loading.length) return "";
+        if (!(await whenPage(() => loading.some((c) => !loadingMore(c)), Math.min(MORE_MS, left())))) for (const c of loading) spent.add(c);
+        return "waited";
+      }
+      const before = root.textContent.length;
+      const res = inPlace(() => clickElement(el));
+      if (res.left) return "left";
+      if (res.error) {
+        spent.add(el);
+        return "waited";
+      }
+      clicks++;
+      const grew = () => root.textContent.length > before && !loadingMore(el);
+      if (!grew() && !(await whenPage(grew, Math.min(MORE_MS, left())))) spent.add(el);
+      return "clicked";
+    };
+    // One scroll and the wait for what it draws; false at the list's end
+    // once nothing more has come for END_MS.
+    const step = async () => {
+      if (box === undefined) box = part?.box ?? scrollerOf((opts.item ? members()[0] : list) ?? root);
+      const scroller = box ?? document.scrollingElement;
+      const from = scroller.scrollTop;
+      scroller.scrollBy({ top: Math.round((box ? box.clientHeight : innerHeight) * 0.85), behavior: "instant" });
+      // a hidden tab runs no rendering steps, so fires no scroll event for
+      // a virtualized list to draw its next rows by
+      if (document.hidden) (box ?? document).dispatchEvent(new Event("scroll", { bubbles: !box }));
+      steps++;
+      const had = items.size;
+      if (scroller.scrollTop !== from) {
+        await whenPage(() => true, Math.min(150, left()));
+        take();
+        return true;
+      }
+      take();
+      return items.size > had || whenPage(() => {
+        take();
+        return items.size > had;
+      }, Math.min(END_MS, left()));
+    };
+    if (opts.scroll) take();
+    const first = [...items.values()].map((item) => item.text);
+    for (;;) {
+      if (!left()) {
+        stopped = "time";
+        break;
+      }
+      if (chars >= GATHER_CHARS || items.size >= (Number(opts.max) || Infinity) || (!opts.scroll && root.textContent.length >= GATHER_CHARS)) {
+        stopped = "max";
+        break;
+      }
+      if (opts.expand) {
+        const did = await expand();
+        if (did === "left") {
+          stopped = "left";
+          break;
+        }
+        if (did) {
+          rested = false;
+          if (opts.scroll) take();
+          continue;
+        }
+        // None is left: the page gets a moment, once, to put up what the
+        // last click is still bringing, and perhaps another control.
+        if (clicks && !rested) {
+          rested = true;
+          await settled(500, Math.min(2000, left()));
+          continue;
+        }
+      }
+      if (!opts.scroll) {
+        stopped = expanders(root).length ? "nothing new" : "none left";
+        break;
+      }
+      if (!(await step())) {
+        stopped = "nothing new";
+        break;
+      }
+    }
+    if (collect && !opts.scroll) take();
+    const count = collect || opts.scroll ? items.size : members().filter((el) => el.textContent.trim()).length || null;
+    return { items: [...items.values()], first, clicks, steps, stopped, spent, count, expand: !!opts.expand, scroll: !!opts.scroll };
+  }
+
+  // What expand and scroll did, as a read reports it: "expanded 8 times,
+  // 498 items, stopped: none left".
+  function gathered(g) {
+    const stopped = { "none left": "none left", "nothing new": "nothing new", time: "out of time, and extract again goes on from here", max: "at the limit", left: "a click would have left the page" }[g.stopped];
+    return [g.expand ? `expanded ${g.clicks} time${g.clicks === 1 ? "" : "s"}` : "", g.scroll ? `scrolled ${g.steps} time${g.steps === 1 ? "" : "s"}` : "", g.count === null ? "" : `${g.count.toLocaleString("en-US")} items`, `stopped: ${stopped}`].filter(Boolean).join(", ");
+  }
+
+  // What a read of root leaves out, and what reads it; after expand or
+  // scroll, what they did, and what they left unless they finished.
+  function unread(root, opts, g) {
+    const done = g && (g.stopped === "none left" || g.stopped === "nothing new");
+    const left = [];
+    const part = done && opts.scroll ? null : partList(root);
+    if (part) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
+    const more = done && opts.expand ? [] : expanders(root, g?.spent);
+    if (more.length) {
+      const held = heldBack(more[0]);
+      const name = `"${clip(accessibleName(more[0]), 40)}"`;
+      left.push([`${more.length === 1 ? `a ${name} control` : `${more.length} controls such as ${name}`}${held ? ` (${held})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
+    }
+    return {
+      ...(g ? { harvested: gathered(g) } : {}),
+      ...(left.length ? { incomplete: { reason: left.map(([reason]) => reason).join("; "), hint: left.map(([, hint]) => hint).join("; ") } } : {}),
+    };
+  }
+
+  // extract with expand or scroll: root's text once its list is whole.
+  async function harvestIn(root, opts, read) {
+    const g = await gather(root, opts, false);
+    return { g, read: { text: opts.scroll && g.items.length ? spliced(read.text, g.first, g.items.map((item) => item.text)) : tidyText(root).text, filler: false } };
+  }
+
+  // repl harvest(page, options): the list's items themselves, each once,
+  // gathered as extract's expand and scroll gather them (scroll unless
+  // expand alone is asked for). item and key are CSS: the items, and the
+  // element in each whose link or text tells it from the rest.
+  async function harvestList(opts = {}) {
+    if (!(await hasBody())) return { error: noBody() };
+    const root = opts.selector ? rootFor(opts.selector) : contentRoot().root;
+    if (!root) return noMatch("selector", opts.selector);
+    const asked = { ...opts, scroll: opts.scroll ?? !opts.expand };
+    const g = await gather(root, asked, true);
+    return { url: location.href, title: document.title, items: g.items, ...unread(root, asked, g) };
   }
 
   // ---------- images ----------
@@ -4808,6 +5173,7 @@
     press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
     scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
     extract: (opts) => memoryRead(extract, opts),
+    harvest: harvestList,
     data: pageData,
     tabInfo,
     eval: (src) => {

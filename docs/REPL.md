@@ -94,8 +94,18 @@ process-wide ownership.
   end of `waitForTimeout`, `waitForSelector`, or `locator.waitFor`, which
   each read the address once more). A move after that shows with the next
   call; a bare `sleep(ms)` makes none.
-- `page.extract(selector?)`, or `page.extract({selector, query})`, returns
-  `{url, title, text, truncated}`: the words are in `.text`.
+- `page.extract(selector?)`, or `page.extract({selector, query, expand,
+  scroll})`, returns `{url, title, text, truncated}`: the words are in
+  `.text`. `expand` and `scroll` read all of a thread or feed first
+  (`safari guide reference extract`).
+- `harvest(page, {selector, item, key, expand, scroll, max, ms})`, or
+  `page.harvest({...})`, returns `{url, title, items, harvested,
+  incomplete}`: each item of the page's list once, as `{text}` or `{key,
+  text}`, gathered by scrolling, or with `expand: true` alone by clicking
+  its "Load more" controls. `item` is CSS for the items when the list is
+  not found by itself, `key` CSS for the element in each whose link or
+  text tells it apart; `max` stops at that many items, and `ms` gives it
+  up to 90 s (25 s when omitted).
 - With agent research saving enabled, eligible `snapshot` and `extract`
   results also contain `memoryReceipt`. Select useful sources with
   `await saveSource(read.memoryReceipt.id, "why this source matters")`.

@@ -1,0 +1,35 @@
+<!doctype html>
+<title>Virtual list</title>
+<!-- 1,000 members, 40 px each, in a 400 px box that draws only the rows
+     near its view (and three past each edge) over a 40,000 px spacer, as
+     react-virtualized and TanStack Virtual do; no ARIA says how many. -->
+<style>
+  #box { height: 400px; overflow: auto; }
+  #rows { position: relative; }
+  .row { position: absolute; left: 0; right: 0; height: 40px; }
+</style>
+<main>
+  <h1>Members</h1>
+  <div id="box"><div id="rows"></div></div>
+  <p>End of the member list.</p>
+</main>
+<script>
+  const TOTAL = 1000;
+  const ROW = 40;
+  const box = document.getElementById("box");
+  const rows = document.getElementById("rows");
+  rows.style.height = `${TOTAL * ROW}px`;
+  const draw = () => {
+    const first = Math.max(0, Math.floor(box.scrollTop / ROW) - 3);
+    const last = Math.min(TOTAL, Math.ceil((box.scrollTop + box.clientHeight) / ROW) + 3);
+    rows.replaceChildren(...Array.from({ length: last - first }, (_, i) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.style.top = `${(first + i) * ROW}px`;
+      row.textContent = `Member ${first + i + 1}, joined in ${2000 + ((first + i) % 25)}`;
+      return row;
+    }));
+  };
+  box.addEventListener("scroll", draw);
+  draw();
+</script>

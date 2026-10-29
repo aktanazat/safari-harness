@@ -1335,6 +1335,34 @@ snapshot`). A `query` that misses inside `selector` (or the section) but
 matches elsewhere on the page says how many lines it left out. `save`
 writes the read to a file (`safari guide reference saving`).
 
+### Whole threads, feeds, and long lists
+
+A page often draws only part of a long list: a thread behind "Load more"
+(a GitHub issue), a feed that adds posts as you scroll (X, Mastodon), a
+list that draws only the rows near its view (react-virtualized). A read
+of such a page says so in `incomplete: {reason, hint}`, printed as a line
+after the text: what it left (a "Load more" control and what it holds
+back, a list of 1,000 rows that draws 16, a feed of unknown length) and
+what reads the rest, naming the site's reader when there is one (`gh api`
+for a GitHub issue's comments, `x.getUserTweets` for an X profile,
+`youtube.getComments` for a video's).
+
+- `expand: true` clicks the list's "Load more", "Show 12 more replies" or
+  "View older messages" controls until none is left, each once what it
+  loads has come (up to 5 s a click). It clicks only buttons that submit
+  no form and links that go nowhere (`#`), never one that opens a menu or
+  dialog; a click that would load another page is stopped and ends it.
+- `scroll: true` scrolls the list's box, or the window, most of a view at
+  a time and keeps each item once, until the list's end brings nothing
+  new for 3 s. With both, it also clicks the controls the scroll uncovers.
+- Both stop after 25 s or 2,000,000 characters, and `harvested` says what
+  they did: `expanded 8 times, 498 items, stopped: none left`. One that
+  ran out of time says so and leaves the view where it stopped, so the
+  same call again goes on from there. `maxBytes` still bounds the text;
+  pass a larger one, or `save`, for a long list.
+- A task allowed only to inspect pages cannot use them: they click and
+  scroll.
+
 ### Tables and card lists as rows
 
 `extract` with `as: "table"` returns the page's data as rows instead of

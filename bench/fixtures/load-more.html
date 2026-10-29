@@ -1,0 +1,47 @@
+<!doctype html>
+<title>Load more</title>
+<!-- A thread of 300 comments that shows its first 20 and last 10 and loads
+     the rest 60 at a time from a Load more button, disabled while it loads,
+     as GitHub's issue timeline does. A link and a form's submit button
+     named like it lead elsewhere: each records a click and goes nowhere. -->
+<style>.comment { padding: 8px; border-bottom: 1px solid #ddd; }</style>
+<main>
+  <h1>Issue 1: everything at once</h1>
+  <div id="timeline"></div>
+  <p><a href="elsewhere.html" id="link">Load more results</a></p>
+  <form action="elsewhere.html" id="form"><button id="submit">Show more results</button></form>
+</main>
+<script>
+  const TOTAL = 300;
+  const TAIL = 291;
+  const timeline = document.getElementById("timeline");
+  const comment = (n) => {
+    const div = document.createElement("div");
+    div.className = "comment";
+    div.textContent = `Comment ${n}: a reply in the thread, ${n} of ${TOTAL}.`;
+    return div;
+  };
+  for (let n = 1; n <= 20; n++) timeline.append(comment(n));
+  const more = document.createElement("div");
+  more.innerHTML = '<span></span> <button type="button">Load more</button>';
+  timeline.append(more);
+  for (let n = TAIL; n <= TOTAL; n++) timeline.append(comment(n));
+  const [left, button] = more.children;
+  let next = 21;
+  left.textContent = `${TAIL - next} remaining items`;
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    setTimeout(() => {
+      for (const end = Math.min(next + 60, TAIL); next < end; next++) more.before(comment(next));
+      if (next >= TAIL) return more.remove();
+      left.textContent = `${TAIL - next} remaining items`;
+      button.disabled = false;
+    }, 50);
+  });
+  for (const id of ["link", "submit"]) {
+    document.getElementById(id).addEventListener("click", (e) => {
+      e.preventDefault();
+      document.body.dataset.used = `${document.body.dataset.used ?? ""} ${id}`.trim();
+    });
+  }
+</script>

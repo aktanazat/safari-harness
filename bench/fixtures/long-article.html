@@ -1,0 +1,32 @@
+<!doctype html>
+<title>A long article</title>
+<!-- An essay of 80 paragraphs, many views tall, read whole by a plain
+     read: a code listing in a box of its own that scrolls, links and a
+     menu button named like Load more, and a table. Nothing is held back. -->
+<style>
+  p { line-height: 1.6; }
+  pre { max-height: 300px; overflow: auto; }
+</style>
+<main>
+  <article>
+    <h1>On reading everything</h1>
+    <div id="body"></div>
+    <pre id="listing"></pre>
+    <table>
+      <thead><tr><th>Year</th><th>Pages read</th></tr></thead>
+      <tbody id="years"></tbody>
+    </table>
+    <p><a href="next.html">Read more</a> · <a href="archive.html">Show more articles</a></p>
+    <button type="button" aria-haspopup="menu">More</button>
+  </article>
+</main>
+<script>
+  const body = document.getElementById("body");
+  for (let n = 1; n <= 80; n++) {
+    const p = document.createElement("p");
+    p.textContent = `Paragraph ${n}. A reader who stops at the first screen misses the argument, which builds slowly across the whole essay and only lands at its close; this is part ${n} of it.`;
+    body.append(p);
+  }
+  document.getElementById("listing").textContent = Array.from({ length: 400 }, (_, i) => `line ${i + 1}: total += pages[${i}];`).join("\n");
+  document.getElementById("years").innerHTML = Array.from({ length: 30 }, (_, i) => `<tr><td>${1995 + i}</td><td>${100 + i * 7}</td></tr>`).join("");
+</script>
