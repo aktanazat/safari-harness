@@ -2808,6 +2808,15 @@ with its `since` to keep waiting.
   ~/Library/Messages it arrives as an empty message marked delivered. It
   cannot start a group chat.
 
+A command timeout does not mean the message was not sent. After dispatch,
+the tool checks new outgoing rows for the exact text or file in the intended
+conversation, even when the send command fails. It returns `sent` or
+`delivered` only with that receipt. Without a receipt, it fails with
+`effect: "possibly_effected"` and `retryable: false`; this is not permission
+to resend. Check `imessage_history` for that conversation and the exact
+outgoing content, including later reads. An empty immediate history read
+does not prove the send failed. The tool never retries a send automatically.
+
 ## contacts
 
 - `contacts {name}`: phones and emails.

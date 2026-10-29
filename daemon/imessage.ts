@@ -12,6 +12,7 @@ import { basename, extname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Tool } from "./tools.ts";
+import { HarnessError } from "./failures.ts";
 
 const execFileAsync = promisify(execFile);
 const HOME = homedir();
@@ -471,31 +472,57 @@ end run`;
 // own here first; Messages copies it into its Attachments on taking it.
 const STAGING = join(HOME, "Library", "Messages", ".send-staging");
 
-// Our own newest message after a rowid, by its text.
-const OUR_ROW = "SELECT is_sent, is_delivered, error FROM message WHERE ROWID > ? AND is_from_me = 1 AND text = ? ORDER BY ROWID DESC LIMIT 1";
-type OurRow = { is_sent: number; is_delivered: number; error: number };
+// Receipts must belong to the intended conversation, not another chat
+// sending the same text or file at the same time.
+type SentChat = Pick<ChatRow, "guid" | "ident" | "svc" | "style">;
+const SENT_CHAT = "c.guid, c.chat_identifier ident, c.service_name svc, c.style";
+function inSendingChat(row: SentChat, chat: boolean, target: string): boolean {
+  return chat ? row.guid === target
+    : row.style !== 43 && row.svc === "iMessage" && handleKey(row.ident) === handleKey(target);
+}
 
-// Our own attachment after a rowid, by file name. A file went only when its
-// row reaches transfer_state 5; the message row alone says delivered even
-// for the empty bubble.
-const OUR_ATTACHMENT = `SELECT m.ROWID rowid, m.error, a.transfer_state state, a.total_bytes bytes FROM attachment a
+const OUR_ROW = `SELECT m.is_sent, m.is_delivered, m.error, ${SENT_CHAT} FROM message m
+  JOIN chat_message_join j ON j.message_id = m.ROWID JOIN chat c ON c.ROWID = j.chat_id
+  WHERE m.ROWID > ? AND m.is_from_me = 1 AND m.text = ? ORDER BY m.ROWID DESC`;
+type OurRow = SentChat & { is_sent: number; is_delivered: number; error: number };
+
+// A file went only when its row reaches transfer_state 5; the message row
+// alone says delivered even for the empty bubble.
+const OUR_ATTACHMENT = `SELECT m.ROWID rowid, m.error, a.transfer_state state, a.total_bytes bytes, ${SENT_CHAT} FROM attachment a
   JOIN message_attachment_join j ON j.attachment_id = a.ROWID JOIN message m ON m.ROWID = j.message_id
-  WHERE m.ROWID > ? AND m.is_from_me = 1 AND a.transfer_name = ? ORDER BY m.ROWID LIMIT 1`;
-type OurAttachment = { rowid: number; error: number; state: number; bytes: number };
+  JOIN chat_message_join cj ON cj.message_id = m.ROWID JOIN chat c ON c.ROWID = cj.chat_id
+  WHERE m.ROWID > ? AND m.is_from_me = 1 AND a.transfer_name = ? ORDER BY m.ROWID`;
+type OurAttachment = SentChat & { rowid: number; error: number; state: number; bytes: number };
 const TRANSFER_DONE = 5;
 const TRANSFER_FAILED = 6;
-// Messages writes the attachment row within a second or two of the send;
-// none by then means it dropped the file.
+// Messages usually writes the attachment row within a second or two.
+// Its absence does not prove that an interrupted send had no effect.
 const ATTACH_APPEAR_MS = 15000;
 const TRANSFER_MS = 120000;
 
-async function runSend(script: string, argv: string[]): Promise<void> {
+async function runSend<T>(script: string, argv: string[], confirm: () => Promise<T>): Promise<T> {
+  let started = false;
   try {
-    await execFileAsync("osascript", ["-e", script, ...argv], { timeout: 20000 });
+    const running = execFileAsync("osascript", ["-e", script, ...argv], { timeout: 20000 });
+    started = running.child.pid !== undefined;
+    await running;
   } catch (e) {
-    const msg = typeof e === "object" && e !== null && "stderr" in e && e.stderr ? String(e.stderr) : e instanceof Error ? e.message : String(e);
-    if (/-1743|not allowed|Not authorized/i.test(msg)) throw new Error("macOS has not allowed this app to control Messages: System Settings > Privacy & Security > Automation");
-    throw new Error(`Messages did not send: ${msg.trim()}`);
+    const stderr = typeof e === "object" && e !== null && "stderr" in e ? String(e.stderr) : "";
+    if (/-1743|not authorized to send apple events/i.test(stderr)) {
+      throw new HarnessError("blocked", "macOS has not allowed this app to control Messages: System Settings > Privacy & Security > Automation", { effect: "none" });
+    }
+    if (!started) {
+      throw new HarnessError("command_failed", `Messages send could not start: ${e instanceof Error ? e.message : String(e)}`, { effect: "none" });
+    }
+    // Killing osascript does not cancel an Apple event already in Messages.
+    // Reconcile the outgoing row even when the subprocess times out or fails.
+  }
+  try {
+    return await confirm();
+  } catch (e) {
+    throw new HarnessError("effect_unknown", e instanceof Error ? e.message : String(e), {
+      next: `Do not resend this draft. Check imessage_history for ${JSON.stringify(argv[1])} for the exact outgoing text or file, including later history reads. A timeout or an empty immediate read does not prove it was not sent.`,
+    });
   }
 }
 
@@ -531,26 +558,27 @@ async function sendFile(file: FileToSend, dir: string, index: number, chat: bool
   mkdirSync(own);
   const staged = join(own, file.name);
   copyFileSync(file.path, staged);
-  await runSend(sendScript("file", chat ? "chat" : "handle"), [staged, target]);
-  const start = Date.now();
-  for (;;) {
-    await Bun.sleep(500);
-    const db = openChatDb();
-    let row: OurAttachment | null;
-    try {
-      row = db.query<OurAttachment, [number, string]>(OUR_ATTACHMENT).get(after, file.name);
-    } finally {
-      db.close();
+  return runSend(sendScript("file", chat ? "chat" : "handle"), [staged, target], async () => {
+    const start = Date.now();
+    for (;;) {
+      await Bun.sleep(500);
+      const db = openChatDb();
+      let row: OurAttachment | undefined;
+      try {
+        row = db.query<OurAttachment, [number, string]>(OUR_ATTACHMENT).all(after, file.name).find((r) => inSendingChat(r, chat, target));
+      } finally {
+        db.close();
+      }
+      const waited = Date.now() - start;
+      if (!row) {
+        if (waited > ATTACH_APPEAR_MS) throw new Error(`Messages has no attachment receipt for ${file.name}; ${to} may have got an empty message.`);
+        continue;
+      }
+      if (row.error || row.state === TRANSFER_FAILED) throw new Error(`Messages failed to send ${file.name} to ${to} (transfer state ${row.state}, error ${row.error})`);
+      if (row.state === TRANSFER_DONE) return row.rowid;
+      if (waited > TRANSFER_MS) throw new Error(`${file.name} was still uploading to ${to} after ${TRANSFER_MS / 1000} s (transfer state ${row.state}).`);
     }
-    const waited = Date.now() - start;
-    if (!row) {
-      if (waited > ATTACH_APPEAR_MS) throw new Error(`Messages took ${file.name} but attached nothing; ${to} may have got an empty message. Check imessage_history before trying again.`);
-      continue;
-    }
-    if (row.error || row.state === TRANSFER_FAILED) throw new Error(`Messages failed to send ${file.name} to ${to} (transfer state ${row.state}, error ${row.error})`);
-    if (row.state === TRANSFER_DONE) return row.rowid;
-    if (waited > TRANSFER_MS) throw new Error(`${file.name} was still uploading to ${to} after ${TRANSFER_MS / 1000} s (transfer state ${row.state}). Check imessage_history before trying again.`);
-  }
+  });
 }
 
 export async function send(opts: { to: string; text?: string; files?: string[]; approved?: boolean }) {
@@ -596,43 +624,50 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
   // Files first, each confirmed before the next, so a failed file stops the
   // rest and the text.
   const sent: { file: string; bytes: number }[] = [];
-  if (files.length) {
-    mkdirSync(STAGING, { recursive: true });
-    const dir = mkdtempSync(join(STAGING, "send-"));
-    try {
-      let after = newestRowid();
-      for (const [i, f] of files.entries()) {
-        try {
-          after = await sendFile(f, dir, i, chat, target, after, draft.to);
-        } catch (e) {
-          const went = sent.length ? ` Sent before it: ${sent.map((s) => s.file).join(", ")}.` : "";
-          throw new Error(`${e instanceof Error ? e.message : String(e)}${went}${text.trim() ? " The text was not sent." : ""}`);
+  try {
+    if (files.length) {
+      mkdirSync(STAGING, { recursive: true });
+      const dir = mkdtempSync(join(STAGING, "send-"));
+      try {
+        let after = newestRowid();
+        for (const [i, f] of files.entries()) {
+          try {
+            after = await sendFile(f, dir, i, chat, target, after, draft.to);
+          } catch (e) {
+            throw new Error(`${e instanceof Error ? e.message : String(e)}${text.trim() ? " The text was not sent." : ""}`, { cause: e });
+          }
+          sent.push({ file: f.name, bytes: f.bytes });
         }
-        sent.push({ file: f.name, bytes: f.bytes });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
     }
+    if (!text.trim()) return { status: "sent", to: draft.to, files: sent };
+    const startRowid = newestRowid();
+    return await runSend(sendScript("text", chat ? "chat" : "handle"), [text, target], async () => {
+      const done = (status: string) => ({ status, to: draft.to, ...(sent.length ? { files: sent } : {}) });
+      // Confirm from the database, including after a command timeout.
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        await Bun.sleep(700);
+        const check = openChatDb();
+        try {
+          const row = check.query<OurRow, [number, string]>(OUR_ROW).all(startRowid, text).find((r) => inSendingChat(r, chat, target));
+          if (row?.error) throw new Error(`Messages reported error ${row.error} sending to ${draft.to}`);
+          if (row?.is_delivered) return done("delivered");
+          if (row?.is_sent) return done("sent");
+        } finally {
+          check.close();
+        }
+      }
+      throw new Error("Messages has no sent receipt yet; the send outcome is unknown.");
+    });
+  } catch (e) {
+    if (!sent.length) throw e;
+    throw new HarnessError("effect_unknown", `${e instanceof Error ? e.message : String(e)} Sent before this failure: ${sent.map((s) => s.file).join(", ")}.`, {
+      next: "Do not resend the whole draft. Check imessage_history for the exact outgoing files and text before deciding what remains unsent.",
+    });
   }
-  if (!text.trim()) return { status: "sent", to: draft.to, files: sent };
-  const startRowid = newestRowid();
-  await runSend(sendScript("text", chat ? "chat" : "handle"), [text, target]);
-  const done = (status: string) => ({ status, to: draft.to, ...(sent.length ? { files: sent } : {}) });
-  // Confirm from the database: the sent row appears within a few seconds.
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    await Bun.sleep(700);
-    const check = openChatDb();
-    try {
-      const row = check.query<OurRow, [number, string]>(OUR_ROW).get(startRowid, text);
-      if (row?.error) throw new Error(`Messages reported error ${row.error} sending to ${draft.to}`);
-      if (row?.is_delivered) return done("delivered");
-      if (row?.is_sent) return done("sent");
-    } finally {
-      check.close();
-    }
-  }
-  return { ...done("unconfirmed"), note: "handed to Messages; no sent receipt yet. Check imessage_history before retrying so it is not sent twice." };
 }
 
 // ---------- tool table ----------

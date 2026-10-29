@@ -9,6 +9,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { HarnessError, readFailure, type Failure } from "./failures.ts";
 
 export const HOST_FILE = join(homedir(), ".local/share/safari-harness/host.json");
 const DAEMON_PORT = 37334;
@@ -95,8 +96,31 @@ export async function remoteCall(host: string, tool: string, args: Record<string
   const safari = (await readHostConfig()).hosts?.[host]?.safari ?? REMOTE_SAFARI;
   const proc = Bun.spawn(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `${safari} call ${tool} ${shellQuote(JSON.stringify(args))} --json --host local`], { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  if (code !== 0) throw new Error(err.trim().replace(/^error: /, "") || `ssh ${host} exited ${code}`);
-  return JSON.parse(out) as unknown;
+  if (code !== 0) {
+    let failure: Failure | undefined;
+    try {
+      failure = readFailure(JSON.parse(out));
+    } catch {
+      failure = undefined;
+    }
+    if (failure) throw failure;
+    if (tool === "imessage_send") {
+      throw new HarnessError("effect_unknown", err.trim() || `ssh ${host} exited ${code} without a send receipt`, {
+        next: "Do not resend this draft. Check imessage_history on the target Mac for the exact outgoing text or file before deciding what happened.",
+      });
+    }
+    throw new Error(err.trim().replace(/^error: /, "") || `ssh ${host} exited ${code}`);
+  }
+  try {
+    return JSON.parse(out) as unknown;
+  } catch (e) {
+    if (tool === "imessage_send") {
+      throw new HarnessError("effect_unknown", `ssh ${host} returned no valid send receipt`, {
+        next: "Do not resend this draft. Check imessage_history on the target Mac for the exact outgoing text or file before deciding what happened.",
+      });
+    }
+    throw e;
+  }
 }
 
 // The hosts to choose from: this Mac, the hosts named in ~/.ssh/config
