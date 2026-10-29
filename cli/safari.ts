@@ -111,6 +111,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              run up to 300 s, 30 when omitted;
                                              --reader name runs a script saved with learn)
   safari extract --tab N [--selector s]      readable text
+  safari extract --tab N --expand|--scroll   all of a thread or feed: clicks its Load
+                                             more, or scrolls and gathers its items
   safari extract --as table --tab N          tables and card lists as JSON rows
   safari extract --as chat --tab N           a chat's messages, each with who wrote it
   safari data --tab N [--pick path] [--max bytes]

@@ -17,7 +17,7 @@ import { closeRetryMs, closeWindow, heldSpace, ownersByPage, resized, spaceNote,
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
-import { addressedNote, shieldChat, shieldExtract, shieldSnapshot, type Shielded } from "./injection.ts";
+import { addressedNote, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
@@ -1321,17 +1321,37 @@ async function runReader(tab: number | undefined, name: string, timeoutMs?: numb
   return evaluate({ tab: id, expression: reader.expression, page: reader.page, timeoutMs });
 }
 
+// extract's expand and scroll go on for up to 25 s in the page (content.js
+// GATHER_MS), and the read after them takes its own time.
+const GATHER_RELAY_MS = 40_000;
+
+// The site reader that reads whole a list its page draws in part, named in
+// the hint of a read that left some of it (incomplete).
+function listReader(url: string): string | undefined {
+  const issue = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)/.exec(url);
+  if (issue) return `gh api repos/${issue[1]}/${issue[2]}/issues/${issue[3]}/comments --paginate reads every comment`;
+  if (/^https:\/\/(?:www\.|m\.)?youtube\.com\/watch\?/.test(url)) return "youtube.getComments(url) in repl reads the comments, a page at a time";
+  const x = /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/(\w+)\/?(?:[?#]|$)/.exec(url);
+  if (!x || /^(?:explore|search|notifications|messages|settings|i|compose)$/i.test(x[1])) return undefined;
+  return x[1] === "home" ? "x.getTimeline() in repl reads the timeline, a page at a time" : `x.getUserTweets("${x[1]}") in repl reads the posts, a page at a time`;
+}
+
+function withReader<T extends { url: string; incomplete?: Incomplete }>(page: T): T {
+  const reader = page.incomplete ? listReader(page.url) : undefined;
+  return reader && page.incomplete ? { ...page, incomplete: { ...page.incomplete, hint: `${page.incomplete.hint}; ${reader}` } } : page;
+}
+
 // as: "table" reads the page's tables and repeated card lists as rows,
 // as: "chat" a chat's messages, each with who wrote it, and as: "images"
 // the addresses of its pictures. Text past maxBytes is read whole, up to
 // SAVED_CHARS, for the saved folder (fit); a secret's source and a read
 // with save: false keep only what the reply shows.
-export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; save?: unknown }) {
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; save?: unknown; expand?: boolean; scroll?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const strict = "strict_selector" in opts && opts.strict_selector === true;
   const whole = strict || opts.save === false ? undefined : SAVED_CHARS;
   const limit = opts.maxBytes || 20000;
-  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict }]) as Promise<Extract | Chat | { tables: unknown[] }>);
+  const read = (selector: string | undefined) => researchRead(tab, () => relay(tab, "extract", [{ selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true }], opts.expand === true || opts.scroll === true ? GATHER_RELAY_MS : undefined) as Promise<Extract | Chat | { tables: unknown[] }>);
   // a secret's source must match exactly, never the whole page
   const { page, missed } = strict ? { page: await read(opts.selector) } : await narrowed("selector", opts.selector, read);
   // GitHub's file page draws its code where extract does not read, so it
@@ -1345,7 +1365,7 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
     }
   }
   // as: "table" answers rows, not text
-  const out = "text" in page ? await fit(shieldExtract(page), limit, whole) : "messages" in page ? shieldChat(page) : page;
+  const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page) : page;
   return missed ? { ...out, note: missed } : out;
 }
 
@@ -3089,11 +3109,24 @@ export const TOOLS: Record<string, Tool> = {
     run: (a) => dialogs(a as { tab?: number; do?: string; text?: string }),
   },
   extract: {
-    desc: "Readable text of the main content (or a CSS selector), for long pages.",
-    params: { tab: TAB, selector: { type: "string", description: "CSS selector to read" }, query: { type: "string", description: "only lines containing this text, from the whole page" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table", "chat", "images"], description: "table: tables and card lists as JSON rows; chat: who said what; images: full-size picture URLs" }, save: SAVE },
+    desc: "Main text, or a CSS selector's. expand clicks Load more; scroll gathers a feed.",
+    params: { tab: TAB, selector: { type: "string" }, query: { type: "string", description: "only lines with this text, page-wide" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table", "chat", "images"], description: "table: tables/cards as JSON rows; chat: who said what; images: full-size URLs" }, expand: { type: "boolean" }, scroll: { type: "boolean" }, save: SAVE },
     unlisted: { strict_selector: { type: "boolean", description: "internal secret source: selector must match exactly one element" } },
     required: ["tab"],
-    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string })),
+    run: saving("extract", (a) => extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; expand?: boolean; scroll?: boolean })),
+  },
+  // repl harvest(page, options): the items of the page's list, each once,
+  // as extract's expand and scroll gather them (content.js harvestList).
+  harvest: {
+    desc: "The items of a page's list, each once, gathered by clicking Load more and scrolling.",
+    params: { tab: TAB, selector: { type: "string" }, item: { type: "string" }, key: { type: "string" }, expand: { type: "boolean" }, scroll: { type: "boolean" }, max: { type: "number" }, ms: { type: "number" } },
+    required: ["tab"],
+    hidden: true,
+    run: async (a) => {
+      const ms = Math.min(a.ms === undefined ? 25_000 : num(a.ms, "ms"), 90_000);
+      const list = await relay(await resolveTab(a.tab), "harvest", [{ selector: a.selector, item: a.item, key: a.key, expand: a.expand, scroll: a.scroll, max: a.max, ms }], ms + 15_000) as Harvest;
+      return shieldItems(withReader(list));
+    },
   },
   map: {
     desc: `Read up to ${MAP_MAX_URLS} pages in background tabs: extract, snapshot, eval or fetch. Failed/blocked pages stay in results; tabs close.`,
@@ -3536,7 +3569,9 @@ export function inputSchema(tool: Tool) {
 }
 
 type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; documentId?: string; update?: SnapshotUpdate; challenge?: Challenge; guide?: string; notes?: string };
-type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string };
+type Incomplete = { reason: string; hint: string };
+type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string; incomplete?: Incomplete; harvested?: string };
+type Harvest = { url: string; title: string; items: { text: string; key?: string }[]; harvested: string; incomplete?: Incomplete };
 // a chat's messages, oldest first, and how many earlier ones were left out
 type Chat = Shielded & { url: string; title: string; messages: { from: string; text: string }[]; earlier?: number };
 
@@ -3578,7 +3613,7 @@ export function formatResult(value: unknown, max = Infinity): string {
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       const { total } = value as { total?: unknown };

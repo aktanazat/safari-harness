@@ -39,6 +39,13 @@ export function shieldChat<T extends { title: string; messages: { from: string; 
   return { ...chat, title: title.text, messages: messages.map(({ places: _, ...m }) => m), ...(places ? { addressedToAI: places } : {}) };
 }
 
+export function shieldItems<T extends { title: string; items: { text: string }[] }>(list: T): T & Shielded {
+  const title = markLines(list.title, false);
+  const marked = list.items.map((item) => markLines(item.text, false));
+  const places = marked.reduce((n, m) => n + m.places, title.places);
+  return { ...list, title: title.text, items: list.items.map((item, i) => ({ ...item, text: marked[i].text })), ...(places ? { addressedToAI: places } : {}) };
+}
+
 // Unicode tag characters draw nothing, yet a model reads the ASCII they
 // spell: orders hidden in plain sight. They go, so a flag emoji built from
 // them shows as a plain black flag.

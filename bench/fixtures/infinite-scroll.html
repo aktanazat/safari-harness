@@ -1,0 +1,35 @@
+<!doctype html>
+<title>Infinite scroll</title>
+<!-- A feed of 300 posts (role=feed; aria-setsize -1: its length unknown)
+     that draws 20 and 20 more 100 ms after the view comes within 400 px of
+     its end, as X's and Mastodon's timelines do. -->
+<style>article { height: 150px; border-bottom: 1px solid #ddd; }</style>
+<main>
+  <h1>Timeline</h1>
+  <div role="feed" id="feed"></div>
+</main>
+<script>
+  const TOTAL = 300;
+  const feed = document.getElementById("feed");
+  let drawn = 0;
+  let loading = false;
+  const draw = () => {
+    for (const end = Math.min(drawn + 20, TOTAL); drawn < end;) {
+      drawn++;
+      const post = document.createElement("article");
+      post.setAttribute("aria-posinset", drawn);
+      post.setAttribute("aria-setsize", -1);
+      post.textContent = `Post ${drawn}: what someone said, ${drawn} posts down.`;
+      feed.append(post);
+    }
+  };
+  draw();
+  addEventListener("scroll", () => {
+    if (loading || drawn >= TOTAL || scrollY + innerHeight < document.documentElement.scrollHeight - 400) return;
+    loading = true;
+    setTimeout(() => {
+      draw();
+      loading = false;
+    }, 100);
+  });
+</script>

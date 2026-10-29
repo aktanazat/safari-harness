@@ -385,6 +385,7 @@ safari back --tab 7
 safari wait --text "Welcome" --tab 7   # returns the moment it is on the page
 safari extract --tab 7                 # the first 20,000 characters; a longer page's whole text goes to a file it names
 safari extract --save --tab 7          # the whole text to a file; prints its path, size, and start
+safari extract --expand --tab 7        # every comment behind its Load more; --scroll gathers a feed
 safari extract --as table --tab 7      # tables and product lists as rows of JSON
 safari extract --as images --tab 7     # full-size picture addresses, one a line
 safari map https://a.example https://b.example   # up to 20 pages at once

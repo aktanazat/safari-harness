@@ -464,7 +464,7 @@ const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: 
 const INSPECTION_READS = new Set("tabs info snapshot extract shot report data wait run element painted lookalikes net console browsing_history status doctor action_finish input_state audit".split(" "));
 
 function inspectionAllowed(tool: string, args: Record<string, unknown>): boolean {
-  if (INSPECTION_READS.has(tool)) return true;
+  if (INSPECTION_READS.has(tool)) return !(tool === "extract" && (args.expand === true || args.scroll === true));
   if (tool === "eval") return scope.getStore()?.trustedInspection === true && args.page !== true;
   if (tool === "dialog") return args.do === undefined || args.do === "read";
   if (tool === "react") return args.do === undefined || args.do === "status" || args.do === "inspect";
