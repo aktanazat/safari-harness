@@ -51,6 +51,11 @@ export function readFailure(value: unknown): Failure | undefined {
   return { ok: false, code: f.code, retryable: f.retryable, effect: f.effect, message: f.message, next: f.next };
 }
 
+export function failedValue(value: unknown): boolean {
+  const f = fields(value);
+  return !!f && (f.ok === false || f.isError === true || typeof f.error === "string");
+}
+
 // An error the extension answered, typed when the page said what kind it
 // was: content.js marks a click it refused before sending any event.
 export function answeredError(message: string, failure: unknown): Error {

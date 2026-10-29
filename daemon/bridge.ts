@@ -2,7 +2,10 @@
 // worker over a WebSocket, plus request/response plumbing every verb rides on.
 //
 // Protocol (JSON over ws):
-//   extension -> daemon  {op:"hello", role:"extension", ua}
+//   extension -> daemon  {op:"hello", role:"extension", ua, started, closed}
+//                        when its page started, and its last socket's close code
+//   daemon -> extension  {op:"limit", bytes}  in reply, the most one message
+//                        may hold (MESSAGE_MAX)
 //   daemon -> extension  {id, op, args}   (op handled by background.js)
 //   extension -> daemon  {id, value} | {id, error, failure?}  (failures.ts)
 //   extension -> daemon  {op:"ticks", on}  start or stop the tick clock
@@ -26,6 +29,18 @@ import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
 
 export const DEFAULT_PORT = 37333;
+
+// The most one message on the extension's socket holds, either way: main.ts
+// sets Bun's limits to it, and background.js answers an error in place of a
+// bigger answer. At Bun's default of 16 MB the daemon closed the socket at a
+// bigger message (1006, "Received too big message"), failing every request
+// on it. From 10-28 16:53Z to 10-29 19:03Z the link dropped 533 times,
+// failing 2,463 requests; the drops Safari's log showed came at about 25.5
+// MB, sent again and again, it seems one file (StormRootCause). A download
+// brings up to 100 MiB (DOWNLOAD_MAX in content.js), some 140 MB as base64;
+// the daemon holds a message and what it reads from it at once, so the bar
+// stops there.
+export const MESSAGE_MAX = 160 * 1024 * 1024;
 
 // The clock for hidden tabs the extension keeps running (see "keeping owned
 // tabs running" in background.js): Safari holds the extension's own timers
@@ -101,6 +116,51 @@ const LIST_MS = 5000;
 // (spaceWindow in spaces.ts).
 export class TimedOut extends Error {}
 
+// Why the extension's socket closed (causeOf), as /health counts it:
+// too_large, a message on it was over MESSAGE_MAX; restarted, the daemon had
+// it reload, its page went away with Safari still running, or a new socket
+// took over; quit, Safari is not running; dropped, anything else.
+export type DropCause = "too_large" | "restarted" | "quit" | "dropped";
+
+// A request in flight when its socket closed, and why it closed.
+class Dropped extends Error {
+  constructor(message: string, readonly why: DropCause) {
+    super(message);
+  }
+}
+
+// Each reads as a drop to map.ts (DISCONNECTED), which reads its pages again.
+function droppedMessage(why: DropCause, code: number | undefined, reason: string): string {
+  switch (why) {
+    case "too_large": return `the Safari extension disconnected before it answered: a message from it was over the ${MESSAGE_MAX / 1024 / 1024} MB its link carries; if this call asks for that much (a large file, a full-page screenshot), ask for less`;
+    case "restarted": return "the Safari extension restarted before it answered; try again";
+    case "quit": return "the Safari extension disconnected before it answered: Safari quit; the next call starts it again in the background";
+    case "dropped": return `the Safari extension disconnected before it answered${code === undefined ? "" : ` (close code ${code}${reason ? `: ${reason}` : ""})`}; try again`;
+  }
+}
+
+// The requests a drop sends once more, on the socket that takes over
+// (again): those that only read, so asking twice is asking once. A relay
+// counts by its page op. A full-page shot scrolls the page and a file may
+// be one to fetch once, so neither goes again, nor does any action. From
+// 10-28 to 10-29 each drop failed 4.6 requests on average (StormRootCause).
+const REPEATABLE: Record<string, true> = { "tabs.list": true, probe: true, pageData: true, cookies: true, "cookies.count": true, "windows.resolve": true };
+const PAGE_READS: Record<string, true> = { snapshot: true, extract: true, tabInfo: true, locate: true, element: true, painted: true, data: true, lookalikes: true, netBody: true };
+
+// How many requests of each kind a drop failed (a relay by its page op).
+function byOp(lost: Pending[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const p of lost) {
+    const op = p.asked?.latencyKey ?? "ping";
+    counts[op] = (counts[op] ?? 0) + 1;
+  }
+  return counts;
+}
+
+async function safariRunning(): Promise<boolean> {
+  return await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
+}
+
 // A tabs.list asked within JOIN_MS of another still unanswered shares its
 // answer rather than asking again: on 10-13 the sweep, the agent windows'
 // pages, and agents asked over each other, 191 of a storm's 235 timeouts.
@@ -128,6 +188,8 @@ type WireMessage = {
   error?: unknown;
   ua?: string;
   role?: string;
+  started?: unknown;
+  closed?: unknown;
   on?: boolean;
   kind?: unknown;
   from?: unknown;
@@ -191,10 +253,11 @@ type Waiter = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer
 // trial while it is stuck (Infinity while one waits).
 type Run = { misses: number; since: number; last: number; ids: Set<string>; trial: number };
 
-// What a socket last said about itself: its user agent, whether it wants
+// What a socket last said about itself: its user agent, when its page
+// started and the code its last socket closed with, whether it wants
 // ticks, and the new ids a reload gave the tabs. A socket waiting to take
 // over is heard only once it has.
-type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
+type Said = { ua?: string; started?: number; closed?: number; ticks: boolean; renumbered?: TabEvent };
 
 // The requests a tab's page answers, the tab first among their arguments:
 // its content script (relay), its own world's script (evalPage, pageData),
@@ -241,11 +304,18 @@ export class Bridge {
   // the calls that meet a stuck kind wait on together.
   private healer = new AsyncLocalStorage<{ reloadedMs?: number }>();
   private reloading: Promise<ExtSocket> | null = null;
-  public extensionInfo: { ua?: string; connectedAt?: number } | null = null;
+  // Sockets the daemon had reload (askReload), whose close is a restart;
+  // how many times the link dropped since the daemon started, by why; and
+  // when the connected extension's page started, to tell a new one by.
+  private reloaded = new WeakSet<ExtSocket>();
+  private drops: Partial<Record<DropCause, number>> = {};
+  private pageStarted: number | undefined;
+  public extensionInfo: { ua?: string; connectedAt?: number; started?: number; closed?: number } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
   public onMemory: (tab: number, url: string, revision: number) => void = () => {};
   public onConnect: () => void = () => {};
+  public onDrop: (drop: { cause: DropCause; code?: number; lost: number }) => void = () => {};
 
   constructor(private readonly aliveMs = ALIVE_MS) {}
 
@@ -284,7 +354,8 @@ export class Bridge {
   }
 
   // What the old socket was asked it will never answer, so those requests
-  // fail now, not at their limit.
+  // fail now, not at their limit, and those that only read go again on the
+  // new one (again).
   private take(sock: ExtSocket) {
     const old = this.sock;
     const said = this.said.get(sock);
@@ -292,16 +363,29 @@ export class Bridge {
     this.refusing = false;
     this.answeredAt = Date.now();
     this.runs.clear();
-    this.extensionInfo = { connectedAt: Date.now(), ...(said?.ua === undefined ? {} : { ua: said.ua }) };
+    this.extensionInfo = { connectedAt: Date.now() };
     this.ticks(said?.ticks ?? false);
     if (said?.renumbered) this.onTab(said.renumbered);
     this.onConnect();
     if (old) {
-      const lost = this.drop(old, "the Safari extension restarted before it answered; try again");
+      const lost = this.lose(old);
+      this.fail(lost, "restarted", undefined, "");
+      this.dropped("restarted", undefined, lost);
       try { old.close(); } catch {}
-      note("connect", { replaced: true, ...(lost ? { unanswered: lost } : {}) });
+      note("connect", { replaced: true, ...(lost.length > 0 ? { unanswered: byOp(lost) } : {}) });
     } else note("connect");
+    if (said) this.hello(said);
     for (const wake of this.waiting) wake();
+  }
+
+  // What the connected extension said in its hello, for /health. A page
+  // that started since the last one's is noted: Safari loaded the extension
+  // again, where a socket that dropped keeps its page.
+  private hello(said: Said) {
+    this.extensionInfo = { ...this.extensionInfo, ua: said.ua, started: said.started, closed: said.closed };
+    if (said.started === undefined) return;
+    if (this.pageStarted !== undefined && said.started !== this.pageStarted) note("restarted", { started: new Date(said.started).toISOString() });
+    this.pageStarted = said.started;
   }
 
   // Whether sock answers a ping within aliveMs. An error is an answer too:
@@ -318,17 +402,28 @@ export class Bridge {
     return promise;
   }
 
-  // A socket closed. Only the current one takes the connection with it; an
-  // old one closing after its replacement leaves the new one alone.
-  detach(sock: ExtSocket) {
+  // A socket closed, with Bun's code and reason (main.ts). Only the current
+  // one takes the connection with it; an old one closing after its
+  // replacement leaves the new one alone. What it was asked fails saying
+  // why it closed (causeOf), and the journal notes how long it lived.
+  detach(sock: ExtSocket, code?: number, reason = "") {
     this.candidates.delete(sock);
-    const lost = this.drop(sock, "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again");
-    if (this.sock !== sock) return;
-    this.sock = null;
-    this.runs.clear();
-    this.extensionInfo = null;
-    this.ticks(false);
-    note("disconnect", lost ? { unanswered: lost } : {});
+    const lost = this.lose(sock);
+    const current = this.sock === sock;
+    if (!current && lost.length === 0) return;
+    const lived = Date.now() - (this.extensionInfo?.connectedAt ?? Date.now());
+    if (current) {
+      this.sock = null;
+      this.runs.clear();
+      this.extensionInfo = null;
+      this.ticks(false);
+    }
+    void this.causeOf(sock, code, reason).then((why) => {
+      this.fail(lost, why, code, reason);
+      if (!current) return;
+      this.dropped(why, code, lost);
+      note("disconnect", { ...(code === undefined ? {} : { code }), ...(reason ? { reason } : {}), cause: why, livedMs: lived, ...(lost.length > 0 ? { unanswered: byOp(lost) } : {}) });
+    });
   }
 
   // called by the server for every inbound frame on an extension socket
@@ -338,11 +433,15 @@ export class Bridge {
     if (msg.op === "hello" || msg.op === "ticks") {
       if (!from) return;
       const said = this.said.get(from) ?? { ticks: false };
-      if (msg.op === "hello") said.ua = msg.ua;
-      else said.ticks = msg.on === true;
+      if (msg.op === "hello") {
+        said.ua = msg.ua;
+        said.started = typeof msg.started === "number" ? msg.started : undefined;
+        said.closed = typeof msg.closed === "number" ? msg.closed : undefined;
+        from.send(JSON.stringify({ op: "limit", bytes: MESSAGE_MAX }));
+      } else said.ticks = msg.on === true;
       this.said.set(from, said);
       if (from !== this.sock) return;
-      if (msg.op === "hello") this.extensionInfo = { ...this.extensionInfo, ua: msg.ua };
+      if (msg.op === "hello") this.hello(said);
       else this.ticks(said.ticks);
       return;
     }
@@ -390,16 +489,38 @@ export class Bridge {
     else p.resolve(msg.value);
   }
 
-  private drop(sock: ExtSocket, reason: string): number {
-    let n = 0;
+  // Takes sock's requests off the wire: it will answer none of them.
+  private lose(sock: ExtSocket): Pending[] {
+    const lost: Pending[] = [];
     for (const [key, p] of this.pending) {
       if (p.sock !== sock) continue;
       this.pending.delete(key);
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
-      n++;
+      lost.push(p);
     }
-    return n;
+    return lost;
+  }
+
+  private fail(lost: Pending[], why: DropCause, code: number | undefined, reason: string) {
+    const message = droppedMessage(why, code, reason);
+    for (const p of lost) p.reject(new Dropped(message, why));
+  }
+
+  private dropped(why: DropCause, code: number | undefined, lost: Pending[]) {
+    this.drops[why] = (this.drops[why] ?? 0) + 1;
+    this.onDrop({ cause: why, ...(code === undefined ? {} : { code }), lost: lost.length });
+  }
+
+  // Why sock closed. Bun closes at a message over MESSAGE_MAX with 1006 and
+  // its reason (StormRootCause). A page going away (1001) or a socket cut
+  // (1006) means Safari quit if it no longer runs; a page going away while
+  // it does means Safari loaded the extension again.
+  private async causeOf(sock: ExtSocket, code: number | undefined, reason: string): Promise<DropCause> {
+    if (code === 1009 || reason === "Received too big message") return "too_large";
+    if (this.reloaded.has(sock)) return "restarted";
+    if (code !== 1001 && code !== 1006) return "dropped";
+    if (!await safariRunning().catch(() => true)) return "quit";
+    return code === 1001 ? "restarted" : "dropped";
   }
 
   private ticks(on: boolean) {
@@ -414,23 +535,33 @@ export class Bridge {
   // opened it.
   private async socket(): Promise<ExtSocket> {
     if (this.sock) return this.sock;
-    const { promise, resolve } = Promise.withResolvers<void>();
-    const timer = setTimeout(resolve, CONNECT_MS);
-    this.waiting.add(resolve);
-    const running = await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
+    const taken = this.taken(CONNECT_MS);
+    const running = await safariRunning();
     if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
-    await promise;
-    clearTimeout(timer);
-    this.waiting.delete(resolve);
+    await taken;
     if (this.sock) return this.sock;
     throw new Error(running
       ? "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)"
       : `Safari was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
   }
 
+  // Waits until a socket takes over (take), ms at most.
+  private async taken(ms: number): Promise<void> {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(resolve, ms);
+    this.waiting.add(resolve);
+    await promise;
+    clearTimeout(timer);
+    this.waiting.delete(resolve);
+  }
+
   async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000): Promise<unknown> {
     const sock = await this.socket();
-    const answer = this.ask(sock, op, args, timeoutMs);
+    const reads = op === "relay" ? Object.hasOwn(PAGE_READS, String(args[1])) : Object.hasOwn(REPEATABLE, op);
+    const answer = this.ask(sock, op, args, timeoutMs).catch((e: unknown) => {
+      if (!reads || !(e instanceof Dropped) || e.why === "quit") throw e;
+      return this.again(e, op, args, timeoutMs);
+    });
     if (!Object.hasOwn(FROM_TAB, op)) return answer;
     const tab = Number(args[0]);
     return answer.then((v) => unsecret(tab, v), (e: unknown) => {
@@ -439,21 +570,33 @@ export class Bridge {
     });
   }
 
+  // A request that only reads (REPEATABLE), in flight when the link
+  // dropped, goes once more on the socket that takes over within
+  // CONNECT_MS, never starting Safari: timer work must not (sweepOnce in
+  // tools.ts). With none, it fails saying why the link dropped.
+  private async again(dropped: Dropped, op: string, args: unknown[], timeoutMs: number): Promise<unknown> {
+    if (!this.sock) await this.taken(CONNECT_MS);
+    if (!this.sock) throw dropped;
+    return this.ask(this.sock, op, args, timeoutMs);
+  }
+
   // Whether a kind of request is stuck on the connected extension.
   get stuck(): boolean {
     return [...this.runs.values()].some((r) => r.misses >= STUCK_AFTER);
   }
 
   // The extension as /health tells it (main.ts): connected or not, stuck or
-  // not, how long since it last answered anything, and each kind of
-  // request's timeouts in a row; while connected, its user agent and when
-  // it connected.
-  health(): { connected: boolean; stuck: boolean; sinceAnswerMs: number | null; timeouts: Record<string, number>; ua?: string; connectedAt?: number } {
+  // not, how long since it last answered anything, each kind of request's
+  // timeouts in a row, and how many times its link dropped since the daemon
+  // started, by why; while connected, its user agent, when it connected,
+  // when its page started, and the code its socket before closed with.
+  health(): { connected: boolean; stuck: boolean; sinceAnswerMs: number | null; timeouts: Record<string, number>; drops: Partial<Record<DropCause, number>>; ua?: string; connectedAt?: number; started?: number; closed?: number } {
     return {
       connected: this.sock !== null,
       stuck: this.stuck,
       sinceAnswerMs: this.sock === null ? null : Date.now() - this.answeredAt,
       timeouts: Object.fromEntries([...this.runs].map(([op, r]) => [op, r.misses])),
+      drops: { ...this.drops },
       ...this.extensionInfo,
     };
   }
@@ -572,6 +715,7 @@ export class Bridge {
   // socket closes, failing what it was asked, and a new one connects.
   private askReload(sock: ExtSocket, why: string) {
     note("reload", { why });
+    this.reloaded.add(sock);
     sock.send('{"op":"reload"}');
   }
 
@@ -579,12 +723,7 @@ export class Bridge {
   // connect again: its new socket, or an error after RELOADED_MS.
   private async reconnect(sock: ExtSocket, why: string): Promise<ExtSocket> {
     this.askReload(sock, why);
-    const { promise, resolve } = Promise.withResolvers<void>();
-    const timer = setTimeout(resolve, RELOADED_MS);
-    this.waiting.add(resolve);
-    await promise;
-    clearTimeout(timer);
-    this.waiting.delete(resolve);
+    await this.taken(RELOADED_MS);
     if (this.sock && this.sock !== sock) return this.sock;
     throw new Error(this.sock === sock
       ? `the extension did not reload within ${RELOADED_MS / 1000} s; run safari doctor for the fix`

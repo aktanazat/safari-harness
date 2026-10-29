@@ -4337,8 +4337,9 @@
   // and Nuxt keep their state there), and JSON in data- attributes of its
   // main region. background.js adds the state frameworks leave in page
   // globals, and the daemon shapes the whole (daemon/pagedata.ts). One
-  // answer must stay well under the 16 MB a message to the daemon may hold,
-  // so a source past what is left of DATA_BUDGET characters is only measured.
+  // answer must stay well under what a message to the daemon may hold
+  // (MESSAGE_MAX in bridge.ts), so a source past what is left of DATA_BUDGET
+  // characters is only measured.
   const DATA_BUDGET = 4e6;
   const DATA_MAX_ITEMS = 50;
 

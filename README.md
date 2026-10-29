@@ -18,8 +18,10 @@ extension/          Safari MV3 web extension (background page + content script)
                     upload/scroll/history on a ref, CSS selector, or visible
                     text; extract, eval, fetch/XHR/console capture, login fill
 daemon/
-  main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health)
+  main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health
+                    /calls)
   bridge.ts         request/response plumbing to the extension socket
+  calls.ts          the call log: a line per call and per link drop, 7 days
   dialogs.js        page-world script: answers alerts, confirms, and prompts
                     so they never block, and catches downloads the page makes
   tools.ts          the Safari tools, each with its own input schema: run
@@ -184,7 +186,7 @@ carry a password.
 | Port  | What |
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
-| 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
+| 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `GET /calls`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
 | 37335 | HTTP on 127.0.0.1, from the first card approval: the page his iPhone opens to approve a card fill, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
@@ -194,6 +196,15 @@ their own origin under the same loopback check. only the extension's
 the bridge's extension origin may take `/passwords`. 37335 serves only the
 approval page: an answer must come from that page's own origin and carry
 the card's passkey signature over that request's challenge.
+
+`GET /calls` sums the last 24 hours of the call log,
+`~/Library/Logs/safari-harness/calls-37334.jsonl`, and `safari status`
+prints that sum. The log has a line for each call the daemon answered:
+when, the tool, how long it took, `ok` or the failure's code, the reply's
+bytes, whether a read was cut, its page's host, and the agent, its lead's
+session, and its process. It has a line for each drop of the extension's
+link: why, its close code, and how many requests it failed. It keeps 7
+days and holds no arguments, page text, or full addresses.
 
 `turn-end/prepare` drains the requested task's active calls and returns exact
 owned tab IDs with a call-generation token; it never closes a page.

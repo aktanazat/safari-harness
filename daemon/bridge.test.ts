@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { Bridge, type ExtSocket } from "./bridge.ts";
+import { Bridge, MESSAGE_MAX, type ExtSocket } from "./bridge.ts";
+import { recent } from "./journal.ts";
 
 // An extension socket that answers every request with value, or never. Its
 // ticks are counted apart from what it is asked.
@@ -32,12 +33,12 @@ function extension(bridge: Bridge, value?: string) {
   return { sock, asked, sent: first.promise, closed: closed.promise, says, nextTick };
 }
 
-test("an extension whose socket stopped answering is replaced: that socket's requests fail, and its late close leaves the new one serving", async () => {
+test("an extension whose socket stopped answering is replaced: that socket's actions fail, and its late close leaves the new one serving", async () => {
   const bridge = new Bridge(5);
   const old = extension(bridge);
   const now = extension(bridge, "answered by the new socket");
   bridge.attach(old.sock);
-  const lost = bridge.request("tabs.list", [], 60000);
+  const lost = bridge.request("tabs.open", ["https://example.com/"], 60000);
   await old.sent;
   bridge.attach(now.sock);
   await expect(lost).rejects.toThrow("restarted before it answered");
@@ -96,6 +97,48 @@ test("an extension that disconnects fails what it was asked at once, not at the 
   bridge.detach(ext.sock);
   await expect(lost).rejects.toThrow("disconnected before it answered");
   expect(bridge.health()).toMatchObject({ connected: false, stuck: false, sinceAnswerMs: null });
+});
+
+// 10-28 to 10-29 the link dropped 533 times, Bun closing it at a message of
+// about 25.5 MB it seems, and nothing kept why (StormRootCause).
+test("a link Bun closed at a message too large tells the caller so, and the journal keeps its close code, reason, and the requests it failed", async () => {
+  const bridge = new Bridge();
+  const ext = extension(bridge);
+  bridge.attach(ext.sock);
+  const lost = bridge.request("relay", [7, "click", ["e1"]], 60000);
+  await ext.sent;
+  bridge.detach(ext.sock, 1006, "Received too big message");
+  await expect(lost).rejects.toThrow("MB its link carries");
+  expect(recent().findLast((e) => e.kind === "disconnect")).toMatchObject({ code: 1006, reason: "Received too big message", cause: "too_large", unanswered: { "relay click": 1 } });
+  expect(bridge.health().drops).toEqual({ too_large: 1 });
+});
+
+test("a read in flight when the link drops is asked once more of the extension that comes back; an action is not", async () => {
+  const bridge = new Bridge();
+  const gone = holding(bridge);
+  bridge.attach(gone.sock);
+  const read = bridge.request("relay", [7, "snapshot", [{}]], 60000);
+  const act = bridge.request("relay", [7, "click", ["e1"]], 60000);
+  await settled();
+  expect(gone.asked).toHaveLength(2);
+  bridge.detach(gone.sock, 1000, "");
+  await expect(act).rejects.toThrow("disconnected before it answered");
+  const back = holding(bridge);
+  bridge.attach(back.sock);
+  await settled();
+  expect(back.asked.map((a) => a.op)).toEqual(["relay"]);
+  back.answer(back.asked[0].id, "the page");
+  expect(await read).toBe("the page");
+});
+
+// Until the extension hears it, it holds its answers to Bun's 16 MB default.
+test("a hello is answered with the most a message on the link may hold", () => {
+  const bridge = new Bridge();
+  const said: unknown[] = [];
+  const sock: ExtSocket = { send: (data: string) => void said.push(JSON.parse(data)), close() {} };
+  bridge.attach(sock);
+  bridge.handleMessage(JSON.stringify({ op: "hello", role: "extension", ua: "test" }), sock);
+  expect(said).toContainEqual({ op: "limit", bytes: MESSAGE_MAX });
 });
 
 test("a request made while the extension reconnects goes out once it is back", async () => {
