@@ -392,10 +392,11 @@ async function fileAt(url) {
     const res = await fetch(url, { credentials: "include", signal: stop.signal });
     if (!res.ok) return null;
     const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const size = Number(res.headers.get("content-length")) || undefined;
     const disposition = res.headers.get("content-disposition") || "";
     const name = /filename\*?=(?:UTF-8'')?"?([^";]+)/i.exec(disposition)?.[1] ?? "";
-    if (type === "application/pdf" || /\.pdf$/i.test(name) || (type === "application/octet-stream" && /\.pdf$/i.test(new URL(res.url).pathname))) return { kind: "pdf", url };
-    if (/^attachment/i.test(disposition) || (type && !/^(?:text\/|image\/|video\/|audio\/|application\/(?:xhtml\+xml|xml|json|javascript)|application\/[\w.-]+\+(?:json|xml))/.test(type))) return { kind: "download", url, type };
+    if (type === "application/pdf" || /\.pdf$/i.test(name) || (type === "application/octet-stream" && /\.pdf$/i.test(new URL(res.url).pathname))) return { kind: "pdf", url, size };
+    if (/^attachment/i.test(disposition) || (type && !/^(?:text\/|image\/|video\/|audio\/|application\/(?:xhtml\+xml|xml|json|javascript)|application\/[\w.-]+\+(?:json|xml))/.test(type))) return { kind: "download", url, type, size };
     return null;
   } catch {
     return null;
@@ -1571,7 +1572,7 @@ async function handle(msg) {
         api.tabs.remove(t.id).catch(() => closing.delete(t.id));
         throw unopened(url);
       }
-      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {}) };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -1637,7 +1638,7 @@ async function handle(msg) {
       await api.tabs.update(tabId, { url });
       const { tab: t, loading, file } = await openedOrFile(tabId, url, Date.now() + 20000, before === url ? "" : before);
       if (failedPage(t)) throw unopened(url);
-      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {}) };
     }
     // With bounds, the window moves as well: left and top count from the
     // top-left of the screen it is on (daemon/tools.ts, showTab). The

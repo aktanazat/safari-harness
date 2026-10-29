@@ -954,7 +954,8 @@ export class ReplSession {
       return asked !== undefined && asked.address === address && asked.call < this.#calls;
     };
     const again = opts.new === true ? [] : this.tabs.filter(earlier).map((p) => p.id);
-    const row = (await this.call("open", { url: address, background: opts.background ?? true, ...(again.length > 0 ? { again } : {}) })) as TabRow & { hint?: unknown };
+    const row = (await this.call("open", { url: address, background: opts.background ?? true, ...(again.length > 0 ? { again } : {}) })) as TabRow & { hint?: unknown; file?: unknown };
+    if (row.file !== undefined && row.id === undefined) throw new Error(`${address} is a file, not a page, so no tab shows it: read it with fetch("${address}")`);
     this.showNotes(row);
     this.showHint(row.hint);
     const p = this.adopt(row);

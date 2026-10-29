@@ -51,6 +51,8 @@ const PAGED = "https://shop.example/c?page=";
 // begins in a tab that shows a page.
 const FILE = "https://files.example/prices.csv";
 const PRICES = "item,price\nlamp,40\n";
+const ARCHIVE = "https://files.example/scans.zip";
+const fetchedFiles: string[] = [];
 const UNLOADED = "https://unloaded.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
@@ -110,10 +112,11 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   if (op === "tabs.open") {
     const url = String(args[0]);
     const title = load(url);
-    const tab = url === FILE ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
+    const file = url === FILE ? { file: "download", fileType: "text/csv", fileBytes: PRICES.length } : url === ARCHIVE ? { file: "download", fileType: "application/zip", fileBytes: 300 * 2 ** 20 } : undefined;
+    const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
-    return { value: url === FILE ? { ...tab, url, file: "download" } : tab };
+    return { value: file ? { ...tab, url, ...file } : tab };
   }
   if (op === "tabs.navigate") {
     const tab = tabs.get(Number(args[0]));
@@ -121,11 +124,14 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     if (!tab) return { error: "no tab" };
     if (url === UNLOADED) return { value: tab };
     const title = load(url);
-    if (url === FILE) return { value: { ...tab, url, file: "download" } };
+    if (url === FILE) return { value: { ...tab, url, file: "download", fileType: "text/csv", fileBytes: PRICES.length } };
     Object.assign(tab, { url, title });
     return { value: tab };
   }
-  if (op === "fetchFile") return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
+  if (op === "fetchFile") {
+    fetchedFiles.push(String(args[0]));
+    return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
+  }
   if (op === "tabs.close") {
     const tab = Number(args[0]);
     if (tabs.get(tab)?.url === stuck) return { error: "a sheet on the tab kept Safari from closing it" };
@@ -386,6 +392,15 @@ test("an address Safari saves as a file is read in the call that loads it, by op
   const mine = opened.slice(before);
   expect(mine).toHaveLength(2);
   expect(mine.filter((t) => !closed.includes(t))).toEqual([]);
+});
+
+// The link carries a fetched file whole, as base64: a 16.5 MB answer
+// dropped it before 10-29, and every agent's call with it.
+test("a file past 50 MB is not fetched over the link; the answer gives its size and how to save it", async () => {
+  const read = await callTool("open", { url: ARCHIVE, background: true }, false);
+  expect(read).toMatchObject({ url: ARCHIVE, type: "application/zip", bytes: 300 * 2 ** 20, file: "download", note: expect.stringContaining(`save it with download {url: "${ARCHIVE}"}`) });
+  expect(read).not.toHaveProperty("id");
+  expect(fetchedFiles).not.toContain(ARCHIVE);
 });
 
 // An eval or fetch read carries no title, and an address may have led to a

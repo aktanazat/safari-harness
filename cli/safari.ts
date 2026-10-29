@@ -349,8 +349,12 @@ function printRaw(result: unknown): void {
 // scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
 // takes the first number an error names too.
 function printId(result: unknown): void {
-  const { id } = result as { id?: unknown };
+  const { id, file } = result as { id?: unknown; file?: unknown };
   if (id !== undefined) show(String(id));
+  else if (file !== undefined) {
+    say("miss: the address is a file, not a page, so no tab holds it; run open without --id to read it");
+    process.exit(1);
+  }
   exitOnMiss(result, true);
 }
 

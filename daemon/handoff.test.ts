@@ -11,6 +11,7 @@ import * as daemonRpc from "./rpc.ts";
 import * as telegram from "./telegram.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 import { runAs } from "./owner.ts";
+import { met, walled } from "./reads.ts";
 
 // handoff gives the user the tab for a step only they can take. The daemon's
 // half raises the tab with a notice, looks at the page once a second, and
@@ -136,6 +137,22 @@ test("a second handoff of the tab joins the first: one notice, and both return o
   expect(await first).toMatchObject({ done: true });
   expect(await again).toMatchObject({ done: true, joined: true });
   expect(m.notices).toEqual(["Clear the check on shop.example"]);
+});
+
+// Every agent's open of a walled site is refused for 10 minutes, and no
+// open reached it to see the check gone once the user had cleared it.
+test("a site's wall ends once the user clears its check in a handoff", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  mac(92, page);
+  met(page.url, { kind: "recaptcha", where: "page" });
+  const t = taken(waits("Clear the check"));
+  const handed = handoff(92, "Clear the check");
+  await t;
+  expect(walled(page.url)).toBeDefined();
+  page.check = undefined;
+  await tick();
+  expect(await handed).toMatchObject({ done: true });
+  expect(walled(page.url)).toBeUndefined();
 });
 
 test("completion preserves a pending human handoff and closes it only after the user finishes", async () => {

@@ -53,7 +53,7 @@ import { basename, dirname, extname, isAbsolute, join } from "node:path";
 // active tab of the window Safari shows in front, agent windows included;
 // partial: the step of the listing Safari's windows did not finish within
 // 2.5 s (background.js), when no tab says front or shown
-export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean; partial?: string; file?: "pdf" | "download" };
+export type TabInfo = { id: number; url?: string; title?: string; active?: boolean; windowId?: number; front?: boolean; shown?: boolean; partial?: string; file?: "pdf" | "download"; fileType?: string; fileBytes?: number };
 
 type Relay = (tabId: number, op: string, args?: unknown[], timeoutMs?: number) => Promise<unknown>;
 const relay: Relay = (tabId, op, args = [], timeoutMs) => bridge.tab(tabId, op, args, timeoutMs);
@@ -1641,6 +1641,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
         h.now = { url: now.url, title: now.title };
         h.done = true;
         h.byItself = true;
+        met(now.url ?? "", null);
         return;
       }
       initial = challenge ?? initial;
@@ -1652,7 +1653,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     // the first check the page answered with; null until it answers
     let seen = initial;
     while (h.waiting > 0 || Date.now() - h.calledAt < h.idleMs) {
-      const [, met] = await Promise.all([Bun.sleep(1000), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
+      const [, shows] = await Promise.all([Bun.sleep(1000), until !== undefined && wait({ tab, text: until, ms: 1000 }).then((r) => r.found === true, () => false)]);
       const [tabs, challenge] = await Promise.all([listTabs(), challengeOf(tab)]);
       // Safari may have swapped the tab for another (continuity.ts)
       tab = followTab(tab);
@@ -1661,8 +1662,9 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (challenge?.where === "block") throw new Error(blocked(challenge));
       if (seen === null) seen = challenge;
       h.now = { url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
-      if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : met) {
+      if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : shows) {
         h.done = true;
+        if (challenge === undefined) met(now.url ?? "", null);
         // gone elsewhere, they have taken back what they wanted themselves;
         // the tab sits in an agent window, which never holds the front tab
         if (now.shown && (await frontApp().catch(() => undefined)) === SAFARI) await giveBack();
@@ -2554,24 +2556,30 @@ function watched(run: (a: Record<string, unknown> & { tab: number }) => Promise<
 // a text file's own text (one past FILE_TEXT_MAX cut, and saved whole to
 // ~/Downloads), any other saved there by its path; the blank tab closes.
 // The extension's fetch is the one that found the file (fileAt), so it
-// fetches it here. In the logs through 10-29 agents met that blank tab 56
-// times in 41 sessions, each a call more (friction).
+// fetches it here, unless it is past FILE_READ_MAX bytes, or of unknown
+// size and neither a PDF nor text: the link carries it whole, as base64.
+// In the logs through 10-29 agents met that blank tab 56 times in 41
+// sessions, each a call more (friction).
 const FILE_TEXT_MAX = 50_000;
+const FILE_READ_MAX = 50 * 2 ** 20;
 const TEXT_TYPE = /^(?:text\/|application\/(?:json|xml|javascript|x-ndjson|[\w.+-]+\+(?:json|xml))\b)/i;
 
 async function fileOpened(t: TabInfo, close: boolean): Promise<unknown> {
   const url = t.url ?? "";
-  let read: object;
-  if (t.file === "pdf") read = await pdf({ do: "read", url });
-  else {
-    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    const text = TEXT_TYPE.test(f.type) ? Buffer.from(f.data, "base64").toString("utf8") : undefined;
-    if (text === undefined) read = { url, ...(await saveFile(f, url, undefined, DOWNLOADS)) };
-    else read = { url, type: f.type, text: text.slice(0, FILE_TEXT_MAX), ...(text.length > FILE_TEXT_MAX ? { truncated: true, total: text.length, saved: (await saveFile(f, url, undefined, DOWNLOADS)).path } : {}) };
-  }
-  if (!close) return beside({ id: t.id, ...read, file: t.file }, "note", `the address is a file, read here; tab ${t.id} still shows the page it had`);
+  const fetched = t.fileBytes === undefined ? t.file === "pdf" || TEXT_TYPE.test(t.fileType ?? "") : t.fileBytes <= FILE_READ_MAX;
+  const read = fetched ? await fileRead(t.file, url) : { url, ...(t.fileType ? { type: t.fileType } : {}), ...(t.fileBytes === undefined ? {} : { bytes: t.fileBytes }) };
+  const what = fetched ? "the address is a file, read here" : `the address is a file${t.fileBytes === undefined ? "" : ` of ${t.fileBytes} bytes`}, not fetched here: save it with download {url: "${url}"}`;
+  if (!close) return beside({ id: t.id, ...read, file: t.file }, "note", `${what}; tab ${t.id} still shows the page it had`);
   await closeTab(t.id, "as its address was a file");
-  return beside({ ...read, file: t.file }, "note", "the address is a file, read here; the blank tab it opened closed");
+  return beside({ ...read, file: t.file }, "note", `${what}; the blank tab it opened closed`);
+}
+
+async function fileRead(kind: TabInfo["file"], url: string): Promise<object> {
+  if (kind === "pdf") return pdf({ do: "read", url });
+  const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+  const text = TEXT_TYPE.test(f.type) ? Buffer.from(f.data, "base64").toString("utf8") : undefined;
+  if (text === undefined) return { url, ...(await saveFile(f, url, undefined, DOWNLOADS)) };
+  return { url, type: f.type, text: text.slice(0, FILE_TEXT_MAX), ...(text.length > FILE_TEXT_MAX ? { truncated: true, total: text.length, saved: (await saveFile(f, url, undefined, DOWNLOADS)).path } : {}) };
 }
 
 // ---------- PDF ----------
@@ -3906,6 +3914,8 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
   }
   const done: Step[] = [];
   const opened: number[] = [];
+  // the step whose open answered a file, which no tab holds, since the last page opened
+  let fileStep: number | undefined;
   // each tab a close step shut, with that step's number
   const closed = new Map<string, number>();
   let named = tab;
@@ -3919,6 +3929,7 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
       const live = (t: unknown) => t !== undefined && !closed.has(String(t));
       const tab = step.args.tab ?? opened.findLast(live) ?? (live(named) ? named : undefined);
       const shut = step.args.tab === undefined ? undefined : closed.get(String(step.args.tab));
+      if (step.args.tab === undefined && fileStep !== undefined && !Object.hasOwn(TIDY, tool)) throw new Error(`step ${fileStep} opened a file, not a page, so no tab holds it: name the tab this step uses`);
       if (shut !== undefined) throw new Error(`tab ${tab} was closed in step ${shut}; name a tab still open, or open the page again`);
       const next = planned[i + 1];
       const acting = acts(step.checked.tool, step.checked.args) || step.checked.tool === "real_input";
@@ -3934,7 +3945,12 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
         const meanwhile = "meanwhile" in value && Array.isArray(value.meanwhile) ? value.meanwhile.join("; ") : "";
         throw new Error(`no new matching text appeared after the preceding action${meanwhile ? `; ${meanwhile}` : ""}`);
       }
-      if (tool === "open" && value && typeof value === "object" && "id" in value && typeof value.id === "number") opened.push(value.id);
+      if (tool === "open" && value && typeof value === "object") {
+        if ("id" in value && typeof value.id === "number") {
+          opened.push(value.id);
+          fileStep = undefined;
+        } else if ("file" in value) fileStep = i + 1;
+      }
       if (tool === "close" && tab !== undefined) closed.set(String(tab), i + 1);
       if (step.args.tab !== undefined && opened.length > 0 && !Object.hasOwn(TIDY, tool) && !opened.some((id) => String(id) === String(step.args.tab))) value = beside(value, "note", `tab ${step.args.tab} is not one this run opened (${opened.join(", ")})`);
       done.push({ step: i + 1, tool, value });

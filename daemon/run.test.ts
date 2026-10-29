@@ -36,6 +36,16 @@ test("after the run closes its tab, it opens another and reads that one", async 
   expect(t.calls.at(-1)).toEqual(["extract", { tab: 6 }]);
 });
 
+// An open of a file answers without a tab, its blank one closed: a step
+// after it would otherwise read the page an earlier step opened.
+test("a step without tab after an open of a file fails, naming that step, and is not sent", async () => {
+  const t = tools();
+  const call = async (tool: string, args: Record<string, unknown>) => (tool === "open" && String(args.url).endsWith(".csv") ? { url: args.url, file: "download", text: "a,b" } : t.call(tool, args));
+  const run = await runSteps([{ tool: "open", args: { url: "https://shop.example/" } }, { tool: "open", args: { url: "https://shop.example/prices.csv" } }, { tool: "extract" }], call);
+  expect(run.steps[2]).toMatchObject({ step: 3, tool: "extract", error: "step 2 opened a file, not a page, so no tab holds it: name the tab this step uses" });
+  expect(t.calls.map(([tool]) => tool)).toEqual(["open"]);
+});
+
 // On 09-29 a run closed tab 801800, opened another, and snapshot 801800.
 test("a step naming a tab the run closed fails with the step that closed it, and is not sent", async () => {
   const t = tools();
