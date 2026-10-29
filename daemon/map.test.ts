@@ -44,13 +44,24 @@ const SLOW_MS = 31_500;
 // the first two again, one with a #fragment.
 const LISTING = "https://shop.example/search?q=lamp";
 const LISTED = ["https://shop.example/item/1", "https://shop.example/help", "https://shop.example/item/2#reviews", "https://other.example/item/4", "https://www.shop.example/item/3", "https://shop.example/item/2", "https://shop.example/item/1"];
+// A listing over three pages of three items, each page linking the next,
+// as eval reads them.
+const PAGED = "https://shop.example/c?page=";
+// An address Safari saves as a file (a CSV), and one whose load never
+// begins in a tab that shows a page.
+const FILE = "https://files.example/prices.csv";
+const PRICES = "item,price\nlamp,40\n";
+const UNLOADED = "https://unloaded.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
 // once, a SLOW page's after SLOW_MS, or, while holding, when the test lets
 // them. A wait is answered at once, found on every page but LOST, and for
 // ABSENT on none, except SILENT's, held. Waits and reads are noted in
-// order, and each load (an open, a goto) with its time.
+// order, and each load (an open, a goto) with its time. FILE shows no
+// page: an open of it leaves its tab blank and a goto keeps the tab's page,
+// each answering that it is a file. A goto of UNLOADED answers the page
+// its tab had.
 const tabs = new Map<number, { id: number; windowId: unknown; url: string; title: string }>();
 const opened: number[] = [];
 const closed: number[] = [];
@@ -72,7 +83,11 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
   asked.push(`read ${url}`);
   if (url === GONE) return { error: "no tab" };
   if (url === EMPTY) return { value: { error: "no content root" } };
-  if (url === LISTING) return { value: { ok: true, result: LISTED } };
+  if (url === LISTING) return { value: { ok: true, result: { links: LISTED, next: null } } };
+  if (url.startsWith(PAGED)) {
+    const n = Number(url.slice(PAGED.length));
+    return { value: { ok: true, result: { links: [1, 2, 3].map((k) => `https://shop.example/p/${3 * n - 3 + k}`), next: n < 3 ? `${PAGED}${n + 1}` : null } } };
+  }
   if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
@@ -93,17 +108,24 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "tabs.list") return { value: [...tabs.values()] };
   if (op === "tabs.open") {
-    const tab = { id: ++nextTab, windowId: args[2], url: String(args[0]), title: load(String(args[0])) };
+    const url = String(args[0]);
+    const title = load(url);
+    const tab = url === FILE ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
-    return { value: tab };
+    return { value: url === FILE ? { ...tab, url, file: "download" } : tab };
   }
   if (op === "tabs.navigate") {
     const tab = tabs.get(Number(args[0]));
+    const url = String(args[1]);
     if (!tab) return { error: "no tab" };
-    Object.assign(tab, { url: String(args[1]), title: load(String(args[1])) });
+    if (url === UNLOADED) return { value: tab };
+    const title = load(url);
+    if (url === FILE) return { value: { ...tab, url, file: "download" } };
+    Object.assign(tab, { url, title });
     return { value: tab };
   }
+  if (op === "fetchFile") return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
   if (op === "tabs.close") {
     const tab = Number(args[0]);
     if (tabs.get(tab)?.url === stuck) return { error: "a sheet on the tab kept Safari from closing it" };
@@ -290,19 +312,80 @@ test("map keeps a safe read pending through a reconnect, but never retries a fir
   expect(initialOpens).toBe(1);
 });
 
+// On 10-29 os.html, the longest of 20 python docs pages map read four at a
+// time, did not answer in 10 s (baseline).
+test("a page that answers nothing in time is read once more after the others, and one that stalls again is given back to map again", async () => {
+  const [a, b, c] = urls(3);
+  const stall = (url: string) => `the page at ${url} did not answer in 10 s (a dialog open on it, or a page stuck loading, holds it); reload it with goto and retry`;
+  const shown = new Map<number, string>();
+  const reads: string[] = [];
+  let next = 0;
+  const call = async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "open" || tool === "goto") {
+      const id = tool === "open" ? ++next : Number(args.tab);
+      shown.set(id, String(args.url));
+      return { id, url: args.url };
+    }
+    if (tool === "extract") {
+      const url = shown.get(Number(args.tab)) ?? "";
+      reads.push(url);
+      if (url === c || (url === a && reads.length === 1)) throw new Error(stall(url));
+      return { url, text: `text of ${url}` };
+    }
+    return { ok: true };
+  };
+  const answer = await mapPages({ urls: [a, b, c], concurrency: 1 }, call);
+  expect(reads).toEqual([a, b, c, a, c]);
+  expect(answer.pages).toMatchObject([{ url: a, ok: true }, { url: b, ok: true }, { url: c, ok: false, error: `the page at ${c} did not answer in 10 s (a dialog open on it, or a page stuck loading, holds it); map it again` }]);
+  expect(answer.urls).toEqual([c]);
+});
+
+// Of the 61 map pages answered "not closed" in the 10-29 audit, 48 had met
+// a dropped link.
+test("a close a dropped link left unanswered is asked again, and its page is not said to be left open", async () => {
+  const lost = "the Safari extension disconnected before it answered (Safari quit, or the extension reloaded); try again";
+  const closes: number[] = [];
+  const call = async (tool: string, args: Record<string, unknown>) => {
+    if (tool === "open") return { id: 1, url: args.url };
+    if (tool === "extract") return { text: "read" };
+    if (tool === "close") {
+      closes.push(Number(args.tab));
+      if (closes.length === 1) throw new Error(lost);
+    }
+    return { ok: true };
+  };
+  const { pages } = await mapPages({ urls: urls(1) }, call);
+  expect(closes).toEqual([1, 1]);
+  expect(pages[0]).not.toHaveProperty("closeError");
+});
+
 // On 10-23 a map of two leaflet PDFs waited 36 s on each to read nothing
 // (SR-7).
-test("a PDF page is read through pdf, whether Safari downloads it or shows it in its viewer", async () => {
+test("a PDF page is read whether Safari saves it, which open reads, or shows it in its viewer, which pdf reads", async () => {
   const downloaded = "https://shop.example/leaflet?download=true";
   const shown = "https://shop.example/leaflet.pdf";
   const call = async (tool: string, args: Record<string, unknown>) => {
-    if (tool === "open") return { id: args.url === shown ? 2 : 1, url: args.url, ...(args.url === downloaded ? { file: "pdf" } : {}) };
+    if (tool === "open") return args.url === downloaded ? { url: args.url, file: "pdf", text: `text of ${args.url}`, note: "the address is a file, read here; the blank tab it opened closed" } : { id: 2, url: args.url };
     if (tool === "extract") throw new Error(`this is a PDF in Safari's viewer, which page reads do not reach: read its text with pdf {do: "read", url: "${shown}"}`);
     if (tool === "pdf") return { url: args.url, text: `text of ${args.url}` };
     return { ok: true };
   };
   const { pages } = await mapPages({ urls: [downloaded, shown] }, call);
   expect(pages).toMatchObject([{ url: downloaded, ok: true, value: { text: `text of ${downloaded}` } }, { url: shown, ok: true, value: { text: `text of ${shown}` } }]);
+});
+
+// In the logs through 10-29 agents met the blank tab of an address Safari
+// saves as a file 56 times in 41 sessions, each a call more (friction).
+test("an address Safari saves as a file is read in the call that loads it, by open, goto, or map, and leaves no blank tab", async () => {
+  const before = opened.length;
+  const read = await callTool("open", { url: FILE, background: true }, false);
+  expect(read).toMatchObject({ url: FILE, type: "text/csv", text: PRICES, file: "download" });
+  expect(read).not.toHaveProperty("id");
+  const pages = await map({ urls: ["https://shop.example/a", FILE], concurrency: 1 });
+  expect(pages[1]).toMatchObject({ url: FILE, ok: true, value: { text: PRICES } });
+  const mine = opened.slice(before);
+  expect(mine).toHaveLength(2);
+  expect(mine.filter((t) => !closed.includes(t))).toEqual([]);
 });
 
 // An eval or fetch read carries no title, and an address may have led to a
@@ -338,6 +421,28 @@ test("every tab map opens is closed, a failed page's and a bot check's included"
   expect(mine.length).toBe(4);
   expect(closed.filter((t) => mine.includes(t)).sort()).toEqual(mine.sort());
   expect([...tabs.keys()]).toEqual([900]);
+});
+
+// Until 10-29 each page opened a tab of its own: a map of 20 pages opened
+// 20 tabs in a Safari holding 524 (baseline).
+test("map opens one tab for each page it reads at once, reads each page in a load of its own, and closes them", async () => {
+  const before = opened.length;
+  const from = loaded.length;
+  const pages = await map({ urls: urls(20), concurrency: 4 });
+  expect(pages.map((p) => p.value)).toEqual(urls(20).map((url) => expect.objectContaining({ text: `text of ${url}` })));
+  expect(loaded.slice(from).map(([url]) => url).toSorted()).toEqual(urls(20).toSorted());
+  const mine = opened.slice(before);
+  expect(mine).toHaveLength(4);
+  expect(mine.filter((t) => !closed.includes(t))).toEqual([]);
+});
+
+// A goto that answers the page its tab showed has not loaded the next one,
+// which a read would then take for it.
+test("a page whose load never begins in a reader's tab opens in a tab of its own, and is never read as the page before it", async () => {
+  const before = opened.length;
+  const pages = await map({ urls: ["https://shop.example/a", UNLOADED], concurrency: 1 });
+  expect(pages[1]).toMatchObject({ url: UNLOADED, ok: true, value: { text: `text of ${UNLOADED}` } });
+  expect(opened.length - before).toBe(2);
 });
 
 // Nobody watches these tabs, so a check still up once open has waited on it
@@ -408,13 +513,14 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
 
 // On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for
 // words a page showed all along answered that it never showed them.
-test("with wait, a page that gives the wait no answer in time is not read, and is not said to lack what wait asked for", async () => {
+test("with wait, a page that gives the wait no answer in time is not read, is not said to lack what wait asked for, and is waited on once more", async () => {
   asked.length = 0;
-  const pages = await map({ urls: [SILENT], wait: { text: "Price", ms: 100 } });
+  const { pages, urls: left } = await mapPages({ urls: [SILENT], wait: { text: "Price", ms: 100 } }, callTool);
   for (const release of unanswered.splice(0)) release();
-  expect(asked).toEqual([`wait ${SILENT} for Price`]);
+  expect(asked).toEqual([`wait ${SILENT} for Price`, `wait ${SILENT} for Price`]);
   expect(pages[0]).toMatchObject({ ok: false, error: expect.stringContaining("no answer in time") });
   expect(pages[0]).not.toMatchObject({ error: expect.stringContaining("did not show") });
+  expect(left).toEqual([SILENT]);
 });
 
 test("map refuses a wait that asks for nothing before opening any page", async () => {
@@ -439,6 +545,7 @@ test("an address Safari cannot show fails in its place before a tab opens for it
 test("a map whose pages run long answers within 60 s with the pages it read, names the rest unfinished and gives their addresses to map next, and begins no more", async () => {
   jest.useFakeTimers();
   const before = opened.length;
+  const from = loaded.length;
   const slow = Array.from({ length: 9 }, (_, i) => `${SLOW}${i}`);
   const began = performance.now();
   const { pages, urls: left } = await waited(mapPages({ urls: slow, concurrency: 3 }, callTool));
@@ -446,14 +553,15 @@ test("a map whose pages run long answers within 60 s with the pages it read, nam
   expect(pages.map((p) => [p.url, p.ok])).toEqual(slow.map((url, i) => [url, i < 3]));
   expect(pages.slice(3).map((p) => (p.ok ? "read" : p.error))).toEqual(Array(6).fill(expect.stringMatching(/unfinished.*again/)));
   expect(left).toEqual(slow.slice(3));
-  // The three still being read go on, each closing its tab as it ends; the
-  // three not begun never open.
+  // The three still being read go on in the tabs the first three were read
+  // in, each closing its tab as it ends; the three not begun never load.
   for (let i = 0; i < 40; i++) {
     await settled();
     jest.advanceTimersByTime(500);
   }
+  expect(loaded.slice(from)).toHaveLength(6);
   const mine = opened.slice(before);
-  expect(mine.length).toBe(6);
+  expect(mine.length).toBe(3);
   expect(closed.filter((t) => mine.includes(t)).sort()).toEqual(mine.sort());
 });
 
@@ -465,6 +573,7 @@ test("with save, a map past its time writes a file for each page it answers with
   jest.useFakeTimers();
   const dir = mkdtempSync(join(tmpdir(), "map-"));
   const before = opened.length;
+  const from = loaded.length;
   let pages: Page[] = [];
   void map({ urls: Array.from({ length: 6 }, (_, i) => `${SLOW}${i}`), concurrency: 3, save: dir }).then((p) => {
     pages = p;
@@ -479,7 +588,7 @@ test("with save, a map past its time writes a file for each page it answers with
     for (let i = 0; i < 10_000 && !done(); i++) await settled();
   };
   await tick(33_000);
-  await until(() => opened.length - before === 6);
+  await until(() => loaded.length - from === 6);
   await tick(33_000);
   await until(() => opened.slice(before).every((t) => closed.includes(t)));
   // A file begun after that lands on the real clock.
@@ -533,6 +642,20 @@ test("map refuses a follow it cannot use before opening a page, and a listing wi
   const [none] = (await followPages({ urls: ["https://shop.example/a"], follow: { match: "/\\/item\\//" } }, callTool)).pages;
   expect(none).toMatchObject({ ok: false, error: "no link on it to its own site matched /\\/item\\//" });
   expect(opened.length - before).toBe(1);
+});
+
+// On 10-29 a category of 1,019 members over 6 pages read 20, and nothing
+// told of its other 5 (completeness).
+test("with follow, a listing's next page is read while max wants more links, and the one max leaves unread is named for the next map", async () => {
+  const items = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `https://shop.example/p/${from + i}`);
+  const all = await followPages({ urls: [`${PAGED}1`], follow: { match: "/\\/p\\//", max: 7 } }, callTool);
+  expect(all.pages).toMatchObject([{ url: `${PAGED}1`, ok: true, items: items(1, 7).map((url) => ({ url, ok: true })), unread: 2 }]);
+  expect(all.pages[0]).not.toHaveProperty("next");
+  expect(all.urls).toEqual(items(8, 9));
+  const first = await followPages({ urls: [`${PAGED}1`], follow: { match: "/\\/p\\//", max: 3 } }, callTool);
+  expect(first.pages).toMatchObject([{ ok: true, items: items(1, 3).map((url) => ({ url })), next: `${PAGED}2` }]);
+  expect(first.urls).toBeUndefined();
+  expect(formatResult(first)).toContain(`map {"urls":["${PAGED}2"]} with the same follow`);
 });
 
 // On 10-23 saved maps counted three pages not found, three raw 404s, and

@@ -49,10 +49,12 @@ Turns
   steps file and run it in the same message: one turn, not two.
 - More than three pages of one kind: one `map` call (up to 20 addresses,
   6 at a time). A listing and the pages it links to are one call too:
-  `map {urls: [listing], follow: {match: "a.item"}}`. Never a loop of
-  `goto`, nor a bash loop of `map` or `eval`. A page your task read in
-  the last 10 min comes from that read; `fresh: true` loads it again.
-  Files by address: one `download {urls, out: folder}`.
+  `map {urls: [listing], follow: {match: "a.item"}}`, its next pages read
+  while `max` wants more. Never a loop of `goto`, nor a bash loop of `map`
+  or `eval`. A page your task read in the last 10 min comes from that
+  read; `fresh: true` loads it again. Map the `urls` an answer gives back
+  next. Files by address: one `download {urls, out: folder}`; `open` of
+  a file's address (a PDF, a CSV) answers with its text or saved path.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "words"` with

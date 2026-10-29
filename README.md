@@ -73,7 +73,8 @@ daemon/
                     output goes to a file, and the reply is its path, size,
                     and first 500 characters
   map.ts            map: one read of each of up to 20 pages, a few at a time,
-                    each in a background tab that closes after
+                    each reader in a background tab of its own that loads its
+                    next page and closes as map answers
   reads.ts          a task's map reads of the last 10 minutes, and the bot
                     checks its sites showed it, so neither is loaded again
   mission.ts        live task controls and bounded private history; a fresh
