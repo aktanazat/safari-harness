@@ -3763,7 +3763,7 @@
     }
     if (collect && !opts.scroll) take();
     const count = collect || opts.scroll ? items.size : members().filter((el) => el.textContent.trim()).length || null;
-    return { items: [...items.values()], first, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll, hidden: document.hidden };
+    return { items: [...items.values()], first, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll };
   }
 
   // What expand and scroll did, as a read reports it: "expanded 8 times,
@@ -3783,7 +3783,6 @@
     const ended = g?.scroll && g.stopped === "nothing new";
     const part = partList(root);
     if (part && (!ended || part.size > g.items.length)) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
-    if (ended && g.hidden) left.push(["this tab is hidden, and the page brought nothing more as it scrolled: many feeds load more only on a shown tab", "a site's kit in repl (safari guide <site>) or its own API reads the rest"]);
     const more = g?.expand && g.stopped === "none left" ? [] : expanders(root);
     if (more.length) {
       const held = heldBack(more[0]);
