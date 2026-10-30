@@ -104,9 +104,11 @@ Safari is the user's everyday browser, so treat his tabs as his.
   makes and deletes the groups, through a keeper process `open` starts:
   each step waits until he is idle, the screen unlocked and Safari behind,
   and stops if his front app changes. A menu that will not
-  close turns groups off for a day; `~/.local/share/safari-harness/groups-off.json`
-  says why, and removing it turns them on sooner. `safari doctor` warns
-  while it is there, and each agent is told why once, not on every open.
+  close turns groups off for a day; a make that fails and leaves its group
+  turns off only new groups, and ended agents' groups still go.
+  `~/.local/share/safari-harness/groups-off.json` says why, and removing it
+  turns them on sooner. `safari doctor` warns while it is there, and each
+  agent is told why once, not on every open.
 - A finished task needs no `close` call. The [cleanup and recovery
   rules](#cleanup-authority) apply to agent tabs opened through MCP, the
   CLI, a `repl --session`, or site globals. Empty project windows close

@@ -16,7 +16,8 @@
 // If it still is, group work stops for a day (the flag in files.off), and
 // every window made meanwhile stays plain, unless someone who has looked
 // removes the flag sooner: on 09-29 a flag from the day before still kept
-// every agent's windows plain, and no one had looked.
+// every agent's windows plain, and no one had looked. A flag a make raised
+// stops makes only: ended agents' groups still go (his word, 10-30).
 //
 // Never guess which group: the sidebar's menu serves its selected row, so a
 // delete goes ahead only with the one group of that exact name selected
@@ -96,20 +97,31 @@ export function startHelper(path = HELPER): { helper: Helper; stop: () => void }
 }
 
 // Why group work is off, if it is: for a day after the flag went up.
+// deletes: false when a make raised it, and deletes may go on.
 const OFF_MS = 24 * 60 * 60_000;
-export function groupsOff(): string | undefined {
+function readOff(): { why: string; deletes?: false } | undefined {
   try {
     if (Date.now() - statSync(files.off).mtimeMs > OFF_MS) return undefined;
-    const { why } = JSON.parse(readFileSync(files.off, "utf8")) as { why: string };
-    return `tab groups are off: ${why}; they come back on a day after that (remove ${files.off} to turn them on now)`;
+    return JSON.parse(readFileSync(files.off, "utf8")) as { why: string; deletes?: false };
   } catch {
     return undefined;
   }
 }
 
-export function turnOff(why: string) {
+export function groupsOff(): string | undefined {
+  const off = readOff();
+  if (!off) return undefined;
+  const what = off.deletes === false ? "new tab groups are off (ended agents' groups still go)" : "tab groups are off";
+  return `${what}: ${off.why}; they come back on a day after that (remove ${files.off} to turn them on now)`;
+}
+
+export function deletesOff(): string | undefined {
+  return readOff()?.deletes === false ? undefined : groupsOff();
+}
+
+export function turnOff(why: string, deletes = true) {
   mkdirSync(dirname(files.off), { recursive: true });
-  writeFileSync(files.off, JSON.stringify({ why: `${why} at ${new Date().toISOString()}` }));
+  writeFileSync(files.off, JSON.stringify({ why: `${why} at ${new Date().toISOString()}`, ...(deletes ? {} : { deletes: false }) }));
 }
 
 // The helper, with the rule for a menu that stayed open: the flag goes up,
@@ -134,11 +146,10 @@ export function waitWhy(g: Gate): string | undefined {
 const stop = (why: string): Outcome => ({ done: false, why, wait: false });
 const later = (why: string): Outcome => ({ done: false, why, wait: true });
 
-// The gate when group work may go ahead now, else why not: off, no
-// permission, the user at the keys, or his front app no longer front.
+// The gate when a step may go ahead now, else why not: no permission, the
+// user at the keys, or his front app no longer front. Each step reads the
+// off flag itself: one a make raised stops makes only.
 export async function check(h: Helper, front?: string): Promise<Gate | Outcome> {
-  const off = groupsOff();
-  if (off) return stop(off);
   const g = (await h("gate")) as Answer & Gate;
   if (!g.ok) return stop(g.error ?? "the tab group helper failed");
   if (!g.trusted) return stop("the terminal the agent runs in has no Accessibility permission");
@@ -197,6 +208,8 @@ async function refuse(h: Helper, window: number, outcome: Outcome): Promise<Outc
 // CGWindowID), which then shows its own tabs. done once no group of that
 // name is left.
 export async function deleteGroup(h: Helper, window: number, name: string): Promise<Outcome> {
+  const off = deletesOff();
+  if (off) return stop(off);
   const start = await check(h);
   if ("done" in start) return start;
   const shown = await h("sidebar", { window, show: true });
@@ -259,9 +272,11 @@ export async function deleteGroup(h: Helper, window: number, name: string): Prom
 export async function makeGroup(h: Helper, window: number, name: string): Promise<Outcome> {
   const start = await check(h);
   if ("done" in start) return start;
-  // A keeper stopped after making it left it made.
+  // A keeper stopped after making it left it made, off or not.
   const was = (await h("state", { window })) as Answer & { shown?: string | null };
   if (was.shown === name) return { done: true };
+  const off = groupsOff();
+  if (off) return stop(off);
   const shown = await h("sidebar", { window, show: true });
   if (!shown.ok) return stop(shown.error ?? "the sidebar did not show");
   const rows = await readRows(h, window);
@@ -294,7 +309,7 @@ export async function makeGroup(h: Helper, window: number, name: string): Promis
     : `the window shows ${made ?? "no group"}, not ${name}`;
   const undone = made === undefined ? undefined : await deleteGroup(h, window, made);
   if (undone?.done) return stop(why);
-  turnOff(`${why}, and its new group ${made ?? ""} is left${undone ? ` (${undone.why})` : ""}`);
+  turnOff(`${why}, and its new group ${made ?? ""} is left${undone ? ` (${undone.why})` : ""}`, false);
   return made === name ? { ...stop(groupsOff()!), left: true } : stop(groupsOff()!);
 }
 

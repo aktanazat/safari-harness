@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { alive, changeQueue, check, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
+import { alive, changeQueue, check, deleteGroup, deletesOff, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
 import { trimLog } from "./journal.ts";
 import { rpc } from "./rpc.ts";
 
@@ -55,8 +55,9 @@ async function windowOf(h: Helper, s: { width: number; height: number; tabs?: nu
 // Safari in front after it is the step's doing, unless someone else
 // brought it forward meanwhile: the user (the step posts no keys or mouse,
 // so he touched them), or an agent's call for him (activate, a handoff).
-// Then it stays in front for him.
-async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () => Promise<Outcome>): Promise<Outcome> {
+// Then it stays in front for him. deletes: whether the flag it raises then
+// stops deletes too, or makes only.
+async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () => Promise<Outcome>, deletes = true): Promise<Outcome> {
   const since = Date.now();
   const before = (await h("gate")) as Answer & Gate;
   const outcome = await run();
@@ -66,7 +67,7 @@ async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () =
   if (after.idleMs <= Date.now() - since) return outcome;
   const raised = (await daemon("raised")) as { at: number };
   if (raised.at >= since - RAISE_MS) return outcome;
-  turnOff(`Safari came to the front while ${what}`);
+  turnOff(`Safari came to the front while ${what}`, deletes);
   spawnSync(INPUT, ["activate", before.front]);
   // A step done stays done: on 10-22 agent 42229's group, deleted, was
   // left queued as if it were still there.
@@ -86,7 +87,7 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
     changeQueue((q) => {
       q[s.name] = { owner: s.owner, since: Date.now() };
     });
-    outcome = await step(h, daemon, `making ${s.name}`, log, () => makeGroup(h, window, s.name));
+    outcome = await step(h, daemon, `making ${s.name}`, log, () => makeGroup(h, window, s.name), false);
     // No group was made, unless group work turned off on the way.
     if (!outcome.done && !groupsOff()) changeQueue((q) => delete q[s.name]);
   }
@@ -177,13 +178,22 @@ export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): P
   const gate = await check(h);
   if ("done" in gate) {
     if (gate.wait) return true;
-    // Off, or no permission, or no helper: windows stay plain and say why,
-    // and groups stay queued.
+    // No permission, or no helper: windows stay plain and say why, and
+    // groups stay queued.
     for (const s of todo) if (!s.ended) await daemon("plain", { name: s.name, why: gate.why });
     return false;
   }
+  // Off, a waiting window stays plain and says why, and a stopped keeper's
+  // making one is looked at, as it may be a group already; ended groups
+  // still go unless the flag stops deletes too.
   let more = watching;
-  for (const s of todo) more = (s.ended ? await clear(h, daemon, s.name, given, log) : await convert(h, daemon, s, log)) || more;
+  for (const s of todo) {
+    const off = groupsOff();
+    if (s.ended) {
+      if (!deletesOff()) more = (await clear(h, daemon, s.name, given, log)) || more;
+    } else if (off && s.group === "waiting") await daemon("plain", { name: s.name, why: off });
+    else more = (await convert(h, daemon, s, log)) || more;
+  }
   return more || retrying(given);
 }
 

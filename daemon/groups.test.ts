@@ -367,3 +367,21 @@ test("a delete that worked while Safari came forward turns group work off, and t
   await pass(h, d, new Map(), quiet);
   expect([groups(), readQueue(), groupsOff()]).toEqual([["Work"], {}, expect.stringContaining("Safari came to the front")]);
 });
+
+// 10-30: with group work off for a day after a make left its group, ended
+// agents' groups stood in his sidebar that whole day; he asked for them to
+// go anyway. A flag a menu or a delete raised still stops deletes: on 10-22
+// a delete brought Safari forward, and the next ones would have too.
+test("a flag a make raised lets an ended task's group go and keeps a waiting window plain; any other flag keeps the group", async () => {
+  for (const deletes of [false, true]) {
+    const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
+    s.tabs = 1;
+    turnOff("the window shows no group, and its new group is left", deletes);
+    changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+    const next = { ...waiting, name: "next (agent 42)" };
+    const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true }, next]);
+    await pass(h, d, new Map(), quiet);
+    expect([groups(), Object.keys(readQueue())]).toEqual(deletes ? [[TRIP, "Work"], [TRIP]] : [["Work"], []]);
+    expect(told.at(-1)).toEqual({ op: "plain", name: next.name, why: groupsOff() });
+  }
+});

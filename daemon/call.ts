@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { CALLER_TOOLS } from "./caller.ts";
-import { keeperRunning } from "./groups.ts";
+import { keeperRunning, readQueue } from "./groups.ts";
 import { beside, checkCall, checkStep, nameIn } from "./guard.ts";
 import { quietly, rpc, takesNews } from "./rpc.ts";
 import { remoteCall } from "./host.ts";
@@ -132,11 +132,14 @@ function spacesIn(tool: string, result: unknown): unknown[] {
 // Tab groups are made and deleted from here, where the terminal's
 // Accessibility permission is (the daemon has none): after an open whose
 // window is to be its task's group, or is one, a keeper (keeper.ts) watches
-// it, unless one already does. Another Mac's Safari needs a keeper on that
-// Mac, so none starts here then.
+// it, unless one already does. A plain window starts one too while groups
+// are queued: with new groups off, ended agents' groups still go. Another
+// Mac's Safari needs a keeper on that Mac, so none starts here then.
 function claimSpaces(tool: string, result: unknown) {
   if (process.env.SAFARI_HARNESS_REMOTE) return;
-  if (!spacesIn(tool, result).some((s) => !!s && typeof s === "object" && "group" in s && s.group !== "plain")) return;
+  const opened = spacesIn(tool, result);
+  if (opened.length === 0) return;
+  if (!opened.some((s) => !!s && typeof s === "object" && "group" in s && s.group !== "plain") && Object.keys(readQueue()).length === 0) return;
   if (keeperRunning()) return;
   spawn(process.execPath, [join(import.meta.dir, "keeper.ts")], { detached: true, stdio: "ignore" }).unref();
 }
