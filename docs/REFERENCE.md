@@ -1426,7 +1426,9 @@ for a GitHub issue's comments, `x.getUserTweets` for an X profile,
   buttons that submit no form and links that go nowhere (`#`), never one
   that opens a menu or dialog; a click that would load another page is
   stopped and ends it. A control it could not click, one under a cookie
-  banner say, stays in `incomplete` with why.
+  banner say, stays in `incomplete` with why. A form's "Load more" that
+  says what it holds back (GitHub's "72 hidden items") is never submitted:
+  every read names it in `incomplete`; click it, then read again.
 - `scroll: true` scrolls the list's box, or the window, most of a view at
   a time and keeps each item once, until the list's end brings nothing
   new for 3 s. With both, it also clicks the controls the scroll uncovers.

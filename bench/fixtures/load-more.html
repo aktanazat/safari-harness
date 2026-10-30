@@ -5,7 +5,10 @@
      as GitHub's issue timeline does. A link and a form's submit button
      named like it lead elsewhere: each records a click and goes nowhere.
      ?delay=MS sets how long a load takes (50 ms unless set), and ?cover
-     lays a banner over the whole page, as a cookie wall does. -->
+     lays a banner over the whole page, as a cookie wall does. ?form puts
+     the rest behind a form's submit buttons, "270 hidden items" and "Load
+     more…", whose submit the page takes over, as GitHub's pull request
+     timeline does; a submit records itself. -->
 <style>.comment { padding: 8px; border-bottom: 1px solid #ddd; }</style>
 <main>
   <h1>Issue 1: everything at once</h1>
@@ -25,26 +28,38 @@
     return div;
   };
   for (let n = 1; n <= 20; n++) timeline.append(comment(n));
-  const more = document.createElement("div");
-  more.innerHTML = '<span></span> <button type="button">Load more</button>';
+  const FORM = options.has("form");
+  const more = document.createElement(FORM ? "form" : "div");
+  more.innerHTML = FORM ? "<button></button> <button>Load more&hellip;</button>" : '<span></span> <button type="button">Load more</button>';
   timeline.append(more);
   for (let n = TAIL; n <= TOTAL; n++) timeline.append(comment(n));
   const [left, button] = more.children;
   let next = 21;
-  left.textContent = `${TAIL - next} remaining items`;
-  button.addEventListener("click", () => {
+  const held = () => `${TAIL - next} ${FORM ? "hidden" : "remaining"} items`;
+  left.textContent = held();
+  const use = (id) => {
+    document.body.dataset.used = `${document.body.dataset.used ?? ""} ${id}`.trim();
+  };
+  const load = () => {
     button.disabled = true;
     setTimeout(() => {
       for (const end = Math.min(next + 60, TAIL); next < end; next++) more.before(comment(next));
       if (next >= TAIL) return more.remove();
-      left.textContent = `${TAIL - next} remaining items`;
+      left.textContent = held();
       button.disabled = false;
     }, Number(options.get("delay") ?? 50));
-  });
+  };
+  if (FORM) {
+    more.addEventListener("submit", (e) => {
+      e.preventDefault();
+      use("form");
+      load();
+    });
+  } else button.addEventListener("click", load);
   for (const id of ["link", "submit"]) {
     document.getElementById(id).addEventListener("click", (e) => {
       e.preventDefault();
-      document.body.dataset.used = `${document.body.dataset.used ?? ""} ${id}`.trim();
+      use(id);
     });
   }
   if (options.has("cover")) {

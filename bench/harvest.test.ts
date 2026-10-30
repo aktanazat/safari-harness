@@ -81,6 +81,19 @@ describe.skipIf(!runner)("whole lists in real WebKit", () => {
     expect(read.value.harvested).toContain(`${found.size} items, stopped: out of time, and extract again goes on from here`);
   }, 60_000);
 
+  test("a form's Load more that says what it holds back is named in incomplete, for the agent to click", async () => {
+    const [plain, whole, after] = await replies("load-more.html", [
+      { op: "extract", args: [{ maxBytes: 200_000 }] },
+      { op: "extract", args: [{ expand: true, maxBytes: 200_000, ms: 25_000 }], timeout: 40_000 },
+      { pageEval: "document.body.dataset.used ?? ''" },
+    ], "?form") as [Read, Read, { value: string }];
+    for (const read of [plain, whole]) {
+      expect(read.value.incomplete?.reason).toMatch(/"Load more…" form button \(270 hidden items\), which expand will not submit/);
+      expect(read.value.incomplete?.hint).toContain("click it, then extract again");
+    }
+    expect(after.value).toBe("");
+  }, 60_000);
+
   test("a gatherStop ends a gather running in the page", async () => {
     // Each load takes 600 ms, so the stop comes a click or two in. The page
     // runs on WebKit's own clock, which no fake reaches: left alone, the

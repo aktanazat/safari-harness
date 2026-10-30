@@ -3817,22 +3817,32 @@
     return [g.expand ? `expanded ${g.clicks} time${g.clicks === 1 ? "" : "s"}` : "", g.scroll ? `scrolled ${g.steps} time${g.steps === 1 ? "" : "s"}` : "", g.count === null ? "" : `${g.count.toLocaleString("en-US")} items`, stopped].filter(Boolean).join(", ");
   }
 
+  // The controls a read leaves, by the first of them: 'a "Load more"
+  // control (271 remaining items)', '3 controls such as "Show more"'.
+  function controlsLeft(els, kind) {
+    const held = heldBack(els[0]);
+    const name = `"${clip(accessibleName(els[0]), 40)}"`;
+    return `${els.length === 1 ? `a ${name} ${kind}` : `${els.length} ${kind}s such as ${name}`}${held ? ` (${held})` : ""}`;
+  }
+
   // What a read of root leaves out, and what reads it; after expand or
   // scroll, what they did, and what they left: the controls still on the
   // page unless expand clicked them all (with why it could not click the
-  // last it gave up on), and a list scrolled to its end that declares more
-  // items than it gave.
+  // last it gave up on), a form's Load more, which expand never submits,
+  // and a list scrolled to its end that declares more items than it gave.
   function unread(root, g) {
     const left = [];
     const ended = g?.scroll && g.stopped === "nothing new";
     const part = partList(root);
     if (part && (!ended || part.size > g.items.length)) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
     const more = g?.expand && g.stopped === "none left" ? [] : expanders(root);
-    if (more.length) {
-      const held = heldBack(more[0]);
-      const name = `"${clip(accessibleName(more[0]), 40)}"`;
-      left.push([`${more.length === 1 ? `a ${name} control` : `${more.length} controls such as ${name}`}${held ? ` (${held})` : ""}${g?.refused ? `, which expand could not click (${g.refused})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
-    }
+    if (more.length) left.push([`${controlsLeft(more, "control")}${g?.refused ? `, which expand could not click (${g.refused})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
+    // A form's "Load more" that says what it holds back: GitHub's pull
+    // request timeline hides items behind one ("72 hidden items", "Load
+    // more…") whose submit its script takes over (10-30). expand submits
+    // no form, so a read names it, for the agent to click.
+    const forms = deepQueryAll("button", root).filter((el) => el.form && el.type === "submit" && EXPANDS.test(norm(accessibleName(el))) && shown(el) && heldBack(el));
+    if (forms.length) left.push([`${controlsLeft(forms, "form button")}, which expand will not submit`, `click ${forms.length === 1 ? "it" : "them"}, then extract again`]);
     return {
       ...(g ? { harvested: gathered(g) } : {}),
       ...(left.length ? { incomplete: { reason: left.map(([reason]) => reason).join("; "), hint: left.map(([, hint]) => hint).join("; ") } } : {}),
