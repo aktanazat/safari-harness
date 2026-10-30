@@ -422,21 +422,24 @@ function fileText(file) {
     : `this address downloads a file${file.type ? ` (${file.type})` : ""}, which Safari does not show as a page: save it with download {url: "${file.url}"}`;
 }
 
-// openedPage, unless FILE_WAIT_MS on the tab still shows no address (or,
-// for a goto, the one it had before) and its address is a file.
+// openedPage, unless the tab shows no address (or, for a goto, the one it
+// had before) once that answers or FILE_WAIT_MS on, whichever is first, and
+// its address is a file. On 10-29 an open of a .pkg answered its blank tab
+// within 1 s, before FILE_WAIT_MS.
 async function openedOrFile(tabId, url, until, before = "") {
   files.delete(tabId);
   const opened = openedPage(tabId, until);
   let timer;
-  const looked = new Promise((resolve) => { timer = setTimeout(resolve, FILE_WAIT_MS); }).then(async () => {
-    const t = await api.tabs.get(tabId).catch(() => null);
+  const looked = new Promise((resolve) => { timer = setTimeout(resolve, FILE_WAIT_MS); }).then(() => api.tabs.get(tabId).catch(() => null));
+  try {
+    const t = await Promise.race([opened.then((page) => page.tab), looked]);
     const file = t && ready.get(tabId) !== true && (!t.url || t.url === "about:blank" || (before && t.url === before)) ? await fileAt(url) : null;
-    if (!file) return opened;
+    if (!file) return await opened;
     files.set(tabId, file);
     return { tab: t, loading: false, file };
-  });
-  try { return await Promise.race([opened, looked]); }
-  finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Whether the tab still holds the frame: one the page took away (GEICO's,
