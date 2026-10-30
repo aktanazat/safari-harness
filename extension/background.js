@@ -416,6 +416,19 @@ async function fileAt(url) {
   }
 }
 
+// An address whose path names an installer, archive or office file, or
+// ends in /download, is asked for before any tab loads it. Loading a file
+// makes Safari ask whether the site may download; on 10-29 that alert, up
+// in a hidden agent window, held Safari's main thread for over 20 min and
+// every request to the extension hung. A file found this way never loads.
+const DOWNLOAD_PATH = /(?:\.(?:zip|gz|tgz|xz|bz2|zst|7z|rar|tar|dmg|pkg|exe|msi|iso|img|apk|ipa|deb|rpm|jar|whl|docx?|xlsx?|pptx?|odt|ods|epub)|\/download)\/?$/i;
+
+async function fileFirst(url) {
+  return /^https?:/i.test(url) && DOWNLOAD_PATH.test(new URL(url).pathname) ? fileAt(url) : null;
+}
+
+const fileFields = (file) => (file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {});
+
 function fileText(file) {
   return file.kind === "pdf"
     ? `this address is a PDF, which Safari does not show as a page: read its text with pdf {do: "read", url: "${file.url}"}`
@@ -1576,17 +1589,19 @@ async function handle(msg) {
     case "tabs.open": {
       // owned: the daemon may close it, and its dialogs are answered here
       const [url, background, windowId, owned = background] = args;
-      const [tab] = await harnessMade(async () => [await api.tabs.create({ url: url || "about:blank", active: !background, ...(typeof windowId === "number" ? { windowId } : {}) })]);
+      const known = await fileFirst(url);
+      const [tab] = await harnessMade(async () => [await api.tabs.create({ url: known || !url ? "about:blank" : url, active: !background, ...(typeof windowId === "number" ? { windowId } : {}) })]);
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
-      const { tab: t, loading, file } = await openedOrFile(tab.id, url, Date.now() + 15000);
+      if (known) files.set(tab.id, known);
+      const { tab: t, loading, file } = known ? { tab, loading: false, file: known } : await openedOrFile(tab.id, url, Date.now() + 15000);
       if (failedPage(t)) {
         closing.add(t.id);
         api.tabs.remove(t.id).catch(() => closing.delete(t.id));
         throw unopened(url);
       }
-      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...fileFields(file) };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -1646,13 +1661,15 @@ async function handle(msg) {
     }
     case "tabs.navigate": {
       const [tabId, url] = args;
+      const known = await fileFirst(url);
+      if (known) return { id: tabId, url, ...fileFields(known) };
       const before = (await api.tabs.get(tabId).catch(() => null))?.url ?? "";
       ready.set(tabId, false);
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
       const { tab: t, loading, file } = await openedOrFile(tabId, url, Date.now() + 20000, before === url ? "" : before);
       if (failedPage(t)) throw unopened(url);
-      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...(file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {}) };
+      return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...fileFields(file) };
     }
     // With bounds, the window moves as well: left and top count from the
     // top-left of the screen it is on (daemon/tools.ts, showTab). The

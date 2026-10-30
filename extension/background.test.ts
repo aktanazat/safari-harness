@@ -447,6 +447,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       blank.shut = true;
       pages.set(url, blank);
       served.set(url, new Headers(headers));
+      return blank;
     },
     // The tab that shows doc.
     showing(doc: Doc): Tab {
@@ -720,6 +721,20 @@ test.each(loads)("%s of a ready page that stays put answers without moving the c
   load(b, page.url).then((a) => { answer = a; });
   await b.clock.advance(0);
   expect(answer?.value).toMatchObject({ url: page.url, title: "Account" });
+});
+
+// On 10-29 an open of a .pkg made Safari ask whether the site may download;
+// that alert, in a hidden agent window, held Safari's main thread for over
+// 20 min, and every request to the extension hung.
+test.each(loads)("%s of an installer's address answers the file without loading it in any tab", async (_tool, load) => {
+  const b = await start();
+  const url = "https://example.com/dist/setup-3.13.pkg";
+  const installer = b.serveFile(url, { "content-type": "application/octet-stream", "content-length": "70239759" });
+  let answer: Answer | undefined;
+  load(b, url).then((a) => { answer = a; });
+  await b.clock.advance(6000);
+  expect(answer?.value).toMatchObject({ url, file: "download", fileBytes: 70239759 });
+  expect(() => b.showing(installer)).toThrow();
 });
 
 test.each(loads)("%s ends by its original deadline when the next page never becomes ready or gets a title", async (_tool, load, limit) => {
