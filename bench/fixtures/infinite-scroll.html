@@ -5,7 +5,11 @@
      its end, as X's and Mastodon's timelines do. ?stall=N stops it at N
      posts, each still declaring all 300, as a feed whose next page fails
      does. ?plain declares no size and puts above the feed a profile of 25
-     short lines alike, more than the posts first drawn, as X's does. -->
+     short lines alike, more than the posts first drawn, as X's does.
+     ?slow=MS keeps the page busy MS ms on each scroll, as a heavy app does
+     in a loaded tab. ?late=MS draws the feed MS ms after the page, below a
+     few links drawn at once, as X draws a profile's timeline seconds after
+     its sidebar's links in a background tab. -->
 <style>article { height: 150px; border-bottom: 1px solid #ddd; }</style>
 <main>
   <h1>Timeline</h1>
@@ -35,7 +39,12 @@
       feed.append(post);
     }
   };
-  draw();
+  if (options.has("late")) {
+    const links = document.createElement("nav");
+    for (const name of ["Terms of Service", "Privacy Policy", "Cookie Policy", "Accessibility", "Ads info"]) links.append(Object.assign(document.createElement("a"), { href: "#", textContent: name }), " ");
+    feed.after(links);
+    setTimeout(draw, Number(options.get("late")));
+  } else draw();
   addEventListener("scroll", () => {
     if (loading || drawn >= STALL || scrollY + innerHeight < document.documentElement.scrollHeight - 400) return;
     loading = true;
@@ -44,4 +53,9 @@
       loading = false;
     }, 100);
   });
+  if (options.has("slow")) {
+    addEventListener("scroll", () => {
+      for (const end = performance.now() + Number(options.get("slow")); performance.now() < end;);
+    });
+  }
 </script>

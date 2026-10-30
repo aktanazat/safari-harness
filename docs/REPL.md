@@ -108,8 +108,8 @@ process-wide ownership.
   text}`, gathered by scrolling, or with `expand: true` alone by clicking
   its "Load more" controls. `item` is CSS for the items when the list is
   not found by itself, `key` CSS for the element in each whose link or
-  text tells it apart; `max` stops at that many items, and `ms` gives it
-  up to 90 s (25 s when omitted).
+  text tells it apart; `max` stops at that many items, and `ms` is the
+  time it answers within, up to 90 s (25 s when omitted).
 - With agent research saving enabled, eligible `snapshot` and `extract`
   results also contain `memoryReceipt`. Select useful sources with
   `await saveSource(read.memoryReceipt.id, "why this source matters")`.

@@ -1431,12 +1431,15 @@ for a GitHub issue's comments, `x.getUserTweets` for an X profile,
   a time and keeps each item once, until the list's end brings nothing
   new for 3 s. With both, it also clicks the controls the scroll uncovers.
   A list that still declares more items than it gave stays in
-  `incomplete`.
-- Both stop after 25 s or 2,000,000 characters, and `harvested` says what
-  they did: `expanded 8 times, 498 items, stopped: none left`. One that
-  ran out of time says so and leaves the view where it stopped, so the
-  same call again goes on from there. `maxBytes` still bounds the text;
-  pass a larger one, or `save`, for a long list.
+  `incomplete`. A list the page draws after the scroll began, a feed
+  below links drawn first, is gathered once it holds more text than the
+  list the scroll began on gave.
+- Both answer within 25 s, keeping time to read what they gathered, or
+  stop at 2,000,000 characters, and `harvested` says what they did:
+  `expanded 8 times, 498 items, stopped: none left`. One that ran out of
+  time says so and leaves the view where it stopped, so the same call
+  again goes on from there. `maxBytes` still bounds the text; pass a
+  larger one, or `save`, for a long list.
 - They gather the page itself; an embedded frame's text is read as it
   stands. A dialog their clicks raise comes back in `dialogs`, as an
   action's does, and a page that goes elsewhere while they run ends the

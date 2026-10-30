@@ -3362,6 +3362,7 @@
   // page waits for the page to draw, as snapshot does, and says when it was
   // still loading at the limit.
   async function extract(opts = {}) {
+    const by = Date.now() + (Number(opts.ms) || 0);
     if (!(await hasBody())) return { error: noBody() };
     if (shownPdf()) return { error: shownPdfText() };
     if (opts.as === "table") return tables(opts);
@@ -3385,7 +3386,9 @@
       at = opts.selector ? { root: rootFor(opts.selector) } : fragmentSection() ?? (opts.query ? { root: document.body } : contentRoot());
     }
     if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: noBody() };
+    const reading = Date.now();
     let read = at.read ?? tidyText(at.root);
+    const pace = (Date.now() - reading) / (at.root.textContent.length || 1);
     const waits = !opts.selector && !opts.query && window === window.top;
     if (waits && (!read.text || read.filler || ariaBusy())) {
       await whenPage(() => {
@@ -3394,7 +3397,7 @@
         return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
-    const harvest = opts.expand || opts.scroll ? await harvestIn(at.root, opts, read) : null;
+    const harvest = opts.expand || opts.scroll ? await harvestIn(at.root, opts, read, by, pace) : null;
     if (harvest) read = harvest.read;
     const loading = waits && (read.filler || ariaBusy());
     let { text } = read;
@@ -3446,10 +3449,9 @@
   // 50,000 px), and an X profile as 2 posts (X keeps 5 to 13 at a time).
   // A read says what it leaves (incomplete); expand and scroll get it.
 
-  // How long expand and scroll go on in one call, inside the 40 s extract
-  // gives them (tools.ts); how long a click, then the list's end, has to
-  // bring more; and the most text they gather, save's ceiling.
-  const GATHER_MS = 25000;
+  // How long a click, then the list's end, has to bring more; and the most
+  // text expand and scroll gather, save's ceiling. Their time is the
+  // call's ms (tools.ts), the read after them included.
   const MORE_MS = 5000;
   const END_MS = 3000;
   const GATHER_CHARS = 2000000;
@@ -3640,9 +3642,15 @@
   // Both stop at the call's time, the text ceiling, max items, or a
   // gatherStop, and a click that would leave the page stops them. The view
   // stays where they leave it, so a call that ran out of time goes on from
-  // there. collect: take the items after an expand alone too.
-  async function gather(root, opts, collect) {
-    const until = Date.now() + Math.min(Number(opts.ms) || GATHER_MS, 110000);
+  // there. collect: take the items after an expand alone too. by: when the
+  // call answers. On 10-30 an X profile's scroll in a background tab
+  // answered after 37 s, and under heavier load not within the 40 s
+  // extract waited, losing all it had gathered: a click or step begins
+  // only while the slowest so far still fits before the read after it,
+  // which takes pace ms for each character root holds, as the read before
+  // it did.
+  async function gather(root, opts, collect, by, pace) {
+    let until = by;
     const left = () => Math.max(0, until - Date.now());
     const stops = gatherStops;
     const spent = new Set();
@@ -3651,6 +3659,8 @@
     let part;
     let list = null;
     let box;
+    let first;
+    let around;
     let chars = 0;
     let clicks = 0;
     let steps = 0;
@@ -3674,6 +3684,26 @@
         chars += text.length - (had?.text.length ?? 0);
         items.set(key ?? text, key ? { key, text } : { text });
       }
+    };
+    // A list drawn after the gather began: X draws a profile's timeline
+    // seconds after its sidebar's links in a background tab, and a scroll
+    // begun before took the links to their end (10-30). Once the list
+    // brings nothing new, one holding more text than all it gave is
+    // gathered in its place, around the page's text as it is then.
+    const relisted = () => {
+      if (opts.item) return false;
+      const next = partList(root);
+      const other = next?.list ?? listIn(root);
+      if (!other || other === list || other.textContent.length <= chars) return false;
+      part = next;
+      list = other;
+      box = undefined;
+      items.clear();
+      chars = 0;
+      take();
+      first = [...items.values()].map((item) => item.text);
+      around = tidyText(root).text;
+      return true;
     };
     // One click and the wait for what it adds, its toggle to open, or the
     // control to go: "clicked", "waited" (none was ready), "" (none is
@@ -3730,17 +3760,21 @@
       }, Math.min(END_MS, left()));
     };
     if (opts.scroll) take();
-    const first = [...items.values()].map((item) => item.text);
-    for (;;) {
+    first = [...items.values()].map((item) => item.text);
+    for (let began = Date.now(), slowest = 0; ;) {
+      slowest = Math.max(slowest, Date.now() - began);
+      began = Date.now();
+      const held = root.textContent.length;
+      until = by - pace * held;
       if (gatherStops !== stops) {
         stopped = "user";
         break;
       }
-      if (!left()) {
+      if (left() <= slowest) {
         stopped = "time";
         break;
       }
-      if (chars >= GATHER_CHARS || items.size >= (Number(opts.max) || Infinity) || (!opts.scroll && root.textContent.length >= GATHER_CHARS)) {
+      if (chars >= GATHER_CHARS || items.size >= (Number(opts.max) || Infinity) || (!opts.scroll && held >= GATHER_CHARS)) {
         stopped = "max";
         break;
       }
@@ -3767,14 +3801,13 @@
         stopped = expanders(root).length ? "nothing new" : "none left";
         break;
       }
-      if (!(await step())) {
-        stopped = "nothing new";
-        break;
-      }
+      if ((await step()) || (left() && relisted())) continue;
+      stopped = left() ? "nothing new" : "time";
+      break;
     }
     if (collect && !opts.scroll) take();
     const count = collect || opts.scroll ? items.size : members().filter((el) => el.textContent.trim()).length || null;
-    return { items: [...items.values()], first, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll };
+    return { items: [...items.values()], first, around, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll };
   }
 
   // What expand and scroll did, as a read reports it: "expanded 8 times,
@@ -3807,9 +3840,9 @@
   }
 
   // extract with expand or scroll: root's text once its list is whole.
-  async function harvestIn(root, opts, read) {
-    const g = await gather(root, opts, false);
-    return { g, read: { text: opts.scroll && g.items.length ? spliced(read.text, g.first, g.items.map((item) => item.text)) : tidyText(root).text, filler: false } };
+  async function harvestIn(root, opts, read, by, pace) {
+    const g = await gather(root, opts, false, by, pace);
+    return { g, read: { text: opts.scroll && g.items.length ? spliced(g.around ?? read.text, g.first, g.items.map((item) => item.text)) : tidyText(root).text, filler: false } };
   }
 
   // repl harvest(page, options): the list's items themselves, each once,
@@ -3817,11 +3850,12 @@
   // expand alone is asked for). item and key are CSS: the items, and the
   // element in each whose link or text tells it from the rest.
   async function harvestList(opts = {}) {
+    const by = Date.now() + (Number(opts.ms) || 0);
     if (!(await hasBody())) return { error: noBody() };
     const root = opts.selector ? rootFor(opts.selector) : contentRoot().root;
     if (!root) return noMatch("selector", opts.selector);
     const asked = { ...opts, scroll: opts.scroll ?? !opts.expand };
-    const g = await gather(root, asked, true);
+    const g = await gather(root, asked, true, by, 0);
     return { url: location.href, title: document.title, items: g.items, ...unread(root, g) };
   }
 
