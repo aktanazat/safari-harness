@@ -165,7 +165,9 @@ export async function pass(h: Helper, daemon: Daemon, given: Map<string, number>
   }
   let more = watching;
   for (const s of todo) more = (s.ended ? await clear(h, daemon, s.name, given, log) : await convert(h, daemon, s, log)) || more;
-  for (const name of orphans) more = (await clear(h, daemon, name, given, log)) || more;
+  // The daemon refuses a group it no longer knows (its tabs are unseen), so
+  // one never keeps this keeper alive: on 10-30 one ran 5.5 h for two.
+  for (const name of orphans) await clear(h, daemon, name, given, log);
   return more;
 }
 

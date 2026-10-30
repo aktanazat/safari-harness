@@ -367,7 +367,11 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (!s?.done) return { ok: false };
       const now = await located(s);
       if (!s.done) return { ok: false };
-      const left = now.filter((t) => !isPage(t, s)).length;
+      // Safari never lets a tab group empty: closing its last page leaves a
+      // blank tab of Safari's own, no address, holding nothing. Counted as a
+      // page left, it held six ended groups in his sidebar on 10-30. Beside
+      // other tabs, a tab with no address may be a page still loading.
+      const left = now.length === 1 && !now[0].url ? 0 : now.filter((t) => !isPage(t, s)).length;
       // A kept, foreign, or newly added page is never moved to enable
       // deletion. Leave the whole group intact until it is truly empty.
       if (left) return { ok: true, tabs: now.length, left, ...s.size };
@@ -376,14 +380,14 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       // agent 1431's groups, whose windows the agent had sized to 390
       // points. An ended window narrower than any the daemon gives goes back
       // to one of its sizes.
-      const page = now.find((t) => isPage(t, s));
-      if (page && s.size.width < MIN_WIDTH) {
+      const tab = now.find((t) => isPage(t, s)) ?? now[0];
+      if (tab && s.size.width < MIN_WIDTH) {
         // background.js "window": the size Safari gave the window
-        const widened = (await bridge.request("window", [page.id, nextSize(), true])) as { size: Size };
+        const widened = (await bridge.request("window", [tab.id, nextSize(), true])) as { size: Size };
         s.size = widened.size;
         save();
       }
-      return { ok: true, tabs: now.length, left: now.filter((t) => !isPage(t, s)).length, ...s.size };
+      return { ok: true, tabs: now.length, left, ...s.size };
     }
     case "gone": {
       const ok = closing.delete(name);
