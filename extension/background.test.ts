@@ -1781,6 +1781,28 @@ test("extract that gathers reads an embedded frame plain", async () => {
   expect(asked).toEqual([expect.objectContaining({ expand: false, scroll: false })]);
 });
 
+// The page takes a gather's ms from when it gets the request, and the
+// daemon waits ms and 15 s from sending it: a tab that loaded 10 s first
+// had the page answer as that wait ran out, losing what it gathered.
+test("a gather sent to a tab still loading gets the page's time less the wait for the load", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/feed");
+  const asked: { ms?: number }[] = [];
+  tab.doc.does = (op, m) => {
+    if (op === "extract") asked.push(m.args?.[0] as { ms?: number });
+    return { url: tab.doc.url, title: "Feed", text: "Post 1", truncated: false };
+  };
+  b.update(tab, { status: "loading" });
+  const answer = b.request("relay", [tab.id, "extract", [{ scroll: true, ms: 25_000 }], 40_000, 0]);
+  await b.clock.advance(10_000);
+  b.update(tab, { status: "complete" });
+  await b.clock.advance(0);
+  await answer;
+  expect(asked).toHaveLength(1);
+  expect(asked[0]?.ms).toBeLessThanOrEqual(15_000);
+  expect(asked[0]?.ms).toBeGreaterThan(14_000);
+});
+
 // On 10-29 a javadoc frameset's read cut each frame at the limit on its
 // own, and ended "â€¦truncated": the marker's UTF-8 read as Windows-1252.
 test("extract of a page and its frames past the limit answers their text up to what the daemon saves, cut once, and counts the whole", async () => {

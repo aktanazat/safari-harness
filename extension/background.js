@@ -196,6 +196,10 @@ const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "p
 // they read it. One whose page goes on is not asked again of the new page,
 // which it would gather too: it fails, naming where the page went.
 const gathers = (op, args) => op === "harvest" || (op === "extract" && (args?.[0]?.expand === true || args?.[0]?.scroll === true));
+// A gather's page answers within ms of taking the request, and the daemon
+// waits ms and a margin from sending it: the time it waited here first, up
+// to 15 s for a tab still loading, comes off the page's ms.
+const budgeted = (op, args, msg, began) => (gathers(op, args) ? { ...msg, args: [{ ...args[0], ms: Math.max(0, (Number(args[0].ms) || 0) - (Date.now() - began)) }, ...args.slice(1)] } : msg);
 async function wentOn(tabId, deadline) {
   await waitReady(tabId, deadline - Date.now());
   const { url } = await api.tabs.get(tabId);
@@ -277,7 +281,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       const known = knownWay(tabId, frameId, op);
       if (known) {
         sent = true;
-        const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, msg, left(), frameId, known === "script"), began);
+        const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, budgeted(op, args, msg, began), left(), frameId, known === "script"), began);
         if (res !== undefined) return res;
         sent = false;
         ways.get(tabId)?.delete(frameId);
@@ -306,7 +310,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       }
       learnWay(tabId, frameId, how);
       sent = true;
-      const res = await sendUntilNavigation(tabId, msg, left(), frameId, how === "script");
+      const res = await sendUntilNavigation(tabId, budgeted(op, args, msg, began), left(), frameId, how === "script");
       if (res !== undefined) return res;
       break;
     } catch (e) {

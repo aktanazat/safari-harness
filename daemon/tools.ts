@@ -1321,10 +1321,10 @@ async function runReader(tab: number | undefined, name: string, timeoutMs?: numb
   return evaluate({ tab: id, expression: reader.expression, page: reader.page, timeoutMs });
 }
 
-// extract's expand and scroll, and harvest, answer within ms of the page
-// taking the request, the read after them included (gather in content.js).
-// The relay waits GATHER_TRIP_MS more, for the trip and a tab still
-// loading (toTab in background.js).
+// extract's expand and scroll, and harvest, answer within ms of the relay
+// sending them, the read after them included (gather in content.js; toTab
+// in background.js takes what a tab still loading held them off the
+// page's ms). The relay waits GATHER_TRIP_MS more, for the trip.
 const GATHER_MS = 25_000;
 const GATHER_TRIP_MS = 15_000;
 
