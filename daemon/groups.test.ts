@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changeQueue, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Helper } from "./groups.ts";
-import { pass, type Daemon, type SpaceState } from "./keeper.ts";
+import { pass, type Daemon, type Given, type SpaceState } from "./keeper.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "groups-test-"));
 Object.assign(files, { queue: join(dir, "groups.json"), off: join(dir, "groups-off.json"), keeper: join(dir, "keeper.pid"), log: join(dir, "keeper.log") });
@@ -112,7 +112,7 @@ function daemon(spaces: SpaceState[], released: Record<string, unknown> = { tabs
   const d: Daemon = async (op, a = {}) => {
     if (op === "state") return { connected: true, spaces };
     told.push({ op, ...a });
-    if (op === "release") return spaces.some((s) => s.name === a.name) ? { ok: true, width: 1003, height: 781, ...released } : { ok: true, tabs: 0, left: 0 };
+    if (op === "release") return spaces.some((s) => s.name === a.name) ? { ok: true, width: 1003, height: 781, ...released } : { ok: false };
     if (op === "scratch") return { ok: true, width: 1003, height: 781, tabs: 1 };
     return { ok: true };
   };
@@ -257,12 +257,12 @@ test("an ended task's group goes once its tabs for the user are out, with its wi
 });
 
 // Deleting a group closes its tabs: one for the user still in it must stop
-// the delete.
+// the delete. He may keep that tab for days: no keeper stays on for it.
 test("an ended task's group stays, queued, while a tab would not move out of it", async () => {
   const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }]);
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
   const { d } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 2, left: 1 });
-  const given = new Map<string, number>();
+  const given: Given = new Map();
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [TRIP], [TRIP]]);
@@ -285,7 +285,8 @@ test("an ended task's group whose Delete would close pages stays, and only proof
 // 10-07: a delete left agent 8780's group queued (the selection moved off
 // it as the menu opened), and the keeper, kept on by another agent's
 // groups, never tried it again: the group stood in his sidebar for hours,
-// its page saying the harness had restarted.
+// its page saying the harness had restarted. On 10-30 a keeper with no
+// other window to watch quit at once, and window 5 waited 55 min.
 test("a group a failed delete left queued is tried again by the same keeper a while later, not at once", async () => {
   const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
   s.tabs = 1;
@@ -295,9 +296,9 @@ test("a group a failed delete left queued is tried again by the same keeper a wh
   };
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
   const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
-  const given = new Map<string, number>();
-  await pass(h, d, given, quiet);
-  await pass(h, d, given, quiet);
+  const given: Given = new Map();
+  expect(await pass(h, d, given, quiet)).toBe(true);
+  expect(await pass(h, d, given, quiet)).toBe(true);
   expect([s.menus, groups()]).toEqual([1, [TRIP, "Work"]]);
   setSystemTime(new Date(Date.now() + 15 * 60_000));
   try {
@@ -309,15 +310,60 @@ test("a group a failed delete left queued is tried again by the same keeper a wh
   expect(readQueue()).toEqual({});
 });
 
-test("a queued group no window claims goes once its agent has exited, from a window of its own; a running agent's stays", async () => {
+// 10-27 and 10-29: two groups queued with no window the daemon knew stood
+// in his sidebar for days, every pass asking for them again.
+test("a queued group no window claims is left to the user once its agent has exited; a running agent's stays queued", async () => {
   const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "group", name: "old (agent 5)" }, { kind: "group", name: "live (agent 6)" }]);
-  s.tabs = 1;
   const exited = Bun.spawnSync(["true"]).pid;
   changeQueue((q) => Object.assign(q, { "old (agent 5)": { owner: exited, since: 0 }, "live (agent 6)": { owner: process.pid, since: 0 } }));
   const { d, told } = daemon([]);
   expect(await pass(h, d, new Map(), quiet)).toBe(true);
-  expect(groups()).toEqual(["live (agent 6)"]);
-  expect(s.closed).toEqual([7]);
-  expect(told).toEqual([{ op: "release", name: "old (agent 5)" }, { op: "scratch" }, { op: "gone", name: "old (agent 5)" }]);
-  expect(Object.keys(readQueue())).toEqual(["live (agent 6)"]);
+  expect([s.menus, groups(), told, Object.keys(readQueue())]).toEqual([0, ["old (agent 5)", "live (agent 6)"], [], ["live (agent 6)"]]);
+});
+
+// 10-27: a make whose check misread the window left its group, and the
+// window, told plain, never went the way of a group's: no keeper could
+// delete it.
+test("a make that leaves its group tells the daemon the window is a group's, and the group stays queued", async () => {
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+  const failedHide: Helper = (op, args) => {
+    if (op !== "sidebar" || args?.show !== false) return h(op, args);
+    s.idleMs = 0;
+    return Promise.resolve({ ok: false, error: "the sidebar could not hide" });
+  };
+  const { d, told } = daemon([waiting]);
+  await pass(failedHide, d, new Map(), quiet);
+  expect([groups(), Object.keys(readQueue()), told.at(-1)]).toEqual([[TRIP], [TRIP], { op: "grouped", name: TRIP }]);
+});
+
+// 10-30: as the menu opened, the sidebar read for a moment as a tab row
+// selected, the group again 300 ms on, and deletes stopped there.
+test("a selection that reads as moved for a moment as the menu opens still deletes the group", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "tab" }, { kind: "group", name: "Work" }]);
+  // the menu serves the group; the next read finds a tab selected, the one
+  // after it the group
+  s.on.menu = () => {
+    delete s.on.menu;
+    s.on.rows = () => {
+      s.rows.forEach((r) => (r.selected = r.kind === "tab"));
+      s.on.rows = () => {
+        delete s.on.rows;
+        s.rows.forEach((r) => (r.selected = r.name === TRIP));
+      };
+    };
+  };
+  expect(await deleteGroup(h, 7, TRIP)).toEqual({ done: true });
+  expect(groups()).toEqual(["Work"]);
+});
+
+// 10-22: Safari came forward during a delete that worked; the group, gone,
+// stayed queued as if it were still there.
+test("a delete that worked while Safari came forward turns group work off, and the queue still forgets the group", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
+  s.tabs = 1;
+  s.on.press = () => (s.front = "com.apple.Safari");
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), readQueue(), groupsOff()]).toEqual([["Work"], {}, expect.stringContaining("Safari came to the front")]);
 });

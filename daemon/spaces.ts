@@ -96,6 +96,15 @@ function spaceName(group: string | undefined, owner: number | undefined): string
 
 const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`) ?? false;
 
+// The tabs in s's window besides its page. Safari never lets a tab group
+// empty: closing its last page leaves a blank tab of Safari's own, no
+// address, holding nothing. Counted as a page, it held six ended groups in
+// his sidebar on 10-30. Beside other tabs, a tab with no address may be a
+// page still loading.
+function pagesIn(inWindow: TabInfo[], s: Space): TabInfo[] {
+  return inWindow.length === 1 && !inWindow[0].url ? [] : inWindow.filter((t) => !isPage(t, s));
+}
+
 const listTabs = async () => (await bridge.request("tabs.list")) as TabInfo[];
 
 async function identify(space: Space, tab: number): Promise<void> {
@@ -367,11 +376,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (!s?.done) return { ok: false };
       const now = await located(s);
       if (!s.done) return { ok: false };
-      // Safari never lets a tab group empty: closing its last page leaves a
-      // blank tab of Safari's own, no address, holding nothing. Counted as a
-      // page left, it held six ended groups in his sidebar on 10-30. Beside
-      // other tabs, a tab with no address may be a page still loading.
-      const left = now.length === 1 && !now[0].url ? 0 : now.filter((t) => !isPage(t, s)).length;
+      const left = pagesIn(now, s).length;
       // A kept, foreign, or newly added page is never moved to enable
       // deletion. Leave the whole group intact until it is truly empty.
       if (left) return { ok: true, tabs: now.length, left, ...s.size };
@@ -454,7 +459,7 @@ async function end(space: Space) {
   const failed = unclosed.get(space);
   if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
-  if (!space.done || (taskTracked?.(space.owner) !== false && inWindow.some(t => !isPage(t, space)))) return;
+  if (!space.done || (taskTracked?.(space.owner) !== false && pagesIn(inWindow, space).length > 0)) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
     const link = bridge.extensionInfo?.connectedAt;
@@ -557,7 +562,7 @@ async function sweepOnce() {
     if (taskTracked && taskTracked(s.owner) === undefined && !s.done) {
       listed ??= await listTabs();
       const inWindow = await located(s, listed);
-      if (!inWindow.some(t => !isPage(t, s))) {
+      if (pagesIn(inWindow, s).length === 0) {
         s.done = true;
         await end(s);
       }
@@ -579,7 +584,7 @@ async function sweepOnce() {
   for (const s of judged) {
     if (spaces.get(s.key) !== s) continue;
     const inWindow = await located(s, tabs);
-    if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && !inWindow.some((t) => !isPage(t, s)))) await end(s);
+    if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && pagesIn(inWindow, s).length === 0)) await end(s);
   }
 }
 
@@ -604,7 +609,7 @@ async function stillOpen(listed: TabInfo[] | undefined): Promise<TabInfo[] | und
     since.checked = true;
     listed ??= await listTabs();
     const inWindow = await located(s, listed);
-    if (inWindow.length > 0 && inWindow.every((t) => isPage(t, s))) note("agent window whose task ended over 5 min ago is still open", { name: s.name, owner: s.owner ?? null, minutes: Math.floor((Date.now() - since.at) / 60_000) });
+    if (inWindow.length > 0 && pagesIn(inWindow, s).length === 0) note("agent window whose task ended over 5 min ago is still open", { name: s.name, owner: s.owner ?? null, minutes: Math.floor((Date.now() - since.at) / 60_000) });
   }
   return listed;
 }
@@ -697,7 +702,7 @@ export async function managedWindows(listed?: TabInfo[]): Promise<ManagedWindow[
     windows.push({
       id: s.id, name: s.name, owner: s.owner ?? null, window: s.window,
       ended: s.owner !== undefined && !alive(s.owner),
-      tabs: owned.filter(t => !isPage(t, s)).map(t => ({ id: t.id, title: t.title ?? "", url: t.url ?? "" })),
+      tabs: pagesIn(owned, s).map(t => ({ id: t.id, title: t.title ?? "", url: t.url ?? "" })),
     });
   }
   return windows;
@@ -711,13 +716,13 @@ export async function closeManagedWindow(id: string, why = "from the windows pag
   if (before.length === 0) throw new Error("This window is no longer tracked.");
   const window = s.window;
   let closed = 0;
-  for (const tab of before) {
-    if (isPage(tab, s)) continue;
+  for (const tab of pagesIn(before, s)) {
     const result = await closeTab(tab.id, why) as { ok?: boolean };
     if (result.ok) closed++;
   }
   const remaining = (await listTabs()).filter(t => t.windowId === window);
-  if (remaining.some(t => !isPage(t, s))) return { ok: false, closed, remaining: remaining.filter(t => !isPage(t, s)).length };
+  const left = pagesIn(remaining, s);
+  if (left.length > 0) return { ok: false, closed, remaining: left.length };
   const marker = remaining.find(t => isPage(t, s));
   if (marker) {
     const result = await closeTab(marker.id, why) as { ok?: boolean };
@@ -743,7 +748,7 @@ export async function closeWindow(window: number, confirm: boolean): Promise<unk
   const w = (await managedWindows()).find((m) => m.window === window);
   const s = w && [...spaces.values(), ...closing.values(), ...ended].find((space) => space.id === w.id);
   if (!w || !s) throw new Error(`window ${window} is no agent window the harness tracks; tabs {all: true} gives each tab's windowId`);
-  if (taskTracked?.(s.owner) === true) throw new Error(`window ${window} is ${s.owner === undefined ? "the harness's" : `agent ${s.owner}'s`}, which is still working; its tabs close when its turn ends`);
+  if (spaces.get(s.key) === s && taskTracked?.(s.owner) === true) throw new Error(`window ${window} is ${s.owner === undefined ? "the harness's" : `agent ${s.owner}'s`}, which is still working; its tabs close when its turn ends`);
   if (!confirm) {
     return {
       ok: false,

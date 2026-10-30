@@ -42,8 +42,9 @@ type Item = { id: string; title: string; enabled: boolean };
 type Sheet = { text: string[]; buttons: string[] };
 // why: what stopped it; wait: whether a later try may go (the user was at
 // the keys), rather than one that would fail again; pages: the group holds
-// pages, which no later try may close.
-export type Outcome = { done: true } | { done: false; why: string; wait: boolean; pages?: true };
+// pages, which no later try may close; left: a make left its group, named
+// as asked, in the sidebar.
+export type Outcome = { done: true } | { done: false; why: string; wait: boolean; pages?: true; left?: true };
 
 // How long he has left the keyboard and mouse alone before a menu opens
 // (Main's rule of 09-28).
@@ -211,8 +212,18 @@ export async function deleteGroup(h: Helper, window: number, name: string): Prom
   const ids = items.map((i) => i.id);
   if (!ids.includes(DELETE) || !ids.includes(RENAME)) return refuse(h, window, stop("the sidebar's menu was not a tab group's"));
   // The menu is the one for the row selected as it opened: still the group?
-  const now = await readRows(h, window);
-  if (!Array.isArray(now) || now.filter((r) => r.selected).length !== 1 || !now.some((r) => r.selected && isTarget(r))) return refuse(h, window, stop(`the selection moved off ${name}`));
+  // As the menu opens, the sidebar can read for a moment as a tab row
+  // selected, the group again 300 ms on (5 reads on 10-30, 2 of them):
+  // agent 58113's and 40636's deletes stopped there. Another group or the
+  // local tabs selected is no such moment: the menu may be theirs.
+  const selected = (rows: Row[] | Outcome) => (Array.isArray(rows) ? rows.filter((r) => r.selected) : []);
+  let now = await readRows(h, window);
+  for (let i = 0; i < 4 && selected(now).some((r) => r.kind === "tab") && selected(now).every((r) => r.kind === "tab" || isTarget(r)); i++) {
+    await Bun.sleep(200);
+    now = await readRows(h, window);
+  }
+  const chosen = selected(now);
+  if (chosen.length !== 1 || !isTarget(chosen[0])) return refuse(h, window, stop(`the selection moved off ${name}`));
   const pressed = (await h("press", { window, id: DELETE })) as Answer & { sheet?: Sheet | null };
   if (!pressed.ok) return stop(pressed.error ?? "Delete Tab Group could not be pressed");
   // A group with open tabs asks first; one without goes at once, the
@@ -267,7 +278,14 @@ export async function makeGroup(h: Helper, window: number, name: string): Promis
   if (!pressed.ok) return stop(pressed.error ?? "New Tab Group could not be pressed");
   const named = (await h("name", { window, name })) as Answer & { named?: string | null };
   const hidden = await h("sidebar", { window, show: false });
-  const state = (await h("state", { window })) as Answer & { shown?: string | null };
+  // The group picker the window state reads is drawn a moment after the
+  // sidebar hides: read at once, it showed no group, and 5 of 30 makes to
+  // 10-27 took their own group for a wrong one.
+  let state = (await h("state", { window })) as Answer & { shown?: string | null };
+  for (let i = 0; i < 5 && hidden.ok && state.ok && state.shown !== name; i++) {
+    await Bun.sleep(300);
+    state = (await h("state", { window })) as Answer & { shown?: string | null };
+  }
   if (named.ok && hidden.ok && state.ok && state.shown === name) return { done: true };
   const made = state.shown || named.named || undefined;
   const why = !named.ok ? (named.error ?? "the new group took no name")
@@ -277,7 +295,7 @@ export async function makeGroup(h: Helper, window: number, name: string): Promis
   const undone = made === undefined ? undefined : await deleteGroup(h, window, made);
   if (undone?.done) return stop(why);
   turnOff(`${why}, and its new group ${made ?? ""} is left${undone ? ` (${undone.why})` : ""}`);
-  return stop(groupsOff()!);
+  return made === name ? { ...stop(groupsOff()!), left: true } : stop(groupsOff()!);
 }
 
 // ---------- the queue ----------

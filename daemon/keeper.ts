@@ -68,7 +68,9 @@ async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () =
   if (raised.at >= since - RAISE_MS) return outcome;
   turnOff(`Safari came to the front while ${what}`);
   spawnSync(INPUT, ["activate", before.front]);
-  return stop(groupsOff()!);
+  // A step done stays done: on 10-22 agent 42229's group, deleted, was
+  // left queued as if it were still there.
+  return outcome.done ? outcome : { ...outcome, ...stop(groupsOff()!) };
 }
 
 // A waiting window becomes its task's group. The daemon holds the window
@@ -89,7 +91,11 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
     if (!outcome.done && !groupsOff()) changeQueue((q) => delete q[s.name]);
   }
   if (typeof outcome === "number") return true;
-  if (outcome.done) await daemon("grouped", { name: s.name });
+  // A group a failed make left stays queued: its window goes on as a
+  // group's, so its record waits, as a group's, for the delete. Told plain,
+  // agent 41120's window 6 and agent 22996's became groups no keeper could
+  // delete (10-27, 10-29).
+  if (outcome.done || outcome.left) await daemon("grouped", { name: s.name });
   else if (outcome.wait) await daemon("waiting", { name: s.name });
   else await daemon("plain", { name: s.name, why: outcome.why });
   return outcome.done || outcome.wait;
@@ -99,7 +105,7 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
 // or a scratch one, closed after every try. Whether to try again: a wait
 // does; a group holding pages is the user's, and leaves the queue; anything
 // else leaves the group queued, for RETRY_MS.
-async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Map<string, number>, log: Log): Promise<boolean> {
+async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Given, log: Log): Promise<boolean> {
   const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
   if (outcome.done || outcome.pages) {
@@ -110,27 +116,26 @@ async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: numbe
   }
   if (outcome.wait) return true;
   log(`left ${name} queued: ${outcome.why}`);
-  given.set(name, Date.now());
+  given.set(name, { at: Date.now(), held: false });
   return false;
 }
 
 // A group whose own window is gone goes from a window opened for it.
-async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Map<string, number>, log: Log): Promise<boolean> {
+async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Given, log: Log): Promise<boolean> {
   const scratch = (await daemon("scratch")) as SpaceState & { ok: boolean };
   if (!scratch.ok) return true;
   return deleteFrom(h, daemon, name, await windowOf(h, scratch), true, given, log);
 }
 
-// An ended task's group, or a queued one the daemon no longer knows: the
-// tabs for the user leave its window, then the group goes with the page,
-// from a window opened for it when its own is gone. A tab that would not
-// leave keeps the group, and it stays queued.
-async function clear(h: Helper, daemon: Daemon, name: string, given: Map<string, number>, log: Log): Promise<boolean> {
+// An ended task's group: the tabs for the user leave its window, then the
+// group goes with the page, from a window opened for it when its own is
+// gone. A tab that would not leave keeps the group, and it stays queued.
+async function clear(h: Helper, daemon: Daemon, name: string, given: Given, log: Log): Promise<boolean> {
   const released = (await daemon("release", { name })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number };
   if (!released.ok) return true;
   if (released.left) {
     log(`left ${name} queued: ${released.left} of its tabs would not move out`);
-    given.set(name, Date.now());
+    given.set(name, { at: Date.now(), held: true });
     return false;
   }
   if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, name, given, log);
@@ -139,22 +144,34 @@ async function clear(h: Helper, daemon: Daemon, name: string, given: Map<string,
 
 // One look at the windows and the queue; whether there is more to watch.
 // given: when this keeper last left each group queued, which it tries
-// again once RETRY_MS has passed.
-export async function pass(h: Helper, daemon: Daemon, given: Map<string, number>, log: Log): Promise<boolean> {
+// again once RETRY_MS has passed; held: a tab of his would not leave it.
+export type Given = Map<string, { at: number; held: boolean }>;
+const retrying = (given: Given) => [...given.values()].some((g) => !g.held);
+export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): Promise<boolean> {
   const now = Date.now();
-  for (const [name, at] of given) if (now - at >= RETRY_MS) given.delete(name);
+  for (const [name, g] of given) if (now - g.at >= RETRY_MS) given.delete(name);
   const { connected, spaces } = (await daemon("state")) as { connected: boolean; spaces: SpaceState[] };
   const queue = Object.entries(readQueue());
   const known = new Set(spaces.map((s) => s.name));
-  // Queued groups the daemon no longer knows (it restarted, or a keeper
-  // stopped midway): theirs to delete once their agents have exited.
+  // Queued groups the daemon no longer knows, their agents exited: their
+  // tabs are unseen, so the daemon refuses them, and they are the user's.
+  // Kept queued, two (10-27, 10-29) stood in his sidebar for days while
+  // every pass asked for them again.
   const running = (owner?: number) => owner !== undefined && alive(owner);
-  const orphans = queue.filter(([name, e]) => !known.has(name) && !given.has(name) && !running(e.owner)).map(([name]) => name);
+  for (const [name, e] of queue) {
+    if (known.has(name) || running(e.owner)) continue;
+    log(`left ${name} to the user: the daemon has no window for it, so its tabs are unseen`);
+    changeQueue((q) => delete q[name]);
+  }
   const watching = spaces.some((s) => !s.ended && s.group === "grouped") || queue.some(([name, e]) => !known.has(name) && running(e.owner));
   // A live window still making is a stopped keeper's: this one tells each
   // outcome before its pass ends.
   const todo = [...spaces.filter((s) => s.ended && !given.has(s.name)), ...spaces.filter((s) => !s.ended && (s.group === "waiting" || s.group === "making"))];
-  if (todo.length === 0 && orphans.length === 0) return watching;
+  // A group a failed delete left queued is tried again by this keeper, as
+  // no other starts until an agent opens a window: on 10-30 window 5 waited
+  // 55 min. One his tab holds waits for the next keeper: he may keep that
+  // tab for days.
+  if (todo.length === 0) return watching || retrying(given);
   // Asking a quit Safari anything would start it again.
   if (!connected) return true;
   const gate = await check(h);
@@ -167,10 +184,7 @@ export async function pass(h: Helper, daemon: Daemon, given: Map<string, number>
   }
   let more = watching;
   for (const s of todo) more = (s.ended ? await clear(h, daemon, s.name, given, log) : await convert(h, daemon, s, log)) || more;
-  // The daemon refuses a group it no longer knows (its tabs are unseen), so
-  // one never keeps this keeper alive: on 10-30 one ran 5.5 h for two.
-  for (const name of orphans) await clear(h, daemon, name, given, log);
-  return more;
+  return more || retrying(given);
 }
 
 if (import.meta.main) {
@@ -182,7 +196,7 @@ if (import.meta.main) {
     appendFileSync(files.log, `${new Date().toISOString()} ${line}\n`);
   };
   const daemon: Daemon = (op, args = {}) => rpc("space", { ...args, op });
-  const given = new Map<string, number>();
+  const given: Given = new Map();
   const locked = await helper("lock", { ms: 0 });
   try {
     if (locked.ok) {
