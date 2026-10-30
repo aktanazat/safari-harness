@@ -1187,7 +1187,7 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "box", scrollY: 300, maxY: 2200 } } }],
   },
   {
-    name: "extract keeps the text a scrolled box has moved above the window",
+    name: "extract keeps the text a scrolled box has moved above the window, and not a box placed above the page that the box does not hold",
     page: "inner-scroll.html",
     steps: [
       { op: "scroll", args: [0, 2000], answer: { value: { ok: true, moved: "box", scrollY: 2000, maxY: 2200 } } },

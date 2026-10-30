@@ -158,12 +158,19 @@
     if (r.right + view.scrollX > 0 && r.bottom + view.scrollY > 0) return false;
     // Above the window is where a box scrolled past sits too: LinkedIn
     // scrolls its main box, not the window, and on 10-30 a read after
-    // expand had scrolled it 14,084 px kept 219 of 2,803 words.
+    // expand had scrolled it 14,084 px kept 219 of 2,803 words. Only the
+    // boxes that hold it count: an absolute box escapes those between it
+    // and its offsetParent, so a span at top: -9999px stays unseen however
+    // far a box it escapes is scrolled.
+    const up = (box, position) => (position === "absolute" ? box.offsetParent : box.parentElement ?? box.getRootNode().host);
     let x = view.scrollX;
     let y = view.scrollY;
-    for (let box = el.parentElement ?? el.getRootNode().host; box && box !== el.ownerDocument.scrollingElement; box = box.parentElement ?? box.getRootNode().host) {
+    for (let box = up(el, style.position); box && box !== el.ownerDocument.scrollingElement;) {
       x += box.scrollLeft;
       y += box.scrollTop;
+      const position = view.getComputedStyle(box).position;
+      if (position === "fixed") break;
+      box = up(box, position);
     }
     return r.right + x <= 0 || r.bottom + y <= 0;
   }
@@ -3386,14 +3393,22 @@
       at = opts.selector ? { root: rootFor(opts.selector) } : fragmentSection() ?? (opts.query ? { root: document.body } : contentRoot());
     }
     if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: noBody() };
-    const reading = Date.now();
-    let read = at.read ?? tidyText(at.root);
-    const pace = (Date.now() - reading) / (at.root.textContent.length || 1);
+    // pace: ms per character of the read a gather starts from, which it
+    // holds back for the read after it. A near-empty root reads within a
+    // clock tick, which per character would hold back seconds.
+    let pace = 0;
+    const readAt = () => {
+      const began = Date.now();
+      const got = at.read ?? tidyText(at.root);
+      pace = (Date.now() - began) / Math.max(at.root.textContent.length, 1000);
+      return got;
+    };
+    let read = readAt();
     const waits = !opts.selector && !opts.query && window === window.top;
     if (waits && (!read.text || read.filler || ariaBusy())) {
       await whenPage(() => {
         at = fragmentSection() ?? contentRoot();
-        read = at.read ?? tidyText(at.root);
+        read = readAt();
         return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
