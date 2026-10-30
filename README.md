@@ -215,6 +215,9 @@ days and holds no arguments, page text, or full addresses.
 owned tab IDs with a call-generation token; it never closes a page.
 `turn-end` releases that preparation. New work in the same task invalidates
 it; unrelated helpers do not. A request without a preparation is rejected.
+A release Safari does not answer fails with 503 and `{ok: false, error}`;
+its pages close at the first sweep Safari answers: the minute's sweep, or
+the one as the extension connects again.
 omp tags browser calls with the session and agent identity (a helper's
 with its lead's session too), including calls through the CLI and shared
 REPLs. The main task and its direct helpers use tabs in one project window.

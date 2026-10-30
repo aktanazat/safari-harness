@@ -292,6 +292,13 @@ const rpcServer = Bun.serve({
           return Response.json({ ok: false, error: "a current owned-resource preparation is required" }, { status: 409 });
         }
         return Response.json(await endTurn(Number(owner), prepared as TurnPreparation, task));
+      } catch (e) {
+        // Its tabs are marked done by then, and a later sweep closes them
+        // (tools.ts): from 10-30 01:05Z to 01:50Z, while Safari left
+        // tabs.list unanswered, every turn end escaped here as Bun's 500.
+        const error = e instanceof Error ? e.message : String(e);
+        console.error(`[safari-harness] turn end for ${owner} failed: ${error}`);
+        return Response.json({ ok: false, error }, { status: 503 });
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
       }
