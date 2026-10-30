@@ -86,7 +86,11 @@ function taskParts(task: string | undefined): string[] | undefined {
 // (the agent's process; from its task, the agent and its lead's session),
 // its outcome (ok, or the failure's code, of a value that says it failed
 // too), the bytes of the reply, whether a read was cut, and its page's host.
+// The tab-group keeper's space calls are no agent's: on 10-30 they were
+// about 1,000 an hour, and their { ok: false } for nothing to do made 446
+// of the log's 479 failed calls in three hours.
 export function logCall(call: { t: number; ms: number; owner: number | undefined; task: string | undefined; tool: string; args: Record<string, unknown>; reply: { ok: true; value: unknown } | { ok: false; failure: Failure }; bytes: number }): void {
+  if (call.tool === "space") return;
   const value = call.reply.ok && call.reply.value !== null && typeof call.reply.value === "object" ? call.reply.value as Record<string, unknown> : undefined;
   const outcome = !call.reply.ok ? call.reply.failure.code : failedValue(value) ? failureOf(value, { effectful: affectsPage(call.tool, call.args) }).code : "ok";
   const host = pageHost(call.args.url) ?? pageHost(value?.url);

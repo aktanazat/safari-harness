@@ -498,7 +498,7 @@ test("a tab that will not close is reported on its page, and every page still an
 // Pages of one site that finish in the same millisecond are named alike.
 test("with save, each page's whole output goes to a file of its own in the folder", async () => {
   const dir = mkdtempSync(join(tmpdir(), "map-"));
-  setSystemTime(new Date("2026-10-01T09:00:00.000Z"));
+  setSystemTime(new Date());
   try {
     const saved = (await map({ urls: ["https://shop.example/a", "https://shop.example/b"], save: dir })).map(savedPath);
     expect(saved.every((path) => path.startsWith(`${dir}/`))).toBe(true);
