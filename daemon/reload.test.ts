@@ -7,9 +7,12 @@ import { callTool, endTurn } from "./tools.ts";
 // A stand-in extension: open hands out tabs 701, 702...; the user's own
 // front tab is 700. A page set held stops answering, as a page a dialog
 // holds or one stuck loading does, until it loads again. Each load is noted.
+// An address in walledLoads loads behind Cloudflare's wall, which lets the
+// browser through after two looks at it.
 const HIS = 700;
-const pages = new Map<number, { url: string; held: boolean }>([[HIS, { url: "https://his.example/", held: false }]]);
+const pages = new Map<number, { url: string; held: boolean; wall?: number }>([[HIS, { url: "https://his.example/", held: false }]]);
 const loads: string[] = [];
+const walledLoads = new Set<string>();
 let nextTab = HIS;
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
@@ -22,7 +25,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   if (op === "tabs.list") return { value: [...pages].map(([id, p]) => ({ id, url: p.url, title: "Page", front: id === HIS })) };
   if (op === "tabs.navigate") {
     const id = Number(args[0]);
-    pages.set(id, { url: String(args[1]), held: false });
+    pages.set(id, { url: String(args[1]), held: false, ...(walledLoads.has(String(args[1])) ? { wall: 2 } : {}) });
     loads.push(String(args[1]));
     return { value: { id, url: String(args[1]), title: "Page" } };
   }
@@ -30,12 +33,18 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     pages.delete(Number(args[0]));
     return { value: { ok: true } };
   }
-  if (op === "probe") return { value: [] };
+  if (op === "probe") {
+    const page = pages.get(Number(args[0]));
+    if (page?.wall === undefined) return { value: [] };
+    const walled = page.wall > 0;
+    if (walled) page.wall--;
+    return { value: [{ frame: 0, url: page.url, title: walled ? "Just a moment..." : "Page", text: "", markers: [], answered: [], frames: [] }] };
+  }
   if (op !== "relay") return { value: { ok: true } };
   const page = pages.get(Number(args[0]));
   if (!page) return { error: "no tab" };
   if (page.held) return { error: `the page at ${page.url} did not answer; reload it with goto and retry` };
-  if (args[1] === "extract") return { value: { url: page.url, title: "Page", text: `text of ${page.url}`, truncated: false } };
+  if (args[1] === "extract") return { value: { url: page.url, title: "Page", text: page.wall ? "Checking your browser" : `text of ${page.url}`, truncated: false } };
   return { value: { ok: true } };
 }
 
@@ -80,6 +89,18 @@ test("a read of a page that stopped answering loads it again and reads it once m
   hold(tab);
   expect(await call("extract", { tab })).toMatchObject({ text: "text of https://dealer.example/car/1", note: expect.stringContaining("loaded again") });
   expect(loads).toEqual(["https://dealer.example/car/1"]);
+  await call("close", { tab });
+});
+
+// The read asked again reads what a goto would have answered: a wall that
+// lets the browser through is waited out, not read as the page.
+test("a page that loads again behind a check that clears by itself is read once the check is gone", async () => {
+  const url = "https://parts.example/item/7";
+  const tab = await open(url);
+  walledLoads.add(url);
+  hold(tab);
+  expect(await call("extract", { tab })).toMatchObject({ text: `text of ${url}`, note: expect.stringContaining("loaded again") });
+  walledLoads.delete(url);
   await call("close", { tab });
 });
 

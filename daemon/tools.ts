@@ -3849,8 +3849,9 @@ function goneWhy(e: unknown, tab: unknown): unknown {
 }
 
 // A page an agent opened that stops answering (a dialog holds it, or it is
-// stuck loading) is loaded again and the read asked once more, as the error
-// tells the agent to do: in the car and insurance searches of late
+// stuck loading) is loaded again as goto loads it, a check that lets the
+// browser through waited out (afterWall), and the read asked once more, as
+// the error tells the agent to do: in the car and insurance searches of late
 // September, agents spent 31 turns doing it by hand. Only a page unchanged
 // since load can be reloaded safely. Arbitrary eval is an action: it may
 // change script state or submit, even if it times out.
@@ -3881,7 +3882,10 @@ async function revived(tool: string, args: Record<string, unknown>): Promise<unk
     if (!Object.hasOwn(ASKED_AGAIN, tool) || !mine || mine.acted || !(e instanceof Error) || !HELD.test(e.message)) throw e;
     const url = (await listTabs()).find((t) => t.id === tab)?.url;
     if (!url?.startsWith("http")) throw e;
-    await missionCall("goto", { tab, url }, () => navigate(tab, url));
+    await missionCall("goto", { tab, url }, async () => {
+      const t = await navigate(tab, url);
+      return t.file ? t : afterWall(t, tab);
+    });
     return beside(await TOOLS[tool].run(args), "note", "the page did not answer, so it was loaded again first");
   }
 }
