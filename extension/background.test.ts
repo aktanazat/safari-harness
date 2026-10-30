@@ -139,6 +139,8 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   // The headers a server answers a fetch of each address with that serves
   // a file (serveFile); any other fetch reads a data: address.
   const served = new Map<string, Headers>();
+  // Every address the extension fetched, in order.
+  const fetched: string[] = [];
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onActivated = new Hook<[{ tabId: number; windowId: number }]>();
@@ -382,7 +384,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
 
   new Function("browser", "WebSocket", "setTimeout", "clearTimeout", "setInterval", "Date", "console", "OffscreenCanvas", "FileReader", "fetch", "createImageBitmap", SOURCE)(
     browser, Socket, clock.setTimeout, clock.clearTimeout, () => 0, class extends Date { constructor() { super(clock.now); } static now() { return clock.now; } }, { log: () => {} },
-    RasterCanvas, RasterReader, async (url: string) => (served.has(url) ? { ok: true, url, headers: served.get(url) } : { blob: async () => new Blob([Buffer.from(url.split(",")[1], "base64")]) }),
+    RasterCanvas, RasterReader, async (url: string) => {
+      fetched.push(url);
+      return served.has(url) ? { ok: true, url, headers: served.get(url) } : { blob: async () => new Blob([Buffer.from(url.split(",")[1], "base64")]) };
+    },
     async (blob: Blob) => ({ ...JSON.parse(await blob.text()), close() {} }),
   );
   await settle();
@@ -410,6 +415,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     told,
     localReads,
     jar,
+    fetched,
     sockets,
     // Safari takes ms to make each tab or window the harness asks for.
     slowMakes(ms: number) {
@@ -725,16 +731,38 @@ test.each(loads)("%s of a ready page that stays put answers without moving the c
 
 // On 10-29 an open of a .pkg made Safari ask whether the site may download;
 // that alert, in a hidden agent window, held Safari's main thread for over
-// 20 min, and every request to the extension hung.
-test.each(loads)("%s of an installer's address answers the file without loading it in any tab", async (_tool, load) => {
+// 20 min, and every request to the extension hung. Addresses that download
+// by their query alone reached a tab still (10-30).
+const downloads = [
+  "https://example.com/dist/setup-3.13.pkg",
+  "https://drive.google.com/uc?export=download&id=1AbCdEf",
+  "https://www.dropbox.com/scl/fi/k2x9/slides.key?rlkey=r8&dl=1",
+  "https://example.com/files/42?download=true",
+  "https://bucket.s3.amazonaws.com/build?X-Amz-Signature=5f&response-content-disposition=attachment%3B%20filename%3Dbuild.tar",
+];
+test.each(loads.flatMap(([tool, load]) => downloads.map((url) => [tool, url, load] as const)))("%s of %s answers the file without loading it in any tab", async (_tool, url, load) => {
   const b = await start();
-  const url = "https://example.com/dist/setup-3.13.pkg";
-  const installer = b.serveFile(url, { "content-type": "application/octet-stream", "content-length": "70239759" });
+  const file = b.serveFile(url, { "content-type": "application/octet-stream", "content-length": "70239759" });
   let answer: Answer | undefined;
   load(b, url).then((a) => { answer = a; });
   await b.clock.advance(6000);
   expect(answer?.value).toMatchObject({ url, file: "download", fileBytes: 70239759 });
-  expect(() => b.showing(installer)).toThrow();
+  expect(() => b.showing(file)).toThrow();
+});
+
+// A page asked for first loads only once that fetch answers, and one whose
+// server does not answer it within FILE_PROBE_MS never loads.
+const ordinary = ["https://www.dropbox.com/home", "https://drive.google.com/drive/my-drive", "https://github.com/org/repo/releases", "https://example.com/search?q=download"];
+test.each(loads.flatMap(([tool, load]) => ordinary.map((url) => [tool, url, load] as const)))("%s of the page %s loads it without asking for it first", async (_tool, url, load) => {
+  const b = await start();
+  const page = new Doc(url);
+  page.title = "Page";
+  b.serve(page);
+  let answer: Answer | undefined;
+  load(b, url).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ url, title: "Page" });
+  expect(b.fetched).not.toContain(url);
 });
 
 test.each(loads)("%s ends by its original deadline when the next page never becomes ready or gets a title", async (_tool, load, limit) => {
@@ -853,11 +881,11 @@ test("a request Safari refuses the extension's script names the tab's address an
 // and each read of one then waited 36 s to fail with "Safari lets no
 // extension into :" or "this tab is blank" (K3, K13, SR-7).
 test.each([
-  ["a PDF", { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="leaflet.pdf"' }, "pdf", 'this address is a PDF, which Safari does not show as a page: read its text with pdf {do: "read", url: "https://example.com/leaflet?download=true"}'],
-  ["another file", { "content-type": "application/zip" }, "download", 'this address downloads a file (application/zip), which Safari does not show as a page: save it with download {url: "https://example.com/leaflet?download=true"}'],
+  ["a PDF", { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="leaflet.pdf"' }, "pdf", 'this address is a PDF, which Safari does not show as a page: read its text with pdf {do: "read", url: "https://example.com/leaflet/latest"}'],
+  ["another file", { "content-type": "application/zip" }, "download", 'this address downloads a file (application/zip), which Safari does not show as a page: save it with download {url: "https://example.com/leaflet/latest"}'],
 ])("open of an address that downloads %s answers once the tab shows no page, and a read of the tab says what to use at once", async (_name, headers, file, told) => {
   const b = await start();
-  const url = "https://example.com/leaflet?download=true";
+  const url = "https://example.com/leaflet/latest";
   b.serveFile(url, headers);
   let opened: Answer | undefined;
   b.request("tabs.open", [url, true]).then((a) => { opened = a; });

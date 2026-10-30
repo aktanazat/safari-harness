@@ -417,16 +417,21 @@ async function fileAt(url, unanswered = null) {
 }
 
 // An address whose path names an installer, archive or office file, or
-// ends in /download, is asked for before any tab loads it. Loading a file
-// makes Safari ask whether the site may download; on 10-29 that alert, up
-// in a hidden agent window, held Safari's main thread for over 20 min and
-// every request to the extension hung. A file found this way never loads,
-// nor does such an address whose server gives no answer within
-// FILE_PROBE_MS: download fetches it, with time to spare.
+// ends in /download, or whose query asks for a download (Google Drive's
+// export=download, Dropbox's dl=1, download=1 or true, S3 and CloudFront's
+// response-content-disposition=attachment), is asked for before any tab
+// loads it. Loading a file makes Safari ask whether the site may download;
+// on 10-29 that alert, up in a hidden agent window, held Safari's main
+// thread for over 20 min and every request to the extension hung. A file
+// found this way never loads, nor does such an address whose server gives
+// no answer within FILE_PROBE_MS: download fetches it, with time to spare.
 const DOWNLOAD_PATH = /(?:\.(?:zip|gz|tgz|xz|bz2|zst|7z|rar|tar|dmg|pkg|exe|msi|iso|img|apk|ipa|deb|rpm|jar|whl|docx?|xlsx?|pptx?|odt|ods|epub)|\/download)\/?$/i;
+const DOWNLOAD_QUERY = /[?&](?:(?:dl=1|download=(?:1|true)|export=download)(?:&|$)|response-content-disposition=attachment)/i;
 
 async function fileFirst(url) {
-  return /^https?:/i.test(url) && DOWNLOAD_PATH.test(new URL(url).pathname) ? fileAt(url, { kind: "download", url }) : null;
+  if (!/^https?:/i.test(url)) return null;
+  const { pathname, search } = new URL(url);
+  return DOWNLOAD_PATH.test(pathname) || DOWNLOAD_QUERY.test(search) ? fileAt(url, { kind: "download", url }) : null;
 }
 
 const fileFields = (file) => (file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {});
