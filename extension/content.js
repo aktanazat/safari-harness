@@ -3541,17 +3541,19 @@
   }
 
   // The list under root a scroll gathers when none says it is drawn in
-  // part: the element with the most children alike (keyOf) that hold
-  // text, three or more.
+  // part: the element whose children alike (keyOf), three or more holding
+  // text, hold the most of it. A count picked X's profile header, six
+  // lines, over its timeline of as many posts (10-29).
   function listIn(root) {
     let best = null;
-    let most = 2;
+    let most = 0;
     for (const el of [root, ...root.querySelectorAll("*")]) {
-      if (el.childElementCount <= most || el.matches("select, datalist, svg, pre, code")) continue;
+      if (el.childElementCount < 3 || el.matches("select, datalist, svg, pre, code")) continue;
       for (const alike of Map.groupBy(el.children, keyOf).values()) {
-        const held = alike.filter((k) => k.textContent.trim()).length;
-        if (held > most) {
-          most = held;
+        const held = alike.filter((k) => !UNDRAWN.test(k.tagName) && k.textContent.trim());
+        const size = held.length < 3 ? 0 : held.reduce((n, k) => n + k.textContent.length, 0);
+        if (size > most) {
+          most = size;
           best = el;
         }
       }

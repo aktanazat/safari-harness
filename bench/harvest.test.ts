@@ -56,6 +56,13 @@ describe.skipIf(!runner)("whole lists in real WebKit", () => {
     expect(read.value.incomplete?.hint).toContain("scroll: true");
   }, 60_000);
 
+  test("scroll gathers a feed that declares no size, not a block of more but shorter lines above it", async () => {
+    const [read] = await replies("infinite-scroll.html", [{ op: "extract", args: [{ scroll: true, maxBytes: 200_000 }], timeout: 40_000 }], "?plain") as [Read];
+    const found = new Set(read.value.text.match(/\bPost \d+\b/g));
+    expect(found.size).toBeGreaterThanOrEqual(294);
+    expect(read.value.harvested).toContain(`${found.size} items`);
+  }, 60_000);
+
   test("a gatherStop ends a gather running in the page", async () => {
     // Each load takes 600 ms, so the stop comes a click or two in. The page
     // runs on WebKit's own clock, which no fake reaches: left alone, the

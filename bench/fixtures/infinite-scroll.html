@@ -4,7 +4,8 @@
      that draws 20 and 20 more 100 ms after the view comes within 400 px of
      its end, as X's and Mastodon's timelines do. ?stall=N stops it at N
      posts, each still declaring all 300, as a feed whose next page fails
-     does. -->
+     does. ?plain declares no size and puts above the feed a profile of 25
+     short lines alike, more than the posts first drawn, as X's does. -->
 <style>article { height: 150px; border-bottom: 1px solid #ddd; }</style>
 <main>
   <h1>Timeline</h1>
@@ -16,13 +17,20 @@
   const options = new URLSearchParams(location.search);
   const STALL = Number(options.get("stall") ?? TOTAL);
   let drawn = 0;
+  if (options.has("plain")) {
+    const profile = document.createElement("ul");
+    for (let i = 1; i <= 25; i++) profile.append(Object.assign(document.createElement("li"), { textContent: `Fact ${i}` }));
+    feed.before(profile);
+  }
   let loading = false;
   const draw = () => {
     for (const end = Math.min(drawn + 20, TOTAL); drawn < end;) {
       drawn++;
       const post = document.createElement("article");
-      post.setAttribute("aria-posinset", drawn);
-      post.setAttribute("aria-setsize", options.has("stall") ? TOTAL : -1);
+      if (!options.has("plain")) {
+        post.setAttribute("aria-posinset", drawn);
+        post.setAttribute("aria-setsize", options.has("stall") ? TOTAL : -1);
+      }
       post.textContent = `Post ${drawn}: what someone said, ${drawn} posts down.`;
       feed.append(post);
     }
