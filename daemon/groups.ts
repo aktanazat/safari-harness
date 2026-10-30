@@ -23,6 +23,10 @@
 // alone, the menu a group's, and a confirm sheet (a group with open tabs
 // gets one) naming that group in full: agent-sweep is a prefix of
 // agent-sweep-4. Anything else ends the menu, and the group stays queued.
+//
+// Never close a page: the keeper deletes only a group the daemon found
+// empty, so a sheet listing any tab but the window's own page (the daemon's
+// address) means tabs it could not see, and the delete is cancelled.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -37,8 +41,9 @@ type Row = { kind: string; name?: string; selected: boolean };
 type Item = { id: string; title: string; enabled: boolean };
 type Sheet = { text: string[]; buttons: string[] };
 // why: what stopped it; wait: whether a later try may go (the user was at
-// the keys), rather than one that would fail again.
-export type Outcome = { done: true } | { done: false; why: string; wait: boolean };
+// the keys), rather than one that would fail again; pages: the group holds
+// pages, which no later try may close.
+export type Outcome = { done: true } | { done: false; why: string; wait: boolean; pages?: true };
 
 // How long he has left the keyboard and mouse alone before a menu opens
 // (Main's rule of 09-28).
@@ -47,6 +52,8 @@ export const IDLE_MS = 30_000;
 const SETTLE_MS = 600;
 const DELETE = "DeleteTabGroupMenuItem";
 const RENAME = "RenameTabGroupMenuItem";
+// The host of an agent window's own page (spaces.ts PAGE).
+const PAGE_HOST = "127.0.0.1";
 // The item of the menu for a window's own tabs that makes them a group:
 // "New Tab Group with This Tab" for one tab (measured 09-28), "with 2 Tabs"
 // for more (measured 09-29). Safari gives it no id of its own.
@@ -213,6 +220,17 @@ export async function deleteGroup(h: Helper, window: number, name: string): Prom
   if (pressed.sheet) {
     const asked = quotedName(pressed.sheet.text);
     if (asked !== name || !pressed.sheet.buttons.includes("Delete")) return refuse(h, window, stop(asked === undefined ? "the confirm sheet named no group" : `the confirm sheet asked about ${asked}`));
+    // Its second line names the tabs it closes: "“app.dover.com” and 8
+    // other tabs will be closed immediately." (measured 10-30). Only the
+    // window's own page may go; a host alone cannot tell it from another
+    // page on 127.0.0.1. Proof of other pages makes the group the user's;
+    // wording not seen before leaves it queued.
+    const closes = pressed.sheet.text.slice(1).join(" ");
+    const shown = quotedName([closes]);
+    if ((shown !== PAGE_HOST && shown !== name) || /other tab/.test(closes)) {
+      const pages = /\band \d+ other tabs?\b/.test(closes) || (shown !== undefined && /^[\w-]+(\.[\w-]+)+$/.test(shown));
+      return refuse(h, window, pages ? { done: false, why: `deleting ${name} would close pages: ${closes}`, wait: false, pages: true } : stop(`the confirm sheet named tabs not known: ${closes || "none"}`));
+    }
     const confirmed = await h("confirm", { window, button: "Delete" });
     if (!confirmed.ok) return refuse(h, window, stop(confirmed.error ?? "the confirm sheet took no answer"));
   }

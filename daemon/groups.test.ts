@@ -12,7 +12,9 @@ beforeEach(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-type Row = { kind: "group" | "local" | "tab"; name?: string; selected?: boolean; open?: boolean };
+// open: the group holds tabs, its Delete sheet naming them: the window's own
+// page alone, or the line given.
+type Row = { kind: "group" | "local" | "tab"; name?: string; selected?: boolean; open?: boolean | string };
 const GROUP_MENU = [{ id: "RenameTabGroupMenuItem", title: "Rename", enabled: true }, { id: "DeleteTabGroupMenuItem", title: "Delete", enabled: true }];
 const LOCAL_MENU = [{ id: "_safari_invokeBlockForMenuItem:", title: "New Tab Group with 2 Tabs", enabled: true }];
 const TAB_MENU = [{ id: "_safari_invokeBlockForMenuItem:", title: "Copy Link", enabled: true }];
@@ -71,7 +73,8 @@ function safari(rows: Row[]) {
             return ok({ closed: true, sheet: null });
           }
           s.asking = s.sheetFor ?? row;
-          return ok({ closed: true, sheet: { text: [`Are you sure you want to permanently delete “${s.asking.name}”?`], buttons: ["Cancel", "Delete"] } });
+          const closes = typeof s.asking.open === "string" ? s.asking.open : "“127.0.0.1” will be closed immediately.";
+          return ok({ closed: true, sheet: { text: [`Are you sure you want to permanently delete “${s.asking.name}”?`, closes], buttons: ["Cancel", "Delete"] } });
         }
         s.rows.forEach((r) => (r.selected = false));
         s.rows.push({ kind: "group", name: "Untitled", selected: true, open: true });
@@ -263,6 +266,20 @@ test("an ended task's group stays, queued, while a tab would not move out of it"
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [TRIP], [TRIP]]);
+});
+
+// 10-30: a sheet naming tabs the daemon did not see makes the group the
+// user's: it stays, with its window, and leaves the queue. Wording not seen
+// before is no proof, and the group stays queued.
+test("an ended task's group whose Delete would close pages stays, and only proof of pages lets the queue forget it", async () => {
+  for (const [closes, queued] of [["“app.dover.com” and 8 other tabs will be closed immediately.", []], ["“Start Page” will be closed immediately.", [TRIP]]] as const) {
+    const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: closes, selected: true }]);
+    s.tabs = 1;
+    changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+    const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
+    await pass(h, d, new Map(), quiet);
+    expect([groups(), s.closed, s.asking, Object.keys(readQueue())]).toEqual([[TRIP], [], undefined, [...queued]]);
+  }
 });
 
 // 10-07: a delete left agent 8780's group queued (the selection moved off

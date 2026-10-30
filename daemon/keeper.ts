@@ -97,11 +97,13 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
 
 // Deletes the group from window's sidebar, then closes the window: its own,
 // or a scratch one, closed after every try. Whether to try again: a wait
-// does; anything else leaves the group queued, for RETRY_MS.
+// does; a group holding pages is the user's, and leaves the queue; anything
+// else leaves the group queued, for RETRY_MS.
 async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Map<string, number>, log: Log): Promise<boolean> {
   const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
-  if (outcome.done) {
+  if (outcome.done || outcome.pages) {
+    if (!outcome.done) log(`left ${name} to the user: ${outcome.why}`);
     await daemon("gone", { name });
     changeQueue((q) => delete q[name]);
     return false;

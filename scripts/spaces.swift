@@ -302,7 +302,10 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         let pid = try safari().pid
         let open = menuWindows(pid) > 0
         var out: [String: Any] = ["menu": open, "closed": endMenu(pid), "sheet": false]
-        if req["window"] != nil, let s = sheet(try window(req)), let cancel = button(s, "Cancel") { out["sheet"] = perform(cancel, kAXPressAction) }
+        if req["window"] != nil, let w = try? window(req), let s = sheet(w), let cancel = button(s, "Cancel") {
+            out["sheet"] = perform(cancel, kAXPressAction)
+            if poll(2000, { sheet(w) == nil ? true : nil }) == nil { out["closed"] = false }
+        }
         return out
     case "lock":
         try lock((req["ms"] as? NSNumber)?.intValue ?? 60000)
@@ -351,7 +354,10 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         guard let menu = shownMenu(app, outline(w)) else { throw Failure(message: "no menu is open", closed: endMenu(pid)) }
         let id = req["id"] as? String, title = req["title"] as? String
         guard let it = kids(menu).first(where: { id != nil ? ident($0) == id : text($0, kAXTitleAttribute) == title }), perform(it, kAXPressAction) else { throw Failure(message: "the open menu has no \(id ?? title ?? "item")", closed: endMenu(pid)) }
-        let closed = settled(pid)
+        // An Escape for a menu still drawn would cancel the confirm sheet
+        // a Delete raised (10-30: every group with tabs stayed).
+        _ = poll(1500, { sheet(w) ?? (menuWindows(pid) == 0 ? w : nil) })
+        let closed = sheet(w) != nil || settled(pid)
         return ["closed": closed, "sheet": poll(1500, { sheet(w) }).map { s -> [String: Any] in
             ["text": findAll(s, depth: 4) { role($0) == "AXStaticText" }.compactMap { text($0, kAXValueAttribute) },
              "buttons": findAll(s, depth: 4) { role($0) == "AXButton" }.compactMap { text($0, kAXTitleAttribute) }]
@@ -360,7 +366,7 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         guard let title = req["button"] as? String, let s = sheet(w) else { throw Failure(message: "no sheet is open") }
         guard let b = button(s, title), perform(b, kAXPressAction) else { throw Failure(message: "the sheet has no \(title) button") }
         guard poll(2000, { sheet(w) == nil ? true : nil }) != nil else { throw Failure(message: "the sheet stayed open") }
-        return [:]
+        return ["closed": settled(try safari().pid)]
     case "name":
         guard let name = req["name"] as? String, !name.isEmpty else { throw Failure(message: "name needs a name") }
         // Safari shows the new group selected in the sidebar, its name field
