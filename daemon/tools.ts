@@ -3589,7 +3589,8 @@ export function inputSchema(tool: Tool) {
 
 type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; documentId?: string; update?: SnapshotUpdate; challenge?: Challenge; guide?: string; notes?: string };
 type Incomplete = { reason: string; hint: string };
-type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string; incomplete?: Incomplete; harvested?: string };
+type Raised = { type: string; message: string; answer: string | boolean | null };
+type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string; incomplete?: Incomplete; harvested?: string; dialogs?: Raised[] };
 type Harvest = { url: string; title: string; items: { text: string; key?: string }[]; harvested: string; incomplete?: Incomplete };
 // a chat's messages, oldest first, and how many earlier ones were left out
 type Chat = Shielded & { url: string; title: string; messages: { from: string; text: string }[]; earlier?: number };
@@ -3601,6 +3602,13 @@ function cutLine(text: string, v: { truncated?: boolean; total?: number; saved?:
   const shown = `${text.length}${v.total === undefined ? "" : ` of ${v.total}`} characters`;
   if (v.saved === undefined) return `\n…showing the first ${shown}; maxBytes (up to ${SAVED_CHARS}) or save reads more`;
   return `\n…showing ${shown}; ${v.total === undefined || v.total > SAVED_CHARS ? `the first ${SAVED_CHARS}` : "full text"} in ${v.saved}`;
+}
+
+// A dialog a gather's clicks or scrolls raised, as the read reports it: a
+// confirm the page asked went unseen, and its answer shaped the list.
+function raisedLine(d: Raised): string {
+  const answered = d.answer === null || d.answer === false ? "dismissed" : typeof d.answer === "string" ? `answered ${JSON.stringify(d.answer)}` : "accepted";
+  return `${d.type} ${JSON.stringify(d.message)}${d.type === "alert" || d.type === "print" ? "" : `, ${answered}`}`;
 }
 
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
@@ -3632,7 +3640,7 @@ export function formatResult(value: unknown, max = Infinity): string {
       return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${v.dialogs?.length ? `\n…the page raised ${v.dialogs.map(raisedLine).join("; ")}` : ""}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       const { total } = value as { total?: unknown };
