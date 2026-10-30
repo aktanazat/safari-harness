@@ -717,6 +717,27 @@ test("an ended narrow grouped window closes before the keeper removes its tab gr
   await spaceTool({ op: "gone", name });
 });
 
+// 10-30: Safari keeps a tab group from emptying, so closing an ended
+// group's page left a blank tab, which release counted as a page left; six
+// groups stood in his sidebar for hours.
+test("an ended group holding only the blank tab Safari leaves releases as empty, and a blank beside another tab does not", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => openTab("https://blank.example/", true, "blank"));
+  const { name } = t.space;
+  await spaceTool({ op: "grouped", name });
+  g.kill();
+  await g.exited;
+  await callTool("close", { tab: t.id });
+  await turnEnded(g.pid);
+  expect(pageIn(s.tabs, t.windowId)).toBeUndefined();
+  s.tabs.set(990001, { id: 990001, url: "", windowId: t.windowId, active: true });
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 1, left: 0 });
+  s.tabs.set(990002, { id: 990002, url: "https://other.example/", windowId: t.windowId, active: false });
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 2, left: 2 });
+  await spaceTool({ op: "gone", name });
+});
+
 // An agent that finishes in a second exits while the keeper makes its
 // window's group: before, the daemon closed the window under the steps, and
 // a group named for the task, or Untitled, stayed in the sidebar.
