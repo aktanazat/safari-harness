@@ -394,7 +394,7 @@ const FILE_WAIT_MS = 2000;
 const FILE_PROBE_MS = 5000;
 const files = new Map();
 
-async function fileAt(url) {
+async function fileAt(url, unanswered = null) {
   if (!/^https?:/i.test(url)) return null;
   const stop = new AbortController();
   const timer = setTimeout(() => stop.abort(), FILE_PROBE_MS);
@@ -409,7 +409,7 @@ async function fileAt(url) {
     if (/^attachment/i.test(disposition) || (type && !/^(?:text\/|image\/|video\/|audio\/|application\/(?:xhtml\+xml|xml|json|javascript)|application\/[\w.-]+\+(?:json|xml))/.test(type))) return { kind: "download", url, type, size };
     return null;
   } catch {
-    return null;
+    return unanswered;
   } finally {
     clearTimeout(timer);
     stop.abort();
@@ -420,11 +420,13 @@ async function fileAt(url) {
 // ends in /download, is asked for before any tab loads it. Loading a file
 // makes Safari ask whether the site may download; on 10-29 that alert, up
 // in a hidden agent window, held Safari's main thread for over 20 min and
-// every request to the extension hung. A file found this way never loads.
+// every request to the extension hung. A file found this way never loads,
+// nor does such an address whose server gives no answer within
+// FILE_PROBE_MS: download fetches it, with time to spare.
 const DOWNLOAD_PATH = /(?:\.(?:zip|gz|tgz|xz|bz2|zst|7z|rar|tar|dmg|pkg|exe|msi|iso|img|apk|ipa|deb|rpm|jar|whl|docx?|xlsx?|pptx?|odt|ods|epub)|\/download)\/?$/i;
 
 async function fileFirst(url) {
-  return /^https?:/i.test(url) && DOWNLOAD_PATH.test(new URL(url).pathname) ? fileAt(url) : null;
+  return /^https?:/i.test(url) && DOWNLOAD_PATH.test(new URL(url).pathname) ? fileAt(url, { kind: "download", url }) : null;
 }
 
 const fileFields = (file) => (file ? { file: file.kind, ...(file.type ? { fileType: file.type } : {}), ...(file.size ? { fileBytes: file.size } : {}) } : {});
