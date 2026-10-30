@@ -155,7 +155,7 @@ function pageStateOf(value: unknown): PageState | undefined {
 }
 
 function decorate(value: Record<string, unknown>, scope?: { partial?: boolean }): Record<string, unknown> {
-  if (pageStateOf(value.pageState)) return value;
+  if (pageStateOf(value.pageState) || typeof value.file === "string") return value;
   const challenge = record(value.challenge);
   const pageState = classifyPage({
     url: typeof value.url === "string" ? value.url : "",
