@@ -1187,6 +1187,14 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "box", scrollY: 300, maxY: 2200 } } }],
   },
   {
+    name: "extract keeps the text a scrolled box has moved above the window",
+    page: "inner-scroll.html",
+    steps: [
+      { op: "scroll", args: [0, 2000], answer: { value: { ok: true, moved: "box", scrollY: 2000, maxY: 2200 } } },
+      { op: "extract", answer: { value: { text: "Top of the list." } } },
+    ],
+  },
+  {
     name: "a scroll on a page that draws on a canvas goes to it as a wheel, which the page takes",
     page: "canvas-scroll.html",
     steps: [

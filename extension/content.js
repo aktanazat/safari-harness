@@ -153,10 +153,19 @@
     if (frame ? r.width <= 1 || r.height <= 1 : shut && r.width <= 1 && r.height <= 1) return true;
     if ((style.position === "absolute" || style.position === "fixed") && clipShut(style.clip)) return true;
     if (!placed || !r.width || !r.height) return false;
-    // a fixed box stays where the window puts it; the others scroll
     const view = el.ownerDocument.defaultView || window;
-    const fixed = style.position === "fixed";
-    return r.right + (fixed ? 0 : view.scrollX) <= 0 || r.bottom + (fixed ? 0 : view.scrollY) <= 0 || (fixed && putAway(r, view));
+    if (style.position === "fixed") return r.right <= 0 || r.bottom <= 0 || putAway(r, view);
+    if (r.right + view.scrollX > 0 && r.bottom + view.scrollY > 0) return false;
+    // Above the window is where a box scrolled past sits too: LinkedIn
+    // scrolls its main box, not the window, and on 10-30 a read after
+    // expand had scrolled it 14,084 px kept 219 of 2,803 words.
+    let x = view.scrollX;
+    let y = view.scrollY;
+    for (let box = el.parentElement ?? el.getRootNode().host; box && box !== el.ownerDocument.scrollingElement; box = box.parentElement ?? box.getRootNode().host) {
+      x += box.scrollLeft;
+      y += box.scrollTop;
+    }
+    return r.right + x <= 0 || r.bottom + y <= 0;
   }
 
   // A fixed box past the window's right or bottom edge: a consent banner or
