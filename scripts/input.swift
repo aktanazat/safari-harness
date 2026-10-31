@@ -570,19 +570,21 @@ func front() {
 
 // Activates the app and waits up to two seconds until it is frontmost.
 // NSWorkspace hears of the change through the run loop, so it turns while
-// this waits.
+// this waits. The two seconds are the clock's: on 10-30, on a loaded Mac,
+// 100 turns of 20 ms took nearly 10 s, the daemon's limit for the helper.
 func activate(_ args: [String]) {
     guard args.count == 1 else { fail("usage: input activate BUNDLEID", 2) }
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: args[0]).first else { fail("\(args[0]) is not running") }
+    let deadline = Date(timeIntervalSinceNow: 2)
     app.activate()
-    for _ in 0..<100 {
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
-            printJSON(["bundleId": args[0]])
-            return
+    while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+        guard Date() < deadline else {
+            let other = NSWorkspace.shared.frontmostApplication.map { $0.localizedName ?? $0.bundleIdentifier ?? "another app" } ?? "no app"
+            fail("\(args[0]) did not come to the front within 2 s; \(other) is in front")
         }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
     }
-    fail("\(args[0]) did not come to the front")
+    printJSON(["bundleId": args[0]])
 }
 
 // ---------- window ----------
