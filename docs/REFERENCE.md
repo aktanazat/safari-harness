@@ -2000,8 +2000,10 @@ what an action reports).
 
 `press {tab, key, ref?}` presses a key or combo (`Enter`, `Tab`, `Escape`,
 `ArrowDown`, `Cmd+K`) on a ref, or on the focused element without one.
-Enter in a field submits its form. It reports what it caused as `click`
-does (`safari guide reference acting`), files it downloaded included.
+Enter in a one-line text field submits its form unless the page took the
+key (cancelled its keydown or keypress); elsewhere, a text area included,
+it goes only to the page. It reports what it caused as `click` does
+(`safari guide reference acting`), files it downloaded included.
 
 ## select
 

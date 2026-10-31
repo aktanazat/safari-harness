@@ -3044,7 +3044,7 @@ export const TOOLS: Record<string, Tool> = {
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
   },
   press: {
-    desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a field submits its form.",
+    desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a one-line field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],

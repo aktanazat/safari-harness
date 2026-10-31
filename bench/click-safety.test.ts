@@ -352,6 +352,32 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
+    name: "Enter submits a form only from a one-line text field whose keydown and keypress the page let through",
+    page: targets,
+    steps: [
+      evaluate(`(() => {
+        const form = document.createElement("form");
+        form.innerHTML = '<textarea id="note" aria-label="Note"></textarea><input id="search" aria-label="Search"><input id="chat" aria-label="Chat"><input id="agree" type="checkbox" aria-label="Agree"><input id="plain" aria-label="Plain"><button>Send</button>';
+        document.body.prepend(form);
+        document.body.dataset.submits = "0";
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          document.body.dataset.submits = String(Number(document.body.dataset.submits) + 1);
+        });
+        document.getElementById("search").addEventListener("keydown", (event) => { if (event.keyCode === 13) event.preventDefault(); });
+        document.getElementById("chat").addEventListener("keypress", (event) => { if (event.key === "Enter") event.preventDefault(); });
+        return true;
+      })()`, true),
+      { op: "press", args: ["#note", "Enter", { noWaitAfter: true }] },
+      { op: "press", args: ["#search", "Enter", { noWaitAfter: true }] },
+      { op: "press", args: ["#chat", "Enter", { noWaitAfter: true }] },
+      { op: "press", args: ["#agree", "Enter", { noWaitAfter: true }] },
+      evaluate("document.body.dataset.submits", "0"),
+      { op: "press", args: ["#plain", "Enter", { noWaitAfter: true }] },
+      evaluate("document.body.dataset.submits", "1"),
+    ],
+  },
+  {
     name: "a cover appearing on mousedown stops the later click instead of clicking through it",
     page: targets,
     steps: [

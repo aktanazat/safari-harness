@@ -3191,10 +3191,16 @@
     }
     watchTarget(el);
     const { key, flags } = parseKey(spec);
-    const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags };
-    el.dispatchEvent(new KeyboardEvent("keydown", common));
+    const enter = key === "Enter" && !Object.keys(flags).length;
+    // Pages still read Enter by its legacy keyCode, and take it on keypress.
+    // That keypress has no charCode, as in Firefox: with charCode 13 WebKit
+    // submits the form itself (a second submit) and clicks a focused button.
+    const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags, ...(key === "Enter" ? { keyCode: 13, which: 13 } : {}) };
+    const sent = el.dispatchEvent(new KeyboardEvent("keydown", common)) && (!enter || el.dispatchEvent(new KeyboardEvent("keypress", common)));
     el.dispatchEvent(new KeyboardEvent("keyup", common));
-    if (key === "Enter" && !Object.keys(flags).length && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    // As in a browser, Enter submits from a one-line text field only, and
+    // not when the page took the key (cancelled its keydown or keypress).
+    if (sent && enter && el.localName === "input" && TEXT_INPUTS.has(el.type)) {
       const form = el.closest("form");
       if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
     }
