@@ -67,9 +67,54 @@ await stopBrowserMemory();
 process.exit(0);
 `;
 
-async function readFixture(mode: string): Promise<Record<string, unknown>> {
+const SYNC_SCRIPT = `
+import { jest } from "bun:test";
+import { bridge } from ${JSON.stringify(new URL("./bridge.ts", import.meta.url).href)};
+import { connect } from ${JSON.stringify(new URL("./fake-safari.ts", import.meta.url).href)};
+import { browserMemory } from ${JSON.stringify(new URL("./browser-memory.ts", import.meta.url).href)};
+import { browserMemoryTool, startBrowserMemory, stopBrowserMemory } from ${JSON.stringify(new URL("./browser-memory-runtime.ts", import.meta.url).href)};
+const settled = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); };
+const error = async () => (await browserMemoryTool({ do: "status" })).status.error ?? null;
+const answer = (id, reply) => bridge.handleMessage(JSON.stringify({ id, ...reply }));
+const held = [];
+jest.useFakeTimers();
+browserMemory.configure({ researchEnabled: true });
+startBrowserMemory();
+connect({
+  send(data) {
+    const { id, op } = JSON.parse(data);
+    if (op === "memory.configure") held.push(id);
+    else answer(id, { value: [] });
+  },
+  close() {},
+});
+await settled();
+jest.advanceTimersByTime(6000);
+answer(held.shift(), { value: { ok: true } });
+await settled();
+const late = await error();
+const older = browserMemoryTool({ do: "configure", config: {} });
+const newer = browserMemoryTool({ do: "configure", config: {} });
+await settled();
+const [olderId, newerId] = held.splice(0);
+answer(newerId, { value: { ok: true } });
+await newer;
+answer(olderId, { error: "fixture: the older settings were refused" });
+await older;
+const afterOlder = await error();
+const refusing = browserMemoryTool({ do: "configure", config: {} });
+await settled();
+answer(held.shift(), { error: "fixture: this extension has no memory settings" });
+await refusing;
+console.log(JSON.stringify({ late, afterOlder, refused: await error() }));
+jest.useRealTimers();
+await stopBrowserMemory();
+process.exit(0);
+`;
+
+async function readFixture(mode: string, script = SCRIPT): Promise<Record<string, unknown>> {
   const directory = mkdtempSync(join(tmpdir(), "memory-read-failure-"));
-  const child = Bun.spawn([process.execPath, "-e", SCRIPT], {
+  const child = Bun.spawn([process.execPath, "-e", script], {
     env: { ...process.env, HOME: directory, RESEARCH_FAILURE_FIXTURE: mode },
     stdout: "pipe",
     stderr: "pipe",
@@ -118,4 +163,12 @@ test.each(["unavailable", "during-read"])("%s research storage cannot destroy a 
 test("a real page read failure still fails instead of becoming an optional-memory warning", async () => {
   const result = await readFixture("read-error");
   expect(result).toEqual({ reads: 1, error: "fixture page read failed" });
+});
+
+test("Safari's latest answer to the memory settings decides the status: a late confirmation clears it, an older refusal does not return, and a refusal says why", async () => {
+  expect(await readFixture("sync", SYNC_SCRIPT)).toEqual({
+    late: null,
+    afterOlder: null,
+    refused: "Safari could not update memory collection: fixture: this extension has no memory settings",
+  });
 });

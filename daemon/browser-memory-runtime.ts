@@ -16,6 +16,7 @@ const headers = { "cache-control": "no-store", "x-content-type-options": "nosnif
 let revision = 0;
 let collecting = false;
 let captureError: string | undefined;
+let syncs = 0;
 const researchOwners = new Map<number, () => void>();
 
 function response(value: unknown, status = 200): Response {
@@ -61,11 +62,12 @@ function view(args: Record<string, unknown> = {}) {
 
 async function synchronize(captureCurrent = true): Promise<void> {
   if (!bridge.connected) return;
+  const sync = ++syncs;
   try {
-    await bridge.request("memory.configure", [browserMemory.status().config, revision, captureCurrent], 5000);
-    captureError = undefined;
-  } catch {
-    captureError = "Safari could not update memory collection. Reconnect Safari and try again.";
+    await bridge.request("memory.configure", [browserMemory.status().config, revision, captureCurrent]);
+    if (sync === syncs) captureError = undefined;
+  } catch (error) {
+    if (sync === syncs) captureError = `Safari could not update memory collection: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
