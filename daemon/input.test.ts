@@ -57,6 +57,7 @@ type Page = {
   probes?: Record<string, unknown>[];
   probeError?: string;
   clipboardRestored?: boolean;
+  inFrontInstead?: string;
 };
 type Mac = {
   app: string;
@@ -171,6 +172,7 @@ function mac(page: Page = {}): Mac {
       return { pasted: true, clipboardRestored: page.clipboardRestored ?? true };
     }
     if (args[0] === "front") return { bundleId: m.app };
+    if (args[0] === "activate" && args[1] === front.SAFARI && page.inFrontInstead) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${page.inFrontInstead} is in front`);
     if (args[0] === "activate") m.app = args[1];
     if (args[0] === "press") {
       m.pressedIn = m.shows(2);
@@ -401,13 +403,27 @@ test("while the user keeps typing, the tab stays behind his app and no key is se
   expect({ app: m.app, acted: m.helper.filter((c) => ["activate", "key"].includes(c[0])), shown: m.asked.filter((a) => a.startsWith("tabs.activate")) }).toEqual({ app: GHOSTTY, acted: [], shown: [] });
 });
 
+// On 10-30 Safari, swamped by other agents' tabs, left the request to come
+// forward unanswered, and another time another app took the front from it
+// at once. Nothing was pressed, yet each failure read as possibly effected,
+// which asks for a fresh read of the page before trying again.
+test("when Safari does not come to the front, no key is sent, and trying again needs no fresh read", async () => {
+  const page: Page = { inFrontInstead: "Sona" };
+  const m = mac(page);
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).rejects.toMatchObject({ code: "unavailable", effect: "none", retryable: true });
+  expect(run(m, "key")).toEqual([]);
+  page.inFrontInstead = undefined;
+  expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).toMatchObject({ ok: true });
+  expect(run(m, "key")).toHaveLength(1);
+});
+
 // Exercise front.input's actual pipe into a child process, without posting
 // keys to the user's Mac. The helper reports its arguments separately from
 // its stdin so text exposed on the command line cannot pass this check.
 test.each([" Zoë 李𐐷\ne\u0301\tline two\r\n", ""])("the native input transport keeps %j exact on stdin and out of process arguments", async (text) => {
   mkdirSync(join(notes, "daemon"));
   mkdirSync(join(notes, "scripts"));
-  copyFileSync(join(import.meta.dir, "front.ts"), join(notes, "daemon", "front.ts"));
+  for (const file of ["front.ts", "failures.ts"]) copyFileSync(join(import.meta.dir, file), join(notes, "daemon", file));
   writeFileSync(join(notes, "scripts", "input"), `#!${process.execPath}\nconst args = process.argv.slice(2);\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify({ args, text }));\n`, { mode: 0o700 });
   writeFileSync(join(notes, "transport.ts"), 'import { input } from "./daemon/front.ts";\nconst text = await Bun.stdin.text();\nconsole.log(JSON.stringify(await input(["type"], undefined, text)));\n');
   const proc = Bun.spawn([process.execPath, join(notes, "transport.ts")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -423,6 +439,19 @@ test.each([" Zoë 李𐐷\ne\u0301\tline two\r\n", ""])("the native input transp
       await proc.exited;
     }
   }
+});
+
+// On 10-30 the helper bringing Safari forward outlived the 10 s it was
+// given, and the answer read "code null, signal SIGTERM, helper stopped".
+// front.ts runs the helper beside its own file, so a copy of it, made at
+// run time next to a helper that never answers, is loaded by path.
+test("a helper stopped for taking too long says so in plain words", async () => {
+  mkdirSync(join(notes, "daemon"));
+  mkdirSync(join(notes, "scripts"));
+  for (const file of ["front.ts", "failures.ts"]) copyFileSync(join(import.meta.dir, file), join(notes, "daemon", file));
+  writeFileSync(join(notes, "scripts", "input"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o700 });
+  const copy = (await import(join(notes, "daemon", "front.ts"))) as typeof front;
+  await expect(copy.input(["activate", front.SAFARI], 300)).rejects.toThrow("input activate failed: the helper did not answer within 0.3 s and was stopped");
 });
 
 // EOIR's Submit and egov.uscis.gov's Check Status ignored scripted clicks,

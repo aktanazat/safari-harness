@@ -13,7 +13,7 @@ test.each([true, false])("native paste keeps its stdin open until the page compl
   directories.push(directory);
   await mkdir(join(directory, "daemon"));
   await mkdir(join(directory, "scripts"));
-  await copyFile(join(import.meta.dir, "front.ts"), join(directory, "daemon", "front.ts"));
+  for (const file of ["front.ts", "failures.ts"]) await copyFile(join(import.meta.dir, file), join(directory, "daemon", file));
   await writeFile(join(directory, "scripts", "input"), `#!/usr/bin/env node\nimport { createInterface } from 'node:readline';\nconst lines = createInterface({input:process.stdin})[Symbol.asyncIterator]();\nconst payload = (await lines.next()).value;\nconsole.log(JSON.stringify({awaitingCompletion:true}));\nconst acknowledgment = (await lines.next()).value;\nconsole.log(JSON.stringify({args:process.argv.slice(2),payload,acknowledgment}));\nprocess.exit(0);\n`, { mode: 0o700 });
   await writeFile(join(directory, "driver.ts"), `import {input} from './daemon/front.ts';\nconst payload=await Bun.stdin.text();\nconsole.log(JSON.stringify(await input(['paste'],2000,payload,async()=>${complete})));\n`);
   const payload = JSON.stringify({ text: "Zoë\t42\n", html: "<b>Zoë</b>", tsv: "Zoë\t42" });

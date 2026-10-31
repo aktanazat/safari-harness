@@ -10,6 +10,7 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { HarnessError } from "./failures.ts";
 import type { TabInfo } from "./tools.ts";
 
 const execFileAsync = promisify(execFile);
@@ -63,8 +64,8 @@ export async function input(args: string[], timeout = 10000, stdin?: string, com
   } catch (e) {
     const error = e && typeof e === "object" ? e as { stderr?: string; code?: string | number; signal?: string; killed?: boolean; message?: string } : undefined;
     const stderr = error?.stderr?.trim();
-    const reason = [error?.code === undefined ? undefined : typeof error.code === "number" ? `exit ${error.code}` : `code ${error.code}`, error?.signal ? `signal ${error.signal}` : undefined, error?.killed ? "helper stopped" : undefined].filter(Boolean).join(", ");
-    throw new Error(`input ${args[0]} failed: ${stderr || reason || (e instanceof Error ? e.message : String(e))}`);
+    const reason = [error?.code === undefined ? undefined : typeof error.code === "number" ? `exit ${error.code}` : `code ${error.code}`, error?.signal ? `signal ${error.signal}` : undefined].filter(Boolean).join(", ");
+    throw new Error(`input ${args[0]} failed: ${error?.killed ? `the helper did not answer within ${timeout / 1000} s and was stopped` : stderr || reason || (e instanceof Error ? e.message : String(e))}`);
   }
 }
 
@@ -87,7 +88,9 @@ export function onRaised(listener: () => void): void {
 }
 
 export async function raiseSafari(): Promise<void> {
-  await input(["activate", SAFARI]);
+  await input(["activate", SAFARI]).catch((e: unknown) => {
+    throw new HarnessError("unavailable", e instanceof Error ? e.message : String(e), { effect: "none", next: "nothing was sent to the page; try again in a moment." });
+  });
   raisedAt = Date.now();
   heard();
 }
