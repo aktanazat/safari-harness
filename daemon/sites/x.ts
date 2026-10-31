@@ -278,8 +278,9 @@ export function x(kit: SiteKit) {
   // says so on every answer (x-rate-limit-*: 10-29).
   async function call(job: GraphqlJob | RestJob): Promise<unknown> {
     const bucket = job.kind === "graphql" ? job.name : job.path;
+    const read = job.kind === "graphql" ? !job.mutation : job.method === "GET";
     await kit.turn(SITE, 1000, bucket);
-    const r = await kit.eval<Reply>(ORIGIN, `(async () => {${PAGE}\nreturn run(${JSON.stringify(job)});})()`);
+    const r = await kit.eval<Reply>(ORIGIN, `(async () => {${PAGE}\nreturn run(${JSON.stringify(job)});})()`, { read });
     if (r.signedOut || r.status === 401) throw new NotSignedIn(SITE, r.signedOut ? "no session cookie" : "HTTP 401");
     if (r.tx) tx = r.tx;
     if (r.op && job.kind === "graphql") ops.set(job.name, r.op);
@@ -305,7 +306,7 @@ export function x(kit: SiteKit) {
 
   // The owner's own user id is in the twid cookie, read inside the tab.
   const myId = async (): Promise<string> => {
-    const id = await kit.eval<string>(ORIGIN, `decodeURIComponent((document.cookie.match(/(?:^|; )twid=([^;]+)/) || [])[1] || "").replace(/^u=/, "")`);
+    const id = await kit.eval<string>(ORIGIN, `decodeURIComponent((document.cookie.match(/(?:^|; )twid=([^;]+)/) || [])[1] || "").replace(/^u=/, "")`, { read: true });
     if (!/^\d+$/.test(id)) throw new NotSignedIn(SITE, "no session cookie");
     return id;
   };

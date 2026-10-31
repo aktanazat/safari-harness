@@ -39,6 +39,11 @@ function resetOf(header: (name: string) => string | null | undefined): number | 
 // The extension's answer for a tab that no longer exists (background.js):
 // the owner closed it, or it sat unused for 20 minutes (tools.ts).
 const GONE = /that tab is gone/;
+// Its answer for a page that answered nothing for 5 s: a dialog or a stuck
+// load holds it, or Safari, short of memory, passed nothing on for that long
+// (10-31: 91% of those answers came within 10 s of Safari's own calls
+// stalling).
+const HELD = /did not answer.*; reload it with goto and retry$/;
 
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
@@ -117,10 +122,20 @@ export class SiteKit {
   }
 
   // An expression evaluated in the site's tab; page: true runs it in the
-  // page's own world, where the site's script variables are.
-  async eval<T = unknown>(origin: string, expression: string, opts: { page?: boolean } = {}): Promise<T> {
+  // page's own world, where the site's script variables are. read: true
+  // says it can safely run twice: when the page did not answer, the held
+  // tab is closed and the expression asked once more in a new tab where the
+  // site asked; not answering again, the error stands. A new tab, because
+  // the daemon refuses to repeat an eval in the tab where it may have run
+  // until that tab is read (mission.ts checkAction), and a reload is no read.
+  async eval<T = unknown>(origin: string, expression: string, opts: { page?: boolean; read?: boolean } = {}): Promise<T> {
     const tab = await this.tab(origin);
-    const r = (await this.invoke("eval", { tab, expression, page: !!opts.page })) as { result?: T };
+    const args = { tab, expression, page: !!opts.page };
+    const r = (await this.invoke("eval", args).catch(async (e: unknown) => {
+      if (!opts.read || !(e instanceof Error && HELD.test(e.message))) throw e;
+      await this.send("close", { tab });
+      return this.invoke("eval", { ...args, tab: await this.reopen(origin, tab) });
+    })) as { result?: T };
     return r.result as T;
   }
 
