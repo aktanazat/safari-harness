@@ -369,6 +369,31 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
+    name: "a covered click names the close control of the dialog covering it, which clears the way",
+    page: targets,
+    steps: [
+      evaluate(`(() => {
+        const target = document.getElementById("descendant");
+        target.scrollIntoView({ block: "center", behavior: "instant" });
+        const rect = target.getBoundingClientRect();
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "dialog");
+        dialog.setAttribute("aria-label", "Confirm your address");
+        dialog.style.cssText = "position:fixed;z-index:10000;background:white";
+        Object.assign(dialog.style, { left: rect.left - 20 + "px", top: rect.top - 20 + "px", width: rect.width + 240 + "px", height: rect.height + 40 + "px" });
+        dialog.innerHTML = '<div style="position:absolute;right:0;top:0"><button>Cancel subscription</button><button>Close</button></div>';
+        dialog.querySelector("button:last-child").addEventListener("click", () => dialog.remove());
+        document.body.append(dialog);
+        return true;
+      })()`, true),
+      { op: "click", args: ["#descendant"], answer: { error: 'that target is covered by dialog "Confirm your address"; its close control is [1] button "Close"', failure: unsent } },
+      state("safety.descendant", 0),
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      { op: "click", args: ["#descendant"], answer: { value: { ok: true } } },
+      state("safety.descendant", 1),
+    ],
+  },
+  {
     name: "an unknown child frame token cannot authorize any frame",
     page: targets,
     steps: [

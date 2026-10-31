@@ -153,7 +153,7 @@ async function upgradeParentPoint(tabId, frameId, initial, deadline, candidates,
       const result = await toTab(tabId, "assertFrameClickable", [point.frame, { x: point.x, y: point.y }, { scroll }], deadline - Date.now(), candidate);
       if (result?.error) throw new Error(result.error);
       if (result?.value?.found === true) {
-        if (result.value.blocker) throw new Error(result.value.blocker);
+        if (result.value.blocker) throw new Error(candidate === 0 ? result.value.blocker : prefixed({ error: result.value.blocker }, candidate).error);
         parent = candidate;
         point = result.value;
         break;

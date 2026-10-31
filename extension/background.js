@@ -942,13 +942,15 @@ async function extractFrames(tabId, res, opts, tokens = null, depth = 0) {
 }
 
 // A ref of an embedded frame reads "f<frameId>:<ref>", and the frame's own
-// script knows only the ref: a stale ref it reports, or a heal it made,
-// gets the frame's prefix back, so the agent reads the ref it sent.
+// script knows only the ref: a stale ref it reports, a ref it names (a
+// label to click, a cover's close controls), or a heal it made, gets the
+// frame's prefix back, so the agent reads the ref it sent.
 function prefixed(res, frameId) {
   if (res && typeof res.error === "string") {
     const error = res.error
       .replace(/^stale ref (\d+)/, `stale ref f${frameId}:$1`)
-      .replace(/click its label \[(\d+)\]/, `click its label [f${frameId}:$1]`);
+      .replace(/click its label \[(\d+)\]/, `click its label [f${frameId}:$1]`)
+      .replace(/(its close controls? (?:is|are) )(.*)$/s, (_, lead, ways) => lead + ways.replace(/(^|, )\[(\d+)\]/g, `$1[f${frameId}:$2]`));
     return { ...res, error, ...(res.failure?.effect === "none" && res.failure?.recovery === "present"
       ? { failure: { ...res.failure, frame: frameId } } : {}) };
   }

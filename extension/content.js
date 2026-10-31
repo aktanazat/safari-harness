@@ -1585,6 +1585,29 @@
     return false;
   }
 
+  // A cover named with its way out: up to three shown controls in the
+  // dialog, or the fixed or sticky box, that holds the cover, or in the
+  // cover itself, whose whole name says to close it ("Close", "Not now",
+  // "×"); "Cancel subscription" or "Decline" is a choice, not a way out. A
+  // box that holds the target too is the page's own, whose Cancel is no way
+  // out.
+  const DISMISS = /^\s*(?:(?:close|dismiss|cancel|hide|skip|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
+  function coveredBy(hit, target, again = "") {
+    let box = hit;
+    for (let node = hit; node && !insideTarget(node, target); node = node.assignedSlot ?? parentOf(node)) {
+      const { position } = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (node.matches(DIALOG_BOXES) || position === "fixed" || position === "sticky") {
+        box = node;
+        break;
+      }
+    }
+    const ways = insideTarget(box, target) ? [] : [box, ...deepElements(box)]
+      .filter((el) => isInteractive(el) && shown(el) && DISMISS.test(accessibleName(el)))
+      .slice(0, 3).map((el) => `[${ensureRef(el)}] ${named(el)}`);
+    if (!ways.length) return `${named(hit)}; dismiss the cover before clicking${again}`;
+    return `${named(hit)}; its close control${ways.length > 1 ? "s are" : " is"} ${ways.join(", ")}`;
+  }
+
   function framePoint(frame, point) {
     const style = (frame.ownerDocument.defaultView || window).getComputedStyle(frame);
     const paddingLeft = parseFloat(style.paddingLeft) || 0, paddingTop = parseFloat(style.paddingTop) || 0;
@@ -1621,7 +1644,7 @@
       }
       ({ x, y } = point);
       const hit = deepPoint(x, y, frame.ownerDocument);
-      if (!hit || !insideTarget(frame, hit)) return hit ? { error: `that frame is covered by ${named(hit)}; dismiss the cover before clicking`, reason: "covered", next: "dismiss the cover before clicking" } : { error: "that frame is outside the visible page; scroll it into view before clicking", reason: "no_area", next: "scroll the frame into view before clicking" };
+      if (!hit || !insideTarget(frame, hit)) return hit ? { error: `that frame is covered by ${coveredBy(hit, frame)}`, reason: "covered", next: "dismiss the cover before clicking" } : { error: "that frame is outside the visible page; scroll it into view before clicking", reason: "no_area", next: "scroll the frame into view before clicking" };
       view = frame.ownerDocument.defaultView;
     }
     return null;
@@ -1702,7 +1725,7 @@
       }
     }
     if (targetStyle.pointerEvents === "none") return { error: "that target does not receive pointer events; click its visible interactive control instead", reason: "pointer_events", next: "click the visible interactive control instead" };
-    if (cover) return { error: `that target is covered by ${named(cover)}; dismiss the cover before clicking`, reason: "covered", next: "dismiss the cover before clicking" };
+    if (cover) return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
     if (points) return { error: "that target has a visible box but Safari returned no hit-test target; wait for the page to draw before clicking", reason: "unpainted", next: "wait for the page to draw before clicking", unseen: true };
     return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
   }
@@ -1717,7 +1740,7 @@
       const blocked = clickBlocked(el) || clickBlocked(point.hit);
       if (blocked) return blocked;
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
-      if (!hit || !insideTarget(el, hit)) return { error: `that target became covered${hit ? ` by ${named(hit)}` : ""}; dismiss the cover before clicking again`, reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
+      if (!hit || !insideTarget(el, hit)) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
       return frameCover(el.ownerDocument, point.x, point.y);
     }, stopAfterEvent);
     if (clicked.error) return checks === 1 ? refused(el, clicked) : clicked;
@@ -1758,7 +1781,7 @@
       if (mapped.error) return { found: true, blocker: mapped.error };
     }
     const hit = deepPoint(mapped.x, mapped.y);
-    if (!hit || !insideTarget(frame, hit)) return { found: true, blocker: hit ? `that frame is covered by ${named(hit)}; dismiss the cover before clicking` : "that frame has no visible target point; re-run snapshot" };
+    if (!hit || !insideTarget(frame, hit)) return { found: true, blocker: hit ? `that frame is covered by ${coveredBy(hit, frame)}` : "that frame has no visible target point; re-run snapshot" };
     return { found: true, ...mapped, frame: frameToken };
   }
 

@@ -1346,9 +1346,10 @@ the part you need.
   document or uncertain replacement needs a fresh snapshot. An action on a
   ref whose element the page redrew as another control (another role or
   name) is refused before any event until a snapshot prints it again.
-  Covered, hidden and disabled controls refuse action. Embedded-frame
-  clicks also check every readable containing frame. Never guess a ref,
-  and read again after an action to see what changed.
+  Covered, hidden and disabled controls refuse action; a covered one names
+  up to three close controls of its cover by ref. Embedded-frame clicks
+  also check every readable containing frame. Never guess a ref, and read
+  again after an action to see what changed.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
   Matching ignores case and reaches into frames; a leading `(?i)` is
@@ -1931,7 +1932,9 @@ what an action reports).
 - A click refused before any event (a cover, a disabled or inert target, a
   stale ref, a ref whose control changed) fails with `effect: "none"`, so it
   may go again once the cause is gone; a refused link names its address,
-  which `goto` opens. A target with no visible area is scrolled to and
+  which `goto` opens, and a cover names by ref the controls whose whole
+  name closes it (`its close control is [41] button "Close"`, never
+  "Cancel subscription"). A target with no visible area is scrolled to and
   tried once more within 0.5 s, as a list still drawing needs.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A

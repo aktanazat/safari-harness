@@ -929,7 +929,7 @@ test("a page-world eval answers its value, and past its limit blames the code on
   expect(stuck?.error).toMatch(/did not answer in 10 s/);
 });
 
-test("a stale ref or a heal in an embedded frame names the ref as the agent sent it, with the frame's prefix", async () => {
+test("a stale ref, a cover's close controls, or a heal in an embedded frame name the ref as the agent sent it, with the frame's prefix", async () => {
   const b = await start();
   const tab = b.open("https://example.com/");
   const frame = b.frame(tab, 5, "https://example.com/embedded");
@@ -939,6 +939,8 @@ test("a stale ref or a heal in an embedded frame names the ref as the agent sent
   expect((await b.ask(tab, "click", ["f5:3"])).value).toEqual({ ok: true, healed: { ref: "f5:3", now: "f5:9" } });
   frame.does = () => ({ error: "stale ref 3; re-run snapshot" });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
+  frame.does = () => ({ error: 'that target is covered by dialog "Offer"; its close controls are [7] button "Close", [8] link "No thanks"', failure: { code: "stale_view", effect: "none" } });
+  expect((await b.ask(tab, "click", ["f5:3"])).error).toBe('that target is covered by dialog "Offer"; its close controls are [f5:7] button "Close", [f5:8] link "No thanks"');
 });
 
 // On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref
