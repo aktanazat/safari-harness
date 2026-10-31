@@ -230,6 +230,11 @@ test("a browser block does not pretend a human can clear it", () => {
   expect(classifyPage({ url: "https://news.example/", title: "Blocked", challenge: { kind: "cloudflare", where: "block" } })).toMatchObject({ kind: "error", next: expect.stringMatching(/report the block.*do not bypass/i) });
 });
 
+test("a consent wall's next step names its reject choice by ref, leaving the choice to the user", () => {
+  const text = 'main\n  h1 "Morning briefing"\ndialog "We value your privacy"\n  We use cookies to remember your choices.\n  [1] button "Accept all"\n  [2] button "Reject all"\n  [3] button "Manage preferences"';
+  expect(classifyPage({ url: "https://news.example/", title: "News", text })).toEqual({ kind: "consent", next: 'ask the user to choose unless their consent choice is already authorized; the reject choice is [2] button "Reject all".' });
+});
+
 test.each(["open", "goto", "info"])("%s with only an address and title stays unjudged", (tool) => {
   expect(withPageState(tool, { id: 7, url: article.url, title: article.title })).toMatchObject({ id: 7, url: article.url, title: article.title, pageState: { kind: "unjudged" } });
 });

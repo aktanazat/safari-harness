@@ -36,24 +36,27 @@ const PAY = /^(?:(?:subscribe|become a (?:subscriber|member)) to (?:continue(?: 
 const PAY_ACTION = /^(?:subscribe(?: now| today)?|start (?:your |a )?(?:free )?(?:trial|subscription)|become a (?:subscriber|member)|choose (?:a |your )?plan|unlock (?:this |the )?(?:article|story))\s*[.!]?$/i;
 const REGION = /^(?:sorry[,!.]?\s*)?(?:(?:this|our) (?:site|website|service|content|video|page) (?:is )?(?:not available|unavailable|blocked|not accessible) (?:in|from) (?:your|this) (?:country|region|location)|(?:not available|unavailable) in your (?:country|region|location)|we (?:are unable to|cannot) (?:provide|offer) (?:this (?:service|content)|access) in your (?:country|region))\s*[.!]?$/i;
 const CONSENT = /^(?:before you continue(?: to .+)?|we value your privacy|your privacy choices|privacy (?:and|&) cookie preferences|cookie (?:consent|preferences)|consent required)\s*[.!]?$/i;
-const CHOICE = /^(?:accept all(?: cookies)?|reject (?:all|optional)(?: cookies)?|agree|i agree|i disagree|disagree|manage (?:options|preferences|cookies)|more options|customi[sz]e(?: cookies)?|only necessary(?: cookies)?)\s*[.!]?$/i;
+const CHOICE = /^(?:accept all(?: cookies)?|agree|i agree|manage (?:options|preferences|cookies)|more options|customi[sz]e(?: cookies)?)\s*[.!]?$/i;
+// A consent choice that refuses, which next names when the read gave it a
+// ref; the harness never clicks it.
+const REJECT = /^(?:reject (?:all|optional)(?: cookies)?|i disagree|disagree|only necessary(?: cookies)?)\s*[.!]?$/i;
 const ERROR = /^(?:(?:error\s*)?(?:400|401|403|404|408|410|429|451|500|502|503|504)(?:\s*[-:–—]?\s*(?:bad request|unauthorized|forbidden|not found|request timeout|gone|too many requests|unavailable for legal reasons|internal server error|bad gateway|service unavailable|gateway timeout))?|(?:page|file) not found|something went wrong|access denied|forbidden|service unavailable|internal server error|bad gateway|failed to open page|error page)\s*[.!]?$/i;
 // A title part that names the page missing. Safari gives a page read no
 // HTTP status (27.0.1's navigation timing has no responseStatus), so the
 // title is the page's own word for it: "Page not found · GitHub".
 const NOT_FOUND = /^(?:(?:error )?404(?: error)?|(?:404 )?(?:page |file )?not found|this page could not be found)[.!]?$/i;
 const LOADING = /^(?:loading(?: (?:content|page|results))?|please wait|signing in|redirecting)\s*[.!…]*$/i;
-const OUTLINE = /^(?:\[[\w:.-]+\]\s*)?(h[1-6]|heading|form|dialog|alertdialog|button|link|textbox|label|checkbox|radio|combobox|main|article|navigation|banner)(?:\s+|$)(?:\[[\w:.-]+\]\s*)?/i;
-type Line = { label: string; role: string; indent: number };
+const OUTLINE = /^(?:\[([\w:.-]+)\]\s*)?(h[1-6]|heading|form|dialog|alertdialog|button|link|textbox|label|checkbox|radio|combobox|main|article|navigation|banner)(?:\s+|$)(?:\[[\w:.-]+\]\s*)?/i;
+type Line = { label: string; role: string; indent: number; ref?: string };
 
 function linesOf(text: string): Line[] {
   const lines: Line[] = [];
   for (const raw of text.split("\n")) {
     const trimmed = raw.trim();
     const outline = OUTLINE.exec(trimmed);
-    const role = outline?.[1].toLowerCase() ?? "";
+    const role = outline?.[2].toLowerCase() ?? "";
     const label = (outline ? trimmed.slice(outline[0].length).replace(/\s*\{[^{}]*\}\s*$/, "") : trimmed).replace(/^"(.*)"$/, "$1").trim();
-    if (label) lines.push({ label, role, indent: raw.length - raw.trimStart().length });
+    if (label) lines.push({ label, role, indent: raw.length - raw.trimStart().length, ...(outline?.[1] ? { ref: outline[1] } : {}) });
   }
   return lines;
 }
@@ -83,7 +86,7 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
   const action = (pattern: RegExp) => lines.some((line) => (line.role === "" || line.role === "button" || line.role === "link") && pattern.test(line.label));
   if (heading(REGION)) return "region_block";
   if (heading(CONSENT) && /\b(?:cookies?|consent|privacy)\b/i.test(labels.join(" "))
-    && new Set(labels.filter((label) => CHOICE.test(label)).map((label) => label.toLowerCase())).size >= 2) return "consent";
+    && new Set(labels.filter((label) => CHOICE.test(label) || REJECT.test(label)).map((label) => label.toLowerCase())).size >= 2) return "consent";
   if (heading(PAY) && action(PAY_ACTION)) return "paywall";
   const field = lines.some((line) => /^(?:email(?: address)?(?: or (?:phone(?: number)?|username))?|password|username|phone(?: number)?)(?:\s*[:*])?$/i.test(line.label)
     && (line.role === "" || line.role === "textbox" || line.role === "label"));
@@ -96,6 +99,10 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
 
 export function classifyPage(facts: PageFacts): PageState {
   const state = (kind: PageKind): PageState => ({ kind, next: NEXT[kind] });
+  const walled = (kind: PageKind, scope: Line[]): PageState => {
+    const reject = kind === "consent" ? scope.find((line) => line.ref !== undefined && REJECT.test(line.label)) : undefined;
+    return reject ? { kind, next: `${NEXT.consent.slice(0, -1)}; the reject choice is [${reject.ref}] ${reject.role} "${reject.label}".` } : state(kind);
+  };
   if (facts.challenge?.where === "block") return { kind: "error", next: "the site blocks this browser; report the block and do not bypass it." };
   if (facts.challenge?.where === "page") return { kind: "unjudged", next: "the page shows a bot check; wait for it to clear in Safari, then use another permitted source if it persists." };
   if (/^safari-resource:.*errorpage/i.test(facts.url) || /^safari-resource:/i.test(facts.title) || facts.title === "Failed to open page") return state("error");
@@ -123,11 +130,12 @@ export function classifyPage(facts: PageFacts): PageState {
     if (lines[index].role !== "dialog" && lines[index].role !== "alertdialog") continue;
     let end = index + 1;
     while (end < lines.length && lines[end].indent > lines[index].indent) end++;
-    const wall = wallKind(lines.slice(index, end), "", facts.url);
-    if (wall) return state(wall);
+    const scope = lines.slice(index, end);
+    const wall = wallKind(scope, "", facts.url);
+    if (wall) return walled(wall, scope);
   }
   const wall = wallKind(lines, facts.title, facts.url);
-  if (wall) return state(wall);
+  if (wall) return walled(wall, lines);
   if (notFound(facts.title) && !proseHeavy(lines)) return state("error");
   if (lines.every((line) => LOGIN.test(line.label) || PAY_ACTION.test(line.label) || CONSENT.test(line.label) || ERROR.test(line.label)
     || /^(?:main|article|error|unavailable|access restricted|verify (?:you are|you're) human)\s*[.!?]?$/i.test(line.label))) return state("unjudged");

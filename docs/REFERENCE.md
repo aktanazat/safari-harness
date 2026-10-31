@@ -298,7 +298,10 @@ alone, an unread body, raw fetched HTML, and partial reads are not proof
 of readable content. A blank read does not prove a page is empty.
 Classification uses the current returned facts, not another request or
 an access bypass. Ordinary articles discussing subscriptions or sign-in
-are not themselves walls.
+are not themselves walls. On a consent wall a snapshot shows, `next`
+also names its reject choice by ref (`the reject choice is [2] button
+"Reject all"`); the harness never clicks it, and the choice stays the
+user's.
 Safari gives a page read no HTTP status, so a page titled not found
 ("Page not found · GitHub", "404") reads as `error` unless its body is prose.
 A complete extraction can also carry `controls: [{role, label}]` for
