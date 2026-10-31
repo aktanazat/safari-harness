@@ -84,16 +84,22 @@ export function matchesTask(record: { owner?: number; task?: string }, owner: nu
   return record.owner === owner && (task === undefined || record.task === task);
 }
 
-export function taskFamily(task: string | undefined): string | undefined {
+// omp's task (taskOf in omp/index.ts): [session, agent], or [session,
+// agent, lead] for a lead's subagent.
+export function taskParts(task: string | undefined): string[] | undefined {
   if (task === undefined) return undefined;
-  let parts: unknown;
   try {
-    parts = JSON.parse(task);
+    const parts: unknown = JSON.parse(task);
+    if (Array.isArray(parts) && (parts.length === 2 || parts.length === 3) && parts.every((p) => typeof p === "string")) return parts;
   } catch {
-    return task;
+    // another client's task
   }
-  if (!Array.isArray(parts) || (parts.length !== 2 && parts.length !== 3) || !parts.every((part) => typeof part === "string")) return task;
-  return JSON.stringify([parts.length === 2 ? parts[0] : parts[2], "Main"]);
+  return undefined;
+}
+
+export function taskFamily(task: string | undefined): string | undefined {
+  const parts = taskParts(task);
+  return parts ? JSON.stringify([parts[2] ?? parts[0], "Main"]) : task;
 }
 
 // One sweep checks every watched pid each second (a signal-0 kill each),

@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { failedValue, failureOf, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { pageHost } from "./notes.ts";
+import { taskParts } from "./owner.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
 const KEPT_MS = 7 * DAY_MS;
@@ -67,19 +68,6 @@ function append(line: Line) {
   } catch (err) {
     console.error("[safari-harness] call log not written:", err instanceof Error ? err.message : err);
   }
-}
-
-// omp's task (taskOf in omp/index.ts): [session, agent], or [session,
-// agent, lead] for a lead's subagent.
-function taskParts(task: string | undefined): string[] | undefined {
-  if (task === undefined) return undefined;
-  try {
-    const parts: unknown = JSON.parse(task);
-    if (Array.isArray(parts) && (parts.length === 2 || parts.length === 3) && parts.every((p) => typeof p === "string")) return parts;
-  } catch {
-    // another client's task
-  }
-  return undefined;
 }
 
 // A call /rpc answered: when it came and how long it took, whose it was
