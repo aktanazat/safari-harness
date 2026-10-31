@@ -844,6 +844,12 @@ things unless its saved task explicitly says to.
 - "stale ref": the ref's element left the page, the page drew several
   lookalikes in its place, or the tab loaded another address (a reload of
   the same one keeps the latest snapshot's refs). Take a new snapshot.
+- "that control changed since the snapshot": the ref's element is still
+  on the page but now reads as another control (another role or name), so
+  an action on it would press what you did not choose. A count in the name
+  ("(3)", "3 unread", "1 item") may change, appear or vanish; any other
+  number, such as a time, a price or a page, must match. Nothing was sent.
+  Take a new snapshot.
 - "tab N is busy with …": another call is acting on that tab (see Acting).
   Use your own tab, or try again once it is done.
 - Tools that changed in a deploy during your session: the MCP server
@@ -1337,10 +1343,12 @@ the part you need.
   it never chooses a replacement by CSS path, row order or a nearby guess.
   A confirmed replacement returns `healed: {ref, now}`. Same-address
   reloads can reuse the latest snapshot's fingerprints, but another
-  document or uncertain replacement needs a fresh snapshot. Covered,
-  hidden and disabled controls refuse action. Embedded-frame clicks also
-  check every readable containing frame. Never guess a ref, and read again
-  after an action to see what changed.
+  document or uncertain replacement needs a fresh snapshot. An action on a
+  ref whose element the page redrew as another control (another role or
+  name) is refused before any event until a snapshot prints it again.
+  Covered, hidden and disabled controls refuse action. Embedded-frame
+  clicks also check every readable containing frame. Never guess a ref,
+  and read again after an action to see what changed.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
   Matching ignores case and reaches into frames; a leading `(?i)` is
@@ -1921,10 +1929,10 @@ what an action reports).
   opens (it blocks a popup a scripted click asks for) answers after 3 s
   with `next`: click the same ref with `real_input`.
 - A click refused before any event (a cover, a disabled or inert target, a
-  stale ref) fails with `effect: "none"`, so it may go again once the
-  cause is gone; a refused link names its address, which `goto` opens. A
-  target with no visible area is scrolled to and tried once more within
-  0.5 s, as a list still drawing needs.
+  stale ref, a ref whose control changed) fails with `effect: "none"`, so it
+  may go again once the cause is gone; a refused link names its address,
+  which `goto` opens. A target with no visible area is scrolled to and
+  tried once more within 0.5 s, as a list still drawing needs.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
   download still under way when the action ends is waited for up to 30 s;

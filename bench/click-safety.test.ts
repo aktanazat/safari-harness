@@ -30,6 +30,10 @@ const cover = (selector: string): Step => evaluate(`(() => {
   document.body.append(notice);
   return true;
 })()`, true);
+const relabel = (name: string): Step => evaluate(`(() => {
+  document.querySelector("#descendant span").textContent = ${JSON.stringify(name)};
+  return true;
+})()`, true);
 
 const positionedLayout = (body: string, markup: string, root = ""): Step => evaluate(`(() => {
   document.documentElement.style.cssText = ${JSON.stringify(root)};
@@ -604,6 +608,63 @@ benchRows("replacement identity in WebKit", [
       { takeover: true },
       { op: "click", args: ["2"], kept: true, answer: { value: { ok: true, healed: { ref: "2" } } } },
       approvals(["B"]),
+    ],
+  },
+  {
+    name: "an action on a ref the page redrew as another control is refused before any event until a snapshot prints it again",
+    page: targets,
+    steps: [
+      relabel("Cart (2)"),
+      { op: "snapshot" },
+      relabel("Cart (3)"),
+      { op: "click", args: ["2"], answer: { value: { ok: true } } },
+      evaluate(`(() => {
+        document.querySelector("#descendant span").textContent = "Delete account";
+        document.getElementById("keyboard").setAttribute("aria-label", "Card number");
+        return true;
+      })()`, true),
+      { op: "element", args: ["2", "visible"], answer: { value: { value: true } } },
+      { op: "click", args: ["2"], answer: { error: 'that control changed since the snapshot: it was button "Cart (2)", now button "Delete account"; re-run snapshot', failure: unsent } },
+      { op: "type", args: ["12", "4242", { noWaitAfter: true }], answer: { error: 'that control changed since the snapshot: it was textbox "Keyboard field", now textbox "Card number"; re-run snapshot', failure: unsent } },
+      state("({ clicks: safety.descendant, typed: document.getElementById('keyboard').value })", { clicks: 1, typed: "" }),
+      { op: "snapshot" },
+      { op: "click", args: ["2"], answer: { value: { ok: true } } },
+      state("safety.descendant", 2),
+    ],
+  },
+  {
+    name: "a count in a ref's name may change, appear or vanish, but any other number in it must match",
+    page: targets,
+    steps: [
+      relabel("Basket (2) 0 items"),
+      { op: "snapshot" },
+      relabel("Basket [3] 1 item"),
+      { op: "click", args: ["2"], answer: { value: { ok: true } } },
+      relabel("Basket"),
+      { op: "click", args: ["2"], answer: { value: { ok: true } } },
+      relabel("Page 2"),
+      { op: "snapshot" },
+      relabel("Page 3"),
+      { op: "click", args: ["2"], answer: { error: 'that control changed since the snapshot: it was button "Page 2", now button "Page 3"; re-run snapshot', failure: unsent } },
+      relabel("Pickup at 7:00 PM"),
+      { op: "snapshot" },
+      relabel("Pickup at 9:30 PM"),
+      { op: "click", args: ["2"], answer: { error: 'that control changed since the snapshot: it was button "Pickup at 7:00 PM", now button "Pickup at 9:30 PM"; re-run snapshot', failure: unsent } },
+      state("safety.descendant", 2),
+    ],
+  },
+  {
+    name: "a query snapshot leaves alone the fingerprint of a heading link it does not print",
+    page: "blank.html",
+    steps: [
+      evaluate(`(() => {
+        document.body.innerHTML = '<h3><a id="book" href="#attic">A Light in the Attic</a></h3><button>Add to basket</button>';
+        return true;
+      })()`, true),
+      { op: "snapshot", answer: { value: { snapshot: 'h3 [1] link "A Light in the Attic"\n[2] button "Add to basket"' } } },
+      evaluate(`(() => { document.getElementById("book").textContent = "Delete my account"; return true; })()`, true),
+      { op: "snapshot", args: [{ query: "basket" }], answer: { value: { snapshot: '[2] button "Add to basket"' } } },
+      { op: "click", args: ["1"], answer: { error: 'that control changed since the snapshot: it was link "A Light in the Attic", now link "Delete my account"; re-run snapshot', failure: unsent } },
     ],
   },
 ]);

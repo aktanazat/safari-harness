@@ -3319,7 +3319,7 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => {
       const tab = await resolveTab(a.tab);
       await relay(tab, "painted", [], 3000).catch(() => {});
-      if (a.ref !== undefined) return relay(tab, "locate", [str(String(a.ref), "ref")]);
+      if (a.ref !== undefined) return relay(tab, "locate", [str(String(a.ref), "ref"), { act: true }]);
       const { viewport } = (await relay(tab, "tabInfo")) as { viewport?: { w: number; h: number } };
       return { x: num(a.x, "x"), y: num(a.y, "y"), width: 0, height: 0, innerWidth: viewport?.w, innerHeight: viewport?.h };
     },

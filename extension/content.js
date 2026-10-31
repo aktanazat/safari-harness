@@ -464,6 +464,8 @@
   const FINGERPRINTS_MAX = 5000;
   let healedNow = null; // the heal the running request made
   let carried = null; // the fingerprints the running request brought (adopt)
+  let acting = false; // whether the running request acts on its target (ACTS)
+  let changedNow = null; // the changed control the running request met (changedSince)
   // How much of an element's surroundings a fingerprint keeps: enough to
   // tell one row's "Delete" from the next.
   const NEAR_MAX = 80;
@@ -626,6 +628,24 @@
       refMap.set(ref, el);
       return el;
     });
+  }
+
+  // A page can draw another control into the element a ref names, and the
+  // ref stays on it: a row's "Save draft" redrawn as "Delete account". An
+  // action checks the element's role and name against the ref's
+  // fingerprint before any event. A count in the name ("Cart (2)", "3
+  // unread", "1 item") may change, appear or vanish; any other number (a
+  // time, a price, a page) must match.
+  const COUNTS = /[([]\d+[)\]]|\b\d+ (?:items?|unread|new|notifications?|messages?)\b/g;
+  function changedSince(ref, el) {
+    const fp = fingerprints.get(ref);
+    if (!fp) return false;
+    const now = candidateOf(el);
+    const bare = (name) => name.toLowerCase().replace(COUNTS, " ").replace(/\s+/g, " ").trim();
+    if (now.role === fp.role && bare(now.name) === bare(fp.name)) return false;
+    const shownAs = (c) => (c.name ? `${c.role} "${c.name}"` : c.role);
+    changedNow = { ref, was: shownAs(fp), now: shownAs(now) };
+    return true;
   }
 
   // The elements that look like a fingerprint's target (the same role,
@@ -1001,12 +1021,12 @@
       printed[ref] = fingerprints.get(ref);
       return ref;
     };
-    const push = (depth, text, n) => {
+    const push = (depth, text, n, lead = "") => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
-      if (query && !query(text) && !text.includes(FRAME_MARK)) return;
+      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) return;
       if (lines.length >= maxLines) { truncated = true; return; }
-      const line = n ? `[${prefix}${refOf(n.el)}] ${text}` : text;
+      const line = n ? `${lead}[${prefix}${refOf(n.el)}] ${text}` : lead + text;
       lines.push(query ? line : "  ".repeat(depth) + line);
     };
     const hrefOf = (n) => (n.el && n.el.href) || null;
@@ -1095,7 +1115,7 @@
         const texts = allText(c);
         // a heading that only holds a link: one line
         if (c.role === "heading" && ek.length === 1 && ek[0].actionable && texts.length <= 1) {
-          push(depth, `${tag(c)} [${prefix}${refOf(ek[0].el)}] ${head(ek[0])}`);
+          push(depth, head(ek[0]), ek[0], `${tag(c)} `);
           render(ek[0], depth + 1);
           continue;
         }
@@ -1242,7 +1262,7 @@
     if (key.startsWith("text=")) return byText(key.slice(5), keepLabel);
     if (/^\d+$/.test(key)) {
       const el = refMap.get(key);
-      if (el?.isConnected) return el;
+      if (el?.isConnected) return acting && changedSince(key, el) ? null : el;
       if (el || fingerprints.has(key) || carried?.[key]) return heal(key);
       return null;
     }
@@ -1376,7 +1396,9 @@
   }
 
   function missing(target) {
-    return { error: /^\d+$/.test(String(target).trim()) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
+    const key = String(target).trim();
+    if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
+    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
   }
 
   function centerOf(el) {
@@ -5357,6 +5379,10 @@
   // Ops that may raise a dialog, and extract when it gathers (expand,
   // scroll): the page's dialogs are armed while they run.
   const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download", "harvest"]);
+  // Ops that act on the element a ref names, and locate when a real click
+  // follows it (the daemon's locate, for real_input): a ref whose control
+  // changed is refused before any event (changedSince).
+  const ACTS = new Set(["click", "clickProbe", "nativeProbe", "type", "typeMark", "press", "pressMark", "select", "hover", "upload", "download"]);
 
   // Runs an op with dialogs armed, and returns the dialogs it raised with
   // its result.
@@ -5415,7 +5441,9 @@
       : { id: msg.id, value: msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed))) };
     let out;
     healedNow = null;
+    changedNow = null;
     adopt(msg.kept);
+    acting = ACTS.has(msg.op) || (msg.op === "locate" && msg.args?.[1]?.act === true);
     const armed = DIALOG_OPS.has(msg.op) || (msg.op === "extract" && (msg.args?.[0]?.expand === true || msg.args?.[0]?.scroll === true));
     try {
       out = armed ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
@@ -5423,6 +5451,7 @@
       return Promise.resolve({ id: msg.id, error: unsecret(String(e && e.message || e)) });
     } finally {
       carried = null;
+      acting = false;
     }
     // Every handler resolves its target before its first await, so a heal
     // made now is this request's.
