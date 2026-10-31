@@ -59,3 +59,30 @@ test("a search X answers with 429 fails with rate_limited at the reset X named, 
   await expect(site(answer(post), {}, asked).search("osha")).rejects.toMatchObject(named);
   expect(asked).toHaveLength(1);
 });
+
+// On 10-31 search answered 404 to one transaction key in eight, on every
+// use of that key, and the session kept the key, so every search after the
+// first failed too.
+test("a read X answers 404 with a kept transaction key is asked once more with a new key, which later reads keep; a second 404 and a write are not asked again", async () => {
+  const keys: (string | null)[] = [];
+  const statuses = [200, 404, 200, 200, 404, 404, 404];
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool === "eval") {
+      const job = JSON.parse(String(args.expression).match(/return run\((.*)\);\}\)\(\)$/s)![1]) as { tx: { animationKey: string } | null };
+      keys.push(job.tx?.animationKey ?? null);
+      return { result: { status: statuses.shift(), headers: {}, body: answer(post), ...(job.tx ? {} : { tx: { keyBytes: [1], animationKey: `key${keys.length}` } }) } };
+    }
+    throw new Error(`no ${tool} in this Safari`);
+  };
+  const site = x(new SiteKit(send, undefined, dir));
+  expect((await site.getTimeline()).tweets).toHaveLength(1);
+  expect((await site.getTimeline()).tweets).toHaveLength(1);
+  await site.getTimeline();
+  expect(keys).toEqual([null, "key1", null, "key3"]);
+  await expect(site.getTimeline()).rejects.toThrow("HTTP 404");
+  expect(keys).toHaveLength(6);
+  await expect(site.like("1234567", { approved: true })).rejects.toThrow("HTTP 404");
+  expect(keys).toHaveLength(7);
+}, 15_000);

@@ -276,12 +276,19 @@ export function x(kit: SiteKit) {
 
   // X limits each operation on its own, 50 searches per 15 minutes, and
   // says so on every answer (x-rate-limit-*: 10-29).
-  async function call(job: GraphqlJob | RestJob): Promise<unknown> {
+  async function call(job: GraphqlJob | RestJob, again = false): Promise<unknown> {
     const bucket = job.kind === "graphql" ? job.name : job.path;
     const read = job.kind === "graphql" ? !job.mutation : job.method === "GET";
     await kit.turn(SITE, 1000, bucket);
     const r = await kit.eval<Reply>(ORIGIN, `(async () => {${PAGE}\nreturn run(${JSON.stringify(job)});})()`, { read });
     if (r.signedOut || r.status === 401) throw new NotSignedIn(SITE, r.signedOut ? "no session cookie" : "HTTP 401");
+    // Search answers 404 to about one transaction key in eight, every time
+    // that key is used (10-31: 1 of 8 fresh keys), so a kept key failed
+    // every search after it. A read is asked once more with a new key.
+    if (r.status === 404 && read && !again) {
+      tx = null;
+      return call({ ...job, tx: null }, true);
+    }
     if (r.tx) tx = r.tx;
     if (r.op && job.kind === "graphql") ops.set(job.name, r.op);
     const limit = await kit.limited(SITE, r.status, (name) => r.headers?.[name], bucket);
