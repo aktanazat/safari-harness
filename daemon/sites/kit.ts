@@ -60,16 +60,20 @@ export class SiteKit {
   // session even if close() is never reached. cwd is the session's folder,
   // where a relative path a site saves a file at begins, as with its fs.
   constructor(private send: Invoke, private owned: (tab: number) => void = () => {}, readonly cwd = process.cwd()) {
-    this.invoke = async (tool, args) => {
-      try {
-        return await send(tool, args);
-      } catch (e) {
-        const gone = Number(args.tab);
-        const origin = this.origins.get(gone);
-        if (origin === undefined || !(e instanceof Error && GONE.test(e.message))) throw e;
-        return send(tool, { ...args, tab: await this.reopen(origin, gone) });
-      }
-    };
+    this.invoke = (tool, args) => this.call(tool, args);
+  }
+
+  private async call(tool: string, args: Record<string, unknown>, onReopen?: (tab: number) => void): Promise<unknown> {
+    try {
+      return await this.send(tool, args);
+    } catch (e) {
+      const gone = Number(args.tab);
+      const origin = this.origins.get(gone);
+      if (origin === undefined || !(e instanceof Error && GONE.test(e.message))) throw e;
+      const tab = await this.reopen(origin, gone);
+      onReopen?.(tab);
+      return this.send(tool, { ...args, tab });
+    }
   }
 
   // A background tab on origin ("https://app.slack.com"), opened at url on
@@ -129,9 +133,9 @@ export class SiteKit {
   // the daemon refuses to repeat an eval in the tab where it may have run
   // until that tab is read (mission.ts checkAction), and a reload is no read.
   async eval<T = unknown>(origin: string, expression: string, opts: { page?: boolean; read?: boolean } = {}): Promise<T> {
-    const tab = await this.tab(origin);
+    let tab = await this.tab(origin);
     const args = { tab, expression, page: !!opts.page };
-    const r = (await this.invoke("eval", args).catch(async (e: unknown) => {
+    const r = (await this.call("eval", args, (reopened) => { tab = reopened; }).catch(async (e: unknown) => {
       if (!opts.read || !(e instanceof Error && HELD.test(e.message))) throw e;
       await this.send("close", { tab });
       return this.invoke("eval", { ...args, tab: await this.reopen(origin, tab) });

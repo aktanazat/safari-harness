@@ -35,6 +35,19 @@ const relabel = (name: string): Step => evaluate(`(() => {
   return true;
 })()`, true);
 
+const clickEvents = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+const recordInputs = (selector: string): Step => evaluate(`(() => {
+  document.body.dataset.inputs = "[]";
+  const target = document.querySelector(${JSON.stringify(selector)});
+  for (const type of ${JSON.stringify(clickEvents)}) target.addEventListener(type, (event) => {
+    const inputs = JSON.parse(document.body.dataset.inputs);
+    inputs.push(event.type);
+    document.body.dataset.inputs = JSON.stringify(inputs);
+  });
+  return true;
+})()`, true);
+const inputs = (result: string[]): Step => evaluate("JSON.parse(document.body.dataset.inputs)", result);
+
 const positionedLayout = (body: string, markup: string, root = ""): Step => evaluate(`(() => {
   document.documentElement.style.cssText = ${JSON.stringify(root)};
   document.body.style.cssText = ${JSON.stringify(`margin:0;overflow:visible;${body}`)};
@@ -530,7 +543,73 @@ benchRows("safe clicks in WebKit", [
   },
 ]);
 
+const changedIdentifiers: Row[] = [
+  { name: "account", before: "Transfer to account (1234)", after: "Transfer to account (9876)" },
+  { name: "invoice", before: "Invoice [1234]", after: "Invoice [9876]" },
+  { name: "year", before: "Year (2025)", after: "Year (2026)" },
+  { name: "page", before: "Page (2)", after: "Page (3)" },
+].map(({ name, before, after }) => ({
+  name: `a changed bracketed ${name} identifier refuses a snapshotted click before any input event`,
+  page: targets,
+  steps: [
+    relabel(before),
+    recordInputs("#descendant"),
+    { op: "snapshot" },
+    relabel(after),
+    { op: "click", args: ["2"], answer: { error: `that control changed since the snapshot: it was button "${before}", now button "${after}"; re-run snapshot`, failure: unsent } },
+    inputs([]),
+  ],
+}));
+
+const delayedIdentity: Row[] = ["1", "#action"].flatMap((target) => [true, false].map((changed): Row => ({
+  name: `a delayed click via ${target} ${changed ? "refuses a relabeled control before any event" : "presses the unchanged control"} while reads remain nonacting`,
+  page: targets,
+  steps: [
+    positionedLayout("", '<div id="wrap"><button id="action" style="width:180px;height:48px">Save draft</button></div>'),
+    recordInputs("#action"),
+    { op: "snapshot", answer: { value: { snapshot: '[1] button "Save draft"' } } },
+    evaluate(`(async () => {
+      const wrap = document.getElementById("wrap");
+      const button = document.getElementById("action");
+      wrap.style.cssText = "height:0;overflow:hidden";
+      const pending = window.__safariHarnessRun({ id: "delayed", op: "click", args: [${JSON.stringify(target)}, { noWaitAfter: true }] });
+      ${changed ? 'button.textContent = "Delete account";' : ""}
+      wrap.style.height = "auto";
+      const read = await window.__safariHarnessRun({ id: "read", op: "element", args: ["1", "text"] });
+      const action = await pending;
+      return { read, action };
+    })()`, {
+      read: { value: { value: changed ? "Delete account" : "Save draft" } },
+      action: changed
+        ? { error: 'that control changed since the snapshot: it was button "Save draft", now button "Delete account"; re-run snapshot', failure: unsent }
+        : { value: { ok: true } },
+    }),
+    inputs(changed ? [] : clickEvents),
+  ],
+})));
+
+const healedAliases: Row[] = [true, false].map((changed) => ({
+  name: `an old reference healed by a read after reload ${changed ? "refuses a relabeled control before any event" : "still presses the unchanged control"}`,
+  page: `${identity}?single`,
+  steps: [
+    { op: "snapshot" },
+    { load: "blank.html" },
+    { load: `${identity}?single#reloaded` },
+    recordInputs("#orders button"),
+    { op: "element", args: ["1", "text"], kept: true, answer: { value: { value: "Approve", healed: { ref: "1", now: "2" } } } },
+    ...changed ? [evaluate('(() => { document.querySelector("#orders button").textContent = "Delete account"; return true; })()', true)] : [],
+    { op: "click", args: ["1"], answer: changed
+      ? { error: 'that control changed since the snapshot: it was button "Approve", now button "Delete account"; re-run snapshot', failure: unsent }
+      : { value: { ok: true } } },
+    inputs(changed ? [] : clickEvents),
+    approvals(changed ? [] : ["A"]),
+  ],
+}));
+
 benchRows("replacement identity in WebKit", [
+  ...changedIdentifiers,
+  ...delayedIdentity,
+  ...healedAliases,
   {
     name: "indistinguishable reordered replacement controls refuse an old reference and request a fresh read",
     page: `${identity}?identical`,

@@ -441,7 +441,7 @@
       el.setAttribute(REF_ATTR, ref);
     }
     refMap.set(ref, el);
-    remember(ref, el);
+    remember(ref, fingerprintOf(el));
     return ref;
   }
 
@@ -585,9 +585,9 @@
     });
   }
 
-  function remember(ref, el) {
+  function remember(ref, fp) {
     fingerprints.delete(ref);
-    fingerprints.set(ref, fingerprintOf(el));
+    fingerprints.set(ref, fp);
     if (fingerprints.size > FINGERPRINTS_MAX) fingerprints.delete(fingerprints.keys().next().value);
   }
 
@@ -626,6 +626,7 @@
       const el = els[m.index];
       healedNow = { ref, now: ensureRef(el) };
       refMap.set(ref, el);
+      remember(ref, fp);
       return el;
     });
   }
@@ -636,12 +637,12 @@
   // fingerprint before any event. A count in the name ("Cart (2)", "3
   // unread", "1 item") may change, appear or vanish; any other number (a
   // time, a price, a page) must match.
-  const COUNTS = /[([]\d+[)\]]|\b\d+ (?:items?|unread|new|notifications?|messages?)\b/g;
-  function changedSince(ref, el) {
-    const fp = fingerprints.get(ref);
+  const COUNTS = /\b\d+ (?:items?|unread|new|notifications?|messages?)\b/g;
+  function changedSince(ref, el, fp = fingerprints.get(ref)) {
     if (!fp) return false;
     const now = candidateOf(el);
-    const bare = (name) => name.toLowerCase().replace(COUNTS, " ").replace(/\s+/g, " ").trim();
+    const bare = (name) => name.toLowerCase().replace(COUNTS, " ").replace(/\s+/g, " ").trim()
+      .replace(/^(cart|basket)\s*(?:\(\d+\)|\[\d+\])$/, "$1");
     if (now.role === fp.role && bare(now.name) === bare(fp.name)) return false;
     const shownAs = (c) => (c.name ? `${c.role} "${c.name}"` : c.role);
     changedNow = { ref, was: shownAs(fp), now: shownAs(now) };
@@ -1531,12 +1532,14 @@
   function clickShown(ref, opts) {
     const prior = opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
     const el = resolve(ref, true);
-    const guard = expectedClick(el, opts, prior);
-    if (guard) return guard;
-    const once = () => afterward(() => withOutcome(() => click(ref, el)), opts);
+    const fp = el && (fingerprints.get(String(ref).trim()) ?? candidateOf(el));
+    const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts);
     const first = once();
     if (!first?.unseen || first.failure?.effect !== "none") return first;
-    return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(once);
+    return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(() => {
+      if (changedSince(String(ref).trim(), el, fp)) return { ...missing(ref), failure: UNSENT };
+      return once();
+    });
   }
 
   function hiddenClick(el, cause, node = el) {

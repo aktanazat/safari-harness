@@ -58,3 +58,27 @@ test("a read the site's page did not answer runs once more in a new tab, and the
   await expect(kit.eval(SITE, "document.title", { read: true })).rejects.toThrow("did not answer");
   expect(opened).toBe(3);
 });
+
+test("a read closes a held replacement for a gone tab and retries in a fresh owned tab at the same home", async () => {
+  const calls: string[] = [];
+  const opened: string[] = [];
+  const owned: number[] = [];
+  const home = `${SITE}/u/1/`;
+  const send: Invoke = async (tool, args) => {
+    calls.push(`${tool} ${args.tab ?? ""}`.trim());
+    if (tool === "open") {
+      opened.push(String(args.url));
+      return { id: opened.length };
+    }
+    if (tool === "eval" && args.tab === 1) throw new Error("that tab is gone: it was closed by the user");
+    if (tool === "eval" && args.tab === 2) throw new Error(`the page at ${home} did not answer in 10 s; reload it with goto and retry`);
+    return { result: args.tab };
+  };
+  const kit = new SiteKit(send, (tab) => owned.push(tab));
+  await kit.tab(SITE, home);
+
+  expect(await kit.eval(SITE, "document.title", { page: true, read: true })).toBe(3);
+  expect(calls).toEqual(["open", "eval 1", "open", "eval 2", "close 2", "open", "eval 3"]);
+  expect(opened).toEqual([home, home, home]);
+  expect(owned).toEqual([1, 2, 3]);
+});

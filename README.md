@@ -467,6 +467,10 @@ an inconsistent image path. Clicks refuse covered, hidden, disabled or uncertain
 replacement targets, including readable containing frames. Viewport-fixed
 controls remain clickable when body scrolling is locked; real containing-block
 clips still apply, including scaled containers.
+The role and name must still match the original read, including after healing
+an old reference or waiting for a hidden control to appear. Account, invoice,
+year and page numbers remain part of that identity. Only explicit count words
+and whole cart/basket totals may change without another snapshot.
 
 Optional tools are available on demand through `run`, CLI and REPL:
 `audit` runs actual axe checks; `react` inspects real component/state
@@ -512,6 +516,10 @@ session, which also ends when that agent exits, so what one call binds the
 next reads; a named session (`--session`) is reachable from any terminal or
 agent. The MCP server exposes it as the `repl` tool. `docs/REPL.md` is the
 reference.
+Site reads explicitly marked safe to repeat can replace an unresponsive owned
+tab at its saved address, including a tab just recovered after closure.
+Unresponsive writes and a second unresponsive read are not retried.
+
 
 ### Another Mac
 
