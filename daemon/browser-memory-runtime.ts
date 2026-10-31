@@ -4,7 +4,7 @@ import { browserMemory, browserRecallQuery } from "./browser-memory.ts";
 import { browserMemoryPage } from "./browser-memory-page.ts";
 import { localRequest } from "./requests.ts";
 import { redacted, unsecret } from "./redact.ts";
-import { alive, currentOwner, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, taskParts, watchOwner } from "./owner.ts";
 import { errorPage } from "./site-guides.ts";
 import type { ResearchReceipt } from "./browser-memory.ts";
 import { verifyPublicMemorySource } from "./browser-memory-public.ts";
@@ -38,6 +38,7 @@ function search(args: Record<string, unknown>) {
   return browserMemory.list({
     query: args.query === undefined ? undefined : text(args.query, "query"),
     site: args.site === undefined ? undefined : text(args.site, "site"),
+    session: args.session === undefined ? undefined : text(args.session, "session"),
     limit: args.limit === undefined ? undefined : Number(args.limit),
     offset: args.offset === undefined ? undefined : Number(args.offset),
     scope: args.scope === "public" ? "public" : undefined,
@@ -107,7 +108,8 @@ export async function saveResearchSource(args: Record<string, unknown>): Promise
   if (Object.keys(args).some((key) => key !== "receipt" && key !== "reason")) throw new Error("save_source accepts only a read receipt and a short source-use reason; private/project scope is unavailable");
   const owner = currentOwner();
   if (owner === undefined) throw new Error("this request has no live process owner; use local MCP or CLI caller context");
-  const page = browserMemory.saveResearch(text(args.receipt, "receipt"), owner, text(args.reason, "reason"));
+  const [session, agent, lead] = taskParts(currentTask()) ?? [];
+  const page = browserMemory.saveResearch(text(args.receipt, "receipt"), owner, text(args.reason, "reason"), session === undefined ? undefined : { session, agent, lead });
   return { page, trust: BROWSER_MEMORY_TRUST };
 }
 

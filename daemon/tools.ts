@@ -2861,6 +2861,7 @@ export const TOOLS: Record<string, Tool> = {
       do: { type: "string", enum: ["status", "search", "recall", "show", "configure", "edit", "forget"], description: "default search; configure changes opt-in collection" },
       query: { type: "string", description: "words to find in saved page text, summaries, or notes" },
       site: { type: "string", description: "exact host to search or forget" },
+      session: { type: "string", description: "omp session id: only research saved in that session or by its helpers" },
       limit: { type: "number", description: "maximum results, up to 100" },
       offset: { type: "number", description: "skip this many matching pages" },
       id: { type: "string", description: "saved page to show, correct, or forget" },

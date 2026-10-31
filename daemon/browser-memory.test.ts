@@ -520,6 +520,45 @@ test("legacy SQLite migration preserves viewed ids, notes and text while removin
   expect(memory.status().total).toBe(2);
 });
 
+test("a saved source keeps the task that saved it, a search finds a task's sources with its helpers', and sources saved before stay readable", () => {
+  const directory = folder();
+  const db = new Database(join(directory, "observations.sqlite"));
+  db.exec(`CREATE TABLE pages (
+    id TEXT PRIMARY KEY, url TEXT NOT NULL, site TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+    visitedAt INTEGER NOT NULL, hash TEXT NOT NULL, revision TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL CHECK(state IN ('pending','ready','failed')), error TEXT,
+    summarySource TEXT NOT NULL DEFAULT 'none' CHECK(summarySource IN ('none','provider','user')), summaryEditedAt INTEGER, noteEditedAt INTEGER,
+    observation TEXT NOT NULL DEFAULT 'viewed' CHECK(observation IN ('viewed','agent_research')),
+    scope TEXT NOT NULL DEFAULT '', reason TEXT, partial INTEGER CHECK(partial IN (0,1)),
+    CHECK((observation='viewed' AND scope='') OR (observation='agent_research' AND scope='public')),
+    UNIQUE(url,observation,scope));
+    CREATE TABLE settings(id INTEGER PRIMARY KEY,value TEXT NOT NULL)`);
+  db.query("INSERT INTO settings VALUES(1,?)").run(JSON.stringify({ enabled: false, researchEnabled: true, sites: [], excludedSites: [], retentionDays: 30, summarize: false }));
+  db.query("INSERT INTO pages(id,url,site,title,body,visitedAt,hash,revision,state,observation,scope,reason,partial) VALUES(?,?,?,?,?,?,?,?,?,'agent_research','public',?,0)")
+    .run("earlier-source", "https://example.com/earlier", "example.com", "Earlier", "An earlier source.", NOW, "earlier-hash", "earlier-revision", "ready", "Used before tasks were kept.");
+  db.close();
+  const memory = store({ directory });
+  const save = (path: string, task: { session: string; agent: string; lead?: string }) => {
+    const receipt = memory.holdResearch({ ...input, url: `https://example.com/${path}`, body: `${path} body`, partial: false }, 123);
+    if (!receipt) throw new Error("expected a held research read");
+    return memory.saveResearch(receipt.id, 123, `Used ${path}.`, task).id;
+  };
+  const lead = save("lead", { session: "outreach", agent: "Main" });
+  const helper = save("helper", { session: "outreach-helper", agent: "Scout", lead: "outreach" });
+  const other = save("other", { session: "audit", agent: "Main" });
+  const ids = (session: string) => memory.list({ session }).pages.map((page) => page.id).sort();
+  expect(ids("outreach")).toEqual([lead, helper].sort());
+  expect(ids("outreach-helper")).toEqual([helper]);
+  expect(ids("audit")).toEqual([other]);
+  expect(memory.detail(helper)).toMatchObject({ session: "outreach-helper", agent: "Scout", lead: "outreach" });
+  const earlier = memory.detail("earlier-source");
+  expect(earlier).toMatchObject({ observation: "agent_research", reason: "Used before tasks were kept." });
+  expect(earlier).not.toHaveProperty("session");
+  const shared = memory.list({ session: "outreach", scope: "public" }).pages;
+  expect(shared.map((page) => page.id).sort()).toEqual([lead, helper].sort());
+  expect(JSON.stringify(shared)).not.toMatch(/outreach|Scout/);
+});
+
 test("forgetting research cancels a pending provider summary and a late result cannot resurrect its text", async () => {
   const result = Promise.withResolvers<string>();
   const memory = store({ summarize: () => result.promise });

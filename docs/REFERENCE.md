@@ -906,10 +906,16 @@ excluded. Project-private saving is not supported without trusted project
 authority.
 Saved research is marked `agent_research`, not the user's browsing, beliefs,
 decisions or actions. Its original source text stays separate from summaries.
+A save also records the omp session and agent that made it: `session`,
+`agent`, and for a helper `lead`, its lead's session. Search's `session`
+finds the sources saved in that session or by its helpers. Sources saved
+before 2026-10-31, or from outside omp, have none. `recall` leaves them
+out, as it leaves out reasons and notes.
 
 ```sh
 safari memory status
 safari memory search "oxygen spectrometer" --site example.com
+safari memory search --session SESSION_ID
 safari memory show --id PAGE_ID
 safari memory configure --config '{"researchEnabled":true}'
 safari memory configure --config '{"enabled":true,"sites":["example.com"],"retentionDays":30,"summarize":true}'
@@ -923,9 +929,10 @@ The `memory` tool is available through the CLI and MCP `run`, not the
 always-loaded tool list:
 `run {steps:[{tool:"memory",args:{do:"search",query:"oxygen"}}]}`.
 Actions are `status`, `search`, `recall`, `show`, `configure`, `edit` and
-`forget`. Search accepts `site`, `limit` (1–100) and `offset`. Detail accepts
-`id`. Configure accepts a partial `config` with `enabled`, `researchEnabled`,
-`sites`, `excludedSites`, `retentionDays` (7, 30 or 90) and `summarize`.
+`forget`. Search accepts `site`, `session`, `limit` (1–100) and `offset`.
+Detail accepts `id`. Configure accepts a partial `config` with `enabled`,
+`researchEnabled`, `sites`, `excludedSites`, `retentionDays` (7, 30 or 90)
+and `summarize`.
 A new store has both collection permissions off, no selected sites,
 30-day retention and provider summaries off.
 

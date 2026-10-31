@@ -561,7 +561,9 @@ replaying an access grant. Receipts are short-lived bearer capabilities;
 local process ids limit cleanup and accidental sharing, not authorization.
 Private/project research is refused without trusted permission context.
 Research is labelled separately from personal browsing and cannot overwrite
-it simply because both use the same URL.
+it simply because both use the same URL. Each saved source records the omp
+session and agent that saved it; `safari memory search --session ID` lists
+the sources saved in one session or by its helpers.
 
 Page text and search stay local. Optional AI summaries send selected text
 to OMP; relevant saved text can also accompany AI tasks. Every observation

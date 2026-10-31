@@ -52,6 +52,7 @@ const USAGE = `safari — drive Safari from the terminal
                                              Mac, with the fix for each that fails
   safari memory status                       inspect collection and saved pages
   safari memory search <words>               find remembered page text and summaries
+  safari memory search --session ID          research saved in one omp session or by its helpers
   safari memory show --id ID                 inspect a saved page
   safari memory configure --config '<json>'  set research saving, browsing sites, or retention
   safari memory edit --id ID --note <text>    correct a summary or add a note

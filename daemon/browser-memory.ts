@@ -9,17 +9,18 @@ export type MemoryConfig = { enabled: boolean; researchEnabled: boolean; sites: 
 export type MemoryPage = {
   id: string; url: string; title: string; site: string; visitedAt: number; summary: string; note: string;
   state: "pending" | "ready" | "failed"; error?: string;
-  observation: "viewed" | "agent_research"; reason?: string; partial?: boolean; scope?: "public";
+  observation: "viewed" | "agent_research"; reason?: string; partial?: boolean; scope?: "public"; session?: string; agent?: string; lead?: string;
   summarySource: "none" | "provider" | "user"; summaryEditedAt?: number; noteEditedAt?: number; excerpt?: string;
 };
 export type MemoryStatus = { config: MemoryConfig; total: number; pending: number; error?: string; provider: "omp"; model: string };
-export type MemorySearch = { query?: string; site?: string; limit?: number; offset?: number; scope?: "public" };
+export type MemorySearch = { query?: string; site?: string; session?: string; limit?: number; offset?: number; scope?: "public" };
+export type ResearchTask = { session: string; agent: string; lead?: string };
 type SummaryPage = { url: string; title: string; body: string };
 type Summarizer = (page: SummaryPage, signal: AbortSignal) => Promise<string>;
 export type BrowserMemoryOptions = { directory?: string; now?: () => number; summarize?: Summarizer };
-type PageRow = Omit<MemoryPage, "error" | "summaryEditedAt" | "noteEditedAt" | "reason" | "partial" | "scope"> & {
+type PageRow = Omit<MemoryPage, "error" | "summaryEditedAt" | "noteEditedAt" | "reason" | "partial" | "scope" | "session" | "agent" | "lead"> & {
   body: string; hash: string; revision: string; error: string | null; summaryEditedAt: number | null; noteEditedAt: number | null;
-  scope: string; reason: string | null; partial: number | null;
+  scope: string; reason: string | null; partial: number | null; session: string | null; agent: string | null; lead: string | null;
 };
 export type ResearchReceipt = { id: string; url: string; readAt: number; partial: boolean; scope: "public"; expiresAt: number };
 type ResearchCandidate = { receipt: ResearchReceipt; owner: number; generation: number; title: string; body: string };
@@ -34,7 +35,7 @@ const MAX_NOTE = 4_000;
 const MAX_PENDING = 16;
 const MAX_PAGES = 1_000;
 const SUMMARY_MS = 60_000;
-const COLUMNS = "id, url, title, site, visitedAt, summary, note, state, error, observation, scope, reason, partial, summarySource, summaryEditedAt, noteEditedAt";
+const COLUMNS = "id, url, title, site, visitedAt, summary, note, state, error, observation, scope, reason, partial, session, agent, lead, summarySource, summaryEditedAt, noteEditedAt";
 const READABLE_SCOPE = "(observation='viewed' OR (observation='agent_research' AND scope='public'))";
 const RECEIPT_MS = 10 * 60_000;
 const MAX_CANDIDATES = 32;
@@ -45,7 +46,7 @@ const PAGE_SCHEMA = `CREATE TABLE pages (
   state TEXT NOT NULL CHECK(state IN ('pending','ready','failed')), error TEXT,
   summarySource TEXT NOT NULL DEFAULT 'none' CHECK(summarySource IN ('none','provider','user')), summaryEditedAt INTEGER, noteEditedAt INTEGER,
   observation TEXT NOT NULL DEFAULT 'viewed' CHECK(observation IN ('viewed','agent_research')),
-  scope TEXT NOT NULL DEFAULT '', reason TEXT, partial INTEGER CHECK(partial IN (0,1)),
+  scope TEXT NOT NULL DEFAULT '', reason TEXT, partial INTEGER CHECK(partial IN (0,1)), session TEXT, agent TEXT, lead TEXT,
   CHECK((observation='viewed' AND scope='') OR (observation='agent_research' AND scope='public')),
   UNIQUE(url,observation,scope))`;
 const STOP_WORDS = new Set("what did do i read viewed view visited visit see saw about on in the a an of for from was were me my at please find show page pages website websites is are to and with remember can you help tell look looking search searching article articles that this these those it we our need want using use recent recently latest earlier before after something anything how when where which".split(" "));
@@ -110,7 +111,8 @@ function configWith(current: MemoryConfig, partial: unknown): MemoryConfig {
 function publicPage(row: Omit<PageRow, "body" | "hash" | "revision">): MemoryPage {
   return { id: row.id, url: row.url, title: row.title, site: row.site, visitedAt: row.visitedAt, summary: row.summary, note: row.note,
     state: row.state, observation: row.observation, summarySource: row.summarySource,
-    ...(row.observation === "agent_research" ? { scope: "public" as const, partial: row.partial === 1, ...(row.reason ? { reason: row.reason } : {}) } : {}),
+    ...(row.observation === "agent_research" ? { scope: "public" as const, partial: row.partial === 1, ...(row.reason ? { reason: row.reason } : {}),
+      ...(row.session && row.agent ? { session: row.session, agent: row.agent, ...(row.lead ? { lead: row.lead } : {}) } : {}) } : {}),
     ...(row.error ? { error: row.error } : {}), ...(row.summaryEditedAt === null ? {} : { summaryEditedAt: row.summaryEditedAt }),
     ...(row.noteEditedAt === null ? {} : { noteEditedAt: row.noteEditedAt }) };
 }
@@ -243,6 +245,8 @@ export class BrowserMemory {
           this.db.exec("DROP TABLE pages_legacy");
         })();
         this.compact();
+      } else if (!columns.some((column) => column.name === "session")) {
+        this.db.transaction(() => this.db.exec("ALTER TABLE pages ADD COLUMN session TEXT; ALTER TABLE pages ADD COLUMN agent TEXT; ALTER TABLE pages ADD COLUMN lead TEXT"))();
       }
       this.db.exec("CREATE INDEX IF NOT EXISTS pages_visited ON pages(visitedAt); CREATE INDEX IF NOT EXISTS pages_site ON pages(site); PRAGMA user_version=2");
       const saved = this.db.query<{ value: string }, []>("SELECT value FROM settings WHERE id=1").get();
@@ -297,6 +301,7 @@ export class BrowserMemory {
     const where: string[] = [READABLE_SCOPE];
     const params: SQLQueryBindings[] = [];
     if (options.site !== undefined && options.site !== "") { where.push("site=?"); params.push(host(options.site)); }
+    if (options.session !== undefined && options.session !== "") { where.push("(session=? OR lead=?)"); params.push(options.session, options.session); }
     const query = (options.query ?? "").trim();
     const parsed = queryParts(query, this.now());
     if (query && !parsed.words.length && parsed.since === undefined) return { pages: [], total: 0 };
@@ -318,6 +323,9 @@ export class BrowserMemory {
         row.note = "";
         row.noteEditedAt = null;
         row.reason = null;
+        row.session = null;
+        row.agent = null;
+        row.lead = null;
         if (row.summarySource === "user") { row.summary = ""; row.summarySource = "none"; row.summaryEditedAt = null; }
       }
       const text = fields.map((field) => row[field].toLowerCase());
@@ -460,7 +468,7 @@ export class BrowserMemory {
     for (const [id, candidate] of this.candidates) if (candidate.owner === owner) this.candidates.delete(id);
   }
 
-  saveResearch(receipt: string, owner: number, reason: string): MemoryPage {
+  saveResearch(receipt: string, owner: number, reason: string, task?: ResearchTask): MemoryPage {
     this.ensureOpen();
     this.pruneCandidates();
     const candidate = this.candidates.get(receipt);
@@ -472,16 +480,17 @@ export class BrowserMemory {
     const hash = createHash("sha256").update(candidate.body).digest("hex");
     const previous = this.db.query<PageRow, [string]>("SELECT * FROM pages WHERE url=? AND observation='agent_research' AND scope='public'").get(url);
     if (previous?.hash === hash) {
-      this.db.query("UPDATE pages SET visitedAt=max(visitedAt,?), reason=?, partial=? WHERE id=?").run(readAt, cleanText(reason, 1000), Number(partial), previous.id);
+      this.db.query("UPDATE pages SET visitedAt=max(visitedAt,?), reason=?, partial=?, session=?, agent=?, lead=? WHERE id=?").run(readAt, cleanText(reason, 1000), Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null, previous.id);
       return publicPage(this.row(previous.id)!);
     }
     const id = previous?.id ?? randomUUID();
     const revision = randomUUID();
     if (previous) this.cancelJobs(new Set([id]));
-    this.db.query(`INSERT INTO pages(id,url,site,title,body,visitedAt,hash,revision,state,observation,scope,reason,partial) VALUES(?,?,?,?,?,?,?,?,?,'agent_research','public',?,?)
+    this.db.query(`INSERT INTO pages(id,url,site,title,body,visitedAt,hash,revision,state,observation,scope,reason,partial,session,agent,lead) VALUES(?,?,?,?,?,?,?,?,?,'agent_research','public',?,?,?,?,?)
       ON CONFLICT(url,observation,scope) DO UPDATE SET title=excluded.title,body=excluded.body,visitedAt=excluded.visitedAt,hash=excluded.hash,
-      revision=excluded.revision,summary='',summarySource='none',summaryEditedAt=NULL,state=excluded.state,error=NULL,reason=excluded.reason,partial=excluded.partial`)
-      .run(id, url, site, candidate.title, candidate.body, readAt, hash, revision, this.config.summarize ? "pending" : "ready", cleanText(reason, 1000), Number(partial));
+      revision=excluded.revision,summary='',summarySource='none',summaryEditedAt=NULL,state=excluded.state,error=NULL,reason=excluded.reason,partial=excluded.partial,
+      session=excluded.session,agent=excluded.agent,lead=excluded.lead`)
+      .run(id, url, site, candidate.title, candidate.body, readAt, hash, revision, this.config.summarize ? "pending" : "ready", cleanText(reason, 1000), Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null);
     const overflow = this.db.query<{ id: string }, [number]>("SELECT id FROM pages ORDER BY visitedAt DESC,id LIMIT -1 OFFSET ?").all(MAX_PAGES);
     this.removeRows(overflow.map((row) => row.id));
     if (previous) this.compact();
@@ -612,7 +621,7 @@ export const browserMemory = {
   researchEligible: (url: string) => memory().researchEligible(url),
   researchGeneration: () => instance?.researchGeneration(),
   holdResearch: (input: { url: string; title: string; body: string; partial: boolean; readAt?: number }, owner: number, generation: number) => memory().holdResearch(input, owner, generation),
-  saveResearch: (receipt: string, owner: number, reason: string) => memory().saveResearch(receipt, owner, reason),
+  saveResearch: (receipt: string, owner: number, reason: string, task?: ResearchTask) => memory().saveResearch(receipt, owner, reason, task),
   releaseResearch: (owner: number) => memory().releaseResearch(owner),
   close: () => { instance?.close(); instance = undefined; },
 };
