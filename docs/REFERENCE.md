@@ -911,6 +911,8 @@ A save also records the omp session and agent that made it: `session`,
 finds the sources saved in that session or by its helpers. Sources saved
 before 2026-10-31, or from outside omp, have none. `recall` leaves them
 out, as it leaves out reasons and notes.
+The local `/memory/api` and `/memory/recall` routes accept the same
+`session` filter, including sources saved by that session's helpers.
 
 ```sh
 safari memory status
@@ -2159,6 +2161,10 @@ it goes only to the page. It reports what it caused as `click` does
   as `reply`, or `reply: null` if none came. Your own message is not
   counted as a reply. In a support chat: `real_input {do: "type", ref,
   text: "…\n", reply: 100000}`, read `reply`, answer, repeat.
+  If typing already changed the field and bringing Safari forward then
+  fails, the error is not safe to retry: read the field before repeating
+  the action. Only a failure before any input reached the page reports
+  that nothing was sent.
 - `do:"drag"` takes a source `ref` or top-viewport `x,y`, and a destination
   `target` or `targetX,targetY`. Both endpoints must already be visible,
   uncovered and in the same frame. It checks the document, geometry,

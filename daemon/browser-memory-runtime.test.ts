@@ -172,3 +172,22 @@ test("Safari's latest answer to the memory settings decides the status: a late c
     refused: "Safari could not update memory collection: fixture: this extension has no memory settings",
   });
 });
+
+test.each(["api", "recall"])("the memory %s route filters a task's sources and includes its helpers", async (route) => {
+  const script = `
+import { browserMemory } from ${JSON.stringify(new URL("./browser-memory.ts", import.meta.url).href)};
+import { browserMemoryRoute, stopBrowserMemory } from ${JSON.stringify(new URL("./browser-memory-runtime.ts", import.meta.url).href)};
+browserMemory.configure({ researchEnabled: true, summarize: false });
+for (const [session, lead] of [["a", undefined], ["helper", "a"], ["b", undefined]]) {
+  const receipt = browserMemory.holdResearch({ url: \`https://example.com/\${session}\`, title: session, body: "lithium source", partial: false }, process.pid);
+  browserMemory.saveResearch(receipt.id, process.pid, "verification source", { session, agent: "main", lead });
+}
+const url = new URL("http://127.0.0.1:37334/memory/${route}?query=lithium&session=a");
+const response = await browserMemoryRoute(new Request(url), url);
+const body = await response.json();
+console.log(JSON.stringify({ status: response.status, total: body.total, titles: body.pages.map((page) => page.title).sort() }));
+await stopBrowserMemory();
+process.exit(0);
+`;
+  expect(await readFixture(route, script)).toEqual({ status: 200, total: 2, titles: ["a", "helper"] });
+});

@@ -9,6 +9,7 @@
 // single click on a tab not in front, and text typed at a field's ref, go
 // through Safari's accessibility tree instead, and nothing comes forward.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
 import { HarnessError } from "./failures.ts";
 import type { InputState } from "./input-state.ts";
@@ -23,6 +24,7 @@ type Point = { x: number; y: number };
 // Real input reaches tabs through the daemon's RPC port. It gives the user
 // back his own front tab, so it lists his tabs too (tabs-view.ts).
 const VIA_RPC: TabOps = { tabs: async () => rowsOf(await rpc("tabs", { all: true })), activate: (tab) => rpc("activate", { tab }) };
+const deliveryState = new AsyncLocalStorage<{ sent: boolean }>();
 
 
 // Waits in the page, up to ms, until it has seen more than `after` marks and,
@@ -67,6 +69,10 @@ async function deliver(tab: number, args: string[], timeout?: number, stdin?: st
   }
   try {
     const declined = result !== null && typeof result === "object" && ("pressed" in result && result.pressed === false || "set" in result && result.set === false);
+    if (!declined) {
+      const state = deliveryState.getStore();
+      if (state) state.sent = true;
+    }
     await rpc("action_finish", { tab, permit: admitted.permit, uncertain: false, picture: picture && !declined });
   } catch {
     throw new HarnessError("effect_unknown", "native input finished but its result could not be recorded; read this tab before acting again");
@@ -517,7 +523,16 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       // The daemon names the tab: it alone hears the new id a deploy gave a
       // tab the agent calls by its old one, and says so in replaced.
       const { tab, ...news } = (await rpc("resolve_tab", { tab: a.tab })) as { tab: number };
-      return { ...(await act(tab, a)), ...news };
+      return deliveryState.run({ sent: false }, async () => {
+        try {
+          return { ...(await act(tab, a)), ...news };
+        } catch (error) {
+          if (deliveryState.getStore()?.sent && error instanceof HarnessError && error.effect === "none") {
+            throw new HarnessError("effect_unknown", error.message, { next: "input already reached the page; read it before repeating this action" });
+          }
+          throw error;
+        }
+      });
     },
   },
 };

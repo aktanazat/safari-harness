@@ -207,7 +207,7 @@ export async function browserMemoryRoute(req: Request, url: URL): Promise<Respon
   try {
     if (req.method === "GET" && url.pathname === "/memory") return browserMemoryPage(token);
     const args: Record<string, unknown> = {};
-    for (const key of ["query", "site", "id", "limit", "offset", "scope"]) if (url.searchParams.has(key)) args[key] = url.searchParams.get(key);
+    for (const key of ["query", "site", "id", "limit", "offset", "scope", "session"]) if (url.searchParams.has(key)) args[key] = url.searchParams.get(key);
     if (req.method === "GET" && url.pathname === "/memory/recall") {
       if (req.headers.get("origin") !== null || !String(args.query ?? "").trim()) return response({ error: "a local recall query is required" }, 403);
       return response(recall(args));

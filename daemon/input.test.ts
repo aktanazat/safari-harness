@@ -417,6 +417,23 @@ test("when Safari does not come to the front, no key is sent, and trying again n
   expect(run(m, "key")).toHaveLength(1);
 });
 
+test.each([
+  { text: " after\n" },
+  { text: " after", send: "#send" },
+])("typing $text cannot claim no effect if activation fails after the field was changed", async (args) => {
+  const m = mac({ inFrontInstead: "Sona", press: { pressed: false } });
+  m.field = "before";
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "type", ref: "#chat", append: true, ...args })).rejects.toMatchObject({
+    code: "effect_unknown", effect: "possibly_effected", retryable: false,
+  });
+  expect(m.field).toBe("before after");
+  expect(m.typed).toEqual([" after"]);
+  expect(run(m, "key")).toEqual([]);
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).rejects.toMatchObject({
+    code: "unavailable", effect: "none",
+  });
+});
+
 // Exercise front.input's actual pipe into a child process, without posting
 // keys to the user's Mac. The helper reports its arguments separately from
 // its stdin so text exposed on the command line cannot pass this check.
