@@ -3705,7 +3705,7 @@ export async function replyText(value: unknown): Promise<string> {
 // real_input's steps do (input.ts).
 export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
   const owner = currentOwner();
-  if (calling.getStore()?.live) return invokeTool(name, args, model, news);
+  if (name === "space" || calling.getStore()?.live) return invokeTool(name, args, model, news);
   const arrived = Date.now();
   if (owner === undefined) return queuing(arrived, () => invokeTool(name, args, model, news));
   const task = currentTask();

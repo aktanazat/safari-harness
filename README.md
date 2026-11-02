@@ -254,6 +254,7 @@ pages. A copied or unknown window page grants no close authority.
 Restarts restore proven ownership and already-admitted completion, so finished
 pages still close if Safari was disconnected when the task ended. New work
 clears that owner's pending completion before using its pages.
+background window housekeeping does not restart a finished task or reset its cleanup timer.
 
 When a task has positively ended, its disposable tabs and status page close
 automatically. A living process without a restored task record remains unknown;

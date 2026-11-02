@@ -232,6 +232,7 @@ function completesNative(agent: Agent, tool: string, args: Record<string, unknow
 
 // Runs one call of owner's through the user's hold on it, and records it.
 export async function watched<T>(owner: number | undefined, tool: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+  if (tool === "space") return scope.exit(run);
   const parent = scope.getStore();
   if (parent) parent.nested = true;
   const agent = recordOf(owner);

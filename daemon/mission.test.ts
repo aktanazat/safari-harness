@@ -278,6 +278,35 @@ test("what an agent types appears neither in its record nor in the pages' JSON, 
 
 const listed = async (owner: number) => ((await (await ask("http://127.0.0.1:37334/agents.json")).json()) as Overview).agents.find((a) => a.owner === owner);
 
+test("window housekeeping does not announce a working browser task", async () => {
+  const a = agent();
+  await call(a.pid, "space", { op: "state" });
+  expect(await listed(a.pid)).toBeUndefined();
+});
+
+test("window housekeeping cannot revive a completed window beside a kept page", async () => {
+  const [a, b, finished] = [agent(), agent(), agent()];
+  const kept = await open(a.pid, "https://kept.example/");
+  const working = await open(b.pid, "https://working.example/");
+  const marker = [...s.tabs.values()].find(tab => tab.url === pageOf(kept).href)!.id;
+  await call(a.pid, "keep", { tab: kept });
+  await endTurn(a.pid);
+  await call(a.pid, "space", { op: "state" });
+  s.tabs.delete(kept);
+  await endTurn(finished.pid);
+  expect(s.tabs.has(marker)).toBe(false);
+  expect(s.tabs.has(working)).toBe(true);
+  expect(s.tabs.has(1)).toBe(true);
+});
+
+test("window housekeeping inside a scripted run reports Safari's connection state", async () => {
+  const a = agent();
+  expect(await call(a.pid, "run", { steps: [{ tool: "space", args: { op: "state" } }] })).toMatchObject({
+    steps: [{ step: 1, tool: "space", value: { connected: true } }],
+    notRun: 0,
+  });
+});
+
 // 10-07: Safari came in front about 30 times in 30 minutes over the
 // terminal he typed in, and no record said for which agent.
 test("each agent's record counts the times it brought Safari to the front, and another agent's does not", async () => {
