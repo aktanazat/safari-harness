@@ -409,6 +409,22 @@ function client(kit: SiteKit, workspace: Workspace) {
       });
     },
 
+    // Deletes a file the owner shared (F…); deleting the message that
+    // carried it leaves the file in his files. The draft names the file.
+    async deleteFile(file: string, opts: { approved?: boolean } = {}) {
+      const f = fileOf((await api<{ file: RawFile }>("files.info", { file })).file);
+      return draftOrSend({
+        site: "slack",
+        action: `delete file ${f.id}`,
+        text: `${f.name} (${f.type}${f.size === undefined ? "" : `, ${f.size} bytes`})`,
+        approved: opts.approved,
+        send: async () => {
+          await api("files.delete", { file: f.id });
+          return { file: f.id, deleted: true };
+        },
+      });
+    },
+
     // Adds an emoji reaction (name without colons) as the owner.
     react(channel: string, ts: string, name: string, opts: { approved?: boolean } = {}) {
       const emoji = name.replace(/^:|:$/g, "");
