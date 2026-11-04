@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import { ReplSession } from "./repl.ts";
+import { FRESH } from "./sites/kit.ts";
 import { windowOwners } from "./spaces.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 
@@ -285,8 +286,11 @@ test("an agent's action on its tab closed after its turn opens the page again bu
   await closedAs([tab]);
   await settled();
   showing = [];
-  await expect(as("click", { tab, ref: "Place order" })).rejects.toThrow(/; it is open again on https:\/\/shop\.example\/checkout, loaded fresh as tab \d+, so its refs and anything typed there are gone: snapshot it, then act$/);
+  const refused = await as("click", { tab, ref: "Place order" }).then(() => "", (e: unknown) => (e instanceof Error ? e.message : String(e)));
+  expect(refused).toMatch(/; it is open again on https:\/\/shop\.example\/checkout, loaded fresh as tab \d+, so its refs and anything typed there are gone: snapshot it, then act$/);
   const again = nextTab;
+  // site kits retry in the reopened tab by reading this answer (kit.ts)
+  expect(Number(FRESH.exec(refused)?.[1])).toBe(again);
   expect(opens.at(-1)?.[0]).toBe("https://shop.example/checkout");
   expect(relays.filter(([to, op]) => to === again && op === "click")).toEqual([]);
   // the next call, a look, goes to the page opened again

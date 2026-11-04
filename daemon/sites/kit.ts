@@ -48,7 +48,7 @@ const HELD = /did not answer.*; reload it with goto and retry$/;
 // opened again for the next call (tools.ts reopen): the call did not run,
 // and the new tab holds the kit's own parked page. On 11-04 every first
 // Slack call of a turn failed this way.
-const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
+export const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
 
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();

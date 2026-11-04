@@ -31,12 +31,12 @@ The `slack` global reads Slack through the session in Safari, from one backgroun
 ### Writing as the owner
 Every write drafts first: without `approved: true` it returns `{status: "draft", action, text}` and changes nothing. Show the owner that exact draft; call again with `approved: true` only after he approves it. A sent write returns `{status: "sent", result}`; the new message's ts is `result.ts`, not a top-level `ts`.
 - `client.postMessage(channel, text, {thread_ts})`: one message, or a reply when `thread_ts` is given.
-- `client.postThread(channel, text, replies)`: a top message and its thread replies as one approval, each reply posted under the top message's ts. `result` is `{ts, channel, replies: [ts…]}`. Use it for "summary on top, details in the thread" updates instead of chaining `postMessage` calls.
+- `client.postThread(channel, text, replies)`: a top message and its thread replies as one approval, each reply posted under the top message's ts. `result` is `{ts, channel, replies: [ts…]}`. Use it for "summary on top, details in the thread" updates instead of chaining `postMessage` calls. When a reply fails after the top message went out, the error names the top message's ts and how many replies were posted: post the rest with `postMessage(channel, text, {thread_ts})`, never `postThread` again.
 - `client.update(channel, ts, text, {thread_ts})`: edits a message the owner wrote. The draft adds `was`, the text it replaces. Slack refuses others' messages (`cant_update_message`).
-- `client.delete(channel, ts, {thread_ts})`: deletes a message the owner wrote. The draft's `text` is the message that would go; a thread's replies stay when its parent goes.
-- `client.react(channel, ts, name)`: adds an emoji reaction (`name` with or without colons).
+- `client.delete(channel, ts, {thread_ts})`: deletes a message the owner wrote, and refuses anyone else's (an admin's delete of a member's message is permanent). The draft's `text` is the message that would go; a thread's replies stay when its parent goes.
+- `client.react(channel, ts, name, {thread_ts})`: adds an emoji reaction (`name` with or without colons). The draft shows the message it goes on.
 - `client.upload(channel, path, {thread_ts, title, comment})`: shares a local file (a relative path begins in the session's folder) in a channel or thread through Slack's external upload, with no file dialog. `result` is `{file, channel, permalink}`.
-- `client.deleteFile(fileId)`: deletes a file the owner shared (`F…`). Deleting the message that carried a file leaves the file in his files; this removes it.
+- `client.deleteFile(fileId)`: deletes a file the owner uploaded (`F…`), and refuses anyone else's. Deleting the message that carried a file leaves the file in his files; this removes it.
 
 ```js
 const c = await slack.getClient();

@@ -194,7 +194,7 @@ function channel(c: RawChannel) {
   };
 }
 
-type RawFile = { id: string; name?: string; title?: string; mimetype?: string; size?: number; url_private?: string; url_private_download?: string };
+type RawFile = { id: string; name?: string; title?: string; mimetype?: string; size?: number; user?: string; url_private?: string; url_private_download?: string };
 
 // A file as history and replies list it, with what download needs: its
 // address and size. Until 10-07 only id, name and type came, and each
@@ -374,9 +374,11 @@ function client(kit: SiteKit, workspace: Workspace) {
     },
 
     // Deletes a message the owner wrote; the draft's text is the message
-    // that would go.
+    // that would go. An admin may delete others' messages, for good: only
+    // the owner's own are taken.
     async delete(channel: string, ts: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
       const gone = await messageAt(channel, ts, opts);
+      if (!workspace.userId || gone.user !== workspace.userId) throw new Error(`message ${ts} in ${channel} is not the owner's (its author is ${gone.user ?? "unknown"}); delete takes only his own messages`);
       return draftOrSend({
         site: "slack",
         action: `delete message ${ts} in ${channel}${gone.replyCount ? ` (its ${gone.replyCount} thread replies stay)` : ""}`,
@@ -403,7 +405,13 @@ function client(kit: SiteKit, workspace: Workspace) {
         send: async () => {
           const top = await api<{ ts: string; channel: string }>("chat.postMessage", { channel, text });
           const done: string[] = [];
-          for (const reply of replies) done.push((await api<{ ts: string }>("chat.postMessage", { channel: top.channel, text: reply, thread_ts: top.ts })).ts);
+          for (const reply of replies) {
+            try {
+              done.push((await api<{ ts: string }>("chat.postMessage", { channel: top.channel, text: reply, thread_ts: top.ts })).ts);
+            } catch (e) {
+              throw new Error(`postThread posted the top message ${top.ts} in ${top.channel} and ${done.length} of ${replies.length} replies, then failed: ${e instanceof Error ? e.message : String(e)}. Do not call postThread again: post the remaining approved replies with postMessage("${top.channel}", text, { thread_ts: "${top.ts}" })`);
+            }
+          }
           return { ts: top.ts, channel: top.channel, replies: done };
         },
       });
@@ -412,7 +420,9 @@ function client(kit: SiteKit, workspace: Workspace) {
     // Deletes a file the owner shared (F…); deleting the message that
     // carried it leaves the file in his files. The draft names the file.
     async deleteFile(file: string, opts: { approved?: boolean } = {}) {
-      const f = fileOf((await api<{ file: RawFile }>("files.info", { file })).file);
+      const raw = (await api<{ file: RawFile }>("files.info", { file })).file;
+      if (!workspace.userId || raw.user !== workspace.userId) throw new Error(`file ${raw.id} is not the owner's (its uploader is ${raw.user ?? "unknown"}); deleteFile takes only his own files`);
+      const f = fileOf(raw);
       return draftOrSend({
         site: "slack",
         action: `delete file ${f.id}`,
@@ -425,14 +435,16 @@ function client(kit: SiteKit, workspace: Workspace) {
       });
     },
 
-    // Adds an emoji reaction (name without colons) as the owner.
-    react(channel: string, ts: string, name: string, opts: { approved?: boolean } = {}) {
+    // Adds an emoji reaction (name without colons) as the owner. The draft
+    // shows the message it goes on.
+    async react(channel: string, ts: string, name: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
       const emoji = name.replace(/^:|:$/g, "");
+      const on = await messageAt(channel, ts, opts);
       return draftOrSend({
         site: "slack",
         action: `react to ${ts} in ${channel}`,
         to: channel,
-        text: `:${emoji}:`,
+        text: `:${emoji}:\n--- on the message ---\n${on.text}`,
         approved: opts.approved,
         send: async () => {
           await api("reactions.add", { channel, timestamp: ts, name: emoji });
@@ -451,7 +463,7 @@ function client(kit: SiteKit, workspace: Workspace) {
       const name = basename(file);
       return draftOrSend({
         site: "slack",
-        action: `upload ${name} (${bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
+        action: `upload ${file} (${bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
         to: channel,
         text: opts.comment ?? "",
         approved: opts.approved,
@@ -478,7 +490,7 @@ function client(kit: SiteKit, workspace: Workspace) {
     // is in the text: one call for a history loop plus a replies call per
     // thread.
     async scan(channel: string, opts: { limit?: number; match?: RegExp | string; threads?: boolean } = {}) {
-      const re = opts.match === undefined ? null : opts.match instanceof RegExp ? opts.match : new RegExp(opts.match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const re = opts.match === undefined ? null : opts.match instanceof RegExp ? new RegExp(opts.match.source, opts.match.flags.replace(/[gy]/g, "")) : new RegExp(opts.match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
       const top = await api<{ messages: RawMessage[] }>("conversations.history", { channel, limit: limit(opts.limit, 50, 1000) });
       const raw: RawMessage[] = [];
       for (const m of top.messages) {

@@ -30,7 +30,8 @@ afterAll(() => {
   jest.useRealTimers();
 });
 
-function safari(methods: Record<string, object>, files: Served[]) {
+// A method's answer is an object, or a list answered one per call in turn.
+function safari(methods: Record<string, object | object[]>, files: Served[]) {
   const asked: string[] = [];
   // Each web-API call with the params the page would send.
   const calls: { method: string; params: Record<string, unknown> }[] = [];
@@ -43,7 +44,9 @@ function safari(methods: Record<string, object>, files: Served[]) {
       if (method === undefined) return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM] } };
       asked.push(method);
       calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}") });
-      return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ...methods[method] }), truncated: false } };
+      const answers = methods[method];
+      const answer = Array.isArray(answers) ? answers.shift() : answers;
+      return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ...answer }), truncated: false } };
     }
     if (tool === "fetch") {
       fetched.push({ url: String(args.url), at: Date.now() });
@@ -130,6 +133,19 @@ test("delete without approval sends nothing and shows the message it would remov
   const draft = await waited((await s.client()).delete("D1", "7.0"));
   expect(draft).toMatchObject({ status: "draft", text: "old text" });
   expect(s.asked).toEqual(["conversations.history"]);
+});
+
+// An admin's delete of a member's message is permanent.
+test("delete refuses a message someone else wrote, even approved, and deletes nothing", async () => {
+  const s = safari({ "conversations.history": { messages: [{ ts: "7.0", user: "U2", text: "lgtm" }] } }, []);
+  await expect(waited((await s.client()).delete("D1", "7.0", { approved: true }))).rejects.toThrow("message 7.0 in D1 is not the owner's");
+  expect(s.asked).toEqual(["conversations.history"]);
+});
+
+// A retried postThread would post the top message and earlier replies again.
+test("postThread that fails midway names the top message and the replies already posted", async () => {
+  const s = safari({ "chat.postMessage": [{ ts: "9.0", channel: "D1" }, { ts: "9.1" }, { ok: false, error: "msg_too_long" }] }, []);
+  await expect(waited((await s.client()).postThread("D1", "summary", ["details 1", "details 2"], { approved: true }))).rejects.toThrow("postThread posted the top message 9.0 in D1 and 1 of 2 replies, then failed");
 });
 
 // On 11-04 chained postMessage calls put a "thread reply" at the top level
