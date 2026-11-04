@@ -1,4 +1,4 @@
-import { daemonHttp } from "../daemon/rpc.ts";
+import { connectionRefused, daemonHttp } from "../daemon/rpc.ts";
 import { setSessionTask } from "../daemon/session-task.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
 
@@ -100,7 +100,7 @@ async function release(pi: ExtensionApi, task?: string): Promise<void> {
       throw new Error(`could not close ${result.failed} tab(s); they close when this process exits`);
     }
   } catch (e: unknown) {
-    if (e instanceof Error && "code" in e && e.code === "ConnectionRefused") return;
+    if (connectionRefused(e)) return;
     pi.logger?.warn(`safari-harness turn end: ${e instanceof Error ? e.message : String(e)}`);
   }
 }

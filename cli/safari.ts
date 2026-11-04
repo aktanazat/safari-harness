@@ -22,7 +22,7 @@ import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
-import { daemonHttp, deployingFor } from "../daemon/rpc.ts";
+import { connectionRefused, daemonHttp, deployingFor } from "../daemon/rpc.ts";
 import { alertHealth } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
@@ -720,7 +720,7 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
   const base = daemonHttp();
   const res = await fetch(`${base}${path}`, init).catch((e: unknown) => {
     const deploy = deployingFor();
-    return fail(e instanceof Error && "code" in e && e.code === "ConnectionRefused"
+    return fail(connectionRefused(e)
       ? deploy !== undefined ? `safari is restarting for a deploy; try again in ${deploy} s` : `daemon not reachable at ${base}: nothing listens there; start it with: safari daemon install`
       : `the daemon at ${base} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`);
   });

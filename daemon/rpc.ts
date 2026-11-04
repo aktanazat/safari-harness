@@ -24,6 +24,13 @@ export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 }
 
+// Whether a fetch failed because nothing listens at its address. Older Bun
+// named this ConnectionRefused; 1.4.4 names it ECONNREFUSED, and under it a
+// call made while the daemon restarted failed at once instead of waiting.
+export function connectionRefused(e: unknown): boolean {
+  return e instanceof Error && "code" in e && (e.code === "ECONNREFUSED" || e.code === "ConnectionRefused");
+}
+
 // While scripts/dev-install.sh deploys, this file holds the second it
 // expects to be done by. A daemon that does not answer then is restarting,
 // not missing: on 10-23 a call in a deploy said to install it (HD-13).
@@ -96,8 +103,8 @@ async function attempt(base: string, body: string, effectful: boolean): Promise<
     const res = await fetch(`${base}/rpc`, { method: "POST", headers: { "content-type": "application/json" }, body });
     return res.status === 503 ? "restarting" : res;
   } catch (e) {
+    if (connectionRefused(e)) return "refused";
     const code = e instanceof Error && "code" in e ? e.code : undefined;
-    if (code === "ConnectionRefused") return "refused";
     // The daemon took the call and ended before it answered: the call may
     // have acted (a click, a submit), so it is not made again.
     const effect = effectful ? "possibly_effected" : "none";
