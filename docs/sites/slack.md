@@ -36,6 +36,7 @@ Every write drafts first: without `approved: true` it returns `{status: "draft",
 - `client.delete(channel, ts, {thread_ts})`: deletes a message the owner wrote. The draft's `text` is the message that would go; a thread's replies stay when its parent goes.
 - `client.react(channel, ts, name)`: adds an emoji reaction (`name` with or without colons).
 - `client.upload(channel, path, {thread_ts, title, comment})`: shares a local file (a relative path begins in the session's folder) in a channel or thread through Slack's external upload, with no file dialog. `result` is `{file, channel, permalink}`.
+- `client.deleteFile(fileId)`: deletes a file the owner shared (`F…`). Deleting the message that carried a file leaves the file in his files; this removes it.
 
 ```js
 const c = await slack.getClient();
