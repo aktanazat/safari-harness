@@ -32,6 +32,8 @@ afterAll(() => {
 
 function safari(methods: Record<string, object>, files: Served[]) {
   const asked: string[] = [];
+  // Each web-API call with the params the page would send.
+  const calls: { method: string; params: Record<string, unknown> }[] = [];
   const fetched: { url: string; at: number }[] = [];
   const send: Invoke = async (tool, args) => {
     if (tool === "open") return { id: 1 };
@@ -40,6 +42,7 @@ function safari(methods: Record<string, object>, files: Served[]) {
       const method = /\/api\/([\w.]+)/.exec(String(args.expression))?.[1];
       if (method === undefined) return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM] } };
       asked.push(method);
+      calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}") });
       return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ...methods[method] }), truncated: false } };
     }
     if (tool === "fetch") {
@@ -51,7 +54,7 @@ function safari(methods: Record<string, object>, files: Served[]) {
     }
     throw new Error(`no ${tool} in this Safari`);
   };
-  return { client: () => waited(slack(new SiteKit(send, undefined, dir)).getClient()), asked, fetched };
+  return { client: () => waited(slack(new SiteKit(send, undefined, dir)).getClient()), asked, calls, fetched };
 }
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
@@ -109,4 +112,31 @@ test("a web page in place of a file's bytes fails, and nothing is saved", async 
   const out = join(dir, "signed-out.png");
   await expect(waited(c.download("F1", out))).rejects.toThrow("Slack answered a web page for file F1, not its image/png");
   expect(existsSync(out)).toBe(false);
+});
+
+// Edits and deletes act on the owner's own messages in his name: an
+// unapproved call must change nothing and show what would be replaced.
+const OLD = { "conversations.history": { messages: [{ ts: "7.0", user: "U1", text: "old text" }] } };
+
+test("update without approval sends nothing and shows the text it would replace", async () => {
+  const s = safari(OLD, []);
+  const draft = await waited((await s.client()).update("D1", "7.0", "new text"));
+  expect(draft).toMatchObject({ status: "draft", text: "new text", was: "old text" });
+  expect(s.asked).toEqual(["conversations.history"]);
+});
+
+test("delete without approval sends nothing and shows the message it would remove", async () => {
+  const s = safari(OLD, []);
+  const draft = await waited((await s.client()).delete("D1", "7.0"));
+  expect(draft).toMatchObject({ status: "draft", text: "old text" });
+  expect(s.asked).toEqual(["conversations.history"]);
+});
+
+// On 11-04 chained postMessage calls put a "thread reply" at the top level
+// when the top message's ts was read from the wrong field.
+test("postThread posts every reply in the thread of the top message it just posted", async () => {
+  const s = safari({ "chat.postMessage": { ts: "9.0", channel: "D1" } }, []);
+  const sent = await waited((await s.client()).postThread("D1", "summary", ["details 1", "details 2"], { approved: true }));
+  expect(sent.status).toBe("sent");
+  expect(s.calls.map((c) => c.params.thread_ts)).toEqual([undefined, "9.0", "9.0"]);
 });
