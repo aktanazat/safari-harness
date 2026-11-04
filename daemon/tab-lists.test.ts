@@ -60,8 +60,17 @@ function safari() {
 }
 
 const agent = Bun.spawn(["sleep", "600"]);
-afterAll(() => {
+// The agent's watch (owner.ts) started its once-a-second sweep on the fake
+// clock, and each test's useFakeTimers set that clock back to now, leaving
+// the sweep due later than any advance here reaches. Once the agent exits,
+// the sweep runs once more on the fake clock and, watching nothing, stops;
+// left alone it never ran again, and every later file in the run whose
+// agent exited waited for a cleanup that never came.
+afterAll(async () => {
   agent.kill();
+  await agent.exited;
+  jest.runOnlyPendingTimers();
+  await settled();
   jest.useRealTimers();
 });
 
