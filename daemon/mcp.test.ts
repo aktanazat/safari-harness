@@ -146,7 +146,9 @@ import { TOOLS } from "./tools.ts";
 // as the bare list its example showed 3. passwords' card-phone and amount
 // (150) brought it to 28,055: the user is mostly on his iPhone, away from
 // the Mac, and on 10-19 he asked that his Face ID there approve the card
-// fills that stalled on the Mac's Touch ID until he came back.
+// fills that stalled on the Mac's Touch ID until he came back. The
+// release imported on 11-04 listed 28,057; passwords' description lost
+// "source:apple skips vault", which its source parameter already says.
 const TOOL_LIST_MAX_BYTES = 28_055;
 
 async function toolList(): Promise<unknown> {
