@@ -7,8 +7,8 @@
 // credentialed request from it. A file's bytes come from files.slack.com,
 // fetched from the same tab with the cookie alone.
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { rateLimited } from "../failures.ts";
 import { NotSignedIn, draftOrSend, type SiteKit } from "./kit.ts";
 
@@ -251,6 +251,15 @@ function user(u: RawUser) {
 
 function client(kit: SiteKit, workspace: Workspace) {
   const api = <T>(method: string, params: Record<string, unknown>) => call<T>(kit, workspace.teamId, method, params);
+  // The message at ts, as history lists it. A thread reply is not in its
+  // channel's history: name its thread's ts as thread_ts.
+  const messageAt = async (channel: string, ts: string, opts: { thread_ts?: string } = {}) => {
+    const top = await api<{ messages: RawMessage[] }>("conversations.history", { channel, latest: ts, oldest: ts, inclusive: true, limit: 1 });
+    let found = top.messages.find((m) => m.ts === ts);
+    if (!found && opts.thread_ts) found = (await api<{ messages: RawMessage[] }>("conversations.replies", { channel, ts: opts.thread_ts, limit: 1000 })).messages.find((m) => m.ts === ts);
+    if (!found) throw new Error(`no message ${ts} in ${channel}${opts.thread_ts ? ` or its thread ${opts.thread_ts}` : "; a thread reply needs its thread's ts as thread_ts"}`);
+    return message(found);
+  };
   return {
     workspace,
 
@@ -326,7 +335,7 @@ function client(kit: SiteKit, workspace: Workspace) {
     // Any web-API method that reads, with Slack's answer as is.
     api(method: string, params: Record<string, unknown> = {}) {
       const verb = method.slice(method.lastIndexOf(".") + 1);
-      if (!READ_VERB.test(verb)) throw new Error(`${method} is not a read method; api() only reads (.list, .history, .replies, .info, .search, .get...). To post, use postMessage.`);
+      if (!READ_VERB.test(verb)) throw new Error(`${method} is not a read method; api() only reads (.list, .history, .replies, .info, .search, .get...). To write, use postMessage, postThread, update, delete, react or upload.`);
       return api<unknown>(method, params);
     },
 
@@ -342,6 +351,125 @@ function client(kit: SiteKit, workspace: Workspace) {
           return { ts: r.ts, channel: r.channel };
         },
       });
+    },
+
+    messageAt,
+
+    // Edits a message the owner wrote. The draft shows the text it replaces
+    // as was, so the owner approves the change, not just the new text.
+    async update(channel: string, ts: string, text: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
+      const was = (await messageAt(channel, ts, opts)).text;
+      const out = await draftOrSend({
+        site: "slack",
+        action: `edit message ${ts} in ${channel}`,
+        to: channel,
+        text,
+        approved: opts.approved,
+        send: async () => {
+          const r = await api<{ ts: string; channel: string }>("chat.update", { channel, ts, text });
+          return { ts: r.ts, channel: r.channel };
+        },
+      });
+      return { ...out, was };
+    },
+
+    // Deletes a message the owner wrote; the draft's text is the message
+    // that would go.
+    async delete(channel: string, ts: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
+      const gone = await messageAt(channel, ts, opts);
+      return draftOrSend({
+        site: "slack",
+        action: `delete message ${ts} in ${channel}${gone.replyCount ? ` (its ${gone.replyCount} thread replies stay)` : ""}`,
+        to: channel,
+        text: gone.text,
+        approved: opts.approved,
+        send: async () => {
+          await api("chat.delete", { channel, ts });
+          return { ts, channel, deleted: true };
+        },
+      });
+    },
+
+    // A top message and its thread replies, approved and posted as one: the
+    // replies go under the top message's ts.
+    postThread(channel: string, text: string, replies: string[], opts: { approved?: boolean } = {}) {
+      if (!Array.isArray(replies) || replies.some((r) => typeof r !== "string" || !r)) throw new Error("postThread needs replies, a list of non-empty texts");
+      return draftOrSend({
+        site: "slack",
+        action: `post in ${channel} with ${replies.length} thread repl${replies.length === 1 ? "y" : "ies"}`,
+        to: channel,
+        text: [text, ...replies.map((r, i) => `--- thread reply ${i + 1} ---\n${r}`)].join("\n"),
+        approved: opts.approved,
+        send: async () => {
+          const top = await api<{ ts: string; channel: string }>("chat.postMessage", { channel, text });
+          const done: string[] = [];
+          for (const reply of replies) done.push((await api<{ ts: string }>("chat.postMessage", { channel: top.channel, text: reply, thread_ts: top.ts })).ts);
+          return { ts: top.ts, channel: top.channel, replies: done };
+        },
+      });
+    },
+
+    // Adds an emoji reaction (name without colons) as the owner.
+    react(channel: string, ts: string, name: string, opts: { approved?: boolean } = {}) {
+      const emoji = name.replace(/^:|:$/g, "");
+      return draftOrSend({
+        site: "slack",
+        action: `react to ${ts} in ${channel}`,
+        to: channel,
+        text: `:${emoji}:`,
+        approved: opts.approved,
+        send: async () => {
+          await api("reactions.add", { channel, timestamp: ts, name: emoji });
+          return { ts, channel, reaction: emoji };
+        },
+      });
+    },
+
+    // Uploads a local file (a relative path begins in the session's
+    // folder) to a channel or thread through Slack's external upload: one
+    // address to send the bytes to, then one call that shares the file.
+    async upload(channel: string, path: string, opts: { thread_ts?: string; title?: string; comment?: string; approved?: boolean } = {}) {
+      const file = resolve(kit.cwd, path);
+      const bytes = await readFile(file);
+      if (bytes.length > FILE_MAX) throw new Error(`${file} has ${bytes.length} bytes; upload takes at most ${FILE_MAX}`);
+      const name = basename(file);
+      return draftOrSend({
+        site: "slack",
+        action: `upload ${name} (${bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
+        to: channel,
+        text: opts.comment ?? "",
+        approved: opts.approved,
+        send: async () => {
+          const slot = await api<{ upload_url: string; file_id: string }>("files.getUploadURLExternal", { filename: name, length: bytes.length });
+          const sent = await paced(kit, new URL(slot.upload_url).origin, async () => {
+            const res = await fetch(slot.upload_url, { method: "POST", body: bytes });
+            return { status: res.status, retryAfter: res.headers.get("retry-after") };
+          });
+          if (sent.status !== 200) throw new Error(`Slack's upload address answered HTTP ${sent.status}; the file was not shared`);
+          const shared = await api<{ files: { id: string; permalink?: string }[] }>("files.completeUploadExternal", {
+            files: [{ id: slot.file_id, title: opts.title ?? name }],
+            channel_id: channel,
+            ...(opts.thread_ts ? { thread_ts: opts.thread_ts } : {}),
+            ...(opts.comment ? { initial_comment: opts.comment } : {}),
+          });
+          return { file: slot.file_id, channel, ...(shared.files[0]?.permalink ? { permalink: shared.files[0].permalink } : {}) };
+        },
+      });
+    },
+
+    // A channel's latest messages with each thread's replies after its
+    // parent, kept when match (a RegExp, or text matched case-insensitively)
+    // is in the text: one call for a history loop plus a replies call per
+    // thread.
+    async scan(channel: string, opts: { limit?: number; match?: RegExp | string; threads?: boolean } = {}) {
+      const re = opts.match === undefined ? null : opts.match instanceof RegExp ? opts.match : new RegExp(opts.match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const top = await api<{ messages: RawMessage[] }>("conversations.history", { channel, limit: limit(opts.limit, 50, 1000) });
+      const raw: RawMessage[] = [];
+      for (const m of top.messages) {
+        raw.push(m);
+        if (opts.threads !== false && m.reply_count) raw.push(...(await api<{ messages: RawMessage[] }>("conversations.replies", { channel, ts: m.ts, limit: 1000 })).messages.slice(1));
+      }
+      return { messages: raw.filter((m) => !re || re.test(m.text ?? "")).map(message) };
     },
   };
 }
