@@ -25,7 +25,17 @@ The `slack` global reads Slack through the session in Safari, from one backgroun
 - `client.users({limit, cursor})`, `client.userInfo(userId)`: the member directory.
 - `client.download(file, out)`: saves a message's file at `out` (a relative path begins in the session's folder, `pwd`) and returns `{path, size, type}`. `file` is one that `history` or `replies` listed, which carries its address, or a file id (`F…`), which costs a `files.info` call first. The bytes come from files.slack.com through the global's own tab, so no tab of yours is needed. Slack's sign-in page in place of the file fails, and nothing is saved. A `429` (too many requests) is waited out as Slack says, or 5 s and then 10 s when it does not, by every session's calls to that host; a third 429 fails with `rate_limited`. `safari download` of a files.slack.com address without a signed-in tab gets the sign-in page and fails.
 - `client.api(method, params)`: any other web-API method that reads (`.list`, `.history`, `.replies`, `.info`, `.search`, `.get…`), answered as Slack answers it; methods that write are refused.
-- `client.postMessage(channel, text, {thread_ts})`: drafts only until approved: returns the exact text and sends nothing; call it again with `approved: true` once the user has approved that text.
+- `client.scan(channel, {limit, match, threads})`: the latest messages with each thread's replies after their parent, kept when `match` (a RegExp, or text matched case-insensitively) is in the text. One call for a history loop plus a `replies` call per thread; `threads: false` skips the replies.
+- `client.messageAt(channel, ts, {thread_ts})`: one message. A thread reply is not in its channel's history; pass its thread's ts as `thread_ts`.
+
+### Writing as the owner
+Every write drafts first: without `approved: true` it returns `{status: "draft", action, text}` and changes nothing. Show the owner that exact draft; call again with `approved: true` only after he approves it. A sent write returns `{status: "sent", result}`; the new message's ts is `result.ts`, not a top-level `ts`.
+- `client.postMessage(channel, text, {thread_ts})`: one message, or a reply when `thread_ts` is given.
+- `client.postThread(channel, text, replies)`: a top message and its thread replies as one approval, each reply posted under the top message's ts. `result` is `{ts, channel, replies: [ts…]}`. Use it for "summary on top, details in the thread" updates instead of chaining `postMessage` calls.
+- `client.update(channel, ts, text, {thread_ts})`: edits a message the owner wrote. The draft adds `was`, the text it replaces. Slack refuses others' messages (`cant_update_message`).
+- `client.delete(channel, ts, {thread_ts})`: deletes a message the owner wrote. The draft's `text` is the message that would go; a thread's replies stay when its parent goes.
+- `client.react(channel, ts, name)`: adds an emoji reaction (`name` with or without colons).
+- `client.upload(channel, path, {thread_ts, title, comment})`: shares a local file (a relative path begins in the session's folder) in a channel or thread through Slack's external upload, with no file dialog. `result` is `{file, channel, permalink}`.
 
 ```js
 const c = await slack.getClient();
