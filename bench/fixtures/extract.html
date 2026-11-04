@@ -1,0 +1,20 @@
+<!doctype html>
+<title>Extract</title>
+<script>
+  customElements.define("price-note", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = "<p>Billed yearly</p>";
+    }
+  });
+</script>
+<nav>Home · Pricing · Blog</nav>
+<main>
+  <h1>Pricing</h1>
+  <p>Pro costs $12 a month.</p>
+  <p style="display: none">Hidden coupon</p>
+  <!-- a letter in a one-pixel box, as ebay interleaves decoys into labels -->
+  <p>Code: <span>BE</span><span style="display: inline-block; width: 1px; height: 1px; overflow: hidden">X</span><span>NCH</span></p>
+  <price-note></price-note>
+</main>
+<footer>Footer text</footer>

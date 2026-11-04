@@ -1,0 +1,182 @@
+// Pairing Apple Passwords with no touch, for daemon/pair.ts: the 6-digit
+// code the Mac shows is read off the window of Apple's password helper, so
+// nobody reads it out.
+//   pairing approval              whether the system authentication prompt
+//                                 is still on screen: {"showing": boolean}
+//   pairing code --pid N [--wait MS]
+//                                 the code process N's window shows, waiting
+//                                 up to MS (default 5000) for it: {"code"}
+//   pairing confirm --pid N --site HOST [--new] [--wait MS]
+//                                 presses the default button of process N's
+//                                 window asking to save a password for HOST,
+//                                 or with --new, its one window asking to save
+//                                 a new login, waiting up to MS (default 5000)
+//                                 for it: {"pressed": the button's title}
+//   pairing qr < PNG              the text of every QR code in the image on
+//                                 stdin: {"found": [...]}. The daemon reads
+//                                 an authenticator key this way, so the
+//                                 image never lands on disk.
+// Each command prints one JSON line. code and confirm need Accessibility
+// permission for the app that runs this.
+import AppKit
+import ApplicationServices
+import CoreImage
+import Foundation
+
+func fail(_ message: String, _ code: Int32 = 1) -> Never {
+    FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
+    exit(code)
+}
+
+func printJSON(_ value: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.withoutEscapingSlashes]) else { fail("cannot encode result") }
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write("\n".data(using: .utf8)!)
+}
+
+// Value following `name` in the arguments, if present.
+func option(_ args: [String], _ name: String) -> String? {
+    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
+func requireAccess() {
+    if !AXIsProcessTrusted() { fail("this app needs Accessibility permission: System Settings > Privacy & Security > Accessibility") }
+}
+
+func attribute(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    return AXUIElementCopyAttributeValue(el, name as CFString, &value) == .success ? value : nil
+}
+
+// ---------- approval ----------
+
+// Apple's helper can leave a request unanswered when its Touch ID prompt
+// closes. Look only for the system authentication window, never its text.
+// Another app's authentication prompt counts too: do not interrupt one.
+func approval() {
+    guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        fail("cannot check whether the authentication prompt is showing")
+    }
+    printJSON(["showing": windows.contains { $0[kCGWindowOwnerName as String] as? String == "coreautha" }])
+}
+
+// ---------- code ----------
+
+// Every string an element and the elements inside it show.
+func texts(_ el: AXUIElement, depth: Int = 0) -> [String] {
+    let own = [kAXValueAttribute, kAXTitleAttribute].compactMap { attribute(el, $0) as? String }
+    guard depth < 8, let children = attribute(el, kAXChildrenAttribute) as? [AXUIElement] else { return own }
+    return own + children.flatMap { texts($0, depth: depth + 1) }
+}
+
+// The helper shows the code spaced out, "1 2 3   4 5 6" on older systems and
+// "123 456" with a no-break space between the halves on macOS 27, and
+// nothing else of six digits. The window title is not matched: it is
+// translated.
+func code(_ args: [String]) {
+    requireAccess()
+    guard let raw = option(args, "--pid"), let pid = pid_t(raw), pid > 1 else { fail("usage: pairing code --pid N [--wait MS]", 2) }
+    let wait = Double(option(args, "--wait") ?? "5000") ?? 5000
+    let app = AXUIElementCreateApplication(pid)
+    let deadline = Date().addingTimeInterval(wait / 1000)
+    repeat {
+        for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+            let digits = texts(window)
+                .filter { !$0.isEmpty && $0.allSatisfy { ($0.isASCII && $0.isNumber) || $0.isWhitespace } }
+                .map { $0.filter { !$0.isWhitespace } }
+            if let found = digits.first(where: { $0.count == 6 }) {
+                printJSON(["code": found])
+                exit(0)
+            }
+        }
+        usleep(100_000)
+    } while Date() < deadline
+    fail("no pairing code showed in a window of process \(pid)")
+}
+
+// ---------- confirm ----------
+
+// Words the texts put in curly quotes: the helper names the login and the
+// site that way, “user” on “site”.
+func quoted(_ texts: [String]) -> [String] {
+    texts.flatMap { text in
+        text.split(separator: "“").dropFirst().compactMap { part in part.split(separator: "”", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) }
+    }
+}
+
+// A save the harness makes (MAYBE_ADD) waits on the helper's own window,
+// which answers nothing until a button is pressed: "update the password
+// saved for “user” on “site”?" for a saved login, and only "Save
+// Password?" for a new one (Mercor's Okta, 10-04: two changes waited 20 s
+// on a window naming the site that never came). A window naming HOST, or
+// a domain HOST is under, is pressed; with --new, so is the one window
+// naming nothing that carries the helper's title for a new login. Two of
+// those cannot be told apart, as when an earlier save left its window up,
+// so neither is pressed. Only the default button (Update Password or Save
+// Password) is pressed, found by role, not by its translated title.
+func confirm(_ args: [String]) {
+    requireAccess()
+    guard let raw = option(args, "--pid"), let pid = pid_t(raw), pid > 1, let host = option(args, "--site"), !host.isEmpty else {
+        fail("usage: pairing confirm --pid N --site HOST [--new] [--wait MS]", 2)
+    }
+    let wait = Double(option(args, "--wait") ?? "5000") ?? 5000
+    let newLogin = args.contains("--new") ? newLoginTitle(pid) : nil
+    let app = AXUIElementCreateApplication(pid)
+    let deadline = Date().addingTimeInterval(wait / 1000)
+    // what the helper's windows named, for the error when none is HOST's
+    var seen: [String] = []
+    repeat {
+        seen = []
+        var unnamed: [AXUIElement] = []
+        for window in attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+            let shown = texts(window)
+            let named = quoted(shown)
+            seen += named
+            if named.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { pressDefault(window, host) }
+            if let title = newLogin, named.isEmpty, shown.contains(title) { unnamed.append(window) }
+        }
+        if unnamed.count > 1 { fail("\(unnamed.count) windows of process \(pid) ask to save a new password without naming its site; press Not Now in each, then call change again") }
+        if let window = unnamed.first { pressDefault(window, host) }
+        usleep(100_000)
+    } while Date() < deadline
+    fail("no window asking to save a password for \(host) showed in process \(pid)" + (seen.isEmpty ? "" : "; its windows named \(seen.joined(separator: ", "))"))
+}
+
+// The helper's title for saving a new login, in the user's language.
+func newLoginTitle(_ pid: pid_t) -> String {
+    let key = "Save Password?"
+    guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL, let bundle = Bundle(url: url) else { return key }
+    return bundle.localizedString(forKey: key, value: nil, table: nil)
+}
+
+func pressDefault(_ window: AXUIElement, _ host: String) -> Never {
+    guard let found = attribute(window, kAXDefaultButtonAttribute), CFGetTypeID(found) == AXUIElementGetTypeID() else {
+        fail("the helper's window for \(host) has no default button")
+    }
+    let button = found as! AXUIElement
+    let title = attribute(button, kAXTitleAttribute) as? String ?? ""
+    guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { fail("could not press \(title) in the helper's window") }
+    printJSON(["pressed": title])
+    exit(0)
+}
+
+// ---------- qr ----------
+
+func qr() {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let image = CIImage(data: data) else { fail("stdin is not an image") }
+    guard let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]) else { fail("this Mac cannot read QR codes") }
+    let found = detector.features(in: image).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+    printJSON(["found": found])
+}
+
+let argv = Array(CommandLine.arguments.dropFirst())
+let rest = Array(argv.dropFirst())
+switch argv.first {
+case "approval": approval()
+case "code": code(rest)
+case "confirm": confirm(rest)
+case "qr": qr()
+default: fail("usage: pairing approval | code --pid N [--wait MS] | confirm --pid N --site HOST [--new] [--wait MS] | qr < PNG", 2)
+}

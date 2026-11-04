@@ -1,0 +1,172 @@
+import { afterEach, expect, jest, mock, test } from "bun:test";
+import { bridge } from "./bridge.ts";
+import { CALLER_TOOLS } from "./caller.ts";
+import { connect } from "./fake-safari.ts";
+import { checkCall } from "./guard.ts";
+import { runAs } from "./owner.ts";
+import { callTool, TOOLS } from "./tools.ts";
+
+// Calls a model wrote are checked and watched (guard.ts); /rpc marks them
+// so with callTool's third argument. Safari is a fake that answers each
+// request to a page at once, with what the test says the page holds, and
+// records it as "tab op args". Each test's agent is its own, so no test
+// sees another's calls.
+function safari(page: (op: string, args: unknown[]) => { value: unknown } | { error: string }) {
+  const sent: string[] = [];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op !== "relay") return queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));
+      const [tab, dom, domArgs]: [number, string, unknown[]] = args;
+      sent.push([tab, dom, ...domArgs.filter((a) => typeof a === "string")].join(" "));
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...page(dom, domArgs) })));
+    },
+    close() {},
+  });
+  return sent;
+}
+
+const model = (owner: number, tool: string, args: Record<string, unknown>) => runAs(owner, () => callTool(tool, args, true));
+
+afterEach(() => {
+  mock.restore();
+  jest.useRealTimers();
+});
+
+test("the sixth call in a row with the same answer fails, telling the agent what to do instead", async () => {
+  safari(() => ({ value: { url: "https://shop.example/cart", title: "Cart" } }));
+  for (let i = 0; i < 5; i++) expect(await model(101, "info", { tab: 7 })).toMatchObject({ title: "Cart" });
+  await expect(model(101, "info", { tab: 7 })).rejects.toThrow("you called info on tab 7 5 times and got the same page; the page is not changing: act, wait on text, or tell the user");
+  // Another agent reading the same tab is counted on its own.
+  expect(await model(102, "info", { tab: 7 })).toMatchObject({ title: "Cart" });
+});
+
+test("the same error six times in a row fails, saying that trying again will not help", async () => {
+  safari(() => ({ error: "no element 5 on the page" }));
+  for (let i = 0; i < 5; i++) await expect(model(103, "click", { tab: 7, ref: "5" })).rejects.toThrow("no element 5 on the page");
+  await expect(model(103, "click", { tab: 7, ref: "5" })).rejects.toThrow("you called click on tab 7 5 times and got the same error (no element 5 on the page); trying again will not change it: try another way, or tell the user");
+});
+
+test("a read whose answer changes is never stopped, and neither is an action that keeps working", async () => {
+  let n = 0;
+  safari((op) => ({ value: op === "tabInfo" ? { title: `Results, page ${++n}` } : { ok: true } }));
+  for (let i = 1; i <= 8; i++) {
+    expect(await model(104, "click", { tab: 7, ref: "Next" })).toMatchObject({ ok: true });
+    expect(await model(104, "info", { tab: 7 })).toMatchObject({ title: `Results, page ${i}` });
+  }
+});
+
+test("the same check after each new step is not a loop; after the same step again and again it is", async () => {
+  safari((op) => ({ value: op === "tabInfo" ? { url: "https://shop.example/form", title: "Form" } : { ok: true } }));
+  for (let i = 1; i <= 8; i++) {
+    expect(await model(107, "type", { tab: 7, ref: `Field ${i}`, text: "x" })).toMatchObject({ ok: true });
+    expect(await model(107, "info", { tab: 7 })).toMatchObject({ title: "Form" });
+  }
+  for (let i = 0; i < 5; i++) {
+    await model(107, "click", { tab: 7, ref: "Save" });
+    expect(await model(107, "info", { tab: 7 })).toMatchObject({ title: "Form" });
+  }
+  await model(107, "click", { tab: 7, ref: "Save" });
+  await expect(model(107, "info", { tab: 7 })).rejects.toThrow("you called info on tab 7 5 times and got the same page; the page is not changing: act, wait on text, or tell the user");
+});
+
+test("a name written another way runs, with a note saying what was used", async () => {
+  const sent = safari(() => ({ value: { ok: true } }));
+  expect(await model(105, "Select", { tab: 7, ref: "3", value: "Blue" })).toEqual({ ok: true, note: "used select for Select; used option for value" });
+  expect(sent).toEqual(["7 select 3 Blue"]);
+});
+
+test("a snapshot ref copied with its display brackets reaches the observed control", async () => {
+  const sent = safari(() => ({ value: { ok: true } }));
+  expect(await model(108, "click", { tab: 7, ref: "[6]" })).toMatchObject({ ok: true });
+  expect(sent).toEqual(["7 click 6"]);
+});
+
+test("a parameter the tool does not take fails before the page is asked, naming the nearest one", async () => {
+  const sent = safari(() => ({ value: { ok: true } }));
+  await expect(model(105, "select", { tab: 7, ref: "3", optoin: "Blue" })).rejects.toThrow("unknown parameter optoin for select; did you mean option? (params: tab, ref, option, snapshot)");
+  expect(sent).toEqual([]);
+});
+
+// On 10-22 map {max_chars, output_dir} failed on max_chars, and the next
+// call on output_dir.
+test("every parameter the tool does not take is named at once, each with its nearest", () => {
+  expect(() => checkCall(TOOLS, "select", { tab: 7, optoin: "Blue", snapshto: true, color: "red" }, true)).toThrow("unknown parameters for select: optoin (did you mean option?), snapshto (did you mean snapshot?), color (params: tab, ref, option, snapshot)");
+});
+
+// maxChars, guessed in the 10-15 to 10-28 logs, is five letters from
+// maxBytes, which map takes for each page's read but does not list.
+test("a wrong parameter name too far from every real one names the one that shares its words", () => {
+  expect(() => checkCall(TOOLS, "map", { urls: ["https://example.com/"], maxChars: 5000 }, true)).toThrow("unknown parameter maxChars for map; did you mean maxBytes? (params: urls,");
+});
+
+// Names agents wrote in the 09-27 to 09-30 logs, and map's script on
+// 10-05, each a failed call.
+test.each([
+  ["eval", "code", "expression"],
+  ["history", "action", "do"],
+  ["passwords", "action", "do"],
+  ["learn", "note", "fact"],
+  ["map", "mode", "what"],
+  ["click", "text", "ref"],
+  ["hover", "text", "ref"],
+  ["snapshot", "selector", "root"],
+  ["scroll", "y", "dy"],
+  ["scroll", "x", "dx"],
+  ["upload", "files", "paths"],
+  ["shot", "path", "out"],
+  ["download", "path", "out"],
+  ["passwords", "account", "username"],
+  ["map", "script", "expression"],
+  ["download", "out_dir", "out"],
+])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
+  expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
+});
+
+// press's text is the key it presses, if anything, never the element.
+test("text names the ref only on the tools that take it so", () => {
+  expect(() => checkCall(TOOLS, "press", { tab: 7, text: "Enter" }, true)).toThrow("unknown parameter text for press");
+});
+
+test("a real_input call written as the type tool's, or with press for key, runs as real_input's own", () => {
+  expect(checkCall(CALLER_TOOLS, "real_input", { tab: 7, ref: "2", type: "a@example.com" }, true)).toEqual({ tool: "real_input", args: { tab: 7, ref: "2", do: "type", text: "a@example.com" }, notes: ['used do "type" and text for type'] });
+  expect(checkCall(CALLER_TOOLS, "real_input", { tab: 7, do: "press", key: "Enter" }, true)).toEqual({ tool: "real_input", args: { tab: 7, do: "key", key: "Enter" }, notes: ['used do "key" for do "press"'] });
+});
+
+test("snapshot given an address says to open it first", () => {
+  expect(() => checkCall(TOOLS, "snapshot", { url: "https://www.geico.com" }, true)).toThrow("snapshot reads the page a tab shows; open the url first (open) and pass its tab");
+});
+
+// On 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut each
+// page's text.
+test("map given max says what keeps each page short instead", () => {
+  expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
+});
+
+// 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
+// times, each telling the agent to reload the extension, and agents ran
+// safari extension reload 27 times.
+test("a model's call that meets a stuck extension has it reloaded inside the call, and its answer says so", async () => {
+  jest.useFakeTimers();
+  const asked: string[] = [];
+  connect({ send: (data: string) => void asked.push(JSON.parse(data).op), close() {} });
+  jest.advanceTimersByTime(20_000);
+  for (let i = 0; i < 2; i++) {
+    const listed = bridge.request("tabs.list", [], 5000);
+    await new Promise<void>((r) => setImmediate(r));
+    jest.advanceTimersByTime(5000);
+    await expect(listed).rejects.toThrow("timed out");
+  }
+  const call = model(109, "tabs", {});
+  await new Promise<void>((r) => setImmediate(r));
+  expect(asked).toEqual(["tabs.list", "tabs.list", "reload"]);
+  jest.advanceTimersByTime(3000);
+  connect({
+    send(data: string) {
+      const { id } = JSON.parse(data);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value: [] })));
+    },
+    close() {},
+  });
+  expect(await call).toMatchObject({ note: "the extension was stuck; reloaded in 3 s" });
+});

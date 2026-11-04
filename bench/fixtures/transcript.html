@@ -1,0 +1,28 @@
+<!doctype html>
+<title>Episode 12</title>
+<script>
+  // Supercast's gate shows the transcript a subscriber may read through a
+  // named slot of its shadow root.
+  customElements.define("supercast-gate", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = '<div class="gate"><slot name="available"></slot></div>';
+    }
+  });
+</script>
+<main>
+  <h1>Episode 12</h1>
+  <p>Show notes for the episode.</p>
+</main>
+<div class="w-tabs">
+  <div class="w-tab-menu"><a class="w-tab-link">Notes</a><a class="w-tab-link w--current">Transcript</a></div>
+  <div class="w-tab-content">
+    <div data-w-tab="Notes" class="w-tab-pane" style="display: none">Notes pane.</div>
+    <div data-w-tab="Transcript" class="w-tab-pane w--tab-active">
+      <supercast-gate>
+        <div slot="available"><p>Desire is modulated by the hormone testosterone.</p><p>Sleep matters too.</p></div>
+        <div slot="unavailable"><p>Subscribe to read the transcript.</p></div>
+      </supercast-gate>
+    </div>
+  </div>
+</div>

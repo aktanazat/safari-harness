@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Net bodies</title>
+<p id="state">loading</p>
+<script>
+// The page's clock stands still, so a row names each request by the time
+// the log wrote it (1000) and its address. Thirty requests one after
+// another, as a page that polls makes them; each body is short.
+Date.now = () => 1000;
+(async () => {
+  for (let i = 0; i < 30; i++) await fetch(`data:text/plain,body-${i}-` + "x".repeat(1000)).then((r) => r.text());
+  document.getElementById("state").textContent = "done";
+})();
+</script>

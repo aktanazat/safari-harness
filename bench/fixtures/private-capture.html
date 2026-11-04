@@ -1,0 +1,38 @@
+<!doctype html>
+<title>Private capture fixture</title>
+<style>
+  html, body { margin: 0; width: 1280px; min-height: 1800px; }
+  input, #known, #split, #ordinary, #shadow, iframe, #bottom { position: absolute; box-sizing: border-box; border: 0; padding: 0; margin: 0; font: 16px/20px monospace; }
+  input { left: 10px; width: 160px; height: 20px; }
+  #password { top: 10px; }
+  #otp { top: 40px; }
+  #card { top: 70px; }
+  #known { left: 10px; top: 100px; }
+  #split { left: 10px; top: 130px; }
+  #ordinary { left: 10px; top: 170px; width: 160px; height: 20px; }
+  #shadow { left: 200px; top: 10px; width: 160px; height: 20px; }
+  iframe { left: 400px; width: 200px; height: 100px; }
+  #same { top: 10px; }
+  #opaque { top: 130px; }
+  #bottom { left: 10px; top: 1300px; }
+</style>
+<input id="password" type="text" autocomplete="current-password" value="field-password">
+<input id="otp" aria-label="Verification code" value="402913">
+<input id="card" aria-label="Card number" value="4242424242424242">
+<span id="known">known-sentinel</span>
+<span id="split">split-<b>sent</b><i>inel</i></span>
+<input id="ordinary" aria-label="Name" value="Ada">
+<div id="shadow"></div>
+<iframe id="same" srcdoc="<!doctype html><style>body{margin:0}input{width:160px;height:20px;border:0;padding:0;box-sizing:border-box}</style><input type='text' autocomplete='one-time-code' value='170921'>"></iframe>
+<iframe id="opaque" sandbox srcdoc="<!doctype html><p>opaque-sentinel</p>"></iframe>
+<span id="bottom">bottom-sentinel</span>
+<span id="formatted" style="position:absolute;left:10px;top:240px;font:16px/20px monospace">4242 4242-4242 4242</span>
+<script>
+  const root = document.querySelector('#shadow').attachShadow({mode: 'open'});
+  root.innerHTML = '<input autocomplete="cc-csc" value="853" style="display:block;width:160px;height:20px;box-sizing:border-box;border:0;padding:0">';
+  document.querySelector('#ordinary').focus();
+  document.documentElement.dataset.fieldEvents = '0';
+  for (const name of ['input', 'change', 'focusin', 'focusout']) {
+    document.addEventListener(name, () => { document.documentElement.dataset.fieldEvents = String(Number(document.documentElement.dataset.fieldEvents) + 1); });
+  }
+</script>

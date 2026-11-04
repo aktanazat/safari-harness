@@ -1,0 +1,45 @@
+<!doctype html>
+<title>Flutter field</title>
+<!-- GEICO's Flutter sign-in (09-29): each field is an input of Flutter's
+     own, which it reads only while it holds the field. It hears of the
+     focus by the focus event alone and takes the field a frame later: it
+     sets the field's attributes, cancels mouse moves on it, and writes the
+     text its own model holds over the field's. A focus on the field it
+     holds does nothing; a blur lets go of it. Log In and Save read the
+     model, never the field. -->
+<flt-semantics><input aria-label="User ID"></flt-semantics>
+<flt-semantics><input type="password" aria-label="Password"></flt-semantics>
+<flt-semantics role="button" id="login">Log In</flt-semantics>
+<flt-semantics><input type="password" aria-label="New password" autocomplete="new-password"></flt-semantics>
+<flt-semantics role="button" id="save">Save</flt-semantics>
+<p id="said"></p>
+<script>
+  const model = new Map();
+  for (const field of document.querySelectorAll("flt-semantics input")) {
+    model.set(field, "");
+    let taken = false;
+    const hold = (e) => e.preventDefault();
+    field.addEventListener("focus", () => {
+      if (taken) return;
+      setTimeout(() => {
+        taken = true;
+        field.setAttribute("autocomplete", "off");
+        field.addEventListener("mousemove", hold);
+        field.value = model.get(field);
+      }, 50);
+    });
+    field.addEventListener("blur", () => {
+      taken = false;
+      field.removeEventListener("mousemove", hold);
+    });
+    field.addEventListener("input", () => { if (taken) model.set(field, field.value); });
+  }
+  document.getElementById("login").addEventListener("click", () => {
+    const [user, password] = model.values();
+    said.textContent = user ? `Signed in as ${user}${password ? " with a password" : ""}` : "Please enter your Email / User ID / Policy Number";
+  });
+  document.getElementById("save").addEventListener("click", () => {
+    const fresh = [...model.values()][2];
+    said.textContent = fresh ? "New password saved" : "Please enter a new password";
+  });
+</script>

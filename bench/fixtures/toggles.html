@@ -1,0 +1,26 @@
+<!doctype html>
+<title>Toggles</title>
+<!-- Six posts each clamped to two lines under a Show more toggle, as
+     LinkedIn's feed does: all of a post's text is on the page already, and
+     a click opens it (aria-expanded) and adds none. -->
+<style>
+  .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .clamp.open { display: block; }
+</style>
+<main>
+  <h1>Posts</h1>
+  <div id="posts"></div>
+</main>
+<script>
+  const posts = document.getElementById("posts");
+  for (let n = 1; n <= 6; n++) {
+    const post = document.createElement("article");
+    post.innerHTML = `<p class="clamp">Post ${n}. ${"A long post the page shows two lines of until it is opened. ".repeat(8)}</p><button type="button" aria-expanded="false">Show more</button>`;
+    const [text, button] = post.children;
+    button.addEventListener("click", () => {
+      text.classList.toggle("open");
+      button.setAttribute("aria-expanded", String(text.classList.contains("open")));
+    });
+    posts.append(post);
+  }
+</script>

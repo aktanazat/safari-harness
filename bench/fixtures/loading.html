@@ -1,0 +1,13 @@
+<!doctype html>
+<title>Case status</title>
+<!-- USCIS's case page while its app loads (09-30): no main region, and a
+     loading line in #root between the header's and the footer's text until
+     the case comes, 1 s after the page loads here. -->
+<header><a href="/">Home</a> <span>Account</span></header>
+<div id="root"><p>The page is loading. Please wait and do not refresh the page.</p></div>
+<footer><p>Contact us</p></footer>
+<script>
+  setTimeout(() => {
+    document.querySelector("#root").innerHTML = "<h1>Case status</h1><p>Case was received.</p>";
+  }, 1000);
+</script>

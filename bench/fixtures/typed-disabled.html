@@ -1,0 +1,12 @@
+<!doctype html>
+<title>Reset your password</title>
+<!-- Reddit's password reset (09-29): Reset password stays disabled until
+     the page hears a key a person pressed, so scripted typing fills the
+     field and leaves the button off. -->
+<form>
+  <input type="email" aria-label="Email">
+  <button type="submit" id="reset" disabled>Reset password</button>
+</form>
+<script>
+  document.querySelector("input").addEventListener("keydown", (e) => { if (e.isTrusted) reset.disabled = false; });
+</script>

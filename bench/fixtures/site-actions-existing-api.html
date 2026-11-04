@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Existing site action API remains untouched</title>
+<script>
+  window.existingModelContext = Object.freeze({ registerTool() { return "existing implementation"; } });
+  Object.defineProperty(document, "modelContext", { value: existingModelContext, configurable: true });
+  Object.defineProperty(navigator, "modelContext", { value: existingModelContext, configurable: true });
+</script>
+<script src="/site-actions-source.js"></script>
+<script>
+  window.existingAPICheck = {
+    result: __safariHarnessInstallSiteActions({ origin: location.origin, legacyNavigator: true }),
+    documentPreserved: document.modelContext === existingModelContext,
+    navigatorPreserved: navigator.modelContext === existingModelContext,
+    behavior: document.modelContext.registerTool(),
+  };
+</script>

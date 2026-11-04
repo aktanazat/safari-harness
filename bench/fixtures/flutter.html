@@ -1,0 +1,21 @@
+<!doctype html>
+<title>Flutter</title>
+<!-- A Flutter web app (GEICO's sign-in, DartPad): it draws on a canvas and
+     builds the controls a screen reader reads, the only ones a snapshot
+     can, a frame after its "Enable accessibility" placeholder is clicked.
+     Words outside Flutter (DartPad's code editor) show meanwhile. -->
+<p>Code editor text.</p>
+<flutter-view>
+  <flt-semantics-placeholder role="button" aria-label="Enable accessibility" tabindex="0" style="position: absolute; left: -1px; top: -1px; width: 1px; height: 1px;"></flt-semantics-placeholder>
+  <flt-semantics-host></flt-semantics-host>
+</flutter-view>
+<script>
+  const placeholder = document.querySelector("flt-semantics-placeholder");
+  placeholder.addEventListener("click", (e) => {
+    if (e.target !== placeholder) return;
+    placeholder.remove();
+    setTimeout(() => {
+      document.querySelector("flt-semantics-host").innerHTML = '<flt-semantics role="button">Log In</flt-semantics>';
+    }, 50);
+  }, true);
+</script>

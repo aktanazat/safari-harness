@@ -1,0 +1,13 @@
+<!doctype html>
+<title>Sign up</title>
+<h1>Enter 6-digit code</h1>
+<input aria-label="Code">
+<button onclick="next()">Next</button>
+<div id="toasts"></div>
+<script>
+  // As TikTok's sign-up answered a scripted Next on 10-02: once its request
+  // came back, a toast at the foot of the page.
+  function next() {
+    setTimeout(() => document.getElementById("toasts").append(Object.assign(document.createElement("div"), { textContent: "Maximum number of attempts reached. Try again later." })), 100);
+  }
+</script>

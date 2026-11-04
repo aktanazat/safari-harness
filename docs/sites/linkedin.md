@@ -1,0 +1,31 @@
+---
+name: LinkedIn
+hosts: linkedin.com, www.linkedin.com
+---
+# LinkedIn
+
+This is the user's real account, and LinkedIn restricts accounts that act in bursts. Read in small batches, and confirm the full list with the user before anything that sends more than one message or invitation.
+
+The global stops with an error instead of retrying when LinkedIn pushes back:
+- signed out or sent to a sign-in page: "not signed in to LinkedIn in Safari"; the user signs in again.
+- HTTP 429: the call fails with `rate_limited`, and every session's LinkedIn calls wait for the reset LinkedIn named (`e.detail.resetAt`), or a back-off from a minute when it named none.
+- HTTP 999: blocked; stop for at least a minute.
+- a redirect to a checkpoint page: the account is being challenged; stop and let the user sign in by hand.
+
+## In safari repl
+The `linkedin` global reads LinkedIn through the session in Safari, from one background tab of its own, with the same requests the LinkedIn web app makes. Requests go out 1 to 1.75 s apart, across every session. Reading the inbox or a conversation this way marks nothing as read.
+- `linkedin.getMe()`: the signed-in member: name, headline, public id, profile url.
+- `linkedin.getProfile(publicIdOrUrl)`: a member's profile: headline, about, location, experience, education. LinkedIn may count this as a profile view the member can see.
+- `linkedin.searchPeople(query, {limit, start})`, `linkedin.searchCompanies(query, {limit, start})`: search results with a `total` and, when there is another page, the `nextStart` to pass as `start`.
+- `linkedin.getCompany(universalNameOrUrl)`: a company page: tagline, description, industry, size, headquarters, followers.
+- `linkedin.getJob(jobIdOrUrl)`: a job posting: title, company, location, posted date, description.
+- `linkedin.getUserPosts(profileIdOrUrl, {limit})`: a member's recent posts with reaction and comment counts.
+- `linkedin.getInbox({limit})`: the message inbox: each conversation with its participants, unread state, and last message.
+- `linkedin.getConversation(conversationId, {limit})`: one conversation's messages, newest first. `conversationId` is the `id` from `getInbox` or the thread's `https://www.linkedin.com/messaging/thread/...` url; `participants` lists whoever sent one of the returned messages.
+- `linkedin.sendMessage({conversationId | to, text})`, `linkedin.sendInvitation(publicIdOrUrl, {note})`: drafts only until approved: each returns the exact text and sends nothing; call it again with `approved: true` once the user has approved that text.
+
+```js
+const me = await linkedin.getMe();
+const { conversations } = await linkedin.getInbox({ limit: 10 });
+const thread = await linkedin.getConversation(conversations[0].id, { limit: 20 });
+```

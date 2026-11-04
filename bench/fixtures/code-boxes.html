@@ -1,0 +1,13 @@
+<!doctype html>
+<title>Code boxes</title>
+<!-- PayPal's emailed-code step (09-29): six one-character boxes, each
+     labelled "Digit N of 6"; Submit reads them in order. -->
+<input maxlength="1" aria-label="Digit 1 of 6"><input maxlength="1" aria-label="Digit 2 of 6"><input maxlength="1" aria-label="Digit 3 of 6"><input maxlength="1" aria-label="Digit 4 of 6"><input maxlength="1" aria-label="Digit 5 of 6"><input maxlength="1" aria-label="Digit 6 of 6">
+<button type="button" id="submit">Submit</button>
+<p id="said"></p>
+<script>
+  submit.addEventListener("click", () => {
+    const code = [...document.querySelectorAll("input")].map((b) => b.value).join("");
+    said.textContent = code === "402913" ? "Code accepted" : `Wrong code, ${code.length} digits`;
+  });
+</script>

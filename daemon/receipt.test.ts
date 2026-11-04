@@ -1,0 +1,375 @@
+import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { bridge } from "./bridge.ts";
+import { connect } from "./fake-safari.ts";
+import { effectOf, keepRequest, NO_EFFECT, type RawReceipt, site, urlMatch, WAIT_NEEDS } from "./receipt.ts";
+import { callTool } from "./tools.ts";
+
+// An action's receipt (receipt.ts, withReceipt in content.js) and the waits
+// that read the page (waitFor in content.js). The page's half runs here
+// from content.js itself: the block between its "tested with
+// daemon/receipt.test.ts" markers, which carries site, keepRequest, and
+// urlMatch with the daemon's bodies, and the settle and text rules.
+
+type Span = { min: number; quiet: number; max: number; patience?: number; busy?: number; poll?: number };
+type PageRules = {
+  RECEIPT_SPAN: Span;
+  QUIET_SPAN: Span;
+  site: typeof site;
+  keepRequest: typeof keepRequest;
+  urlMatch: typeof urlMatch;
+  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null, back?: number | null) => number;
+  shows: (page: string, want: string) => boolean;
+};
+
+const CONTENT = readFileSync(join(import.meta.dir, "../extension/content.js"), "utf8");
+const begin = CONTENT.indexOf("// ---- tested with daemon/receipt.test.ts: begin ----");
+const end = CONTENT.indexOf("// ---- tested with daemon/receipt.test.ts: end ----");
+const inPage: PageRules = new Function(`${CONTENT.slice(begin, end)}\nreturn { RECEIPT_SPAN, QUIET_SPAN, site, keepRequest, urlMatch, settleAt, shows };`)();
+
+const copies = [["daemon", { site, keepRequest, urlMatch }], ["page", inPage]] as const;
+
+// ---------- which requests a receipt reports ----------
+
+// [method, url, page, kept]
+const REQUESTS: [string, string, string, boolean][] = [
+  ["POST", "https://shop.example.com/api/order", "https://shop.example.com/cart", true],
+  ["GET", "https://api.shop.example.com/cart/items", "https://www.shop.example.com/cart", true],
+  ["GET", "https://cdn.other.com/app.js", "https://shop.example.com/cart", false],
+  ["GET", "https://static.bbc.co.uk/news.json", "https://www.bbc.co.uk/news", true],
+  ["GET", "https://evil.co.uk/news.json", "https://www.bbc.co.uk/news", false],
+  ["GET", "http://127.0.0.1:9000/api", "http://127.0.0.1:8080/", true],
+  ["GET", "http://127.0.0.2/api", "http://127.0.0.1:8080/", false],
+  ["POST", "https://shop.example.com/collect", "https://shop.example.com/cart", false],
+  ["GET", "https://shop.example.com/v1/track.gif?u=1", "https://shop.example.com/cart", false],
+  ["POST", "https://shop.example.com/g/log", "https://shop.example.com/cart", false],
+  ["GET", "https://shop.example.com/Analytics/hit", "https://shop.example.com/cart", false],
+  ["GET", "https://shop.example.com/pixel", "https://shop.example.com/cart", false],
+  ["POST", "https://shop.example.com/beacon", "https://shop.example.com/cart", false],
+  ["DELETE", "https://shop.example.com/track/42", "https://shop.example.com/cart", true],
+  ["PUT", "https://shop.example.com/collect", "https://shop.example.com/cart", true],
+  ["GET", "https://shop.example.com/login", "https://shop.example.com/cart", true],
+  ["GET", "https://shop.example.com/catalog", "https://shop.example.com/cart", true],
+  ["GET", "not a url", "https://shop.example.com/cart", false],
+];
+
+for (const [where, rules] of copies) {
+  test(`${where}: a receipt keeps the page's own requests, less other sites and beacons`, () => {
+    for (const [method, url, page, kept] of REQUESTS) expect([method, url, rules.keepRequest({ method, url }, page)]).toEqual([method, url, kept]);
+  });
+
+  test(`${where}: a wait's url is a part of the address, or a /regex/ with flags`, () => {
+    expect(rules.urlMatch("https://shop.example.com/order/123/done", "/done")).toBe(true);
+    expect(rules.urlMatch("https://shop.example.com/cart", "/done")).toBe(false);
+    expect(rules.urlMatch("https://shop.example.com/ORDER/123", "/order\\/\\d+/i")).toBe(true);
+    expect(rules.urlMatch("https://shop.example.com/ORDER/123", "/order\\/\\d+/")).toBe(false);
+    expect(() => rules.urlMatch("", "/(/")).toThrow();
+  });
+}
+
+// ---------- what a receipt says ----------
+
+const QUIET: RawReceipt = { added: 0, removed: 0, changed: 0, url: null, focus: null, states: [], dialog: null, page: "https://shop.example.com/cart", requests: [], pending: [], errors: [] };
+
+test("a page that did nothing gets none and what to try", () => {
+  expect(effectOf(QUIET)).toEqual({ effect: "none", next: NO_EFFECT });
+  // a tab that keeps no request log is judged on the rest
+  expect(effectOf({ ...QUIET, requests: null, pending: null })).toEqual({ effect: "none", next: NO_EFFECT });
+  // beacons and other sites are no reaction
+  expect(effectOf({ ...QUIET, requests: [{ method: "POST", url: "https://shop.example.com/collect", status: 204 }, { method: "GET", url: "https://ads.other.com/x", status: 200 }] }).effect).toBe("none");
+});
+
+test("errors the page threw come beside the effect, and do not make one", () => {
+  expect(effectOf({ ...QUIET, errors: ["TypeError: x is undefined"] })).toEqual({ effect: "none", next: NO_EFFECT, pageErrors: ["TypeError: x is undefined"] });
+  expect(effectOf({ ...QUIET, added: 3, errors: ["boom"] })).toEqual({ effect: { added: 3 }, pageErrors: ["boom"] });
+});
+
+test("a page that refused for want of focus or a real click says what the step needs: Safari in front and a real click, or the user", () => {
+  const names = (next?: string) => ["activate", "real_input", "handoff"].filter((t) => new RegExp(`\\b${t}\\b`).test(next ?? ""));
+  for (const error of ["unhandled rejection: The document is not focused.", "unhandled rejection: The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.", "NotAllowedError: denied"]) {
+    // the page took the focus and still refused: that effect is no answer
+    const got = effectOf({ ...QUIET, focus: "page", errors: [error] });
+    expect([error, got.pageErrors, names(got.next)]).toEqual([error, [error], ["activate", "real_input", "handoff"]]);
+  }
+  expect(effectOf({ ...QUIET, focus: "page", errors: ["TypeError: x is undefined"] }).next).toBeUndefined();
+});
+
+// On 10-01 and 10-02 TikTok's sign-up answered each scripted Next with
+// "Maximum number of attempts reached. Try again later."; the agent changed
+// the address, the network, and the cookies over two days, and a real click
+// went through at once. A job site's Submit answered so on 09-30
+// (greenhouse.md).
+test("a scripted action the site answered with an error says to do it once with real input", () => {
+  const rows: [string[], boolean][] = [
+    [["Maximum number of attempts reached. Try again later."], true],
+    [["There was an error processing your application. Please try again."], true],
+    [["Too many attempts"], true],
+    [["Something went wrong"], true],
+    [["Incorrect code. Please try again."], false],
+    [["Saved"], false],
+  ];
+  for (const [said, real] of rows) expect([said, /\breal_input\b/.test(effectOf({ ...QUIET, added: 1, said }).next ?? "")]).toEqual([said, real]);
+  // its own site turning the request away says the same
+  expect(effectOf({ ...QUIET, requests: [{ method: "POST", url: "https://shop.example.com/api/verify", status: 429 }] }).next).toMatch(/\breal_input\b/);
+});
+
+test("an effect quotes the few lines an action brought up, and only counts a whole new section", () => {
+  expect(effectOf({ ...QUIET, added: 2, said: ["Code sent", "Check your email"] }).effect).toEqual({ added: 2, said: ["Code sent", "Check your email"] });
+  expect(effectOf({ ...QUIET, added: 9, said: ["Item 1", "Item 2", "Item 3", "Item 4"] }).effect).toEqual({ added: 9 });
+});
+
+test("failed requests lead the net lines, paths without their queries, then the rest, then those still out", () => {
+  const got = effectOf({
+    ...QUIET,
+    requests: [
+      { method: "GET", url: "https://shop.example.com/api/cart?token=abc", status: 200 },
+      { method: "POST", url: "https://shop.example.com/api/order", status: 500 },
+      { method: "GET", url: "https://api.shop.example.com/stock", error: "TypeError: Load failed" },
+      { method: "POST", url: "https://shop.example.com/collect", status: 204 },
+    ],
+    pending: [{ method: "GET", url: "https://shop.example.com/api/list?page=2" }],
+  });
+  expect(got.effect).toEqual({ net: ["failed: POST /api/order 500", "failed: GET api.shop.example.com/stock TypeError: Load failed", "GET /api/cart 200", "pending: GET /api/list"] });
+});
+
+// A click whose request was still out when its watch ended (a Slate
+// form's dialog) left the dialog unread, and agents put a shell sleep
+// after 54 clicks in the ten sessions to 09-30; wait quiet covers the
+// request instead.
+test("an action whose own request is still out says to wait for the page to go quiet, and one on others' requests does not", () => {
+  const waitsQuiet = (next?: string) => /\bwait\b/.test(next ?? "") && /\bquiet\b/.test(next ?? "");
+  const own = { method: "GET", url: "https://shop.example.com/api/list" };
+  expect(waitsQuiet(effectOf({ ...QUIET, pending: [own] }).next)).toBe(true);
+  expect(effectOf({ ...QUIET, pending: [{ method: "POST", url: "https://shop.example.com/collect" }, { method: "GET", url: "https://ads.other.com/x" }] }).next).toBe(NO_EFFECT);
+  expect(effectOf({ ...QUIET, requests: [{ ...own, status: 200 }] }).next).toBeUndefined();
+  // a page that refused the click needs Safari in front first
+  expect(effectOf({ ...QUIET, pending: [own], errors: ["NotAllowedError: denied"] }).next).toMatch(/\breal_input\b/);
+});
+
+test("a receipt lists ten requests and counts the rest", () => {
+  const requests = Array.from({ length: 13 }, (_, i) => ({ method: "GET", url: `https://shop.example.com/api/${i}`, status: 200 }));
+  expect(effectOf({ ...QUIET, requests })).toEqual({ effect: { net: [...requests.slice(0, 10).map((_, i) => `GET /api/${i} 200`), "and 3 more"] } });
+});
+
+test("a control's state change reads as what it is now and no longer is", () => {
+  const got = effectOf({
+    ...QUIET,
+    states: [
+      { who: 'button "Menu"', before: ["collapsed", "focused"], after: ["expanded"] },
+      { who: 'checkbox "Gift"', before: ["checked"], after: [] },
+      { who: 'combobox "Size"', before: ['value="S"'], after: ['value="M"'] },
+      { who: 'button "Same"', before: ["focused"], after: [] },
+    ],
+  });
+  expect(got).toEqual({ effect: { states: ['button "Menu": now expanded, no longer collapsed', 'checkbox "Gift": no longer checked', 'combobox "Size": value="S" -> value="M"'] } });
+});
+
+test("an address, focus, or dialog alone is an effect", () => {
+  expect(effectOf({ ...QUIET, url: "https://shop.example.com/cart#step2" }).effect).toEqual({ url: "https://shop.example.com/cart#step2" });
+  expect(effectOf({ ...QUIET, focus: 'textbox "Email"' }).effect).toEqual({ focus: 'textbox "Email"' });
+  expect(effectOf({ ...QUIET, dialog: "confirm" }).effect).toEqual({ dialog: "confirm" });
+});
+
+// ---------- matching text ----------
+
+test("the page's text matches case and spacing aside", () => {
+  const rows: [string, string, boolean][] = [
+    ["BMW M240 i xDrive", "M240i", true],
+    ["BMW M240\u00a0i", "m240 I", true],
+    ["Order\n  placed", "order placed", true],
+    ["BMW M340i", "M240i", false],
+    ["Payday", "Paid on", false],
+  ];
+  for (const [page, want, found] of rows) expect([page, want, inPage.shows(page, want)]).toEqual([page, want, found]);
+});
+
+test("the page matches invisible padding and soft hyphens as text, not glyphs", () => {
+  for (const invisible of ["\u00AD", "\u034F", "\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF"]) {
+    expect(inPage.shows(`USCIS${invisible} told many peo${invisible}ple`, "USCIS told many people")).toBe(true);
+    expect(inPage.shows("USCIS told many people", `USCIS told${invisible} many people`)).toBe(true);
+  }
+});
+
+// ---------- when a watch of the page ends ----------
+
+// A fake clock walks a millisecond at a time; the page changed at the
+// times given, and the watch ends at the first moment settleAt allows.
+// No change is distinct from a change in the action's own millisecond.
+function endsAt(changes: number[], span: Span, busy = false): number {
+  let first: number | null = null;
+  let last = 0;
+  for (let now = 0; now <= 10000; now++) {
+    if (changes.includes(now)) {
+      first ??= now;
+      last = now;
+    }
+    if (now >= inPage.settleAt(0, last, busy, span, first)) return now;
+  }
+  throw new Error("the page watch did not end within the fake clock's 10000 ms");
+}
+
+// On 10-05 AWS's Forgot password answered none at 300 ms after a redirect,
+// but the next snapshot showed its security check. A missing request log
+// must not turn a late first change into an ignored click.
+const ACTION_ENDS: [string, number[], boolean, number][] = [
+  ["no change and no pending request waits for a first change", [], false, 2000],
+  ["a first change at 1200 ms gets its quiet span", [1200], false, 1350],
+  ["a late first change and its next batch settle together", [1200, 1300], false, 1450],
+  ["a batch after a late change has settled is too late", [1200, 1500], false, 1350],
+  ["a change in the action's own millisecond keeps the fast answer", [0], false, 300],
+  ["an immediate change keeps the fast answer", [50], false, 300],
+  ["a change near the minimum gets its quiet span", [250], false, 400],
+  ["two early batches settle together", [250, 350], false, 500],
+  ["a batch after an early change has settled is too late", [250, 500], false, 400],
+  ["an early storm stays bounded", Array.from({ length: 50 }, (_, i) => i * 100), false, 800],
+  ["a request the action started still out holds the watch 3 s from the action", [], true, 3000],
+  ["a first change at the old maximum gets its quiet span", [800], false, 950],
+  ["a late storm cannot keep the watch open", Array.from({ length: 50 }, (_, i) => 1200 + i * 100), false, 1700],
+  ["a first change just before patience ends still settles", [1999], false, 2149],
+  ["a first change at the patience boundary still settles", [2000], false, 2150],
+  ["a first change after patience runs out is too late", [2001], false, 2000],
+  ["a storm at the patience boundary reaches the overall bound", Array.from({ length: 50 }, (_, i) => 2000 + i * 100), false, 2500],
+];
+
+test.each(ACTION_ENDS)("an action's watch: %s", (_name, changes, busy, end) => {
+  expect(endsAt(changes, inPage.RECEIPT_SPAN, busy)).toBe(end);
+});
+
+test("a late change whose request is still out is held 3 s from the action, or to its own bound when that is later", () => {
+  expect(inPage.settleAt(10000, 11200, true, inPage.RECEIPT_SPAN, 11200)).toBe(13000);
+  expect(inPage.settleAt(10000, 12800, true, inPage.RECEIPT_SPAN, 12800)).toBe(13300);
+});
+
+// The same clock with a request the action started that the watch sees
+// come back at back: the watch holds while it is out, and the page then
+// settles as after a late reaction. In the two weeks of logs before 10-19,
+// 191 of 955 clicks, keys, and options answered with such a request still
+// out at 800 ms, and 69 were followed by a call to wait for it.
+function endsWithRequest(changes: number[], back: number): number {
+  let last = 0;
+  for (let now = 0; now <= 10000; now++) {
+    if (changes.includes(now)) last = now;
+    const out = now < back;
+    if (now >= inPage.settleAt(0, last, out, inPage.RECEIPT_SPAN, 0, out ? null : back)) return now;
+  }
+  throw new Error("the page watch did not end within the fake clock's 10000 ms");
+}
+
+const REQUEST_ENDS: [string, number[], number, number][] = [
+  ["a request back at 1 s whose answer the page draws at once settles after the drawing", [1005], 1000, 1155],
+  ["a request back at 1 s that changes nothing ends a quiet span after it", [], 1000, 1150],
+  ["a request back before the old bound still gets a quiet span after it", [], 400, 550],
+  ["a storm after the request comes back stays bounded", Array.from({ length: 50 }, (_, i) => 1000 + i * 100), 1000, 1500],
+  ["a request still out at 3 s ends the watch there", [], 5000, 3000],
+];
+
+test.each(REQUEST_ENDS)("an action's watch on its own request: %s", (_name, changes, back, end) => {
+  expect(endsWithRequest(changes, back)).toBe(end);
+});
+
+test("a late change settles relative to the action's start, not the clock's origin", () => {
+  expect(inPage.settleAt(10000, 11200, false, inPage.RECEIPT_SPAN, 11200)).toBe(11350);
+});
+
+const QUIET_ENDS: [string, number[], number][] = [
+  ["without any changes", [], 500],
+  ["after a change in the wait's own millisecond", [0], 500],
+  ["after the last of two changes", [100, 400], 900],
+  ["before a change that comes after it has settled", [100, 400, 1200], 900],
+];
+
+test.each(QUIET_ENDS)("a quiet wait ends 500 ms %s", (_name, changes, end) => {
+  expect(endsAt(changes, inPage.QUIET_SPAN)).toBe(end);
+});
+
+// ---------- through the tools ----------
+
+// Safari as the daemon sees it: a page op answers from answers[op], or
+// fails with what it throws, and each request to the page is noted as
+// [op, args].
+function safari(answers: Record<string, (args: unknown[]) => unknown>) {
+  const sent: [string, unknown[]][] = [];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      let reply: { value: unknown } | { error: string };
+      try {
+        reply = { value: op === "relay" ? (sent.push([args[1], args[2]]), answers[args[1]]?.(args[2]) ?? { ok: true }) : [] };
+      } catch (e) {
+        reply = { error: e instanceof Error ? e.message : String(e) };
+      }
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
+    },
+    close() {},
+  });
+  return sent;
+}
+
+test("a click answers with its effect, or with where it led and nothing more", async () => {
+  safari({ click: () => ({ ok: true, receipt: QUIET }) });
+  expect(await callTool("click", { tab: 7, ref: "#b" })).toMatchObject({ ok: true, effect: "none", next: NO_EFFECT });
+  safari({ click: () => ({ ok: true, receipt: { ...QUIET, added: 2 } }) });
+  const added = await callTool("click", { tab: 7, ref: "#b" });
+  expect(added).toMatchObject({ ok: true, effect: { added: 2 } });
+  expect(added).not.toHaveProperty("receipt");
+  safari({ click: () => ({ ok: true, navigated: { url: "https://shop.example.com/done", title: "Done" }, receipt: QUIET }) });
+  const led = await callTool("click", { tab: 7, ref: "#b" });
+  expect(led).toMatchObject({ ok: true, navigated: { url: "https://shop.example.com/done" } });
+  expect(led).not.toHaveProperty("effect");
+  expect(led).not.toHaveProperty("receipt");
+});
+
+test("a wait on several texts asks the page for all it wants and says which it saw", async () => {
+  const sent = safari({ wait: () => ({ found: true, which: "Declined" }) });
+  const got = await callTool("wait", { tab: 7, any: ["Placed", "Declined"], gone: "Loading", url: "/order/", quiet: true, ms: 1000 });
+  expect(got).toMatchObject({ ok: true, found: true, which: "Declined" });
+  expect(sent[0]).toEqual(["wait", [null, { any: ["Placed", "Declined"], gone: "Loading", url: "/order/", quiet: true }]]);
+});
+
+test("a wait refuses what the page could not check", async () => {
+  safari({});
+  await expect(callTool("wait", { tab: 7 })).rejects.toThrow(WAIT_NEEDS);
+  await expect(callTool("wait", { tab: 7, any: "Placed" })).rejects.toThrow("any must be a list of texts");
+  await expect(callTool("wait", { tab: 7, any: [] })).rejects.toThrow("any must be a list of texts");
+  await expect(callTool("wait", { tab: 7, url: "/(/" })).rejects.toThrow("is not a valid /regex/");
+});
+
+// A wait with only ms slept all of it: in the car search of 09-27, 107 such
+// waits held agents 6.8 minutes on pages long since drawn.
+test("a wait with only ms ends once the page settles, which it asks the page for", async () => {
+  const sent = safari({ wait: () => ({ found: true }) });
+  expect(await callTool("wait", { tab: 7, ms: 20000 })).toMatchObject({ ok: true });
+  expect(sent).toEqual([["wait", [null, { quiet: true }]]]);
+});
+
+test("a wait with only ms on a page that cannot be watched waits out its ms and does not fail", async () => {
+  safari({ wait: () => { throw new Error("Safari could not open https://down.example/: the site did not answer"); } });
+  expect(await callTool("wait", { tab: 7, ms: 50 })).toMatchObject({ ok: true });
+});
+
+// Late in September agents waited on words no page shows ("zzqq1" to
+// "zzqq48") to sleep, 15 minutes of it, and asked for more than the limit.
+// On 10-07 a support chat took 160 waits of 30 s; a wait now holds 110 s.
+test("a text wait the page never meets says those words never showed; a 60 s wait is kept whole, and an ms past 110000 says it was cut", async () => {
+  safari({ wait: () => ({ found: false }) });
+  expect(await callTool("wait", { tab: 7, text: "zzqq1", ms: 200000 })).toMatchObject({ ok: false, found: false, hint: expect.stringContaining("never showed those words"), note: expect.stringContaining("at most 110000") });
+  const minute = await callTool("wait", { tab: 7, selector: "#done", ms: 60000 });
+  expect(JSON.stringify(minute)).not.toMatch(/never showed|at most/);
+});
+
+test("a timed-out wait returns what the page changed before it stopped", async () => {
+  let waiting: string | undefined;
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay" && args[1] === "wait") { waiting = id; return; }
+      queueMicrotask(() => {
+        if (op === "relay" && args[1] === "waitStop") bridge.handleMessage(JSON.stringify({ id: waiting, value: { found: false, meanwhile: ["new: No case found", "gone: Checking"] } }));
+        bridge.handleMessage(JSON.stringify({ id, value: op === "relay" ? { ok: true } : [] }));
+      });
+    },
+    close() {},
+  });
+  expect(await callTool("wait", { tab: 7, text: "Case details", ms: 50 })).toMatchObject({ found: false, meanwhile: ["new: No case found", "gone: Checking"] });
+});

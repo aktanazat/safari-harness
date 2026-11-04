@@ -1,0 +1,17 @@
+<!doctype html>
+<title>Account</title>
+<!-- USCIS's signed-in pages (09-30) load AWS's token script and show no
+     check. AWS's CAPTCHA draws its puzzle into #captcha-container; this page
+     draws it 500 ms after it loads. The script is never fetched here. -->
+<script type="text/plain" src="https://0123456789ab.edge.sdk.token.awswaf.com/0123456789ab/fedcba987654/challenge.js"></script>
+<main>
+  <h1>Account</h1>
+  <p>Your cases</p>
+</main>
+<div id="captcha-container"></div>
+<script>
+  setTimeout(() => {
+    document.querySelector("#captcha-container").innerHTML =
+      '<div class="amzn-captcha-modal" style="width: 320px; height: 400px"><h2 class="amzn-captcha-modal-title">Solve the puzzle</h2></div>';
+  }, 500);
+</script>

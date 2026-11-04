@@ -1,0 +1,34 @@
+<!doctype html>
+<title>Editor</title>
+<div contenteditable="true" role="textbox" aria-label="Message">Old notes</div>
+<p id="model"></p>
+<script>
+  // A rich editor in miniature, as ProseMirror and Lexical work: the text
+  // lives in its own model, every edit is taken over at beforeinput, and the
+  // element is drawn again from the model. Text changed in the element
+  // behind its back never reaches the model.
+  const box = document.querySelector("[contenteditable]");
+  let text = box.textContent;
+  const draw = (caret) => {
+    box.textContent = text;
+    document.getElementById("model").textContent = `Editor holds: ${text}.`;
+    if (box.firstChild) getSelection().collapse(box.firstChild, caret);
+  };
+  // where a selection boundary falls in the text
+  const offset = (node, at) => {
+    const r = document.createRange();
+    r.selectNodeContents(box);
+    r.setEnd(node, at);
+    return r.toString().length;
+  };
+  box.addEventListener("beforeinput", (e) => {
+    e.preventDefault();
+    const r = getSelection().getRangeAt(0);
+    const start = offset(r.startContainer, r.startOffset);
+    const end = offset(r.endContainer, r.endOffset);
+    const insert = e.inputType === "insertText" ? e.data ?? "" : "";
+    text = text.slice(0, start) + insert + text.slice(end);
+    draw(start + insert.length);
+  });
+  draw(text.length);
+</script>

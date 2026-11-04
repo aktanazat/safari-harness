@@ -1,0 +1,171 @@
+// The guides `safari guide` prints: docs/GUIDE.md, the short card of rules;
+// one section of docs/REFERENCE.md, a tool's (`safari guide eval`) or an
+// idea's (`safari guide reference troubleshooting`); docs/REPL.md for
+// safari repl; and one per site in docs/sites/, followed by the notes
+// agents have learned on that site (notes.ts).
+
+import { readFile } from "node:fs/promises";
+import { distance } from "./guard.ts";
+import { notedHosts, notesSection } from "./notes.ts";
+import { bundled, covering, covers, type Guide } from "./site-guides.ts";
+
+const DOCS = new URL("../docs/", import.meta.url);
+
+// which is what followed `safari guide`, its words joined by spaces. Words
+// that name nothing together are each a topic of their own: on 10-22
+// `safari guide repl x linkedin` missed, and its agent asked three times.
+export async function guide(which?: string): Promise<string | null> {
+  const words = (which ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return readFile(new URL("GUIDE.md", DOCS), "utf8");
+  const [first, ...rest] = words;
+  if (first === "repl" && rest.length === 0) return readFile(new URL("REPL.md", DOCS), "utf8");
+  const reference = await readFile(new URL("REFERENCE.md", DOCS), "utf8");
+  if (first === "reference") return referenceSection(reference, rest.join(" "));
+  const tool = rest.length === 0 ? sections(reference).find((s) => s.tool === toolName(first)) : undefined;
+  if (tool) return tool.text;
+  const whole = (await siteGuide(words.join(" "))) ?? find(sections(reference), words.join(" "))?.text ?? null;
+  if (whole !== null || rest.length === 0) return whole;
+  const each = await Promise.all(words.map((word) => guide(word)));
+  if (each.every((text) => text === null)) return null;
+  return [...new Set(each.map((text, i) => (text ?? noGuide(words[i])).trimEnd()))].join("\n\n") + "\n";
+}
+
+// A `## ` section of the reference, up to the next `#` or `## ` heading.
+// A tool's heading is its name alone (`## real_input`); an idea's is a
+// phrase (`## Two lanes: this harness or Apple's safaridriver`).
+type Section = { heading: string; tool?: string; text: string };
+
+function sections(md: string): Section[] {
+  const out: Section[] = [];
+  let open: { heading: string; lines: string[] } | undefined;
+  const close = () => {
+    if (!open) return;
+    const tool = /^[a-z_]+$/.test(open.heading) ? open.heading : undefined;
+    out.push({ heading: open.heading, ...(tool ? { tool } : {}), text: `${open.lines.join("\n").trimEnd()}\n` });
+    open = undefined;
+  };
+  for (const line of md.split("\n")) {
+    if (/^#{1,2} /.test(line)) {
+      close();
+      if (line.startsWith("## ")) open = { heading: line.slice(3).trim(), lines: [line] };
+    } else open?.lines.push(line);
+  }
+  close();
+  return out;
+}
+
+const toolName = (name: string) => {
+  const tool = name.toLowerCase().replace(/-/g, "_");
+  return tool === "read" ? "authenticated_read" : tool;
+};
+
+// A tool by its name, else the idea whose heading starts with the words,
+// else the first whose heading holds them.
+function find(all: Section[], words: string): Section | undefined {
+  const q = words.toLowerCase();
+  return all.find((s) => s.tool === toolName(q))
+    ?? all.find((s) => !s.tool && s.heading.toLowerCase().startsWith(q))
+    ?? all.find((s) => !s.tool && s.heading.toLowerCase().includes(q));
+}
+
+// `safari guide reference` lists the sections: on 10-16 an agent printed
+// all 113 KB of the reference (omp showed 52 KB of it), and others paged
+// it with sed. `all` prints the whole file; a name prints that section.
+function referenceSection(md: string, words: string): string | null {
+  if (words === "all") return md;
+  const all = sections(md);
+  if (words) return find(all, words)?.text ?? null;
+  const ideas = all.filter((s) => !s.tool).map((s) => `  ${s.heading}`);
+  const tools = all.flatMap((s) => (s.tool ? [s.tool] : []));
+  return [
+    "The reference, a section at a time. `safari guide <tool>` prints one tool's section (safari guide eval);",
+    "`safari guide reference <words>` an idea's, by the first words of its heading (safari guide reference troubleshooting);",
+    "`safari guide reference all` the whole file.",
+    "",
+    "Ideas:",
+    ...ideas,
+    "",
+    "Tools:",
+    `  ${tools.join(", ")}`,
+    "",
+  ].join("\n");
+}
+
+// "sites" lists every guide, and the hosts with learned notes.
+export async function siteGuide(which: string): Promise<string | null> {
+  const guides = bundled();
+  const listing = (gs: Guide[]) => gs.map((g) => `${g.slug.padEnd(18)} ${g.hosts.join(", ")}`).join("\n");
+  if (which === "sites") {
+    const noted = notedHosts();
+    return noted.length ? `${listing(guides)}\n\nlearned notes: ${noted.join(", ")}` : listing(guides);
+  }
+  const q = which.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+  const named = guides.find((g) => g.slug === q || g.name.toLowerCase() === q);
+  if (named) {
+    // a named guide's notes: those of every host its entries cover
+    const domains = named.hosts.map((entry) => entry.split("/")[0]);
+    return withLearned(named.text, notedHosts().filter((n) => domains.some((d) => covers(d, n))));
+  }
+  // A bare name is every site with that name among its host's labels:
+  // geico is geico.com, discover card.discover.com and discover.com. 16 of
+  // 95 lookups from 09-28 to 09-30 gave a bare name and missed. google is
+  // google-search, and search too: on 10-22 six agents asked for it again
+  // after the list of google's guides, and one's search missed.
+  if (/^[a-z0-9-]+$/.test(q)) {
+    const docs = guides.filter((g) => g.hosts.some((entry) => labels(entry.split("/")[0]).includes(q)));
+    const noted = notedHosts().filter((h) => labels(h).includes(q));
+    const main = docs.find((g) => g.slug === `${q}-search`);
+    const others = docs.filter((g) => g !== main).map((g) => g.slug);
+    if (main) return withLearned(others.length ? `${main.text.trimEnd()}\n\nOther guides for ${q}: ${others.join(", ")}\n` : main.text, noted);
+    if (docs.length > 1) return withLearned(`${docs.length} guides cover ${q}; ask for one by its name:\n${listing(docs)}`, noted);
+    if (docs.length || noted.length) return withLearned(docs[0]?.text ?? null, noted);
+    const ending = guides.filter((g) => g.slug.endsWith(`-${q}`));
+    if (ending.length === 1) return ending[0].text;
+  }
+  const slash = q.indexOf("/");
+  const [host, path] = slash < 0 ? [q, "/"] : [q.slice(0, slash), q.slice(slash)];
+  // The host's notes and its subdomains': uscis.gov found none on 09-30,
+  // its notes being on my.uscis.gov and egov.uscis.gov.
+  const noteHost = host.replace(/:\d+$/, "");
+  return withLearned(covering(guides, host, path)?.text ?? null, notedHosts().filter((h) => covers(noteHost, h)));
+}
+
+// A guide, then the notes learned on each of hosts; null when neither.
+function withLearned(text: string | null, hosts: string[]): string | null {
+  const learned = hosts.map(notesSection).filter((s) => s !== null);
+  if (learned.length === 0) return text;
+  return [...(text === null ? [] : [text.trimEnd()]), ...learned].join("\n\n");
+}
+
+// Labels that name a door into a site, not the site: on 09-30 the nearest
+// noted site to apply.knight-hennessy.stanford.edu, and to smapply, was
+// apply.coveredca.com, on the word apply alone.
+const DOORS: Record<string, true> = Object.fromEntries(["www", "m", "mobile", "app", "apps", "my", "myaccount", "account", "accounts", "login", "signin", "auth", "id", "sso", "secure", "portal", "apply", "jobs", "careers", "online", "web"].map((l) => [l, true]));
+
+// A host's labels that name it, without the top-level domain or a door:
+// geico for geico.com, card and discover for card.discover.com, stanford
+// for applygrad.stanford.edu.
+function labels(host: string): string[] {
+  const all = host.split(".");
+  return (all.length > 1 ? all.slice(0, -1) : all).filter((l) => !Object.hasOwn(DOORS, l));
+}
+
+// What to say when no guide or notes answer which: the noted hosts nearest
+// it, and the call that lists every site (list). $s is a shell variable the
+// shell passed as written, as it did for an agent's loop on 09-29.
+export function noGuide(which: string, list = "safari guide sites"): string {
+  if (/^reference\s/.test(which)) return `no section of the reference is named ${which.replace(/^reference\s+/, "")}; safari guide reference lists them`;
+  if (/^\$\{?\w+\}?$/.test(which)) return `no guide for ${which}: the shell passed the variable as written, so it was empty or unset, or in single quotes; give the site itself, like geico.com`;
+  const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").split(/[/:]/)[0]);
+  // a label two letters or fewer from one asked for, and not all of it
+  const near = notedHosts()
+    .map((host) => ({ host, d: Math.min(...labels(host).flatMap((l) => asked.flatMap((a) => {
+      const d = distance(l, a);
+      return d <= 2 && d < Math.min(l.length, a.length) ? [d] : [];
+    }))) }))
+    .filter(({ d }) => d <= 2)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 5)
+    .map(({ host }) => host);
+  return `no guide or notes for ${which}; ${near.length ? `nearest with notes: ${near.join(", ")}; ` : ""}every site with a guide or notes: ${list}`;
+}

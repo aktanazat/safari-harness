@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Native interactions</title>
+<style>
+body { font: 16px system-ui; margin: 32px; }
+.row { display: flex; align-items: center; gap: 100px; margin-bottom: 24px; }
+#card, #drop { display: grid; place-items: center; height: 90px; border: 2px solid #333; }
+#card { width: 130px; background: #cce3ff; cursor: grab; }
+#drop { width: 220px; background: #e5f4e7; }
+#editor { width: 650px; min-height: 100px; border: 2px solid #333; padding: 12px; margin: 20px 0; }
+#drawing { width: 650px; height: 100px; border: 2px solid #333; touch-action: none; }
+#covered-wrap { position: relative; width: 160px; margin: 16px 0; }
+#covered { width: 160px; height: 40px; }
+#cover { position: absolute; inset: 0; background: #ddd; z-index: 2; }
+#offscreen { margin-top: 1600px; }
+table { border-collapse: collapse; } td, th { border: 1px solid #333; padding: 6px; }
+</style>
+</head>
+<body>
+<div class="row"><div id="card" draggable="true">move card</div><div id="drop">drop card</div></div>
+<label>slider <input id="slider" type="range" min="0" max="100" value="0" style="width:400px"></label>
+<div id="editor" contenteditable="true" role="textbox" aria-label="table editor"></div>
+<canvas id="drawing" width="650" height="100" aria-label="drawing"></canvas>
+<div id="covered-wrap"><button id="covered">covered target</button><div id="cover">cover</div></div>
+<label>password <input id="password" type="password" autocomplete="off"></label>
+<button id="offscreen">offscreen target</button>
+<script>
+const card = document.querySelector('#card');
+const drop = document.querySelector('#drop');
+card.addEventListener('dragstart', (event) => {
+  event.dataTransfer.setData('text/plain', 'native-card');
+  document.body.dataset.dragTrusted = String(event.isTrusted);
+});
+drop.addEventListener('dragover', (event) => event.preventDefault());
+drop.addEventListener('drop', (event) => {
+  event.preventDefault();
+  if (event.dataTransfer.getData('text/plain') === 'native-card') {
+    drop.append(card);
+    document.body.dataset.dropped = 'true';
+    document.body.dataset.dropTrusted = String(event.isTrusted);
+  }
+});
+const editor = document.querySelector('#editor');
+editor.addEventListener('keydown', (event) => {
+  if (!event.metaKey || event.key.toLowerCase() !== 'v' || document.body.dataset.delayPaste !== 'true') return;
+  delete document.body.dataset.delayPaste;
+  const deadline = performance.now() + 1500;
+  let remaining;
+  do { remaining = deadline - performance.now(); } while (remaining > 0);
+  document.body.dataset.delayedPasteHandled = 'true';
+});
+editor.addEventListener('paste', (event) => {
+  document.body.dataset.pasteTrusted = String(event.isTrusted);
+  document.body.dataset.pasteCount = String(Number(document.body.dataset.pasteCount || 0) + 1);
+});
+const drawing = document.querySelector('#drawing');
+let drawingActive = false;
+let points = 0;
+drawing.addEventListener('pointerdown', (event) => {
+  drawingActive = true;
+  points = 1;
+  drawing.setPointerCapture(event.pointerId);
+  const context = drawing.getContext('2d');
+  context.beginPath();
+  context.moveTo(event.offsetX, event.offsetY);
+});
+drawing.addEventListener('pointermove', (event) => {
+  if (!drawingActive || !(event.buttons & 1)) return;
+  const context = drawing.getContext('2d');
+  context.lineTo(event.offsetX, event.offsetY);
+  context.stroke();
+  points++;
+});
+drawing.addEventListener('pointerup', (event) => {
+  drawingActive = false;
+  document.body.dataset.drawPoints = String(points);
+  document.body.dataset.drawReleased = String(event.buttons === 0);
+  document.body.dataset.drawTrusted = String(event.isTrusted);
+});
+</script>
+</body>
+</html>

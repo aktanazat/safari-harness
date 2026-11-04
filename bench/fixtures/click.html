@@ -1,0 +1,7 @@
+<!doctype html>
+<title>Click</title>
+<script>let presses = 0;</script>
+<p id="count">Pressed 0 times</p>
+<button onclick="count.textContent = `Pressed ${++presses} times`">Press</button>
+<button onclick="doomed.remove()">Remove the next button</button>
+<button id="doomed">Doomed</button>

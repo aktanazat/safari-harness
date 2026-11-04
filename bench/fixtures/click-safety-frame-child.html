@@ -1,0 +1,8 @@
+<!doctype html>
+<title>Opaque form</title>
+<button id="frame-action" data-clicks="0">Frame action</button>
+<script>
+  document.getElementById("frame-action").addEventListener("click", (event) => {
+    event.currentTarget.dataset.clicks = String(Number(event.currentTarget.dataset.clicks) + 1);
+  });
+</script>

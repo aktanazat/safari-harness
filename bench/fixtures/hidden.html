@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Hidden text</title>
+<style>
+  @keyframes fade-in { to { opacity: 1; } }
+</style>
+<p>This sentence is shown on the page.</p>
+<p style="display: none">This sentence is hidden by display: none.</p>
+<p style="visibility: hidden">This sentence is hidden by visibility: hidden.</p>
+<p style="opacity: 0">This sentence is hidden by opacity: 0.</p>
+<!-- transparent until its fade-in starts, as Apple's sign-in frame is -->
+<p style="opacity: 0; animation: fade-in 1s 100s both">This sentence is fading in.</p>

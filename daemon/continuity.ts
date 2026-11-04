@@ -1,0 +1,117 @@
+// Tabs that change under an agent. Safari may swap a tab for another under a
+// new id (a page it prepared ahead, shown in the tab's place), and gives
+// every tab a new id when the extension reloads (a deploy of it): a call
+// with an old id reaches the tab under its new one, and its result says
+// replaced: {from, to}, and that the old id goes on working. A popup an
+// agent's page opens later, outside any action (a sign-in window a script
+// opens), is that agent's tab too, and the agent's next result says popup:
+// {tab, url}. One that a tab the agent kept for the user opens stays his,
+// as that tab does, and the news says kept: true. The extension reports
+// all three (background.js); tools.ts moves what it keeps per tab.
+
+import { bridge } from "./bridge.ts";
+import { currentOwner } from "./owner.ts";
+
+type Replaced = { from: number; to: number };
+type Popup = { tab: number; url: string; kept?: true };
+type News = { replaced?: Replaced; popup?: Popup };
+
+// Old id to newest, for the extension connection it was reported on. Once
+// the extension connects again, Safari may have started over and given an
+// old id to another tab; a reloaded extension says again, each time it
+// connects, which tab each old id names now (recordRenumbered), and its own
+// aliases (background.js) lead an old id to its new tab while Safari runs.
+// Ids reported on an earlier connection lead nowhere (followTab), and go as
+// the next is recorded.
+const moved = new Map<number, { to: number; connectedAt: number | undefined }>();
+// Popups not yet reported, by the agent that owns them.
+const popups = new Map<number, Popup[]>();
+// Calls waiting for an agent's next popup (popupWaiting).
+const waiters = new Map<number, Set<() => void>>();
+
+// A tab swapped twice is reached by its first id too: every id that led to
+// the old one leads to the new one.
+export function recordReplaced(from: number, to: number): void {
+  const connectedAt = bridge.extensionInfo?.connectedAt;
+  for (const [old, m] of moved) {
+    if (m.connectedAt !== connectedAt) moved.delete(old);
+    else if (m.to === from) moved.set(old, { to, connectedAt });
+  }
+  moved.set(from, { to, connectedAt });
+}
+
+// Every tab's id after the extension reloaded, by the id it had before; the
+// extension has followed the swaps between already.
+export function recordRenumbered(tabs: Map<number, number>): void {
+  const connectedAt = bridge.extensionInfo?.connectedAt;
+  for (const [old, m] of moved) if (m.connectedAt !== connectedAt) moved.delete(old);
+  for (const [from, to] of tabs) moved.set(from, { to, connectedAt });
+}
+
+// The id a tab has now: a replaced one's newest id, or the id as it is.
+export function followTab(id: number): number {
+  const m = moved.get(id);
+  return m && m.connectedAt === bridge.extensionInfo?.connectedAt ? m.to : id;
+}
+
+export function queuePopup(owner: number, popup: Popup): void {
+  popups.set(owner, [...(popups.get(owner) ?? []), popup]);
+  for (const wake of waiters.get(owner) ?? []) wake();
+}
+
+// Settles once the agent has a popup waiting to be reported, or after ms.
+export function popupWaiting(owner: number, ms: number): Promise<void> {
+  if (popups.get(owner)?.length) return Promise.resolve();
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const wake = () => {
+    clearTimeout(timer);
+    waiters.get(owner)?.delete(wake);
+    if (waiters.get(owner)?.size === 0) waiters.delete(owner);
+    resolve();
+  };
+  const timer = setTimeout(wake, ms);
+  waiters.set(owner, (waiters.get(owner) ?? new Set()).add(wake));
+  return promise;
+}
+
+// An agent's popups it exited without hearing of: its pid may come back as
+// another process's.
+export function forgetPopups(owner: number): void {
+  popups.delete(owner);
+}
+
+// Runs a tool call and adds its news to the result: replaced when the call
+// named a tab by an old id, and the caller's oldest unreported popup. A
+// result that is not an object (a list, a text) carries none, and the
+// popup waits for the next.
+export async function withTabNews(tab: unknown, run: () => Promise<unknown>): Promise<unknown> {
+  const result = await run();
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return result;
+  const news: News = {};
+  const id = typeof tab === "number" ? tab : typeof tab === "string" && tab.trim() !== "" ? Number(tab) : NaN;
+  if (Number.isInteger(id) && followTab(id) !== id) news.replaced = { from: id, to: followTab(id) };
+  const owner = currentOwner();
+  const waiting = owner === undefined ? undefined : popups.get(owner);
+  if (owner !== undefined && waiting?.length) {
+    news.popup = waiting[0];
+    if (waiting.length > 1) popups.set(owner, waiting.slice(1));
+    else popups.delete(owner);
+  }
+  return news.replaced || news.popup ? { ...result, ...news } : result;
+}
+
+// formatResult's line for a result's news, and the result without it. The
+// fields are the ones withTabNews wrote; the CLI gets them back through JSON.
+export function splitNews(value: News): { line: string; rest: object } | null {
+  const { replaced, popup, ...rest } = value;
+  if (!replaced && !popup) return null;
+  const opened = popup ? `opened tab ${popup.tab}${popup.url ? ` (${popup.url})` : ""}` : "";
+  const lines = [
+    // From 10-04 to 10-12 a 99point agent read "use 117776" as an order and
+    // listed its tabs again after each renumbering; the old id still works.
+    ...(replaced ? [`tab ${replaced.from} is now tab ${replaced.to}; ${replaced.from} still reaches it`] : []),
+    // a popup of a tab the agent kept is the user's, as that tab is
+    ...(popup ? [popup.kept ? `a tab you kept ${opened}; it stays open for the user` : `your page ${opened}; it is yours to use and close`] : []),
+  ];
+  return { line: lines.join("\n"), rest };
+}

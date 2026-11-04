@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Filled code</title>
+<!-- A code field the page filled itself, as Safari fills in a code from
+     Messages or the user types one, named by a label that repeats what is
+     in it, as USCIS's is (09-30); a ZIP code, which an agent checks; and a
+     text area named for code, as an embed box or a code editor is. -->
+<input id="code" aria-label="Verification code">
+<input id="zip" aria-label="ZIP code">
+<textarea id="embed" aria-label="Embed code"></textarea>
+<script>
+  code.value = "402913";
+  code.setAttribute("aria-label", `Verification code required ${code.value}`);
+  zip.value = "95616";
+  embed.value = "width=560";
+</script>

@@ -1,0 +1,19 @@
+<!doctype html>
+<title>Checkout</title>
+<form id="pay">
+  <label>Gift card number <input name="gift"></label>
+  <label>Card number <input name="cardnumber" autocomplete="cc-number" inputmode="numeric"></label>
+  <label>Expires <input name="exp" autocomplete="cc-exp" placeholder="MM / YY"></label>
+  <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
+  <label>Name on card <input name="holder" autocomplete="cc-name"></label>
+  <label>Shipping ZIP <input name="ship" autocomplete="shipping postal-code"></label>
+  <label>Billing ZIP <input name="zip" autocomplete="postal-code"></label>
+  <button type="button" id="check">Check</button>
+</form>
+<p id="out"></p>
+<script>
+  document.getElementById("check").addEventListener("click", () => {
+    const f = document.getElementById("pay").elements;
+    document.getElementById("out").textContent = `Got card ${f.cardnumber.value} ending ${f.cardnumber.value.slice(-4)}, expiring ${f.exp.value}, code ${f.cvc.value}, for ${f.holder.value}, billing ZIP ${f.zip.value}. Gift card "${f.gift.value}", shipping ZIP "${f.ship.value}".`;
+  });
+</script>

@@ -1,0 +1,37 @@
+<!doctype html>
+<title>Inbox</title>
+<!-- Gmail's thread list (09-30): each thread is a table row with no tab
+     stop, under a hand cursor, named by a summary hidden inside it
+     (aria-labelledby). Its checkbox names itself by the same summary, and
+     its subject is a div with role link, no href, and too much text to be
+     a name. A click on the row opens the thread; a click on the checkbox
+     ticks it and goes no further. -->
+<style>
+  .zA { cursor: pointer; }
+  .afn { display: none; }
+  .oZ-jc { width: 20px; height: 20px; }
+  .xY { width: 600px; }
+</style>
+<table role="grid">
+  <tr class="zA" role="row" tabindex="-1" aria-labelledby="thread-1">
+    <td><div class="oZ-jc" role="checkbox" tabindex="-1" aria-checked="false" aria-labelledby="thread-1"></div></td>
+    <td>Ada Parker</td>
+    <td class="xY">
+      <div class="afn" id="thread-1">unread, Ada Parker, Garden plans for the weekend, 10:15 AM, Can we move the planting to Sunday morning? The forecast says rain on Saturday.</div>
+      <div class="xS" role="link"><span>Garden plans for the weekend</span> - <span>Can we move the planting to Sunday morning? The forecast says rain on Saturday afternoon, and the beds will be too wet to dig until noon at the earliest.</span></div>
+    </td>
+    <td><span title="Tue, Sep 30, 10:15 AM">10:15 AM</span></td>
+  </tr>
+</table>
+<p id="said"></p>
+<script>
+  const row = document.querySelector(".zA");
+  const box = row.querySelector("[role=checkbox]");
+  box.addEventListener("click", (e) => {
+    e.stopPropagation();
+    box.setAttribute("aria-checked", String(box.getAttribute("aria-checked") !== "true"));
+  });
+  row.addEventListener("click", () => {
+    document.getElementById("said").textContent = "Opened thread";
+  });
+</script>

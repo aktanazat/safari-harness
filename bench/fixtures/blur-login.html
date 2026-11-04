@@ -1,0 +1,18 @@
+<!doctype html>
+<title>Sign in</title>
+<!-- ShopGoodwill's sign-in (10-13), an Angular form that updates on blur:
+     a field's value reaches the form only as the field loses focus, so
+     Sign In with values set and never left says the fields are empty. -->
+<form>
+  <input id="user" autocomplete="username" placeholder="Username/Email">
+  <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+  <button type="button" id="signin">Sign In</button>
+</form>
+<p id="said"></p>
+<script>
+  const form = {};
+  for (const field of [user, password]) field.addEventListener("blur", () => { form[field.id] = field.value; });
+  signin.addEventListener("click", () => {
+    said.textContent = form.user && form.password ? `Signed in as ${form.user}` : "Username/Email and Password are required";
+  });
+</script>

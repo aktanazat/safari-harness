@@ -1,0 +1,12 @@
+<!doctype html>
+<title>Frame click safety</title>
+<style>
+  .frame-box { position: relative; width: 320px; height: 160px; margin: 24px; }
+  iframe { width: 320px; height: 160px; border: 0; }
+  #frame-cover { position: absolute; inset: 0; z-index: 2; background: white; }
+</style>
+<div class="frame-box">
+  <iframe title="Opaque origin form" sandbox="allow-scripts" src="click-safety-frame-child.html"></iframe>
+  <div id="frame-cover">Parent blocking notice</div>
+</div>
+<script>if (location.search.includes("clear")) document.getElementById("frame-cover").hidden = true;</script>

@@ -1,0 +1,10 @@
+node_modules/
+.build/
+*.xcuserstate
+xcuserdata/
+scripts/pdfkit
+scripts/input
+scripts/pairing
+scripts/spaces
+scripts/bench
+scripts/attachments

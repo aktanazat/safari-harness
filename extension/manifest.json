@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Safari Harness Bridge",
+  "version": "0.1.0",
+  "description": "Local automation bridge: lets the safari CLI and daemon drive Safari with aside-style tools.",
+  "background": {
+    "scripts": ["upgrades.js", "background.js"],
+    "persistent": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dialogs.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "permissions": ["tabs", "scripting", "storage", "alarms", "cookies"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_icon": "toolbar-icon.svg",
+    "default_title": "Safari Harness"
+  }
+}

@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Unseen text</title>
+<style>
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .gradient { background: linear-gradient(red, blue); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+</style>
+<!-- a hidden wrapper whose child shows itself, as Slack's workspace chooser does -->
+<div style="visibility: hidden">Hidden wrapper text.<p style="visibility: visible">Workspace shown inside a hidden wrapper.</p></div>
+<h2 class="gradient">Gradient heading</h2>
+<p style="font-size: 1px">One-pixel words.</p>
+<p style="position: absolute; left: -9999px">Words placed off the page.</p>
+<div style="width: 1px; height: 1px; overflow: hidden">Words in a one-pixel box.</div>
+<p style="-webkit-text-fill-color: transparent">Words with a clear fill.</p>
+<button><span class="sr-only">Close dialog</span></button>
+<p>Shown words.</p>

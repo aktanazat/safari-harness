@@ -1,0 +1,14 @@
+<!doctype html>
+<title>Release notes</title>
+<body>
+<script>
+  // The page takes its body away and builds it again a second later, as a
+  // client-rendered page that replaces its document does.
+  const body = document.body;
+  body.remove();
+  setTimeout(() => {
+    body.innerHTML = "<h1>Release notes</h1><p>Version 4 ships today.</p>";
+    document.documentElement.append(body);
+  }, 1000);
+</script>
+</body>

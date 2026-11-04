@@ -1,0 +1,398 @@
+// Calls a model wrote, checked and watched.
+//
+// Forgiving arguments: a near miss of a name (browsing-history for
+// browsing_history, value for select's option) runs, with a note saying
+// what was used, and a name no tool takes fails in the same call with the
+// nearest real one instead of being ignored. On 01a0da2f two run steps
+// failed on go for do and value for option; on 01a0e50b an agent searched
+// Messages with query instead of text.
+//
+// The loop guard: an agent that makes one call over and over and gets the
+// same answer each time is stopped with a next step, and one that sleeps
+// in a loop is told to wait on the page instead. On 01a0e20a an agent slept
+// 98 times, 829 s in all. An agent that reads a tab with snapshot right
+// after an action there is told once that the action could have answered
+// with that page. A model's call that meets a stuck extension has it
+// reloaded inside the call (healing in bridge.ts), and its answer says so.
+//
+// Calls the harness makes itself (the REPL's locators, the tab group
+// keeper, the site kits) poll on purpose and name their options exactly,
+// so neither applies to them.
+
+import { AsyncLocalStorage } from "node:async_hooks";
+import { bridge } from "./bridge.ts";
+import { acts } from "./lanes.ts";
+import { READS } from "./map.ts";
+import { currentOwner } from "./owner.ts";
+import { waitsOnPage } from "./receipt.ts";
+import type { Tool } from "./tools.ts";
+
+// Names as a model may write them: in another case, or with - or _ between
+// the words (browsing-history, max_bytes).
+const squash = (name: string) => name.toLowerCase().replace(/[-_]/g, "");
+
+// The one of names that name means: itself, or itself written another way.
+export function nameIn(names: string[], name: string): string | undefined {
+  return names.includes(name) ? name : names.find((n) => squash(n) === squash(name));
+}
+
+// Names models reach for that the tools spell otherwise. Each is taken only
+// by a tool that has the second name and not the first: history's do,
+// select's option, imessage_search's text; and, where a list follows, only
+// by the tools it names: click's text is the ref it names, press's is not.
+// action, code, note, mode, and js each failed a call in the 09-27 to
+// 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
+// 10-07 net's query, the part of the address it keeps; in the 10-12 to
+// 10-16 logs shot's path and passwords' account; on 10-05 map's script;
+// on 10-22 download's out_dir.
+const ALIASES: [string, string, string[]?][] = [
+  ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
+  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
+  ["path", "out", ["shot", "shots", "download"]], ["outDir", "out", ["download"]], ["account", "username", ["passwords"]],
+];
+
+// Parameters that ask a tool for what it cannot do, with what to do
+// instead: snapshot {url} and extract {url} each read no page on 09-29,
+// and on 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut
+// each page's text.
+const MISSES: [string, string, string][] = [
+  ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
+  ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
+  ["map", "max", "map takes no max: to keep each page's text short pass query (only lines with it) or selector, or save for a file per page; urls holds at most 20 addresses, and follow has its own max"],
+];
+
+// What to do instead of a parameter that asks tool for what it cannot do.
+export function missFor(tool: string, key: string): string | undefined {
+  return MISSES.find(([t, k]) => t === tool && k === key)?.[2];
+}
+
+// Tools that take the options of the tools they run: map gives each page's
+// read the options map does not take itself (map.ts).
+const PASSES: Record<string, string[]> = { map: READS };
+
+type Param = Tool["params"][string];
+type Taken = { params: string[]; taken: Record<string, Param>; aliases: [string, string, string[]?][] };
+
+// What a tool takes: its listed parameters, every name it reads (its
+// unlisted ones and those of the tools it passes options to), and the
+// aliases it takes for them.
+function takenBy(tools: Record<string, Tool>, tool: string): Taken {
+  const own = tools[tool];
+  const taken: Record<string, Param> = Object.assign({}, ...(PASSES[tool] ?? []).map((t) => ({ ...tools[t].params, ...tools[t].unlisted })), own.params, own.unlisted);
+  const params = Object.keys(own.params);
+  const aliases = ALIASES.filter(([alias, real, only]) => (only === undefined || only.includes(tool)) && params.includes(real) && !Object.hasOwn(taken, alias));
+  return { params, taken, aliases };
+}
+
+function meant({ taken, aliases }: Taken, key: string): [string, Param] | undefined {
+  const real = nameIn(Object.keys(taken), key) ?? aliases.find(([alias]) => nameIn([alias], key))?.[1];
+  return real === undefined ? undefined : [real, taken[real]];
+}
+
+// The parameter of tool a name given for it means, and how it is typed:
+// itself, itself written another way, or the name an alias stands for.
+// The CLI reads its flags so (cli/safari.ts).
+export function paramFor(tools: Record<string, Tool>, tool: string, key: string): [string, Param] | undefined {
+  return meant(takenBy(tools, tool), key);
+}
+
+export type Checked = { tool: string; args: Record<string, unknown>; notes: string[] };
+// Checked calls whose tool can answer with the page after it (its own
+// snapshot), as checkCall found them.
+const answersPage = new WeakSet<Checked>();
+
+// The tool and arguments a call means. A model's call may name either in
+// another way, and each one taken so is noted; names the tool does not
+// take fail the call, all named at once: on 10-22 map {max_chars,
+// output_dir} took two calls to learn that neither was map's.
+// Calls the harness makes itself are taken as written.
+export function checkCall(tools: Record<string, Tool>, name: string, given: Record<string, unknown>, model: boolean): Checked {
+  const names = Object.keys(tools);
+  const tool = model ? nameIn(names, name) : Object.hasOwn(tools, name) ? name : undefined;
+  if (tool === undefined) {
+    const listed = names.filter((n) => !tools[n].hidden);
+    const near = nearest(name, listed);
+    throw new Error(`unknown tool ${name}; ${near ? `did you mean ${near}? ` : ""}tools: ${listed.join(", ")}`);
+  }
+  if (!model) return { tool, args: given, notes: [] };
+  const notes = tool === name ? [] : [`used ${tool} for ${name}`];
+  const taken = takenBy(tools, tool);
+  const args: Record<string, unknown> = {};
+  const from: Record<string, string> = {};
+  const unknown: string[] = [];
+  for (const [key, value] of Object.entries(reshaped(tool, given, notes))) {
+    if (value === undefined) continue;
+    // A run gives every step the tab its latest open made, else the last
+    // tab a step named, whether or not the step's tool takes one.
+    const real = meant(taken, key)?.[0] ?? (key === "tab" ? key : undefined);
+    if (real === undefined) {
+      const miss = missFor(tool, key);
+      if (miss) throw new Error(miss);
+      unknown.push(key);
+      continue;
+    }
+    if (Object.hasOwn(args, real)) throw new Error(`${from[real]} and ${key} both name ${real} for ${tool}; pass one`);
+    if (real !== key) notes.push(`used ${real} for ${key}`);
+    args[real] = real === "ref" && typeof value === "string" && /^\[(?:\d+|f\d+:\d+)\]$/.test(value) ? value.slice(1, -1) : value;
+    from[real] = key;
+  }
+  if (unknown.length) {
+    const known = [...Object.keys(taken.taken), ...taken.aliases.map(([alias]) => alias)];
+    const params = `(params: ${taken.params.join(", ") || "none"})`;
+    if (unknown.length === 1) {
+      const near = closestParam(unknown[0], known);
+      throw new Error(`unknown parameter ${unknown[0]} for ${tool}${near ? `; did you mean ${near}?` : ""} ${params}`);
+    }
+    const each = unknown.map((key) => {
+      const near = closestParam(key, known);
+      return near ? `${key} (did you mean ${near}?)` : key;
+    });
+    throw new Error(`unknown parameters for ${tool}: ${each.join(", ")} ${params}`);
+  }
+  const checked = { tool, args, notes };
+  if (Object.hasOwn(tools[tool].params, "snapshot")) answersPage.add(checked);
+  return checked;
+}
+
+// Check a run before any step acts (USCIS / EOIR, 09-30). Its tabs may
+// come from earlier steps, so only the other required arguments are due.
+export function checkStep(tools: Record<string, Tool>, name: string, given: Record<string, unknown>): Checked {
+  const call = checkCall(tools, name, given, true);
+  const missing = (tools[call.tool].required ?? []).filter((key) => key !== "tab" && call.args[key] === undefined);
+  if (missing.length) throw new Error(`${call.tool} needs ${missing.join(" and ")}`);
+  return call;
+}
+
+// real_input called in the shape of another tool: its verb as a parameter
+// (type: "hello", as the type tool takes text), or press for its key; net
+// and console with their verb as a flag (start: true). Each failed a call
+// on 09-29.
+function reshaped(tool: string, given: Record<string, unknown>, notes: string[]): Record<string, unknown> {
+  if ((tool === "net" || tool === "console") && given.do === undefined) {
+    const verb = ["start", "read", "stop"].find((v) => given[v] === true);
+    if (verb === undefined) return given;
+    const { [verb]: _, ...rest } = given;
+    notes.push(`used do "${verb}" for ${verb}: true`);
+    return { ...rest, do: verb };
+  }
+  if (tool !== "real_input") return given;
+  if (given.type !== undefined && given.text === undefined && (given.do === undefined || given.do === "type")) {
+    const { type, ...rest } = given;
+    notes.push('used do "type" and text for type');
+    return { ...rest, do: "type", text: type };
+  }
+  if (given.do !== "press") return given;
+  notes.push('used do "key" for do "press"');
+  return { ...given, do: "key" };
+}
+
+// The one of names a slip away from name: at most two letters added,
+// dropped, or changed, and fewer than it has.
+export function nearest(name: string, names: string[]): string | undefined {
+  let best: string | undefined;
+  let least = 3;
+  for (const n of names) {
+    const d = distance(squash(name), squash(n));
+    if (d < least && d < n.length) {
+      best = n;
+      least = d;
+    }
+  }
+  return best;
+}
+
+// The parameter a wrong name most likely meant: one a slip away, else the
+// one sharing most of its words. maxChars, a guess in the 10-15 to 10-28
+// logs, is five letters from maxBytes and was named nothing nearer.
+export function closestParam(name: string, params: string[]): string | undefined {
+  const near = nearest(name, params);
+  if (near !== undefined) return near;
+  const mine = new Set(wordsOf(name));
+  let best: string | undefined;
+  let most = 0;
+  for (const p of params) {
+    const shared = wordsOf(p).filter((w) => mine.has(w)).length;
+    if (shared > most) {
+      best = p;
+      most = shared;
+    }
+  }
+  return best;
+}
+
+const wordsOf = (name: string) => name.split(/[-_]|(?<=[a-z])(?=[A-Z])/).map((w) => w.toLowerCase()).filter((w) => w.length > 2);
+
+// The fewest letters added, dropped, or changed that make a into b.
+export function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+
+// A result with a line for the model beside it: a note on how its call was
+// taken, or a hint at a better next call. A result that already has one
+// keeps it after the new one.
+export function beside(result: unknown, key: "note" | "hint", text: string): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { [key]: text, value: result };
+  const had = key in result ? result[key] : undefined;
+  if (had === undefined) return { ...result, [key]: text };
+  return typeof had === "string" ? { ...result, [key]: `${text}; ${had}` } : { [key]: text, value: result };
+}
+
+// Whether the call running now is a model's: its own, or a step of its run.
+const byModel = new AsyncLocalStorage<boolean>();
+export const fromModel = () => byModel.getStore() === true;
+
+// Runs a checked call, and for a model's, reloads a stuck extension inside
+// it, watches it for loops, notes a read its last action could have
+// answered, and adds the notes its check made.
+export async function guard(call: Checked, model: boolean, run: () => Promise<unknown>): Promise<unknown> {
+  let result: unknown;
+  if (model) {
+    const owner = currentOwner();
+    const start = Date.now();
+    const { value, reloadedMs } = await bridge.healing(() => byModel.run(true, () => (owner === undefined ? run() : watch(call, owner, run))));
+    const read = owner === undefined ? value : folds(call, owner, start, value);
+    result = reloadedMs === undefined ? read : beside(read, "note", `the extension was stuck; reloaded in ${Math.ceil(reloadedMs / 1000)} s`);
+  } else result = await byModel.run(false, run);
+  return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
+}
+
+// The sixth call in a row with the same arguments and the same answer, in
+// 3 minutes, fails: five is past any polling that works, and a page that
+// changes gives a new answer, which starts the count again.
+const REPEATS = 6;
+const REPEAT_MS = 3 * 60_000;
+// Sleeps past a minute in 10 minutes get a hint to wait on the page.
+const SLEEP_BUDGET_MS = 60_000;
+const SLEEP_MS = 10 * 60_000;
+
+type Streak = { outcome: string; times: number[] };
+// Each owner's streaks, by call, and the last action it took. A new action
+// (the next field typed, another button) is progress, so the checks after
+// it count again from one; the same action again is part of the loop.
+type Watch = { act: string | undefined; at: number; calls: Map<string, Streak> };
+const watches = new Map<number, Watch>();
+const sleeps = new Map<number, { at: number; ms: number }[]>();
+// The total each owner was last told it slept, and when.
+const toldSleep = new Map<number, { at: number; total: number }>();
+
+// Tools never stopped: wait and handoff are how an agent waits for a page
+// or the user, and a run's steps are watched one by one.
+const UNWATCHED = new Set(["run", "wait", "handoff_wait"]);
+// Reads whose answer is the page itself.
+const PAGE_READS = new Set(["snapshot", "extract", "info"]);
+
+async function watch({ tool, args }: Checked, owner: number, run: () => Promise<unknown>): Promise<unknown> {
+  const now = Date.now();
+  sweep(now);
+  if (tool === "wait") return slept(owner, args, now, await run());
+  if (UNWATCHED.has(tool)) return run();
+  const key = `${tool} ${Bun.hash(stable(args))}`;
+  const seen = watches.get(owner) ?? { act: undefined, at: now, calls: new Map<string, Streak>() };
+  watches.set(owner, seen);
+  seen.at = now;
+  // An action's answer says it ran, not what the page did, so the same
+  // answer from one is no sign of a loop; the same error is.
+  const acting = acts(tool, args);
+  if (acting && seen.act !== key) {
+    seen.act = key;
+    seen.calls.clear();
+  }
+  let result: unknown;
+  try {
+    result = await run();
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    if (repeat(seen.calls, key, `error ${error}`, now) >= REPEATS) throw new Error(`${called(tool, args)} and got the same error (${error}); trying again will not change it: try another way, or tell the user`);
+    throw e;
+  }
+  const times = repeat(seen.calls, key, acting ? "acted" : `value ${Bun.hash(stable(result))}`, now);
+  if (acting || times < REPEATS) return result;
+  throw new Error(PAGE_READS.has(tool)
+    ? `${called(tool, args)} and got the same page; the page is not changing: act, wait on text, or tell the user`
+    : `${called(tool, args)} and got the same answer; nothing is changing: act, wait on text, or tell the user`);
+}
+
+function called(tool: string, args: Record<string, unknown>): string {
+  return `you called ${tool}${args.tab === undefined ? "" : ` on tab ${String(args.tab)}`} ${REPEATS - 1} times`;
+}
+
+// How many calls in a row, this one included, had this outcome.
+function repeat(calls: Map<string, Streak>, key: string, outcome: string, now: number): number {
+  const last = calls.get(key);
+  const times = last && last.outcome === outcome ? last.times.filter((t) => now - t < REPEAT_MS).slice(1 - REPEATS) : [];
+  times.push(now);
+  calls.set(key, { outcome, times });
+  return times.length;
+}
+
+// A wait with only ms names nothing the agent waits for. Its time counts
+// toward the owner's budget; past it, the answer carries the hint once,
+// and again only when the total has doubled or 10 minutes on. In the two
+// weeks of logs before 10-19 it came with every such wait: 125 answers
+// carried it, and agents cut it from their output with grep 50 times. It
+// names changed, which a script after a click or a scroll can wait on
+// where it cannot name the text to come.
+function slept(owner: number, args: Record<string, unknown>, start: number, result: unknown): unknown {
+  if (waitsOnPage(args)) return result;
+  const now = Date.now();
+  const recent = (sleeps.get(owner) ?? []).filter((s) => now - s.at < SLEEP_MS);
+  recent.push({ at: now, ms: now - start });
+  sleeps.set(owner, recent);
+  const total = recent.reduce((sum, s) => sum + s.ms, 0);
+  const told = toldSleep.get(owner);
+  if (total <= SLEEP_BUDGET_MS || (told !== undefined && now - told.at < SLEEP_MS && total < 2 * told.total)) return result;
+  toldSleep.set(owner, { at: now, total });
+  return beside(result, "hint", `you slept ${Math.round(total / 1000)} s in the last 10 minutes; wait on the page instead: with text or a selector it returns once the page shows them, with changed: true (a script's page.waitForChange()) once new lines appear`);
+}
+
+// An action's own snapshot answers with the page after it, so a snapshot
+// of that tab as the next call costs a call and a turn: in the logs from
+// 09-28 to 10-19 agents did so after 373 actions, at a median 2.6 s of
+// the model's time each. An owner's first such read says so; 97% of them
+// came within 30 s of the action.
+const FOLD_MS = 30_000;
+const lastActs = new Map<number, { tool: string; tab: string; at: number }>();
+const toldFold = new Set<number>();
+
+function folds(call: Checked, owner: number, start: number, result: unknown): unknown {
+  const { tool, args } = call;
+  const last = lastActs.get(owner);
+  lastActs.delete(owner);
+  if (answersPage.has(call)) {
+    // open answers with the tab it made
+    const tab = tool === "open" && result && typeof result === "object" && "id" in result ? result.id : args.tab;
+    if (args.snapshot === undefined && tab !== undefined) lastActs.set(owner, { tool, tab: String(tab), at: Date.now() });
+    return result;
+  }
+  if (tool !== "snapshot" || !last || toldFold.has(owner) || start - last.at > FOLD_MS || String(args.tab) !== last.tab) return result;
+  if (args.save !== undefined || args.maxNodes !== undefined || args.showHidden !== undefined) return result;
+  toldFold.add(owner);
+  const { query, root, diff } = args;
+  const plain = root === undefined && diff === undefined;
+  const value = !plain ? JSON.stringify({ query, root, diff }) : query === undefined ? "true" : JSON.stringify(query);
+  const words = String(query);
+  const cli = !plain ? "" : query === undefined ? " (CLI --snapshot)" : ` (CLI --snapshot=${/^[\w.$-]+$/.test(words) ? words : JSON.stringify(words)})`;
+  return beside(result, "note", `next time pass snapshot: ${value} to ${last.tool}${cli}: its answer then has this page, one call instead of two`);
+}
+
+// Forgets streaks and sleeps too old to count.
+function sweep(now: number) {
+  for (const [owner, seen] of watches) {
+    if (now - seen.at >= REPEAT_MS) watches.delete(owner);
+    else for (const [key, s] of seen.calls) if (now - s.times[s.times.length - 1] >= REPEAT_MS) seen.calls.delete(key);
+  }
+  for (const [owner, list] of sleeps) if (list.every((s) => now - s.at >= SLEEP_MS)) sleeps.delete(owner);
+  for (const [owner, told] of toldSleep) if (now - told.at >= SLEEP_MS) toldSleep.delete(owner);
+  for (const [owner, act] of lastActs) if (now - act.at > FOLD_MS) lastActs.delete(owner);
+}
+
+// JSON with every object's keys in order, so equal values hash the same.
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_, v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v)) ?? "undefined";
+}

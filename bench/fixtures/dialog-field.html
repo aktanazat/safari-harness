@@ -1,0 +1,12 @@
+<!doctype html>
+<title>Verify your email</title>
+<!-- SUECU's sign-in (09-29): the page's own email field sits behind an
+     open dialog that asks for the email too. -->
+<footer><label>Newsletter <input type="email"></label></footer>
+<div role="dialog" aria-modal="true" aria-label="Verify your email">
+  <label>Email <input type="email" id="asked"></label>
+  <p id="said"></p>
+</div>
+<script>
+  asked.addEventListener("input", () => { said.textContent = `Dialog saw ${asked.value}`; });
+</script>

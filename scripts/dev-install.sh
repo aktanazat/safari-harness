@@ -1,0 +1,368 @@
+#!/bin/bash
+# Deploy a commit of this checkout as the Safari Harness in use.
+#
+#   scripts/dev-install.sh [COMMIT]    deploy COMMIT (default: HEAD)
+#   scripts/dev-install.sh --rollback  go back to the release deployed before
+#
+# Normal deploys must contain both the selected and running releases.
+# Merge their commits first; only --rollback deliberately goes backwards.
+#
+# A deploy takes a commit, never the working tree: it copies the commit into
+# ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
+# and points ~/.local/share/safari-harness/current at it in one step. The
+# CLI (~/.bun/bin/safari), omp's safari MCP server and extension, and the
+# launchd jobs (the daemon and routines) all run from current, so edits in
+# a checkout reach no one until they are committed and deployed. Then only
+# what changed restarts:
+#   - The daemon, when what it runs (daemon/codehash.ts) differs from what
+#     the running daemon reports, or its launchd job runs something else.
+#     It finishes its calls in flight first, and calls that arrive meanwhile
+#     wait for the new daemon (rpc.ts). A failed start can return to the
+#     previous release only without losing newer checkpoint metadata.
+#   - The app and extension, when extension/ or "Safari Harness/" differ
+#     from the installed ones, or the extension is not connected. Safari
+#     reloads the extension, which reconnects to the daemon. Safari gives
+#     every tab a new id then; the extension tells the daemon each old id's
+#     new one, so agents keep their tabs and the ids they hold still work.
+# Agent sessions already running keep their MCP server process; before
+# each call it loads the daemon's release's daemon/mcp-tools.ts if that
+# differs from the code its calls run on, runs the call with it, and asks
+# its client to list the tools again (daemon/fresh.ts). deploys.log records
+# each deploy; the last releases stay for --rollback. One deploy runs at a
+# time.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DATA="$HOME/.local/share/safari-harness"
+RELEASES="$DATA/releases"
+CURRENT="$DATA/current"
+APP="/Applications/Safari Harness.app"
+APPEX="$APP/Contents/PlugIns/Safari Harness Extension.appex"
+LOCK=/private/var/tmp/safari-harness-install.lock
+BASE="${SAFARI_HARNESS_HTTP:-http://127.0.0.1:37334}"
+JOBS="$HOME/Library/LaunchAgents"
+DAEMON=at.aktan.safari-harness.daemon
+MCP="$HOME/.omp/agent/mcp.json"
+EXTENSIONS="$HOME/.omp/agent/extensions"
+CHECKPOINTS="$ROOT/scripts/deploy-checkpoints.ts"
+# Xcode's build folder for the app, kept from one build to the next. Until
+# 10-21 each build made a new one in /private/var/tmp and moved it to the
+# Trash: six of 217 MB in 3.5 hours.
+BUILD="$HOME/Library/Caches/safari-harness/DerivedData"
+# releases kept besides the current one, however old
+KEEP=5
+PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
+
+case "${1:-}" in
+  --rollback) what=rollback ;;
+  -*) echo "usage: $0 [COMMIT | --rollback]" >&2; exit 2 ;;
+  *) what=deploy ;;
+esac
+
+# health FIELD: that field of the daemon's /health, or "" when it does not answer
+health() { curl -s --max-time 2 "$BASE/health" | jq -r "$1 // empty" 2>/dev/null || true; }
+# trash PATH: moves it to the Trash under a name of its own
+trash() { mv "$1" "$HOME/.Trash/safari-harness-$(basename "$1")-$(date +%s)"; }
+# job LABEL: the program its launchd job runs
+job() { plutil -extract ProgramArguments.1 raw "$JOBS/$1.plist" 2>/dev/null || true; }
+# strays: each registered copy of the app, its extension, or an app inside
+# it, other than the installed one
+strays() {
+  lsregister -dump | sed -n 's/^path: *\(.*Safari Harness[^/]*\.app\(ex\)\{0,1\}\) (0x[0-9a-f]*)$/\1/p' | while IFS= read -r copy; do
+    case "$copy" in "$APP" | "$APP"/*) ;; *) echo "$copy" ;; esac
+  done
+}
+
+# point RELEASE: current becomes it in one step (a rename over the link);
+# when each release was last current orders them for pruning
+point() {
+  ln -sfn "releases/$1" "$DATA/.current.new"
+  bun -e 'require("node:fs").renameSync(process.argv.at(-2), process.argv.at(-1))' "$DATA/.current.new" "$CURRENT"
+  [ -z "$before" ] || touch "$DATA/$before"
+  touch "$RELEASES/$1"
+}
+
+# helpers DIR: the release's helpers (each scripts/X.swift built to
+# scripts/X), copied from the current release when all their sources are
+# the same, else built by the release's own `bun run helpers`
+helpers() {
+  local src same=true
+  for src in "$1"/scripts/*.swift; do
+    cmp -s "$src" "$CURRENT/scripts/${src##*/}" && [ -x "$CURRENT/scripts/$(basename "$src" .swift)" ] || same=false
+  done
+  if $same; then
+    for src in "$1"/scripts/*.swift; do cp -p "$CURRENT/scripts/$(basename "$src" .swift)" "${src%.swift}"; done
+  elif ! (cd "$1" && bun run helpers) >"$1/.helpers.log" 2>&1; then
+    tail -n 20 "$1/.helpers.log"
+    echo "the helpers did not build" >&2
+    exit 1
+  fi
+  for src in "$1"/scripts/*.swift; do
+    [ -x "${src%.swift}" ] || echo "warning: scripts/$(basename "$src" .swift) was not built; add it to package.json's helpers" >&2
+  done
+}
+
+# restart WHY: stops the daemon once its calls in flight finish and starts
+# the current release's. A fallback first stops that sole job, then either
+# retains compatible state or restores an unchanged pre-start snapshot.
+# Meanwhile DATA/deploying holds the second it should be done by: a call
+# that finds no daemon says a deploy restarts it (rpc.ts), not to install.
+restart() {
+  local old pid busy i
+  echo $(($(date +%s) + 120)) >"$DATA/deploying"
+  old="$(health .pid)"
+  if [ -n "$old" ] && [ "$(job "$DAEMON")" = "$CURRENT/daemon/main.ts" ]; then
+    busy="$(curl -s --max-time 5 -X POST -H 'content-type: application/json' -d "$(jq -cn --arg r "$what $sha: $1" '{reason: $r}')" "$BASE/shutdown" | jq -r '.inFlight // 0' 2>/dev/null || true)"
+    [ "${busy:-0}" = 0 ] || echo "daemon: finishing $busy call(s) in flight first"
+  else
+    # a new launchd job: launchd stops the old daemon with SIGTERM, which
+    # also lets its calls in flight finish (main.ts)
+    bun "$CURRENT/cli/safari.ts" daemon install >/dev/null
+  fi
+  # up to a minute of calls in flight, then the start
+  for i in $(seq 1 180); do
+    pid="$(health .pid)"
+    if [ -n "$pid" ] && [ "$pid" != "$old" ] && [ "$(health .code)" = "$want" ]; then
+      echo "daemon: restarted ($1)"
+      for i in $(seq 1 60); do [ -n "$(health .extension.connectedAt)" ] && return; sleep 0.5; done
+      echo "daemon: its extension has not connected after 30 s (is Safari running?)"
+      return
+    fi
+    sleep 0.5
+  done
+  echo "daemon: no daemon of release $sha answered within 90 s; see ~/Library/Logs/safari-harness/daemon.log" >&2
+  if [ -n "$before" ] && [ "$before" != "releases/$sha" ]; then
+    local back="${before#releases/}"
+    if launchctl bootout "gui/$(id -u)/$DAEMON"; then
+      if bun "$CHECKPOINTS" restore "$DATA" "$BASE" "$checkpoint" "$RELEASES/$back" "$REL"; then
+        before="releases/$sha"
+        point "$back"
+        launchctl bootstrap "gui/$(id -u)" "$JOBS/$DAEMON.plist"
+        echo "put back release $back with compatible checkpoints" >&2
+      else
+        # The new checkpoint remains the sole state. Never start a legacy
+        # reader against it or discard changes made during failed startup.
+        launchctl bootstrap "gui/$(id -u)" "$JOBS/$DAEMON.plist"
+        echo "fallback blocked; current release and checkpoint bytes retained" >&2
+      fi
+    else
+      echo "could not stop the sole daemon; no checkpoint or release restored" >&2
+    fi
+  fi
+  exit 1
+}
+
+until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
+tmp=""
+checkpoint=""
+trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rm -f "$DATA/deploying"; rmdir "$LOCK"' EXIT
+mkdir -p "$RELEASES"
+before="$(readlink "$CURRENT" 2>/dev/null || true)"
+
+# A commit from before deploys by release has no daemon/codehash.ts: its
+# daemon cannot say what it runs, so none is deployed or rolled back to.
+if [ "$what" = rollback ]; then
+  sha="$(tail -n 1 "$DATA/deploys.log" 2>/dev/null | cut -d' ' -f3)"
+  [ -n "$sha" ] && [ -f "$RELEASES/$sha/daemon/codehash.ts" ] || { echo "no earlier release deployed by this script is recorded in $DATA/deploys.log" >&2; exit 1; }
+else
+  full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
+  sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
+  git -C "$ROOT" cat-file -e "$full:daemon/codehash.ts" 2>/dev/null || { echo "$sha predates deploys by release; deploy a later commit" >&2; exit 1; }
+  # Check both sources: current may have switched while the old daemon
+  # still runs. Resolve abbreviated ids before comparing, and fail closed
+  # when this checkout cannot establish the installed release's ancestry.
+  running="$(health .root)"
+  if [ -z "$before$running" ] && { [ -e "$CURRENT" ] || [ -L "$CURRENT" ] || [ -s "$DATA/deploys.log" ]; }; then
+    echo "cannot identify the release in use; no release changed" >&2
+    exit 1
+  fi
+  for release in "$before" "$running"; do
+    [ -n "$release" ] || continue
+    case "$release" in
+      releases/*) live="${release#releases/}" ;;
+      "$RELEASES"/*) live="${release#"$RELEASES/"}" ;;
+      *) echo "cannot identify the release in use: $release; no release changed" >&2; exit 1 ;;
+    esac
+    if ! [[ "$live" =~ ^[0-9a-fA-F]{4,64}$ ]] || ! live_full="$(git -C "$ROOT" rev-parse --verify --quiet "$live^{commit}")"; then
+      echo "cannot resolve release $live in this checkout; fetch or merge its history first; no release changed" >&2
+      exit 1
+    fi
+    if ! git -C "$ROOT" merge-base --is-ancestor "$live_full" "$full" 2>/dev/null; then
+      echo "$sha does not contain $live, a release in use; merge it first, or use --rollback for an intentional rollback; no release changed" >&2
+      exit 1
+    fi
+  done
+  left="$(git -C "$ROOT" status --porcelain -- daemon cli extension "Safari Harness" scripts passwords-bridge docs omp package.json | wc -l | tr -d ' ')"
+  [ "$left" = 0 ] || echo "note: $left uncommitted change(s) in the checkout are not deployed"
+  if [ ! -d "$RELEASES/$sha" ]; then
+    tmp="$(mktemp -d "$RELEASES/.new.XXXXXX")"
+    git -C "$ROOT" archive "$full" | tar -x -C "$tmp"
+    if [ -f "$tmp/bun.lock" ]; then bun install --cwd "$tmp" --frozen-lockfile --production; fi
+    for f in "$tmp"/extension/*.js; do node --check "$f"; done
+    # what the app and extension are built from, as git names it
+    git -C "$ROOT" rev-parse "$full:extension" "$full:Safari Harness" | shasum -a 256 | cut -c1-16 >"$tmp/.extension"
+    helpers "$tmp"
+    mv "$tmp" "$RELEASES/$sha"
+    tmp=""
+  fi
+fi
+REL="$RELEASES/$sha"
+
+# Refuse a manual downgrade before changing the app, links or daemon.
+# Checking the current writer as well as the files prevents a race with
+# its first version-2 write while the installer builds the app.
+previous="$CURRENT"
+[ -f "$previous/package.json" ] || previous="$REL"
+bun "$CHECKPOINTS" check "$DATA" "$BASE" "$previous" "$REL"
+
+# The app is built before anything changes, so a failed build changes nothing.
+key="$(cat "$REL/.extension")"
+app=""
+if [ "$key" != "$(cat "$DATA/installed-extension" 2>/dev/null || true)" ] || [ -z "$(health .extension.connectedAt)" ]; then
+  app="$DATA/apps/$key.zip"
+  if [ ! -f "$app" ]; then
+    # Products is made anew, so the app holds only this release's files,
+    # none an earlier build left; Xcode reuses the rest.
+    rm -rf "$BUILD/Build/Products"
+    mkdir -p "$BUILD"
+    if [ -z "${DEVELOPER_DIR:-}" ] && [[ "$(xcode-select -p)" != *.app/* ]] && [ -d /Applications/Xcode.app ]; then
+      export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    fi
+    xcodebuild -checkFirstLaunchStatus || xcodebuild -runFirstLaunch
+    # An App Store Connect key signs without an account in Xcode's settings
+    # when ~/.appstoreconnect/safari-harness-signing names it: its key id,
+    # then its team's issuer id; the key is private_keys/AuthKey_<id>.p8.
+    signing=()
+    if [ -s "$HOME/.appstoreconnect/safari-harness-signing" ]; then
+      read -r ascId ascIssuer < "$HOME/.appstoreconnect/safari-harness-signing"
+      signing=(-authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_$ascId.p8" -authenticationKeyID "$ascId" -authenticationKeyIssuerID "$ascIssuer")
+    fi
+    if ! (cd "$REL/Safari Harness" && xcodebuild -scheme "Safari Harness" -configuration Debug -derivedDataPath "$BUILD" -allowProvisioningUpdates ${signing[@]+"${signing[@]}"} build) >"$BUILD/build.log" 2>&1; then
+      grep -E "error:|errSec|failed with" "$BUILD/build.log" | head -20 || true
+      echo "the app did not build" >&2
+      exit 1
+    fi
+    built="$BUILD/Build/Products/Debug/Safari Harness.app"
+    # kept as a zip (which Safari never finds) for a rollback to install
+    mkdir -p "$DATA/apps"
+    ditto -c -k --keepParent "$built" "$app.part"
+    mv "$app.part" "$app"
+  fi
+fi
+
+# Xcode registers each copy of the app it builds, and a copy deleted later
+# stays registered. At launch Safari looks for the app of every copy of the
+# extension, and one it cannot find gets the extension turned off by name,
+# the installed one's too (09-30). So every deploy unregisters each copy
+# but the installed one, whoever built it, before installing.
+found="$(strays)"
+if [ -n "$found" ]; then
+  while IFS= read -r copy; do
+    case "$copy" in *.appex) pluginkit -r "$copy" 2>/dev/null || true ;; esac
+    lsregister -u "$copy" 2>/dev/null || true
+  done <<<"$found"
+  echo "unregistered stray copies of the app:"
+  sed 's/^/  /' <<<"$found"
+  left="$(strays)"
+  [ -z "$left" ] || { echo "still registered, so Safari turns the extension off when it next starts:" >&2; sed 's/^/  /' <<<"$left" >&2; }
+fi
+
+checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
+point "$sha"
+echo "current: release $sha"
+[ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
+# The safari skill, which agents read before their first call, is
+# docs/skill-head.md and then the card (docs/GUIDE.md) word for word: the
+# two never drift, and agents need no `safari guide` call after reading it,
+# which 215 calls made in the two weeks before 10-19.
+skill="$HOME/.agents/skills/safari/SKILL.md"
+if [ -f "$CURRENT/docs/skill-head.md" ]; then
+  mkdir -p "${skill%/*}"
+  cat "$CURRENT/docs/skill-head.md" "$CURRENT/docs/GUIDE.md" >"$skill.new"
+  mv "$skill.new" "$skill"
+fi
+[ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
+  echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
+# New omp sessions load the runtime-authorized release hook. Existing
+# sessions keep their loaded hook; agent_end alone is not task authority.
+[ ! -d "$EXTENSIONS" ] || [ "$(readlink "$EXTENSIONS/safari-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/safari-harness"
+for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
+  [ -f "$plist" ] || continue
+  label="$(basename "$plist" .plist)"
+  [ "$(job "$label")" = "$CURRENT/cli/safari.ts" ] && continue
+  plutil -replace ProgramArguments.1 -string "$CURRENT/cli/safari.ts" "$plist"
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+  echo "routine ${label##*.}: now runs the deployed release"
+done
+
+want="$(bun "$REL/daemon/codehash.ts")"
+ran="$(job "$DAEMON")"
+if [ "$ran" != "$CURRENT/daemon/main.ts" ]; then
+  restart "its launchd job ran ${ran:-nothing}"
+elif [ "$(health .ok)" != true ]; then
+  restart "it was not running"
+elif [ "$(health .code)" != "$want" ]; then
+  restart "its code changed"
+else
+  echo "daemon: unchanged"
+fi
+rm -f "$DATA/deploying"
+
+if [ -n "$app" ]; then
+  was="$(health .extension.connectedAt)"
+  tmp="$(mktemp -d /private/var/tmp/sh-app.XXXXXX)"
+  ditto -x -k "$app" "$tmp"
+  rsync -a --delete "$tmp/Safari Harness.app/" "$APP/"
+  trash "$tmp"
+  tmp=""
+  codesign --verify --deep "$APP"
+  lsregister -f "$APP"
+  pluginkit -a "$APPEX"
+  echo "$key" >"$DATA/installed-extension"
+  # Safari reloads the extension, which connects again
+  now=""
+  for i in $(seq 1 60); do
+    now="$(health .extension.connectedAt)"
+    if [ -n "$now" ] && [ "$now" != "$was" ]; then echo "extension: installed; it reconnected after $((i / 2)) s"; break; fi
+    [ "$i" = 30 ] && pluginkit -a "$APPEX"
+    sleep 0.5
+  done
+  [ -n "$now" ] && [ "$now" != "$was" ] || { echo "extension: installed, but it has not reconnected after 30 s (is Safari running?)" >&2; exit 1; }
+else
+  echo "extension: unchanged"
+fi
+
+# The live release sat off master for a day on 10-23, and work started from
+# master lacked its fixes (HD-1). Its .upstream says how far ahead of
+# origin/master it is, as this checkout knows origin, for safari status.
+unmerged=""
+master="$(git -C "$ROOT" rev-parse --verify --quiet "origin/master^{commit}" || true)"
+ahead="$([ -z "$master" ] || git -C "$ROOT" rev-list --count "$master..$sha" 2>/dev/null || true)"
+if [ -n "$ahead" ]; then
+  branch="$(git -C "$ROOT" name-rev --name-only --no-undefined --refs='refs/heads/*' "$sha" 2>/dev/null || echo "$sha")"
+  jq -n --arg branch "$branch" --argjson ahead "$ahead" --arg master "${master:0:7}" --arg at "$(date -u +%FT%TZ)" '{branch: $branch, ahead: $ahead, master: $master, at: $at}' >"$REL/.upstream"
+  if [ "$ahead" != 0 ]; then
+    unmerged=" unmerged $branch"
+    echo "warning: release $sha is $ahead commit(s) ahead of origin/master, from branch $branch; merge it, or work started from master lacks it" >&2
+  fi
+else
+  rm -f "$REL/.upstream"
+fi
+[ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what$unmerged" >>"$DATA/deploys.log"
+bun "$CHECKPOINTS" discard "$DATA" "$BASE" "$checkpoint"
+checkpoint=""
+
+# Kept: the current release, the newest KEEP others, any current in the
+# last week (an agent session's MCP server may still run it), and the one
+# the daemon runs. App zips no kept release is built from go too.
+running="$(health .root)"
+n=0
+for r in $(ls -t "$RELEASES"); do
+  n=$((n + 1))
+  if [ "$n" -gt $((KEEP + 1)) ] && [ "$RELEASES/$r" != "$running" ] && [ -z "$(find "$RELEASES/$r" -maxdepth 0 -mtime -7)" ]; then trash "$RELEASES/$r"; fi
+done
+for zip in "$DATA"/apps/*.zip; do
+  [ -f "$zip" ] || continue
+  grep -qxs "$(basename "$zip" .zip)" "$RELEASES"/*/.extension || trash "$zip"
+done

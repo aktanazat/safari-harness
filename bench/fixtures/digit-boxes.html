@@ -1,0 +1,23 @@
+<!doctype html>
+<title>Digit boxes</title>
+<!-- Delta's emailed-code step (09-29): six boxes labelled "Digit N of 6",
+     with no length limit. A box given more than one character keeps the
+     first and passes the rest to the boxes after it; Submit reads them in
+     order. -->
+<input aria-label="Digit 1 of 6"><input aria-label="Digit 2 of 6"><input aria-label="Digit 3 of 6"><input aria-label="Digit 4 of 6"><input aria-label="Digit 5 of 6"><input aria-label="Digit 6 of 6">
+<button type="button" id="submit">Submit</button>
+<p id="said"></p>
+<script>
+  const boxes = [...document.querySelectorAll("input")];
+  for (const [i, box] of boxes.entries()) {
+    box.addEventListener("input", () => {
+      const rest = [...box.value.slice(1)];
+      box.value = box.value.slice(0, 1);
+      for (const [j, digit] of rest.entries()) if (boxes[i + 1 + j]) boxes[i + 1 + j].value = digit;
+    });
+  }
+  submit.addEventListener("click", () => {
+    const code = boxes.map((b) => b.value).join("");
+    said.textContent = code === "402913" ? "Code accepted" : `Wrong code, ${code.length} digits`;
+  });
+</script>

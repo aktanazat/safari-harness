@@ -1,0 +1,5532 @@
+// Safari Harness content script.
+// Runs in every page. Implements the DOM-side verbs the daemon calls:
+// aria snapshots with stable element refs, click/type/scroll by ref,
+// JS evaluation, and extraction.
+//
+// This is a clean-room implementation of the same contract Aside's
+// injected.ts snapshot module provides for Chrome, adapted to Safari's
+// Web Extension API (no chrome.debugger available).
+
+(() => {
+  // One copy of this script answers in each page. The extension sets the
+  // claim to null to put a fresh copy in where the one there answers
+  // nothing (a copy left behind when the extension reloaded): the old copy
+  // then ignores every message, and the new one numbers its refs after the
+  // ones already on the page. The new one first retires the old one (see
+  // __safariHarnessRetire at the end), whose page listeners and watches
+  // would otherwise run on for the page's life with no one to answer.
+  if (window.__safariHarnessInjected) return;
+  const takeover = window.__safariHarnessInjected === null;
+  if (takeover) window.__safariHarnessRetire?.();
+  const claim = {};
+  window.__safariHarnessInjected = claim;
+  // This copy's life in the page: its page listeners end with it.
+  const life = new AbortController();
+
+  const REF_ATTR = "data-sh-ref";
+  let refSeq = 0;
+  const refMap = new Map(); // ref -> element
+  if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) refSeq = Math.max(refSeq, Number(el.getAttribute(REF_ATTR)) || 0);
+
+  // ---------- role / name computation (ARIA-lite) ----------
+
+  const ROLE_MAP = {
+    A: (el) => (el.hasAttribute("href") ? "link" : null),
+    BUTTON: () => "button",
+    INPUT: (el) => {
+      const t = (el.type || "text").toLowerCase();
+      if (t === "checkbox") return "checkbox";
+      if (t === "radio") return "radio";
+      if (t === "submit" || t === "button" || t === "reset" || t === "image") return "button";
+      if (t === "range") return "slider";
+      if (t === "search") return "searchbox";
+      if (t === "file") return "button";
+      return "textbox";
+    },
+    TEXTAREA: () => "textbox",
+    SELECT: (el) => (el.multiple ? "listbox" : "combobox"),
+    FORM: () => "form",
+    NAV: () => "navigation",
+    MAIN: () => "main",
+    ARTICLE: () => "article",
+    SECTION: (el) => (el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby") ? "region" : null),
+    ASIDE: () => "complementary",
+    HEADER: (el) => (closestLandmark(el) ? null : "banner"),
+    FOOTER: (el) => (closestLandmark(el) ? null : "contentinfo"),
+    DIALOG: () => "dialog",
+    PROGRESS: () => "progressbar",
+    IMG: (el) => (el.alt === "" ? "presentation" : "img"),
+    H1: () => "heading", H2: () => "heading", H3: () => "heading",
+    H4: () => "heading", H5: () => "heading", H6: () => "heading",
+  };
+
+  function closestLandmark(el) {
+    return el.closest("article, aside, main, nav, section, form");
+  }
+
+  // A rich editor's editing host (ProseMirror's contenteditable div) is a
+  // text field without saying so; the paragraphs inside it are its text.
+  function getExplicitRole(el) {
+    const r = el.getAttribute && el.getAttribute("role");
+    if (r) return r.split(/\s+/)[0];
+    const fn = ROLE_MAP[el.tagName];
+    if (fn) return fn(el);
+    return el.isContentEditable && !el.parentElement?.isContentEditable ? "textbox" : null;
+  }
+
+  const NAMED_ROLES = new Set([
+    "button", "link", "textbox", "searchbox", "combobox", "listbox", "checkbox",
+    "radio", "slider", "heading", "img", "navigation", "main", "form", "dialog",
+    "article", "banner", "contentinfo", "complementary", "region", "tab",
+    "tabpanel", "menu", "menubar", "menuitem", "tree", "treeitem", "grid",
+    "table", "alert", "alertdialog", "status", "tooltip", "progressbar",
+  ]);
+
+  const INTERACTIVE_TAGS = new Set([
+    "A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY", "DETAILS",
+    "LABEL", "OPTION", "VIDEO", "AUDIO", "IFRAME",
+  ]);
+
+  // A control the page made of a plain element, with no role or tab stop
+  // and its click handler added from script (CloudKit's "Add field" span),
+  // shows only as a hand cursor. It counts when the page also names it,
+  // for assistive tech or its tests (a snapshot also counts one floating
+  // over the page: handStarts): plain text under a hand cursor stays
+  // text. A name another element holds counts: each Gmail thread row is
+  // named by a summary hidden in it, and a click on the row opens the
+  // thread (09-30). Inside a control that shows the hand (inHand), the
+  // hand is that control's.
+  function isInteractive(el, style, inHand = false) {
+    if (el.tabIndex >= 0 && !el.hasAttribute("disabled")) return true;
+    const role = getExplicitRole(el);
+    if (role && ["button", "link", "textbox", "checkbox", "radio", "combobox", "listbox", "menuitem", "tab", "slider", "switch"].includes(role)) return true;
+    if (el.onclick || el.onmousedown || el.onpointerdown) return true;
+    if (INTERACTIVE_TAGS.has(el.tagName)) return true;
+    if (inHand || !(el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby") || el.hasAttribute("title") || el.hasAttribute("data-testid"))) return false;
+    return (style ?? (el.ownerDocument.defaultView || window).getComputedStyle(el)).cursor === "pointer";
+  }
+
+  // In a list floating over the page, a dropdown's options or a menu, the
+  // hand alone marks a control: DriveCentric draws each option as a div
+  // with no role, tab stop, or name, its click handler added from script.
+  // There the element where the hand starts counts in a snapshot; one that
+  // only inherits the hand does not, so a page that shows the hand
+  // everywhere marks nothing. A layer floats when it is fixed, or placed
+  // absolutely with a z-index.
+  const floats = (style) => style.position === "fixed" || (style.position === "absolute" && style.zIndex !== "auto");
+  function handStarts(el, style, inHand) {
+    if (inHand || style.cursor !== "pointer") return false;
+    const up = el.parentElement ?? el.getRootNode().host;
+    return (up.ownerDocument.defaultView || window).getComputedStyle(up).cursor !== "pointer";
+  }
+
+  // Opacity 0 hides an element, but not one fading in: Safari runs no
+  // animation in a hidden tab, so a form that fades in (Apple's sign-in
+  // frame) would stay transparent until the tab came to the front.
+  function transparent(el, style) {
+    return parseFloat(style.opacity) === 0 && !el.getAnimations().some((a) => a.playState === "running");
+  }
+
+  function isVisible(el) {
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || transparent(el, style)) return false;
+    if (el.getClientRects().length === 0 && (style.display === "none" || style.position === "fixed")) return false;
+    return true;
+  }
+
+  // ---------- words no one sees ----------
+  // Pages hide text from people but not from agents: instructions addressed
+  // to an AI, parked where no one looks. The page as an agent reads it
+  // (snapshot, extract) leaves such words out; showHidden keeps them.
+
+  // A box whose content no scroll shows: a frame or an overflow-hidden box
+  // of at most a pixel (the screen-reader-only pattern), a positioned box
+  // clipped to nothing, or one moved wholly left of or above the page. A
+  // collapsed panel, flat one way only, stays: its text is a click away.
+  // Most boxes sit in the flow unclipped and skip the layout read.
+  function unseenBox(el, style) {
+    const frame = el.tagName === "IFRAME" || el.tagName === "FRAME";
+    const shut = style.overflowX !== "visible" && style.overflowY !== "visible" && style.display !== "inline" && style.display !== "contents";
+    const placed = style.position !== "static";
+    if (!frame && !shut && !placed) return false;
+    const r = el.getBoundingClientRect();
+    if (frame ? r.width <= 1 || r.height <= 1 : shut && r.width <= 1 && r.height <= 1) return true;
+    if ((style.position === "absolute" || style.position === "fixed") && clipShut(style.clip)) return true;
+    if (!placed || !r.width || !r.height) return false;
+    const view = el.ownerDocument.defaultView || window;
+    if (style.position === "fixed") return r.right <= 0 || r.bottom <= 0 || putAway(r, view);
+    if (r.right + view.scrollX > 0 && r.bottom + view.scrollY > 0) return false;
+    // Above the window is where a box scrolled past sits too: LinkedIn
+    // scrolls its main box, not the window, and on 10-30 a read after
+    // expand had scrolled it 14,084 px kept 219 of 2,803 words. Only the
+    // boxes that hold it count: an absolute box escapes those between it
+    // and its offsetParent, so a span at top: -9999px stays unseen however
+    // far a box it escapes is scrolled.
+    const up = (box, position) => (position === "absolute" ? box.offsetParent : box.parentElement ?? box.getRootNode().host);
+    let x = view.scrollX;
+    let y = view.scrollY;
+    for (let box = up(el, style.position); box && box !== el.ownerDocument.scrollingElement;) {
+      x += box.scrollLeft;
+      y += box.scrollTop;
+      const position = view.getComputedStyle(box).position;
+      if (position === "fixed") break;
+      box = up(box, position);
+    }
+    return r.right + x <= 0 || r.bottom + y <= 0;
+  }
+
+  // A fixed box past the window's right or bottom edge: a consent banner or
+  // drawer put away slides there. Unlike a skip link held above or left of
+  // the page, nothing brings it back on focus: its controls print nowhere
+  // either. A dismissed consent dialog stayed in every snapshot (SR-16).
+  function putAway(r, view) {
+    return r.width > 0 && r.height > 0 && (r.left >= view.innerWidth || r.top >= view.innerHeight);
+  }
+
+  // clip: rect(top, right, bottom, left) leaving no room. An auto edge is
+  // the box's own, which leaves room.
+  function clipShut(clip) {
+    const edges = /^rect\((.*)\)$/.exec(clip)?.[1].split(/[\s,]+/).map(parseFloat);
+    return edges?.length === 4 && (edges[1] - edges[3] <= 1 || edges[2] - edges[0] <= 1);
+  }
+
+  // An element's own words drawn without ink: a font of at most a pixel,
+  // or a clear fill (alpha 0) with no outline or shadow, unless a
+  // background shows through the letters (a gradient heading's
+  // background-clip: text). Its children can set their own.
+  function faintText(el, style) {
+    if (parseFloat(style.fontSize) <= 1) return true;
+    if (!/^transparent$|^rgba\(.*,\s*0\)$|\/\s*0\)$/.test(style.getPropertyValue("-webkit-text-fill-color"))) return false;
+    if (style.textShadow !== "none" || parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) > 0) return false;
+    for (let e = el; e; e = e.parentElement) {
+      const s = e === el ? style : (e.ownerDocument.defaultView || window).getComputedStyle(e);
+      if ((s.getPropertyValue("background-clip") + s.getPropertyValue("-webkit-background-clip")).includes("text")) return false;
+    }
+    return true;
+  }
+
+  // A text node's words no one sees: its element hides them or draws them
+  // without ink. Whitespace only parts words, so it always counts.
+  function unseenWords(text) {
+    const el = text.parentElement;
+    if (!el || !/\S/.test(text.nodeValue)) return false;
+    const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+    return style.visibility !== "visible" || faintText(el, style);
+  }
+
+  // Roles whose accessible name comes from their text (ARIA "name from content").
+  const NAME_FROM_CONTENT = new Set(["button", "link", "heading", "tab", "menuitem", "menuitemcheckbox",
+    "menuitemradio", "option", "checkbox", "radio", "switch", "treeitem", "cell", "gridcell",
+    "columnheader", "rowheader", "tooltip"]);
+
+  function textOf(el, max = 120) {
+    let t;
+    if (el.querySelector("select")) {
+      // a label wrapping its dropdown: leave out the option list
+      const copy = el.cloneNode(true);
+      for (const s of copy.querySelectorAll("select")) s.remove();
+      t = copy.textContent;
+    } else {
+      t = el.innerText || el.textContent || "";
+    }
+    t = t.replace(/\s+/g, " ").trim();
+    if (t.length > max) t = t.slice(0, max) + "…";
+    return t;
+  }
+
+  // The name an element states itself: aria-labelledby, aria-label, an
+  // image's alt, or a field's label. null when its name comes from its
+  // content or title. A control in a row that takes the row's own label
+  // is a part of the row: Gmail's checkbox names itself by its thread's
+  // summary, the row carries that name, and a click meant for the thread
+  // only ticked the box (09-30).
+  function ownName(el) {
+    const labelledby = el.getAttribute("aria-labelledby");
+    if (labelledby && labelledby !== el.parentElement?.closest("[role=row]")?.getAttribute("aria-labelledby")) {
+      const parts = labelledby.split(/\s+/)
+        .map((id) => el.getRootNode().getElementById(id))
+        .filter(Boolean)
+        .map((n) => textOf(n, 80));
+      if (parts.some(Boolean)) return parts.filter(Boolean).join(" ");
+    }
+    const label = el.getAttribute("aria-label");
+    if (label) return label.trim();
+    if (el.tagName === "IMG") return (el.getAttribute("alt") || "").trim();
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+      // A button made of an input shows its value (or, with none, the
+      // browser's word for it), and an image button its alt.
+      if (el.type === "submit" || el.type === "reset" || el.type === "button") return el.value.trim() || { submit: "Submit", reset: "Reset" }[el.type] || null;
+      if (el.type === "image") return (el.getAttribute("alt") || "").trim() || null;
+      if (el.labels && el.labels.length) return textOf(el.labels[0], 80);
+      return (el.getAttribute("placeholder") || el.getAttribute("name") || el.getAttribute("title") || "").trim();
+    }
+    return null;
+  }
+
+  // Names from content: a heading is page text, and pages put instructions
+  // in them, so it gets a paragraph's length, not a control label's.
+  const NAME_MAX = 80;
+  const TEXT_MAX = 160;
+  const TEXT_NAMED_TAGS = /^(A|BUTTON|H[1-6]|LABEL|SUMMARY)$/;
+
+  function namedByContent(el) {
+    return TEXT_NAMED_TAGS.test(el.tagName) || NAME_FROM_CONTENT.has(el.getAttribute("role"));
+  }
+
+  function accessibleName(el) {
+    const own = ownName(el);
+    if (own !== null) return own;
+    if (namedByContent(el)) {
+      const t = textOf(el, /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX);
+      if (t) return t;
+      // image-only links and icon buttons: name them by their picture's
+      // label, past an icon whose label is empty (Amazon's, 09-30)
+      const inner = el.querySelector("img[alt]:not([alt='']), [aria-label]:not([aria-label=''])");
+      if (inner) return (inner.getAttribute("aria-label") || inner.getAttribute("alt")).trim().slice(0, NAME_MAX);
+    }
+    return (el.getAttribute("title") || "").trim();
+  }
+
+  // A field whose value is a secret: its value is never printed, only
+  // whether it is filled. Autofill puts these in without the agent typing,
+  // and a show-password toggle turns a password field into a text field. A
+  // field the harness filled with a secret (keepSecret) is one too.
+  const secretFields = new WeakSet();
+  function secretField(el) {
+    return secretFields.has(el) || el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
+  }
+
+  // What the harness types as a secret (type's secret, a saved login or
+  // code, a card) never comes back from this page, wherever the page shows
+  // it: USCIS names its code field by a label that repeats the code, so a
+  // snapshot printed it past the field's {filled} (USCIS, 09-30). fields
+  // are where it went; every answer has texts cut (unsecret, in answer).
+  // They last as long as this page. A text under 3 characters is not kept:
+  // a cut of every "4" would garble the page and hide next to nothing.
+  const secretTexts = new Set();
+  function keepSecret(fields, ...texts) {
+    for (const f of fields) secretFields.add(f);
+    for (const t of texts) if (typeof t === "string" && t.length >= 3) secretTexts.add(t);
+  }
+
+  // A text of digits is cut only where it stands as a number of its own: a
+  // card's security code of 234 leaves a total of $1,234.56 whole.
+  const secretPattern = (t) => /^\d+$/.test(t) ? `(?<!\\d|\\d[.,])${t}(?![.,]?\\d)` : t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // value with each kept text cut to "...", however deep, the longest
+  // first, so a code inside a longer secret cannot split it; but for a
+  // file's bytes (a top-level data, in base64), which a cut would break.
+  function unsecret(value) {
+    if (!secretTexts.size) return value;
+    const secrets = new RegExp([...secretTexts].sort((a, b) => b.length - a.length).map(secretPattern).join("|"), "g");
+    const cut = (v, top) => typeof v === "string" ? v.replace(secrets, "...")
+      : Array.isArray(v) ? v.map((x) => cut(x, false))
+      : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]))
+      : v;
+    return cut(value, true);
+  }
+
+  // An input named for a code shows only that it is filled once it holds
+  // digits, and its name loses its value (protectedFieldName): a code the
+  // user or the page put in, which the harness never typed, is a secret
+  // too (USCIS, 09-30). A term must start a word, so "shipping" holds no
+  // pin; a zip, postal, promo, or phone country code stays readable, as
+  // address fill types those and an agent checks them, and so does a text
+  // area, as a code editor's.
+  const CODE_NAME = /\b(code|otp|verification|passcode|cvc|cvv|csc)|\bpin\b|security.?code/i;
+  const OPEN_CODE = /\b(zip|postal|promo|coupon|discount|voucher|gift|country|area)/i;
+  function holdsCode(el, v) {
+    if (el.tagName !== "INPUT" || !/\d/.test(v)) return false;
+    const name = accessibleName(el);
+    return CODE_NAME.test(name) && !OPEN_CODE.test(name);
+  }
+
+  function stateOf(el) {
+    const s = [];
+    if (el.hasAttribute("disabled")) s.push("disabled");
+    if (el.getAttribute("aria-expanded") === "true") s.push("expanded");
+    if (el.getAttribute("aria-checked") === "true" || el.checked === true) s.push("checked");
+    if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      if (el.getRootNode().activeElement === el) s.push("focused");
+      const v = /^(submit|reset|button|image)$/.test(el.type) ? "" : el.value; // a button's value is its name
+      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
+    }
+    if (el.tagName === "SELECT" && el.options.length) {
+      const sel = el.selectedOptions[0];
+      if (sel) s.push(`value="${textOf(sel, 40)}"`);
+      s.push(`${el.options.length} options`);
+    }
+    if (el.href) {
+      const u = shortUrl(el.href);
+      if (u) s.push("url=" + u);
+    }
+    return s;
+  }
+
+  // A field shown only as filled has its value cut from its name too:
+  // USCIS named its code field "…required <the code>" (09-30).
+  function protectedFieldName(el, name, states = stateOf(el)) {
+    return states.includes("filled") && el.value.length >= 3 ? name.replaceAll(el.value, "...") : name;
+  }
+
+  // Link targets cost most of a snapshot's bytes, mostly tracking queries.
+  // Same-site links show their path, long queries collapse to "?…", and
+  // links to this same page are omitted. The ref still clicks the full URL.
+  function shortUrl(href) {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.protocol === "javascript:") return null;
+    // a file made in the page: its address is a long opaque string
+    if (u.protocol === "data:" || u.protocol === "blob:") return `${u.protocol}…`;
+    if (u.origin === location.origin && u.pathname === location.pathname && u.search === location.search) return null;
+    const base = u.origin === location.origin ? u.pathname : u.origin + u.pathname;
+    return base + (u.search.length > 41 ? "?…" : u.search);
+  }
+
+  // ---------- shadow roots ----------
+  // Web components draw into shadow roots, which querySelector, innerText,
+  // and a MutationObserver on the document never enter (CVS's insurance
+  // forms live there). Open ones are read as part of the page, as drawn: a
+  // host shows its shadow root, and a <slot> the host's children assigned to
+  // it. A closed root stays unreadable.
+  function drawnChildren(el) {
+    if (el.shadowRoot) return el.shadowRoot.childNodes;
+    if (el.tagName === "SLOT" && el.assignedNodes().length) return el.assignedNodes();
+    return el.childNodes;
+  }
+
+  // Every element under root, each shadow root's right after its host.
+  function* deepElements(root) {
+    if (root.shadowRoot) yield* deepElements(root.shadowRoot);
+    for (const el of root.querySelectorAll("*")) {
+      yield el;
+      if (el.shadowRoot) yield* deepElements(el.shadowRoot);
+    }
+  }
+
+  function shadowRoots(root = document) {
+    const out = root.shadowRoot ? [root.shadowRoot] : [];
+    for (const el of deepElements(root)) if (el.shadowRoot) out.push(el.shadowRoot);
+    return out;
+  }
+
+  function deepQueryAll(selector, root = document) {
+    return [root, ...shadowRoots(root)].flatMap((r) => [...r.querySelectorAll(selector)]);
+  }
+
+  function deepQuery(selector) {
+    return document.querySelector(selector) ?? deepQueryAll(selector)[0] ?? null;
+  }
+
+  // The innermost element at a point: elementFromPoint stops at a host.
+  function deepPoint(x, y, doc = document) {
+    let hit = doc.elementFromPoint(x, y);
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  }
+
+  // ---------- snapshot ----------
+
+  function ensureRef(el) {
+    let ref = el.getAttribute(REF_ATTR);
+    if (ref && (refMap.has(ref) ? refMap.get(ref) !== el : fingerprints.has(ref) || carried?.[ref])) ref = null;
+    if (!ref) {
+      refSeq += 1;
+      ref = String(refSeq);
+      el.setAttribute(REF_ATTR, ref);
+    }
+    refMap.set(ref, el);
+    remember(ref, fingerprintOf(el));
+    return ref;
+  }
+
+  function pruneRefs() {
+    // drop refs whose elements left the DOM
+    for (const [ref, el] of refMap) {
+      if (!el.isConnected) refMap.delete(ref);
+    }
+  }
+
+  // ---------- fingerprints ----------
+  // A framework that draws the page anew replaces the elements a snapshot
+  // gave refs, and the agent's next action would miss. Each ref keeps a
+  // fingerprint of its element (daemon/fingerprint.ts says what one
+  // holds), and a ref whose element is gone heals to the one element on
+  // the page that matches it; the reply says so (healed: { ref, now }).
+  // Teach mode keeps the same fingerprint of each step's target, for a
+  // replay to find the target again.
+  const fingerprints = new Map(); // ref -> fingerprint, kept after its element leaves
+  const FINGERPRINTS_MAX = 5000;
+  let healedNow = null; // the heal the running request made
+  let carried = null; // the fingerprints the running request brought (adopt)
+  let acting = false; // whether the running request acts on its target (ACTS)
+  let changedNow = null; // the changed control the running request met (changedSince)
+  // How much of an element's surroundings a fingerprint keeps: enough to
+  // tell one row's "Delete" from the next.
+  const NEAR_MAX = 80;
+  const NO_TEXT = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+  // An id the page's author wrote, not one its framework numbers anew on
+  // each load.
+  const STABLE_ID = /^[A-Za-z][A-Za-z_-]*$/;
+
+  function parentOf(el) {
+    return el.parentElement ?? el.parentNode?.host ?? null;
+  }
+
+  // The opening text in box outside el, read from its text nodes: reading
+  // a whole large box, or laying it out for innerText, would cost every
+  // ref a snapshot gives.
+  function textAround(box, el) {
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => n === el || NO_TEXT.has(n.nodeName) ? NodeFilter.FILTER_REJECT
+        : n.nodeType === Node.TEXT_NODE ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
+    });
+    let t = "";
+    for (let n = walker.nextNode(); n && t.length < NEAR_MAX; n = walker.nextNode()) {
+      const d = n.data.trim();
+      if (d) t += ` ${d}`;
+    }
+    return norm(t).slice(0, NEAR_MAX);
+  }
+
+  // Nearby text belongs to the control's box, not the whole document:
+  // unrelated page messages must not become a row's business identity.
+  function nearText(el) {
+    let up = 0;
+    for (let box = parentOf(el); box && box !== el.ownerDocument.body && box !== el.ownerDocument.documentElement && up < 6; box = parentOf(box), up++) {
+      const t = textAround(box, el);
+      if (t) return t;
+    }
+    return "";
+  }
+
+  // Up to depth steps from the element toward the top of its document or
+  // shadow root: a stable id ends the path, else each step is the tag and
+  // its place among its siblings of that tag.
+  function cssPath(el, depth) {
+    const steps = [];
+    for (let e = el; e && steps.length < depth; e = e.parentElement) {
+      if (STABLE_ID.test(e.id)) {
+        steps.unshift(`#${CSS.escape(e.id)}`);
+        break;
+      }
+      let k = 1;
+      for (let s = e.previousElementSibling; s; s = s.previousElementSibling) if (s.localName === e.localName) k++;
+      steps.unshift(`${CSS.escape(e.localName)}:nth-of-type(${k})`);
+    }
+    return steps.join(">");
+  }
+
+  // An element as the matcher sees it; near and path are read only for
+  // lookalikes (matchFingerprint).
+  function candidateOf(el) {
+    const tag = el.localName;
+    return {
+      role: getExplicitRole(el) || tag,
+      name: accessibleName(el),
+      tag,
+      get near() { return nearText(el); },
+      get path() { return cssPath(el, 4); },
+    };
+  }
+
+  // The page's elements by tag, and each one's place among its lookalikes,
+  // for one read (withCensus): a snapshot fingerprints hundreds of elements
+  // with one. The read holds it, not the microtask queue: in Safari, WebKit
+  // runs that queue each time it calls back into this script during a
+  // request (textAround's filter does, node by node), and a census kept
+  // until the next microtask was taken anew for each ref, 342 times in one
+  // read of Wikipedia's Europa page (10-21).
+  let census = null;
+  function withCensus(read) {
+    if (census) return read();
+    census = { roots: null, tags: new Map() };
+    try {
+      return read();
+    } finally {
+      census = null;
+    }
+  }
+
+  // Every element of a tag, shadow roots included, in page order.
+  function tagged(tag) {
+    census.roots ??= [document, ...shadowRoots()];
+    return census.roots.flatMap((r) => [...r.querySelectorAll(CSS.escape(tag))]);
+  }
+
+  // Each element of the tag, with its place among those that look the same
+  // (lookalikeKey) and how many of those there are.
+  function placesOf(tag) {
+    let places = census.tags.get(tag);
+    if (!places) {
+      const counts = new Map();
+      places = new Map();
+      for (const el of tagged(tag)) {
+        const key = lookalikeKey(candidateOf(el));
+        const index = counts.get(key) ?? 0;
+        counts.set(key, index + 1);
+        places.set(el, { key, index, counts });
+      }
+      census.tags.set(tag, places);
+    }
+    return places;
+  }
+
+  function fingerprintOf(el) {
+    return withCensus(() => {
+      const { role, name, tag, near, path } = candidateOf(el);
+      const at = placesOf(tag).get(el);
+      return { role, name, tag, near, path, index: at ? at.index : 0, count: at ? at.counts.get(at.key) : 1 };
+    });
+  }
+
+  function remember(ref, fp) {
+    fingerprints.delete(ref);
+    fingerprints.set(ref, fp);
+    if (fingerprints.size > FINGERPRINTS_MAX) fingerprints.delete(fingerprints.keys().next().value);
+  }
+
+  // ---- shared with daemon/fingerprint.ts: begin ----
+  function lookalikeKey(c) {
+    return `${c.role}\n${c.name}\n${c.tag}`;
+  }
+
+  function matchFingerprint(fp, candidates) {
+    const want = lookalikeKey(fp);
+    const same = [];
+    for (let i = 0; i < candidates.length; i++) if (lookalikeKey(candidates[i]) === want) same.push(i);
+    // Position and CSS paths survive a reorder without preserving identity.
+    // Repeated controls need unique, nonempty matching nearby text.
+    if (fp.near) {
+      const kin = same.filter((i) => candidates[i].near === fp.near);
+      if (kin.length === 1) return { index: kin[0] };
+    } else if (same.length === 1 && fp.count === 1 && !candidates[same[0]].near) {
+      return { index: same[0] };
+    }
+    return { count: same.length };
+  }
+  // ---- shared with daemon/fingerprint.ts: end ----
+
+  // The element a gone ref's fingerprint names (this page's own, or one the
+  // request brought from before the page loaded: adopt), now with a ref of
+  // its own; null when no one element matches (none, or lookalikes it
+  // cannot tell apart), and the action fails as a stale ref.
+  function heal(ref) {
+    const fp = fingerprints.get(ref) ?? carried?.[ref];
+    if (!fp) return null;
+    return withCensus(() => {
+      const els = tagged(fp.tag);
+      const m = matchFingerprint(fp, els.map(candidateOf));
+      if (!("index" in m)) return null;
+      const el = els[m.index];
+      healedNow = { ref, now: ensureRef(el) };
+      refMap.set(ref, el);
+      remember(ref, fp);
+      return el;
+    });
+  }
+
+  // A page can draw another control into the element a ref names, and the
+  // ref stays on it: a row's "Save draft" redrawn as "Delete account". An
+  // action checks the element's role and name against the ref's
+  // fingerprint before any event. A count in the name ("Cart (2)", "3
+  // unread", "1 item") may change, appear or vanish; any other number (a
+  // time, a price, a page) must match.
+  const COUNTS = /\b\d+ (?:items?|unread|new|notifications?|messages?)\b/g;
+  function changedSince(ref, el, fp = fingerprints.get(ref)) {
+    if (!fp) return false;
+    const now = candidateOf(el);
+    const bare = (name) => name.toLowerCase().replace(COUNTS, " ").replace(/\s+/g, " ").trim()
+      .replace(/^(cart|basket)\s*(?:\(\d+\)|\[\d+\])$/, "$1");
+    if (now.role === fp.role && bare(now.name) === bare(fp.name)) return false;
+    const shownAs = (c) => (c.name ? `${c.role} "${c.name}"` : c.role);
+    changedNow = { ref, was: shownAs(fp), now: shownAs(now) };
+    return true;
+  }
+
+  // The elements that look like a fingerprint's target (the same role,
+  // name, and tag), each with a ref, for a replay to choose among with the
+  // matcher (daemon/replay.ts).
+  function lookalikes(fp) {
+    const want = lookalikeKey(fp);
+    return withCensus(() => {
+      const out = [];
+      for (const el of tagged(fp.tag)) {
+        const c = candidateOf(el);
+        if (lookalikeKey(c) === want) out.push({ ref: ensureRef(el), role: c.role, name: c.name, tag: c.tag, near: c.near, path: c.path });
+      }
+      return out;
+    });
+  }
+
+  // A reply carries the heal its request made beside what the op answered.
+  function withHeal(value, healed) {
+    return healed && value && typeof value === "object" && !Array.isArray(value) ? { ...value, healed } : value;
+  }
+
+  // ---------- refs across a load ----------
+  // A load starts the page's refs over, while the agent still holds the
+  // ones its snapshot gave: on 10-07 Akyl's audit agents ran goto on the
+  // page they were reading, then clicked a ref from their snapshot of it,
+  // and each click failed as a stale ref (partners, calendar, inbox). A
+  // snapshot answers with the fingerprints of the refs it printed and the
+  // last ref this page gave (outline); background.js keeps those of the
+  // tab's latest snapshot, and sends an action that met a stale ref again
+  // with that ref's (kept). At the address the snapshot read, its hash
+  // aside, the ref then heals as one the page drew anew does; at any other
+  // it stays stale, whatever there looks the same. Refs this page gives
+  // from then on count on from that last one, so none of them is a ref the
+  // agent holds for another element.
+  function adopt(kept) {
+    carried = kept && samePage(kept.url) ? kept.fingerprints : null;
+    if (carried) refSeq = Math.max(refSeq, kept.last);
+  }
+
+  // ---------- embedded frames ----------
+  // Every frame runs this script. Each frame's copy has a token and tells
+  // its parent frame; the parent maps the <iframe> element to that token and
+  // prints it in the snapshot (FRAME_MARK), and the extension, which knows
+  // each frame's token and id, puts the frame's own snapshot there. The
+  // parent also says hello to frames loaded before it, so either may start
+  // first.
+  const FRAME_MARK = "@@frame:";
+  const frameToken = Math.random().toString(36).slice(2, 10);
+  window.__safariHarnessFrame = frameToken;
+  const childToken = new WeakMap(); // <iframe> -> its document's token
+  const greeted = new WeakSet(); // <iframe>s a snapshot found without a token and said hello to
+  const offsetWaiters = new Map(); // request id -> resolve
+
+  function frameElementOf(source) {
+    for (const f of deepQueryAll("iframe, frame")) if (f.contentWindow === source) return f;
+    return null;
+  }
+
+  // Where this frame's viewport sits in the top page's viewport, and the
+  // top viewport's size; each ancestor adds its <iframe>'s content box.
+  // box, a part of this frame's viewport, is scrolled into view in each
+  // ancestor on the way: an element of a frame below a dialog's fold stayed
+  // there when only the <iframe> was shown (SheerID's form, 10-19).
+  function frameOffset(box = null) {
+    if (window === window.top) return Promise.resolve({ x: 0, y: 0, innerWidth, innerHeight });
+    return new Promise((resolve) => {
+      const id = Math.random().toString(36).slice(2);
+      offsetWaiters.set(id, resolve);
+      parent.postMessage({ __shOffset: id, box }, "*");
+      setTimeout(() => { if (offsetWaiters.delete(id)) resolve(null); }, 3000);
+    });
+  }
+
+  const isBox = (b) => !!b && typeof b === "object" && ["x", "y", "width", "height"].every((k) => Number.isFinite(b[k]));
+
+  // Scrolls each box that holds el, nearest first, then the window, until
+  // rect (in this viewport) shows, centered on an axis where it did not.
+  function reveal(el, rect) {
+    const view = el.ownerDocument.defaultView || window;
+    const center = (at, size, from, span) => (at >= from && at + size <= from + span ? 0 : at + size / 2 - (from + span / 2));
+    let { x, y } = rect;
+    for (let box = parentOf(el); box && box !== el.ownerDocument.body && box !== el.ownerDocument.documentElement; box = parentOf(box)) {
+      if (box.scrollHeight <= box.clientHeight && box.scrollWidth <= box.clientWidth) continue;
+      const b = box.getBoundingClientRect();
+      const [left, top] = [box.scrollLeft, box.scrollTop];
+      box.scrollBy({ left: center(x, rect.width, b.left + box.clientLeft, box.clientWidth), top: center(y, rect.height, b.top + box.clientTop, box.clientHeight), behavior: "instant" });
+      x -= box.scrollLeft - left;
+      y -= box.scrollTop - top;
+    }
+    view.scrollBy({ left: center(x, rect.width, 0, view.innerWidth), top: center(y, rect.height, 0, view.innerHeight), behavior: "instant" });
+  }
+
+  addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || typeof d !== "object" || window.__safariHarnessInjected !== claim) return;
+    if (typeof d.__shFrame === "string") {
+      const f = frameElementOf(e.source);
+      if (f) childToken.set(f, d.__shFrame);
+    } else if (d.__shHello === 1 && e.source === parent) {
+      parent.postMessage({ __shFrame: frameToken }, "*");
+    } else if (typeof d.__shOffset === "string") {
+      const f = frameElementOf(e.source);
+      if (!f) return;
+      const cs = getComputedStyle(f);
+      const content = () => {
+        const r = f.getBoundingClientRect();
+        return { x: r.left + f.clientLeft + parseFloat(cs.paddingLeft), y: r.top + f.clientTop + parseFloat(cs.paddingTop) };
+      };
+      const box = isBox(d.box) ? d.box : null;
+      const here = (c) => box && { x: c.x + box.x, y: c.y + box.y, width: box.width, height: box.height };
+      if (box) reveal(f, here(content()));
+      else f.scrollIntoView({ block: "nearest", behavior: "instant" });
+      const c = content();
+      frameOffset(here(c)).then((o) => {
+        if (!o) return;
+        e.source.postMessage({
+          __shOffsetReply: d.__shOffset,
+          x: o.x + c.x,
+          y: o.y + c.y,
+          innerWidth: o.innerWidth,
+          innerHeight: o.innerHeight,
+        }, "*");
+      });
+    } else if (typeof d.__shOffsetReply === "string" && e.source === parent) {
+      const resolve = offsetWaiters.get(d.__shOffsetReply);
+      if (!resolve) return;
+      offsetWaiters.delete(d.__shOffsetReply);
+      resolve({ x: d.x, y: d.y, innerWidth: d.innerWidth, innerHeight: d.innerHeight });
+    }
+  }, { signal: life.signal });
+  if (window !== window.top) parent.postMessage({ __shFrame: frameToken }, "*");
+  for (const f of deepQueryAll("iframe, frame")) f.contentWindow?.postMessage({ __shHello: 1 }, "*");
+
+  // The element's box in the top page's viewport, in CSS pixels, scrolled
+  // into view in every frame it is in: where a real mouse click must land,
+  // and what a screenshot of it crops to.
+  async function locate(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    let x = r.x, y = r.y;
+    // an element of a frame read inline: add each <iframe>'s content box
+    for (let w = el.ownerDocument.defaultView; w && w !== window; w = w.parent) {
+      const f = w.frameElement;
+      if (!f) break;
+      const fr = f.getBoundingClientRect();
+      x += fr.left + f.clientLeft;
+      y += fr.top + f.clientTop;
+    }
+    const o = await frameOffset({ x, y, width: r.width, height: r.height });
+    if (!o) return { error: "could not place this frame on the page" };
+    return { x: x + o.x, y: y + o.y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
+  }
+
+  // real_input's click on a tab not in front (daemon/input.ts) presses the
+  // element through Safari's accessibility tree, where the helper finds it
+  // by a class of its own (AXDOMClassList) in a window of the page's outer
+  // size. WebKit offers a press only on a control, a link, or an element
+  // with a click listener of its own, and a page that listens on window or
+  // document gives its other elements none, so the element gets a listener;
+  // it also tells pressDone when the click has come. A control Safari
+  // answers with its own UI (a select's menu, a date picker, the Colors
+  // panel, a file panel), or a label that clicks one, would open that UI on
+  // screen over the user's app, so it takes the real mouse instead:
+  // { picker: true }.
+  const PICKER_INPUTS = new Set(["date", "datetime-local", "month", "week", "time", "color", "file"]);
+  const picker = (el) => el?.localName === "select" || (el?.localName === "input" && PICKER_INPUTS.has(el.type));
+  const presses = new Map(); // mark -> { el, heard (a promise), listen, since }
+  function pressMark(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    if (picker(el) || (el.localName === "label" && picker(el.control))) return { picker: true };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const mark = `__sh_press_${Math.random().toString(36).slice(2, 10)}`;
+    const heard = Promise.withResolvers();
+    const listen = (e) => { if (e.isTrusted) heard.resolve(); };
+    el.classList.add(mark);
+    el.addEventListener("click", listen, true);
+    presses.set(mark, { el, heard: heard.promise, listen, since: Date.now() });
+    return { mark, width: outerWidth, height: outerHeight };
+  }
+
+  // Takes the class and the listener off once the press has reached the
+  // element, or after ms: WebKit looks for the listener when it runs the
+  // press, which may come after the helper has returned. Answers with the
+  // errors the page threw from the mark on (dialogs.js), after a press that
+  // came has had the receipt's shortest watch to show them: a page that
+  // refuses a passkey or clipboard call for want of focus says so then;
+  // and tab: true when the page said a tab is coming since (announceTab),
+  // which the daemon waits to hear of. A mark this frame does not hold is
+  // another frame's, which relayOp then asks.
+  async function pressDone(ref, mark, ms) {
+    const p = presses.get(mark);
+    if (!p) return missing(ref);
+    presses.delete(mark);
+    const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
+    p.el.classList.remove(mark);
+    p.el.removeEventListener("click", p.listen, true);
+    if (came) await sleep(RECEIPT_SPAN.min);
+    return { errors: hear(p.since)?.errors ?? [], ...(tabSaid >= p.since ? { tab: true } : {}) };
+  }
+
+  // Safari runs no extension script in srcdoc and about:blank frames, so
+  // such a frame never reports. It shares this page's origin, so this copy
+  // reads its document directly, as part of the page.
+  function inlineDoc(f) {
+    if (childToken.has(f)) return null;
+    try { return f.contentDocument?.body ? f.contentDocument : null; } catch { return null; }
+  }
+  function inlineBodies() {
+    const out = [];
+    for (const f of deepQueryAll("iframe, frame")) {
+      const d = inlineDoc(f);
+      if (d) out.push(d.body);
+    }
+    return out;
+  }
+
+  // One walk over the page. What an agent can act on prints with a ref;
+  // headings, landmarks, and the page's own text print without one, each
+  // run of text once, where it sits. Names come from the text gathered on
+  // the way, so no element's text is read twice and nothing forces layout.
+  //   article
+  //     h3 [54] link "A Light in the Attic" /catalogue/a-light-in-the-attic_1000/index.html
+  //     £51.77 · In stock
+  //     [55] button "Add to basket"
+  // opts.query keeps only lines containing that text (case-insensitive), as
+  // a flat list, so an agent can find one element without reading the page;
+  // "a|b" keeps lines containing either.
+  const ACTION_ROLES = new Set(["button", "link", "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio",
+    "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "treeitem", "spinbutton"]);
+  const BREAK = 0; // a block edge: the text on each side prints on its own line
+  const CELL = 1; // a table cell's edge: joined with " | "
+
+  const norm = (t) => t.replace(/\s+/g, " ").trim();
+  const clip = (t, max) => { t = norm(t); return t.length > max ? t.slice(0, max) + "…" : t; };
+
+  // A root or selector that matches nothing is named, with how to read the
+  // page without it: "root not found" left agents guessing (09-29).
+  function noMatch(option, selector) {
+    return { error: `nothing on the page matches ${option} "${selector}"; leave ${option} out to read the whole page` };
+  }
+
+  function outline(opts = {}, walkOnly = false) {
+    pruneRefs();
+    const root = opts.root ? rootFor(opts.root) : document.body;
+    if (!root) return opts.root ? noMatch("root", opts.root) : { error: noBody() };
+    const maxLines = opts.maxNodes || 600;
+    const query = opts.query ? queryMatch(opts.query) : null;
+    // Refs in an embedded frame print with its frame's prefix ("f3:12"), so
+    // the extension knows which frame an action goes to.
+    const prefix = opts.refPrefix || "";
+    // Frames printed without their token: a frame that loaded before this
+    // script listened may not have told it which frame it is. The walk says
+    // hello to each once, and the extension snapshots again after the
+    // answers, so their lines have a place.
+    let unlinked = 0;
+    // Whether the walk met words or a control a person sees (snapshot waits
+    // on a page without them).
+    let seen = false;
+
+    // Pass 1: the kept elements as a tree, with loose text and block edges
+    // in page order. `named` holds the ancestors naming themselves by their
+    // text; each gathers the text inside it.
+    const top = { kids: [] };
+    const walk = (el, parent, named, inItem, inHand, muted = false, afloat = false) => {
+      // Never drawn, hidden or not: showHidden would print a page's script
+      // source and style rules as its text.
+      if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
+      const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+      // showHidden keeps what the page hides (a collapsed menu, a closed
+      // dialog), for reading; such an element cannot be clicked until shown.
+      if (!opts.showHidden) {
+        if (style.display === "none" || transparent(el, style)) return;
+        if (style.position === "fixed" && (el.getClientRects().length === 0 || putAway(el.getBoundingClientRect(), el.ownerDocument.defaultView || window))) return;
+      }
+      // A child of a hidden element can show itself with visibility: visible
+      // (Slack's workspace chooser does), so a hidden element loses only its
+      // own line and words, and each child is judged by its own style. The
+      // words in a box no one sees (unseenBox) print nowhere.
+      const hidden = !opts.showHidden && style.visibility !== "visible";
+      const boxed = muted || (!opts.showHidden && unseenBox(el, style));
+      if ((hidden || boxed) && (el.tagName === "IFRAME" || el.tagName === "FRAME")) return;
+      const role = getExplicitRole(el);
+      const aloft = afloat || floats(style);
+      const actionable = ACTION_ROLES.has(role) || isInteractive(el, style, inHand) || el.tagName === "IFRAME" || el.tagName === "FRAME" || (aloft && handStarts(el, style, inHand));
+      let node = parent;
+      if (!hidden && (actionable || (role && NAMED_ROLES.has(role)))) {
+        node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
+        parent.kids.push(node);
+        seen ||= actionable && !boxed;
+        if (node.name === null && namedByContent(el)) {
+          node.text = [];
+          named = [...named, node];
+        }
+      } else if ((el.tagName === "UL" || el.tagName === "OL") && inItem) {
+        node = { group: true, kids: [] };
+        parent.kids.push(node);
+      }
+      const pic = hidden ? null : el.tagName === "IMG" ? el.getAttribute("alt") : node.el !== el ? el.getAttribute("aria-label") : null;
+      if (pic) for (const n of named) n.pic ??= pic.trim();
+      const add = (x) => { node.kids.push(x); for (const n of named) n.text.push(typeof x === "string" ? x : " "); };
+      // Words no one sees still name the control they sit in, as
+      // screen-reader text does, but print nowhere; a hidden element's own
+      // words do neither. Whitespace only parts words, so it always goes.
+      let quiet = null;
+      const words = (t) => {
+        if (!/\S/.test(t)) return add(t);
+        if (hidden) return;
+        quiet ??= boxed || (!opts.showHidden && faintText(el, style));
+        if (!quiet) {
+          seen = true;
+          return add(t);
+        }
+        for (const n of named) n.text.push(t);
+      };
+      if (!/^(SELECT|TEXTAREA|IMG|svg|INPUT)$/.test(el.tagName)) {
+        const d = style.display;
+        const block = !d.startsWith("inline") && d !== "contents";
+        const edge = d === "table-cell" ? CELL : BREAK;
+        if (block) add(edge);
+        for (const child of drawnChildren(el)) {
+          if (child.nodeType === Node.TEXT_NODE) words(child.nodeValue);
+          else if (child.nodeType === Node.ELEMENT_NODE) {
+            if (child.tagName === "BR") add(BREAK);
+            else walk(child, node, named, inItem || el.tagName === "LI", inHand || (actionable && style.cursor === "pointer"), boxed, aloft);
+          }
+        }
+        if (block) add(edge);
+      }
+      if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
+        const d = inlineDoc(el);
+        if (d) walk(d.body, node, [], false, false);
+        else if (!childToken.has(el) && !greeted.has(el)) {
+          greeted.add(el);
+          el.contentWindow?.postMessage({ __shHello: 1 }, "*");
+          unlinked++;
+        }
+      }
+      if (node.el !== el) return;
+      if (node.text) {
+        const full = norm(node.text.join(""));
+        const cap = /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX;
+        if (full) {
+          node.fromText = true;
+          node.long = full.length > cap;
+          node.name = node.long ? null : full;
+        } else if (node.pic) {
+          node.fromPic = true;
+          node.name = node.pic.slice(0, NAME_MAX);
+        } else node.name = (el.getAttribute("title") || "").trim();
+        delete node.text;
+        // a title cut short on screen ("A Light in the ...") with the whole
+        // title in the title attribute
+        const title = el.getAttribute("title");
+        if (node.name && title && /(\.\.\.|…)$/.test(node.name) && title.startsWith(node.name.replace(/\s*(\.\.\.|…)$/, ""))) node.name = title.trim();
+      } else if (node.name === null) node.name = (el.getAttribute("title") || "").trim();
+    };
+    walk(root, top, [], false, false);
+    // snapshot's check whether a person sees anything on the page yet
+    if (walkOnly) return { seen };
+
+    // Pass 2: print. A ref is given only to a line that is printed.
+    const lines = [];
+    let truncated = false;
+    // The fingerprint of each ref printed, for background.js to keep
+    // (adopt).
+    const printed = {};
+    const refOf = (el) => {
+      const ref = ensureRef(el);
+      printed[ref] = fingerprints.get(ref);
+      return ref;
+    };
+    const push = (depth, text, n, lead = "") => {
+      // an embedded frame's line stays, whatever the query: the extension
+      // puts the frame's own matching lines in its place
+      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) return;
+      if (lines.length >= maxLines) { truncated = true; return; }
+      const line = n ? `${lead}[${prefix}${refOf(n.el)}] ${text}` : lead + text;
+      lines.push(query ? line : "  ".repeat(depth) + line);
+    };
+    const hrefOf = (n) => (n.el && n.el.href) || null;
+    const tag = (n) => (n.role === "heading" && /^H[1-6]$/.test(n.el.tagName) ? n.el.tagName.toLowerCase() : n.role);
+    // A line's text after its ref: role, name, bare URL, then states. A
+    // stated name or title can run to a whole commit message: one line of it.
+    const head = (n) => {
+      const st = stateOf(n.el);
+      const i = st.findIndex((s) => s.startsWith("url="));
+      const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
+      const name = n.name ? clip(protectedFieldName(n.el, n.name, st), TEXT_MAX) : "";
+      const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
+      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
+    };
+    // The text items from kids[from] up to the next element.
+    const textItems = (kids, from) => {
+      const items = [];
+      let run = "";
+      // Text between inline links arrives in pieces: drop the separators and
+      // the unmatched bracket each piece starts or ends with ("(", ") · 291 points by").
+      const flush = () => {
+        const t = clip(run, TEXT_MAX).replace(/^[\s)\]|·•,;]+|[\s([|·•,;]+$/g, "").replace(/(\| ){2,}/g, "| ");
+        if (t) items.push(t);
+        run = "";
+      };
+      let i = from;
+      for (; i < kids.length; i++) {
+        const c = kids[i];
+        if (typeof c === "string") run += c;
+        else if (c === CELL) run += " | ";
+        else if (c === BREAK) flush();
+        else break;
+      }
+      flush();
+      return { items, next: i };
+    };
+    const elementKids = (n) => n.kids.filter((k) => typeof k === "object");
+    const allText = (n) => {
+      const r = [];
+      for (let i = 0; i < n.kids.length;) {
+        if (typeof n.kids[i] === "object") { i++; continue; }
+        const { items, next } = textItems(n.kids, i);
+        r.push(...items);
+        i = next;
+      }
+      return r;
+    };
+    const short = (t) => t.length <= 24 && !t.includes(" | ");
+    const render = (node, depth) => {
+      // nothing prints past the last line: stop reading the page there
+      if (truncated) return;
+      const kids = node.kids;
+      // links that only show a picture, when a text link in the same block
+      // goes to the same place
+      const textHrefs = new Set();
+      const scan = (n, d) => {
+        for (const k of elementKids(n)) {
+          if (k.actionable && k.fromText && hrefOf(k)) textHrefs.add(hrefOf(k));
+          if (d < 2 && !k.actionable) scan(k, d + 1);
+        }
+      };
+      scan(node, 0);
+      for (let i = 0; i < kids.length && !truncated;) {
+        const c = kids[i];
+        if (typeof c !== "object") {
+          let { items, next } = textItems(kids, i);
+          i = next;
+          if (node.fromText && !node.long) continue; // already the name
+          // text a stated name already carries (aria-label ".cargo, (Directory)" over ".cargo")
+          if (node.name && !node.fromText) items = items.filter((t) => !node.name.toLowerCase().includes(t.toLowerCase()));
+          // short neighbours share a line ("£51.77 · In stock"); table rows and long text keep their own
+          let line = "";
+          for (const it of items) {
+            if (line && !(short(it) && short(line.split(" · ").pop()) && line.length + it.length < TEXT_MAX)) { push(depth, line); line = ""; }
+            line = line ? `${line} · ${it}` : it;
+          }
+          if (line) push(depth, line);
+          continue;
+        }
+        i++;
+        if (c.group) { render(c, depth + 1); continue; }
+        if (!c.actionable && !c.name && (c.role === "form" || c.role === "region")) { render(c, depth); continue; }
+        if (!c.actionable && c.role === "img" && node.actionable) continue;
+        if (c.actionable && c.fromPic && hrefOf(c) && textHrefs.has(hrefOf(c))) continue;
+        const ek = elementKids(c);
+        const texts = allText(c);
+        // a heading that only holds a link: one line
+        if (c.role === "heading" && ek.length === 1 && ek[0].actionable && texts.length <= 1) {
+          push(depth, head(ek[0]), ek[0], `${tag(c)} `);
+          render(ek[0], depth + 1);
+          continue;
+        }
+        // a nameless box holding one text: "alert: Warning! …"
+        if (!c.actionable && !c.name && ek.length === 0) {
+          if (texts.length === 0) continue;
+          if (texts.length === 1) { push(depth, `${tag(c)}: ${texts[0]}`); continue; }
+        }
+        push(depth, head(c), c.actionable ? c : null);
+        render(c, depth + 1);
+      }
+    };
+    withCensus(() => render(top, 0));
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
+  }
+
+  // A page still drawing can show for a moment nothing a person sees: a
+  // sign-in page (Chase's) read as empty once, and the agent never looked
+  // again; Bank of America's hold just a skip link, parked in a one-pixel
+  // box, until their script draws the rest. A read that finds nothing a
+  // person sees (under its root; for a query, no line) on a page without
+  // it reads again after each change the page makes, and answers once it
+  // finds some, or after DRAW_WAIT_MS with what it has: queries of
+  // suedax's profile answered empty four times while it drew its settings
+  // (09-29). On a page a person sees already, a query or root that finds
+  // nothing answers at once. An embedded frame answers at once: an ad's
+  // frame may never draw.
+  // A page still blank then says so: Turnitin's and Duolingo's read as
+  // nothing right after goto, and drew a moment later (09-29).
+  //
+  // Flutter draws its page on a canvas, and builds the controls a screen
+  // reader reads, the only ones a read sees, once its "Enable
+  // accessibility" placeholder is clicked: GEICO's sign-in read as that
+  // button alone (09-29). A read clicks it, and waits the same way for the
+  // controls, which come a frame later. A hidden tab draws no frames unless
+  // the harness opened it, so in the user's own they come once he shows
+  // it, and the read says so.
+  const DRAW_WAIT_MS = 2000;
+  const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
+  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
+  // A page that hit an error may draw nothing however long a wait looks for
+  // its text: on 10-09 an agent waited 25 s on one whose script had thrown,
+  // then read an empty console (S99PartB). A blank read names the errors
+  // the page kept since it began (dialogs.js), failed script loads among them.
+  function undrawnHint() {
+    const errors = hear(0)?.errors ?? [];
+    if (errors.length === 0) return UNDRAWN_PAGE;
+    const count = errors.length === 1 ? "an error" : `${errors.length} errors${errors.length > 3 ? ", the latest" : ""}`;
+    return `the page has drawn nothing, and it hit ${count}: ${errors.slice(-3).join("; ")}. Waiting for its text may not help: read them with console (do: read), or reload it (history, do: reload), then snapshot again`;
+  }
+  function snapshot(opts = {}) {
+    if (!document.body) return hasBody().then((has) => (has ? snapshot(opts) : { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: noBody() }));
+    if (shownPdf()) return { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: shownPdfText() };
+    const top = window === window.top;
+    // Flutter's host element sits in the page itself, so only a page with
+    // one pays for a search of every shadow root (2 ms of a read of cnn.com).
+    const placeholder = top && document.querySelector("flutter-view, flt-glass-pane") ? deepQuery("flt-semantics-placeholder") : null;
+    placeholder?.click();
+    // Whether a read holds what it came for: Flutter's controls, else words
+    // or a control a person sees (under root) and, for a query, a line.
+    const found = (read, seen) => (placeholder ? deepQuery("flt-semantics") !== null : !read.error && seen && (!opts.query || read.nodes > 0));
+    const { seen, ...snap } = outline(opts);
+    if (!top || found(snap, seen)) return snap;
+    if (!placeholder && (seen || (opts.root && outline({}, true).seen))) return snap;
+    let latest = snap;
+    return whenPage(() => {
+      const { seen: now, ...again } = outline(opts);
+      latest = again;
+      return found(again, now);
+    }, DRAW_WAIT_MS).then((held) => {
+      if (!held && placeholder && document.hidden && !tickPort) return { ...latest, hint: FLUTTER_UNDRAWN };
+      if (!held && !placeholder && !outline({}, true).seen) return { ...latest, hint: undrawnHint() };
+      return latest;
+    });
+  }
+
+  // Resolves true once test holds for a batch of changes the page makes,
+  // or false after ms. Safari stops a content script's timers in a hidden
+  // tab, so the limit also runs on an owned tab's ticks, and in any other
+  // hidden tab on a loop of messages, as withReceipt's watch does.
+  function whenPage(test, ms) {
+    return new Promise((resolve) => {
+      const until = Date.now() + ms;
+      const spin = document.hidden && !tickPort ? new MessageChannel() : null;
+      const done = (held) => {
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", check);
+        spin?.port1.close();
+        observer.disconnect();
+        resolve(held);
+      };
+      const check = () => { if (Date.now() >= until) done(false); };
+      const observer = watchPage((records) => { if (records.length && test(records)) done(true); });
+      const timer = setTimeout(() => done(false), ms);
+      document.addEventListener("__sh_tick", check);
+      if (spin) {
+        spin.port1.onmessage = () => {
+          check();
+          spin.port2.postMessage(null);
+        };
+        spin.port2.postMessage(null);
+      }
+    });
+  }
+
+  // A page with no body yet: its script took the body away to build it
+  // again, or the read came before the parser put one in. On 10-23 map read
+  // 23 such pages as "no content root", and open said nothing matched root
+  // "undefined" (K2, SR-4). A read waits for one as it waits for a page to
+  // draw; an XML or SVG file never has one.
+  const webDocument = () => !document.documentElement || document.documentElement.namespaceURI === "http://www.w3.org/1999/xhtml";
+  async function hasBody() {
+    if (document.body) return true;
+    if (document.documentElement && webDocument()) await whenPage(() => !!document.body, DRAW_WAIT_MS);
+    return !!document.body;
+  }
+  const noBody = () => (webDocument()
+    ? "the page had not put its document in place yet (no body after 2 s): read it again"
+    : "this is not a web page but an XML or SVG file, which has no body to read: read its source with fetch {url}");
+
+  // Safari shows a PDF served inline in its own viewer, a document with
+  // only an embed in its body: extract read none of its text and said the
+  // page showed no text yet (K3, SR-7; its contentType checked in Safari
+  // on 10-24).
+  const shownPdf = () => window === window.top && document.contentType === "application/pdf";
+  const shownPdfText = () => `this is a PDF in Safari's viewer, which page reads do not reach: read its text with pdf {do: "read", url: "${location.href}"}`;
+
+  // ---------- actions ----------
+
+  // A target is a ref from the latest snapshot ("12"), a CSS selector
+  // ("#email"), or an element's visible text or label ("Sign in"), so an
+  // action can run without a snapshot first. A bare word is tried as text
+  // before CSS: "Menu" should reach the button, not the <menu> element.
+  // text= is visible text alone, as Playwright writes it: "15" is a ref,
+  // text=15 the day 15 in a date picker.
+  const CSS_HINT = /[#.[\]:>*=~^$|+()]/;
+  // "<target> >> nth=<i>", as Playwright's locator.nth(i) writes it: the
+  // target's match at i in matchesOf's order, counted from the end when i
+  // is negative.
+  const NTH = /^(.*\S)\s*>>\s*nth=(-?\d+)$/s;
+  function resolve(target, keepLabel = false) {
+    const key = String(target).trim();
+    if (NTH.test(key)) return matchesOf(key, keepLabel)[0] ?? null;
+    if (key.startsWith("text=")) return byText(key.slice(5), keepLabel);
+    if (/^\d+$/.test(key)) {
+      const el = refMap.get(key);
+      if (el?.isConnected) return acting && changedSince(key, el) ? null : el;
+      if (el || fingerprints.has(key) || carried?.[key]) return heal(key);
+      return null;
+    }
+    return CSS_HINT.test(key) ? bySelector(key) ?? byText(key, keepLabel) : byText(key, keepLabel) ?? bySelector(key);
+  }
+
+  // Every element a target names, in page order, for a locator's count,
+  // nth, and all: a selector's matches, shown or not, as Playwright counts
+  // them; for text, the shown controls of that very name, else the one
+  // element resolve finds. In the two weeks of logs before 10-19, scripts
+  // took the fourth "See out-the-door price" button, the third radio
+  // button, and a gallery's nth thumbnail so, and locators had no nth.
+  function matchesOf(key, keepLabel = false) {
+    const nth = NTH.exec(key);
+    if (nth) {
+      const el = matchesOf(nth[1], keepLabel).at(Number(nth[2]));
+      return el ? [el] : [];
+    }
+    const ref = /^\d+$/.test(key);
+    const text = key.startsWith("text=");
+    if (!ref && !text && CSS_HINT.test(key)) {
+      try { return deepQueryAll(key); } catch { /* not a selector: text */ }
+    }
+    const want = ref ? "" : (text ? key.slice(5) : key).replace(/\s+/g, " ").trim().toLowerCase();
+    const named = want ? [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]).filter((el) => isInteractive(el) && shown(el) && accessibleName(el).replace(/\s+/g, " ").toLowerCase() === want) : [];
+    if (named.length) return keepLabel ? named : named.map(fieldOf);
+    const one = resolve(key, keepLabel);
+    return one ? [one] : [];
+  }
+
+  // A label stands for its field. The snapshot gives a label that wraps its
+  // field a ref of its own; typing into that ref or picking an option on it
+  // means the field. A label no field takes as its own (no for, nothing
+  // inside) may still name one through aria-labelledby: on 10-07
+  // Robinhood's "Sell in" label named its combobox so, and getByLabel('Sell
+  // in').selectOption answered that the label was no <select> or combobox.
+  // Its list names the label too, so the field is the one that takes input.
+  function fieldOf(el) {
+    if (!el || el.tagName !== "LABEL") return el;
+    if (el.control) return el.control;
+    const named = el.id ? [...el.getRootNode().querySelectorAll(`[aria-labelledby~="${CSS.escape(el.id)}"]`)] : [];
+    return named.find((n) => n.matches("select, input, textarea") || ["combobox", "textbox"].includes(getExplicitRole(n))) ?? el;
+  }
+
+  // isVisible alone passes the children of a display:none parent, because
+  // the snapshot never walks into one; a target found by search must also
+  // have a box on the page.
+  function shown(el) {
+    return el.getClientRects().length > 0 && isVisible(el);
+  }
+
+  // The dialog open over the page: the last shown, when several are.
+  function openDialog() {
+    return deepQueryAll(DIALOG_BOXES).filter(shown).at(-1) ?? null;
+  }
+
+  // A selector's first shown match, one in the open dialog first: SUECU's
+  // sign-in typed into the page's own email field, behind the dialog that
+  // asked for it (09-29). A selector that matches nothing is tried once more
+  // with its links matched by where they go.
+  function bySelector(selector) {
+    let all;
+    try { all = deepQueryAll(selector); } catch { return null; }
+    if (!all.length) all = byHref(selector);
+    const box = openDialog();
+    return (box && all.find((el) => box.contains(el) && shown(el))) ?? all.find(shown) ?? all[0] ?? null;
+  }
+
+  // The selector's matches with each [href=V] widened to the href attributes
+  // on the page that resolve to V's address. CSS compares the attribute as
+  // written: Slate writes href="frm?…", the snapshot shows /apply/frm?…, and
+  // a[href="/apply/frm?…"] copied from it matched nothing (09-30).
+  const HREF_EQUALS = /\[\s*href\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^\s\]"']+))\s*\]/g;
+  function byHref(selector) {
+    const resolved = (href) => {
+      try { return new URL(href, document.baseURI).href; } catch { return null; }
+    };
+    let written = null;
+    const widened = selector.replace(HREF_EQUALS, (whole, dq, sq, bare) => {
+      const want = resolved((dq ?? sq ?? bare).replace(/\\(.)/g, "$1"));
+      written ??= [...new Set(deepQueryAll("[href]").map((el) => el.getAttribute("href")))];
+      const same = want === null ? [] : written.filter((href) => resolved(href) === want);
+      return same.length ? `:is(${same.map((href) => `[href="${CSS.escape(href)}"]`).join(",")})` : whole;
+    });
+    if (widened === selector) return [];
+    try { return deepQueryAll(widened); } catch { return []; }
+  }
+
+  // A read's root or selector. "dialog" is the dialog open over the page, and
+  // the name an action's answer gives one (dialog "Parent/Guardian Details
+  // 2027") is that dialog, found as the answer found it: Slate's popups are
+  // divs, so the CSS "dialog" matched nothing and the name was not CSS
+  // (09-30). A ref from the latest snapshot, bracketed as it prints or not,
+  // is its element: root "[23]" failed as CSS (01a10ea8, 10-05). Any other
+  // selector is CSS.
+  function rootFor(selector) {
+    const want = selector.trim();
+    if (want === "dialog") return openDialog() ?? deepQuery(selector);
+    const ref = /^\[?(\d+)\]?$/.exec(want);
+    if (ref) return resolve(ref[1]);
+    if (!/^[\w-]+ ".*"$/s.test(want)) return deepQuery(selector);
+    return deepQueryAll(DIALOG_BOXES).filter(shown).findLast((box) => named(box) === want) ?? null;
+  }
+
+  // Controls whose name is the text win, then any element whose own text it
+  // is (the innermost), then controls whose name contains it, then the
+  // innermost element whose text holds it, as Playwright's getByText finds
+  // one: on 10-02 a wait for a sentence that began a longer paragraph ran
+  // out its 30 s. A label stands for its field.
+  function byText(text, keepLabel = false) {
+    const want = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!want) return null;
+    const all = [document.body, ...inlineBodies()].flatMap((b) => [...deepElements(b)]);
+    let partial = null;
+    let found = null;
+    for (const el of all) {
+      if (!isInteractive(el)) continue;
+      const name = accessibleName(el).replace(/\s+/g, " ").toLowerCase();
+      if (name === want && shown(el)) { found = el; break; }
+      if (!partial && name.includes(want) && shown(el)) partial = el;
+    }
+    let holding = null;
+    for (const el of found ? [] : all) {
+      if (found && !found.contains(el)) break;
+      const own = textOf(el, Infinity).toLowerCase();
+      if (own === want && shown(el)) found = el;
+      else if (!found && own.includes(want) && (!holding || holding.contains(el)) && shown(el)) holding = el;
+    }
+    found ??= partial ?? holding;
+    return keepLabel ? found : fieldOf(found);
+  }
+
+  function missing(target) {
+    const key = String(target).trim();
+    if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
+    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
+  }
+
+  function centerOf(el) {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  }
+
+  function fireMouse(el, type, x, y) {
+    el.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, composed: true, view: el.ownerDocument.defaultView,
+      clientX: x, clientY: y, button: 0,
+    }));
+  }
+
+  function fireClick(el, x, y, beforeEvent = null, stopAfterEvent = null) {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      const blocked = beforeEvent?.();
+      if (blocked) return blocked;
+      fireMouse(el, type, x, y);
+      if (stopAfterEvent?.()) return { ok: true };
+    }
+    return { ok: true };
+  }
+
+  // What an action set in motion, read right after it ran, so the extension
+  // waits for a load or a tab only when one is coming:
+  //   "load"    this tab is loading another document
+  //   "tab"     another tab is opening
+  //   "script"  a link or form the page's script took over; it may move soon
+  // Safari fires no navigate event for a synthetic link click, so links and
+  // forms are read from their click and submit events; the page's own
+  // location changes do fire navigate, synchronously.
+  function withOutcome(act) {
+    let nav = null;
+    let submit = null;
+    let clicked = null;
+    let clickedLink = null;
+    let popped = false;
+    const onNav = (e) => { nav ??= e; };
+    const onSubmit = (e) => { submit ??= e; };
+    const onClick = (e) => {
+      if (clicked) return;
+      clicked = e;
+      clickedLink = e.composedPath().find((el) => el instanceof Element && el.matches("a[href], area[href]"));
+    };
+    const onPopup = () => { popped = true; };
+    navigation.addEventListener("navigate", onNav);
+    addEventListener("submit", onSubmit, true);
+    addEventListener("click", onClick, true);
+    document.addEventListener("__sh_popup", onPopup);
+    let res;
+    try {
+      res = act();
+    } finally {
+      navigation.removeEventListener("navigate", onNav);
+      removeEventListener("submit", onSubmit, true);
+      removeEventListener("click", onClick, true);
+      document.removeEventListener("__sh_popup", onPopup);
+    }
+    if (!res || res.error) return res;
+    const expect = popped ? "tab"
+      : nav ? (nav.destination.sameDocument ? null : "load")
+      : submit ? submitOutcome(submit)
+      : clicked ? linkOutcome(clicked, clickedLink)
+      : null;
+    // the window.open said so already, and a link's click says so itself
+    if (expect === "tab" && !popped && !clickedLink) announceTab();
+    return expect ? { ...res, expect } : res;
+  }
+
+  function opensTab(target) {
+    return target !== "" && !["_self", "_top", "_parent"].includes(target.toLowerCase());
+  }
+
+  function submitOutcome(e) {
+    if (e.defaultPrevented) return "script";
+    const target = e.submitter?.getAttribute("formtarget") ?? e.target.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
+    return opensTab(target) ? "tab" : "load";
+  }
+
+  function linkOutcome(e, a) {
+    if (!a || a.hasAttribute("download")) return null;
+    if (e.defaultPrevented) return "script";
+    const to = new URL(a.href, location.href);
+    // mailto:, tel:, and app links hand off to another app; the tab stays.
+    if (to.protocol !== "https:" && to.protocol !== "http:") return null;
+    if (to.href.split("#")[0] === location.href.split("#")[0] && to.hash) return null;
+    const target = a.getAttribute("target") ?? document.querySelector("base[target]")?.target ?? "";
+    return opensTab(target) ? "tab" : "load";
+  }
+
+  // A form type filled whose submit stays disabled did not take the
+  // typing: Reddit's password reset enables its button only on keys a
+  // person presses, and type there answered kept (09-29). A form with a
+  // field still empty may be waiting on that field instead.
+  const TYPING_UNTAKEN = "that control is still disabled after type filled its form: the page did not take scripted typing; type into its fields with real_input type and ref, then click again";
+  function typedForm(el) {
+    const form = el.form;
+    if (!form || lastTyped?.form !== form) return false;
+    return [...form.elements].every((f) => !/^(INPUT|TEXTAREA)$/.test(f.tagName) || /^(hidden|submit|reset|button|image|checkbox|radio|file)$/.test(f.type) || f.value !== "" || !shown(f));
+  }
+
+  // A click refused before its first event did nothing (failures.ts); one
+  // on a link names where it goes, which goto opens instead.
+  const UNSENT = { code: "stale_view", effect: "none" };
+  function refused(el, res) {
+    const a = el.closest("a[href]");
+    const doc = el.ownerDocument.URL.split("#")[0];
+    const to = a && !a.closest("[aria-disabled=true], [inert]") && /^https?:/.test(a.href) && a.href.split("#")[0] !== doc ? a.href : null;
+    const { next, recovery, ...detail } = res;
+    const failure = next ? { ...UNSENT, retryable: false, next } : UNSENT;
+    if (recovery === "present") Object.assign(failure, { recovery, document: frameToken, target: ensureRef(el) });
+    return { ...detail, error: to ? `${res.error}; it links to ${to}, which goto opens` : res.error, failure };
+  }
+
+  function click(ref, el = resolve(ref, true)) {
+    if (!el) return { ...missing(ref), failure: UNSENT };
+    return clickElement(el);
+  }
+
+  // Only a refusal before the first event may be tried again. Scroll-driven
+  // layout and a foreground fade can settle without changing the DOM, so the
+  // final check also runs at the end of the existing short wait.
+  function expectedClick(el, opts, prior) {
+    if (opts?.expectedDocument && opts.expectedDocument !== frameToken) return { error: "the target document changed before the click; re-run snapshot", failure: UNSENT };
+    if (opts?.expectedTarget && (!prior?.isConnected || el !== prior)) return { error: "the target changed before the click; re-run snapshot", failure: UNSENT };
+    return null;
+  }
+  const UNSEEN_MS = 500;
+  function clickShown(ref, opts) {
+    const prior = opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
+    const el = resolve(ref, true);
+    const fp = el && (fingerprints.get(String(ref).trim()) ?? candidateOf(el));
+    const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts);
+    const first = once();
+    if (!first?.unseen || first.failure?.effect !== "none") return first;
+    return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(() => {
+      if (changedSince(String(ref).trim(), el, fp)) return { ...missing(ref), failure: UNSENT };
+      return once();
+    });
+  }
+
+  function hiddenClick(el, cause, node = el) {
+    // A styled checkbox's hidden input is not its pointer target. Name the
+    // associated label, but leave its hit-test to a separate, explicit click.
+    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => shown(label) && !clickBlocked(label)) : [];
+    if (labels.length === 1) return { error: `that control is not visible (${cause}); click its label [${ensureRef(labels[0])}] instead`, reason: "label", next: "click the visible label instead" };
+    // A snapshot keeps a transparent control that is fading in. Clicking it
+    // must still wait for ink; Safari can freeze that fade in a hidden tab.
+    const fading = cause === "opacity: 0" && node.getAnimations().some((animation) => animation.playState === "running" && animation.effect?.getKeyframes().some((frame) => frame.opacity !== undefined));
+    if (fading) {
+      if (node.ownerDocument.hidden) return { error: "that target is not visible: an opacity animation is running in this hidden tab; present this tab, then click again", reason: "background_animation", next: "present this tab, then click again", recovery: "present" };
+      return { error: "that target is not visible yet: its opacity animation has not finished; wait for it to appear before clicking", reason: "animation", next: "wait for the control to appear before clicking", unseen: true };
+    }
+    return { error: `that target is not visible (${cause}); open or show that control before clicking`, reason: "hidden", next: "open or show the control before clicking" };
+  }
+
+  function clickBlocked(el) {
+    if (!el.isConnected) return { error: "that target left the page; re-run snapshot", reason: "detached" };
+    const control = el.tagName === "LABEL" ? el.control : el;
+    if (control?.matches(":disabled")) {
+      const typingUntaken = typedForm(control);
+      return { error: typingUntaken ? TYPING_UNTAKEN : "that control is disabled; complete its form or wait for the page to enable it before clicking", reason: "disabled", next: typingUntaken ? "type into the form with real_input type and ref, then click again" : "complete the form or wait for the page to enable the control" };
+    }
+    // A label must not activate a field disabled by ARIA or an inert wrapper,
+    // even when that field is hidden and the label is elsewhere on the page.
+    for (const target of control && control !== el ? [control, el] : [el]) {
+      for (let node = target; node; node = node.assignedSlot ?? parentOf(node)) {
+        if (node.inert) return { error: "that control is inert; close the active dialog or wait for the page to enable it", reason: "inert", next: "close the active dialog or wait for the page to enable the control" };
+        if (node.getAttribute("aria-disabled") === "true" || node.matches(":disabled")) return { error: "that control is disabled; wait for the page to enable it before clicking", reason: "disabled", next: "wait for the page to enable the control before clicking" };
+      }
+    }
+    const visibility = (el.ownerDocument.defaultView || window).getComputedStyle(el).visibility;
+    if (visibility !== "visible") return hiddenClick(el, `visibility: ${visibility}`);
+    for (let node = el; node; node = node.assignedSlot ?? parentOf(node)) {
+      const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (style.display === "none") return hiddenClick(el, "display: none", node);
+      if (Number(style.opacity) === 0) return hiddenClick(el, "opacity: 0", node);
+      if (style.contentVisibility === "hidden") return hiddenClick(el, "content-visibility: hidden", node);
+    }
+    return null;
+  }
+
+  function insideTarget(el, hit) {
+    for (let node = hit; node; node = node.assignedSlot ?? parentOf(node)) if (node === el) return true;
+    return false;
+  }
+
+  // A cover named with its way out: up to three shown controls in the
+  // dialog, or the fixed or sticky box, that holds the cover, or in the
+  // cover itself, whose whole name says to close it ("Close", "Not now",
+  // "×"); "Cancel subscription" or "Decline" is a choice, not a way out. A
+  // box that holds the target too is the page's own, whose Cancel is no way
+  // out.
+  const DISMISS = /^\s*(?:(?:close|dismiss|cancel|hide|skip|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
+  function coveredBy(hit, target, again = "") {
+    let box = hit;
+    for (let node = hit; node && !insideTarget(node, target); node = node.assignedSlot ?? parentOf(node)) {
+      const { position } = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (node.matches(DIALOG_BOXES) || position === "fixed" || position === "sticky") {
+        box = node;
+        break;
+      }
+    }
+    const ways = insideTarget(box, target) ? [] : [box, ...deepElements(box)]
+      .filter((el) => isInteractive(el) && shown(el) && DISMISS.test(accessibleName(el)))
+      .slice(0, 3).map((el) => `[${ensureRef(el)}] ${named(el)}`);
+    if (!ways.length) return `${named(hit)}; dismiss the cover before clicking${again}`;
+    return `${named(hit)}; its close control${ways.length > 1 ? "s are" : " is"} ${ways.join(", ")}`;
+  }
+
+  function framePoint(frame, point) {
+    const style = (frame.ownerDocument.defaultView || window).getComputedStyle(frame);
+    const paddingLeft = parseFloat(style.paddingLeft) || 0, paddingTop = parseFloat(style.paddingTop) || 0;
+    const width = frame.clientWidth - paddingLeft - (parseFloat(style.paddingRight) || 0);
+    const height = frame.clientHeight - paddingTop - (parseFloat(style.paddingBottom) || 0);
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x >= width || point.y >= height) return { error: "that frame's target point is outside its viewport; read the target again" };
+    for (let node = frame; node; node = node.assignedSlot ?? parentOf(node)) {
+      const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+      if (style.perspective !== "none" || (style.rotate && !["none", "0deg"].includes(style.rotate))) return { error: "that frame is rotated or projected, so its click position cannot be checked safely" };
+      if (style.transform !== "none") {
+        const matrix = new DOMMatrixReadOnly(style.transform);
+        if (!matrix.is2D || matrix.b !== 0 || matrix.c !== 0 || matrix.a <= 0 || matrix.d <= 0) return { error: "that frame is rotated or skewed, so its click position cannot be checked safely" };
+      }
+    }
+    const rect = frame.getBoundingClientRect();
+    const sx = frame.offsetWidth ? rect.width / frame.offsetWidth : 1;
+    const sy = frame.offsetHeight ? rect.height / frame.offsetHeight : 1;
+    return { x: rect.left + (frame.clientLeft + paddingLeft + point.x) * sx, y: rect.top + (frame.clientTop + paddingTop + point.y) * sy };
+  }
+
+  function frameCover(doc, x, y, scroll = true) {
+    for (let view = doc.defaultView; view && view !== view.top;) {
+      let frame;
+      try { frame = view.frameElement; } catch { return null; }
+      if (!frame) return null;
+      const blocked = clickBlocked(frame);
+      if (blocked) return blocked;
+      let point = framePoint(frame, { x, y });
+      if (point.error) return point;
+      if (scroll) {
+        reveal(frame, { ...point, width: 1, height: 1 });
+        point = framePoint(frame, { x, y });
+        if (point.error) return point;
+      }
+      ({ x, y } = point);
+      const hit = deepPoint(x, y, frame.ownerDocument);
+      if (!hit || !insideTarget(frame, hit)) return hit ? { error: `that frame is covered by ${coveredBy(hit, frame)}`, reason: "covered", next: "dismiss the cover before clicking" } : { error: "that frame is outside the visible page; scroll it into view before clicking", reason: "no_area", next: "scroll the frame into view before clicking" };
+      view = frame.ownerDocument.defaultView;
+    }
+    return null;
+  }
+
+  // Hit-test the visible part of each box, including wrapped links and
+  // controls clipped by a scroll pane. Never send events through a cover.
+  function clickPoint(el, scroll = true) {
+    const blocked = clickBlocked(el);
+    if (blocked && !blocked.unseen) return blocked;
+    if (scroll) el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    const afterScroll = clickBlocked(el);
+    if (afterScroll) return afterScroll;
+    const view = el.ownerDocument.defaultView || window;
+    const doc = el.ownerDocument, root = doc.documentElement;
+    const rootStyle = view.getComputedStyle(root);
+    const targetStyle = view.getComputedStyle(el);
+    let cover = null;
+    let boxes = 0;
+    let points = 0;
+    for (const rect of el.getClientRects()) {
+      if (++boxes > 32) break;
+      let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+      let right = Math.min(view.innerWidth, rect.right), bottom = Math.min(view.innerHeight, rect.bottom);
+      let positioned = targetStyle.position === "fixed" || targetStyle.position === "absolute" ? el : null;
+      for (let node = el.assignedSlot ?? parentOf(el); node; node = node.assignedSlot ?? parentOf(node)) {
+        const style = (node.ownerDocument.defaultView || window).getComputedStyle(node);
+        // Out-of-flow boxes escape overflow between themselves and their
+        // actual containing block. Safari also reports transformed fixed
+        // containing blocks through offsetParent.
+        if (positioned && node !== positioned.offsetParent) continue;
+        if (style.display === "contents") continue;
+        // offsetParent uses a static body as a fallback even when the
+        // absolute containing block is the viewport, not the body.
+        if (positioned && node === doc.body && style.position === "static" && view.getComputedStyle(positioned).position === "absolute"
+          && style.transform === "none" && style.perspective === "none" && style.filter === "none"
+          && (!style.backdropFilter || style.backdropFilter === "none")
+          && (!style.translate || style.translate === "none") && (!style.rotate || style.rotate === "none") && (!style.scale || style.scale === "none")
+          && !/\b(layout|paint|strict|content)\b/.test(style.contain) && style.contentVisibility !== "auto"
+          && !/(^|,)\s*(position|transform|perspective|filter|backdrop-filter|translate|rotate|scale|contain|content-visibility)\s*(,|$)/.test(style.willChange)) continue;
+        positioned = style.position === "fixed" || style.position === "absolute" ? node : null;
+        // Root overflow, and eligible HTML body overflow, clips the
+        // viewport already intersected above, not the element's own box.
+        if (node === root || (node === doc.body && root.localName === "html" && node.localName === "body"
+          && rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible"
+          && rootStyle.contain === "none" && style.contain === "none")) continue;
+        if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+        const clip = node.getBoundingClientRect();
+        // Client dimensions are untransformed; bring them into viewport
+        // coordinates, including scale inherited from an outer ancestor.
+        // These are candidate bounds, never a substitute for hit-testing.
+        const sx = node.offsetWidth ? clip.width / node.offsetWidth : 1;
+        const sy = node.offsetHeight ? clip.height / node.offsetHeight : 1;
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left + node.clientLeft * sx);
+          right = Math.min(right, clip.left + (node.clientLeft + node.clientWidth) * sx);
+        }
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top + node.clientTop * sy);
+          bottom = Math.min(bottom, clip.top + (node.clientTop + node.clientHeight) * sy);
+        }
+      }
+      if (right <= left || bottom <= top) continue;
+      for (const [fx, fy] of [[0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]]) {
+        const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+        points += 1;
+        const hit = deepPoint(x, y, el.ownerDocument);
+        if (hit && insideTarget(el, hit)) {
+          const stopped = clickBlocked(hit);
+          if (!stopped) {
+            const coveredFrame = frameCover(el.ownerDocument, x, y, scroll);
+            if (coveredFrame) return coveredFrame;
+            return { hit, x, y };
+          }
+          return stopped;
+        }
+        cover ??= hit;
+      }
+    }
+    if (targetStyle.pointerEvents === "none") return { error: "that target does not receive pointer events; click its visible interactive control instead", reason: "pointer_events", next: "click the visible interactive control instead" };
+    if (cover) return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
+    if (points) return { error: "that target has a visible box but Safari returned no hit-test target; wait for the page to draw before clicking", reason: "unpainted", next: "wait for the page to draw before clicking", unseen: true };
+    return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
+  }
+
+  function clickElement(el, stopAfterEvent = null) {
+    const point = clickPoint(el);
+    if (point.error) return refused(el, point);
+    watchTarget(el);
+    let checks = 0;
+    const clicked = fireClick(point.hit, point.x, point.y, () => {
+      checks += 1;
+      const blocked = clickBlocked(el) || clickBlocked(point.hit);
+      if (blocked) return blocked;
+      const hit = deepPoint(point.x, point.y, el.ownerDocument);
+      if (!hit || !insideTarget(el, hit)) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
+      return frameCover(el.ownerDocument, point.x, point.y);
+    }, stopAfterEvent);
+    if (clicked.error) return checks === 1 ? refused(el, clicked) : clicked;
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) el.focus();
+    return { ok: true };
+  }
+  function clickProbe(ref, kind = "click", opts) {
+    const prior = kind === "click" && opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
+    const target = resolve(ref, kind === "click");
+    const guard = kind === "click" ? expectedClick(target, opts, prior) : null;
+    if (guard) return guard;
+    const el = kind === "select" ? fieldOf(target) : target;
+    if (!el) return missing(ref);
+    const point = clickPoint(el);
+    if (point.error) return point.recovery === "present" ? refused(el, point) : point;
+    let { x, y } = point;
+    for (let doc = el.ownerDocument; doc !== document;) {
+      const frame = doc.defaultView?.frameElement;
+      if (!frame) return { error: "the target's frame changed; re-run snapshot" };
+      const parentPoint = framePoint(frame, { x, y });
+      if (parentPoint.error) return parentPoint;
+      ({ x, y } = parentPoint);
+      doc = frame.ownerDocument;
+    }
+    return { x, y, frame: frameToken };
+  }
+
+  function assertFrameClickable(token, point, opts = {}) {
+    const frame = deepQueryAll("iframe, frame").find((el) => childToken.get(el) === token);
+    if (!frame) return { found: false };
+    const blocked = clickBlocked(frame);
+    if (blocked) return { found: true, blocker: blocked.error };
+    let mapped = framePoint(frame, point);
+    if (mapped.error) return { found: true, blocker: mapped.error };
+    if (opts.scroll !== false) {
+      reveal(frame, { ...mapped, width: 1, height: 1 });
+      mapped = framePoint(frame, point);
+      if (mapped.error) return { found: true, blocker: mapped.error };
+    }
+    const hit = deepPoint(mapped.x, mapped.y);
+    if (!hit || !insideTarget(frame, hit)) return { found: true, blocker: hit ? `that frame is covered by ${coveredBy(hit, frame)}` : "that frame has no visible target point; re-run snapshot" };
+    return { found: true, ...mapped, frame: frameToken };
+  }
+
+  function nativeEndpoint(ref, x, y) {
+    if (ref !== undefined && ref !== null) {
+      if (x !== undefined || y !== undefined) return { error: "use a target ref or coordinates, not both" };
+      const el = resolve(ref, true);
+      if (!el) return missing(ref);
+      if (el.ownerDocument !== document) return { error: "native drag targets must be in the same frame; choose that frame explicitly" };
+      const point = clickPoint(el, false);
+      return point.error ? point : { x: point.x, y: point.y };
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return { error: "native drag coordinates must be inside the current viewport" };
+    const hit = deepPoint(x, y);
+    if (!hit) return { error: "no visible target at those native drag coordinates" };
+    const blocked = clickBlocked(hit);
+    if (blocked) return blocked;
+    const covered = frameCover(document, x, y, false);
+    return covered || { x, y };
+  }
+
+  function nativePasteBlocked(el) {
+    if (!el) return "there is no focused editable field for native paste";
+    if (secretField(el)) return "native paste refuses secret fields, including passwords";
+    if (!(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return "native paste needs a text field or editable region";
+    if (el.readOnly || el.getAttribute("aria-readonly") === "true") return "that field is read-only, so it cannot receive native paste";
+    return null;
+  }
+
+  function nativeProbe(request = {}) {
+    if (!request || typeof request !== "object" || !["drag", "paste"].includes(request.kind)) return { error: "native probe needs drag or paste" };
+    const state = { document: frameToken, innerWidth, innerHeight };
+    const expected = request.expected;
+    if (expected && (expected.document !== state.document || expected.innerWidth !== innerWidth || expected.innerHeight !== innerHeight)) return { error: "the native target document or viewport changed; read it again before dispatch" };
+    if (request.kind === "drag") {
+      const from = nativeEndpoint(request.ref, request.x, request.y);
+      if (from.error) return from;
+      const to = nativeEndpoint(request.target, request.targetX, request.targetY);
+      if (to.error) return to;
+      if (expected && (expected.from?.x !== from.x || expected.from?.y !== from.y || expected.to?.x !== to.x || expected.to?.y !== to.y)) return { error: "a native drag target moved; read it again before dispatch" };
+      if (innerWidth !== state.innerWidth || innerHeight !== state.innerHeight) return { error: "the native viewport changed while checking the drag; read it again before dispatch" };
+      return { ...state, from, to };
+    }
+    const explicit = request.ref !== undefined && request.ref !== null;
+    const el = explicit ? fieldOf(resolve(request.ref)) : focusedNow();
+    if (explicit && !el) return missing(request.ref);
+    const blocked = nativePasteBlocked(el);
+    if (blocked) return { error: blocked };
+    if (el.ownerDocument !== document) return { error: "native paste needs an editable field in this frame; choose that frame explicitly" };
+    const before = clickPoint(el, false);
+    if (before.error) return before;
+    if (!expected && explicit && focusedNow() !== el) el.focus({ preventScroll: true });
+    if (focusedNow() !== el) return { error: expected ? "the focused field changed; native paste was not dispatched" : "the page did not focus that editable field; native paste was not dispatched" };
+    const changed = nativePasteBlocked(el);
+    if (changed) return { error: changed };
+    const after = clickPoint(el, false);
+    if (after.error) return after;
+    const focus = ensureRef(el);
+    const from = { x: after.x, y: after.y };
+    if (expected && expected.focus !== focus) return { error: "the focused editable field was replaced; read it again before native paste" };
+    if (expected && (expected.from?.x !== from.x || expected.from?.y !== from.y)) return { error: "the native paste target moved; read it again before dispatch" };
+    if (innerWidth !== state.innerWidth || innerHeight !== state.innerHeight) return { error: "the native viewport changed while focusing the field; read it again before dispatch" };
+    return { ...state, focus, from };
+  }
+
+  function hover(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const { x, y } = centerOf(el);
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"]) fireMouse(el, type, x, y);
+    return { ok: true };
+  }
+
+  // The option a choice names among a list's { label, value } options: its
+  // label or value in any case, else the first whose label holds it. A
+  // <select>'s options and a combobox's are matched alike.
+  function optionNamed(options, choice) {
+    const want = String(choice).trim().toLowerCase();
+    return options.find((o) => o.label.toLowerCase() === want || o.value.toLowerCase() === want) ??
+      options.find((o) => o.label.toLowerCase().includes(want));
+  }
+
+  const noOption = (choice, options) => ({ error: `no option "${choice}"; options: ${options.slice(0, 40).map((o) => o.label).join(" | ")}` });
+  // With no choice, select only lists the options, all of them: on 10-07 an
+  // agent asked for "__list__" and "zz-list-options" to read them.
+  const optionList = (options) => ({ options: options.map((o) => o.label) });
+  const optionsOf = (el) => [...el.options].map((o) => ({ label: o.label.trim(), value: o.value }));
+
+  function selectOption(el, choice) {
+    watchTarget(el);
+    const options = optionsOf(el);
+    const opt = optionNamed(options, choice);
+    if (!opt) return noOption(choice, options);
+    // the native setter, so framework value trackers see a real change
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, opt.value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, value: opt.label };
+  }
+
+  // A combobox draws its list of options itself: EOIR's nationality box
+  // (React) draws it after a click, and select answered that it was no
+  // <select> (09-30). Its list is the one it names (aria-controls,
+  // aria-owns), read at each look, since React names it only once it is
+  // open. Else, a closed box is clicked open, and its list is a listbox that
+  // was not on show before; an open box's is the one it showed an earlier
+  // select, which a choice the list lacked left open. The option is
+  // clicked, as a person picks it, and the answer is its label. With no
+  // choice the list is left open, as a miss leaves it, and listed.
+  const LIST_WAIT_MS = 3000;
+  const comboLists = new WeakMap(); // box -> the list it showed for select
+  async function comboOption(box, choice, opts) {
+    const lists = () => deepQueryAll("[role=listbox]").filter(shown);
+    const named = () => {
+      const ids = ["aria-controls", "aria-owns"].flatMap((a) => (box.getAttribute(a) ?? "").split(/\s+/));
+      return lists().find((l) => l.id && ids.includes(l.id));
+    };
+    let list;
+    if (box.getAttribute("aria-expanded") === "true") {
+      const kept = comboLists.get(box);
+      list = named() ?? (kept && shown(kept) ? kept : undefined);
+    } else {
+      const before = new Set(lists());
+      const listOf = () => named() ?? lists().find((l) => !before.has(l));
+      // A list can open on pointerdown or mousedown and cover the old point
+      // or move its trigger. Opening is complete then: send no later events
+      // through that list. The chosen option gets its own guarded click.
+      const opened = clickElement(box, listOf);
+      if (opened.error) return opened;
+      list = listOf();
+      if (!list) await whenPage(() => (list = listOf()) !== undefined, LIST_WAIT_MS);
+    }
+    if (!list) return { error: "found no list of options for that combobox: if it lists options as you type, type into it and select again; else click the option in a fresh snapshot" };
+    comboLists.set(box, list);
+    const options = deepQueryAll("[role=option]", list).filter(shown).map((el) => {
+      const label = accessibleName(el);
+      return { el, label, value: label };
+    });
+    if (choice === null) return optionList(options);
+    const opt = optionNamed(options, choice);
+    if (!opt) return noOption(choice, options);
+    return afterward(() => withOutcome(() => {
+      watchTarget(box);
+      const selected = clickElement(opt.el);
+      if (selected.error) return { error: selected.error };
+      return { ok: true, value: opt.label };
+    }), opts);
+  }
+
+  // select takes a <select>, a label of one, or a combobox, resolved before
+  // the first await (answer). A null choice lists the options.
+  function selectIn(ref, choice, opts) {
+    const el = fieldOf(resolve(ref));
+    if (!el) return missing(ref);
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (choice !== null) {
+      const point = clickPoint(el);
+      if (point.error) return point;
+    }
+    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
+    if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
+    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
+  }
+
+  // files: [{ name, type, data (base64) }]. File inputs are usually hidden
+  // behind a styled button, so the ref may be that button's container; with
+  // no ref, the page's only file input is used.
+  function upload(ref, files) {
+    let input;
+    if (ref !== null && ref !== undefined) {
+      const el = resolve(ref);
+      if (!el) return missing(ref);
+      input = el.matches("input[type=file]") ? el : deepQueryAll("input[type=file]", el)[0];
+      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
+    } else {
+      const all = deepQueryAll("input[type=file]");
+      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
+      input = all[0];
+    }
+    if (files.length > 1 && !input.multiple) return { error: "this input takes one file" };
+    const dt = new DataTransfer();
+    for (const f of files) {
+      const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+      dt.items.add(new File([bytes], f.name, { type: f.type }));
+    }
+    input.files = dt.files;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, files: [...input.files].map((f) => f.name) };
+  }
+
+  // A traversal may stay in this document, so it is only a maybe; a reload
+  // always loads.
+  function historyGo(to) {
+    if (to === "back") history.back();
+    else if (to === "forward") history.forward();
+    else if (to === "reload") location.reload();
+    else return { error: `do must be back, forward, or reload` };
+    return { ok: true, expect: to === "reload" ? "load" : "script" };
+  }
+
+  // ---------- dialogs ----------
+  // dialogs.js runs in the page's own world and, once armed, answers
+  // alert, confirm, prompt, and print itself instead of showing them, and
+  // keeps beforeunload from holding a navigation. A tab the harness opened
+  // is armed for good, and kept running while hidden; any other tab only
+  // while an action runs, so a dialog the user meets later still shows.
+  // Each dialog is reported to this world and returned with the action
+  // that raised it.
+  const dialogLog = [];
+  let dialogPolicy = null; // { accept, text } once the extension armed this tab
+  document.addEventListener("__sh_dialog_seen", (e) => {
+    if (typeof e.detail !== "string") return;
+    try { dialogLog.push(JSON.parse(e.detail)); } catch {}
+    if (dialogLog.length > 50) dialogLog.shift();
+  }, { signal: life.signal });
+  function armDialogs(armed, policy) {
+    const detail = JSON.stringify({ armed, owned: !!policy, accept: !!(policy && policy.accept), text: policy && typeof policy.text === "string" ? policy.text : null });
+    document.dispatchEvent(new CustomEvent("__sh_dialog_policy", { detail }));
+  }
+  function setDialogs(policy) {
+    if (policy) {
+      dialogPolicy = policy;
+      armDialogs(true, policy);
+      takeTicks();
+    }
+    return { dialogs: dialogLog.slice(-20), answer: dialogPolicy && dialogPolicy.accept ? "accept" : "dismiss" };
+  }
+
+  // An owned tab takes the extension's ticks (see dialogs.js) over a port of
+  // its own: a message per tick, 20 a second, leaves Safari answering the
+  // harness's requests to the tab with nothing. A page restored from the
+  // back-forward cache lost its port and connects again.
+  let tickPort = null;
+  function takeTicks() {
+    if (tickPort) return;
+    tickPort = api.runtime.connect({ name: "ticks" });
+    tickPort.onMessage.addListener(() => document.dispatchEvent(new CustomEvent("__sh_tick")));
+    tickPort.onDisconnect.addListener(() => { tickPort = null; });
+  }
+  addEventListener("pageshow", (e) => { if (e.persisted && dialogPolicy) takeTicks(); }, { signal: life.signal });
+
+  // ---------- page fetch and downloads ----------
+  // Requests from here carry the page's cookies, as the page's own would.
+  // One to a site the page's own requests sent a sign-in header to goes
+  // from the page's world with that header (signedFetch). base64 returns
+  // the body's bytes (a PDF, an image) instead of its text. A text answer
+  // carries its length and the headers that say when to ask again.
+  const TOLD = /^(?:content-length|retry-after|(?:x-)?rate-?limit)/i;
+  async function pageFetch(url, opts = {}) {
+    const target = new URL(url, location.href);
+    const limit = opts.maxBytes || 50000;
+    const signed = opts.base64 ? null : signedFetch(target.href, opts, limit);
+    if (signed) return signed;
+    const res = await fetch(target, {
+      method: opts.method || "GET",
+      headers: opts.headers || undefined,
+      body: opts.body ?? undefined,
+      credentials: "include",
+    });
+    const head = { status: res.status, url: res.url, type: res.headers.get("content-type") };
+    if (opts.base64) {
+      const blob = await res.blob();
+      const kept = blob.size > limit ? blob.slice(0, limit) : blob;
+      return { ...head, headers: [...res.headers], data: await base64Of(kept), truncated: blob.size > limit, total: blob.size };
+    }
+    const text = await res.text();
+    return {
+      ...head,
+      headers: [...res.headers].filter(([name]) => TOLD.test(name)),
+      text: text.length > limit ? text.slice(0, limit) : text,
+      truncated: text.length > limit,
+      total: text.length,
+    };
+  }
+
+  // The page's world (dialogs.js) holds the header and says within the ask
+  // whether it sends the request; null when it does not. The header never
+  // leaves it.
+  function signedFetch(url, opts, limit) {
+    const id = `${Date.now()}-${Math.random()}`;
+    let sent = false;
+    const { promise, resolve } = Promise.withResolvers();
+    const take = (e) => {
+      let a;
+      try { a = JSON.parse(e.detail); } catch { return; }
+      if (a?.id !== id) return;
+      if (a.sent) {
+        sent = true;
+        return;
+      }
+      document.removeEventListener("__sh_fetch_answer", take);
+      resolve(a.answer);
+    };
+    document.addEventListener("__sh_fetch_answer", take, { signal: life.signal });
+    document.dispatchEvent(new CustomEvent("__sh_fetch_ask", { detail: JSON.stringify({ id, url, method: opts.method || "GET", headers: opts.headers || null, body: opts.body ?? null, max: limit }) }));
+    if (!sent) {
+      document.removeEventListener("__sh_fetch_answer", take);
+      return null;
+    }
+    return promise.then(({ error, ...answer }) => {
+      if (error) throw new Error(error);
+      return { ...answer, note: `sent with the sign-in header the page's own requests to ${new URL(url).host} carry` };
+    });
+  }
+
+  function base64Of(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ""));
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+  }
+
+  const DOWNLOAD_MAX = 100 * 1024 * 1024;
+  function nameFrom(disposition, url) {
+    const m = disposition && /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+    }
+    try {
+      const u = new URL(url);
+      if (u.protocol === "http:" || u.protocol === "https:") return decodeURIComponent(u.pathname.split("/").pop() || "") || u.hostname;
+    } catch {}
+    return "";
+  }
+
+  // The file at url, fetched with the page's cookies: { name, type, size, data (base64) }.
+  async function fetchFile(url, name) {
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) return { error: `download failed: HTTP ${res.status}` };
+    const blob = await res.blob();
+    if (blob.size > DOWNLOAD_MAX) return { error: `file is ${blob.size} bytes; the limit is ${DOWNLOAD_MAX}` };
+    return { name: name || nameFrom(res.headers.get("content-disposition"), res.url), type: blob.type, size: blob.size, data: await base64Of(blob) };
+  }
+
+  // A download the page makes from script (a blob or data link it clicks,
+  // or a window it opens) is caught in the page's own world (dialogs.js)
+  // and handed here; the page's own save is cancelled so Safari does not
+  // save a second copy. The daemon owns the time limit (downloadStop).
+  let pendingDownload = null;
+  let caughtDownload = null;
+  document.addEventListener("__sh_download_seen", (e) => {
+    if (typeof e.detail !== "string") return;
+    try { caughtDownload = JSON.parse(e.detail); } catch { return; }
+    pendingDownload?.(caughtDownload);
+  }, { signal: life.signal });
+  // Safari gives a tab a page opens no opener, so the page says one is
+  // coming (tabs a page opens, in background.js).
+  let tabSaid = 0;
+  const announceTab = () => {
+    tabSaid = Date.now();
+    api.runtime.sendMessage({ __safariHarnessPopup: 1 }).catch(() => {});
+  };
+  document.addEventListener("__sh_popup", announceTab, { signal: life.signal });
+  // A click on a link that opens another tab says so too, a real one
+  // included: on 10-24 real_input's answer named no tab its link opened.
+  // Read once the click is done, when the page has had its say.
+  addEventListener("click", (e) => {
+    const link = e.composedPath().find((el) => el instanceof Element && el.matches("a[href], area[href]"));
+    if (link) setTimeout(() => { if (linkOutcome(e, link) === "tab") announceTab(); });
+  }, { capture: true, signal: life.signal });
+  function catchDownloads(on) {
+    document.dispatchEvent(new CustomEvent("__sh_download_catch", { detail: on ? "1" : "0" }));
+  }
+
+  // A link to this page itself ("#", or no address of its own) is a button
+  // the page's script runs: fetched, it saved the page's HTML under the
+  // site's name, once per document (GEICO's documents list, 09-29). It is
+  // clicked like one.
+  function samePage(url) {
+    try {
+      const to = new URL(url);
+      const here = new URL(location.href);
+      to.hash = here.hash = "";
+      return to.href === here.href;
+    } catch {
+      return false;
+    }
+  }
+
+  // A web page is not the file a ref downloads: a link to a document
+  // viewer, or a window a click opens on one. One the site named for
+  // saving (a download attribute) stays a file.
+  function notPage(file, named) {
+    if (named || !/^text\/html\b/i.test(file.type ?? "")) return file;
+    return { error: "the ref opens a web page, not a file: click it, then call download with only the tab it opens to save the file that tab shows" };
+  }
+
+  async function download(ref) {
+    const el = resolve(ref);
+    if (!el) return missing(ref);
+    const link = el.closest("a[href], area[href]");
+    if (link && !link.href.startsWith("javascript:") && !samePage(link.href)) {
+      return notPage(await fetchFile(link.href, link.getAttribute("download") || ""), link.hasAttribute("download"));
+    }
+    caughtDownload = null;
+    catchDownloads(true);
+    try {
+      const clicked = withOutcome(() => click(ref));
+      if (clicked && clicked.error) return clicked;
+      const caught = caughtDownload ?? await new Promise((resolve) => { pendingDownload = resolve; });
+      if (!caught) return { error: "the click started no download the page could see; it may be a server download: check ~/Downloads", clicked };
+      return notPage(await fetchFile(caught.url, caught.name), !!caught.name);
+    } finally {
+      pendingDownload = null;
+      catchDownloads(false);
+    }
+  }
+
+  // ---------- annotated screenshots ----------
+  // Draws each ref from the latest snapshot that is in view as a numbered
+  // box, for one capture; clear removes them.
+  const ANNOTATE_ID = "__safari_harness_annotate";
+  function annotate(on) {
+    document.getElementById(ANNOTATE_ID)?.remove();
+    if (!on) return { ok: true };
+    const layer = document.createElement("div");
+    layer.id = ANNOTATE_ID;
+    layer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
+    let shown = 0;
+    for (const [ref, el] of refMap) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) continue;
+      const box = document.createElement("div");
+      box.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;outline:2px solid #e5484d;box-sizing:border-box`;
+      const tag = document.createElement("span");
+      tag.textContent = ref;
+      tag.style.cssText = "position:absolute;left:-2px;top:-16px;background:#e5484d;color:#fff;font:bold 11px/14px -apple-system,sans-serif;padding:0 3px;border-radius:2px;white-space:nowrap";
+      // A short row in a list: above would cover the row before it, so the
+      // label sits to the left, where list markers and margins usually are.
+      if (r.height < 30 && r.left > 8 * ref.length + 8) { tag.style.left = "auto"; tag.style.right = "calc(100% + 2px)"; tag.style.top = "0"; }
+      else if (r.top < 16) tag.style.top = "0";
+      box.append(tag);
+      layer.append(box);
+      shown++;
+    }
+    document.documentElement.append(layer);
+    return { ok: true, shown, dpr: devicePixelRatio, innerWidth, innerHeight };
+  }
+
+  let privateCapture = null;
+  const capturePrivacyError = (message) => new Error(`screenshot privacy: ${message}`);
+
+  function privatePage(secrets, layer = null) {
+    const viewport = { width: innerWidth, height: innerHeight, devicePixelRatio };
+    if (!document.body) throw capturePrivacyError("the page has no document body yet: wait for it to load, then capture again");
+    if (!viewport.width || !viewport.height) throw capturePrivacyError("the tab has no viewport (its window is minimized or off screen): show it with activate, or capture with shots {urls}");
+    if (window.visualViewport && (Math.abs(visualViewport.width - innerWidth) > 1 || Math.abs(visualViewport.height - innerHeight) > 1 || visualViewport.offsetLeft || visualViewport.offsetTop)) throw capturePrivacyError("reset page magnification before capturing");
+    const roots = [];
+    const fields = [];
+    const regions = new Map();
+    const scrolls = [];
+    const texts = new Set([...secretTexts, ...secrets].filter(Boolean));
+    const clip = (a, b) => {
+      const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+      const right = Math.min(a.x + a.width, b.x + b.width), bottom = Math.min(a.y + a.height, b.y + b.height);
+      return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+    };
+    const add = (rect, context, el = null) => {
+      if (!context.clip.width || !context.clip.height || !(rect.right > rect.left && rect.bottom > rect.top)) return;
+      for (let p = el; p; p = p.parentElement ?? p.getRootNode().host) {
+        const style = p.ownerDocument.defaultView.getComputedStyle(p);
+        const reflection = style.getPropertyValue("-webkit-box-reflect");
+        if (style.filter !== "none" || style.textShadow !== "none" || (reflection && reflection !== "none")) {
+          regions.set(JSON.stringify(context.clip), context.clip);
+          return;
+        }
+      }
+      const x = Math.floor(context.x + rect.left - 2), y = Math.floor(context.y + rect.top - 2);
+      const r = clip({ x, y, width: Math.ceil(context.x + rect.right + 2) - x, height: Math.ceil(context.y + rect.bottom + 2) - y }, context.clip);
+      if (r) regions.set(JSON.stringify(r), r);
+    };
+    const shown = (el) => {
+      const style = el.ownerDocument.defaultView.getComputedStyle(el);
+      return style.display !== "none" && style.visibility === "visible" && Number(style.opacity) !== 0;
+    };
+    const inspect = (root, context) => {
+      roots.push({ root, context });
+      for (const el of root.querySelectorAll("*")) {
+        if (el === layer || layer?.contains(el)) continue;
+        if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) scrolls.push({ el, x: el.scrollLeft, y: el.scrollTop });
+        if (el.shadowRoot) inspect(el.shadowRoot, context);
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+          const token = cardToken(el);
+          const sensitive = secretField(el) || holdsCode(el, el.value) || (token.token?.startsWith("cc-") && !token.weak) || /\b(password|passphrase)\b/i.test(accessibleName(el)) ||
+            (el.tagName === "INPUT" && /\d/.test(el.value) && (el.maxLength === 1 || /\b\d+\s*of\s*[4-8]\b/i.test(accessibleName(el))));
+          fields.push({ el, context, sensitive });
+          if (sensitive && el.value) texts.add(el.value);
+        }
+        if (!shown(el)) continue;
+        if (/^(IFRAME|FRAME)$/.test(el.tagName)) {
+          const r = el.getBoundingClientRect();
+          const visible = clip({ x: context.x + r.left, y: context.y + r.top, width: r.width, height: r.height }, context.clip);
+          let child;
+          try { child = el.contentDocument; } catch {}
+          if (!visible) {
+            if (child?.body) inspectDocument(child, { x: 0, y: 0, clip: { x: 0, y: 0, width: 0, height: 0 } });
+            continue;
+          }
+          let transformed = false;
+          for (let p = el; p; p = p.parentElement ?? p.getRootNode().host) {
+            const style = p.ownerDocument.defaultView.getComputedStyle(p);
+            if (style.transform !== "none" || style.filter !== "none" || (style.zoom && style.zoom !== "1" && style.zoom !== "normal")) { transformed = true; break; }
+          }
+          if (!child?.body || transformed || Math.abs(r.width - el.offsetWidth) > 1 || Math.abs(r.height - el.offsetHeight) > 1) {
+            add(r, context, el);
+            if (child?.body) inspectDocument(child, { x: 0, y: 0, clip: { x: 0, y: 0, width: 0, height: 0 } });
+          } else {
+            const x = context.x + r.left + el.clientLeft, y = context.y + r.top + el.clientTop;
+            const inside = clip({ x, y, width: el.clientWidth, height: el.clientHeight }, visible);
+            if (inside) inspectDocument(child, { x, y, clip: inside });
+          }
+        } else if (/^(OBJECT|EMBED)$/.test(el.tagName)) {
+          add(el.getBoundingClientRect(), context, el);
+        }
+      }
+    };
+    const inspectDocument = (doc, context) => {
+      scrolls.push({ view: doc.defaultView, doc, x: doc.defaultView.scrollX, y: doc.defaultView.scrollY });
+      inspect(doc, context);
+    };
+    inspectDocument(document, { x: 0, y: 0, clip: { x: 0, y: 0, width: innerWidth, height: innerHeight } });
+    const known = [...texts].sort((a, b) => b.length - a.length);
+    const contains = (text) => typeof text === "string" && known.some((secret) => text.includes(secret) || (/^\d{3,}$/.test(secret) && text.replace(/[\s\u00a0-]/g, "").includes(secret)));
+    for (const { el, context, sensitive } of fields) {
+      if (shown(el) && (sensitive || contains(el.value) || contains(el.placeholder))) add(el.getBoundingClientRect(), context, el);
+    }
+    for (const { root, context } of roots) {
+      const doc = root.ownerDocument ?? root;
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let text = "";
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const el = node.parentElement;
+        if (!el || el === layer || layer?.contains(el) || el.closest("script,style,noscript") || !shown(el)) continue;
+        nodes.push({ node, start: text.length, end: text.length + node.data.length });
+        text += node.data;
+      }
+      for (const secret of known) {
+        const pattern = /^\d{3,}$/.test(secret) ? secret.split("").join("[\\s\\u00a0-]*") : secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        for (const match of text.matchAll(new RegExp(pattern, "g"))) {
+          const at = match.index, end = at + match[0].length;
+          const first = nodes.find((n) => n.end > at), last = nodes.find((n) => n.end >= end);
+          if (!first || !last) throw capturePrivacyError("protected text could not be placed");
+          const range = doc.createRange();
+          range.setStart(first.node, at - first.start);
+          range.setEnd(last.node, end - last.start);
+          const rects = range.getClientRects();
+          for (const node of nodes) if (node.end > at && node.start < end) for (const r of rects) add(r, context, node.node.parentElement);
+        }
+      }
+      for (const el of root.querySelectorAll("*")) {
+        if (el === layer || layer?.contains(el) || !shown(el)) continue;
+        if (contains(el.getAttribute("alt"))) add(el.getBoundingClientRect(), context, el);
+        const view = el.ownerDocument.defaultView;
+        for (const pseudo of ["::before", "::after"]) {
+          const style = view.getComputedStyle(el, pseudo);
+          if (contains(style.content)) {
+            // Generated content has no range, and can paint outside its host
+            // even without absolute positioning (offsets, transforms, overflow).
+            if (context.clip.width && context.clip.height) regions.set(JSON.stringify(context.clip), context.clip);
+          }
+        }
+      }
+    }
+    const sourcePattern = known.length ? new RegExp(known.map((secret) => {
+      // Each character may be literal or percent-encoded independently.
+      // encodeURIComponent leaves unreserved ASCII literal, but URLs need not.
+      const characters = [...secret].map((character) => {
+        const literal = character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        let encoded = encodeURIComponent(character);
+        if (encoded === character) encoded = `%${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
+        encoded = encoded.replace(/%[0-9a-f]{2}/gi, (part) => part.replace(/[a-f]/gi, (letter) => `[${letter.toUpperCase()}${letter.toLowerCase()}]`));
+        return `(?:${literal}|${encoded}${character === " " ? "|\\+" : ""})`;
+      });
+      return characters.join(/^\d{3,}$/.test(secret) ? "(?:[\\s\\u00a0+-]|%20|%[cC]2%[aA]0)*" : "");
+    }).join("|"), "g") : null;
+    const sourceText = (text) => sourcePattern ? text.replace(sourcePattern, "...") : text;
+    return {
+      regions: [...regions.values()].sort((a, b) => a.y - b.y || a.x - b.x || a.width - b.width || a.height - b.height),
+      roots, scrolls,
+      source: { url: sourceText(location.href), title: sourceText(document.title), viewport },
+      page: { x: scrollX, y: scrollY, height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, innerHeight) },
+    };
+  }
+
+  function clearPrivateMask(session) {
+    clearTimeout(session.timer);
+    for (const observer of session.observers) observer.disconnect();
+    session.observers = [];
+    session.layer?.remove();
+    session.layer = null;
+  }
+
+  function restorePrivateCapture(mark) {
+    const session = privateCapture;
+    if (!session || session.mark !== mark) return { ok: true };
+    privateCapture = null;
+    clearPrivateMask(session);
+    let failed = false;
+    for (const saved of session.scrolls) {
+      try {
+        if (saved.view) {
+          if (saved.view.document === saved.doc) saved.view.scrollTo({ left: saved.x, top: saved.y, behavior: "instant" });
+        } else if (saved.el.isConnected) saved.el.scrollTo({ left: saved.x, top: saved.y, behavior: "instant" });
+      } catch { failed = true; }
+    }
+    if (failed) throw capturePrivacyError("the page could not restore every scroll position");
+    return { ok: true };
+  }
+
+  // A shot of a page with a playing video or an endless animation can fail
+  // its privacy check, which finds the page changed between masking and
+  // capture (SR-6). background.js pauses them for one more try, then plays
+  // what it paused again.
+  let stilled = null;
+  function stillPage(on) {
+    if (!on) {
+      const was = stilled;
+      stilled = null;
+      for (const m of was?.media ?? []) m.play().catch(() => {});
+      for (const a of was?.animations ?? []) a.play();
+      return { ok: true };
+    }
+    if (stilled) return { ok: true, paused: 0 };
+    const media = deepQueryAll("video, audio").filter((m) => !m.paused);
+    const animations = document.getAnimations().filter((a) => a.playState === "running");
+    for (const m of media) m.pause();
+    for (const a of animations) a.pause();
+    stilled = { media, animations };
+    return { ok: true, paused: media.length + animations.length };
+  }
+
+  function capturePrivacy(mark, phase, secrets = []) {
+    if (phase === "restore") return restorePrivateCapture(mark);
+    if (typeof mark !== "string" || !mark || !Array.isArray(secrets) || secrets.some((s) => typeof s !== "string")) throw capturePrivacyError("invalid protection request");
+    if (phase === "start") {
+      if (privateCapture) throw capturePrivacyError("another capture is still protecting this page");
+      // An embedded frame drawn at no size shows nothing to protect.
+      if (window !== window.top && (!innerWidth || !innerHeight)) {
+        privateCapture = { mark, scrolls: [], observers: [], layer: null, timer: null };
+        return { ok: true };
+      }
+      const state = privatePage(secrets);
+      privateCapture = { mark, scrolls: state.scrolls, observers: [], layer: null, timer: null };
+      privateCapture.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+      return { ok: true, source: state.source, page: state.page };
+    }
+    const session = privateCapture;
+    if (!session || session.mark !== mark) throw capturePrivacyError("the protected page is no longer available");
+    if (phase === "clear") {
+      clearPrivateMask(session);
+      session.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+      return { ok: true };
+    }
+    if (phase === "check") {
+      const state = privatePage(secrets, session.layer);
+      const signature = JSON.stringify({ regions: state.regions, source: state.source, page: state.page });
+      if (!session.layer?.isConnected || session.dirty || session.observers.some((o) => o.takeRecords().length) || signature !== session.signature) throw capturePrivacyError("the page changed during capture; read it again");
+      return { ok: true };
+    }
+    if (phase !== "prepare") throw capturePrivacyError("unknown protection request");
+    clearPrivateMask(session);
+    const state = privatePage(secrets);
+    const layer = document.createElement("div");
+    session.layer = layer;
+    layer.setAttribute("aria-hidden", "true");
+    layer.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;pointer-events:none!important;z-index:2147483647!important;contain:strict!important;overflow:hidden!important";
+    const shadow = layer.attachShadow({ mode: "closed" });
+    for (const r of state.regions) {
+      const mask = document.createElement("div");
+      mask.style.cssText = `position:absolute;left:${r.x}px;top:${r.y}px;width:${r.width}px;height:${r.height}px;background:#000`;
+      shadow.append(mask);
+    }
+    document.documentElement.append(layer);
+    session.dirty = false;
+    session.signature = JSON.stringify({ regions: state.regions, source: state.source, page: state.page });
+    for (const { root } of state.roots) {
+      const observer = new MutationObserver(() => { session.dirty = true; });
+      observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+      session.observers.push(observer);
+    }
+    session.timer = setTimeout(() => restorePrivateCapture(mark), 15000);
+    if (privateCapture !== session || !layer.isConnected) throw capturePrivacyError("protection was removed before capture");
+    return { ok: true, regions: state.regions, source: state.source, page: state.page, masked: state.regions.length };
+  }
+
+  addEventListener("pagehide", () => { if (privateCapture) restorePrivateCapture(privateCapture.mark); }, { signal: life.signal });
+
+  // The native setter, so framework value trackers (React) see a real edit,
+  // and a keyup last, as a person's typing ends: jQuery-era forms validate
+  // on keyup (USC's date of birth stayed "Please check this again!" and its
+  // Next sent nothing, 10-19). Its key names no character, so no handler
+  // takes it for Enter.
+  function setValue(el, value, data) {
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, cancelable: true, key: "Unidentified" }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // A field a saved login, password, or code fills is left as a person
+  // leaves it: an Angular form that updates on blur (ShopGoodwill's sign-in
+  // and reset, 10-13) takes the value only then, and in a tab in the back
+  // focus() on the next field fires no blur on this one. A Flutter field is
+  // not left: its blur would end the read of what was set.
+  function fillValue(el, value) {
+    setValue(el, value, value);
+    if (el.closest("flt-semantics")) return;
+    el.dispatchEvent(new FocusEvent("blur"));
+    el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  }
+
+  // Flutter's text fields (GEICO's sign-in) read what is typed only while
+  // the page holds the field, from a frame after it gains focus until it
+  // loses focus. Taking it, Flutter writes the text its own model holds
+  // over the field's, so a value set sooner is lost: GEICO's model stayed
+  // empty under a filled username (09-29). A field it holds already takes
+  // text at once: a focus again makes Flutter do nothing, and a second
+  // type into DartPad's field waited out the limit for a take (09-29). The
+  // page hears of focus from the focus event alone, which focus() fires
+  // neither on a field that has focus nor in a window in the back.
+  // Resolves whether the page holds the field.
+  function focusField(el) {
+    if (!el.closest("flt-semantics")) {
+      el.focus();
+      return true;
+    }
+    if (flutterHolds(el)) return true;
+    const taken = whenPage(() => flutterHolds(el), DRAW_WAIT_MS);
+    let focused = false;
+    const onFocus = () => { focused = true; };
+    el.addEventListener("focus", onFocus);
+    el.focus();
+    el.removeEventListener("focus", onFocus);
+    if (!focused) el.dispatchEvent(new FocusEvent("focus"));
+    return taken;
+  }
+  // Flutter cancels a mouse move on the field it holds, so the browser
+  // leaves the selection to it, and on no other field: the page's one sign
+  // that it holds a field (DartPad, 09-29).
+  const flutterHolds = (el) => !el.dispatchEvent(new MouseEvent("mousemove", { cancelable: true }));
+  const untaken = (field) => ({ error: `the page did not take ${field}, so it would not read text put there: Flutter takes a field only while its tab draws, and a hidden tab you did not open does not; activate the tab, then try again` });
+
+  // A rich editor (ProseMirror, Lexical, Draft.js, Slate) keeps its own
+  // model of the text and redraws the element from it, so an edit reaches it
+  // only as input events: clearing the element's text behind its back left
+  // the old text in the model. execCommand edits as typing does. Where it
+  // does nothing, the edit is offered as a beforeinput the editor may take
+  // over, and made by hand only if it does not.
+  function replaceEditable(el, text, append) {
+    if (append && !text) return;
+    const selection = getSelection();
+    selection.selectAllChildren(el);
+    if (append) selection.collapseToEnd();
+    if (document.execCommand(text ? "insertText" : "delete", false, text)) return;
+    const inputType = text ? "insertText" : "deleteContent";
+    const data = text || null;
+    if (!el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType, data }))) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    if (append) range.collapse(false);
+    range.deleteContents();
+    if (text) range.insertNode(document.createTextNode(text));
+    selection.selectAllChildren(el);
+    selection.collapseToEnd();
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+  }
+
+  // A price field reformats what goes in ("$1,234.00" for 1234): the same
+  // figures, typed with no letters, are the text kept. DriveCentric's
+  // answered kept false for a price it showed as "$200,000" (09-29).
+  const figures = (t) => t.replace(/[^\d.]/g, "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  const keeps = (value, want) => value === want || (/\d/.test(want) && !/\p{L}/u.test(want) && figures(value) === figures(want));
+
+  // What the page says is wrong with a field a moment after text went in:
+  // the message its aria-invalid points to, or an alert it raised. GEICO's
+  // card field took a number, then said "Invalid card number" (09-29).
+  // Words that repeat the text are not passed on: type never echoes it.
+  function complaint(el, alerts, text) {
+    let words = null;
+    if (el.getAttribute("aria-invalid") === "true") {
+      const ids = `${el.getAttribute("aria-errormessage") ?? ""} ${el.getAttribute("aria-describedby") ?? ""}`.split(/\s+/).filter(Boolean);
+      words = ids.map((id) => el.getRootNode().getElementById(id)).filter(Boolean).map((n) => textOf(n, 160)).filter(Boolean).join(" ") || "the page marks the field invalid";
+    } else {
+      const raised = deepQueryAll("[role=alert]").map((a) => [a, textOf(a, 160)]).find(([a, t]) => t && t !== alerts.get(a) && shown(a));
+      words = raised?.[1] ?? null;
+    }
+    return words !== null && words.toLowerCase().includes(text.toLowerCase()) ? "the page says the text is invalid" : words;
+  }
+
+  // A field in a frame of another site (a card processor's) may take only
+  // keys a person presses: GEICO's card field answered kept false (09-29).
+  function foreignFrame() {
+    if (window === window.top) return false;
+    try { return !window.top.document; } catch { return true; }
+  }
+
+  let lastTyped = null; // the field type last put text in (typedForm)
+
+  async function typeText(ref, text, opts = {}) {
+    const el = fieldOf(resolve(ref));
+    if (!el) return missing(ref);
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    if (!(await focusField(el))) return untaken("the field");
+    lastTyped = el;
+    lookBeforeTyping(opts.secret ? null : text);
+    const before = el.isContentEditable ? "" : String(el.value || "");
+    const alerts = new Map(deepQueryAll("[role=alert]").map((a) => [a, textOf(a, 160)]));
+    // A code typed into a box of a row of code boxes (PayPal's, Delta's)
+    // goes one character to a box, as a person types it, and the whole
+    // row then holds a secret.
+    const row = opts.secret && text.length > 1 ? codeBoxes() : [];
+    const boxes = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    const spread = boxes.length > 0 && boxes.length === text.length;
+    if (spread) {
+      for (const [i, box] of boxes.entries()) {
+        if (!(await focusField(box))) return untaken("a code box");
+        setValue(box, text[i], text[i]);
+      }
+    } else if (el.isContentEditable) {
+      replaceEditable(el, text, opts.append);
+    } else if ("value" in el) {
+      setValue(el, (opts.append ? before : "") + text, text);
+    } else {
+      return { error: "element is not editable" };
+    }
+    if (opts.secret) keepSecret(row.includes(el) ? row : [el], text);
+    // Whether the field holds the text once the page has had a moment with
+    // it (at once, with noWaitAfter): a page may reformat it (a phone field
+    // adds dashes) or cut it (a length limit). The text itself never comes
+    // back: type once echoed a one-time code into the transcript.
+    if (!opts.noWaitAfter) await whenPage(() => false, RECEIPT_SPAN.min);
+    const kept = spread ? boxes.map((b) => b.value).join("") === text
+      : el.isContentEditable ? (el.textContent ?? "").includes(text)
+      : keeps(el.value, (opts.append ? before : "") + text);
+    const invalid = opts.secret ? null : complaint(el, alerts, text);
+    return { ok: true, kept, ...(invalid ? { invalid } : {}), ...(foreignFrame() ? { next: "if the page ignores it, use real_input type with ref" } : {}) };
+  }
+
+  // ---------- real typing ----------
+
+  // real_input's type (daemon/input.ts) sets a field's text through
+  // Safari's accessibility tree where it can, as pressMark's press clicks:
+  // the helper finds the field by a class of its own and sets its value
+  // (setvalue in scripts/input.swift). The page hears trusted beforeinput
+  // and input events, as from typing; nothing comes to the front, and
+  // macOS does not autocorrect the words. WebKit takes the value only into
+  // the element the page has focused, so the field gets focus here. Where
+  // real keys type instead, autocorrect="off" keeps macOS from changing the
+  // words: in a Philips support chat "resham" went out as "gresham" (10-07).
+  // The look before typing keeps the agent's own lines out of a changed
+  // wait. Answers the mark, its window's size, how many boxes the field
+  // begins of a row of code boxes, which takes a character a box (each box
+  // marked as the mark and its place, _0 on), whether it takes line breaks
+  // (multiline), and whether it holds plain text that more can be set
+  // after (plain); field: false where ref, or with no ref the focused
+  // element, holds no text to check.
+  const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
+  const textIn = (el) => (el.isContentEditable ? el.innerText ?? "" : String(el.value ?? ""));
+  // mark -> { el, before, boxes }: a code row's boxes are typed each under
+  // its own mark while the row's is still to be checked
+  const realFields = new Map();
+  function typeMark(ref, text, append) {
+    const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
+    if (!el && ref !== null) return missing(ref);
+    if (!el || !(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return { field: false };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    lookBeforeTyping(text);
+    el.setAttribute("autocorrect", "off");
+    el.focus();
+    const row = text.length > 1 ? codeBoxes() : [];
+    const run = row.includes(el) ? row.slice(row.indexOf(el), row.indexOf(el) + text.length) : [];
+    const boxes = run.length === text.length ? run : [];
+    const mark = `__sh_type_${Math.random().toString(36).slice(2, 10)}`;
+    el.classList.add(mark);
+    boxes.forEach((b, i) => b.classList.add(`${mark}_${i}`));
+    realFields.set(mark, { el, before: append ? textIn(el) : "", boxes });
+    for (const old of realFields.keys()) if (realFields.size > 16) realFields.delete(old);
+    return { mark, width: outerWidth, height: outerHeight, boxes: boxes.length, multiline: el.localName !== "input", plain: !el.isContentEditable };
+  }
+
+  // Takes the mark off and answers whether the field holds text (after
+  // what it held, with append), as type's kept reckons it, once the page
+  // has had a moment with it, and whether it has the page's focus. sent,
+  // after a Return: whether the page took the text out of the field, as a
+  // chat does once it has sent it, given a second to. A mark this frame
+  // does not hold is another frame's, which relayOp then asks.
+  async function typeField(ref, mark, text, sent) {
+    const field = realFields.get(mark);
+    if (!field) return missing(ref);
+    const { el, before, boxes } = field;
+    el.classList.remove(mark);
+    boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
+    const flat = (t) => t.replace(/\s+/g, " ").trim();
+    if (sent) {
+      const holding = () => el.isConnected && flat(textIn(el)).includes(flat(text));
+      await whenPage(() => !holding(), 1000);
+      return { sent: !holding() };
+    }
+    await whenPage(() => false, RECEIPT_SPAN.min);
+    const want = before + text;
+    const kept = boxes.length > 0 ? boxes.map((b) => b.value).join("") === text
+      : el.isContentEditable ? flat(textIn(el)) === flat(want)
+      : keeps(el.value, want);
+    return { kept, focused: focusedNow() === el };
+  }
+
+  // The Send button of the field marked for real typing, marked as the
+  // mark and _send for a press from behind: the nearest button around the
+  // field named send or submit, or its form's submit button. A chat's
+  // Send button took a new ref with every message on 10-07, and Return,
+  // the way without it, needs the tab in front. Answers its ref and name,
+  // or send: null where there is none.
+  const SEND = /(^|[^a-z])(send|submit)/i;
+  function sendButton(ref, mark) {
+    const field = realFields.get(mark);
+    if (!field) return missing(ref);
+    const up = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
+    const named = (b) => [accessibleName(b), b.title, b.id, b.getAttribute("data-testid"), b.getAttribute("class")].filter(Boolean).join(" ");
+    let box = up(field.el);
+    for (let depth = 0; box && depth < 6; depth++, box = up(box)) {
+      const buttons = [...box.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')].filter((b) => b !== field.el && shown(b));
+      const send = buttons.find((b) => SEND.test(named(b))) ?? (box.localName === "form" ? buttons.find((b) => b.type === "submit") : undefined);
+      if (send) {
+        send.classList.add(`${mark}_send`);
+        return { send: `.${mark}_send`, name: accessibleName(send).slice(0, 60) };
+      }
+    }
+    return { send: null };
+  }
+
+  // ---------- Apple Passwords fill ----------
+
+  // What a field says it is for: its name, id, label, and placeholder.
+  const fieldWords = (el) => [el.name, el.id, el.getAttribute("aria-label"), el.placeholder, el.labels?.[0]?.textContent].filter(Boolean).join(" ");
+
+  // The sign-in fields on this page: the current-password field and the
+  // username field before it. A new-password field is a sign-up's, and so
+  // is one that says it repeats or sets a password, marked or not:
+  // Monkeytype's sign-up form, first on its page, calls its repeat
+  // passwordVerify (09-29). Of the rest, one alone in its form comes
+  // first. A username-first page (Google, Apple) has only the latter,
+  // which must then say it is a username or email field.
+  function loginFields() {
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
+    const passwords = deepQueryAll("input[type=password]")
+      .filter((el) => usable(el) && el.getAttribute("autocomplete") !== "new-password" && !/verif|confirm|repeat|again|retype|new/i.test(fieldWords(el)));
+    const password = passwords.find((el) => el.form?.querySelectorAll("input[type=password]").length === 1) ?? passwords[0] ?? null;
+    const scope = password?.form ?? document;
+    const texts = deepQueryAll("input:not([type]), input[type=text], input[type=email], input[type=tel]", scope).filter(usable);
+    const tagged = texts.find((el) => /\b(username|email)\b/.test(el.getAttribute("autocomplete") ?? ""));
+    const username = tagged ?? (password
+      ? texts.filter((el) => el.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING).pop()
+      : texts.find((el) => el.type === "email" || /user|login|email|account|identifier/i.test(`${el.name} ${el.id}`)));
+    return { username: username ?? null, password };
+  }
+
+  // Which frame's form a login goes into is the extension's to find: it asks
+  // every frame at once (probeFrames in background.js), and each says what
+  // it holds and which site it is on. The reply never carries what was typed.
+  function loginForm() {
+    const f = loginFields();
+    return { origin: location.origin, username: f.username !== null, password: f.password !== null };
+  }
+
+  // The daemon sends the hostname the login is saved for to the frame that
+  // holds the form; a frame that has moved elsewhere gets nothing.
+  async function fillLogin(host, username, password) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const f = loginFields();
+    if (f.password) keepSecret([f.password], password);
+    const filled = [];
+    for (const [field, value, name] of [[f.username, username, "username"], [f.password, password, "password"]]) {
+      if (!field || !value) continue;
+      if (!(await focusField(field))) return untaken(`the ${name} field`);
+      fillValue(field, value);
+      filled.push(name);
+    }
+    if (!filled.length) return { error: "the login form is gone; nothing was filled" };
+    return { ok: true, filled };
+  }
+
+  // Inputs a verification code goes in.
+  const CODE_INPUTS = "input:not([type]), input[type=text], input[type=tel], input[type=number], input[type=password]";
+
+  // A row of 4 to 8 code boxes, a character each: limited to one (PayPal's)
+  // or named "Digit N of 6" (Delta's, with no limit, whose digits a
+  // snapshot then showed, 09-29). None when the page has no such row.
+  function codeBoxes() {
+    const boxes = deepQueryAll(CODE_INPUTS).filter((el) => !el.disabled && !el.readOnly && shown(el) && (el.maxLength === 1 || /\b\d+\s*of\s*[4-8]\b/i.test(accessibleName(el))));
+    return boxes.length >= 4 && boxes.length <= 8 ? boxes : [];
+  }
+
+  // A verification-code field: the one marked one-time-code, a row of code
+  // boxes (one digit each), or one named like a code.
+  function codeFields() {
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el);
+    const inputs = deepQueryAll(CODE_INPUTS).filter(usable);
+    const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
+    if (marked) return [marked];
+    const boxes = codeBoxes();
+    if (boxes.length) return boxes;
+    const named = inputs.find((el) => /otp|one.?time|totp|2fa|mfa|verif|security.?code|auth.?code|\bcode\b/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") ?? ""} ${el.placeholder}`));
+    return named ? [named] : [];
+  }
+
+  // The ways a sign-in offers to send its code, when it asks for one before
+  // it shows a field: Instagram's chooser offered an authentication app or
+  // a text message, and code answered only that no field was there.
+  const CODE_METHOD = /authenticat|text message|\bsms\b|whatsapp|security key|backup code|recovery code|\be-?mail\b|\bcall\b|another way|other (?:options|ways)|verification method/i;
+  function codeMethods() {
+    const named = deepQueryAll("button, a[href], label, input[type=radio], [role=button], [role=link], [role=radio], [role=option], [role=menuitem], [role=menuitemradio]")
+      .filter(shown).map((el) => (accessibleName(el) || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80)).filter((n) => CODE_METHOD.test(n));
+    return [...new Set(named)].slice(0, 6);
+  }
+
+  function codeField() {
+    if (codeFields().length) return { origin: location.origin, found: true };
+    const methods = codeMethods();
+    return { origin: location.origin, found: false, ...(methods.length ? { methods } : {}) };
+  }
+
+  // A change-password (or sign-up) form: the new-password fields, marked
+  // new-password or named like one (lichess's newPasswd1 and newPasswd2),
+  // and the current-password field beside them. A field showing its
+  // password as text counts when marked or named as one: mail.ru's reset
+  // shows the password it suggests, and names its repeat field only. A
+  // repeat field with no new one marked (Quest's and Covered California's
+  // password and confirmedPassword) takes its new one from the unmarked
+  // field before it. A field says what it is for by its name, id, label,
+  // or placeholder: Paradox's reset field is a new one only by its
+  // placeholder (09-29).
+  function changeFields() {
+    const secret = (el) => el.type === "password" || (el.getAttribute("autocomplete") ?? "").endsWith("-password") || /passw|pwd/i.test(fieldWords(el));
+    const usable = (el) => !el.disabled && !el.readOnly && shown(el) && secret(el);
+    const inputs = deepQueryAll("input[type=password], input[type=text]").filter(usable);
+    const newly = (el) => el.getAttribute("autocomplete") === "new-password" || /new/i.test(fieldWords(el));
+    const marked = inputs.filter((el) => newly(el) || /confirm|repeat|again|retype/i.test(fieldWords(el)));
+    const current = inputs.find((el) => !marked.includes(el) && (el.getAttribute("autocomplete") === "current-password" || /current|old/i.test(fieldWords(el)))) ?? null;
+    const before = marked.length && !marked.some(newly) ? inputs.slice(0, inputs.indexOf(marked[0])).filter((el) => el !== current).at(-1) : undefined;
+    return { fresh: before ? [before, ...marked] : marked, current };
+  }
+
+  // What the daemon needs to make a password this form takes: how many new
+  // fields, the shortest length they allow, their passwordrules, and
+  // whether the current password is still to be typed. Never a value.
+  function changeForm() {
+    const { fresh, current } = changeFields();
+    const limits = fresh.map((el) => el.maxLength).filter((n) => n > 0);
+    const rules = fresh.map((el) => el.getAttribute("passwordrules")).find(Boolean);
+    return {
+      origin: location.origin,
+      fresh: fresh.length,
+      ...(limits.length ? { maxLength: Math.min(...limits) } : {}),
+      ...(rules ? { rules } : {}),
+      ...(current ? { current: current.value ? "filled" : "empty" } : {}),
+    };
+  }
+
+  // Types the new password into every new-password field, and the current
+  // one, when given, into its field.
+  async function fillNewPassword(host, current, password) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const f = changeFields();
+    if (!f.fresh.length) return { error: "the new-password field is gone; nothing was filled" };
+    keepSecret([f.current, ...f.fresh].filter(Boolean), current, password);
+    const filled = [];
+    const fields = [[f.current, current, "current password"], ...f.fresh.map((el, i) => [el, password, i ? "confirm password" : "new password"])];
+    for (const [field, value, name] of fields) {
+      if (!field || !value) continue;
+      if (!(await focusField(field))) return untaken(`the ${name} field`);
+      fillValue(field, value);
+      filled.push(name);
+    }
+    return { ok: true, filled };
+  }
+
+  // What a bot check leaves in this frame (challenge.ts in the daemon names
+  // the check): the frame's address and title, its text when that is short,
+  // which of the markers show (a script or an iframe counts by being there),
+  // which answer fields hold a token, and the addresses of the frames it
+  // shows on the page.
+  function challengeFacts({ markers, answers, textMax }) {
+    const roots = [document, ...shadowRoots()];
+    const all = (selector) => roots.flatMap((r) => [...r.querySelectorAll(selector)]);
+    const onPage = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width >= 30 && r.height >= 30 && r.bottom > 0 && r.right > 0 && shown(el);
+    };
+    return {
+      origin: location.origin,
+      url: location.href,
+      title: document.title,
+      text: shortText(textMax),
+      markers: markers.filter((s) => all(s).some((el) => el.tagName === "SCRIPT" || el.tagName === "IFRAME" || onPage(el))),
+      answered: answers.filter((s) => all(s).some((el) => el.value)),
+      frames: all("iframe").filter(onPage).map((f) => f.src).filter(Boolean),
+    };
+  }
+
+  // The frame's text as drawn when it is at most max characters, else "": a
+  // wall says what it is in a few lines. Text nodes are counted first, which
+  // needs no layout and stops past max, so a long page costs no more than a
+  // short one.
+  function shortText(max) {
+    const body = document.body;
+    if (!body) return "";
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let length = 0;
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (/^(script|style|noscript|template)$/i.test(n.parentNode.nodeName)) continue;
+      length += n.data.replace(/\s+/g, " ").trim().length;
+      if (length > max) return "";
+    }
+    const text = (body.innerText ?? "").replace(/\s+/g, " ").trim();
+    return text.length <= max ? text : "";
+  }
+
+  // What the extension asks every frame at once, by name.
+  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts, card: cardForm };
+
+  async function fillCode(host, code) {
+    if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
+    const fields = codeFields();
+    if (!fields.length) return { error: "the code field is gone; nothing was filled" };
+    keepSecret(fields, code);
+    const parts = fields.length === 1 ? [code] : [...code];
+    for (const [i, field] of fields.entries()) {
+      if (parts[i] === undefined) continue;
+      if (!(await focusField(field))) return untaken("the code field");
+      fillValue(field, parts[i]);
+    }
+    return { ok: true, filled: ["code"] };
+  }
+
+  // ---------- address fill ----------
+
+  // What an address field wants: the last word of its autocomplete ("section-a
+  // shipping postal-code"), else what its name, id, label, or placeholder
+  // says. Card fields (cc-*, "card number", CVC, expiry) are never matched.
+  const ADDRESS_HINTS = [
+    ["postal-code", /zip|postal|post.?code/i],
+    ["address-line2", /address.?(line)?.?2|apt|apartment|suite|\bunit\b/i],
+    ["address-level2", /city|town|locality/i],
+    ["address-level1", /state|province|region|county/i],
+    ["country", /country/i],
+    ["address-line1", /address|street/i],
+    ["given-name", /first.?name|given.?name|fname/i],
+    ["family-name", /last.?name|surname|family.?name|lname/i],
+    ["organization", /company|organi[sz]ation/i],
+    ["email", /e.?mail/i],
+    ["tel", /phone|\btel\b|mobile/i],
+    ["name", /full.?name|^name$|your.?name/i],
+  ];
+  const CARD_FIELD = /\bcc-|card|cvv|cvc|csc|expir|security.?code/i;
+
+  function addressToken(el) {
+    const auto = (el.getAttribute("autocomplete") ?? "").trim().toLowerCase().split(/\s+/).pop() ?? "";
+    if (auto.startsWith("cc-")) return "card";
+    if (auto && auto !== "on" && auto !== "off") return auto;
+    const label = fieldWords(el);
+    if (CARD_FIELD.test(label)) return "card";
+    return ADDRESS_HINTS.find(([, re]) => re.test(label))?.[0] ?? null;
+  }
+
+  function chooseOption(select, wanted) {
+    const norm = (s) => String(s ?? "").trim().toLowerCase();
+    for (const want of wanted.filter(Boolean).map(norm)) {
+      const opt = [...select.options].find((o) => norm(o.value) === want || norm(o.textContent) === want);
+      if (opt) return opt;
+    }
+    return null;
+  }
+
+  // Fills the page's empty address fields from values keyed by autocomplete
+  // token, and chooses select options that match. The reply names the
+  // fields, never what went in them.
+  async function fillAddress(values, root) {
+    const scope = root ? deepQuery(root) : document;
+    if (!scope) return missing(root);
+    const filled = [];
+    const kept = [];
+    let cards = 0;
+    for (const el of deepQueryAll("input, select, textarea", scope)) {
+      if (el.disabled || el.readOnly || !shown(el) || secretField(el) || /^(hidden|submit|button|checkbox|radio|file|image|reset)$/.test(el.type)) continue;
+      const token = addressToken(el);
+      if (token === "card") { cards++; continue; }
+      if (!token) continue;
+      if (el.tagName === "SELECT") {
+        const opt = chooseOption(el, [values[token], token === "country" ? values["country-name"] : undefined]);
+        if (!opt) continue;
+        el.value = opt.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        filled.push(token);
+        continue;
+      }
+      const value = token === "country" && !el.getAttribute("autocomplete") ? values["country-name"] : values[token];
+      if (!value) continue;
+      if (el.value) { kept.push(token); continue; }
+      if (!(await focusField(el))) return untaken(`the ${token} field`);
+      setValue(el, value, value);
+      filled.push(token);
+    }
+    return { filled, kept, cardFieldsLeftAlone: cards };
+  }
+
+  // ---------- card fill ----------
+
+  // What a card field wants: the last word of its autocomplete ("billing
+  // cc-number"), else what its name, id, label, or placeholder says, which
+  // is never a gift card's, a bank account's, or a birth date's. A list
+  // under one expiry label is its month or its year by what it offers. A
+  // weak word (a bare "Month", a "security code") is a card's only in the
+  // frame that holds the card's number.
+  const CARD_TOKENS = ["cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-name", "cc-given-name", "cc-family-name", "postal-code"];
+  const CARD_HINTS = [
+    ["cc-csc", /cvv|cvc|csc|\bcid\b|card.?(code|verification)|verification.?(number|value)/i],
+    ["cc-exp-month", /exp\w*.?(month|mm\b)/i],
+    ["cc-exp-year", /exp\w*.?(year|yy)/i],
+    ["cc-exp", /expir|exp.?date|valid.?(thru|through|until)|mm.?\/?.?yy|\bexp\b/i],
+    ["cc-name", /name.?on.?(the.?)?card|card.?holder|holder.?name|\bcc.?name/i],
+    ["cc-number", /card.?(number|no\b|num)|\bcc.?num|number.?on.?card|\bpan\b|(credit|debit).?card/i],
+    ["postal-code", /zip|postal|post.?code/i],
+    ["cc-csc", /security.?code|verification.?code/i, "weak"],
+    ["cc-exp-month", /\bmonth\b/i, "weak"],
+    ["cc-exp-year", /\byear\b/i, "weak"],
+  ];
+  const NOT_CARD = /gift|voucher|coupon|promo|loyalty|member|reward|account.?(number|no\b)|routing|iban|birth|\bdob\b/i;
+  const CARD_NAMES = { "cc-number": "number", "cc-exp": "expiry", "cc-exp-month": "expiry month", "cc-exp-year": "expiry year", "cc-csc": "security code", "cc-name": "name", "cc-given-name": "first name", "cc-family-name": "last name", "postal-code": "zip" };
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const twoDigits = (n) => String(n % 100).padStart(2, "0");
+
+  function cardToken(el) {
+    const auto = (el.getAttribute("autocomplete") ?? "").trim().toLowerCase().split(/\s+/).pop() ?? "";
+    if (CARD_TOKENS.includes(auto)) return { token: auto, weak: false };
+    const words = fieldWords(el);
+    const hint = (auto && auto !== "on" && auto !== "off") || NOT_CARD.test(words) ? undefined : CARD_HINTS.find(([, re]) => re.test(words));
+    if (!hint) return { token: null, weak: false };
+    return { token: hint[0] === "cc-exp" && el.tagName === "SELECT" ? expiryPart(el) : hint[0], weak: Boolean(hint[2]) };
+  }
+
+  function expiryPart(select) {
+    const n = [...select.options].map((o) => Number.parseInt(o.value || o.textContent, 10)).filter(Number.isFinite);
+    return n.some((v) => v > 12) ? "cc-exp-year" : "cc-exp-month";
+  }
+
+  // This frame's card fields, the first of each kind. A ZIP is the card's
+  // where its autocomplete says billing, else the first after the card's
+  // number in its form that is no shipping or delivery ZIP.
+  function paymentFields() {
+    const found = new Map();
+    const weak = [];
+    const zips = [];
+    for (const el of deepQueryAll("input, select")) {
+      if (el.disabled || el.readOnly || !shown(el) || /^(hidden|submit|button|checkbox|radio|file|image|reset)$/.test(el.type)) continue;
+      const { token, weak: unsure } = cardToken(el);
+      if (token === "postal-code") zips.push(el);
+      else if (token && !found.has(token)) {
+        found.set(token, el);
+        if (unsure) weak.push(token);
+      }
+    }
+    const number = found.get("cc-number");
+    if (!number) for (const t of weak) found.delete(t);
+    const shipping = (el) => /\bshipping\b/i.test(el.getAttribute("autocomplete") ?? "") || /ship|deliver/i.test(fieldWords(el));
+    const zip = zips.find((el) => /\bbilling\b/i.test(el.getAttribute("autocomplete") ?? ""))
+      ?? (number && zips.find((el) => !shipping(el) && el.form === number.form && number.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (zip) found.set("postal-code", zip);
+    return found;
+  }
+
+  // Which card fields this frame holds, and the site it is on: the daemon
+  // sends a card only to frames on a site it trusts with one. Never a value.
+  function cardForm() {
+    return { origin: location.origin, fields: [...paymentFields().keys()] };
+  }
+
+  // An expiry field's text in the shape its placeholder or label shows
+  // (MM/YY, MM / YY, MMYY, MM/YYYY), else the one its length allows.
+  function expiryText(el, month, year) {
+    const mm = twoDigits(month);
+    const shape = /MM(\s*[/.-]?\s*)(YYYY|YY|AAAA|AA|JJJJ|JJ)/i.exec(fieldWords(el));
+    if (shape) return mm + shape[1] + (shape[2].length === 4 ? String(year) : twoDigits(year));
+    const max = el.maxLength;
+    return max === 4 ? mm + twoDigits(year) : max === 6 ? `${mm}${year}` : max === 7 ? `${mm}/${year}` : `${mm}/${twoDigits(year)}`;
+  }
+
+  // The option a person would pick: by what it shows, then by its value,
+  // so a list whose values count months from 0 gets July by its name.
+  function pickOption(select, test) {
+    const options = [...select.options].filter((o) => !o.disabled);
+    return options.find((o) => test(o.textContent.trim())) ?? options.find((o) => test(o.value.trim())) ?? null;
+  }
+
+  // What a card field gets: a text for a field, an option for a list.
+  function cardValue(token, el, card) {
+    const [given = "", ...family] = String(card.name ?? "").trim().split(/\s+/);
+    const list = el.tagName === "SELECT";
+    switch (token) {
+      case "cc-number": return card.number;
+      case "cc-csc": return card.csc;
+      case "cc-name": return card.name;
+      case "cc-given-name": return given;
+      case "cc-family-name": return family.join(" ");
+      case "postal-code": return card.zip;
+      case "cc-exp": return card.month && card.year ? expiryText(el, card.month, card.year) : undefined;
+      case "cc-exp-month":
+        if (!card.month) return undefined;
+        return list ? pickOption(el, (t) => new RegExp(`^0?${card.month}(?!\\d)`).test(t) || t.toLowerCase().startsWith(MONTHS[card.month - 1])) : twoDigits(card.month);
+      case "cc-exp-year": {
+        if (!card.year) return undefined;
+        if (list) return pickOption(el, (t) => t === String(card.year) || t === twoDigits(card.year));
+        const words = fieldWords(el);
+        return el.maxLength === 2 || (/\bYY\b/i.test(words) && !/YYYY/i.test(words)) ? twoDigits(card.year) : String(card.year);
+      }
+    }
+    return undefined;
+  }
+
+  // Fills this frame's card fields: the number, the expiry in the field's
+  // own shape, the security code, the name, and the billing ZIP. The daemon
+  // sends the card only to a frame on a site it trusts with it (cards.ts),
+  // and a frame that has moved elsewhere since gets nothing. The number and
+  // code stay secrets of this page (keepSecret). The reply names the fields,
+  // never what went in them. A text field the page did not keep a moment
+  // later comes back with its ref, for the keys a person presses
+  // (real_input, cards.ts): a card processor's frame may take nothing else.
+  // A list with no option for the card's month or year comes back without.
+  async function fillCard(host, card, secrets = []) {
+    if (location.hostname !== host || (host && location.protocol !== "https:")) return { error: `the page moved to ${location.host}; nothing was filled` };
+    const fields = paymentFields();
+    keepSecret(["cc-number", "cc-csc", "cc-exp", "cc-exp-month", "cc-exp-year"].map((t) => fields.get(t)).filter(Boolean), ...secrets);
+    const set = [];
+    const missed = [];
+    for (const [token, el] of fields) {
+      const value = cardValue(token, el, card);
+      if (value === undefined || value === "") continue;
+      if (el.tagName === "SELECT") {
+        const option = typeof value === "string" ? chooseOption(el, [value]) : value;
+        if (!option) {
+          missed.push({ field: CARD_NAMES[token], token });
+          continue;
+        }
+        el.value = option.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        set.push([token, el, option.value]);
+        continue;
+      }
+      if (!(await focusField(el))) return untaken(`the card's ${CARD_NAMES[token]} field`);
+      setValue(el, value, value);
+      set.push([token, el, value]);
+    }
+    if (!set.length && !missed.length) return { error: "the card fields are gone; nothing was filled" };
+    await whenPage(() => false, RECEIPT_SPAN.min);
+    const filled = [];
+    for (const [token, el, value] of set) {
+      if (el.tagName === "SELECT" ? el.value === value : keeps(el.value, value)) filled.push(CARD_NAMES[token]);
+      else missed.push(el.tagName === "SELECT" ? { field: CARD_NAMES[token], token } : { field: CARD_NAMES[token], token, ref: ensureRef(el) });
+    }
+    return { ok: true, filled, ...(missed.length ? { missed } : {}) };
+  }
+
+  // "Shift+Option+C" -> key "C" with shiftKey and altKey. A key that is not
+  // a known combo ("+", "Enter") is sent as is.
+  const MODIFIERS = { shift: "shiftKey", option: "altKey", alt: "altKey", cmd: "metaKey", command: "metaKey", meta: "metaKey", ctrl: "ctrlKey", control: "ctrlKey" };
+  function parseKey(spec) {
+    const parts = spec.split("+");
+    const flags = {};
+    if (parts.length < 2 || parts[parts.length - 1] === "") return { key: spec, flags };
+    for (const p of parts.slice(0, -1)) {
+      const flag = MODIFIERS[p.trim().toLowerCase()];
+      if (!flag) return { key: spec, flags: {} };
+      flags[flag] = true;
+    }
+    let key = parts[parts.length - 1];
+    if (key.length === 1) key = flags.shiftKey ? key.toUpperCase() : key.toLowerCase();
+    return { key, flags };
+  }
+
+  function keyCode(key) {
+    if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^\d$/.test(key)) return `Digit${key}`;
+    return { "/": "Slash", "?": "Slash", ".": "Period", ",": "Comma", " ": "Space" }[key] ?? key;
+  }
+
+  function pressKey(ref, spec) {
+    const explicit = ref !== null && ref !== undefined;
+    let el = explicit ? fieldOf(resolve(ref)) : null;
+    if (explicit && !el) return missing(ref);
+    if (!el) {
+      el = document.activeElement;
+      while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    }
+    el ??= document.body;
+    if (el !== document.body && el !== document.documentElement) {
+      const blocked = clickBlocked(el);
+      if (blocked) return blocked;
+    }
+    watchTarget(el);
+    const { key, flags } = parseKey(spec);
+    const enter = key === "Enter" && !Object.keys(flags).length;
+    // Pages still read Enter by its legacy keyCode, and take it on keypress.
+    // That keypress has no charCode, as in Firefox: with charCode 13 WebKit
+    // submits the form itself (a second submit) and clicks a focused button.
+    const common = { bubbles: true, cancelable: true, key, code: keyCode(key), ...flags, ...(key === "Enter" ? { keyCode: 13, which: 13 } : {}) };
+    const sent = el.dispatchEvent(new KeyboardEvent("keydown", common)) && (!enter || el.dispatchEvent(new KeyboardEvent("keypress", common)));
+    el.dispatchEvent(new KeyboardEvent("keyup", common));
+    // As in a browser, Enter submits from a one-line text field only, and
+    // not when the page took the key (cancelled its keydown or keypress).
+    if (sent && enter && el.localName === "input" && TEXT_INPUTS.has(el.type)) {
+      const form = el.closest("form");
+      if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
+    }
+    // Enter outside a form usually runs the page's own search or send.
+    return key === "Enter" ? { ok: true, key, ...flags, expect: "script" } : { ok: true, key, ...flags };
+  }
+
+  // A page that scrolls a box of its own (an app's pane) or draws on a
+  // canvas (Flutter) never moves the window: four scrolls of GEICO's
+  // policy pages each answered ok and moved nothing (09-29). The window
+  // scrolls when it can, else the box under the middle of the window that
+  // scrolls that way, else the element there gets a wheel, as a mouse over
+  // it would give, which a page that scrolls itself takes (cancels). The
+  // answer says which moved; a scroll that moved nothing is an error.
+  function scrollBy(dx, dy) {
+    const x = window.scrollX;
+    const y = window.scrollY;
+    const maxY = () => Math.round(document.documentElement.scrollHeight - innerHeight);
+    window.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    if (window.scrollX !== x || window.scrollY !== y) return { ok: true, moved: "window", scrollY: Math.round(window.scrollY), maxY: maxY() };
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const at = deepPoint(cx, cy);
+    const scrolls = (overflow) => /^(auto|scroll|overlay)$/.test(overflow);
+    for (let box = at; box; box = box.parentElement ?? box.getRootNode().host) {
+      const style = getComputedStyle(box);
+      if (!(dy && scrolls(style.overflowY)) && !(dx && scrolls(style.overflowX))) continue;
+      const left = box.scrollLeft;
+      const top = box.scrollTop;
+      box.scrollBy({ left: dx, top: dy, behavior: "instant" });
+      if (box.scrollLeft !== left || box.scrollTop !== top) return { ok: true, moved: "box", scrollY: Math.round(box.scrollTop), maxY: box.scrollHeight - box.clientHeight };
+    }
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, deltaX: dx, deltaY: dy, deltaMode: WheelEvent.DOM_DELTA_PIXEL });
+    if (at && !at.dispatchEvent(wheel)) return { ok: true, moved: "wheel" };
+    return { error: `nothing moved: the window is at scrollY ${Math.round(y)} of ${maxY()}, no box under its middle scrolls that way, and the page there does not take a wheel` };
+  }
+
+  // innerText, minus the words no one sees: boxes of at most one pixel,
+  // clear boxes, boxes no scroll shows (unseenBox), and an element's own
+  // words drawn without ink (faintText). Pages hide decoys that way (ebay
+  // interleaves random letters into item labels and parks them
+  // off-screen), and text addressed to AI agents; innerText keeps them
+  // because they do render.
+  function visibleText(root) {
+    const text = root.innerText || "";
+    const cuts = []; // [node, its words], each cut at its next occurrence
+    let skip = null;
+    for (const el of root.querySelectorAll("*")) {
+      if (skip?.contains(el)) continue;
+      const rects = el.getClientRects();
+      if (!rects.length) continue; // not rendered, so not in innerText either
+      const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      if ((r.width <= 1 && r.height <= 1) || transparent(el, style) || unseenBox(el, style)) {
+        if (el.textContent.trim()) {
+          skip = el;
+          cuts.push([el, el.innerText]);
+        }
+        continue;
+      }
+      const own = [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue));
+      if (own.length && faintText(el, style)) for (const n of own) cuts.push([n, norm(n.nodeValue)]);
+    }
+    // An element's own words and its children's interleave: cut in page order.
+    cuts.sort(([a], [b]) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let out = "";
+    let at = 0;
+    for (const [, t] of cuts) {
+      const i = t ? text.indexOf(t, at) : -1;
+      if (i < 0) continue;
+      out += text.slice(at, i);
+      at = i + t.length;
+    }
+    return out + text.slice(at);
+  }
+
+  // innerText stops at a shadow root and reads a filled <slot> as empty. The
+  // path from root down to each open shadow host and each filled slot is
+  // read node by node, as drawn; each subtree off that path is read whole
+  // by leaf (innerText, or visibleText).
+  function readText(root, leaf) {
+    const up = (n) => n.assignedSlot ?? (n.parentNode instanceof ShadowRoot ? n.parentNode.host : n.parentNode);
+    const path = new Set();
+    for (const el of [root, ...deepElements(root)]) {
+      if (!el.shadowRoot && !(el.tagName === "SLOT" && el.assignedNodes().length)) continue;
+      for (let n = el; n && !path.has(n); n = n === root ? null : up(n)) path.add(n);
+    }
+    if (!path.size) return leaf(root);
+    const read = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) return unseenWords(node) ? "" : node.nodeValue.replace(/\s+/g, " ");
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+      if (node.tagName === "BR") return "\n";
+      const style = getComputedStyle(node);
+      const d = style.display;
+      if (d === "none" || transparent(node, style) || unseenBox(node, style)) return "";
+      const t = path.has(node) ? [...drawnChildren(node)].map(read).join("") : leaf(node);
+      return d.startsWith("inline") || d === "contents" ? t : `\n${t}\n`;
+    };
+    return read(root);
+  }
+
+  // A line of only invisible characters (zero-width ones, a soft hyphen) is
+  // a loading skeleton's: HackerOne's and PayPal's pages held lines of
+  // U+200C where their text would come (09-29). A line of only word joiners
+  // (U+2060) or U+FEFF is not: a loaded Wikipedia article held three lines
+  // of a lone U+2060 (10-20), and every open of it waited 5 s. Such lines
+  // are left out of the text all the same. A line that only says the page
+  // is loading stands in for text too: USCIS's case pages read "The page is
+  // loading. Please wait and do not refresh the page." between their real
+  // lines while the rest came (09-30). Invisible characters are read as
+  // spaces here, using the matching rules' one list (INVISIBLE).
+  const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
+
+  // An element's text as extract returns it: spaces and blank lines run
+  // together, skeleton and loading lines left out, and whether there were any.
+  function tidyText(root) {
+    const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
+    const filler = (l) => FILLER.test(l.replace(INVISIBLE, " "));
+    const joinersOnly = (l) => /^[\u2060\uFEFF ]+$/.test(l);
+    const text = lines.filter((l) => !filler(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text, filler: lines.some((l) => filler(l) && !joinersOnly(l)) };
+  }
+
+  // A page that marks its main region or body aria-busy is still filling in.
+  const ariaBusy = () => !!document.querySelector("body[aria-busy='true'], main[aria-busy='true'], [role='main'][aria-busy='true']");
+
+  // Whether the page says it is still loading: skeleton or loading lines in
+  // what extract reads, or aria-busy. On 10-05 Cvent's sign-on page showed
+  // only a spinner, then a page saying "Signing In", before sending the
+  // tab to AWS. Those count too, but only with no other visible text in
+  // the whole page: a progress widget or a heading beside real content
+  // must not hold an open.
+  function stillLoading() {
+    if (!document.body) return webDocument();
+    if (ariaBusy()) return true;
+    const { root } = contentRoot();
+    if (!root) return false;
+    const read = tidyText(root);
+    if (read.filler) return true;
+    const interstitial = /^(?:signing in|redirecting)[.…]*$/i.test(read.text);
+    if (read.text && !interstitial) return false;
+    if (root !== document.body && tidyText(document.body).text !== read.text) return false;
+    return interstitial || deepQueryAll("[role=progressbar], progress").some((el) => {
+      if (!shown(el)) return false;
+      // A progress indicator can have a box even when a parent hides it.
+      for (let box = el; box; box = box.parentElement ?? box.getRootNode().host) {
+        const style = getComputedStyle(box);
+        if (transparent(box, style) || unseenBox(box, style)) return false;
+      }
+      return true;
+    });
+  }
+
+  // What extract reads by default: a dialog open over the page (claude.ai's
+  // Settings read as the chat behind it, 09-29), or one that shows only an
+  // embedded frame (SheerID's form on Adorama, 10-19); else the page's main
+  // region, or its only article, unless that holds little of the page's
+  // text (Amazon's Prime page put only the account's name in it, 09-29);
+  // else the whole body (the first of many articles is a card, not the
+  // content). A root other than the main region comes with a note.
+  function contentRoot() {
+    const box = openDialog();
+    if (box && (norm(box.innerText ?? "") || framesIn(box).length)) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const articles = document.querySelectorAll("article");
+    const main = document.querySelector("main, [role=main]") ?? (articles.length === 1 ? articles[0] : null);
+    if (!main) return { root: document.body };
+    const inMain = norm(main.innerText ?? "").length;
+    const inBody = norm(document.body.innerText ?? "").length;
+    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: "the main region holds little of the page's text, so this is the whole page" };
+    return { root: main };
+  }
+
+  // The embedded frames shown in root that have a copy of this script of
+  // their own (another site's, which this copy cannot read): background.js
+  // reads each and adds its text after this frame's (extractFrames).
+  function framesIn(root) {
+    return deepQueryAll("iframe, frame").filter((f) => childToken.has(f) && root.contains(f) && shown(f)).map((f) => ({ token: childToken.get(f), name: named(f) }));
+  }
+
+  const HEADINGS = "h1, h2, h3, h4, h5, h6, [role=heading]";
+  function headingLevel(el) {
+    if (!el.matches(HEADINGS)) return 0;
+    return /^H[1-6]$/.test(el.tagName) ? Number(el.tagName[1]) : Number(el.getAttribute("aria-level")) || 2;
+  }
+
+  // The section an address's #fragment names, read alone: the element with
+  // that id (or the anchor with that name) when it holds text and no
+  // heading names it; else from its heading, or the heading after an empty
+  // anchor, as far as the next heading of that level or above. On 10-23 an
+  // agent read all of NVIDIA's PTX guide 54 times, once for each #section
+  // it wanted (K14). A fragment naming nothing shown reads the page.
+  function fragmentSection() {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
+    if (!id) return null;
+    const target = document.getElementById(id) ?? [...document.getElementsByName(id)].find((el) => el.tagName === "A");
+    if (!target || !document.body.contains(target) || target === document.body) return null;
+    const note = `this is the section #${id} the address names; extract with selector "body" reads the whole page`;
+    const start = target.closest(HEADINGS) ?? (norm(target.textContent) ? null : [...document.body.querySelectorAll(HEADINGS)].find((h) => target.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING));
+    if (!start) {
+      const read = tidyText(target);
+      return read.text ? { root: target, read, note } : null;
+    }
+    const level = headingLevel(start);
+    const ends = (el) => headingLevel(el) > 0 && headingLevel(el) <= level;
+    let unit = start;
+    while (!unit.nextElementSibling && unit.parentElement && unit.parentElement !== document.body) unit = unit.parentElement;
+    const units = [unit];
+    for (let el = unit.nextElementSibling; el && !ends(el) && ![...el.querySelectorAll(HEADINGS)].some(ends); el = el.nextElementSibling) units.push(el);
+    const reads = units.map(tidyText);
+    const text = reads.map((r) => r.text).filter(Boolean).join("\n\n");
+    return text ? { root: unit.parentElement, units, read: { text, filler: reads.some((r) => r.filler) }, note } : null;
+  }
+
+  // query keeps the lines containing it, searched across the whole body. A
+  // default read that finds no text, skeleton or loading lines, or a busy
+  // page waits for the page to draw, as snapshot does, and says when it was
+  // still loading at the limit.
+  async function extract(opts = {}) {
+    const by = Date.now() + (Number(opts.ms) || 0);
+    if (!(await hasBody())) return { error: noBody() };
+    if (shownPdf()) return { error: shownPdfText() };
+    if (opts.as === "table") return tables(opts);
+    if (opts.as === "chat") return chatView(opts);
+    if (opts.as === "images") {
+      let found = pictures(opts);
+      if (!opts.selector && found.images?.length === 0) await whenPage(() => (found = pictures(opts)).images.length > 0, DRAW_WAIT_MS);
+      return found;
+    }
+    let at;
+    if (opts.strict_selector === true) {
+      // Secret sources must name one subtree. Count and read it in the same
+      // turn, without choosing a first match or changing the email thread.
+      if (typeof opts.selector !== "string" || !opts.selector.trim()) return { error: "source selector must be a nonempty string" };
+      let matches;
+      try { matches = deepQueryAll(opts.selector); }
+      catch { return { error: "source selector is not valid CSS" }; }
+      if (matches.length !== 1) return { error: `source selector matches ${matches.length} elements, not one` };
+      at = { root: matches[0] };
+    } else {
+      at = opts.selector ? { root: rootFor(opts.selector) } : fragmentSection() ?? (opts.query ? { root: document.body } : contentRoot());
+    }
+    if (!at.root) return opts.selector ? noMatch("selector", opts.selector) : { error: noBody() };
+    // pace: ms per character of the read a gather starts from, which it
+    // holds back for the read after it. A near-empty root reads within a
+    // clock tick, which per character would hold back seconds.
+    let pace = 0;
+    const readAt = () => {
+      const began = Date.now();
+      const got = at.read ?? tidyText(at.root);
+      pace = (Date.now() - began) / Math.max(at.root.textContent.length, 1000);
+      return got;
+    };
+    let read = readAt();
+    const waits = !opts.selector && !opts.query && window === window.top;
+    if (waits && (!read.text || read.filler || ariaBusy())) {
+      await whenPage(() => {
+        at = fragmentSection() ?? contentRoot();
+        read = readAt();
+        return read.text !== "" && !read.filler && !ariaBusy();
+      }, DRAW_WAIT_MS);
+    }
+    const harvest = opts.expand || opts.scroll ? await harvestIn(at.root, opts, read, by, pace) : null;
+    if (harvest) read = harvest.read;
+    const loading = waits && (read.filler || ariaBusy());
+    let { text } = read;
+    const notes = [at.note];
+    if (opts.query) {
+      text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
+      // A selector or section that leaves the lines out: on 10-23 a
+      // podcast's transcript sat outside its main region, and three reads
+      // of selector "main" said no line on the page held the words (SR-9).
+      const elsewhere = !text && at.root !== document.body ? tidyText(document.body).text.split("\n").filter(queryMatch(opts.query)).length : 0;
+      if (elsewhere) notes.push(`no line in ${opts.selector ? `selector "${opts.selector}"` : "this section"} contains "${opts.query}", but ${elsewhere} line${elsewhere === 1 ? "" : "s"} elsewhere on the page do${elsewhere === 1 ? "es" : ""}: ${opts.selector ? "leave selector out" : 'extract with selector "body"'}`);
+      else if (!text) notes.push(`no line on the page contains "${opts.query}" (the page has ${read.text.length} characters of text)`);
+    } else if (!text && !opts.selector) {
+      notes.push("the page shows no text yet: wait for text you expect (wait with text), then extract again");
+    } else if (read.filler) {
+      notes.push("parts of the page were still loading, and their placeholder lines are left out");
+    }
+    const limit = opts.maxBytes || 20000;
+    const frames = opts.strict_selector === true ? [] : framesIn(at.root);
+    const controls = [];
+    if (waits && !loading && !at.units && text.length <= limit) {
+      for (const el of deepQueryAll('button,input,textarea,[role="button"],[role="textbox"]', at.root)) {
+        const role = getExplicitRole(el);
+        if ((role !== "button" && role !== "textbox") || !shown(el)) continue;
+        const label = protectedFieldName(el, accessibleName(el));
+        if (label) controls.push({ role, label });
+      }
+    }
+    return {
+      url: location.href,
+      title: document.title,
+      text: text.slice(0, Math.max(limit, opts.whole || 0)),
+      truncated: text.length > limit,
+      ...(text.length > limit ? { total: text.length } : {}),
+      ...(controls.length ? { controls } : {}),
+      ...(notes.some(Boolean) ? { note: notes.filter(Boolean).join("; ") } : {}),
+      ...(loading ? { loading: true } : {}),
+      ...(opts.query && !text ? regexHint(opts.query) : {}),
+      ...(frames.length ? { frames } : {}),
+      ...(opts.strict_selector === true ? {} : unread(at.root, harvest?.g)),
+    };
+  }
+
+  // ---------- whole lists ----------
+  // A read takes what the page has drawn, and on 10-29 three reads said
+  // they were whole that were not: a GitHub issue of 498 comments read as
+  // 2.6% of them (its "Load more" held 694 items back), a virtualized list
+  // of 1,000 rows as 16 (react-virtualized draws the rows near its view in
+  // 50,000 px), and an X profile as 2 posts (X keeps 5 to 13 at a time).
+  // A read says what it leaves (incomplete); expand and scroll get it.
+
+  // How long a click, then the list's end, has to bring more; and the most
+  // text expand and scroll gather, save's ceiling. Their time is the
+  // call's ms (tools.ts), the read after them included.
+  const MORE_MS = 5000;
+  const END_MS = 3000;
+  const GATHER_CHARS = 2000000;
+
+  // gatherStop counts up, and each gather begun before it stops between
+  // its clicks and scroll steps: the task's pause, Take over, inspect-only
+  // or stop asked it to (withGather in mission.ts).
+  let gatherStops = 0;
+
+  // A control that adds more of the list it is in, by its name: "Load
+  // more", "Show 5 more replies", "View older messages", "12 more
+  // comments"; never "More" alone, a menu's name.
+  const EXPANDS = /^(?:(?:load|show|view|see)\s+(?:\d[\d,.]*\s+)?(?:more|older|earlier|previous|hidden|remaining)\b(?:\s+[\w()-]+){0,2}|\d[\d,.]*\s+more(?:\s+[\w()-]+){1,2})\s*[.…]*$/i;
+
+  // The controls under root that add more of its list, drawn, in page
+  // order. A link counts only when it goes nowhere ("#", javascript:), a
+  // button only when it submits no form, and neither when it opens a menu
+  // or dialog or is open already.
+  function expanders(root, spent) {
+    return deepQueryAll("button, [role=button], summary, input[type=button], a", root).filter((el) => !spent?.has(el)
+      && !(el.tagName === "A" && el.hasAttribute("href") && !/^\s*(?:#|javascript:)/i.test(el.getAttribute("href")))
+      && !(el.form && el.type !== "button")
+      && !/^(?:true|menu|listbox|tree|grid|dialog)$/.test(el.getAttribute("aria-haspopup") ?? "")
+      && el.getAttribute("aria-expanded") !== "true"
+      && !(el.tagName === "SUMMARY" && el.parentElement.open)
+      && EXPANDS.test(norm(accessibleName(el)))
+      && shown(el));
+  }
+
+  // A control still loading what its last click asked for.
+  const loadingMore = (el) => el.isConnected && (el.matches(":disabled") || el.getAttribute("aria-disabled") === "true" || el.getAttribute("aria-busy") === "true");
+
+  // What a control says it holds back, in its name or the few words
+  // around it: "694 remaining items", "3 hidden items", "12 more replies".
+  const HELD = /\d[\d,]*\s+(?:more|hidden|remaining)\b(?:\s+[a-z]+)?/i;
+  function heldBack(el) {
+    let held = HELD.exec(accessibleName(el))?.[0];
+    for (let box = el.parentElement; !held && box && box.textContent.length <= 300; box = box.parentElement) held = HELD.exec(norm(box.innerText))?.[0];
+    return held ?? "";
+  }
+
+  // A list under root drawn in part: one that declares more rows than it
+  // has (aria-rowcount, aria-setsize; -1 is a length still unknown, as a
+  // feed says), or a box five views tall or more, its own or the page's,
+  // that draws only the items near its view (sparse). Answers the items'
+  // parent, the box that scrolls them (null: the window), the size it
+  // declares, and why.
+  function partList(root) {
+    for (const grid of root.querySelectorAll("[aria-rowcount]")) {
+      const size = Number(grid.getAttribute("aria-rowcount"));
+      const rows = grid.querySelectorAll("[role=row], tr");
+      if (rows.length && (size === -1 || size > rows.length)) return { list: rows[rows.length - 1].parentElement, box: scrollerOf(grid), size, reason: `a grid of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} rows`} that draws ${rows.length}` };
+    }
+    const sets = Map.groupBy([...root.querySelectorAll("[aria-setsize]")].filter((el) => /^(?:article|listitem|row)$/.test(getExplicitRole(el) ?? "")), (el) => el.parentElement);
+    for (const [list, items] of sets) {
+      const sizes = items.map((el) => Number(el.getAttribute("aria-setsize")));
+      const size = sizes.includes(-1) ? -1 : Math.max(...sizes);
+      if (size === -1 || size > items.length) return { list, box: scrollerOf(list), size, reason: `a list of ${size === -1 ? "unknown length" : `${size.toLocaleString("en-US")} items`} that draws ${items.length}` };
+    }
+    const around = [];
+    for (let el = root; el && el !== document.body && el !== document.documentElement; el = el.parentElement) around.push(el);
+    for (const box of [...around, ...root.querySelectorAll("*")]) {
+      const part = box.clientHeight >= 100 && box.scrollHeight >= 5 * box.clientHeight && /^(?:auto|scroll|overlay)$/.test(getComputedStyle(box).overflowY) && sparse(box, box.scrollHeight);
+      if (part) return { ...part, box };
+    }
+    const height = document.scrollingElement?.scrollHeight ?? 0;
+    const part = height >= 5 * innerHeight && sparse(document.body, height);
+    return part && root.contains(part.list) ? { ...part, box: null } : null;
+  }
+
+  // Whether a box of height draws only the part of its list near its view:
+  // going down through the child that holds the list (the only one with
+  // anything in it, or one nearly as tall), its items span under three
+  // quarters of the height. A virtualized list stands empty space in for
+  // the rest, and an empty box (its spacer) is not an item.
+  function sparse(box, height) {
+    for (let el = box; ;) {
+      const kids = [...el.children].filter((k) => k.textContent.trim() || k.querySelector("img, video, canvas, svg"));
+      const rects = kids.map((k) => k.getBoundingClientRect());
+      const inner = kids.length === 1 ? 0 : rects.findIndex((r) => r.height >= 0.9 * height);
+      if (inner >= 0) {
+        el = kids[inner];
+        continue;
+      }
+      const placed = rects.filter((r) => r.height > 0);
+      if (placed.length < 3) return null;
+      const span = Math.max(...placed.map((r) => r.bottom)) - Math.min(...placed.map((r) => r.top));
+      return span < 0.75 * height ? { list: el, reason: `a list that draws only the ${placed.length} items near its view (${Math.round(height).toLocaleString("en-US")} px tall)` } : null;
+    }
+  }
+
+  // The box that scrolls el, or null when the window does.
+  function scrollerOf(el) {
+    for (let box = el; box && box !== document.body && box !== document.documentElement; box = box.parentElement) {
+      if (box.scrollHeight > box.clientHeight + 1 && /^(?:auto|scroll|overlay)$/.test(getComputedStyle(box).overflowY)) return box;
+    }
+    return null;
+  }
+
+  // The list under root a scroll gathers when none says it is drawn in
+  // part: the element whose children alike (keyOf), three or more holding
+  // text, hold the most of it. A count picked X's profile header, six
+  // lines, over its timeline of as many posts (10-29).
+  function listIn(root) {
+    let best = null;
+    let most = 0;
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      if (el.childElementCount < 3 || el.matches("select, datalist, svg, pre, code")) continue;
+      for (const alike of Map.groupBy(el.children, keyOf).values()) {
+        const held = alike.filter((k) => !UNDRAWN.test(k.tagName) && k.textContent.trim());
+        const size = held.length < 3 ? 0 : held.reduce((n, k) => n + k.textContent.length, 0);
+        if (size > most) {
+          most = size;
+          best = el;
+        }
+      }
+    }
+    return best;
+  }
+
+  // What makes an item the same one when the list draws it again: the
+  // link or text of key (CSS) in it, an index or key the list gave it, or
+  // its permalink (the link around its time: X's posts, GitHub's
+  // comments); else null, and its text tells it apart.
+  function itemKey(el, key) {
+    if (key) {
+      const at = el.matches(key) ? el : el.querySelector(key);
+      return at ? at.href || norm(at.textContent) || null : null;
+    }
+    for (const name of ["data-index", "aria-rowindex", "aria-posinset", "data-key", "data-id"]) {
+      const value = el.getAttribute(name);
+      if (value) return `${name}=${value}`;
+    }
+    return el.querySelector("a[href] time, a[href] relative-time")?.closest("a").href ?? null;
+  }
+
+  // The read's text with the list's drawn items, first to last, put back
+  // as every item gathered, the text around the list kept; the items
+  // alone when the read does not hold the drawn ones.
+  function spliced(text, first, items) {
+    const body = items.join("\n\n");
+    const head = first[0]?.split("\n")[0];
+    const tail = first.at(-1)?.split("\n").at(-1);
+    const from = head ? text.indexOf(head) : -1;
+    const to = tail ? text.lastIndexOf(tail) : -1;
+    if (from < 0 || to < from) return body;
+    return [text.slice(0, from).trim(), body, text.slice(to + tail.length).trim()].filter(Boolean).join("\n\n");
+  }
+
+  // Resolves once the page has changed nothing for ms, or after limit.
+  async function settled(ms, limit) {
+    for (const end = Date.now() + limit; Date.now() < end;) if (!(await whenPage(() => true, Math.min(ms, end - Date.now())))) return;
+  }
+
+  // Runs a click that must leave the page where it is: a link, form or
+  // script that would load another page, or another path of this one, is
+  // stopped, and the answer says so (left), as it says a popup opened.
+  function inPlace(act) {
+    let left = false;
+    const path = location.pathname;
+    const stay = (e) => {
+      if (e.defaultPrevented) return;
+      if (e.type === "navigate" && (!e.cancelable || (e.destination.sameDocument && new URL(e.destination.url).pathname === path))) return;
+      if (e.type === "click" && !e.composedPath().some((n) => n instanceof Element && n.matches("a[href], area[href]") && !/^\s*(?:#|javascript:)/i.test(n.getAttribute("href")))) return;
+      e.preventDefault();
+      left = true;
+    };
+    const popped = () => { left = true; };
+    navigation.addEventListener("navigate", stay);
+    addEventListener("submit", stay);
+    addEventListener("click", stay);
+    document.addEventListener("__sh_popup", popped);
+    try {
+      const res = act();
+      return left ? { ...res, left } : res;
+    } finally {
+      navigation.removeEventListener("navigate", stay);
+      removeEventListener("submit", stay);
+      removeEventListener("click", stay);
+      document.removeEventListener("__sh_popup", popped);
+    }
+  }
+
+  // expand clicks root's "Load more" controls one at a time, each once it
+  // is ready, until none is left; scroll scrolls the box that holds its
+  // list, or the window, most of a view at a time, and takes each item it
+  // draws once (itemKey), until the list's end brings nothing for END_MS.
+  // Both stop at the call's time, the text ceiling, max items, or a
+  // gatherStop, and a click that would leave the page stops them. The view
+  // stays where they leave it, so a call that ran out of time goes on from
+  // there. collect: take the items after an expand alone too. by: when the
+  // call answers. On 10-30 an X profile's scroll in a background tab
+  // answered after 37 s, and under heavier load not within the 40 s
+  // extract waited, losing all it had gathered: a click or step begins
+  // only while the slowest so far still fits before the read after it,
+  // which takes pace ms for each character root holds, as the read before
+  // it did.
+  async function gather(root, opts, collect, by, pace) {
+    let until = by;
+    const left = () => Math.max(0, until - Date.now());
+    const stops = gatherStops;
+    const spent = new Set();
+    const items = new Map();
+    const seen = new WeakMap();
+    let part;
+    let list = null;
+    let box;
+    let first;
+    let around;
+    let chars = 0;
+    let clicks = 0;
+    let steps = 0;
+    let rested = false;
+    let stopped = "";
+    let refused = "";
+    const members = () => {
+      if (opts.item) return deepQueryAll(opts.item, root);
+      if (!list?.isConnected) list = (part = partList(root))?.list ?? listIn(root);
+      return list ? [...list.children] : [];
+    };
+    const take = () => {
+      for (const el of members()) {
+        const print = el.textContent;
+        if (!print.trim() || seen.get(el) === print) continue;
+        seen.set(el, print);
+        const text = tidyText(el).text;
+        const key = itemKey(el, opts.key);
+        const had = items.get(key ?? text);
+        if (!text || (had && had.text.length >= text.length)) continue;
+        chars += text.length - (had?.text.length ?? 0);
+        items.set(key ?? text, key ? { key, text } : { text });
+      }
+    };
+    // A list drawn after the gather began: X draws a profile's timeline
+    // seconds after its sidebar's links in a background tab, and a scroll
+    // begun before took the links to their end (10-30). Once the list
+    // brings nothing new, one holding more text than all it gave is
+    // gathered in its place, around the page's text as it is then.
+    const relisted = () => {
+      if (opts.item) return false;
+      const next = partList(root);
+      const other = next?.list ?? listIn(root);
+      if (!other || other === list || other.textContent.length <= chars) return false;
+      part = next;
+      list = other;
+      box = undefined;
+      items.clear();
+      chars = 0;
+      take();
+      first = [...items.values()].map((item) => item.text);
+      around = tidyText(root).text;
+      return true;
+    };
+    // One click and the wait for what it adds, its toggle to open, or the
+    // control to go: "clicked", "waited" (none was ready), "" (none is
+    // left), or "left". refused: why the last control it gave up on was
+    // not clicked.
+    const expand = async () => {
+      const all = expanders(root, spent);
+      const el = all.find((c) => !clickBlocked(c));
+      if (!el) {
+        const loading = all.filter(loadingMore);
+        for (const c of all) {
+          if (loading.includes(c)) continue;
+          spent.add(c);
+          refused = clickBlocked(c).error;
+        }
+        if (!loading.length) return "";
+        if (!(await whenPage(() => loading.some((c) => !loadingMore(c)), Math.min(MORE_MS, left())))) for (const c of loading) spent.add(c);
+        return "waited";
+      }
+      const before = root.textContent.length;
+      const res = inPlace(() => clickElement(el));
+      if (res.left) return "left";
+      if (res.error) {
+        spent.add(el);
+        refused = res.error;
+        return "waited";
+      }
+      clicks++;
+      const done = () => !el.isConnected || el.getAttribute("aria-expanded") === "true" || (el.tagName === "SUMMARY" && el.parentElement.open) || (root.textContent.length > before && !loadingMore(el));
+      if (!done() && !(await whenPage(done, Math.min(MORE_MS, left())))) spent.add(el);
+      return "clicked";
+    };
+    // One scroll and the wait for what it draws; false at the list's end
+    // once nothing more has come for END_MS.
+    const step = async () => {
+      if (box === undefined) box = part?.box ?? scrollerOf((opts.item ? members()[0] : list) ?? root);
+      const scroller = box ?? document.scrollingElement;
+      const from = scroller.scrollTop;
+      scroller.scrollBy({ top: Math.round((box ? box.clientHeight : innerHeight) * 0.85), behavior: "instant" });
+      // a hidden tab runs no rendering steps, so fires no scroll event for
+      // a virtualized list to draw its next rows by
+      if (document.hidden) (box ?? document).dispatchEvent(new Event("scroll", { bubbles: !box }));
+      steps++;
+      const had = items.size;
+      if (scroller.scrollTop !== from) {
+        await whenPage(() => true, Math.min(150, left()));
+        take();
+        return true;
+      }
+      take();
+      return items.size > had || whenPage(() => {
+        take();
+        return items.size > had;
+      }, Math.min(END_MS, left()));
+    };
+    if (opts.scroll) take();
+    first = [...items.values()].map((item) => item.text);
+    for (let began = Date.now(), slowest = 0; ;) {
+      slowest = Math.max(slowest, Date.now() - began);
+      began = Date.now();
+      const held = root.textContent.length;
+      until = by - pace * held;
+      if (gatherStops !== stops) {
+        stopped = "user";
+        break;
+      }
+      if (left() <= slowest) {
+        stopped = "time";
+        break;
+      }
+      if (chars >= GATHER_CHARS || items.size >= (Number(opts.max) || Infinity) || (!opts.scroll && held >= GATHER_CHARS)) {
+        stopped = "max";
+        break;
+      }
+      if (opts.expand) {
+        const did = await expand();
+        if (did === "left") {
+          stopped = "left";
+          break;
+        }
+        if (did) {
+          rested = false;
+          if (opts.scroll) take();
+          continue;
+        }
+        // None is left: the page gets a moment, once, to put up what the
+        // last click is still bringing, and perhaps another control.
+        if (clicks && !rested) {
+          rested = true;
+          await settled(500, Math.min(2000, left()));
+          continue;
+        }
+      }
+      if (!opts.scroll) {
+        stopped = expanders(root).length ? "nothing new" : "none left";
+        break;
+      }
+      if ((await step()) || (left() && relisted())) continue;
+      stopped = left() ? "nothing new" : "time";
+      break;
+    }
+    if (collect && !opts.scroll) take();
+    const count = collect || opts.scroll ? items.size : members().filter((el) => el.textContent.trim()).length || null;
+    return { items: [...items.values()], first, around, clicks, steps, stopped, refused, count, expand: !!opts.expand, scroll: !!opts.scroll };
+  }
+
+  // What expand and scroll did, as a read reports it: "expanded 8 times,
+  // 498 items, stopped: none left".
+  function gathered(g) {
+    const stopped = { "none left": "stopped: none left", "nothing new": "stopped: nothing new", time: "stopped: out of time, and extract again goes on from here", max: "stopped: at the limit", left: "stopped: a click would have left the page", user: "stopped by the user" }[g.stopped];
+    return [g.expand ? `expanded ${g.clicks} time${g.clicks === 1 ? "" : "s"}` : "", g.scroll ? `scrolled ${g.steps} time${g.steps === 1 ? "" : "s"}` : "", g.count === null ? "" : `${g.count.toLocaleString("en-US")} items`, stopped].filter(Boolean).join(", ");
+  }
+
+  // The controls a read leaves, by the first of them: 'a "Load more"
+  // control (271 remaining items)', '3 controls such as "Show more"'.
+  function controlsLeft(els, kind) {
+    const held = heldBack(els[0]);
+    const name = `"${clip(accessibleName(els[0]), 40)}"`;
+    return `${els.length === 1 ? `a ${name} ${kind}` : `${els.length} ${kind}s such as ${name}`}${held ? ` (${held})` : ""}`;
+  }
+
+  // What a read of root leaves out, and what reads it; after expand or
+  // scroll, what they did, and what they left: the controls still on the
+  // page unless expand clicked them all (with why it could not click the
+  // last it gave up on), a form's Load more, which expand never submits,
+  // and a list scrolled to its end that declares more items than it gave.
+  function unread(root, g) {
+    const left = [];
+    const ended = g?.scroll && g.stopped === "nothing new";
+    const part = partList(root);
+    if (part && (!ended || part.size > g.items.length)) left.push([part.reason, "extract with scroll: true scrolls it, gathering every item"]);
+    const more = g?.expand && g.stopped === "none left" ? [] : expanders(root);
+    if (more.length) left.push([`${controlsLeft(more, "control")}${g?.refused ? `, which expand could not click (${g.refused})` : ""}`, `extract with expand: true clicks ${more.length === 1 ? "it" : "them"} until none is left`]);
+    // A form's "Load more" that says what it holds back: GitHub's pull
+    // request timeline hides items behind one ("72 hidden items", "Load
+    // more…") whose submit its script takes over (10-30). expand submits
+    // no form, so a read names it, for the agent to click.
+    const forms = deepQueryAll("button", root).filter((el) => el.form && el.type === "submit" && EXPANDS.test(norm(accessibleName(el))) && shown(el) && heldBack(el));
+    if (forms.length) left.push([`${controlsLeft(forms, "form button")}, which expand will not submit`, `click ${forms.length === 1 ? "it" : "them"}, then extract again`]);
+    return {
+      ...(g ? { harvested: gathered(g) } : {}),
+      ...(left.length ? { incomplete: { reason: left.map(([reason]) => reason).join("; "), hint: left.map(([, hint]) => hint).join("; ") } } : {}),
+    };
+  }
+
+  // extract with expand or scroll: root's text once its list is whole.
+  async function harvestIn(root, opts, read, by, pace) {
+    const g = await gather(root, opts, false, by, pace);
+    return { g, read: { text: opts.scroll && g.items.length ? spliced(g.around ?? read.text, g.first, g.items.map((item) => item.text)) : tidyText(root).text, filler: false } };
+  }
+
+  // repl harvest(page, options): the list's items themselves, each once,
+  // gathered as extract's expand and scroll gather them (scroll unless
+  // expand alone is asked for). item and key are CSS: the items, and the
+  // element in each whose link or text tells it from the rest.
+  async function harvestList(opts = {}) {
+    const by = Date.now() + (Number(opts.ms) || 0);
+    if (!(await hasBody())) return { error: noBody() };
+    const root = opts.selector ? rootFor(opts.selector) : contentRoot().root;
+    if (!root) return noMatch("selector", opts.selector);
+    const asked = { ...opts, scroll: opts.scroll ?? !opts.expand };
+    const g = await gather(root, asked, true, by, 0);
+    return { url: location.href, title: document.title, items: g.items, ...unread(root, g) };
+  }
+
+  // ---------- images ----------
+  // extract with as: "images" lists the pictures under the root (the
+  // selector's, else what extract reads), each once at its largest
+  // address: a link around it to an image file, a zoom's or lazy loader's
+  // data- attribute, a srcset's widest candidate, else what it shows; and
+  // a box's CSS background. Icons (no side ICON_PX or more) are left out,
+  // and without a selector the page's og:image and JSON-LD images follow.
+  // On 10-23 agents wrote 51 scripts reading currentSrc, srcset, and
+  // background-image to collect listing photos (SR-3).
+  const ICON_PX = 100;
+  const FULL_SRC = ["data-zoom-image", "data-zoom-src", "data-large-image", "data-large", "data-full-src", "data-full"];
+  const LAZY_SRC = ["data-src", "data-lazy-src", "data-original", "data-lazy"];
+  const IMAGE_FILE = /\.(?:jpe?g|png|webp|gif|avif|heic|tiff?)$/i;
+
+  // An address as the page names it, made absolute; a file made in the
+  // page (data:, blob:) is a placeholder or has no address to fetch.
+  function imageAddress(src) {
+    if (!src || /^\s*(?:data|blob|javascript):/i.test(src)) return null;
+    try { return new URL(src.trim(), document.baseURI).href; } catch { return null; }
+  }
+
+  // A srcset's candidates, each with its width (w) or density (x).
+  function srcsetOf(set) {
+    return (set || "").split(/,\s+/).map((c) => {
+      const [url, d = "1x"] = c.trim().split(/\s+/);
+      const n = parseFloat(d) || 0;
+      return { url: imageAddress(url), w: d.endsWith("w") ? n : 0, x: d.endsWith("x") ? n : 0 };
+    }).filter((c) => c.url);
+  }
+
+  // The sides an image service's address asks for, w and h (or width and
+  // height), when it names both: a lazy picture not yet drawn has no other
+  // size. On 10-24 Unsplash's 32 px avatars were listed as pictures.
+  function askedSides(src) {
+    const q = new URL(src).searchParams;
+    const sides = [Number(q.get("w") ?? q.get("width")), Number(q.get("h") ?? q.get("height"))];
+    return sides.every((n) => n > 0) ? sides : [];
+  }
+
+  function pictureOf(img) {
+    const attr = (name) => imageAddress(img.getAttribute(name));
+    const sources = img.parentElement?.tagName === "PICTURE" ? [...img.parentElement.querySelectorAll("source")] : [];
+    const candidates = [img, ...sources].flatMap((el) => [...srcsetOf(el.getAttribute("srcset")), ...srcsetOf(el.getAttribute("data-srcset"))]);
+    const widest = candidates.reduce((a, c) => (!a || c.w > a.w || (!a.w && !c.w && c.x > a.x) ? c : a), null);
+    const link = img.closest("a[href]");
+    const linked = link && IMAGE_FILE.test(new URL(link.href, document.baseURI).pathname) ? imageAddress(link.getAttribute("href")) : null;
+    const full = linked ?? FULL_SRC.map(attr).find(Boolean);
+    const shown = imageAddress(img.currentSrc || img.getAttribute("src"));
+    const src = full ?? widest?.url ?? LAZY_SRC.map(attr).find(Boolean) ?? shown;
+    if (!src) return null;
+    const [aw, ah] = [Number(img.getAttribute("width")), Number(img.getAttribute("height"))];
+    const ratio = img.naturalWidth && img.naturalHeight ? img.naturalHeight / img.naturalWidth : aw && ah ? ah / aw : 0;
+    const size = src === shown && img.naturalWidth ? { width: img.naturalWidth, height: img.naturalHeight }
+      : !full && widest?.url === src && widest.w ? { width: widest.w, ...(ratio ? { height: Math.round(widest.w * ratio) } : {}) } : {};
+    if (!full) {
+      const r = img.getBoundingClientRect();
+      const measured = (src === shown ? [img.naturalWidth, img.naturalHeight, r.width, r.height] : [size.width, aw, ah]).filter((n) => n > 0);
+      const sides = measured.length ? measured : askedSides(src);
+      if (sides.length && Math.max(...sides) < ICON_PX) return null;
+    }
+    const alt = clip(img.alt || img.getAttribute("aria-label") || img.title || "", 200);
+    return { src, ...(alt ? { alt } : {}), ...size };
+  }
+
+  // The image addresses a JSON-LD block names: image, as a string, a list,
+  // or an ImageObject, at any depth.
+  function linkedImages(data, out = [], depth = 0) {
+    if (!data || typeof data !== "object" || depth > 6) return out;
+    for (const [key, value] of Object.entries(data)) {
+      if (key === "image") for (const v of [value].flat()) out.push(typeof v === "string" ? v : v?.url ?? v?.contentUrl);
+      else linkedImages(value, out, depth + 1);
+    }
+    return out;
+  }
+
+  function pictures(opts) {
+    const root = opts.selector ? rootFor(opts.selector) : contentRoot().root;
+    if (!root) return noMatch("selector", opts.selector);
+    const found = new Map();
+    const add = (image) => {
+      if (!image?.src) return;
+      const u = new URL(image.src);
+      const key = IMAGE_FILE.test(u.pathname) ? u.origin + u.pathname : image.src;
+      const had = found.get(key);
+      if (!had || (image.width ?? 0) > (had.width ?? 0)) found.set(key, { ...image, ...(had?.alt && !image.alt ? { alt: had.alt } : {}) });
+    };
+    for (const el of [root, ...deepElements(root)]) {
+      if (el.tagName === "IMG") { add(pictureOf(el)); continue; }
+      const r = el.getBoundingClientRect();
+      if (Math.max(r.width, r.height) < ICON_PX) continue;
+      const background = getComputedStyle(el).backgroundImage;
+      if (background === "none") continue;
+      const alt = clip(el.getAttribute("aria-label") || el.title || "", 200);
+      for (const m of background.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/g)) add({ src: imageAddress(m[2]), ...(alt ? { alt } : {}) });
+    }
+    if (!opts.selector) {
+      for (const m of document.querySelectorAll('meta[property="og:image"], meta[name="og:image"]')) add({ src: imageAddress(m.content), from: "og:image" });
+      for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+        let data;
+        try { data = JSON.parse(s.textContent); } catch { continue; }
+        for (const src of linkedImages(data)) add({ src: typeof src === "string" ? imageAddress(src) : null, from: "json-ld" });
+      }
+    }
+    const keep = opts.query ? queryMatch(opts.query) : () => true;
+    const limit = opts.maxBytes || 20000;
+    const images = [];
+    let used = 0;
+    let truncated = false;
+    for (const image of found.values()) {
+      if (!keep(`${image.alt ?? ""} ${image.src}`)) continue;
+      used += JSON.stringify(image).length + 1;
+      if (used > limit) { truncated = true; break; }
+      images.push(image);
+    }
+    return { url: location.href, title: document.title, images, truncated };
+  }
+
+  // A query's parts: "a|b" is a or b. A leading (?i) is dropped: agents
+  // wrote it as in a regex, and a query ignores case already (09-29).
+  function alternatives(query) {
+    return String(query).replace(/^\(\?i\)/, "").split("|").map((s) => s.trim()).filter(Boolean);
+  }
+
+  // A query's test for one line: "a|b" matches a line containing either
+  // alternative, case and invisible mail padding aside (Gmail, 09-30).
+  function queryMatch(query) {
+    const plain = (t) => t.replace(INVISIBLE, "").toLowerCase().replace(/\s+/g, " ");
+    const alts = alternatives(query).map(plain);
+    return (line) => {
+      const t = plain(line);
+      return alts.some((a) => t.includes(a));
+    };
+  }
+
+  // A query that matched nothing and reads as a regex ("^Send",
+  // "(?i)credit|balance|\$\d"): agents took the empty answer for the
+  // page's (09-29).
+  const regexHint = (query) => (/\\|\^|\(\?|\.\*|\[.*\]|\$$/.test(query) ? { hint: 'the query is plain text, not a regex: "a|b" keeps lines containing a or b, case aside' } : {});
+
+  // ---------- tables as rows ----------
+  // extract with as: "table" reads the page's data as rows instead of text:
+  // each table (a <table>, or an element with the ARIA table or grid role),
+  // and each run of 3 or more cards of the same kind among siblings (a
+  // product grid, search results). The rules are fixed, so the same page
+  // always reads the same.
+
+  const TABLE_ROLES = "[role=table],[role=grid],[role=treegrid]";
+  const CELL_ROLES = "[role=cell],[role=gridcell],[role=columnheader],[role=rowheader]";
+  // A card with more fields than this is a section of the page, not a card.
+  const CARD_FIELDS_MAX = 40;
+
+  const cellText = (cell) => norm(cell.innerText || cell.textContent || "");
+  const keyOf = (el) => el.localName + (el.classList.length ? `.${el.classList[0]}` : "");
+  const drawn = (el) => el.getClientRects().length > 0;
+
+  // Tables and card lists under the root, in page order, each list once: a
+  // list inside a card of one already read is part of that card.
+  function tables(opts) {
+    const root = opts.selector ? rootFor(opts.selector) : document.body;
+    if (!root) return noMatch("selector", opts.selector);
+    const found = [];
+    const lists = [];
+    for (const el of [root, ...deepElements(root)]) {
+      const table = tableOf(el);
+      if (table) found.push(table);
+      else if (!lists.some((p) => p.contains(el))) {
+        const cards = cardsOf(el);
+        if (cards.length) lists.push(el);
+        found.push(...cards);
+      }
+    }
+    return { url: location.href, title: document.title, ...withinLimit(found, opts) };
+  }
+
+  // query keeps the rows containing it; maxBytes (default 20000) bounds the
+  // JSON of what is kept, and the first row past it ends the read.
+  function withinLimit(found, opts) {
+    const keep = opts.query ? queryMatch(opts.query) : () => true;
+    const limit = opts.maxBytes || 20000;
+    const out = [];
+    let used = 0;
+    for (const t of found) {
+      const rows = [];
+      let size = JSON.stringify({ ...t, rows }).length;
+      for (const row of t.rows) {
+        if (!keep(row.join(" | "))) continue;
+        size += JSON.stringify(row).length + 1;
+        if (used + size > limit) return { tables: rows.length ? [...out, { ...t, rows }] : out, truncated: true };
+        rows.push(row);
+      }
+      if (!rows.length) continue;
+      out.push({ ...t, rows });
+      used += size;
+    }
+    return { tables: out, truncated: false };
+  }
+
+  // A drawn table's rows, or null for anything else. A table that holds
+  // other tables, or says it is for layout, lays out the page instead.
+  function tableOf(el) {
+    if (el.tagName === "TABLE") {
+      if (el.matches("[role=presentation],[role=none]") || el.querySelector("table") || !drawn(el)) return null;
+      const rows = [...el.rows];
+      const thead = rows.filter((row) => row.parentElement.tagName === "THEAD").length;
+      const head = thead || (rows.length > 1 && [...rows[0].cells].every((c) => c.tagName === "TH") ? 1 : 0);
+      return asTable(el.caption ? cellText(el.caption) : "", spanGrid(rows), head);
+    }
+    if (!el.matches(TABLE_ROLES) || !drawn(el)) return null;
+    const rows = [...el.querySelectorAll("[role=row]")].filter((row) => row.closest(TABLE_ROLES) === el)
+      .map((row) => [...row.querySelectorAll(CELL_ROLES)].filter((c) => c.closest("[role=row]") === row));
+    const head = rows.length > 1 && rows[0].length && rows[0].every((c) => c.getAttribute("role") === "columnheader") ? 1 : 0;
+    return asTable(el.getAttribute("aria-label") || "", rows.map((cells) => cells.map(cellText)), head);
+  }
+
+  // A cell that spans rows or columns fills each slot it covers, so every
+  // row lines up with the headers (as pandas' read_html reads them).
+  function spanGrid(rows) {
+    const grid = rows.map(() => []);
+    rows.forEach((row, r) => {
+      let c = 0;
+      for (const cell of row.cells) {
+        while (grid[r][c] !== undefined) c++;
+        const text = cellText(cell);
+        const down = Math.min(Math.max(1, cell.rowSpan), rows.length - r);
+        const across = Math.max(1, cell.colSpan);
+        for (let dr = 0; dr < down; dr++) for (let dc = 0; dc < across; dc++) grid[r + dr][c + dc] = text;
+        c += across;
+      }
+    });
+    return grid;
+  }
+
+  // Header rows join by column: "Price" over "USD" reads "Price / USD"; a
+  // table without them has none. Rows are padded to one width; empty ones
+  // are dropped.
+  function asTable(caption, grid, head) {
+    const width = grid.reduce((w, row) => Math.max(w, row.length), 0);
+    const pad = (row) => Array.from({ length: width }, (_, c) => row[c] ?? "");
+    const headers = head ? pad([]).map((_, c) => [...new Set(grid.slice(0, head).map((row) => row[c] ?? "").filter(Boolean))].join(" / ")) : [];
+    const rows = grid.slice(head).map(pad).filter((row) => row.some(Boolean));
+    return rows.length ? { kind: "table", ...(caption ? { caption } : {}), headers, rows } : null;
+  }
+
+  // The card lists among el's children: 3 or more drawn children with the
+  // same tag and first class, each with 2 or more text fields (a menu of
+  // bare links is not data).
+  function cardsOf(el) {
+    if (el.children.length < 3 || el.closest(`table,select,svg,${TABLE_ROLES}`)) return [];
+    const lists = [];
+    for (const alike of Map.groupBy(el.children, keyOf).values()) {
+      if (alike.length < 3) continue;
+      const cards = alike.map((card) => (drawn(card) ? cardFields(card) : null))
+        .filter((fields) => fields && fields.filter((f) => !f.link).length >= 2);
+      if (cards.length >= 3) lists.push(cardList(cards));
+    }
+    return lists;
+  }
+
+  // One list for cards whose fields differ (one with an extra badge): its
+  // headers are every field any card has, in page order, and a card without
+  // a field has "" there. A key a card repeats is numbered ("span.spec",
+  // "span.spec 2"), so each value keeps a column.
+  function cardList(cards) {
+    const keyed = cards.map((fields) => {
+      const seen = new Map();
+      return fields.map(({ key, value }) => {
+        const n = (seen.get(key) ?? 0) + 1;
+        seen.set(key, n);
+        return [n > 1 ? `${key} ${n}` : key, value];
+      });
+    });
+    const headers = [];
+    for (const fields of keyed) {
+      let at = 0;
+      for (const [key] of fields) {
+        const i = headers.indexOf(key);
+        if (i < 0) headers.splice(at++, 0, key);
+        else at = i + 1;
+      }
+    }
+    return { kind: "cards", headers, rows: keyed.map((fields) => {
+      const byKey = new Map(fields);
+      return headers.map((h) => byKey.get(h) ?? "");
+    }) };
+  }
+
+  // A card's fields in page order: the own text of each drawn element
+  // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class
+  // after its parent's (a price and a mileage in one class of span keep
+  // apart), and each link's address after its text. null when it has too
+  // many.
+  function cardFields(card) {
+    const fields = [];
+    const add = (el) => {
+      const up = el === card ? null : el.parentElement ?? el.getRootNode().host;
+      const key = up && up !== card ? `${keyOf(up)} > ${keyOf(el)}` : keyOf(el);
+      const own = norm([...el.childNodes].map((n) => (n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.nodeName === "BR" ? " " : "")).join(""));
+      if (own && drawn(el)) fields.push({ key, value: own });
+      if (el.tagName === "A" && el.href) fields.push({ key: `${key} href`, value: el.href, link: true });
+      return fields.length <= CARD_FIELDS_MAX;
+    };
+    if (!add(card)) return null;
+    for (const el of deepElements(card)) if (!add(el)) return null;
+    return fields;
+  }
+
+  function tabInfo() {
+    return {
+      url: location.href,
+      title: document.title,
+      ready: document.readyState,
+      scrollY: Math.round(window.scrollY),
+      viewport: { w: innerWidth, h: innerHeight },
+    };
+  }
+
+  // ---------- action receipts ----------
+  // After a click, a key, or an option, the page is watched until it
+  // settles, and the action answers with what changed: its receipt, which
+  // receipt.ts in the daemon makes the action's effect. A click the page
+  // ignored then says so in its own answer, instead of in a snapshot a turn
+  // later. An action that loads another page or opens a tab is not
+  // watched: the extension reports where it led, as before.
+  //
+  // ---- tested with daemon/receipt.test.ts: begin ----
+  // A page that reacts gets the usual 300 ms minimum, 150 ms quiet, and
+  // 800 ms bound. With no reaction, keep watching for a first change for
+  // 2 s. On 10-05 AWS's Forgot password answered none at 300 ms after a
+  // redirect, but its security check was there in the next snapshot 2 s
+  // later. A redirect can leave no dialogs.js request log; a lazy script
+  // or a timer may also leave no pending request to hold the watch open.
+  // A request to its own site the action started holds the watch until it
+  // comes back, 3 s from the action at most, asked after every 100 ms. In
+  // the two weeks of logs before 10-19, 191 of 955 clicks, keys, and options
+  // answered at 800 ms with one still out, and 69 were followed by a call
+  // to wait for it.
+  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800, patience: 2000, busy: 3000, poll: 100 };
+  // the most lines new since an action a receipt carries
+  const SAID_MAX = 20;
+  // wait's quiet: no change for 500 ms, for as long as the wait lasts
+  const QUIET_SPAN = { min: 0, quiet: 500, max: Infinity };
+  // Parts of a page that change by themselves (a clock, a progress bar, a
+  // playing video) and tags that draw nothing: changes there are no sign of
+  // an action, and neither are the harness's own marks (data-sh-ref).
+  const RESTLESS = "[role=timer], [role=marquee], [role=progressbar], progress, video, audio, canvas";
+  const UNDRAWN = /^(SCRIPT|STYLE|LINK|META|NOSCRIPT|TEMPLATE)$/;
+  const DIALOG_BOXES = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal="true"]';
+  let watched = null; // [{ el, before }] while an action is watched
+
+  // site, keepRequest, and urlMatch have the same bodies in
+  // daemon/receipt.ts, which reports requests and checks a wait's url with
+  // them; receipt.test.ts runs this block, and those, on its tables.
+  function site(host) {
+    if (/^[\d.]+$/.test(host) || host.includes(":")) return host;
+    const labels = host.split(".");
+    const n = labels.length > 2 && labels[labels.length - 1].length === 2 && labels[labels.length - 2].length <= 3 ? 3 : 2;
+    return labels.slice(-n).join(".");
+  }
+
+  const BEACON = /^(collect|analytics|log|beacon|track|pixel)(\.\w+)?$/i;
+
+  function keepRequest(entry, page) {
+    const to = URL.parse(entry.url);
+    const from = URL.parse(page);
+    if (!to || !from || site(to.hostname) !== site(from.hostname)) return false;
+    if (entry.method !== "GET" && entry.method !== "POST") return true;
+    return !to.pathname.split("/").some((segment) => BEACON.test(segment));
+  }
+
+  function urlMatch(href, pattern) {
+    const re = /^\/(.+)\/([dgimsuvy]*)$/.exec(pattern);
+    return re ? new RegExp(re[1], re[2]).test(href) : href.includes(pattern);
+  }
+
+  // Once a page reacts, wait at least span.min from the action and
+  // span.quiet from its last change, bounded by span.max. first is null
+  // while waiting for a first reaction, and start for an ordinary watch
+  // (including wait's quiet). A late first reaction shifts only the bound:
+  // it gets the same max - min settling room as a reaction at the minimum,
+  // without paying the minimum again. Further changes cannot move that
+  // bound. A request the action started that is still out (busy) holds the
+  // watch span.busy from the action, and one seen back at back counts as a
+  // late reaction: the page gets that settling room to draw what it
+  // brought.
+  function settleAt(start, last, busy, span, first = start, back = null) {
+    const reacted = back === null ? first : Math.max(first ?? back, back);
+    if (reacted === null && !busy && span.patience !== undefined) return start + span.patience;
+    const max = Math.max(start, (reacted ?? start) - span.min) + span.max;
+    if (busy) return Math.max(max, start + (span.busy ?? 0));
+    return Math.min(max, Math.max(start + span.min, (back === null ? last : Math.max(last, back)) + span.quiet));
+  }
+
+  // Gmail pads previews with U+034F and U+200C (09-30). The same invisible
+  // characters are ignored by waits, queries, and loading skeleton reads.
+  const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]|\u034F/g;
+
+  // Whether the page's text shows want, case and spacing aside: "M240i"
+  // finds "M240 i", and a name the page breaks over two lines is found.
+  function shows(page, want) {
+    const squash = (t) => String(t).replace(INVISIBLE, "").toLowerCase().replace(/\s+/g, "");
+    return squash(page).includes(squash(want));
+  }
+  // ---- tested with daemon/receipt.test.ts: end ----
+
+  // The element a change happened in: a text's parent, a shadow root's host.
+  const holder = (n) => (n.nodeType === Node.ELEMENT_NODE ? n : n.parentElement ?? n.getRootNode().host ?? null);
+  // Whether a node put in or taken out counts: an element that draws, or text.
+  const countable = (n) => (n.nodeType === Node.ELEMENT_NODE ? !UNDRAWN.test(n.tagName) : n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "");
+
+  function madeByPage(r) {
+    const at = holder(r.target);
+    if (!at || at.closest(RESTLESS)) return false;
+    if (r.type === "attributes") return !r.attributeName.startsWith("data-sh-");
+    return r.type === "characterData" || [...r.addedNodes, ...r.removedNodes].some(countable);
+  }
+
+  // Watches the page, shadow roots included, and hands seen each batch of
+  // the changes the page made (madeByPage).
+  function watchPage(seen) {
+    const opts = { childList: true, subtree: true, characterData: true, attributes: true };
+    // a change inside a shadow root reaches only an observer on that root
+    const watch = () => { for (const r of shadowRoots()) observer.observe(r, opts); };
+    const observer = new MutationObserver((records) => {
+      watch();
+      seen(records.filter(madeByPage));
+    });
+    observer.observe(document.documentElement, opts);
+    watch();
+    return observer;
+  }
+
+  // An element as a snapshot names it: button "Menu".
+  function named(el) {
+    const role = getExplicitRole(el) || el.localName;
+    const name = accessibleName(el);
+    return name ? `${role} "${name}"` : role;
+  }
+
+  function focusedNow() {
+    let el = document.activeElement;
+    while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    return el;
+  }
+
+  // Asks the page's world (dialogs.js), which answers within the ask. A
+  // page open since before the extension was has no dialogs.js, and
+  // answers nothing: undefined.
+  function askPage(ask, answer, detail) {
+    let heard;
+    const take = (e) => {
+      if (heard !== undefined || typeof e.detail !== "string") return;
+      try { heard = JSON.parse(e.detail); } catch {}
+    };
+    document.addEventListener(answer, take);
+    document.dispatchEvent(new CustomEvent(ask, { detail: JSON.stringify(detail) }));
+    document.removeEventListener(answer, take);
+    return heard;
+  }
+
+  // What the page's world saw since `since`: the requests the page made,
+  // those still out, and the errors it did not catch.
+  function hear(since) {
+    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since });
+  }
+
+  // One response's whole text, as the page's world kept it: that of the
+  // request at key.url that the log wrote at key.t (net's body).
+  function netBody(key) {
+    return askPage("__sh_net_body_ask", "__sh_net_body_answer", key)
+      ?? { error: "this page keeps no request bodies: reload it (history, do: reload), then use net again" };
+  }
+
+  // The control an action is about to use, and those whose state it
+  // drives: the one around it that says whether it is expanded, the field a
+  // label clicks, and whatever these control (aria-controls). Their states
+  // now, to set beside their states once the page settles. A click that
+  // download makes is not watched.
+  function watchTarget(el) {
+    if (!watched) return;
+    const near = [el, el.closest("[aria-expanded], [aria-controls]"), el.tagName === "LABEL" ? el.control : null].filter(Boolean);
+    const controlled = near.flatMap((n) => (n.getAttribute("aria-controls") ?? "").split(/\s+/).filter(Boolean).map((id) => n.getRootNode().getElementById(id)));
+    for (const n of [...near, ...controlled]) if (n && !watched.some((w) => w.el === n)) watched.push({ el: n, before: stateOf(n) });
+  }
+
+  // Runs an action (withOutcome's) and answers once the page settles, with
+  // its receipt. Safari stops a content script's timers in a hidden tab: a
+  // tab the harness owns wakes the watch on its ticks (takeTicks), and any
+  // other hidden tab on a loop of messages, which Safari does not slow; the
+  // loop lasts only as long as the watch.
+  function withReceipt(run) {
+    const start = Date.now();
+    const url = location.href;
+    const focus = focusedNow();
+    const boxes = deepQueryAll(DIALOG_BOXES).filter(isVisible);
+    const raised = dialogLog.length;
+    // the page's lines now, so the receipt can say which the action brought
+    // up: on 10-02 TikTok answered a scripted Next only in a toast
+    const shown = linesOf(pageText());
+    let added = 0;
+    let removed = 0;
+    const changed = new Set();
+    let last = start;
+    // Start with the ordinary watch; null only after its first look has
+    // found no reaction. This keeps focus and native control changes fast,
+    // even when they make no mutation for the observer to see.
+    let first = start;
+    // whether a request the action started is out, as the page's request
+    // log said when last asked; back, when one the watch held for came back
+    let busy = false;
+    let asked = -Infinity;
+    let back = null;
+    let wake = () => {};
+    // An element counts with all it holds; text put in or taken out
+    // changes the element it is in.
+    const count = (nodes, parent) => {
+      let n = 0;
+      for (const node of nodes) {
+        if (!countable(node)) continue;
+        if (node.nodeType === Node.ELEMENT_NODE) n += 1 + node.getElementsByTagName("*").length;
+        else changed.add(holder(parent));
+      }
+      return n;
+    };
+    const tally = (records) => {
+      for (const r of records) {
+        if (r.type !== "childList") changed.add(holder(r.target));
+        else {
+          added += count(r.addedNodes, r.target);
+          removed += count(r.removedNodes, r.target);
+        }
+      }
+    };
+    const observer = watchPage((records) => {
+      if (records.length) {
+        tally(records);
+        last = Date.now();
+        first ??= last;
+      }
+      wake();
+    });
+    watched = [];
+    let res;
+    let targets;
+    try {
+      res = run();
+    } catch (e) {
+      observer.disconnect();
+      throw e;
+    } finally {
+      targets = watched;
+      watched = null;
+    }
+    if (!res || res.error || res.expect === "load" || res.expect === "tab") {
+      observer.disconnect();
+      return res;
+    }
+    return new Promise((resolve) => {
+      let open = true;
+      let away = false;
+      let timer = null;
+      const spin = document.hidden && !tickPort ? new MessageChannel() : null;
+      const check = () => {
+        const now = Date.now();
+        if (now >= settleAt(start, last, false, RECEIPT_SPAN, first, back) && !(busy && now < asked + RECEIPT_SPAN.poll)) {
+          asked = now;
+          const heard = hear(start);
+          const out = (heard?.pending ?? []).some((e) => keepRequest(e, location.href));
+          if (busy && !out) back = now;
+          busy = out;
+          if (first === start && !busy && !added && !removed && !changed.size &&
+              location.href === url && focusedNow() === focus && dialogLog.length === raised &&
+              !targets.some((t) => t.el.isConnected && t.before.join("\n") !== stateOf(t.el).join("\n")) &&
+              !(heard?.requests ?? []).some((e) => keepRequest(e, location.href))) first = null;
+        }
+        const at = settleAt(start, last, busy, RECEIPT_SPAN, first, back);
+        if (now >= at) return finish();
+        clearTimeout(timer);
+        // A request that comes back without changing the page wakes nothing,
+        // so one still out is asked after again.
+        timer = setTimeout(check, (busy ? Math.min(at, now + RECEIPT_SPAN.poll) : at) - now);
+      };
+      // Another document is on its way: the extension waits for it and
+      // reports where the action led, instead of a receipt.
+      const onNav = (e) => {
+        if (e.destination.sameDocument) return;
+        away = true;
+        finish();
+      };
+      const finish = () => {
+        if (!open) return;
+        open = false;
+        clearTimeout(timer);
+        spin?.port1.close();
+        document.removeEventListener("__sh_tick", check);
+        navigation.removeEventListener("navigate", onNav);
+        tally(observer.takeRecords().filter(madeByPage));
+        observer.disconnect();
+        if (away) return resolve({ ...res, expect: "load" });
+        const heard = hear(start);
+        const now = focusedNow();
+        const box = deepQueryAll(DIALOG_BOXES).find((b) => isVisible(b) && !boxes.includes(b));
+        resolve({
+          ...res,
+          receipt: {
+            added,
+            removed,
+            changed: changed.size,
+            url: location.href === url ? null : location.href,
+            focus: now === focus ? null : now && now !== document.body && now !== document.documentElement ? named(now) : "page",
+            states: targets.filter((t) => t.el.isConnected)
+              .map((t) => ({ who: named(t.el), before: t.before, after: stateOf(t.el) }))
+              .filter((s) => s.before.join("\n") !== s.after.join("\n")),
+            dialog: dialogLog.length > raised ? dialogLog[dialogLog.length - 1].type : box ? named(box) : null,
+            said: newLines(shown, linesOf(pageText())).slice(0, SAID_MAX).map((l) => clip(l, 200)),
+            page: location.href,
+            requests: heard?.requests ?? null,
+            pending: heard?.pending ?? null,
+            errors: heard?.errors ?? [],
+          },
+        });
+      };
+      document.addEventListener("__sh_tick", check);
+      navigation.addEventListener("navigate", onNav);
+      if (spin) {
+        spin.port1.onmessage = () => {
+          check();
+          if (open) spin.port2.postMessage(null);
+        };
+        spin.port2.postMessage(null);
+      }
+      wake = check;
+      check();
+    });
+  }
+
+  function afterward(run, opts) {
+    return opts?.noWaitAfter ? run() : withReceipt(run);
+  }
+
+  // ---------- wait ----------
+  // Resolves once the page shows what the wait asks for. It listens for DOM
+  // changes instead of polling: Safari stops a content script's timers in a
+  // hidden tab, and runs that tab's own work in late batches, but a change
+  // the page makes wakes an observer in the same task. The extension asks
+  // every frame (waitInFrames in background.js), and the daemon owns the
+  // time limit: waitStop ends the wait with that id early. A newer wait ends
+  // an older one.
+  let pendingWait = null; // { id, done }
+  let actLook = null; // { token, lines }, the run's look before its action
+
+  // The text of the page and of the frames in it that share its origin. A
+  // Flutter page's words are its semantics nodes' labels, which hold no
+  // text: GEICO's choice "Get an Email" was only a radio's label, and a
+  // wait for it never met (09-29).
+  function pageText() {
+    const text = [document.body, ...inlineBodies()].map((b) => (b ? readText(b, (el) => el.innerText ?? "") : "")).join("\n");
+    const labels = document.querySelector("flutter-view, flt-glass-pane") ? deepQueryAll("flt-semantics[aria-label], flt-semantics [aria-label]").map((el) => el.getAttribute("aria-label")) : [];
+    return [text, ...labels].join("\n").replace(INVISIBLE, "");
+  }
+
+  // Gmail's "Search results" was only in the tab's title (09-30).
+  // gone still reads only the body: a title can outlive the form it names.
+  function titled(page) {
+    return window === window.top ? `${document.title.replace(INVISIBLE, "")}\n${page}` : page;
+  }
+
+  // wait {changed}: lines new to the page (or to the selector's element)
+  // since the last look. A person's reply in a support chat comes when it
+  // comes: in Robinhood's chats an agent spent about 53 turns and 15
+  // minutes of sleeps waiting on guessed clock times and made-up words
+  // (09-29). The last look stays in the page between calls, so a reply that
+  // lands between two waits still counts. It is the text as the last
+  // changed wait found it, or as the last type, scripted or real, began,
+  // or else as this wait begins. Lines the agent typed, typing notes, and
+  // read receipts and times alone are not a reply.
+  const lastLook = new Map(); // region: "" for the page, else a selector -> its lines
+  const typedLines = [];
+  const linesOf = (text) => String(text ?? "").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  function regionText(key) {
+    if (key === "") return pageText();
+    const el = deepQuery(key);
+    return el ? readText(el, (e) => e.innerText ?? "") : "";
+  }
+  function lookBeforeTyping(text) {
+    for (const key of new Set(["", ...lastLook.keys()])) lastLook.set(key, linesOf(regionText(key)));
+    if (text === null) return;
+    typedLines.push(...linesOf(text).map((l) => l.toLowerCase()));
+    typedLines.splice(0, Math.max(0, typedLines.length - 20));
+  }
+  const TIMES = /\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|\b\d+\s*(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?)\s+ago\b/gi;
+  const STATUS = /^(?:\s|[·•,:|-]|read|seen|delivered|sent|edited|just now|now|today|yesterday)*$/i;
+  const bareOf = (line) => line.replace(TIMES, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const typedHere = (bare) => typedLines.some((t) => bare === t || ((bare.endsWith(t) || bare.startsWith(t)) && bare.length - t.length <= 16));
+  function reply(line) {
+    const bare = bareOf(line);
+    if (STATUS.test(bare) || /\btyping\b/.test(bare)) return false;
+    return !typedHere(bare);
+  }
+  function newLines(before, now) {
+    const left = new Map();
+    for (const l of before) left.set(l, (left.get(l) ?? 0) + 1);
+    return now.filter((l) => {
+      const n = left.get(l) ?? 0;
+      left.set(l, n - 1);
+      return n <= 0;
+    });
+  }
+  // The new lines, a chat's worth: the latest 40, 4000 characters at most.
+  function addedOf(lines) {
+    const out = [];
+    let size = 0;
+    for (const l of lines.slice(-40).reverse()) {
+      if (size + l.length > 4000) break;
+      out.unshift(l);
+      size += l.length;
+    }
+    return out;
+  }
+
+  // extract with as: "chat" reads a chat's thread as messages in order,
+  // each with who wrote it, for an agent that lost track of a long support
+  // chat and for the user reading it after: "you" for a message holding a
+  // line the agent typed here, or drawn on the right, where a chat draws
+  // your own; "page" for one drawn across the middle (a join notice, a
+  // date); "them" for the rest. The thread is the selector's element, else
+  // the page's chat log: role=log, else the live region holding the most
+  // text. A log of one wrapper is read through to its rows. The latest
+  // messages are kept, up to maxBytes of text; earlier counts the rest.
+  function chatView(opts) {
+    const logs = opts.selector ? [rootFor(opts.selector)].filter(Boolean) : deepQueryAll('[role="log"], [aria-live="polite"], [aria-live="assertive"]').filter((el) => shown(el) && norm(el.innerText ?? ""));
+    const log = logs.sort((a, b) => (b.innerText ?? "").length - (a.innerText ?? "").length)[0];
+    if (!log) return opts.selector ? noMatch("selector", opts.selector) : { error: "nothing on the page matches a chat log (role=log or a live region); pass the thread's CSS selector as selector" };
+    let rows = [...log.children].filter(shown);
+    while (rows.length === 1 && rows[0].children.length > 0) rows = [...rows[0].children].filter(shown);
+    const edge = log.getBoundingClientRect();
+    const range = document.createRange();
+    const all = [];
+    for (const row of rows) {
+      const { text } = tidyText(row);
+      if (!text) continue;
+      range.selectNodeContents(row);
+      const box = range.getBoundingClientRect();
+      const left = box.left - edge.left;
+      const right = edge.right - box.right;
+      const mine = linesOf(text).some((l) => typedHere(bareOf(l)));
+      const from = mine || right + 24 < left ? "you" : Math.min(left, right) > 48 && Math.abs(left - right) <= 24 ? "page" : "them";
+      all.push({ from, text });
+    }
+    const max = Number(opts.maxBytes) || 20000;
+    const messages = [];
+    let size = 0;
+    for (const m of all.reverse()) {
+      if (size + m.text.length > max) break;
+      messages.unshift(m);
+      size += m.text.length;
+    }
+    return { url: location.href, title: document.title, messages, ...(messages.length < all.length ? { earlier: all.length - messages.length } : {}) };
+  }
+
+  // A miss used to say nothing about the page's unexpected next state
+  // (USCIS's passkey offer, 09-30). Keep the latest news, three lines at most.
+  function meanwhileOf(before) {
+    const now = linesOf(pageText());
+    const lines = [
+      ...(before.url === location.href ? [] : [`url was: ${clip(before.url, 120)}`]),
+      ...(before.title === document.title ? [] : [`title was: ${clip(before.title, 120)}`]),
+      ...addedOf(newLines(before.lines, now)).reverse().map((l) => `new: ${clip(l, 120)}`),
+      ...addedOf(newLines(now, before.lines)).reverse().map((l) => `gone: ${clip(l, 120)}`),
+    ];
+    return lines.length ? lines.slice(0, 3) : ["the page did not change"];
+  }
+
+  // A request out longer than this is a long poll (Gmail keeps its /sync/
+  // and /cloudsearch/request ones open), not a page still loading: wait's
+  // quiet counts only younger ones. Gmail's quiet waits answered found
+  // false, with a long poll still out (09-29).
+  const PENDING_MS = 2000;
+
+  // spec (wait in tools.ts), all of whose parts must hold:
+  //   text   the page shows it         any   it shows one of these (which)
+  //   gone   it no longer shows it     url   the address has this part, or
+  //   quiet  the page made no change          matches this /regex/
+  //          for 500 ms (QUIET_SPAN), with no request to its own site out
+  //   changed  lines new since the last look (added; see lastLook), in the
+  //          selector's element when there is one
+  // Text matches case and spacing aside (shows). url and quiet are the top
+  // page's to decide: an embedded frame answers at once that it has not
+  // seen them. gone each frame decides for its own text, and background.js
+  // ends the wait once none shows it (waitInFrames). quiet comes with
+  // time, so it also wakes on a timer, and on an owned tab's ticks where
+  // Safari holds the timer. A page still
+  // waiting on its own site (its listings, its prices) has not settled,
+  // whatever it shows meanwhile: such a request counts as a change.
+  function waitFor(selector, spec, id = null) {
+    pendingWait?.done(false);
+    const want = spec ?? {};
+    if (want.look != null) {
+      actLook = { token: want.look, lines: linesOf(titled(pageText())) };
+      return { found: true };
+    }
+    // A run takes this look before its action, not after its receipt:
+    // text that arrived during the action still counts (EOIR, 09-30).
+    const after = want.after != null && actLook?.token === want.after ? actLook.lines : null;
+    if (window !== window.top && (want.url != null || want.quiet)) return { found: false };
+    const start = Date.now();
+    let last = start;
+    const region = selector ?? "";
+    if (want.changed && !lastLook.has(region)) lastLook.set(region, linesOf(regionText(region)));
+    // Text "a|b" is met by either part, split as a query's is, and the
+    // answer says which: a wait on "a|b" as a query reads it never met
+    // (09-29).
+    const texts = want.text == null ? null : alternatives(want.text);
+    const words = () => {
+      if (texts === null && want.gone == null && want.any == null) return { found: true };
+      const body = pageText();
+      const page = after === null ? titled(body) : newLines(after, linesOf(titled(body))).join("\n");
+      const said = texts?.find((t) => shows(page, t));
+      if (texts !== null && said === undefined) return null;
+      if (want.gone != null && shows(body, want.gone)) return null;
+      if (want.any == null) return texts !== null && texts.length > 1 ? { found: true, which: said } : { found: true };
+      const which = want.any.find((t) => shows(page, t));
+      return which === undefined ? null : { found: true, which };
+    };
+    const met = () => {
+      if (selector && deepQuery(selector) === null) return null;
+      if (want.url != null && !urlMatch(location.href, want.url)) return null;
+      if (want.quiet && Date.now() < settleAt(start, last, false, QUIET_SPAN)) return null;
+      if (want.quiet && (hear(Date.now() - PENDING_MS)?.pending ?? []).some((e) => keepRequest(e, location.href))) {
+        last = Date.now();
+        return null;
+      }
+      if (!want.changed) return words();
+      const lines = linesOf(regionText(region));
+      const added = newLines(lastLook.get(region), lines).filter(reply);
+      if (added.length === 0) return null;
+      const m = words();
+      if (m === null) return null;
+      lastLook.set(region, lines);
+      return { ...m, added: addedOf(added) };
+    };
+    // A wait met as it begins says so: Visible's text to go answered found
+    // in 2 ms, though it had never shown (09-29). New lines found at once
+    // came before the wait began, as a chat's reply may: that is no miss.
+    const now = met();
+    if (now && want.changed) return now;
+    if (now) return { ...now, already: true, ...(want.gone != null ? { hint: `"${want.gone}" was not on the page as the wait began: it went before, or never showed; to know the next page is up, wait for text it shows` } : {}) };
+    const before = { lines: linesOf(pageText()), url: location.href, title: document.title };
+    return new Promise((resolve) => {
+      let timer = null;
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(check, settleAt(start, last, false, QUIET_SPAN) - Date.now());
+      };
+      const check = () => {
+        const m = met();
+        if (m) done(m);
+        else if (want.quiet) arm();
+      };
+      const tick = () => { if (Date.now() >= settleAt(start, last, false, QUIET_SPAN)) check(); };
+      const observer = watchPage((records) => {
+        if (records.length) last = Date.now();
+        check();
+      });
+      const done = (answer) => {
+        observer.disconnect();
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", tick);
+        navigation.removeEventListener("currententrychange", check);
+        if (pendingWait === mine) pendingWait = null;
+        resolve(answer);
+      };
+      const mine = { id, done: (found) => done({ found, ...(window === window.top ? { meanwhile: meanwhileOf(before) } : {}) }) };
+      pendingWait = mine;
+      // the address can change with no change to the page (pushState)
+      if (want.url != null) navigation.addEventListener("currententrychange", check);
+      if (want.quiet) {
+        document.addEventListener("__sh_tick", tick);
+        arm();
+      }
+    });
+  }
+
+  // One fact about the element a target names (ref, selector, or text, as
+  // actions take them), for the REPL's locators. count and visible answer
+  // for a target that matches nothing, and texts and innerTexts with every
+  // match's text, as allTextContents and allInnerTexts read them; the rest
+  // report it missing.
+  function elementInfo(target, what, name) {
+    const key = String(target).trim();
+    if (what === "count") return { value: matchesOf(key).length };
+    if (what === "texts") return { value: matchesOf(key).map((el) => el.textContent) };
+    if (what === "innerTexts") return { value: matchesOf(key).map((el) => el.innerText ?? el.textContent) };
+    const el = resolve(key);
+    if (what === "visible") return { value: !!el && shown(el) };
+    if (!el) return missing(target);
+    switch (what) {
+      case "text": return { value: el.textContent };
+      case "innerText": return { value: el.innerText ?? el.textContent };
+      case "html": return { value: el.innerHTML };
+      case "value": return secretField(el) ? { error: "that is a password field; its value stays in the page" } : { value: "value" in el ? String(el.value ?? "") : null };
+      case "checked": return { value: !!el.checked };
+      case "attr": return { value: el.getAttribute(String(name)) };
+      case "box": {
+        const r = el.getBoundingClientRect();
+        return { value: { x: r.x, y: r.y, width: r.width, height: r.height } };
+      }
+      default: return { error: `unknown element fact ${what}` };
+    }
+  }
+
+  // ---------- the page's own data ----------
+  // What the page declares about itself for machines, as the data tool
+  // reads it: JSON-LD, microdata, meta tags, JSON in script tags (Next.js
+  // and Nuxt keep their state there), and JSON in data- attributes of its
+  // main region. background.js adds the state frameworks leave in page
+  // globals, and the daemon shapes the whole (daemon/pagedata.ts). One
+  // answer must stay well under what a message to the daemon may hold
+  // (MESSAGE_MAX in bridge.ts), so a source past what is left of DATA_BUDGET
+  // characters is only measured.
+  const DATA_BUDGET = 4e6;
+  const DATA_MAX_ITEMS = 50;
+
+  function pageData() {
+    const found = {
+      jsonld: jsonLd(),
+      microdata: [...document.querySelectorAll("[itemscope]:not([itemprop])")].slice(0, DATA_MAX_ITEMS).map((el) => microItem(el, 0)),
+      meta: metaTags(),
+      next: parseJson(document.getElementById("__NEXT_DATA__")?.textContent),
+      flight: nextFlight(),
+      nuxt: parseJson(document.getElementById("__NUXT_DATA__")?.textContent),
+      scripts: jsonScripts(),
+      attrs: jsonAttributes(),
+    };
+    const out = { url: location.href, title: document.title, tooBig: {} };
+    let room = DATA_BUDGET;
+    for (const [name, value] of Object.entries(found)) {
+      if (value === undefined) continue;
+      const json = JSON.stringify(value);
+      if (json.length > room) {
+        out.tooBig[name] = new Blob([json]).size;
+      } else {
+        out[name] = value;
+        room -= json.length;
+      }
+    }
+    return out;
+  }
+
+  // Next.js's app router has no __NEXT_DATA__: it streams the page in
+  // self.__next_f.push([1, "…"]) scripts, whose strings joined are its
+  // flight rows (the daemon reads them, daemon/pagedata.ts).
+  function nextFlight() {
+    const rows = [...document.scripts].filter((s) => !s.src && s.textContent.includes("self.__next_f.push(")).flatMap((s) => {
+      const t = s.textContent;
+      const push = parseJson(t.slice(t.indexOf("push(") + 5, t.lastIndexOf(")")));
+      return Array.isArray(push) && push[0] === 1 && typeof push[1] === "string" ? [push[1]] : [];
+    });
+    return rows.length ? rows.join("") : undefined;
+  }
+
+  // A missing or malformed one reads as nothing.
+  function parseJson(text) {
+    try {
+      return text ? JSON.parse(text) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // The page's JSON-LD blocks, a block that holds a list as its items.
+  function jsonLd() {
+    return [...document.querySelectorAll('script[type="application/ld+json"]')].flatMap((s) => {
+      const v = parseJson(s.textContent);
+      return v === undefined ? [] : Array.isArray(v) ? v : [v];
+    });
+  }
+
+  // Meta tags by name or property (og:, twitter:, product:), one given more
+  // than once as a list, and the canonical address.
+  function metaTags() {
+    const out = new Map();
+    const add = (key, value) => {
+      if (key && value !== null) out.set(key, out.has(key) ? [].concat(out.get(key), value) : value);
+    };
+    for (const m of document.querySelectorAll("meta[property], meta[name]")) add(m.getAttribute("property") || m.getAttribute("name"), m.getAttribute("content"));
+    add("canonical", document.querySelector("link[rel=canonical]")?.href ?? null);
+    return Object.fromEntries(out);
+  }
+
+  // One microdata item: its type and properties, a nested item's as an item
+  // of its own, and a property given more than once as a list.
+  function microItem(item, depth) {
+    const props = new Map();
+    for (const p of item.querySelectorAll("[itemprop]")) {
+      // a property of a nested item belongs to that item
+      if (p.parentElement.closest("[itemscope]") !== item) continue;
+      const value = !p.hasAttribute("itemscope") ? microValue(p) : depth < 5 ? microItem(p, depth + 1) : null;
+      for (const name of p.getAttribute("itemprop").split(/\s+/).filter(Boolean)) {
+        props.set(name, props.has(name) ? [].concat(props.get(name), [value]) : value);
+      }
+    }
+    const type = item.getAttribute("itemtype");
+    return { ...(type ? { type } : {}), props: Object.fromEntries(props) };
+  }
+
+  // Where a microdata property keeps its value, by tag (the HTML standard's
+  // list); any other element's is its text, or the content attribute some
+  // pages add for the value their text only shows ("$19.99" as "19.99").
+  const MICRO_VALUE = { META: "content", AUDIO: "src", EMBED: "src", IFRAME: "src", IMG: "src", SOURCE: "src", TRACK: "src", VIDEO: "src", A: "href", AREA: "href", LINK: "href", OBJECT: "data", DATA: "value", METER: "value", TIME: "datetime" };
+
+  function microValue(el) {
+    const at = Object.hasOwn(MICRO_VALUE, el.tagName) ? MICRO_VALUE[el.tagName] : null;
+    // an address reads resolved, as the page would follow it
+    const v = at === "src" || at === "href" || at === "data" ? el[at] : at && el.getAttribute(at);
+    return String(v || el.getAttribute("content") || norm(el.textContent)).slice(0, 2000);
+  }
+
+  // JSON a page keeps in script tags of its own (a store's product, a
+  // framework's settings), with the tag's id where it has one.
+  function jsonScripts() {
+    return [...document.querySelectorAll('script[type="application/json"]')]
+      .filter((s) => s.id !== "__NEXT_DATA__" && s.id !== "__NUXT_DATA__")
+      .slice(0, DATA_MAX_ITEMS)
+      .flatMap((s) => {
+        const value = parseJson(s.textContent);
+        return value === undefined ? [] : [s.id ? { id: s.id, value } : { value }];
+      });
+  }
+
+  // JSON in data- attributes of the page's main region (a product card's
+  // data-product), each with the element that holds it.
+  function jsonAttributes() {
+    const root = document.querySelector("main, [role=main]") || document.body;
+    const out = [];
+    if (!root) return out;
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      for (const a of el.attributes) {
+        if (!a.name.startsWith("data-") || !/^\s*[[{]/.test(a.value)) continue;
+        const value = parseJson(a.value);
+        if (value === undefined) continue;
+        const classes = [...el.classList].slice(0, 2).map((c) => `.${c}`).join("");
+        out.push({ el: `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${classes}`, [a.name]: value });
+        if (out.length >= DATA_MAX_ITEMS) return out;
+      }
+    }
+    return out;
+  }
+
+  // ---------- eval's helpers ----------
+  // eval's code finds these as sh, in the extension's world only (page: true
+  // runs it in the page's, which has no sh): q and qa query into shadow
+  // roots, text reads what the user sees of an element or selector, jsonld
+  // reads the page's JSON-LD, scripts searches the page's own code, and wait
+  // sleeps.
+  const SH = Object.freeze({
+    q: deepQuery,
+    qa: deepQueryAll,
+    resolve,
+    text: (target = document.body) => {
+      const root = typeof target === "string" ? deepQuery(target) : target;
+      return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
+    },
+    jsonld: jsonLd,
+    scripts: searchScripts,
+    wait: sleep,
+  });
+
+  // sh.scripts(pattern, {around, max}): the page's script files and inline
+  // scripts searched for a string or regex, for the API path, the error
+  // text, or the flag a site's code holds. Each match comes with around
+  // characters each side; max matches in all. A file the page's origin may
+  // not fetch is listed in unread, so a miss there proves nothing.
+  async function searchScripts(pattern, { around = 200, max = 20 } = {}) {
+    const re = pattern instanceof RegExp ? new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`) : new RegExp(String(pattern).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+    const files = [...new Set([...document.scripts].map((s) => s.src).concat(performance.getEntriesByType("resource").filter((e) => e.initiatorType === "script" || /\.m?js(?:[?#]|$)/.test(e.name)).map((e) => e.name)).filter(Boolean))];
+    const sources = [...document.scripts].filter((s) => !s.src && s.textContent).map((s, n) => ({ file: `inline ${n}`, text: s.textContent }));
+    const unread = [];
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const r = await fetch(file);
+          if (r.ok) sources.push({ file, text: await r.text() });
+          else unread.push(file);
+        } catch {
+          unread.push(file);
+        }
+      }),
+    );
+    const found = [];
+    for (const { file, text } of sources) {
+      for (const m of text.matchAll(re)) {
+        if (found.length >= max) return { found, searched: sources.length, unread, more: true };
+        found.push({ file: file.split("?")[0], text: text.slice(Math.max(0, m.index - around), m.index + m[0].length + around) });
+      }
+    }
+    return { found, searched: sources.length, unread };
+  }
+
+  // Safari stops a content script's timers in a hidden tab, so a sleep there
+  // also ends on the ticks an owned tab gets (takeTicks). It lasts at most
+  // 25 s, inside eval's 30.
+  function sleep(ms) {
+    const until = Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 25000);
+    return new Promise((resolve) => {
+      const check = () => { if (Date.now() >= until) done(); };
+      const done = () => {
+        clearTimeout(timer);
+        document.removeEventListener("__sh_tick", check);
+        resolve();
+      };
+      const timer = setTimeout(done, until - Date.now());
+      document.addEventListener("__sh_tick", check);
+    });
+  }
+
+  // A page whose security policy forbids eval refuses to build the code. The
+  // daemon then runs it in the page's own world (evaluate in tools.ts),
+  // where it may be allowed, and says this if it is refused there too.
+  const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
+
+  // ---------- teach mode ----------
+  // The user clicks the toolbar button to record what he does in this tab;
+  // background.js keeps the recording and turns record on in each page of
+  // it. Each click, text he types, dropdown choice, Enter in a field, and
+  // text he selects to read becomes a step with its target's fingerprint,
+  // so a replay finds the same control on a fresh page (daemon/replay.ts).
+  // Only his own input counts (isTrusted), and only in the top page. A
+  // secret field's text never leaves the page: its step names the kind of
+  // secret instead, for Apple Passwords to fill on replay.
+  let recording = false;
+  let typing = null; // { el, step }: the field he is typing in, sent once he moves on
+  let enterNow = false; // in the task of an Enter step: Safari's click on the form's button is part of it
+  let passedTo = null; // the control a clicked label passes its click to, in this task
+  let pressedAt = null; // where the mouse went down: a click that moved selected text
+  let lastRead = ""; // the selector of a read step sent last: a double click selects twice
+  const secretKinds = new WeakMap(); // a field once secret stays so, through a show-password toggle
+  const NOT_TEXT = /^(checkbox|radio|button|submit|reset|image|file|range|color|hidden)$/;
+
+  function recordingHere() {
+    return recording && window.__safariHarnessInjected === claim;
+  }
+
+  function textField(el) {
+    return el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && !NOT_TEXT.test(el.type));
+  }
+
+  function fieldFacts(el) {
+    return { type: el.isContentEditable ? "contenteditable" : String(el.type ?? el.localName), autocomplete: el.getAttribute("autocomplete") ?? "", name: el.getAttribute("name") ?? "", id: el.id, label: accessibleName(el) };
+  }
+
+  // Which secret a field holds, from what fieldFacts says of it, or null.
+  // The daemon judges each step again with its copy before it saves one
+  // (daemon/recordings.ts); recordings.test.ts runs both on one table.
+  // ---- shared with daemon/recordings.ts: begin ----
+  const SECRET_HINTS = { password: /passw|passcode|\bpin\b/i, code: /\botp\b|one.?time|verification.?code|\b2fa\b|\bmfa\b/i, card: /\bcc-|card|cvv|cvc|csc|expir|security.?code/i };
+
+  function secretOfField(f) {
+    const hints = `${f.name} ${f.id} ${f.label}`;
+    if (f.type === "hidden") return "hidden";
+    if (f.type === "password" || /\b(current|new)-password\b/i.test(f.autocomplete) || SECRET_HINTS.password.test(hints)) return "password";
+    if (/\bone-time-code\b/i.test(f.autocomplete) || SECRET_HINTS.code.test(hints)) return "one-time-code";
+    if (/\bcc-/i.test(f.autocomplete) || SECRET_HINTS.card.test(hints)) return "card";
+    return null;
+  }
+  // ---- shared with daemon/recordings.ts: end ----
+
+  // A field judged secret once stays so: a show-password toggle makes it a
+  // text field.
+  function secretKind(el) {
+    if (secretKinds.has(el)) return secretKinds.get(el);
+    const kind = secretOfField(fieldFacts(el));
+    if (kind) secretKinds.set(el, kind);
+    return kind;
+  }
+
+  function stepFor(kind, el) {
+    return { kind, url: location.href, target: fingerprintOf(el) };
+  }
+
+  function sendStep(step) {
+    if (!step) return;
+    lastRead = step.kind === "read" ? step.selector : "";
+    api.runtime.sendMessage({ __safariHarnessStep: 1, step }).catch(() => {});
+  }
+
+  // The field he was typing in, as its step, once he moves on.
+  function typed() {
+    if (!typing) return null;
+    const { el, step } = typing;
+    typing = null;
+    const secret = secretKind(el);
+    if (secret) step.secret = secret;
+    else step.value = el.isContentEditable ? el.innerText : String(el.value ?? "");
+    return step;
+  }
+
+  // A click in a field, on a dropdown, or on a file input is no step: the
+  // typing or choice after it is (a file choice is not recorded).
+  function noClickStep(el) {
+    return textField(el) || el.localName === "select" || el.localName === "option" || (el.localName === "input" && el.type === "file");
+  }
+
+  // What a click was on: the nearest control around the point (a label
+  // stands for its control), else the box showing the hand cursor there (a
+  // card the page made clickable from script); null for plain text and the
+  // page's background.
+  function clickTarget(node) {
+    let hand = null;
+    let up = 0;
+    for (let el = node instanceof Element ? node : null; el && up < 10; el = parentOf(el), up++) {
+      if (noClickStep(el)) return null;
+      if (el.localName === "label" && el.control) return noClickStep(el.control) ? null : el.control;
+      if (el.localName !== "details" && isInteractive(el)) return el;
+      if (getComputedStyle(el).cursor === "pointer") hand = el;
+      else if (hand) return hand;
+    }
+    return hand;
+  }
+
+  // A mouse that moved while down dragged out a selection.
+  function dragged(e) {
+    return e.detail > 0 && pressedAt !== null && Math.hypot(e.clientX - pressedAt.x, e.clientY - pressedAt.y) > 5;
+  }
+
+  function onRecordedMouseDown(e) {
+    if (recordingHere() && e.isTrusted) pressedAt = { x: e.clientX, y: e.clientY };
+  }
+
+  function onRecordedClick(e) {
+    if (!recordingHere() || !e.isTrusted || enterNow || dragged(e)) return;
+    const start = e.composedPath()[0];
+    if (start === passedTo) return;
+    const el = clickTarget(start);
+    if (!el) return;
+    if (!el.contains(start)) {
+      // a label: the click it passes on to its control is this same step
+      passedTo = el;
+      setTimeout(() => { passedTo = null; }, 0);
+    }
+    sendStep(typed());
+    sendStep(stepFor("click", el));
+  }
+
+  // Text he selects, by dragging or a double click, is a step that reads
+  // it; its target is found again by where it sits on the page (selector),
+  // as its text is what changes from one run to the next.
+  function onRecordedMouseUp(e) {
+    if (!recordingHere() || !e.isTrusted || !(dragged(e) || e.detail > 1)) return;
+    const sel = getSelection();
+    const active = document.activeElement;
+    if (!sel || sel.isCollapsed || !sel.toString().trim() || (active && textField(active))) return;
+    const node = sel.getRangeAt(0).commonAncestorContainer;
+    const el = node instanceof Element ? node : node.parentElement;
+    if (!el) return;
+    const selector = cssPath(el, Infinity);
+    if (selector === lastRead) return;
+    sendStep(typed());
+    sendStep({ ...stepFor("read", el), selector });
+  }
+
+  function onRecordedKeyDown(e) {
+    if (!recordingHere() || !e.isTrusted || e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || !textField(el)) return;
+    sendStep(typed());
+    sendStep({ ...stepFor("press", el), key: "Enter" });
+    enterNow = true;
+    setTimeout(() => { enterNow = false; }, 0);
+  }
+
+  function onRecordedInput(e) {
+    if (!recordingHere() || !e.isTrusted) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || !textField(el) || typing?.el === el) return;
+    sendStep(typed());
+    // judged now, before a show-password toggle can make it a text field
+    secretKind(el);
+    typing = { el, step: { ...stepFor("type", el), field: fieldFacts(el) } };
+  }
+
+  function onRecordedChange(e) {
+    if (!recordingHere() || !e.isTrusted) return;
+    const el = e.composedPath()[0];
+    if (!(el instanceof Element) || el.localName !== "select") return;
+    sendStep(typed());
+    const step = { ...stepFor("select", el), field: fieldFacts(el) };
+    const secret = secretKind(el);
+    if (secret) step.secret = secret;
+    else step.option = el.selectedOptions[0]?.label.trim() ?? "";
+    sendStep(step);
+  }
+
+  function onRecordedFocusOut(e) {
+    if (recordingHere() && typing && e.composedPath()[0] === typing.el) sendStep(typed());
+  }
+
+  function onRecordedPageHide() {
+    if (recordingHere()) sendStep(typed());
+  }
+
+  // background.js turns recording on in each page of the tab he records,
+  // and off when he stops; the answer to off holds what he was typing.
+  function record(on) {
+    const pending = on ? null : typed();
+    recording = on === true && window === window.top;
+    return { ok: true, recording, pending };
+  }
+
+  if (window === window.top) {
+    for (const [type, fn] of [["mousedown", onRecordedMouseDown], ["click", onRecordedClick], ["mouseup", onRecordedMouseUp], ["keydown", onRecordedKeyDown],
+      ["input", onRecordedInput], ["change", onRecordedChange], ["focusout", onRecordedFocusOut], ["pagehide", onRecordedPageHide]]) {
+      addEventListener(type, fn, { capture: true, signal: life.signal });
+    }
+  }
+  function memoryPage(expectedUrl) {
+    if (window !== window.top || location.href !== expectedUrl) return { skipped: true };
+    const fields = deepQueryAll('input,textarea,[contenteditable],[role="textbox"],[role="searchbox"],[role="combobox"]');
+    if (fields.some((field) => {
+      if (field.matches('input[type="password"],input[autocomplete="one-time-code"],input[autocomplete^="cc-"]')) return true;
+      if (field.matches('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]),textarea')) return !!field.value?.trim();
+      return (field.isContentEditable || field.matches('[role="textbox"],[role="searchbox"],[role="combobox"]')) && !!field.textContent?.trim();
+    })) return { skipped: true };
+    const parts = [];
+    let length = 0;
+    let visited = 0;
+    const skip = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|INPUT|TEXTAREA|SELECT|OPTION|DATALIST|FORM|IFRAME|FRAME|OBJECT|EMBED|CANVAS|VIDEO|AUDIO)$/;
+    const eligibleStyle = (element) => {
+      if (skip.test(element.tagName) || element.isContentEditable || element.matches('[role="textbox"],[role="searchbox"],[role="combobox"],[role="form"],[data-private],[data-sensitive]')) return null;
+      const style = getComputedStyle(element);
+      return style.display === "none" || style.visibility !== "visible" || transparent(element, style) || unseenBox(element, style) ? null : style;
+    };
+    const walk = (element) => {
+      if (++visited > 5000 || length >= 24000) return;
+      const style = eligibleStyle(element);
+      if (!style) return;
+      const block = !style.display.startsWith("inline") && style.display !== "contents";
+      if (block) parts.push("\n");
+      for (const child of drawnChildren(element)) {
+        if (length >= 24000 || visited > 5000) break;
+        if (child.nodeType === Node.ELEMENT_NODE) walk(child);
+        else if (child.nodeType === Node.TEXT_NODE && !unseenWords(child)) {
+          const value = String(child.nodeValue || "").slice(0, 24000 - length);
+          parts.push(value);
+          length += value.length;
+        }
+      }
+      if (block) parts.push("\n");
+    };
+    const root = document.querySelector("main,article") || document.body;
+    if (!root) return { skipped: true };
+    for (let ancestor = root.assignedSlot ?? parentOf(root); ancestor; ancestor = ancestor.assignedSlot ?? parentOf(ancestor)) {
+      if (!eligibleStyle(ancestor)) return { skipped: true };
+    }
+    walk(root);
+    const body = parts.join("").replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (!body) return { skipped: true };
+    return { url: location.href, title: document.title.slice(0, 500), body, partial: length >= 24000 || visited > 5000, visible: document.visibilityState === "visible" };
+  }
+
+  async function memoryRead(read, opts = {}) {
+    const value = await read(opts);
+    if (!opts.memoryResearch || !value || value.error || value.loading || opts.showHidden || (opts.as && opts.as !== "text") || opts.strict_selector || value.frames?.length) return value;
+    const safe = memoryPage(value.url);
+    if (safe.skipped) return value;
+    const output = typeof value.text === "string" ? value.text : typeof value.snapshot === "string" ? value.snapshot : "";
+    const normalize = (text) => text.replace(/\s+/g, " ").trim();
+    const seen = normalize(output);
+    const lines = safe.body.split("\n").filter((line) => line.trim());
+    const kept = lines.filter((line) => seen.includes(normalize(line)));
+    const body = kept.join("\n");
+    if (body.length < 40) return value;
+    return { ...value, memorySource: { url: safe.url, title: safe.title, body,
+      partial: safe.partial || value.truncated === true || kept.length !== lines.length || !!(opts.selector || opts.root || opts.query || opts.diff || opts.interactive) } };
+  }
+
+  // ---------- message dispatch ----------
+
+  const handlers = {
+    snapshot: (opts) => memoryRead(snapshot, opts),
+    memoryPage,
+    click: clickShown,
+    clickProbe,
+    assertFrameClickable,
+    nativeProbe,
+    type: (ref, text, opts) => typeText(ref, text, opts),
+    press: (ref, spec, opts) => afterward(() => withOutcome(() => pressKey(ref, spec)), opts),
+    scroll: (dx, dy) => scrollBy(dx || 0, dy || 0),
+    extract: (opts) => memoryRead(extract, opts),
+    harvest: harvestList,
+    gatherStop: () => {
+      gatherStops++;
+      return { ok: true };
+    },
+    data: pageData,
+    tabInfo,
+    eval: (src) => {
+      let run;
+      try {
+        // eslint-disable-next-line no-new-func
+        run = new Function("sh", `return (${src})`);
+      } catch (e) {
+        // bad code is the caller's to fix; any other refusal is the page's policy
+        if (e instanceof SyntaxError) throw e;
+        return { error: EVAL_BLOCKED };
+      }
+      const result = run(SH);
+      if (result && typeof result.then === "function") {
+        return result.then((v) => ({ ok: true, result: safeClone(v) }));
+      }
+      return { ok: true, result: safeClone(result) };
+    },
+    wait: waitFor,
+    waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
+    // open and goto wait, within their limit, while the page says it is
+    // still loading, and say whether it still was (USCIS, 09-30).
+    loaded: async (ms) => ({ loading: stillLoading() && !(await whenPage(() => !stillLoading(), ms)) }),
+    // Resolves once the tab has drawn two frames, i.e. it is visible and painted.
+    painted: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r({ ok: true })))),
+    // Finishes the page's running finite animations and transitions, and
+    // those they start, for up to ms, before a screenshot (screenshot in
+    // background.js); endless ones (spinners) run on.
+    settle: async (ms) => {
+      const until = Date.now() + ms;
+      let finished = 0;
+      for (;;) {
+        const running = document.getAnimations().filter((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime));
+        if (running.length === 0 || Date.now() >= until) return { finished };
+        for (const a of running) {
+          try {
+            a.finish();
+            finished++;
+          } catch {
+            // one at rate 0 has no end to go to
+          }
+        }
+        const next = Promise.withResolvers();
+        setTimeout(next.resolve, 16);
+        await next.promise;
+      }
+    },
+    clickAt: (x, y) => withReceipt(() => withOutcome(() => clickAt(x, y))),
+    hover,
+    select: selectIn,
+    upload,
+    history: historyGo,
+    fillLogin,
+    fillCode,
+    fillNewPassword,
+    fillAddress,
+    fillCard,
+    locate,
+    pressMark,
+    pressDone,
+    tabIntent: (since) => tabSaid >= since,
+    typeMark,
+    typeField,
+    sendButton,
+    annotate,
+    capturePrivacy,
+    stillPage,
+    dialogs: setDialogs,
+    fetch: pageFetch,
+    fetchFile,
+    download,
+    downloadStop: () => { pendingDownload?.(null); return { ok: true }; },
+    element: elementInfo,
+    lookalikes,
+    record,
+    netBody,
+  };
+  // Ops that may raise a dialog, and extract when it gathers (expand,
+  // scroll): the page's dialogs are armed while they run.
+  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download", "harvest"]);
+  // Ops that act on the element a ref names, and locate when a real click
+  // follows it (the daemon's locate, for real_input): a ref whose control
+  // changed is refused before any event (changedSince).
+  const ACTS = new Set(["click", "clickProbe", "nativeProbe", "type", "typeMark", "press", "pressMark", "select", "hover", "upload", "download"]);
+
+  // Runs an op with dialogs armed, and returns the dialogs it raised with
+  // its result.
+  function withDialogs(run) {
+    const seen = dialogLog.length;
+    if (!dialogPolicy) armDialogs(true, null);
+    const done = (value) => {
+      if (!dialogPolicy) armDialogs(false, null);
+      const raised = dialogLog.slice(seen);
+      return raised.length && value && typeof value === "object" && typeof value.error !== "string" ? { ...value, dialogs: raised } : value;
+    };
+    let out;
+    try {
+      out = run();
+    } catch (e) {
+      done(null);
+      throw e;
+    }
+    return out && typeof out.then === "function" ? out.then(done, (e) => { done(null); throw e; }) : done(out);
+  }
+
+  function clickAt(x, y) {
+    const el = deepPoint(x, y);
+    if (!el) return { error: "no element at point" };
+    watchTarget(el);
+    fireClick(el, x, y);
+    return { ok: true, tag: el.tagName };
+  }
+
+  // Safari hands every reply to its native side as JSON, and a NaN or
+  // Infinity anywhere in it aborts the whole browser (Foundation throws in
+  // _writeJSONNumber), so replies go out as plain JSON: a non-finite number
+  // on its own becomes its name, and one inside an object becomes null.
+  function safeClone(v) {
+    if (v === undefined) return null;
+    if (typeof v === "number" && !Number.isFinite(v)) return String(v);
+    try {
+      return JSON.parse(JSON.stringify(v));
+    } catch {
+      return String(v);
+    }
+  }
+
+  const api = (typeof browser !== "undefined" && browser.runtime) ? browser : chrome;
+  // Answers one request from the extension.
+  function answer(msg) {
+    // the extension asks this first, to know a copy that answers is here
+    if (msg.op === "ping") return Promise.resolve({ id: msg.id, value: true });
+    const fn = handlers[msg.op];
+    if (!fn) return Promise.resolve({ id: msg.id, error: `unknown op ${msg.op}` });
+    // Handlers report expected failures (stale ref, no such option) as
+    // { error }; send those as errors so callers never mistake them for success.
+    // Neither carries a secret the harness typed on this page (unsecret).
+    const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
+      ? { id: msg.id, error: unsecret(value.error), ...(value.failure ? { failure: value.failure } : {}) }
+      : { id: msg.id, value: msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed))) };
+    let out;
+    healedNow = null;
+    changedNow = null;
+    adopt(msg.kept);
+    acting = ACTS.has(msg.op) || (msg.op === "locate" && msg.args?.[1]?.act === true);
+    const armed = DIALOG_OPS.has(msg.op) || (msg.op === "extract" && (msg.args?.[0]?.expand === true || msg.args?.[0]?.scroll === true));
+    try {
+      out = armed ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
+    } catch (e) {
+      return Promise.resolve({ id: msg.id, error: unsecret(String(e && e.message || e)) });
+    } finally {
+      carried = null;
+      acting = false;
+    }
+    // Every handler resolves its target before its first await, so a heal
+    // made now is this request's.
+    const healed = healedNow;
+    if (out && typeof out.then === "function") {
+      return out.then(settle, (err) => ({ id: msg.id, error: unsecret(String(err && err.message || err)) }));
+    }
+    return Promise.resolve(settle(out));
+  }
+  // A page open since before the extension reloaded keeps this world bound
+  // to the old load's messaging, which reaches no one: the extension asks
+  // through executeScript then (sendUntilNavigation in background.js).
+  window.__safariHarnessRun = (msg) => (window.__safariHarnessInjected === claim ? answer(msg) : null);
+  // A newer copy taking over ends this one: its page listeners come off,
+  // and a wait or a download it still holds ends, as no one would ever
+  // stop them. Its tick port closed with the load that opened it. A watch
+  // after an action and a sleep in eval end by themselves within seconds;
+  // ending the sleep early would run the rest of the old eval sooner. A
+  // copy from before this hook stays.
+  window.__safariHarnessRetire = () => {
+    if (privateCapture) restorePrivateCapture(privateCapture.mark);
+    life.abort();
+    pendingWait?.done(false);
+    pendingDownload?.(null);
+  };
+  api.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
+    return answer(msg);
+  });
+
+  // Tell the extension this document can take requests; this lands well
+  // before the tab's "complete", which also waits on ads and trackers. A tab
+  // the harness owns gets back how to answer its dialogs.
+  // It also keeps its tab's and window's ids, for the extension to map
+  // after it reloads (adopt in background.js).
+  api.runtime.sendMessage({ __safariHarnessReady: 1 }).then((r) => r, () => null).then((r) => {
+    // A print the page raised as it loaded waits on this word (dialogs.js):
+    // in a tab not the harness's, or with no extension to answer, it shows.
+    if (!r?.dialogs) document.dispatchEvent(new Event("__sh_dialog_known"));
+    if (!r) return;
+    window.__safariHarnessTab = r.tab;
+    window.__safariHarnessWindow = r.window;
+    if (r.dialogs) setDialogs(r.dialogs);
+    if (r.net === false) document.dispatchEvent(new Event("__sh_net_off"));
+  });
+})();
