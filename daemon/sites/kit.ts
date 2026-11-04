@@ -44,6 +44,11 @@ const GONE = /that tab is gone/;
 // (10-31: 91% of those answers came within 10 s of Safari's own calls
 // stalling).
 const HELD = /did not answer.*; reload it with goto and retry$/;
+// The daemon's answer when a kit tab that closed at its agent's turn end is
+// opened again for the next call (tools.ts reopen): the call did not run,
+// and the new tab holds the kit's own parked page. On 11-04 every first
+// Slack call of a turn failed this way.
+const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
 
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
@@ -69,7 +74,17 @@ export class SiteKit {
     } catch (e) {
       const gone = Number(args.tab);
       const origin = this.origins.get(gone);
-      if (origin === undefined || !(e instanceof Error && GONE.test(e.message))) throw e;
+      if (origin === undefined || !(e instanceof Error)) throw e;
+      const fresh = FRESH.exec(e.message);
+      if (fresh) {
+        const tab = Number(fresh[1]);
+        this.origins.set(tab, origin);
+        this.owned(tab);
+        if (this.tabs.has(origin)) this.tabs.set(origin, Promise.resolve(tab));
+        onReopen?.(tab);
+        return this.send(tool, { ...args, tab });
+      }
+      if (!GONE.test(e.message)) throw e;
       const tab = await this.reopen(origin, gone);
       onReopen?.(tab);
       return this.send(tool, { ...args, tab });

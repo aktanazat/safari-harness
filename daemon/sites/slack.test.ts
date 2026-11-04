@@ -140,3 +140,27 @@ test("postThread posts every reply in the thread of the top message it just post
   expect(sent.status).toBe("sent");
   expect(s.calls.map((c) => c.params.thread_ts)).toEqual([undefined, "9.0", "9.0"]);
 });
+
+// On 11-04 every first Slack call of a turn failed: the kit's tab had
+// closed as the turn ended, and the daemon opened it again fresh as a new
+// tab and refused the eval there. The kit's parked page holds nothing, so
+// the call runs once more in that tab.
+test("a call whose tab was opened again fresh after the turn ended runs there", async () => {
+  const evalTabs: unknown[] = [];
+  let stale = true;
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool !== "eval") throw new Error(`no ${tool} in this Safari`);
+    evalTabs.push(args.tab);
+    if (args.tab === 1 && stale) {
+      stale = false;
+      throw new Error("tab 1 had closed as its agent's turn ended at Nov 4 at 9:04 AM; it is open again on https://app.slack.com/safari-repl, loaded fresh as tab 2, so its refs and anything typed there are gone: an eval that only reads can run there again; else snapshot it, then act");
+    }
+    return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM] } };
+  };
+  const kit = slack(new SiteKit(send, undefined, dir));
+  expect(await waited(kit.listWorkspaces())).toEqual([TEAM]);
+  await waited(kit.listWorkspaces());
+  expect(evalTabs).toEqual([1, 2, 2]);
+});
