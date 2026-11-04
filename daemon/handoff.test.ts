@@ -159,21 +159,33 @@ test("completion preserves a pending human handoff and closes it only after the 
   const tab = 30001;
   const page: Page = { url: "https://fixture.example/handoff", check: "box" };
   const m = mac(tab, page);
-  const build = join(import.meta.dir, "../.build");
-  mkdirSync(build, { recursive: true });
-  const checkpointDir = mkdtempSync(join(build, "handoff-state-"));
-  process.once("exit", () => rmSync(checkpointDir, { recursive: true, force: true }));
-  const checkpoint = join(checkpointDir, "tabs.json");
-  writeFileSync(checkpoint, JSON.stringify({ [tab]: { owner: process.pid, used: Date.now() } }));
-  loadTabs(checkpoint);
-  const handoff = await runAs(process.pid, () => callTool("handoff_wait", { tab, why: "Finish the fixture check", ms: 0, away: true }));
-  expect(handoff).toMatchObject({ done: false });
-  await endTurn(process.pid);
-  expect(m.closed).not.toContain(tab);
-  page.check = undefined;
-  await tick();
-  await endTurn(process.pid);
-  expect(m.closed).toContain(tab);
+  // The agent is a process of its own that ends with the test: its tab and
+  // handoff watch it (owner.ts) on the fake clock, and a watch on this
+  // process, which outlives the file, kept that clock's sweep, which never
+  // ran again, for every file after this one.
+  const agent = Bun.spawn(["sleep", "600"]);
+  try {
+    const build = join(import.meta.dir, "../.build");
+    mkdirSync(build, { recursive: true });
+    const checkpointDir = mkdtempSync(join(build, "handoff-state-"));
+    process.once("exit", () => rmSync(checkpointDir, { recursive: true, force: true }));
+    const checkpoint = join(checkpointDir, "tabs.json");
+    writeFileSync(checkpoint, JSON.stringify({ [tab]: { owner: agent.pid, used: Date.now() } }));
+    loadTabs(checkpoint);
+    const handoff = await runAs(agent.pid, () => callTool("handoff_wait", { tab, why: "Finish the fixture check", ms: 0, away: true }));
+    expect(handoff).toMatchObject({ done: false });
+    await endTurn(agent.pid);
+    expect(m.closed).not.toContain(tab);
+    page.check = undefined;
+    await tick();
+    await endTurn(agent.pid);
+    expect(m.closed).toContain(tab);
+  } finally {
+    agent.kill();
+    await agent.exited;
+    // one sweep sees the agent gone and, watching nothing more, stops
+    jest.advanceTimersByTime(1000);
+  }
 });
 
 test.each([
