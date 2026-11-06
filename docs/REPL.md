@@ -44,8 +44,8 @@ outside the page: read `document`, `window` and the rest through
 
 omp identifies each call by its session and agent, not just its process.
 When a helper finishes, only its disposable pages are released. A sibling
-or the main session keeps its pages. Main completion releases all remaining
-pages owned by that process, including abandoned helper pages. Kept pages,
+or the main session keeps its pages. Main completion releases the main
+session's own pages and those no task names; process exit releases the rest. Kept pages,
 pending handoffs and personal pages remain protected.
 
 This identity follows every REPL run, including a named session reused by

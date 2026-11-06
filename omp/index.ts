@@ -1,4 +1,4 @@
-import { connectionRefused, daemonHttp } from "../daemon/rpc.ts";
+import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemon/rpc.ts";
 import { setSessionTask } from "../daemon/session-task.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
 
@@ -37,6 +37,16 @@ function taskOf(ctx: Context): string | undefined {
   return JSON.stringify(lead === session ? [session, agent.id] : [session, agent.id, lead]);
 }
 
+// A lead's turn end releases its pages this long after its agent_end,
+// unless its session starts again first. omp ends a reply the user's
+// message interrupts with a final agent_end and starts the next run about
+// a second later: from 11-02 to 11-04, 19 tab closes came within the same
+// minute as such a steer, and each cost the agent a failed call and a
+// fresh load (AuditSafariHarness-2). A helper's end releases at once.
+const RELEASE_DELAY_MS = 15_000;
+// By lead session, its release waiting out that pause.
+const releasing = new Map<string, Timer>();
+
 export default function safariTurnEnd(pi: ExtensionApi) {
   pi.on("tool_call", (event, ctx) => {
     // A helper ends its run by calling yield; one whose run met a page
@@ -66,8 +76,20 @@ export default function safariTurnEnd(pi: ExtensionApi) {
   });
   pi.on("agent_end", (event, ctx) => {
     if (event.willContinue || (ctx.mode === "print" && ctx.agent?.kind !== "sub")) return;
-    if (ctx.agent?.kind !== "sub") return release(pi);
     const task = taskOf(ctx);
+    if (ctx.agent?.kind !== "sub") {
+      // The lead's own task, which also reaches the pages no task names:
+      // its helpers' pages are theirs to release, and they may still run.
+      const session = ctx.sessionManager?.getSessionId() ?? "";
+      clearTimeout(releasing.get(session));
+      const timer = setTimeout(() => {
+        releasing.delete(session);
+        void release(pi, task);
+      }, RELEASE_DELAY_MS);
+      timer.unref();
+      releasing.set(session, timer);
+      return;
+    }
     if (task === undefined) {
       pi.logger?.warn("safari-harness turn end: helper task identity is unavailable; leaving its pages protected");
       return;
@@ -83,24 +105,58 @@ export default function safariTurnEnd(pi: ExtensionApi) {
   });
   pi.on("before_agent_start", (_event, ctx) => {
     const session = ctx.sessionManager?.getSessionId();
-    if (session !== undefined && ctx.agent?.kind !== "sub") newRun(session);
+    if (ctx.agent?.kind === "sub") return;
+    clearTimeout(releasing.get(session ?? ""));
+    releasing.delete(session ?? "");
+    if (session !== undefined) newRun(session);
   });
 }
 
+// How long one release waits on the daemon. It first drains the task's
+// calls in flight, and a lead interrupted mid-call may have one waiting on
+// a page or the user for minutes; its pages then close when unused for 20
+// minutes or as this process exits.
+const RELEASE_MS = 30_000;
+
+// A release the daemon missed as it restarted (a deploy) goes again once
+// it answers: before 11-06 it was dropped, and the turn's pages stayed
+// until the 20-minute idle close (AuditSafariHarness-10).
 async function release(pi: ExtensionApi, task?: string): Promise<void> {
   const admission = { owner: process.pid, ...(task === undefined ? {} : { task }) };
+  const base = daemonHttp();
   try {
-    const prepare = await fetch(`${daemonHttp()}/turn-end/prepare`, { method: "POST", body: JSON.stringify(admission) });
-    if (!prepare.ok) throw new Error(`prepare: ${prepare.status} ${await prepare.text()}`);
-    const prepared: unknown = await prepare.json();
-    const res = await fetch(`${daemonHttp()}/turn-end`, { method: "POST", body: JSON.stringify({ ...admission, prepared }) });
-    if (!res.ok) throw new Error(`release: ${res.status} ${await res.text()}`);
-    const result: unknown = await res.json();
-    if (result && typeof result === "object" && "failed" in result && typeof result.failed === "number" && result.failed > 0) {
-      throw new Error(`could not close ${result.failed} tab(s); they close when this process exits`);
-    }
+    let missed = await releaseOnce(base, admission);
+    if (missed !== undefined && await daemonBack(base, missed)) missed = await releaseOnce(base, admission);
+    if (missed === "restarting") throw new Error("the daemon was restarting, and did not answer again in time");
   } catch (e: unknown) {
-    if (connectionRefused(e)) return;
-    pi.logger?.warn(`safari-harness turn end: ${e instanceof Error ? e.message : String(e)}`);
+    const timedOut = e instanceof Error && e.name === "TimeoutError";
+    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 20 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+async function releaseOnce(base: string, admission: { owner: number; task?: string }): Promise<Missed | undefined> {
+  const signal = AbortSignal.timeout(RELEASE_MS);
+  const post = async (path: string, body: unknown): Promise<Response | Missed> => {
+    let res: Response;
+    try {
+      res = await fetch(`${base}${path}`, { method: "POST", body: JSON.stringify(body), signal });
+    } catch (e: unknown) {
+      if (connectionRefused(e)) return "refused";
+      throw e;
+    }
+    if (res.ok) return res;
+    const text = await res.text();
+    if (res.status === 503 && /"restarting":true/.test(text)) return "restarting";
+    throw new Error(`${path}: ${res.status} ${text}`);
+  };
+  const prepare = await post("/turn-end/prepare", admission);
+  if (typeof prepare === "string") return prepare;
+  const prepared: unknown = await prepare.json();
+  const res = await post("/turn-end", { ...admission, prepared });
+  if (typeof res === "string") return res;
+  const result: unknown = await res.json();
+  if (result && typeof result === "object" && "failed" in result && typeof result.failed === "number" && result.failed > 0) {
+    throw new Error(`could not close ${result.failed} tab(s); they close when this process exits`);
+  }
+  return undefined;
 }
