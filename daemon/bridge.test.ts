@@ -365,10 +365,10 @@ test("a kind unanswered for a minute while it is asked has the extension reload 
   expect(ext.asked.slice(3)).toEqual(["windows.open", "reload"]);
 });
 
-// Storms ran 5 to 29 min and got one reload in 17 days. A reload fails
-// every request in flight, and two that did not help will not help a
-// moment later.
-test("a reload that does not help is followed by a second a minute later, and by no third within ten minutes", async () => {
+// 11-06: Safari answered no extension call from 19:16:42 while the page kept
+// its socket open, and eight reloads in 50 minutes went unheard; each model's
+// call that met it waited 30 s on one and was told to reload again.
+test("a reload Safari ignores is not asked again on that socket, and every call says to restart Safari", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
   const reloads: number[] = [];
@@ -386,7 +386,30 @@ test("a reload that does not help is followed by a second a minute later, and by
     await settled();
     jest.advanceTimersByTime(10_000);
   }
-  expect(reloads).toEqual([60, 140, 660]);
+  expect(reloads).toEqual([60]);
+  expect(bridge.health()).toMatchObject({ stuck: true, reloadIgnored: true });
+  await expect(bridge.healing(() => bridge.request("windows.open", [], 30000))).rejects.toThrow("and Safari ignored its reload; quit Safari and open it again");
+  await expect(bridge.reload()).rejects.toThrow("another reload would go unheard too");
+  expect(reloads).toEqual([60]);
+});
+
+// 11-06: the page's own "Safari did not answer tabs.query in time" came a
+// moment after the daemon's 5 s limit, ended tabs.list's run ten times, and
+// left it out of doctor's stuck list.
+test("a Safari call the page gave up on counts as unanswered, not as an answer", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = holding(bridge);
+  pastGrace(bridge, ext.sock);
+  const silent = (id: string) => bridge.handleMessage(JSON.stringify({ id, error: "Safari did not answer tabs.query in time", phase: "tabs.query" }), ext.sock);
+  await timesOut(bridge, "tabs.list", 5000);
+  silent(ext.asked[0].id);
+  expect(bridge.health()).toMatchObject({ stuck: false, timeouts: { "tabs.list": 1 } });
+  const second = bridge.request("tabs.list");
+  await settled();
+  silent(ext.asked[1].id);
+  await expect(second).rejects.toThrow("Safari did not answer tabs.query in time");
+  expect(bridge.health()).toMatchObject({ stuck: true, timeouts: { "tabs.list": 2 } });
 });
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44

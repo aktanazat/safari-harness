@@ -106,6 +106,11 @@ const RELOADS_MS = 600_000;
 // or two (CONNECT_MS).
 const RELOADED_MS = 30000;
 
+// What clears a reload Safari ignored (reloadIgnored). On 11-06 Safari left
+// every extension call unanswered from 19:16:42 while the extension's page
+// kept its socket open, and eight reloads in 50 minutes each went unheard.
+const IGNORED_FIX = "quit Safari and open it again (History > Reopen All Windows brings its windows back), or in Safari > Settings > Extensions turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
+
 // How long a tabs.list waits when its caller sets no limit: the extension
 // answers one within 2.5 s with what it has by then (background.js), and on
 // 10-13 map's opens each waited 30 s on one that never came.
@@ -194,6 +199,8 @@ type WireMessage = {
   args?: unknown[];
   value?: unknown;
   error?: unknown;
+  // the Safari call a page gave up on (bounded in background.js)
+  phase?: unknown;
   ua?: string;
   role?: string;
   started?: unknown;
@@ -312,10 +319,10 @@ export class Bridge {
   // the calls that meet a stuck kind wait on together.
   private healer = new AsyncLocalStorage<{ reloadedMs?: number }>();
   private reloading: Promise<ExtSocket> | null = null;
-  // Sockets the daemon had reload (askReload), whose close is a restart;
-  // how many times the link dropped since the daemon started, by why; and
-  // when the connected extension's page started, to tell a new one by.
-  private reloaded = new WeakSet<ExtSocket>();
+  // When the daemon had each socket reload (askReload), whose close is then
+  // a restart; how many times the link dropped since the daemon started, by
+  // why; and when the connected extension's page started, to tell a new one by.
+  private reloaded = new WeakMap<ExtSocket, number>();
   private drops: Partial<Record<DropCause, number>> = {};
   private pageStarted: number | undefined;
   public extensionInfo: { ua?: string; connectedAt?: number; started?: number; closed?: number } | null = null;
@@ -487,14 +494,17 @@ export class Bridge {
     if (msg.id === undefined) return;
     const key = String(msg.id);
     const p = this.pending.get(key);
-    // an answer the daemon gave up on still shows the extension answers
-    if (from === this.sock) this.heard(key, p?.asked, msg.error === undefined);
+    // an answer the daemon gave up on still shows the extension answers; a
+    // Safari call the page gave up on shows only that its page runs
+    const safariSilent = msg.phase !== undefined;
+    if (from === this.sock && !safariSilent) this.heard(key, p?.asked, msg.error === undefined);
     if (!p) return;
     this.pending.delete(key);
     clearTimeout(p.timer);
     // a typed refusal may name the address of the link it did not click
     if (msg.error !== undefined) p.reject(answeredError(msg.failure === undefined ? String(msg.error) : redactUrl(String(msg.error)), msg.failure));
     else p.resolve(msg.value);
+    if (from === this.sock && safariSilent && p.asked) this.unanswered(p.asked);
   }
 
   // Takes sock's requests off the wire: it will answer none of them.
@@ -601,15 +611,26 @@ export class Bridge {
   // timeouts in a row, and how many times its link dropped since the daemon
   // started, by why; while connected, its user agent, when it connected,
   // when its page started, and the code its socket before closed with.
-  health(): { connected: boolean; stuck: boolean; sinceAnswerMs: number | null; timeouts: Record<string, number>; drops: Partial<Record<DropCause, number>>; ua?: string; connectedAt?: number; started?: number; closed?: number } {
+  health(): { connected: boolean; stuck: boolean; reloadIgnored: boolean; sinceAnswerMs: number | null; timeouts: Record<string, number>; drops: Partial<Record<DropCause, number>>; ua?: string; connectedAt?: number; started?: number; closed?: number } {
     return {
       connected: this.sock !== null,
       stuck: this.stuck,
+      reloadIgnored: this.reloadIgnored(Date.now()),
       sinceAnswerMs: this.sock === null ? null : Date.now() - this.answeredAt,
       timeouts: Object.fromEntries([...this.runs].map(([op, r]) => [op, r.misses])),
       drops: { ...this.drops },
       ...this.extensionInfo,
     };
+  }
+
+  // Safari ignored the reload: RELOADED_MS after the connected socket was
+  // asked to reload it is still open, and a kind stuck since before the ask
+  // is stuck still. Another reload goes the same unheard way, so none goes
+  // until a new socket connects or that kind answers again.
+  private reloadIgnored(now: number): boolean {
+    const asked = this.sock ? this.reloaded.get(this.sock) : undefined;
+    if (asked === undefined || now - asked < RELOADED_MS) return false;
+    return [...this.runs.values()].some((r) => r.misses >= STUCK_AFTER && r.since <= asked);
   }
 
   // How long each kind of request took to answer since the daemon started:
@@ -717,7 +738,7 @@ export class Bridge {
     if (run.misses === STUCK_AFTER) note("stuck", { op: asked.op, ms: now - run.since });
     const reloaded = this.reloads.at(-1) ?? -Infinity;
     this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
-    if (run.misses < STUCK_AFTER || now - Math.max(run.since, reloaded) < RELOAD_AFTER_MS || this.reloads.length >= RELOADS) return;
+    if (run.misses < STUCK_AFTER || now - Math.max(run.since, reloaded) < RELOAD_AFTER_MS || this.reloads.length >= RELOADS || this.reloadIgnored(now)) return;
     this.reloads.push(now);
     this.askReload(asked.sock, `${asked.op} went unanswered for ${Math.round((now - run.since) / 1000)} s, ${run.misses} requests in a row`);
   }
@@ -726,7 +747,7 @@ export class Bridge {
   // socket closes, failing what it was asked, and a new one connects.
   private askReload(sock: ExtSocket, why: string) {
     note("reload", { why });
-    this.reloaded.add(sock);
+    this.reloaded.set(sock, Date.now());
     sock.send('{"op":"reload"}');
   }
 
@@ -737,7 +758,7 @@ export class Bridge {
     await this.taken(RELOADED_MS);
     if (this.sock && this.sock !== sock) return this.sock;
     throw new Error(this.sock === sock
-      ? `the extension did not reload within ${RELOADED_MS / 1000} s; run safari doctor for the fix`
+      ? `the extension did not reload within ${RELOADED_MS / 1000} s: Safari ignored it; ${IGNORED_FIX}`
       : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run safari doctor for the fix`);
   }
 
@@ -749,6 +770,7 @@ export class Bridge {
   private healed(sock: ExtSocket, op: string, args: unknown[], timeoutMs: number, run: Run, now: number): Promise<unknown> {
     const heal = this.healer.getStore();
     const stuck = `extension stuck: the Safari extension has answered none of the last ${run.misses} ${op} requests (for ${Math.round((now - run.since) / 1000)} s)`;
+    if (this.reloadIgnored(now)) throw new Error(`${stuck}, and Safari ignored its reload; ${IGNORED_FIX}`);
     if (!heal) throw new Error(`${stuck}; try again in a minute`);
     if (!this.reloading) {
       this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
@@ -780,6 +802,7 @@ export class Bridge {
   async reload(): Promise<{ ms: number }> {
     const sock = this.sock;
     if (!sock) throw new Error("Safari extension not connected, so there is nothing to reload; run safari doctor for the fix");
+    if (this.reloadIgnored(Date.now())) throw new Error(`Safari ignored the extension's last reload and still answers none of its calls, so another reload would go unheard too; ${IGNORED_FIX}`);
     const began = Date.now();
     await this.reconnect(sock, "asked for (safari extension reload)");
     return { ms: Date.now() - began };

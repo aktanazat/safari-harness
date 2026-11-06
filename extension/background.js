@@ -95,7 +95,7 @@ function connect() {
         const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
         const id = lost ? Number(lost[1] ?? msg.args?.[0]) : undefined;
         const failure = err?.failure ?? (lost && await goneBefore(id, asked) ? { code: "stale_view", effect: "none", retryable: false, next: "find the tab with tabs, or open it again" } : undefined);
-        answer({ id: msg.id, error: lost ? await goneText(id) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text, ...(failure ? { failure } : {}) });
+        answer({ id: msg.id, error: lost ? await goneText(id) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text, ...(failure ? { failure } : {}), ...(err?.phase ? { phase: err.phase } : {}) });
       });
     };
     sock.onclose = (ev) => {

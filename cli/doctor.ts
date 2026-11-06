@@ -45,7 +45,7 @@ export type Check = { name: string; status: Status; detail: string; fix?: string
 // What the doctor reads of the daemon's /health (main.ts): the extension
 // as the bridge tells it (bridge.ts health), null from an older daemon
 // while it is not connected.
-export type Health = { pid?: number; stopping?: string; extension: { connected: boolean; stuck: boolean; timeouts: Record<string, number>; connectedAt?: number } | null };
+export type Health = { pid?: number; stopping?: string; extension: { connected: boolean; stuck: boolean; reloadIgnored?: boolean; timeouts: Record<string, number>; connectedAt?: number } | null };
 export type Pairing = { unlocked: boolean; reason?: string; sessions?: number };
 
 // One fact each. The ones that can fail throw with the reason; the rest
@@ -197,12 +197,15 @@ function launchdCheck(loaded: boolean, answering: boolean): Check {
 }
 
 // Stuck: a kind of request the extension has left unanswered twice in a
-// row, which then fails at once until it answers again (bridge.ts).
+// row, which then fails at once until it answers again (bridge.ts). Its
+// reload ignored, Safari itself holds the calls, and only a Safari restart
+// or the Settings toggle clears it.
 function extensionCheck(extension: Health["extension"]): Check {
   const name = "extension";
   if (!extension?.connected) return { name, status: "fail", detail: "Safari Harness Bridge is not connected", fix: EXTENSIONS };
   if (extension.stuck) {
     const unanswered = Object.entries(extension.timeouts).map(([op, n]) => `${op} ${n}`).join(", ");
+    if (extension.reloadIgnored) return { name, status: "fail", detail: `connected, but Safari answers none of its calls and ignored its reload: requests it left unanswered in a row: ${unanswered}`, fix: `quit Safari and open it again (History > Reopen All Windows brings its windows back), or ${EXTENSIONS}` };
     return { name, status: "fail", detail: `connected, but stuck: requests it left unanswered in a row: ${unanswered}`, fix: `${RELOAD}; if it stays stuck, ${EXTENSIONS}` };
   }
   const since = extension.connectedAt;
