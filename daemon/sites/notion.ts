@@ -27,7 +27,8 @@ async function post<T>(kit: SiteKit, endpoint: string, body: unknown, userId?: s
   await kit.turn(ORIGIN, PACE_MS);
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (userId) headers["x-notion-active-user-header"] = userId;
-  return kit.json<T>(ORIGIN, `${API}/${endpoint}`, { method: "POST", headers, body: JSON.stringify(body) }, SITE);
+  // Every endpoint this kit asks reads (sync, search, query, spaces).
+  return kit.json<T>(ORIGIN, `${API}/${endpoint}`, { method: "POST", headers, body: JSON.stringify(body), read: true }, SITE);
 }
 
 // A record of a record map: { role, value: {...} }, or in the newer shape

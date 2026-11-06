@@ -479,9 +479,9 @@ test("an uncertain identical action is blocked until observation, without blocki
   let sent = 0;
   const action = () => observedCall(a.pid, "click", { tab, ref: 9 }, async () => { sent++; throw new HarnessError("timeout", "reply lost after dispatch"); });
   await expect(action()).rejects.toMatchObject({ code: "timeout", effect: "possibly_effected" });
-  await expect(observedCall(a.pid, "click", { ref: "9", tab, snapshot: true, x: 20, y: 30, ignored: "not part of the action" }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown", effect: "none" });
+  await expect(observedCall(a.pid, "click", { ref: "9", tab, snapshot: true, x: 20, y: 30, ignored: "not part of the action" }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown" });
   for (const noWaitAfter of [false, true]) {
-    await expect(observedCall(a.pid, "click", { tab, ref: 9, noWaitAfter }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown", effect: "none" });
+    await expect(observedCall(a.pid, "click", { tab, ref: 9, noWaitAfter }, async () => { sent++; return { ok: true }; })).rejects.toMatchObject({ code: "effect_unknown" });
   }
   expect(sent).toBe(1);
   await call(a.pid, "click", { tab, ref: "different" });
@@ -490,6 +490,98 @@ test("an uncertain identical action is blocked until observation, without blocki
   await call(a.pid, "snapshot", { tab });
   await expect(action()).rejects.toMatchObject({ code: "timeout" });
   expect(sent).toBe(2);
+});
+
+// A lock refusal did not send the call, but it says an identical earlier one
+// may have happened: its envelope says so (effect_unknown's defaults), not
+// effect none beside "may already have happened" (MineSessionD-7).
+test("a refused repeat of an uncertain action reports the earlier action's unknown effect and is not retryable", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://refusal.example/");
+  await expect(observedCall(a.pid, "click", { tab, ref: 4 }, async () => { throw new HarnessError("timeout", "reply lost after dispatch"); })).rejects.toMatchObject({ effect: "possibly_effected" });
+  await expect(observedCall(a.pid, "click", { tab, ref: 4 }, async () => ({ ok: true }))).rejects.toMatchObject({ code: "effect_unknown", effect: "possibly_effected", retryable: false });
+});
+
+// A site kit's read (Slack's conversations.history goes out as a POST from
+// the page) says read: it can run twice, so losing its answer holds nothing
+// (MineSessionD-7, MineSessionE-4).
+test.each([
+  { tool: "eval", args: { expression: "fetch('/api/conversations.history', { method: 'POST' })", page: true, read: true } },
+  { tool: "fetch", args: { url: "https://reads.example/api/files.info", method: "POST", body: "file=F1", read: true } },
+])("a read-only $tool that loses its answer can be asked again at once", async ({ tool, args }) => {
+  const a = agent();
+  const tab = await open(a.pid, "https://reads.example/");
+  let sent = 0;
+  const read = () => observedCall(a.pid, tool, { ...args, tab }, async () => { sent++; if (sent === 1) throw new Error("Load failed: a request got no answer"); return { result: "messages" }; });
+  await expect(read()).rejects.toThrow("Load failed");
+  expect(await read()).toEqual({ result: "messages" });
+  expect(sent).toBe(2);
+});
+
+// The same uncertain request from a second tab on the same site is the same
+// request: a new repl session's tab must not admit it (MineSessionE-4).
+test.each([
+  { tool: "eval", args: { expression: "fetch('/api/chat.postMessage', { method: 'POST' })", page: true } },
+  { tool: "fetch", args: { url: "https://posts.example/api/chat.postMessage", method: "POST", body: "text=hi" } },
+])("an uncertain $tool is refused in another tab on its site until a tab there is read whole", async ({ tool, args }) => {
+  const a = agent();
+  const first = await open(a.pid, "https://posts.example/");
+  const second = await open(a.pid, "https://posts.example/park");
+  const elsewhere = await open(a.pid, "https://other-site.example/");
+  let sent = 0;
+  const post = (tab: number, fail = false) => observedCall(a.pid, tool, { ...args, tab }, async () => { sent++; if (fail) throw new HarnessError("timeout", "reply lost after dispatch"); return { ok: true }; });
+  await expect(post(first, true)).rejects.toMatchObject({ code: "timeout", effect: "possibly_effected" });
+  await expect(post(second)).rejects.toMatchObject({ code: "effect_unknown" });
+  expect(sent).toBe(1);
+  if (tool === "eval") await post(elsewhere);
+  await observedCall(a.pid, "snapshot", { tab: second }, async () => fullView);
+  await post(second);
+  expect(sent).toBe(tool === "eval" ? 3 : 2);
+});
+
+// download by url (or of the file a tab shows) fetches; a local save error
+// after it leaves nothing on the page to repeat (MineSessionE-4).
+test("a url download that failed saving can be asked again with another out", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://files.example/");
+  let sent = 0;
+  const download = (out: string) => observedCall(a.pid, "download", { tab, url: "https://files.example/a.png", out }, async () => {
+    sent++;
+    if (out === "/tmp/folder") throw Object.assign(new Error("EISDIR: illegal operation on a directory, open '/tmp/folder'"), { code: "EISDIR" });
+    return { path: out };
+  });
+  await expect(download("/tmp/folder")).rejects.toThrow("EISDIR");
+  expect(await download("/tmp/folder/a.png")).toEqual({ path: "/tmp/folder/a.png" });
+  expect(sent).toBe(2);
+});
+
+// Failures before the page is touched did nothing, whatever the tool
+// (MineSessionC-6, MineSessionB-5c).
+test("an action refused before it reaches the page reports effect none and holds no retry", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://early.example/");
+  const clicks = s.effects.length;
+  await expect(call(a.pid, "click", { tab, ref: "1", snapshot: { maxNodes: 5 } })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
+  await expect(call(a.pid, "eval", { tab, expression: "(" })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
+  expect(s.effects.length).toBe(clicks);
+  await call(a.pid, "click", { tab, ref: "1" });
+  expect(s.effects.length).toBe(clicks + 1);
+});
+
+// The extension answers an action on a tab gone before it was asked as
+// never sent (background.js); the harness's own word on why the tab went
+// keeps that (MineSessionC-6).
+test("a click on a tab the harness closed earlier reports effect none, as the extension answered", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://closed-earlier.example/");
+  await tools.closeTab(tab, "the test closed it before the click");
+  const relay = s.ops.relay;
+  s.ops.relay = () => { throw Object.assign(new Error(`that tab is gone: Safari has had no tab ${tab}; find it with tabs, or open it again`), { failure: { code: "stale_view", effect: "none", retryable: false } }); };
+  try {
+    await expect(call(a.pid, "click", { tab, ref: "1" })).rejects.toMatchObject({ code: "stale_view", effect: "none", message: expect.stringContaining("that tab is gone") });
+  } finally {
+    s.ops.relay = relay;
+  }
 });
 
 // On 10-29 a click on GitHub's "Load more" lost its reply, and every whole
@@ -769,7 +861,7 @@ test("a dispatched cookies mutation with an unknown result cannot repeat, while 
   let sent = 0;
   const mutate = () => observedCall(a.pid, "cookies", args, async () => { sent++; throw new Error("reply lost after mutation"); });
   await expect(mutate()).rejects.toThrow("reply lost after mutation");
-  await expect(mutate()).rejects.toMatchObject({ code: "effect_unknown", effect: "none" });
+  await expect(mutate()).rejects.toMatchObject({ code: "effect_unknown" });
   expect(sent).toBe(1);
   expect(await observedCall(a.pid, "cookies", { tab }, async () => [])).toEqual([]);
   await call(a.pid, "snapshot", { tab });

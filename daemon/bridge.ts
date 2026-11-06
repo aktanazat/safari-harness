@@ -122,8 +122,12 @@ export class TimedOut extends Error {}
 // took over; quit, Safari is not running; dropped, anything else.
 export type DropCause = "too_large" | "restarted" | "quit" | "dropped";
 
-// A request in flight when its socket closed, and why it closed.
+// A request in flight when its socket closed, and why it closed. It is
+// unavailable (failures.ts): a read, done nothing, may go again at once;
+// an action may have run. On 11-03 an extension restart answered a read
+// "try again" beside retryable false (MineSessionA-7).
 class Dropped extends Error {
+  readonly code = "unavailable";
   constructor(message: string, readonly why: DropCause) {
     super(message);
   }

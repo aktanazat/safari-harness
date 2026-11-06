@@ -17,7 +17,8 @@ export class NotSignedIn extends Error {
   }
 }
 
-export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number };
+// read: the request only reads, so it may run twice (eval's read below).
+export type FetchInit = { method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; read?: boolean };
 // headers: the response's content-length, retry-after, and rate-limit
 // headers, those the page could read (another origin exposes few); total:
 // the whole text's length, of which text holds the first maxBytes.
@@ -121,7 +122,7 @@ export class SiteKit {
   // A request from the site's own page, with its cookies.
   async fetch(origin: string, url: string, init: FetchInit = {}): Promise<FetchResult> {
     const tab = await this.tab(origin);
-    return (await this.invoke("fetch", { tab, url, method: init.method, headers: init.headers, body: init.body, maxBytes: init.maxBytes ?? 20_000_000 })) as FetchResult;
+    return (await this.invoke("fetch", { tab, url, method: init.method, headers: init.headers, body: init.body, maxBytes: init.maxBytes ?? 20_000_000, ...(init.read ? { read: true } : {}) })) as FetchResult;
   }
 
   // fetch, parsed as JSON. A 429 fails with rate_limited; 401 and 403 mean
@@ -142,14 +143,15 @@ export class SiteKit {
 
   // An expression evaluated in the site's tab; page: true runs it in the
   // page's own world, where the site's script variables are. read: true
-  // says it can safely run twice: when the page did not answer, the held
-  // tab is closed and the expression asked once more in a new tab where the
-  // site asked; not answering again, the error stands. A new tab, because
-  // the daemon refuses to repeat an eval in the tab where it may have run
-  // until that tab is read (mission.ts checkAction), and a reload is no read.
+  // says it can safely run twice. The daemon then holds no retry when its
+  // answer is lost (lanes.ts): on 11-04 a Slack read that lost its answer
+  // blocked the same read for four calls (MineSessionD-7). And when the
+  // page did not answer, the held tab is closed and the expression asked
+  // once more in a new tab where the site asked; not answering again, the
+  // error stands.
   async eval<T = unknown>(origin: string, expression: string, opts: { page?: boolean; read?: boolean } = {}): Promise<T> {
     let tab = await this.tab(origin);
-    const args = { tab, expression, page: !!opts.page };
+    const args = { tab, expression, page: !!opts.page, ...(opts.read ? { read: true } : {}) };
     const r = (await this.call("eval", args, (reopened) => { tab = reopened; }).catch(async (e: unknown) => {
       if (!opts.read || !(e instanceof Error && HELD.test(e.message))) throw e;
       await this.send("close", { tab });

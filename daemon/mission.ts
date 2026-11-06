@@ -70,11 +70,14 @@ type Hold = "paused" | "driving";
 type Status = "working" | "waiting on the user" | "paused" | "user is driving" | "stopped" | "ended";
 type View = { revision: number; stale: boolean; retries: Set<string>; native?: Map<string, Call>; all?: true };
 
-// raised: the times it brought Safari to the front (front.ts)
+// raised: the times it brought Safari to the front (front.ts); sites: its
+// uncertain requests that hold on every tab of their site (siteKey), each
+// with that site's origin
 type Agent = {
   id: string;
   revision: number;
   views: Map<number, View>;
+  sites: Map<string, string>;
   pictures: boolean;
   inspectionOnly: boolean;
   takeovers: Set<Promise<number | undefined>>;
@@ -96,7 +99,7 @@ type Agent = {
 
 function fresh(owner?: number): Agent {
   const now = Date.now();
-  return { id: randomUUID(), revision: 0, views: new Map(), pictures: false, inspectionOnly: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set(), actions: new Set(), gathers: new Set() };
+  return { id: randomUUID(), revision: 0, views: new Map(), sites: new Map(), pictures: false, inspectionOnly: false, takeovers: new Set(), owner, first: now, last: now, calls: [], running: new Set(), raised: 0, waiting: new Set(), actions: new Set(), gathers: new Set() };
 }
 
 const agents = new Map<number, Agent>();
@@ -550,7 +553,33 @@ function observed(tool: string, args: Record<string, unknown>, value: unknown): 
   return tool === "extract" && "text" in value && typeof value.text === "string";
 }
 
-function checkAction(agent: Agent, tool: string, args: Record<string, unknown>) {
+// A request whose effect does not hang on the tab it goes from: a fetch, or
+// code run in the page, does the same from any tab on its site. Its
+// uncertain run holds on every tab there, so a second repl session's new
+// tab cannot send it again (MineSessionE-4). Clicks, typing and the rest
+// stay held on their own tab: a ref names an element of one tab's
+// snapshot, and the same ref in another tab is another element.
+const SITE_WIDE: Record<string, true> = { fetch: true, eval: true };
+
+// The site a request acts on: a fetch's address, else its tab's page.
+async function siteOf(tool: string, args: Record<string, unknown>, tab: number | undefined): Promise<string | undefined> {
+  if (tool === "fetch" && typeof args.url === "string" && URL.canParse(args.url)) return new URL(args.url).origin;
+  if (tab === undefined) return undefined;
+  const url = (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  return url && URL.canParse(url) ? new URL(url).origin : undefined;
+}
+
+function siteKey(tool: string, args: Record<string, unknown>, origin: string): string {
+  return createHmac("sha256", KEY).update(origin).update(fingerprint(tool, { ...args, tab: undefined })).digest("hex");
+}
+
+// A refusal sends nothing, but names an earlier identical action whose
+// effect is unknown, and says so as effect_unknown does: possibly
+// effected, not to be repeated until read. On 11-04 one said effect none
+// beside "may already have happened" (MineSessionD-7).
+const ALREADY = "that action may already have happened; this call was not sent";
+
+function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string) {
   if (agent.inspectionOnly && !inspectionAllowed(tool, args)) throw new HarnessError("blocked", "this task may only inspect its current pages; the user must allow actions from its task controls", { next: "continue reading current pages, or wait for the user to allow actions" });
   syncViews(agent);
   const rawTab = tabOf(args.tab).tab;
@@ -558,19 +587,33 @@ function checkAction(agent: Agent, tool: string, args: Record<string, unknown>) 
   const effectful = affectsPage(tool, args);
   const guarded = effectful && tool !== "run" && tool !== "replay";
   const key = guarded ? fingerprint(tool, args) : undefined;
+  const site = guarded && origin !== undefined && Object.hasOwn(SITE_WIDE, tool) ? siteKey(tool, args, origin) : undefined;
   const view = tab === undefined ? undefined : agent.views.get(tab);
   if (guarded && view?.stale) throw new HarnessError("stale_view", "the user changed this tab; snapshot or read it before acting", { next: "snapshot or extract this tab, then decide what to do" });
   if (effectful && view?.native?.size) {
-    throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { effect: "none", retryable: false, next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
+    throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
   }
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
-    throw new HarnessError("effect_unknown", "that action may already have happened; snapshot or read this tab before repeating it", { effect: "none", retryable: true, next: "snapshot or extract this tab and check whether the action already happened" });
+    throw new HarnessError("effect_unknown", `${ALREADY}; snapshot or read this tab before repeating it`, { next: "snapshot or extract this tab and check whether the action already happened" });
   }
-  return { tab, effectful, key };
+  if (site !== undefined && agent.sites.has(site)) {
+    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; read a tab there whole (snapshot or extract) before repeating it`, { next: `snapshot or extract a tab on ${origin} (tabs lists them) and check whether the action already happened` });
+  }
+  return { tab, effectful, key, site };
+}
+
+// An uncertain action holds its tab, and a site-wide one its site too.
+function holdUncertain(agent: Agent, tab: number, key: string, site: string | undefined, origin: string | undefined): void {
+  invalidate(agent, tab, key);
+  if (site === undefined || origin === undefined) return;
+  if (agent.sites.size >= KEPT) agent.sites.delete(agent.sites.keys().next().value!);
+  agent.sites.set(site, origin);
 }
 
 async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
-  const { tab, effectful, key } = checkAction(agent, tool, args);
+  const rawTab = tabOf(args.tab).tab;
+  const origin = Object.hasOwn(SITE_WIDE, tool) && affectsPage(tool, args) ? await siteOf(tool, args, rawTab === undefined ? undefined : followTab(rawTab)) : undefined;
+  const { tab, effectful, key, site } = checkAction(agent, tool, args, origin);
   const revision = agent.revision;
   try {
     const value = await run();
@@ -580,10 +623,13 @@ async function execute<T>(agent: Agent, tool: string, args: Record<string, unkno
     if (!delegated() && tab !== undefined && observed(tool, args, value) && agent.hold !== "driving") {
       const pending = agent.views.get(tab);
       if (pending && pending.revision <= revision && !pending.native?.size) agent.views.delete(tab);
+      // A whole read of a tab on a site releases what holds on that site.
+      const seen = agent.sites.size > 0 ? await siteOf("snapshot", args, tab) : undefined;
+      if (seen !== undefined) for (const [held, at] of agent.sites) if (at === seen) agent.sites.delete(held);
     }
     if (!delegated() && dispatched && effectful && tab !== undefined && key !== undefined && value && typeof value === "object" && "ok" in value && value.ok === false) {
       const failure = failureOf(value, { effectful: true });
-      if (failure.effect === "possibly_effected") invalidate(agent, tab, key);
+      if (failure.effect === "possibly_effected") holdUncertain(agent, tab, key, site, origin);
     }
     const pictureTab = tab ?? (tool === "open" && value && typeof value === "object" && "id" in value ? tabOf(value.id).tab : undefined);
     if (!delegated() && dispatched && (effectful || tool === "open") && pictureTab !== undefined && Object.hasOwn(PICTURE_ACTIONS, tool)) {
@@ -593,7 +639,7 @@ async function execute<T>(agent: Agent, tool: string, args: Record<string, unkno
     return value;
   } catch (e) {
     if (!delegated() && effectful && tab !== undefined && key !== undefined && failureOf(e, { effectful: dispatched }).effect === "possibly_effected") {
-      invalidate(agent, tab, key);
+      holdUncertain(agent, tab, key, site, origin);
       const call = scope.getStore()?.call;
       if (dispatched && call && Object.hasOwn(PICTURE_ACTIONS, tool)) await pictureAfter(agent, call, tab, true);
     }

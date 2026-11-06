@@ -24,8 +24,13 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   goto: always,
   history: always,
   upload: (a) => a.find === undefined,
-  eval: always,
+  // read: a site kit's request that only reads (Slack's history goes out
+  // as a POST from its page) and so can run twice: it takes no lane, and
+  // losing its answer holds no retry (mission.ts checkAction). On 11-04 a
+  // lost answer to one blocked every Slack read after it (MineSessionD-7).
+  eval: (a) => a.read !== true,
   fetch: (a) => {
+    if (a.read === true) return false;
     const method = String(a.method ?? "GET").toUpperCase();
     return a.body !== undefined || (method !== "GET" && method !== "HEAD");
   },
@@ -44,10 +49,15 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
 // Whether a call changes its tab's page.
 export const acts = (tool: string, args: Record<string, unknown>) => Object.hasOwn(ACTING, tool) && ACTING[tool](args);
 
-const EXTRA_EFFECTS: Record<string, true> = { real_input: true, close: true, window: true, activate: true, select_tab: true, type_mark: true, press_mark: true, replay: true, download: true };
+const EXTRA_EFFECTS: Record<string, true> = { real_input: true, close: true, window: true, activate: true, select_tab: true, type_mark: true, press_mark: true, replay: true };
 
 export function affectsPage(tool: string, args: Record<string, unknown>): boolean {
   if (tool === "native_preflight" && args.expected !== undefined || tool === "video" && (args.do === undefined || args.do === "inspect")) return false;
+  // A download clicks only by ref alone; by url, or of the file its tab
+  // shows, it fetches (download in tools.ts). On 11-05 a url's save into a
+  // folder failed EISDIR, and its retry with a file path was refused as a
+  // repeat of an action that may have happened (MineSessionE-4).
+  if (tool === "download") return args.ref !== undefined && args.url === undefined && args.urls === undefined;
   return acts(tool, args) || Object.hasOwn(EXTRA_EFFECTS, tool) || tool === "cookies" && (args.do === "set" || args.do === "clear");
 }
 

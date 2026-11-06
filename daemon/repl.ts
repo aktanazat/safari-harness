@@ -6,12 +6,15 @@
 // ...) read the owner's signed-in sites through tabs of their own.
 
 import vm from "node:vm";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as nodePath from "node:path";
 import { homedir } from "node:os";
 import { inspect } from "node:util";
 import { invoke as defaultInvoke, type Invoke } from "./call.ts";
+import { failureOf, HarnessError, readFailure, type Failure } from "./failures.ts";
+import { affectsPage } from "./lanes.ts";
 import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
@@ -35,7 +38,39 @@ const SPILL_HEAD_CHARS = 2_000;
 // page's whole snapshot, its error at the end.
 const ERROR_LINES = 8;
 
-export type ReplResult = { output: string; error?: string };
+// failure: the error's envelope (failures.ts), as the MCP repl tool and the
+// CLI answer it: the code and effect of what failed inside the run, made
+// uncertain once a call that may have changed a page ran earlier in it.
+// On 11-03 a run's rate_limited came back as command_failed, effect none
+// (AuditSafariHarness-23).
+export type ReplResult = { output: string; error?: string; failure?: Failure };
+
+// One run of a session's code: its output, whether a call of its may have
+// changed a page (acted), and its acting calls in flight. A run past its
+// time limit is abandoned: its later calls are refused, and what it prints
+// stays its own; the session's next run waits for it, then answers what it
+// did instead of running (late) (AuditSafariHarness-13, -22).
+type Run = { out: string[]; acted: boolean; inflight: number; abandoned?: number; ended?: Promise<void>; late?: ReplResult };
+const runs = new AsyncLocalStorage<Run>();
+
+// The last expression comes back as { value } on an object with no
+// prototype; a `return x` the transpiler let through, as x itself.
+function valueOf(done: unknown): unknown {
+  return done !== null && typeof done === "object" && Object.getPrototypeOf(done) === null ? ("value" in done ? done.value : undefined) : done;
+}
+
+function failed(output: string, e: HarnessError): ReplResult {
+  return { output, error: e.message, failure: failureOf(e) };
+}
+
+// What failed inside a run, as its error says, uncertain once a call of
+// the run may have changed a page: then repeating it may repeat that call.
+function runFailure(e: unknown, run: Run): Failure {
+  const uncertain = run.acted || run.inflight > 0;
+  const failure = failureOf(e, { effectful: uncertain });
+  if (!uncertain || failure.effect === "possibly_effected") return failure;
+  return failureOf(new HarnessError(failure.code, failure.message, { effect: "possibly_effected" }));
+}
 
 type TabRow = { id: number; url?: string; title?: string; active?: boolean; front?: boolean };
 type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; effect?: { url?: string } | "none"; newTab?: TabRow; dialogs?: unknown[]; next?: string };
@@ -713,7 +748,15 @@ export class ReplSession {
   set #page(value: unknown) {
     this.#g.page = value;
   }
-  #out: string[] = [];
+  // The running run, whose output a print goes to; a print from a run
+  // abandoned at its time limit stays in its own (Run), and one from code
+  // left running by a run that ended goes to the current run, if any.
+  #current: Run | undefined;
+  #idle: string[] = [];
+  get #out(): string[] {
+    const run = runs.getStore();
+    return run?.abandoned !== undefined ? run.out : this.#current?.out ?? this.#idle;
+  }
   #chain: Promise<unknown> = Promise.resolve();
   // Which call of the session this is, and the address each tab its
   // openTab opened asked for, in which call (openTab).
@@ -727,7 +770,26 @@ export class ReplSession {
   constructor(readonly id: string, opts: { cwd?: string; invoke?: Invoke; quiet?: boolean } = {}) {
     this.cwd = opts.cwd ?? process.cwd();
     mkdirSync(this.cwd, { recursive: true });
-    this.#invoke = opts.invoke ?? defaultInvoke;
+    const send = opts.invoke ?? defaultInvoke;
+    // Each call of a run notes whether it may have changed a page, and a
+    // run abandoned at its time limit sends no more (Run).
+    this.#invoke = async (tool, args, model) => {
+      const run = runs.getStore();
+      if (run?.abandoned !== undefined) throw new HarnessError("aborted", `this repl run passed its time limit ${Math.round((Date.now() - run.abandoned) / 1000)} s ago; its later calls are stopped, and ${tool} was not sent`, { effect: "none" });
+      const acting = run !== undefined && affectsPage(tool, args ?? {});
+      if (!acting) return send(tool, args, model);
+      run.inflight++;
+      try {
+        const value = await send(tool, args, model);
+        run.acted = true;
+        return value;
+      } catch (e) {
+        if (failureOf(e, { effectful: true }).effect === "possibly_effected") run.acted = true;
+        throw e;
+      } finally {
+        run.inflight--;
+      }
+    };
     this.#quiet = opts.quiet === true;
     this.kit = new SiteKit(this.#invoke, undefined, this.cwd);
     this.#ctx = vm.createContext({});
@@ -783,45 +845,80 @@ export class ReplSession {
     return next;
   }
 
+  // A run past its time limit that may still be running (Run).
+  #abandoned: Run | undefined;
+
   async #exec(code: string, timeoutMs: number): Promise<ReplResult> {
-    if (this.closed) return { output: "", error: "this session has ended" };
+    if (this.closed) return failed("", new HarnessError("unavailable", "this session has ended", { effect: "none", retryable: false, next: "start a new session" }));
+    // Code run beside a run that timed out read and acted beside it, and
+    // its prints came back in this run's answer; once it ended, a rerun of
+    // an approved send sent twice (AuditSafariHarness-13, -22). So this
+    // code waits its turn: it does not run while that run does, and the
+    // first call after it ends answers what it did instead.
+    const before = this.#abandoned;
+    if (before?.late === undefined && before?.abandoned !== undefined) {
+      const s = Math.round((Date.now() - before.abandoned) / 1000);
+      return failed("", new HarnessError("unavailable", `the run before this one passed its time limit ${s} s ago and is still running; its calls are stopped as they come, and this code did not run: run it again once that run ends, or end the session (safari repl --close)`, { effect: "none", retryable: true, next: "wait, then run the code again, or end the session" }));
+    }
+    if (before?.late !== undefined) {
+      this.#abandoned = undefined;
+      const { late } = before;
+      const did = before.acted ? "; it may have changed a page or sent something" : "";
+      return failed(await this.#flush(before.out), new HarnessError("stale_view", `the run before this one, which passed its time limit, has ended${late.error ? ` with an error: ${late.error}` : ""}${did}. Its output is above. This code did not run: check what that run did, then run this again if it is still needed`, { effect: "none", next: "read what the timed-out run did before running the code again" }));
+    }
     this.#calls++;
-    this.#out = [];
+    this.#idle = [];
     let js: string;
     try {
       js = this.#transpiler.transformSync(code);
     } catch (e) {
       const error = errorText(e);
-      if (!/Top-level return/.test(error)) return { output: "", error };
+      if (!/Top-level return/.test(error)) return failed("", new HarnessError("invalid_argument", error));
       // Playwright scripts often end with `return x`, which the transpiler
       // refuses beside a top-level await. Such a script runs as the body of
       // one async function, on the same lines, and its declarations stay in it.
       try {
         js = this.#transpiler.transformSync(`await (async () => {${code}\n})()`);
       } catch (again) {
-        return { output: "", error: errorText(again) };
+        return failed("", new HarnessError("invalid_argument", errorText(again)));
       }
     }
+    const run: Run = { out: [], acted: false, inflight: 0 };
+    this.#current = run;
     let timer: Timer | undefined;
+    const timedOut = new Error(`timed out after ${Math.round(timeoutMs / 1000)} s; the code may still be running in this session: its later calls are stopped, and the session's next run answers what it did`);
     try {
       await this.#refresh();
-      const running = Promise.resolve(vm.runInContext(freshDeclarations(js), this.#ctx, { timeout: timeoutMs, filename: "repl" }) as unknown);
+      const running = runs.run(run, () => Promise.resolve(vm.runInContext(freshDeclarations(js), this.#ctx, { timeout: timeoutMs, filename: "repl" }) as unknown));
       const limit = Promise.withResolvers<never>();
-      timer = setTimeout(() => limit.reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)} s; the code may still be running in this session`)), timeoutMs);
-      const done = await Promise.race([running, limit.promise]);
-      // The last expression comes back as { value } on an object with no
-      // prototype; a `return x` the transpiler let through, as x itself.
-      const value = done !== null && typeof done === "object" && Object.getPrototypeOf(done) === null ? ("value" in done ? done.value : undefined) : done;
-      if (value !== undefined) this.#out.push(show(value));
-      return { output: await this.#flush() };
+      timer = setTimeout(() => {
+        run.abandoned = Date.now();
+        this.#abandoned = run;
+        running.then((done) => {
+          const value = valueOf(done);
+          if (value !== undefined) run.out.push(show(value));
+          run.late = { output: "" };
+        }, (e: unknown) => {
+          run.late = { output: "", error: errorText(e) };
+        });
+        limit.reject(timedOut);
+      }, timeoutMs);
+      const value = valueOf(await Promise.race([running, limit.promise]));
+      if (value !== undefined) run.out.push(show(value));
+      return { output: await this.#flush(run.out) };
     } catch (e) {
+      if (e === timedOut) {
+        const uncertain = run.acted || run.inflight > 0;
+        return failed(await this.#flush(run.out.splice(0), ERROR_LINES), new HarnessError("timeout", timedOut.message, uncertain ? { effect: "possibly_effected" } : { effect: "none", next: "wait for the run to end; the session's next run answers what it did" }));
+      }
       const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
       const text = errorText(e);
-      const output = await this.#flush(ERROR_LINES);
+      const output = await this.#flush(run.out, ERROR_LINES);
       const error = this.#quiet ? text : await cutLines(text, "the error");
-      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}` };
+      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}`, failure: runFailure(e, run) };
     } finally {
       clearTimeout(timer);
+      if (this.#current === run) this.#current = undefined;
     }
   }
 
@@ -843,12 +940,11 @@ export class ReplSession {
     return near === undefined ? "" : `\nhint: did you mean ${on}.${near}()?`;
   }
 
-  // The run's output; past SPILL_CHARS, or past lines, saved whole and its
-  // head returned with the path. A person reads a quiet session's output,
-  // not a file.
-  async #flush(lines = Infinity): Promise<string> {
-    const text = this.#out.join("\n");
-    this.#out = [];
+  // A run's output, taken from out; past SPILL_CHARS, or past lines, saved
+  // whole and its head returned with the path. A person reads a quiet
+  // session's output, not a file.
+  async #flush(out: string[], lines = Infinity): Promise<string> {
+    const text = out.splice(0).join("\n");
     if (this.#quiet) return text;
     if (text.split("\n").length > lines) return cutLines(text, "output before the error", lines);
     if (text.length <= SPILL_CHARS) return text;
