@@ -3207,6 +3207,16 @@ again; tab ids agents hold keep working. Turn the extension off and on in
 Safari Settings only when `safari doctor` still fails its round trip
 after a reload; that asks for the password.
 
+Safari can stop doing what the extension asks while the extension's page
+stays connected (11-06): a reload then goes unheard too, and its socket
+never closes. Once a reload has gone 30 s unheard with a kind still stuck
+and nothing answered since, the daemon asks no more reloads on that link:
+calls that meet a stuck kind fail at once saying Safari ignored its
+reload, `safari extension reload` refuses, and `/health`, `safari status`
+and `safari doctor` say `reloadIgnored`. Quitting Safari and opening it
+again clears it (History > Reopen All Windows brings its windows back), as
+does the Settings toggle. Any answer from the extension ends the state.
+
 When the extension's link drops, a call in flight that only reads (a
 snapshot, an extract, a tab list) is sent once more on the link that
 comes back within 10 s. A call that acts is never sent again: it fails

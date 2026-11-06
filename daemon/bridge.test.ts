@@ -393,6 +393,30 @@ test("a reload Safari ignores is not asked again on that socket, and every call 
   expect(reloads).toEqual([60]);
 });
 
+// A kind no one asks again keeps its run, so the state must end on the
+// extension's first answer of any kind, or a later stall never reloads.
+test("any answer after an ignored reload lets the next stall reload the extension again", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = holding(bridge);
+  pastGrace(bridge, ext.sock);
+  for (let i = 0; i < 9; i++) {
+    void bridge.request("windows.open", [], 30000).catch(() => {});
+    await settled();
+    jest.advanceTimersByTime(10_000);
+  }
+  expect(bridge.health()).toMatchObject({ stuck: true, reloadIgnored: true });
+  const list = bridge.request("tabs.list");
+  await settled();
+  ext.answer(ext.asked.at(-1)!.id, []);
+  expect(await list).toEqual([]);
+  expect(bridge.health()).toMatchObject({ stuck: true, reloadIgnored: false });
+  expect(ext.asked.filter((a) => a.op === "reload")).toHaveLength(1);
+  void bridge.reload().catch(() => {});
+  await settled();
+  expect(ext.asked.filter((a) => a.op === "reload")).toHaveLength(2);
+});
+
 // 11-06: the page's own "Safari did not answer tabs.query in time" came a
 // moment after the daemon's 5 s limit, ended tabs.list's run ten times, and
 // left it out of doctor's stuck list.

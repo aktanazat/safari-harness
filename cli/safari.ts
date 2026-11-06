@@ -883,7 +883,7 @@ async function main() {
   // 2.2 KB for a yes or no, and said connected while every call timed out
   // (S99PartC).
   if (cmd === "status") {
-    type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connected?: boolean; stuck?: boolean; sinceAnswerMs?: number | null; timeouts?: Record<string, number>; connectedAt?: number } | null; journal?: JournalEvent[] };
+    type Health = { pid?: number; code?: string; root?: string; inFlight?: number; stopping?: string; extension: { connected?: boolean; stuck?: boolean; reloadIgnored?: boolean; sinceAnswerMs?: number | null; timeouts?: Record<string, number>; connectedAt?: number } | null; journal?: JournalEvent[] };
     type Upstream = { branch: string; ahead: number; master: string; at: string };
     const h = await daemonJson<Health>("/health");
     const alerts = alertHealth();
@@ -901,7 +901,7 @@ async function main() {
     const missed = Object.entries(e?.timeouts ?? {}).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n} in a row`).join(", ");
     const answered = typeof e?.sinceAnswerMs === "number" ? `, last answered ${Math.round(e.sinceAnswerMs / 1000)} s ago` : "";
     console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
-      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; run: safari extension reload`
+      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "run: safari extension reload"}`
       : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
     console.log(!alerts.on ? `${alerts.why}: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat`
       : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`

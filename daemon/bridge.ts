@@ -624,13 +624,13 @@ export class Bridge {
   }
 
   // Safari ignored the reload: RELOADED_MS after the connected socket was
-  // asked to reload it is still open, and a kind stuck since before the ask
-  // is stuck still. Another reload goes the same unheard way, so none goes
-  // until a new socket connects or that kind answers again.
+  // asked to reload it is still open, a kind is stuck, and nothing it sent
+  // since the ask was an answer (a Safari call its page gave up on is none).
+  // Another reload goes the same unheard way, so none goes until a new
+  // socket connects or the extension answers anything again.
   private reloadIgnored(now: number): boolean {
     const asked = this.sock ? this.reloaded.get(this.sock) : undefined;
-    if (asked === undefined || now - asked < RELOADED_MS) return false;
-    return [...this.runs.values()].some((r) => r.misses >= STUCK_AFTER && r.since <= asked);
+    return asked !== undefined && now - asked >= RELOADED_MS && this.stuck && this.answeredAt <= asked;
   }
 
   // How long each kind of request took to answer since the daemon started:
