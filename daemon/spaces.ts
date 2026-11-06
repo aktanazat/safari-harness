@@ -31,11 +31,11 @@
 
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { bridge, TimedOut } from "./bridge.ts";
+import { bridge, TimedOut, type RequestOptions } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
 import { closeTab, endUntrackedTurns, linkDropped, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -105,11 +105,16 @@ function pagesIn(inWindow: TabInfo[], s: Space): TabInfo[] {
   return inWindow.length === 1 && !inWindow[0].url ? [] : inWindow.filter((t) => !isPage(t, s));
 }
 
-const listTabs = async () => (await bridge.request("tabs.list")) as TabInfo[];
+// Requests no agent's own call makes (sweeps, the keeper's space tool, the
+// agents page) never start a Safari the user quit, even one he quit after
+// they looked (socket in bridge.ts).
+const quiet: RequestOptions = { start: false };
+
+const listTabs = async (options = quiet) => (await bridge.request("tabs.list", [], undefined, options)) as TabInfo[];
 
 async function identify(space: Space, tab: number): Promise<void> {
   const proof = randomUUID();
-  const result = await bridge.tab(tab, "eval", [`(() => { history.replaceState({ ...history.state, safariHarnessSpace: ${JSON.stringify(proof)} }, ""); return true; })()`]).catch(() => null) as { result?: unknown } | null;
+  const result = await bridge.tab(tab, "eval", [`(() => { history.replaceState({ ...history.state, safariHarnessSpace: ${JSON.stringify(proof)} }, ""); return true; })()`], undefined, undefined, quiet).catch(() => null) as { result?: unknown } | null;
   if (result?.result !== true) return;
   space.proof = proof;
   save();
@@ -121,22 +126,39 @@ async function identify(space: Space, tab: number): Promise<void> {
 // close it; 01a0f14c). A quit Safari hears nothing, and one that cannot
 // answer does not hold up the keeper.
 async function regrouping(space: Space, on: boolean) {
-  if (bridge.connected) await bridge.request("windows.regrouping", [space.window, on]).catch(() => undefined);
+  if (bridge.connected) await bridge.request("windows.regrouping", [space.window, on], undefined, quiet).catch(() => undefined);
 }
+
+// Ended and closing windows Safari answered it no longer has: a listing
+// that shows neither the window nor its page asks Safari no more about one.
+// The agents page, polled every 2 s, resolved each of 18 such groups' gone
+// windows every time (11-06).
+const goneWindows = new WeakSet<Space>();
 
 // Browser window aliases and the original page's history state establish
 // ownership independently of a copied address.
-async function located(space: Space, tabs?: TabInfo[]): Promise<TabInfo[]> {
-  const all = tabs ?? (await listTabs());
-  let window = all.some(t => t.windowId === space.window) ? space.window : await bridge.request("windows.resolve", [space.window]).catch(() => null) as number | null;
+async function located(space: Space, tabs?: TabInfo[], options = quiet): Promise<TabInfo[]> {
+  const all = tabs ?? (await listTabs(options));
+  const shown = all.some(t => t.windowId === space.window);
+  const over = closing.get(space.name) === space || ended.has(space);
+  if (!shown && over && goneWindows.has(space) && !all.some(t => isPage(t, space))) return [];
+  let answered = true;
+  let window = shown ? space.window : await bridge.request("windows.resolve", [space.window], undefined, options).catch(() => {
+    answered = false;
+    return null;
+  }) as number | null;
   if (window === null && space.proof) {
     const pages = all.filter(t => isPage(t, space) && pageAt(t) !== undefined);
     if (pages.length === 1) {
-      const result = await bridge.tab(pages[0].id, "eval", ["history.state?.safariHarnessSpace ?? null"]).catch(() => null) as { result?: unknown } | null;
+      const result = await bridge.tab(pages[0].id, "eval", ["history.state?.safariHarnessSpace ?? null"], undefined, undefined, options).catch(() => null) as { result?: unknown } | null;
       if (result?.result === space.proof) window = pages[0].windowId ?? null;
     }
   }
-  if (window === null) return [];
+  if (window === null) {
+    if (answered && over) goneWindows.add(space);
+    return [];
+  }
+  goneWindows.delete(space);
   if (window !== space.window) {
     space.window = window;
     save();
@@ -188,13 +210,14 @@ export function heldSpace(group?: string): Space | undefined {
 // was: on 10-16 an open failed "extension request tabs.list timed out after
 // 5000ms" on a Mac too loaded for Safari to list its tabs in 5 s (smoke run
 // after the deploy). Only lost, the window an open just found gone, is then
-// made anew. A stuck extension's error still fails the open at once.
-export async function spaceWindow(group?: string, lost?: Space, isolated = false): Promise<Space> {
+// made anew. A stuck extension's error still fails the open at once. Only
+// an agent's own open may start a Safari the user quit (options).
+export async function spaceWindow(group?: string, lost?: Space, isolated = false, options: RequestOptions = {}): Promise<Space> {
   const owner = currentOwner();
   const task = currentTask();
   const key = spaceKey(group, isolated);
   for (const had of matchingSpaces(key, isolated)) {
-    const inWindow = await located(had).catch((e: unknown) => {
+    const inWindow = await located(had, undefined, options).catch((e: unknown) => {
       if (e instanceof TimedOut) return undefined;
       throw e;
     });
@@ -212,7 +235,7 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const name = spaceName(group, owner);
       const size = nextSize();
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-      const w = (await bridge.request("windows.open", [page, size])) as { windowId: number; tabId: number };
+      const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number };
       const off = groupsOff();
       const space: Space = { key, id, window: w.windowId, name, size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
@@ -320,6 +343,22 @@ function pageAt(t: TabInfo): { tab: number; window: number; id: string; name: st
   return id && name && width && height ? { tab: t.id, window: t.windowId, id, name, size: { width, height } } : undefined;
 }
 
+// One list of Safari's tabs per keeper pass (pass in keeper.ts), which its
+// state and every release share: each release listed them again, about 3
+// lists per ended group each 3 s pass (11-06). A list that failed is asked
+// again. A release without a pass lists afresh.
+let passListing: { pass: string; tabs: Promise<TabInfo[]> } | undefined;
+
+function passTabs(pass: unknown): Promise<TabInfo[]> | undefined {
+  if (typeof pass !== "string") return undefined;
+  if (passListing?.pass === pass) return passListing.tabs;
+  const tabs = listTabs();
+  passListing = { pass, tabs };
+  tabs.catch(() => {
+    if (passListing?.tabs === tabs) passListing = undefined;
+  });
+  return tabs;
+}
 
 // The keeper's side (keeper.ts). state lists the windows that are or will
 // be groups and the ended groups, with each window's size and, while Safari
@@ -330,7 +369,7 @@ function pageAt(t: TabInfo): { tab: number; window: number; id: string; name: st
 // without moving any protected or foreign page. gone forgets the group;
 // scratch opens a window to delete from a group whose own window is gone;
 // raised says when a call last brought Safari to the front.
-// None asks anything of a quit Safari.
+// None asks anything of a quit Safari, or starts one he quit meanwhile.
 export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   const name = String(a.name ?? "");
   const live = [...spaces.values()].find((s) => s.name === name);
@@ -341,6 +380,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       // for a quit Safari, where the error a list threw stopped it.
       const asks = bridge.connected && !bridge.stuck && watched.some((s) => s.group === "waiting" || s.group === "making");
       const tabs = asks ? await listTabs().catch(() => undefined) : undefined;
+      if (tabs && typeof a.pass === "string") passListing = { pass: a.pass, tabs: Promise.resolve(tabs) };
       const counted = await Promise.all(watched.map(async (s) => ({ s, inWindow: tabs && (await located(s, tabs)) })));
       // A waiting window holding fewer than GROUP_AT of its agent's tabs is
       // not yet one the keeper makes a group of.
@@ -374,7 +414,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (!bridge.connected) return { ok: false };
       const s = closing.get(name);
       if (!s?.done) return { ok: false };
-      const now = await located(s);
+      const now = await located(s, await passTabs(a.pass));
       if (!s.done) return { ok: false };
       const left = pagesIn(now, s).length;
       // A kept, foreign, or newly added page is never moved to enable
@@ -388,7 +428,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const tab = now.find((t) => isPage(t, s)) ?? now[0];
       if (tab && s.size.width < MIN_WIDTH) {
         // background.js "window": the size Safari gave the window
-        const widened = (await bridge.request("window", [tab.id, nextSize(), true])) as { size: Size };
+        const widened = (await bridge.request("window", [tab.id, nextSize(), true], undefined, quiet)) as { size: Size };
         s.size = widened.size;
         save();
       }
@@ -401,9 +441,14 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
     }
     case "scratch": {
       if (!bridge.connected) return { ok: false };
-      const s = await spaceWindow("tab group cleanup");
+      // The daemon's window, no agent's: made as the keeper's caller's, it
+      // ended at that agent's every turn end, and the next pass opened
+      // another (33 in an hour for agent 39993 on 11-05).
+      const s = await runAs(undefined, () => spaceWindow("tab group cleanup", undefined, false, quiet));
       s.group = "plain";
       s.why = "a window to delete tab groups from";
+      // In use while the keeper deletes from it: unused 20 min, it ends.
+      s.used = Date.now();
       save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };
     }
@@ -464,9 +509,9 @@ async function end(space: Space) {
   if (page) {
     const link = bridge.extensionInfo?.connectedAt;
     try {
-      await bridge.request("dialogs", [page.id, { accept: false, text: null }]);
+      await bridge.request("dialogs", [page.id, { accept: false, text: null }], undefined, quiet);
       if (!space.done) return;
-      const result = await bridge.request("tabs.close", [page.id], 10000) as { ok?: boolean };
+      const result = await bridge.request("tabs.close", [page.id], 10000, quiet) as { ok?: boolean };
       if (result.ok !== true) return;
       const tracked = taskTracked?.(space.owner);
       let why = "as its agent's turn ended";
@@ -544,7 +589,7 @@ async function sweepOnce() {
         if (failed && Date.now() < failed.at) continue;
         const link = bridge.extensionInfo?.connectedAt;
         try {
-          const result = await closeTab(tab.id, space ? "with its window, as its agent's task ended" : "with its window, as no record names it") as { ok?: boolean } | null;
+          const result = await closeTab(tab.id, space ? "with its window, as its agent's task ended" : "with its window, as no record names it", undefined, quiet) as { ok?: boolean } | null;
           if (result?.ok === true) unclosed.delete(key);
           else failedClose(key, space?.name ?? "untracked agent status", "Safari did not close the status page");
         } catch (e) {

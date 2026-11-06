@@ -1,7 +1,7 @@
 // Tool registry: the aside-style verbs, implemented over the bridge.
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
-import { bridge } from "./bridge.ts";
+import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
@@ -85,9 +85,9 @@ function str(v: unknown, name: string): string {
 let lastListed: { at: number; tabs: TabInfo[]; changes: number } | undefined;
 let tabChanges = 0;
 
-export async function listTabs(): Promise<TabInfo[]> {
+export async function listTabs(options: RequestOptions = {}): Promise<TabInfo[]> {
   const changes = tabChanges;
-  const tabs = (await bridge.request("tabs.list")) as TabInfo[];
+  const tabs = (await bridge.request("tabs.list", [], undefined, options)) as TabInfo[];
   sighted(tabs);
   lastListed = { at: Date.now(), tabs, changes };
   return tabs;
@@ -97,8 +97,8 @@ export async function listTabs(): Promise<TabInfo[]> {
 // each agent window's page asked Safari for every tab every 2 s it showed.
 // A call to a harness tab, and a tab the harness opens or closes, makes the
 // next one fresh, so only what the user did himself shows late.
-export function recentTabs(maxAgeMs: number): Promise<TabInfo[]> {
-  return lastListed?.changes === tabChanges && Date.now() - lastListed.at < maxAgeMs ? Promise.resolve(lastListed.tabs) : listTabs();
+export function recentTabs(maxAgeMs: number, options: RequestOptions = {}): Promise<TabInfo[]> {
+  return lastListed?.changes === tabChanges && Date.now() - lastListed.at < maxAgeMs ? Promise.resolve(lastListed.tabs) : listTabs(options);
 }
 
 // A page tool's tab: the id open returned, or "front", the tab the user has
@@ -253,14 +253,14 @@ async function reuseTab(address: string, space: Space, among?: Set<number>): Pro
 // failed "that tab is gone" after the repl had closed it (HuntsUsage). A
 // listing first finds one a Safari that started again holds under a new id
 // (sighted).
-export async function closeTab(tab: number, why = "by a close call", only?: "idle"): Promise<unknown> {
+export async function closeTab(tab: number, why = "by a close call", only?: "idle", options: RequestOptions = {}): Promise<unknown> {
   let id = followTab(num(tab, "tab"));
   let res: unknown;
   try {
-    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000, options);
   } catch (e) {
     if (!(e instanceof Error) || !e.message.startsWith("that tab is gone") || (!closedTabs.has(id) && !harnessTabs.has(id))) throw e;
-    await listTabs().catch((): TabInfo[] => []);
+    await listTabs(options).catch((): TabInfo[] => []);
     if (followTab(id) === id) {
       // what closed it: the harness's own record of a close it made, else
       // the extension's word from Safari (goneWhy)
@@ -270,7 +270,7 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
       return { ok: true, already };
     }
     id = followTab(id);
-    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000);
+    res = await bridge.request("tabs.close", only === undefined ? [id] : [id, only], 20000, options);
   }
   if (res && typeof res === "object" && "ok" in res && res.ok === true) {
     const held = harnessTabs.get(id);
@@ -293,8 +293,9 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // started again (restored). done: cleanup was explicitly admitted for it.
 // failed: its last close by a sweep did not close it; retry: how many of
 // those closes in a row failed or were refused, and when the next may go
-// (sweepOnce).
-type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
+// (sweepOnce); stuck: the last was Safari's own failure to close it, which
+// its agent's calls and turn ends do not end (closeLater).
+type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number };
 const harnessTabs = new Map<number, HarnessTab>();
 // the used time the file of tabs holds for each, as last written (save)
 const written = new WeakMap<HarnessTab, number>();
@@ -625,7 +626,7 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
       if (!inTurn(t, owner, task)) continue;
       // A wait an idle close set is not owed at the turn's end: the
       // extension refuses only a close for idleness.
-      if (!t.done) delete t.retry;
+      if (!t.done && !t.retry?.stuck) delete t.retry;
       t.done = true;
     }
     save();
@@ -714,7 +715,7 @@ async function sweepOnce() {
   // sweep lists the tabs, which notes what they show and finds those a
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
-  const listed = await listTabs().catch(() => undefined);
+  const listed = await listTabs({ start: false }).catch(() => undefined);
   if (listed === undefined) return;
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
@@ -739,7 +740,7 @@ async function sweepOnce() {
       }
       if (reconnectedSince(t)) return;
       const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner));
-      const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000)) as { ok?: boolean; front?: true; protected?: string } | null;
+      const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string } | null;
       if (res?.front) {
         t.used = Date.now();
       } else if (res?.ok !== true) {
@@ -771,10 +772,15 @@ async function sweepOnce() {
   await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
 }
 
+// A close Safari itself did not make (a native sheet, a window off screen
+// holds the tab) keeps its wait while the agent works: before, each call
+// and turn end of the agent began the wait again at a minute, and tabs
+// 916381 and 916584 failed to close 76 and 75 times in 11 hours (11-03).
+// Only a close, or the tab seen gone, ends it.
 function closeLater(tab: number, t: HarnessTab, why: string): void {
   const tries = (t.retry?.tries ?? 0) + 1;
   const wait = closeRetryMs(tries);
-  t.retry = { tries, at: Date.now() + wait };
+  t.retry = { tries, at: Date.now() + wait, ...(why.startsWith("Safari did not close") ? { stuck: true as const } : {}) };
   t.failed = true;
   console.error(`[safari-harness] closing tab ${tab} failed: ${why}; trying again in ${wait / 1000} s`);
 }
@@ -3758,7 +3764,7 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
     if (!matchesTask(t, owner, task)) continue;
     if (t.done) resumed = true;
     delete t.done;
-    delete t.retry;
+    if (!t.retry?.stuck) delete t.retry;
   }
   turnResumed(owner, task);
   if (resumed) save();

@@ -105,7 +105,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   each step waits until he is idle, the screen unlocked and Safari behind,
   and stops if his front app changes. A menu that will not
   close turns groups off for a day; a make that fails and leaves its group
-  turns off only new groups, and ended agents' groups still go.
+  turns off only new groups, and ended agents' groups still go. An exited
+  agent's group whose window is gone and that three deletes could not
+  remove stays in his sidebar for him to delete.
   `~/.local/share/safari-harness/groups-off.json` says why, and removing it
   turns them on sooner. `safari doctor` warns while it is there, and each
   agent is told why once, not on every open.
