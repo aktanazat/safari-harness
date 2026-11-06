@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promi
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { withPageState } from "./page-state.ts";
+import { redactSecretText } from "./redact.ts";
 
 export const SAVED_DIR = join(homedir(), ".local/share/safari-harness/saved");
 const HEAD_CHARS = 500;
@@ -108,9 +109,11 @@ export async function pruneSaved(): Promise<void> {
 
 // Text longer than a reply keeps, whole, in the saved folder, named for
 // url's host: an answer (replyText in tools.ts, repl.ts) or a page's text
-// cut at extract's limit (fit in tools.ts). Returns its path.
+// cut at extract's limit (fit in tools.ts). Returns its path. Agents read
+// these files, so secret-shaped values are cut as in a reply (redact.ts):
+// on 11-06 two saved Slack searches put a key and a password in transcripts.
 export function saveAnswer(text: string, url = ""): Promise<string> {
-  return write({ dir: SAVED_DIR }, url, { body: text, ext: "txt" });
+  return write({ dir: SAVED_DIR }, url, { body: redactSecretText(text), ext: "txt" });
 }
 
 // The read's result, written to target. An error the page answered with is

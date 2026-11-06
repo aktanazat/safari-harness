@@ -3,7 +3,7 @@ import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { redacted, redactUrl } from "./redact.ts";
-import { callTool } from "./tools.ts";
+import { callTool, formatResult } from "./tools.ts";
 
 // A stand-in extension. The user's window, 7000, holds three tabs, the front
 // one on GitHub. Each window open makes starts with its page. A type answers
@@ -15,6 +15,8 @@ const tabs = new Map<number, Row>([
   [7003, { id: 7003, windowId: 7000, url: "https://gist.github.com/me/1", title: "Gist" }],
 ]);
 const typed: unknown[] = [];
+// A made-up key, joined at run time so no file holds one whole.
+const PASTED = ["sk-", "proj-", "Fixture0123456789abcdefXYZ"].join("");
 let nextTab = 8000;
 let nextWindow = 5000;
 function answer(op: string, args: unknown[]): unknown {
@@ -30,6 +32,9 @@ function answer(op: string, args: unknown[]): unknown {
   }
   if (op === "tabs.list") return [...tabs.values()];
   if (op === "probe") return [];
+  // A page, and a site's cookies, that hold a key someone pasted.
+  if (op === "evalPage") return `deploy notes: ${PASTED}`;
+  if (op === "cookies") return [{ name: "sid", value: PASTED }];
   if (op === "relay" && args[1] === "type") {
     const [, text] = args[2] as unknown[];
     typed.push(args[2]);
@@ -123,4 +128,19 @@ test("addresses keep an order id and lose a code, a state, and a token, whatever
     snapshot: '[3] link "Back" /cb?code=...&order=7\n[4] link "Next" /p?page=2',
     steps: [{ value: { url: "https://b.example/?token=..." } }],
   });
+});
+
+// The daemon's boundary (audit I-1): a model's own read has secret-shaped
+// values cut and counted, as the formatted answer shows. A REPL script's
+// call (not the model's) sees the page as it is, and cookies keeps its
+// values, as its description warns.
+test("a model's eval answer has a pasted key cut and counted; a script's eval and cookies keep it", async () => {
+  const model = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args, true));
+  const read = await model("eval", { tab: mine.id, expression: "document.body.innerText", page: true });
+  expect(JSON.stringify(read)).not.toContain(PASTED);
+  expect(read).toMatchObject({ redacted: { openai: 1 } });
+  expect(formatResult(read)).toContain("[REDACTED:openai]");
+  expect(formatResult(read)).toContain("redacted: openai 1");
+  expect(JSON.stringify(await as("eval", { tab: mine.id, expression: "document.body.innerText", page: true }))).toContain(PASTED);
+  expect(JSON.stringify(await model("cookies", { tab: mine.id }))).toContain(PASTED);
 });

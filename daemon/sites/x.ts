@@ -425,9 +425,9 @@ export function x(kit: SiteKit) {
     },
 
     // ----- writes: drafts until approved -----
-    post(text: string, opts: { replyTo?: string; approved?: boolean } = {}) {
+    post(text: string, opts: { replyTo?: string; approved?: string | boolean } = {}) {
       const replyTo = opts.replyTo ? tweetId(opts.replyTo) : undefined;
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: replyTo ? "reply" : "post",
         ...(replyTo ? { to: `https://x.com/i/status/${replyTo}` } : {}),
@@ -442,9 +442,9 @@ export function x(kit: SiteKit) {
       });
     },
 
-    like(idOrUrl: string, opts: { approved?: boolean } = {}) {
+    like(idOrUrl: string, opts: { approved?: string | boolean } = {}) {
       const id = tweetId(idOrUrl);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: "like",
         to: `https://x.com/i/status/${id}`,
@@ -454,9 +454,9 @@ export function x(kit: SiteKit) {
       });
     },
 
-    follow(handle: string, opts: { approved?: boolean } = {}) {
+    follow(handle: string, opts: { approved?: string | boolean } = {}) {
       const h = handleOf(handle);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: "follow",
         to: `@${h}`,
@@ -471,10 +471,10 @@ export function x(kit: SiteKit) {
     },
 
     // conversationOrHandle: a conversation id from getDmInbox, or a handle for a one-to-one chat.
-    sendDm(conversationOrHandle: string, text: string, opts: { approved?: boolean } = {}) {
+    sendDm(conversationOrHandle: string, text: string, opts: { approved?: string | boolean } = {}) {
       const target = conversationOrHandle.trim();
       const isConversation = /^\d+(-\d+)?$/.test(target);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: "dm",
         to: isConversation ? `conversation ${target}` : `@${handleOf(target)}`,

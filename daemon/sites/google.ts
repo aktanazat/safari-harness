@@ -5,6 +5,7 @@
 // Sheets come from their export endpoints. Composing opens a prefilled
 // window for the owner and never presses Send.
 
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -439,6 +440,26 @@ export function gmail(kit: SiteKit) {
   // The files a draft attaches, by name, as a line after its body.
   const attached = (files: string[] = []) => (files.length ? `\n\nAttached: ${files.map((f) => f.split("/").pop()).join(", ")}` : "");
 
+  // What the files a draft attaches hold: a file changed after the owner
+  // saw the draft makes it another draft (draftOrSend's bind).
+  async function filesHash(files: string[] = []): Promise<string> {
+    const hash = createHash("sha256");
+    for (const f of files) hash.update(f).update(new Uint8Array(await Bun.file(f).arrayBuffer()));
+    return hash.digest("hex");
+  }
+
+  // Who a draft goes out as and, for a reply, to whom, named in the draft:
+  // without account a draft goes from the first signed-in account, and a
+  // reply's draft named no one (audit SH-29).
+  async function sender(n: number): Promise<string> {
+    return (await accounts.list()).find((a) => a.index === n)?.email ?? `Google account ${n}`;
+  }
+  // Gmail's Reply goes to the thread's last message's Reply-To, or else its sender.
+  async function replyTo(n: number, id: string): Promise<string> {
+    const last = (await thread(n, id, false)).messages.at(-1);
+    return (last?.replyTo?.length ? last.replyTo : last ? [last.from] : []).map((s) => s.email).join(", ");
+  }
+
   function composeText(o: Compose): string {
     return [`To: ${o.to ?? ""}`, o.cc ? `Cc: ${o.cc}` : "", o.bcc ? `Bcc: ${o.bcc}` : "", `Subject: ${o.subject ?? ""}`, "", o.body ?? ""].filter((l, i) => l !== "" || i === 4).join("\n") + attached(o.files);
   }
@@ -573,13 +594,15 @@ export function gmail(kit: SiteKit) {
     // A draft of a new message; approved, it opens Gmail's compose window
     // prefilled with it, files attached, in a new tab for the owner, who
     // alone presses Send.
-    async openComposer(opts: Compose & { account?: number | string; approved?: boolean }) {
+    async openComposer(opts: Compose & { account?: number | string; approved?: string | boolean }) {
       const n = await accountIndex(accounts, opts.account);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "Gmail",
         action: "open a prefilled compose window (nothing is sent until the owner presses Send)",
+        from: await sender(n),
         to: opts.to,
         text: composeText(opts),
+        bind: await filesHash(opts.files),
         approved: opts.approved,
         send: () => composeTab(n, opts),
       });
@@ -587,13 +610,15 @@ export function gmail(kit: SiteKit) {
 
     // A draft of a new message; approved, it sends it from Gmail's compose
     // window, files attached, and returns once Gmail shows "Message sent".
-    async send(opts: Compose & { account?: number | string; to: string; approved?: boolean }) {
+    async send(opts: Compose & { account?: number | string; to: string; approved?: string | boolean }) {
       const n = await accountIndex(accounts, opts.account);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "Gmail",
         action: "send this message",
+        from: await sender(n),
         to: opts.to,
         text: composeText(opts),
+        bind: await filesHash(opts.files),
         approved: opts.approved,
         send: async () => pressSend((await composeTab(n, opts)).tab),
       });
@@ -602,14 +627,18 @@ export function gmail(kit: SiteKit) {
     // A draft reply on a thread; approved, it opens the thread in a new tab
     // for the owner, presses Reply there, types the body into the reply
     // box, and attaches the files. Nothing is sent. Opening the thread in
-    // Gmail marks it read.
-    async openReplyComposer(account: number | string, threadId: string, opts: { body?: string; files?: string[]; approved?: boolean } = {}) {
+    // Gmail marks it read; its draft reads it from the print view, which
+    // does not.
+    async openReplyComposer(account: number | string, threadId: string, opts: { body?: string; files?: string[]; approved?: string | boolean } = {}) {
       const n = await accountIndex(accounts, account);
       const id = legacyThreadId(threadId);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "Gmail",
         action: `open a reply on thread ${id} (nothing is sent until the owner presses Send)`,
+        from: await sender(n),
+        to: await replyTo(n, id),
         text: `${opts.body ?? ""}${attached(opts.files)}`,
+        bind: await filesHash(opts.files),
         approved: opts.approved,
         send: () => replyTab(n, id, opts),
       });
@@ -619,13 +648,16 @@ export function gmail(kit: SiteKit) {
     // message. Approved, it sends it from the thread's reply box and
     // returns once Gmail shows "Message sent". Opening the thread marks it
     // read.
-    async reply(account: number | string, threadId: string, opts: { body: string; files?: string[]; approved?: boolean }) {
+    async reply(account: number | string, threadId: string, opts: { body: string; files?: string[]; approved?: string | boolean }) {
       const n = await accountIndex(accounts, account);
       const id = legacyThreadId(threadId);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "Gmail",
         action: `send a reply on thread ${id}`,
+        from: await sender(n),
+        to: await replyTo(n, id),
         text: `${opts.body}${attached(opts.files)}`,
+        bind: await filesHash(opts.files),
         approved: opts.approved,
         send: async () => pressSend((await replyTab(n, id, opts)).tab),
       });

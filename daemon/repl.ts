@@ -18,6 +18,7 @@ import { affectsPage } from "./lanes.ts";
 import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
+import { redactSecretText, type Redacted } from "./redact.ts";
 import { nearest } from "./guard.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
@@ -43,7 +44,9 @@ const ERROR_LINES = 8;
 // uncertain once a call that may have changed a page ran earlier in it.
 // On 11-03 a run's rate_limited came back as command_failed, effect none
 // (AuditSafariHarness-23).
-export type ReplResult = { output: string; error?: string; failure?: Failure };
+// redacted: how many secret-shaped values of each kind were cut from the
+// output and error (redact.ts); absent when none were.
+export type ReplResult = { output: string; error?: string; failure?: Failure; redacted?: Redacted };
 
 // One run of a session's code: its output, whether a call of its may have
 // changed a page (acted), and its acting calls in flight. A run past its
@@ -868,6 +871,10 @@ export class ReplSession {
     }
     this.#calls++;
     this.#idle = [];
+    // A draft a site made in this run cannot be approved in it (kit.ts).
+    this.kit.run = this.#calls;
+    // What this run's answer had cut (redact.ts).
+    const cut: Redacted = {};
     let js: string;
     try {
       js = this.#transpiler.transformSync(code);
@@ -905,17 +912,18 @@ export class ReplSession {
       }, timeoutMs);
       const value = valueOf(await Promise.race([running, limit.promise]));
       if (value !== undefined) run.out.push(show(value));
-      return { output: await this.#flush(run.out) };
+      const output = await this.#flush(run.out, cut);
+      return { output, ...(Object.keys(cut).length ? { redacted: cut } : {}) };
     } catch (e) {
       if (e === timedOut) {
         const uncertain = run.acted || run.inflight > 0;
         return failed(await this.#flush(run.out.splice(0), ERROR_LINES), new HarnessError("timeout", timedOut.message, uncertain ? { effect: "possibly_effected" } : { effect: "none", next: "wait for the run to end; the session's next run answers what it did" }));
       }
       const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
-      const text = errorText(e);
-      const output = await this.#flush(run.out, ERROR_LINES);
+      const text = redactSecretText(errorText(e), cut);
+      const output = await this.#flush(run.out, cut, ERROR_LINES);
       const error = this.#quiet ? text : await cutLines(text, "the error");
-      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}`, failure: runFailure(e, run) };
+      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}`, failure: runFailure(e, run), ...(Object.keys(cut).length ? { redacted: cut } : {}) };
     } finally {
       clearTimeout(timer);
       if (this.#current === run) this.#current = undefined;
@@ -940,11 +948,12 @@ export class ReplSession {
     return near === undefined ? "" : `\nhint: did you mean ${on}.${near}()?`;
   }
 
-  // A run's output, taken from out; past SPILL_CHARS, or past lines, saved
+  // A run's output, taken from out, its secret-shaped values cut and
+  // counted into cut (redact.ts); past SPILL_CHARS, or past lines, saved
   // whole and its head returned with the path. A person reads a quiet
   // session's output, not a file.
-  async #flush(out: string[], lines = Infinity): Promise<string> {
-    const text = out.splice(0).join("\n");
+  async #flush(out: string[], cut: Redacted = {}, lines = Infinity): Promise<string> {
+    const text = redactSecretText(out.splice(0).join("\n"), cut);
     if (this.#quiet) return text;
     if (text.split("\n").length > lines) return cutLines(text, "output before the error", lines);
     if (text.length <= SPILL_CHARS) return text;

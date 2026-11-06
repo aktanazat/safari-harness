@@ -6,7 +6,8 @@
 // the caller to be allowed to control Messages, and returns a draft first.
 
 import { Database } from "bun:sqlite";
-import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -581,7 +582,51 @@ async function sendFile(file: FileToSend, dir: string, index: number, chat: bool
   });
 }
 
-export async function send(opts: { to: string; text?: string; files?: string[]; approved?: boolean }) {
+// Drafts the user was shown, a file each, so that the CLI's next process
+// can approve one: <id>.json holds a hash of what it would send and when it
+// was made; approving renames it to <id>.used, which only one caller can.
+// Approval was approved: true, which a model could set on its first call
+// and which re-resolved the recipient, so a draft to one chat by name could
+// go to another (audit SH-21).
+const DRAFTS = join(HOME, ".local", "share", "safari-harness", "drafts");
+const DRAFT_MS = 30 * 60_000;
+
+// A draft file's hash and time, or undefined for a file that is not one.
+function readDraft(file: string): { payload: string; at: number } | undefined {
+  try {
+    const d: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (d && typeof d === "object" && "payload" in d && typeof d.payload === "string" && "at" in d && typeof d.at === "number") return { payload: d.payload, at: d.at };
+  } catch {}
+  return undefined;
+}
+
+function issueDraft(payload: string): string {
+  mkdirSync(DRAFTS, { recursive: true, mode: 0o700 });
+  for (const name of readdirSync(DRAFTS)) {
+    const old = readDraft(join(DRAFTS, name));
+    if (!old || Date.now() - old.at > DRAFT_MS) rmSync(join(DRAFTS, name), { force: true });
+  }
+  const id = randomBytes(6).toString("hex");
+  writeFileSync(join(DRAFTS, `${id}.json`), JSON.stringify({ payload, at: Date.now() }), { mode: 0o600, flag: "wx" });
+  return id;
+}
+
+function redeemDraft(id: unknown, payload: string): void {
+  const refused = (why: string) => new HarnessError("invalid_argument", `nothing was sent: ${why}`, { retryable: false, next: "show the user the draft and wait for their yes before approving it" });
+  if (typeof id !== "string" || !/^[0-9a-f]{12}$/.test(id)) throw refused("approved takes the draftId of the draft the user approved; call without approved for the draft");
+  const file = join(DRAFTS, `${id}.json`);
+  const shown = readDraft(file);
+  if (!shown) throw refused(existsSync(join(DRAFTS, `${id}.used`)) ? `draft ${id} was approved once already, and a draft sends once; draft again for another send` : `no draft ${id} (a draft lasts ${DRAFT_MS / 60_000} min); draft it again`);
+  if (Date.now() - shown.at > DRAFT_MS) throw refused(`draft ${id} is over ${DRAFT_MS / 60_000} min old; draft it again`);
+  if (shown.payload !== payload) throw refused(`this is not draft ${id}: its recipient, text, or files differ; draft it again`);
+  try {
+    renameSync(file, join(DRAFTS, `${id}.used`));
+  } catch {
+    throw refused(`draft ${id} was approved once already, and a draft sends once`);
+  }
+}
+
+export async function send(opts: { to: string; text?: string; files?: string[]; approved?: string | boolean }) {
   const text = String(opts.text ?? "");
   const files = filesToSend(opts.files);
   if (!text.trim() && !files.length) throw new Error("send needs text, files, or both");
@@ -616,9 +661,16 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
   } finally {
     db.close();
   }
-  if (opts.approved !== true) {
-    return { status: "draft", ...draft, next: "show the user this recipient, text, files, and recent lines; call again with approved: true only after they say yes" };
+  // What the draft would send: the chat it resolved to, the text, and each
+  // file's bytes.
+  const hash = createHash("sha256").update(JSON.stringify([draft.chat ?? to, draft.service, text]));
+  for (const f of files) hash.update(f.path).update(readFileSync(f.path));
+  const payload = hash.digest("hex");
+  if (opts.approved === undefined || opts.approved === false) {
+    const draftId = issueDraft(payload);
+    return { status: "draft", draftId, ...draft, next: `show the user this recipient, text, files, and recent lines; only after they say yes, call again with the same to, text, and files and approved: "${draftId}"` };
   }
+  redeemDraft(opts.approved, payload);
   const chat = draft.chat !== null;
   const target = draft.chat ?? to;
   // Files first, each confirmed before the next, so a failed file stops the
@@ -724,15 +776,15 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => contacts(a as { name: string }),
   },
   imessage_send: {
-    desc: "Draft text/files; files go first, separately. Show the recipient, exact text/files and recent lines. Send only after the user approves that draft: approved:true. Never approve it yourself. Fails unless every file uploads.",
+    desc: "Draft text/files; files go first, separately. Show the recipient, exact text/files and recent lines. Send only after the user approves that draft: approved:draftId. Never approve it yourself. Fails unless every file uploads.",
     params: {
       to: { type: "string", description: "chat id, unique name, or phone/email" },
       text: { type: "string", description: "message text" },
       files: { type: "array", items: { type: "string" }, description: "absolute file paths" },
-      approved: { type: "boolean", description: "true only after the user approved this exact draft" },
+      approved: { type: "string", description: "draftId of the draft the user approved" },
     },
     required: ["to"],
-    run: (a) => send(a as { to: string; text?: string; files?: string[]; approved?: boolean }),
+    run: (a) => send(a as { to: string; text?: string; files?: string[]; approved?: string }),
   },
 };
 

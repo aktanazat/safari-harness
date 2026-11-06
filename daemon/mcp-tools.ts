@@ -11,6 +11,7 @@ import { invoke } from "./call.ts";
 import { checkCall } from "./guard.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
+import { redactedLine } from "./redact.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
 import { withTask } from "./rpc.ts";
 
@@ -55,15 +56,16 @@ const REPL_TOOL: Tool = {
       : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
     const notice = own && fresh !== undefined ? `${fresh}\n` : "";
     if (own) fresh = undefined;
+    const cut = r.redacted === undefined ? "" : `\n${redactedLine(r.redacted)}`;
     // The error first: output printed before it can be a page's snapshot.
     // It keeps the run's own failure: on 11-03 a rate limit inside a run
     // came back command_failed, effect none (AuditSafariHarness-23). A host
     // that names none (an older release) may have acted.
     if (r.error) {
       const failure = readFailure(r.failure);
-      throw new HarnessError(failure?.code ?? "command_failed", `${notice}${r.error}${r.output ? `\noutput before the error:\n${r.output}` : ""}`, failure ? { effect: failure.effect, retryable: failure.retryable, next: failure.next } : { effect: "possibly_effected" });
+      throw new HarnessError(failure?.code ?? "command_failed", `${notice}${r.error}${r.output ? `\noutput before the error:\n${r.output}` : ""}${cut}`, failure ? { effect: failure.effect, retryable: failure.retryable, next: failure.next } : { effect: "possibly_effected" });
     }
-    const out = `${notice}${r.output || "(no output; return or console.log what you want back)"}`;
+    const out = `${notice}${r.output || "(no output; return or console.log what you want back)"}${cut}`;
     return r.hint === undefined ? out : `${out}\nhint: ${r.hint}`;
   },
 };

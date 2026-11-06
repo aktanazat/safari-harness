@@ -31,6 +31,8 @@ import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
 import type { Overview } from "../daemon/mission.ts";
 import { failureOf } from "../daemon/failures.ts";
+import { redactedLine } from "../daemon/redact.ts";
+import type { ReplResult } from "../daemon/repl.ts";
 
 // Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
@@ -270,8 +272,9 @@ const USAGE = `safari — drive Safari from the terminal
                                              (downloads may mark the conversation read)
   safari imessage code [--seconds 30] [--since rowid]
                                              wait for a sign-in code by text
-  safari imessage send <to> [text] [--file path]... [--approved]
-                                             draft a text and/or files; sends only with --approved
+  safari imessage send <to> [text] [--file path]... [--approve <draftId>]
+                                             draft a text and/or files; sends only with --approve and
+                                             the draftId of the draft the user approved
   safari contacts <name>                     phones and emails for a contact
   safari ask "<question>"                    away from the Mac, send the question to your phone
                                              (answer it back here); at the Mac, send nothing
@@ -671,7 +674,7 @@ async function replCommand(argv: string[]) {
   const file = flag("file", argv);
   const code = file !== undefined ? await Bun.file(resolve(file)).text() : argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
   if (!code.trim()) fail('usage: safari repl [--session name] "<code>" | --file path (or pipe the code in)', 2);
-  let result: { output: string; error?: string };
+  let result: ReplResult;
   // Without --session, a call runs in its agent's own session (the agent
   // above this process: owner.ts), so what one call binds the next reads:
   // on 10-07 Akyl's globalThis.dmid was gone in its next call, each call
@@ -697,6 +700,7 @@ async function replCommand(argv: string[]) {
   if (json) return print(result);
   if (result.output) console.log(result.output);
   else if (!result.error) console.log("(no output; return or console.log what you want back)");
+  if (result.redacted) console.error(redactedLine(result.redacted));
   if (result.error) fail(result.error);
 }
 
@@ -974,7 +978,7 @@ async function main() {
       search: ["imessage_search", { text: pos.join(" ") || undefined, from: flag("from", rest), chat: flag("chat", rest), days: numFlag("days"), limit: numFlag("limit") }],
       files: ["imessage_files", { ids: pos, out: flag("out", rest), clipboard: hasFlag("clipboard", rest) }],
       code: ["imessage_wait_code", { seconds: numFlag("seconds"), since: numFlag("since") }],
-      send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: hasFlag("approved", rest) }],
+      send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: flag("approve", rest) }],
     };
     const call = sub ? calls[sub] : undefined;
     if (!call) fail("usage: safari imessage chats|history|search|files|code|send …, or safari contacts <name>", 2);

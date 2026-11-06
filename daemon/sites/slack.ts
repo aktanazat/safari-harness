@@ -7,6 +7,7 @@
 // credentialed request from it. A file's bytes come from files.slack.com,
 // fetched from the same tab with the cookie alone.
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { rateLimited } from "../failures.ts";
@@ -251,8 +252,21 @@ function user(u: RawUser) {
 
 // ---------- client ----------
 
+// The thread posts that failed part way, by session and texts (postThread).
+type ThreadPart = { ts: string; channel: string; replies: string[] };
+const partial = new WeakMap<SiteKit, Map<string, ThreadPart>>();
+function partOf(kit: SiteKit): Map<string, ThreadPart> {
+  let parts = partial.get(kit);
+  if (!parts) partial.set(kit, (parts = new Map()));
+  return parts;
+}
+
 function client(kit: SiteKit, workspace: Workspace) {
   const api = <T>(method: string, params: Record<string, unknown>) => call<T>(kit, workspace.teamId, method, params);
+  // Who a write goes out as, named in its draft: getClient() with no
+  // workspace takes the one used last, which may not be the one the owner
+  // has in mind (audit SH-29).
+  const from = `${workspace.name} (${workspace.domain}.slack.com), as ${workspace.userId ?? "an unknown user"}`;
   // The message at ts, as history lists it. A thread reply is not in its
   // channel's history: name its thread's ts as thread_ts.
   const messageAt = async (channel: string, ts: string, opts: { thread_ts?: string } = {}) => {
@@ -341,10 +355,11 @@ function client(kit: SiteKit, workspace: Workspace) {
       return api<unknown>(method, params);
     },
 
-    postMessage(channel: string, text: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
-      return draftOrSend({
+    postMessage(channel: string, text: string, opts: { thread_ts?: string; approved?: string | boolean } = {}) {
+      return draftOrSend(kit, {
         site: "slack",
         action: opts.thread_ts ? `reply in thread ${opts.thread_ts} of ${channel}` : `post in ${channel}`,
+        from,
         to: channel,
         text,
         approved: opts.approved,
@@ -359,11 +374,12 @@ function client(kit: SiteKit, workspace: Workspace) {
 
     // Edits a message the owner wrote. The draft shows the text it replaces
     // as was, so the owner approves the change, not just the new text.
-    async update(channel: string, ts: string, text: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
+    async update(channel: string, ts: string, text: string, opts: { thread_ts?: string; approved?: string | boolean } = {}) {
       const was = (await messageAt(channel, ts, opts)).text;
-      const out = await draftOrSend({
+      const out = await draftOrSend(kit, {
         site: "slack",
         action: `edit message ${ts} in ${channel}`,
+        from,
         to: channel,
         text,
         approved: opts.approved,
@@ -378,12 +394,13 @@ function client(kit: SiteKit, workspace: Workspace) {
     // Deletes a message the owner wrote; the draft's text is the message
     // that would go. An admin may delete others' messages, for good: only
     // the owner's own are taken.
-    async delete(channel: string, ts: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
+    async delete(channel: string, ts: string, opts: { thread_ts?: string; approved?: string | boolean } = {}) {
       const gone = await messageAt(channel, ts, opts);
       if (!workspace.userId || gone.user !== workspace.userId) throw new Error(`message ${ts} in ${channel} is not the owner's (its author is ${gone.user ?? "unknown"}); delete takes only his own messages`);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "slack",
         action: `delete message ${ts} in ${channel}${gone.replyCount ? ` (its ${gone.replyCount} thread replies stay)` : ""}`,
+        from,
         to: channel,
         text: gone.text,
         approved: opts.approved,
@@ -395,39 +412,55 @@ function client(kit: SiteKit, workspace: Workspace) {
     },
 
     // A top message and its thread replies, approved and posted as one: the
-    // replies go under the top message's ts.
-    postThread(channel: string, text: string, replies: string[], opts: { approved?: boolean } = {}) {
+    // replies go under the top message's ts. One that failed part way is
+    // remembered by its texts: the same postThread again drafts and posts
+    // only the replies still to go, under the top message already posted.
+    // Called again, it once posted the top message a second time (audit
+    // SH-25).
+    postThread(channel: string, text: string, replies: string[], opts: { approved?: string | boolean } = {}) {
       if (!Array.isArray(replies) || replies.some((r) => typeof r !== "string" || !r)) throw new Error("postThread needs replies, a list of non-empty texts");
-      return draftOrSend({
+      const key = JSON.stringify([workspace.teamId, channel, text, replies]);
+      const posted = partOf(kit).get(key);
+      const many = (n: number) => `${n} thread repl${n === 1 ? "y" : "ies"}`;
+      return draftOrSend(kit, {
         site: "slack",
-        action: `post in ${channel} with ${replies.length} thread repl${replies.length === 1 ? "y" : "ies"}`,
+        action: posted
+          ? `post the last ${many(replies.length - posted.replies.length)} of ${replies.length} under message ${posted.ts} in ${posted.channel} (the top message and ${many(posted.replies.length)} were posted before a failure)`
+          : `post in ${channel} with ${many(replies.length)}`,
+        from,
         to: channel,
         text: [text, ...replies.map((r, i) => `--- thread reply ${i + 1} ---\n${r}`)].join("\n"),
         approved: opts.approved,
         send: async () => {
-          const top = await api<{ ts: string; channel: string }>("chat.postMessage", { channel, text });
-          const done: string[] = [];
-          for (const reply of replies) {
+          let top = posted;
+          if (!top) {
+            const r = await api<{ ts: string; channel: string }>("chat.postMessage", { channel, text });
+            top = { ts: r.ts, channel: r.channel, replies: [] };
+          }
+          for (const reply of replies.slice(top.replies.length)) {
             try {
-              done.push((await api<{ ts: string }>("chat.postMessage", { channel: top.channel, text: reply, thread_ts: top.ts })).ts);
+              top.replies.push((await api<{ ts: string }>("chat.postMessage", { channel: top.channel, text: reply, thread_ts: top.ts })).ts);
             } catch (e) {
-              throw new Error(`postThread posted the top message ${top.ts} in ${top.channel} and ${done.length} of ${replies.length} replies, then failed: ${e instanceof Error ? e.message : String(e)}. Do not call postThread again: post the remaining approved replies with postMessage("${top.channel}", text, { thread_ts: "${top.ts}" })`);
+              partOf(kit).set(key, top);
+              throw new Error(`postThread posted the top message ${top.ts} in ${top.channel} and ${top.replies.length} of ${replies.length} replies, then failed: ${e instanceof Error ? e.message : String(e)}. To post the rest, call postThread again with the same texts: its new draft posts only the remaining replies under ${top.ts}, never the top message again`);
             }
           }
-          return { ts: top.ts, channel: top.channel, replies: done };
+          partOf(kit).delete(key);
+          return { ts: top.ts, channel: top.channel, replies: top.replies, ...(posted ? { resumed: true } : {}) };
         },
       });
     },
 
     // Deletes a file the owner shared (F…); deleting the message that
     // carried it leaves the file in his files. The draft names the file.
-    async deleteFile(file: string, opts: { approved?: boolean } = {}) {
+    async deleteFile(file: string, opts: { approved?: string | boolean } = {}) {
       const raw = (await api<{ file: RawFile }>("files.info", { file })).file;
       if (!workspace.userId || raw.user !== workspace.userId) throw new Error(`file ${raw.id} is not the owner's (its uploader is ${raw.user ?? "unknown"}); deleteFile takes only his own files`);
       const f = fileOf(raw);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "slack",
         action: `delete file ${f.id}`,
+        from,
         text: `${f.name} (${f.type}${f.size === undefined ? "" : `, ${f.size} bytes`})`,
         approved: opts.approved,
         send: async () => {
@@ -439,12 +472,13 @@ function client(kit: SiteKit, workspace: Workspace) {
 
     // Adds an emoji reaction (name without colons) as the owner. The draft
     // shows the message it goes on.
-    async react(channel: string, ts: string, name: string, opts: { thread_ts?: string; approved?: boolean } = {}) {
+    async react(channel: string, ts: string, name: string, opts: { thread_ts?: string; approved?: string | boolean } = {}) {
       const emoji = name.replace(/^:|:$/g, "");
       const on = await messageAt(channel, ts, opts);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "slack",
         action: `react to ${ts} in ${channel}`,
+        from,
         to: channel,
         text: `:${emoji}:\n--- on the message ---\n${on.text}`,
         approved: opts.approved,
@@ -458,16 +492,18 @@ function client(kit: SiteKit, workspace: Workspace) {
     // Uploads a local file (a relative path begins in the session's
     // folder) to a channel or thread through Slack's external upload: one
     // address to send the bytes to, then one call that shares the file.
-    async upload(channel: string, path: string, opts: { thread_ts?: string; title?: string; comment?: string; approved?: boolean } = {}) {
+    async upload(channel: string, path: string, opts: { thread_ts?: string; title?: string; comment?: string; approved?: string | boolean } = {}) {
       const file = resolve(kit.cwd, path);
       const bytes = await readFile(file);
       if (bytes.length > FILE_MAX) throw new Error(`${file} has ${bytes.length} bytes; upload takes at most ${FILE_MAX}`);
       const name = basename(file);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: "slack",
         action: `upload ${file} (${bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
+        from,
         to: channel,
         text: opts.comment ?? "",
+        bind: createHash("sha256").update(bytes).update(JSON.stringify([opts.title ?? null])).digest("hex"),
         approved: opts.approved,
         send: async () => {
           const slot = await api<{ upload_url: string; file_id: string }>("files.getUploadURLExternal", { filename: name, length: bytes.length });

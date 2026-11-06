@@ -1,11 +1,17 @@
 // The REPL's imessage global: the helper's own Messages tools under the
 // names the other site globals use. Reading needs the calling terminal's
-// Full Disk Access; send returns a draft until the owner approves it.
+// Full Disk Access; send returns a draft until the owner approves that
+// draft by its draftId, in a later run than the one that made it.
 
+import { HarnessError } from "../failures.ts";
 import type { SiteKit } from "./kit.ts";
 
 export function imessage(kit: SiteKit) {
   const call = (tool: string, args: Record<string, unknown>) => kit.invoke(tool, args);
+  // The run of the session each draft was made in (kit.run), as draftOrSend
+  // keeps for the other sites: a script that drafts and approves in one run
+  // sends what no one saw.
+  const madeIn = new Map<string, number>();
   return {
     listChats: (opts: { limit?: number } = {}) => call("imessage_chats", { limit: opts.limit }),
     getHistory: (chat: string, opts: { limit?: number; since?: number } = {}) => call("imessage_history", { chat, limit: opts.limit, since: opts.since }),
@@ -13,6 +19,12 @@ export function imessage(kit: SiteKit) {
     files: (ids: string[], opts: { out?: string; clipboard?: boolean } = {}) => call("imessage_files", { ids, out: opts.out, clipboard: opts.clipboard }),
     contacts: (name: string) => call("contacts", { name }),
     waitForCode: (opts: { seconds?: number; since?: number } = {}) => call("imessage_wait_code", { seconds: opts.seconds, since: opts.since }),
-    send: (to: string, text: string, opts: { files?: string[]; approved?: boolean } = {}) => call("imessage_send", { to, text, files: opts.files, approved: opts.approved === true }),
+    async send(to: string, text: string, opts: { files?: string[]; approved?: string | boolean } = {}) {
+      const { approved } = opts;
+      if (typeof approved === "string" && madeIn.get(approved) === kit.run) throw new HarnessError("invalid_argument", `nothing was sent: draft ${approved} was made in this same run, so the owner has not seen it; approve it in a later call`, { retryable: false });
+      const r = await call("imessage_send", { to, text, files: opts.files, ...(approved === undefined || approved === false ? {} : { approved }) });
+      if (r && typeof r === "object" && "draftId" in r && typeof r.draftId === "string") madeIn.set(r.draftId, kit.run);
+      return r;
+    },
   };
 }

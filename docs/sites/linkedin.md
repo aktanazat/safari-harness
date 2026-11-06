@@ -22,7 +22,7 @@ The `linkedin` global reads LinkedIn through the session in Safari, from one bac
 - `linkedin.getUserPosts(profileIdOrUrl, {limit})`: a member's recent posts with reaction and comment counts.
 - `linkedin.getInbox({limit})`: the message inbox: each conversation with its participants, unread state, and last message.
 - `linkedin.getConversation(conversationId, {limit})`: one conversation's messages, newest first. `conversationId` is the `id` from `getInbox` or the thread's `https://www.linkedin.com/messaging/thread/...` url; `participants` lists whoever sent one of the returned messages.
-- `linkedin.sendMessage({conversationId | to, text})`, `linkedin.sendInvitation(publicIdOrUrl, {note})`: drafts only until approved: each returns the exact text and sends nothing; call it again with `approved: true` once the user has approved that text.
+- `linkedin.sendMessage({conversationId | to, text})`, `linkedin.sendInvitation(publicIdOrUrl, {note})`: drafts only until approved: each returns the exact text with a `draftId` and sends nothing; once the user has approved that draft, call it again, in a later call, with the same arguments and `approved: "<draftId>"`. A draft sends once.
 
 ```js
 const me = await linkedin.getMe();

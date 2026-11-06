@@ -76,13 +76,16 @@ test("a read X answers 404 with a kept transaction key is asked once more with a
     }
     throw new Error(`no ${tool} in this Safari`);
   };
-  const site = x(new SiteKit(send, undefined, dir));
+  const kit = new SiteKit(send, undefined, dir);
+  const site = x(kit);
   expect((await site.getTimeline()).tweets).toHaveLength(1);
   expect((await site.getTimeline()).tweets).toHaveLength(1);
   await site.getTimeline();
   expect(keys).toEqual([null, "key1", null, "key3"]);
   await expect(site.getTimeline()).rejects.toThrow("HTTP 404");
   expect(keys).toHaveLength(6);
-  await expect(site.like("1234567", { approved: true })).rejects.toThrow("HTTP 404");
+  const like = await site.like("1234567");
+  kit.run++;
+  await expect(site.like("1234567", { approved: like.draftId })).rejects.toThrow("HTTP 404");
   expect(keys).toHaveLength(7);
 }, 15_000);
