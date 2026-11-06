@@ -3,7 +3,8 @@
 // which is HttpOnly and travels with every request the tab sends; with
 // several accounts signed in, x-notion-active-user-header picks one.
 // Everything here reads: records through syncRecordValues, pages by walking
-// their block tree, search through the app's own search.
+// their block tree, search and recent edits through the app's own search,
+// database rows through queryCollection.
 
 import { NotSignedIn, type SiteKit } from "./kit.ts";
 
@@ -83,7 +84,8 @@ function dateText(d: Rec): string {
   return d.end_date ? `${start} → ${str(d.end_date)}${d.end_time ? ` ${str(d.end_time)}` : ""}` : start;
 }
 
-function richText(v: unknown, markdown: boolean): string {
+// names, when given, turns a user mention into that user's name.
+function richText(v: unknown, markdown: boolean, names?: Map<string, string>): string {
   if (!Array.isArray(v)) return "";
   return v.map((seg) => {
     if (!Array.isArray(seg)) return "";
@@ -93,7 +95,7 @@ function richText(v: unknown, markdown: boolean): string {
       if (!Array.isArray(d)) continue;
       const [kind, arg] = d as [unknown, unknown];
       if (kind === "p" && typeof arg === "string") text = markdown ? `[page](${pageUrl(arg)})` : pageUrl(arg);
-      else if (kind === "u" && typeof arg === "string") text = `@${arg}`;
+      else if (kind === "u" && typeof arg === "string") text = names?.get(arg) ?? `@${arg}`;
       else if (kind === "d" && arg && typeof arg === "object") text = dateText(arg as Rec);
       else if (kind === "e" && typeof arg === "string") text = markdown ? `$${arg}$` : arg;
       else if (!markdown) continue;
@@ -116,16 +118,73 @@ function format(b: Rec): Rec {
 }
 
 // A page's properties by name: database rows key them by the ids of the
-// parent collection's schema.
-function propertiesOf(b: Rec, schema: Rec | null): Record<string, string> {
+// parent collection's schema. Created and edited times and people are no
+// stored values; they come from the row itself.
+function propertiesOf(b: Rec, schema: Rec | null, names?: Map<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(props(b))) {
     if (key === "title") continue;
     const column = schema?.[key];
     const name = column && typeof column === "object" ? str((column as Rec).name) || key : key;
-    out[name] = richText(value, false);
+    out[name] = richText(value, false, names);
+  }
+  for (const column of Object.values(schema ?? {})) {
+    if (!column || typeof column !== "object") continue;
+    const { name, type } = column as Rec;
+    if (typeof name !== "string") continue;
+    if (type === "created_time") out[name] = iso(b.created_time);
+    else if (type === "last_edited_time") out[name] = iso(b.last_edited_time);
+    else if (type === "created_by" || type === "last_edited_by") {
+      const id = str(type === "created_by" ? b.created_by_id : b.last_edited_by_id);
+      if (id) out[name] = names?.get(id) ?? `@${id}`;
+    }
   }
   return out;
+}
+
+// The users a page's properties name: people columns, and its creator and
+// last editor when the schema has columns for them.
+function usersOf(b: Rec, schema: Rec | null): string[] {
+  const out = new Set<string>();
+  for (const value of Object.values(props(b))) {
+    if (!Array.isArray(value)) continue;
+    for (const seg of value) {
+      const decorations: unknown[] = Array.isArray(seg) && Array.isArray(seg[1]) ? seg[1] : [];
+      for (const d of decorations) if (Array.isArray(d) && d[0] === "u" && typeof d[1] === "string") out.add(d[1]);
+    }
+  }
+  const types = new Set(Object.values(schema ?? {}).map((c) => (c && typeof c === "object" ? (c as Rec).type : undefined)));
+  if (types.has("created_by") && typeof b.created_by_id === "string") out.add(b.created_by_id);
+  if (types.has("last_edited_by") && typeof b.last_edited_by_id === "string") out.add(b.last_edited_by_id);
+  return [...out];
+}
+
+function userName(u: Rec | null): string {
+  return str(u?.name) || [str(u?.given_name), str(u?.family_name)].filter(Boolean).join(" ");
+}
+
+// Each user's name, from map when it holds the user, else from Notion.
+async function namesOf(kit: SiteKit, userId: string, users: string[], map?: RecordMap): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const missing: string[] = [];
+  for (const id of users) {
+    const name = userName(record(map, "notion_user", id));
+    if (name) names.set(id, name);
+    else missing.push(id);
+  }
+  for (let i = 0; i < missing.length; i += BATCH) {
+    const batch = missing.slice(i, i + BATCH);
+    const fetched = await records(kit, userId, batch.map((id) => ({ table: "notion_user", id })));
+    for (const id of batch) {
+      const name = userName(record(fetched, "notion_user", id));
+      if (name) names.set(id, name);
+    }
+  }
+  return names;
+}
+
+function schemaOf(collection: Rec | null): Rec | null {
+  return collection?.schema && typeof collection.schema === "object" ? (collection.schema as Rec) : null;
 }
 
 function summary(b: Rec) {
@@ -206,7 +265,7 @@ function blockLines(id: string, tree: Tree, depth: number, root: boolean, number
   if (type === "page" || type === "collection_view_page") {
     if (!root) return [`${indent}[${title || tree.collections.get(str(b.collection_id)) || "untitled"}](${pageUrl(id)})`];
     own = [`# ${title || tree.collections.get(str(b.collection_id)) || "Untitled"}`, ""];
-  } else if (type === "collection_view") return [`${indent}(database: ${tree.collections.get(str(b.collection_id)) || id})`];
+  } else if (type === "collection_view") return [`${indent}(database: ${tree.collections.get(str(b.collection_id)) || "untitled"}, ${id})`];
   else if (type === "alias") {
     const target = f.alias_pointer && typeof f.alias_pointer === "object" ? str((f.alias_pointer as Rec).id) : "";
     return [`${indent}[page](${pageUrl(target || id)})`];
@@ -245,40 +304,82 @@ function render(tree: Tree, rootId: string): string {
 // ---------- search ----------
 
 type SearchHit = { id: string; highlight?: { text?: string; pathText?: string } };
+type SearchAnswer = { results?: SearchHit[]; recordMap?: RecordMap; total?: number };
+type Space = Account["spaces"][number];
 
 const SEARCH_FILTERS = { isDeletedOnly: false, excludeTemplates: false, navigableBlockContentOnly: true, requireEditPermissions: false, ancestors: [], createdBy: [], editedBy: [], lastEditedTime: {}, createdTime: {}, inTeams: [] };
+const DAY_MS = 86_400_000;
+
+function hitOf(hit: SearchHit, b: Rec | null, space: Space) {
+  return {
+    id: hit.id,
+    title: b ? richText(props(b).title, false) : "",
+    type: str(b?.type),
+    space: space.name,
+    spaceId: space.id,
+    ...(hit.highlight?.pathText ? { path: hit.highlight.pathText } : {}),
+    ...(hit.highlight?.text ? { snippet: hit.highlight.text.replace(/<\/?[a-zA-Z]+>/g, "") } : {}),
+    lastEditedTime: iso(b?.last_edited_time),
+    url: pageUrl(hit.id),
+  };
+}
+
+// ---------- databases ----------
+
+type QueryAnswer = { result?: { reducerResults?: { results?: { blockIds?: string[]; hasMore?: boolean } } }; recordMap?: RecordMap };
 
 // ---------- client ----------
 
 function client(kit: SiteKit, account: Account) {
   const userId = account.userId;
+  const spacesOf = (spaceId?: string) => {
+    const spaces = spaceId ? account.spaces.filter((s) => s.id === spaceId) : account.spaces;
+    if (!spaces.length) throw new Error(`no space "${spaceId}" in this account; listAccounts() names them`);
+    return spaces;
+  };
   return {
     account,
 
     // Pages and databases matching query in the account's spaces, or in one.
     async search(query: string, opts: { limit?: number; spaceId?: string } = {}) {
-      const spaces = opts.spaceId ? account.spaces.filter((s) => s.id === opts.spaceId) : account.spaces;
-      if (!spaces.length) throw new Error(`no space "${opts.spaceId}" in this account; listAccounts() names them`);
+      const spaces = spacesOf(opts.spaceId);
       const limit = Math.min(Math.max(Number(opts.limit ?? 20), 1), 100);
       const results = [];
       for (const space of spaces) {
-        const r = await post<{ results?: SearchHit[]; recordMap?: RecordMap; total?: number }>(kit, "search", { type: "BlocksInSpace", query, spaceId: space.id, limit, filters: SEARCH_FILTERS, sort: { field: "relevance" }, source: "quick_find" }, userId);
-        for (const hit of r.results ?? []) {
-          const b = record(r.recordMap, "block", hit.id);
-          results.push({
-            id: hit.id,
-            title: b ? richText(props(b).title, false) : "",
-            type: str(b?.type),
-            space: space.name,
-            spaceId: space.id,
-            ...(hit.highlight?.pathText ? { path: hit.highlight.pathText } : {}),
-            ...(hit.highlight?.text ? { snippet: hit.highlight.text.replace(/<\/?[a-zA-Z]+>/g, "") } : {}),
-            lastEditedTime: iso(b?.last_edited_time),
-            url: pageUrl(hit.id),
-          });
-        }
+        const r = await post<SearchAnswer>(kit, "search", { type: "BlocksInSpace", query, spaceId: space.id, limit, filters: SEARCH_FILTERS, sort: { field: "relevance" }, source: "quick_find" }, userId);
+        for (const hit of r.results ?? []) results.push(hitOf(hit, record(r.recordMap, "block", hit.id), space));
       }
       return results;
+    },
+
+    // Pages edited after since (default: a day ago), newest first, as the
+    // app's search sorted by last edit finds them; hasMore when limit cut
+    // the list short.
+    async recent(opts: { since?: Date | string | number; limit?: number; spaceId?: string } = {}) {
+      const since = opts.since === undefined ? Date.now() - DAY_MS : new Date(opts.since).getTime();
+      if (Number.isNaN(since)) throw new Error(`since "${String(opts.since)}" is not a date or time`);
+      const spaces = spacesOf(opts.spaceId);
+      const limit = Math.min(Math.max(Number(opts.limit ?? 50), 1), 500);
+      // The filter takes a day, in a time zone of Notion's choosing; a day
+      // early keeps every edit after since, and the rest are dropped here.
+      const startDate = new Date(since - DAY_MS).toISOString().slice(0, 10);
+      const filters = { ...SEARCH_FILTERS, lastEditedTime: { starting: { type: "date", start_date: startDate } } };
+      const pages = [];
+      let hasMore = false;
+      for (const space of spaces) {
+        const r = await post<SearchAnswer>(kit, "search", { type: "BlocksInSpace", query: "", spaceId: space.id, limit, filters, sort: { field: "lastEdited", direction: "desc" }, source: "quick_find" }, userId);
+        const hits = r.results ?? [];
+        for (const hit of hits) {
+          const b = record(r.recordMap, "block", hit.id);
+          if (!b || b.alive === false || typeof b.last_edited_time !== "number" || b.last_edited_time <= since) continue;
+          pages.push(hitOf(hit, b, space));
+        }
+        const last = hits.length >= limit ? hits.at(-1) : undefined;
+        const oldest = last ? record(r.recordMap, "block", last.id) : null;
+        if (typeof oldest?.last_edited_time === "number" && oldest.last_edited_time > since) hasMore = true;
+      }
+      pages.sort((a, b) => b.lastEditedTime.localeCompare(a.lastEditedTime));
+      return { pages: pages.slice(0, limit), hasMore: hasMore || pages.length > limit };
     },
 
     // A page's title, properties, and child block ids.
@@ -288,10 +389,48 @@ function client(kit: SiteKit, account: Account) {
       if (!b) throw new Error(`Notion has no page ${id} that this account can read`);
       let schema: Rec | null = null;
       if (b.parent_table === "collection" && typeof b.parent_id === "string") {
-        const collection = record(await records(kit, userId, [{ table: "collection", id: b.parent_id }]), "collection", b.parent_id);
-        schema = collection?.schema && typeof collection.schema === "object" ? (collection.schema as Rec) : null;
+        schema = schemaOf(record(await records(kit, userId, [{ table: "collection", id: b.parent_id }]), "collection", b.parent_id));
       }
-      return { ...summary(b), properties: propertiesOf(b, schema) };
+      const names = await namesOf(kit, userId, usersOf(b, schema));
+      return { ...summary(b), properties: propertiesOf(b, schema, names) };
+    },
+
+    // The rows of a database (a full-page or inline database, or a linked
+    // view of one), up to limit, each with its properties by name.
+    async queryDatabase(databaseId: string, opts: { limit?: number } = {}) {
+      const id = uuid(databaseId);
+      const b = record(await records(kit, userId, [{ table: "block", id }]), "block", id);
+      if (!b) throw new Error(`Notion has no database ${id} that this account can read`);
+      const pointer = format(b).collection_pointer;
+      const collectionId = str(b.collection_id) || (pointer && typeof pointer === "object" ? str((pointer as Rec).id) : "");
+      const [viewId] = ids(b.view_ids);
+      if (!collectionId || !viewId) throw new Error(`Notion block ${id} is a ${str(b.type) || "block"}, not a database; getPage or blockToMarkdown reads it`);
+      const spaceId = str(b.space_id);
+      const limit = Math.min(Math.max(Number(opts.limit ?? 100), 1), 500);
+      const r = await post<QueryAnswer>(kit, "queryCollection", {
+        clientType: "notion_app",
+        collectionView: { id: viewId, spaceId },
+        source: { type: "collection", id: collectionId, spaceId },
+        loader: { reducers: { results: { type: "results", limit } }, searchQuery: "", sort: [], userId, userTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      }, userId);
+      const found = r.result?.reducerResults?.results;
+      const collection = record(r.recordMap, "collection", collectionId) ?? record(await records(kit, userId, [{ table: "collection", id: collectionId }]), "collection", collectionId);
+      const schema = schemaOf(collection);
+      const rows = ids(found?.blockIds).map((rowId) => record(r.recordMap, "block", rowId)).filter((row): row is Rec => !!row && row.alive !== false);
+      const names = await namesOf(kit, userId, [...new Set(rows.flatMap((row) => usersOf(row, schema)))], r.recordMap);
+      return {
+        id,
+        name: richText(collection?.name, false),
+        rows: rows.map((row) => ({
+          id: str(row.id),
+          title: richText(props(row).title, false),
+          properties: propertiesOf(row, schema, names),
+          createdTime: iso(row.created_time),
+          lastEditedTime: iso(row.last_edited_time),
+          url: pageUrl(str(row.id)),
+        })),
+        hasMore: !!found?.hasMore,
+      };
     },
 
     async getBlock(blockId: string) {
@@ -320,7 +459,7 @@ async function accounts(kit: SiteKit): Promise<Account[]> {
     const u = record(map, "notion_user", userId);
     out.push({
       userId,
-      name: str(u?.name) || [str(u?.given_name), str(u?.family_name)].filter(Boolean).join(" "),
+      name: userName(u),
       email: str(u?.email),
       spaces: Object.keys(map.space ?? {}).map((id) => {
         const s = record(map, "space", id);
