@@ -106,20 +106,41 @@ async function waited<T>(run: Promise<T>): Promise<T> {
   return run;
 }
 
-function result(args: Parameters<typeof send>[0]) {
+// A send with approved: true is the user's yes to its draft: the draft the
+// user saw first, then the call that approves it by its draftId.
+async function result(args: Parameters<typeof send>[0]) {
+  const draft = args.approved === true ? await waited(send({ ...args, approved: undefined })) : undefined;
+  const call = draft && "draftId" in draft ? { ...args, approved: draft.draftId } : args;
   // This is the MCP server's real failure conversion, including its
   // non-page classification of imessage_send.
-  return waited(send(args).then(
+  return waited(send(call).then(
     (value) => ({ value, failure: null }),
-    (error: unknown) => ({ value: null, failure: failureOf(error, { effectful: affectsPage("imessage_send", args) }) }),
+    (error: unknown) => ({ value: null, failure: failureOf(error, { effectful: affectsPage("imessage_send", call) }) }),
   ));
 }
 
 test("a draft without approval sends nothing", async () => {
   const reply = await result({ ...SEND, approved: false });
-  expect(reply.value).toMatchObject({ status: "draft", chat: CHAT, text: TEXT });
+  expect(reply.value).toMatchObject({ status: "draft", chat: CHAT, text: TEXT, draftId: expect.stringMatching(/^[0-9a-f]{12}$/) });
   expect(attempts).toEqual([]);
   expect(db.query("SELECT COUNT(*) n FROM message").get()).toEqual({ n: 1 });
+});
+
+// Audit SH-21: approved: true sent on a first call no one saw, and the
+// approving call resolved its recipient again, so a draft to one chat could
+// go to another.
+test("approved: true sends nothing; a draft's id approves only that recipient and text, once", async () => {
+  const refused = { code: "invalid_argument", effect: "none", retryable: false };
+  expect((await result({ ...SEND, approved: "true" })).failure).toMatchObject({ ...refused, message: expect.stringContaining("approved takes the draftId") });
+  const draft = await waited(send({ to: CHAT, text: TEXT }));
+  if (!("draftId" in draft)) throw new Error("no draft");
+  expect((await result({ to: "iMessage;-;other@example.com", text: TEXT, approved: draft.draftId })).failure).toMatchObject({ ...refused, message: expect.stringContaining(`is not draft ${draft.draftId}`) });
+  expect((await result({ to: CHAT, text: `${TEXT} changed`, approved: draft.draftId })).failure).toMatchObject({ ...refused, message: expect.stringContaining(`is not draft ${draft.draftId}`) });
+  expect(attempts).toEqual([]);
+  plans.push({ apply: () => { outgoing(TEXT); } });
+  expect((await result({ to: CHAT, text: TEXT, approved: draft.draftId })).value).toMatchObject({ status: "sent" });
+  expect((await result({ to: CHAT, text: TEXT, approved: draft.draftId })).failure).toMatchObject({ ...refused, message: expect.stringContaining("approved once already") });
+  expect(attempts).toEqual([[TEXT, CHAT]]);
 });
 
 test.each([

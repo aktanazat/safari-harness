@@ -31,13 +31,17 @@ afterAll(() => {
 });
 
 // A method's answer is an object, or a list answered one per call in turn.
-function safari(methods: Record<string, object | object[]>, files: Served[]) {
+// goneAfter names a method whose next call reaches Slack and then fails as
+// the extension answers when the tab closed before the answer came back.
+function safari(methods: Record<string, object | object[]>, files: Served[], opts: { goneAfter?: string } = {}) {
   const asked: string[] = [];
   // Each web-API call with the params the page would send.
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const fetched: { url: string; at: number }[] = [];
+  let tabs = 0;
+  let goneAfter = opts.goneAfter;
   const send: Invoke = async (tool, args) => {
-    if (tool === "open") return { id: 1 };
+    if (tool === "open") return { id: ++tabs };
     if (tool === "pace") return PACE_TOOL.run(args);
     if (tool === "eval") {
       const method = /\/api\/([\w.]+)/.exec(String(args.expression))?.[1];
@@ -46,6 +50,10 @@ function safari(methods: Record<string, object | object[]>, files: Served[]) {
       calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}") });
       const answers = methods[method];
       const answer = Array.isArray(answers) ? answers.shift() : answers;
+      if (goneAfter === method) {
+        goneAfter = undefined;
+        throw new Error("that tab is gone: the user or its own page closed it 0 s ago; find it with tabs, or open it again");
+      }
       return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ...answer }), truncated: false } };
     }
     if (tool === "fetch") {
@@ -57,7 +65,17 @@ function safari(methods: Record<string, object | object[]>, files: Served[]) {
     }
     throw new Error(`no ${tool} in this Safari`);
   };
-  return { client: () => waited(slack(new SiteKit(send, undefined, dir)).getClient()), asked, calls, fetched };
+  const kit = new SiteKit(send, undefined, dir);
+  return { client: () => waited(slack(kit).getClient()), kit, asked, calls, fetched };
+}
+
+// A draft made, then approved by its draftId in the session's next run, as
+// the owner's yes comes between two REPL calls.
+async function approved<T>(kit: SiteKit, write: (approved?: string) => Promise<T>): Promise<T> {
+  const draft = (await waited(write())) as { status: string; draftId: string };
+  expect(draft.status).toBe("draft");
+  kit.run++;
+  return waited(write(draft.draftId));
 }
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
@@ -145,16 +163,78 @@ test("delete refuses a message someone else wrote, even approved, and deletes no
 // A retried postThread would post the top message and earlier replies again.
 test("postThread that fails midway names the top message and the replies already posted", async () => {
   const s = safari({ "chat.postMessage": [{ ts: "9.0", channel: "D1" }, { ts: "9.1" }, { ok: false, error: "msg_too_long" }] }, []);
-  await expect(waited((await s.client()).postThread("D1", "summary", ["details 1", "details 2"], { approved: true }))).rejects.toThrow("postThread posted the top message 9.0 in D1 and 1 of 2 replies, then failed");
+  const c = await s.client();
+  await expect(approved(s.kit, (ok) => c.postThread("D1", "summary", ["details 1", "details 2"], { approved: ok }))).rejects.toThrow("postThread posted the top message 9.0 in D1 and 1 of 2 replies, then failed");
+});
+
+// Audit SH-25: called again after such a failure, postThread posted a
+// second top message. Its next draft says what is left, and its send posts
+// only that, under the top message already posted.
+test("postThread called again after a failure part way posts only the remaining replies, under the same top message", async () => {
+  const s = safari({ "chat.postMessage": [{ ts: "9.0", channel: "D1" }, { ts: "9.1" }, { ok: false, error: "msg_too_long" }, { ts: "9.2" }] }, []);
+  const c = await s.client();
+  const thread = (ok?: string) => c.postThread("D1", "summary", ["details 1", "details 2"], { approved: ok });
+  await expect(approved(s.kit, thread)).rejects.toThrow("postThread posted the top message 9.0");
+  s.kit.run++;
+  const draft = await waited(thread());
+  expect(draft.action).toBe("post the last 1 thread reply of 2 under message 9.0 in D1 (the top message and 1 thread reply were posted before a failure)");
+  s.kit.run++;
+  const sent = await waited(thread(draft.draftId));
+  expect(sent).toMatchObject({ status: "sent", result: { ts: "9.0", channel: "D1", replies: ["9.1", "9.2"], resumed: true } });
+  expect(s.calls.map((x) => [x.params.text, x.params.thread_ts])).toEqual([["summary", undefined], ["details 1", "9.0"], ["details 2", "9.0"], ["details 2", "9.0"]]);
 });
 
 // On 11-04 chained postMessage calls put a "thread reply" at the top level
 // when the top message's ts was read from the wrong field.
 test("postThread posts every reply in the thread of the top message it just posted", async () => {
   const s = safari({ "chat.postMessage": { ts: "9.0", channel: "D1" } }, []);
-  const sent = await waited((await s.client()).postThread("D1", "summary", ["details 1", "details 2"], { approved: true }));
+  const c = await s.client();
+  const sent = await approved(s.kit, (ok) => c.postThread("D1", "summary", ["details 1", "details 2"], { approved: ok }));
   expect(sent.status).toBe("sent");
-  expect(s.calls.map((c) => c.params.thread_ts)).toEqual([undefined, "9.0", "9.0"]);
+  expect(s.calls.map((x) => x.params.thread_ts)).toEqual([undefined, "9.0", "9.0"]);
+});
+
+// Audit SH-21 and E-10: approval was a flag the model set. It sent on a
+// first call no one saw, sent other text to another channel than the
+// draft's, and could be set in the same script that drafted.
+test("approved: true sends nothing; approval takes the draft's id", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, []);
+  const c = await s.client();
+  await expect(waited(c.postMessage("C1", "never shown", { approved: true }))).rejects.toThrow("nothing was sent: approved takes the draftId");
+  await expect(waited(c.postMessage("C1", "never shown", { approved: "0123456789ab" }))).rejects.toThrow("nothing was sent: no draft 0123456789ab");
+  expect(s.asked).toEqual([]);
+});
+
+test("a draft's id approves only that draft's text, channel and sender, once, and not in the run that made it", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, []);
+  const c = await s.client();
+  const draft = await waited(c.postMessage("C1", "the text the owner saw"));
+  expect(draft).toMatchObject({ status: "draft", to: "C1", from: "Acme (acme.slack.com), as U1", text: "the text the owner saw" });
+  await expect(waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).rejects.toThrow("made in this same run");
+  s.kit.run++;
+  await expect(waited(c.postMessage("C1", "other text", { approved: draft.draftId }))).rejects.toThrow("nothing was sent: this post in C1 is not draft");
+  await expect(waited(c.postMessage("C2", "the text the owner saw", { approved: draft.draftId }))).rejects.toThrow("nothing was sent: this post in C2 is not draft");
+  expect(s.asked).toEqual([]);
+  expect(await waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).toMatchObject({ status: "sent", draftId: draft.draftId, result: { ts: "1.0" } });
+  await expect(waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).rejects.toThrow("approved once already");
+  expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" } }]);
+});
+
+// Audit SH-24: the extension says a tab is gone after the request left it
+// too, and the kit sent a post again in a new tab: two posts.
+test("an approved post whose tab vanished after the request ran is not sent again", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, [], { goneAfter: "chat.postMessage" });
+  const c = await s.client();
+  const failed = await approved(s.kit, (ok) => c.postMessage("C1", "hello", { approved: ok })).then(() => undefined, (e: unknown) => e);
+  expect(failed).toMatchObject({ code: "effect_unknown", message: expect.stringContaining("may have gone through; it was not sent again") });
+  expect(s.asked).toEqual(["chat.postMessage"]);
+});
+
+test("a read whose tab vanished is still asked again in a new tab", async () => {
+  const s = safari({ "conversations.history": { messages: [{ ts: "1.0", user: "U2", text: "hi" }] } }, [], { goneAfter: "conversations.history" });
+  const c = await s.client();
+  expect((await waited(c.history("C1"))).messages).toHaveLength(1);
+  expect(s.asked).toEqual(["conversations.history", "conversations.history"]);
 });
 
 // On 11-04 every first Slack call of a turn failed: the kit's tab had

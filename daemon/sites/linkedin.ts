@@ -480,12 +480,12 @@ export function linkedin(kit: SiteKit) {
     // from the owner's account is not a test.
     // conversationId: a thread from getInbox; to: a member's public id or
     // profile url (their existing conversation is used, or a new one starts).
-    sendMessage(opts: { conversationId?: string; to?: string; text: string; approved?: boolean }) {
+    sendMessage(opts: { conversationId?: string; to?: string; text: string; approved?: string | boolean }) {
       const thread = opts.conversationId ? threadOf(opts.conversationId) : "";
       const recipient = opts.to ? memberIdentity(opts.to) : "";
       if (!thread && !recipient) throw new Error("sendMessage needs a conversationId or a recipient in to");
       if (!opts.text.trim()) throw new Error("sendMessage needs text");
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: "message",
         to: thread ? `conversation ${thread}` : recipient,
@@ -516,11 +516,11 @@ export function linkedin(kit: SiteKit) {
 
     // note: at most 300 characters, and LinkedIn drops it for accounts
     // without Premium.
-    sendInvitation(publicIdOrUrl: string, opts: { note?: string; approved?: boolean } = {}) {
+    sendInvitation(publicIdOrUrl: string, opts: { note?: string; approved?: string | boolean } = {}) {
       const identity = memberIdentity(publicIdOrUrl);
       const note = opts.note?.trim() ?? "";
       if (note.length > NOTE_MAX) throw new Error(`an invitation note is at most ${NOTE_MAX} characters (this one is ${note.length})`);
-      return draftOrSend({
+      return draftOrSend(kit, {
         site: SITE,
         action: "invitation",
         to: identity,

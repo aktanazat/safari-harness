@@ -29,7 +29,7 @@ The `x` global (also `twitter`) reads X through the session in Safari, from one 
 - `x.getBookmarks({count, cursor})`: the bookmarks.
 - `x.getDmInbox()`: the message inbox: each conversation with its participants, unread flag, and last message.
 - `x.getNotifications({count, cursor})`: recent notifications: kind, who, text, and the post concerned.
-- `x.post(text, {replyTo})`, `x.like(idOrUrl)`, `x.follow(handle)`, `x.sendDm(conversationOrHandle, text)`: drafts only until approved: each returns the exact action and sends nothing; call it again with `approved: true` once the user has approved that text.
+- `x.post(text, {replyTo})`, `x.like(idOrUrl)`, `x.follow(handle)`, `x.sendDm(conversationOrHandle, text)`: drafts only until approved: each returns the exact action with a `draftId` and sends nothing; once the user has approved that draft, call it again, in a later call, with the same arguments and `approved: "<draftId>"`. A draft sends once.
 
 ```js
 const { tweets, nextCursor } = await x.search("from:X", { count: 10, product: "Latest" });

@@ -2951,9 +2951,13 @@ with its `since` to keep waiting.
 
 ## imessage_send
 
-- `imessage_send {to, text, files}`: returns a draft and sends nothing. Show
-  the user the recipient, the exact text, the files, and the recent lines,
-  and call again with `approved: true` only after he says yes. One message
+- `imessage_send {to, text, files}`: returns a draft with a `draftId` and
+  sends nothing. Show the user the recipient, the exact text, the files, and
+  the recent lines, and only after he says yes call again with the same
+  `to`, `text` and `files` and `approved: "<draftId>"` (CLI: `--approve
+  <draftId>`). The draft is bound to the chat it resolved to, the text and
+  each file's bytes; a changed one, a reused id, an id over 30 minutes old,
+  or `approved: true` sends nothing. One message
   per approval, plus one per file; files (absolute paths) go first, each
   confirmed before the next. It succeeds only once every file finished
   uploading, and fails otherwise: a failed file stops the rest and the text.

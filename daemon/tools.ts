@@ -26,7 +26,7 @@ import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, queuing } from "./lanes.ts";
 import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
-import { keepSecret, redacted, redactUrl, tabSecrets, unsecret } from "./redact.ts";
+import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { replay } from "./replay.ts";
@@ -3623,10 +3623,10 @@ function raisedLine(d: Raised): string {
 // characters a reply keeps (REPLY_CHARS), which a map's answer is fitted
 // to page by page.
 export function formatResult(value: unknown, max = Infinity): string {
-  // Notes, hints, and optional-memory warnings stay visible beside every read shape.
-  if (value && typeof value === "object" && !Array.isArray(value) && ("note" in value || "hint" in value || "memoryWarning" in value)) {
-    const { note, hint, memoryWarning, ...rest }: { note?: unknown; hint?: unknown; memoryWarning?: unknown } = value;
-    const tail = [...(note === undefined ? [] : [`note: ${String(note)}`]), ...(hint === undefined ? [] : [`hint: ${String(hint)}`]), ...(memoryWarning === undefined ? [] : [`memoryWarning: ${String(memoryWarning)}`])];
+  // Notes, hints, optional-memory warnings, and what redaction cut stay visible beside every read shape.
+  if (value && typeof value === "object" && !Array.isArray(value) && ("note" in value || "hint" in value || "memoryWarning" in value || "redacted" in value)) {
+    const { note, hint, memoryWarning, redacted: cut, ...rest }: { note?: unknown; hint?: unknown; memoryWarning?: unknown; redacted?: Redacted } = value;
+    const tail = [...(note === undefined ? [] : [`note: ${String(note)}`]), ...(hint === undefined ? [] : [`hint: ${String(hint)}`]), ...(memoryWarning === undefined ? [] : [`memoryWarning: ${String(memoryWarning)}`]), ...(cut === undefined ? [] : [redactedLine(cut)])];
     const room = max - tail.reduce((n, line) => n + line.length + 1, 0);
     const body = Object.keys(rest).length === 1 && "value" in rest ? formatResult(rest.value, room) : formatResult(rest, room);
     return [body, ...tail].join("\n");
@@ -3769,9 +3769,15 @@ async function invokeTool(name: string, args: Record<string, unknown>, model: bo
         }
       }
     }), { partial: partialRead(call.args) }));
-    return back === undefined ? result : beside(result, "note", back);
+    // A model's answer has secret-shaped values cut and counted (redact.ts);
+    // cookies keeps its values, which its own description guards.
+    const { value: safe, redacted: cut } = model && call.tool !== "cookies" ? redactSecrets(result) : { value: result, redacted: {} };
+    const counted = Object.keys(cut).length === 0 ? safe : safe && typeof safe === "object" && !Array.isArray(safe) ? { ...safe, redacted: cut } : { value: safe, redacted: cut };
+    return back === undefined ? counted : beside(counted, "note", back);
   } catch (e) {
-    throw await unopened(goneWhy(e, call.args.tab));
+    const failed = await unopened(goneWhy(e, call.args.tab));
+    if (model && failed instanceof Error) failed.message = redactSecretText(failed.message);
+    throw failed;
   }
 }
 

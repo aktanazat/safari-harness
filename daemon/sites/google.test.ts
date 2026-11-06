@@ -109,6 +109,21 @@ test("a Gmail tab gone since the last call gives way to a new one, checked for i
   await expect(mail.getThread(0, ID)).rejects.toThrow("no Google account at index 0 in Safari (Gmail opened /u/1/ instead)");
 });
 
+// Audit SH-29: a reply's draft named neither the account it goes out from
+// nor whom Gmail's Reply sends it to.
+test("a reply's draft names the account it goes out from and the address Gmail's Reply sends it to", async () => {
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: String(args.url).startsWith("https://ogs.google.com") ? 2 : 1 };
+    if (tool === "tabs") return { tabs: [{ id: 1, url: "https://mail.google.com/mail/u/1/#inbox", title: "Inbox - Gmail" }] };
+    if (tool === "fetch") return { status: 200, url: String(args.url), type: "text/html", truncated: false, text: '<div>owner@example.com</div><a data-au="1" data-email="work@example.com">Work<br>work@example.com</a>' };
+    if (args.expression === "location.href") return { result: "https://ogs.google.com/u/0/widget/account?hl=en" };
+    const pat = { from: "Pat <pat@example.com>", date: "Sat, Sep 26, 2026 at 12:51 AM", lines: ["To: work@example.com", "Reply-To: team@example.com"], body: "<p>lunch?</p>", attachments: [] };
+    return { result: { status: 200, url: `https://mail.google.com/mail/u/1/?view=pt&search=all&th=${ID}`, subject: "Lunch", messages: [pat] } };
+  };
+  const draft = await gmail(new SiteKit(send)).reply(1, ID, { body: "yes" });
+  expect(draft).toMatchObject({ status: "draft", from: "work@example.com", to: "team@example.com", text: "yes" });
+});
+
 afterEach(() => {
   jest.useRealTimers();
 });

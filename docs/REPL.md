@@ -217,7 +217,18 @@ action result is not safe to repeat until a fresh read shows what happened.
 
 Each reads the user's signed-in site through tabs of its own, and says "not
 signed in to <site> in Safari" when it is not. Methods that send or change
-anything return a draft until called with `approved: true`.
+anything return a draft with a `draftId` and its recipients (`to`); Slack's
+and Gmail's also name the account it goes out as (`from`). Only after the
+owner approves that draft, call again in a later call with the same
+arguments and `approved: "<draftId>"`; it sends once. `approved: true`, a
+changed argument, a reused id, or an id from the same run send nothing.
+
+A run's output and error have secret-shaped values cut to
+`[REDACTED:<kind>]` (API keys of OpenAI, Anthropic, Slack, AWS, GitHub,
+Supabase and others, JWTs, private keys, and values after names such as
+`API_KEY=` or `password:`), and the answer adds a `redacted:` line with a
+count of each kind. The script itself sees the page as it is; what an
+approved send sends is never cut.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
 `googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`. `safari guide <site>`

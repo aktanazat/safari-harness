@@ -100,3 +100,86 @@ export function unsecret(tab: number, value: unknown): unknown {
   };
   return cut(value, true);
 }
+
+// Credentials people paste into the pages agents read: Slack messages and
+// Notion pages carried OpenAI, Anthropic, Supabase service_role, AWS,
+// GitHub, Telnyx and other keys, and a password, into transcripts and so to
+// the model provider (audit 11-06, I-1). Each value of one of these shapes
+// is cut to [REDACTED:<kind>] in every answer a model gets: a model's own
+// tool call (callTool in tools.ts), a REPL run's output and error (repl.ts),
+// and a long answer saved to a file (save.ts). A site's own calls inside a
+// REPL script see the page as it is, and what an approved send sends is
+// never touched. The shapes carry a prefix no ordinary text has, so a
+// link, an id, a uuid or a hash stays whole.
+const SHAPES: [kind: string, shape: RegExp][] = [
+  ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
+  ["jwt", /\beyJ[\w-]{8,}\.eyJ[\w-]{8,}\.[\w-]{8,}/g],
+  ["anthropic", /\bsk-ant-[\w-]{20,}/g],
+  // OpenAI's, and the many providers that copied its sk- (Braintrust,
+  // DeepSeek): a digit among 20 or more characters, so a CSS class such as
+  // sk-spinner-double-bounce stays.
+  ["openai", /\bsk-(?=[\w-]*\d)[\w-]{20,}/g],
+  ["slack", /\bx(?:ox[abposre]|app)-(?=[\w-]*\d)[\w-]{10,}/g],
+  ["aws", /\bAKIA[0-9A-Z]{16}\b/g],
+  ["github", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,})/g],
+  ["supabase", /\bsb_secret_[\w-]{20,}/g],
+  ["telnyx", /\bKEY[0-9A-Z]{20,}_[A-Za-z0-9]{20,}\b/g],
+  ["tavily", /\btvly-(?:dev-|prod-)?[A-Za-z0-9]{20,}/g],
+  ["perplexity", /\bpplx-[A-Za-z0-9]{40,}/g],
+];
+
+// A value after a name that says it is a credential: OPENAI_API_KEY=...,
+// "X-API-Key": "...", password: ... Its name stays, so the reader knows
+// what was there. A name of a page or a cursor (nextPageToken, sync_token)
+// is paging, not a secret, and stays whole.
+const LABELED = /(?<![\w-])((?:[A-Za-z][\w.-]*?)?(?:api[_-]?key|apikey|secret(?:[_-]?key)?|token|passw(?:or)?d|pwd|access[_-]?key(?:[_-]?id)?|private[_-]?key|client[_-]?secret|credentials?|[_-]key))(["']?\s*[:=]\s*["']?)([^\s"'`<>,;(){}[\]\\]+)/gi;
+const PAGING = /page|next|cursor|continuation|sync/i;
+const PASSWORD = /passw(?:or)?d|pwd|credential/i;
+const PLACEHOLDER = /^(?:\*+|•+|x{3,}|\.{3,}|null|none|nil|undefined|true|false|required|optional|redacted|changeme|example|your[\w-]*|\$\w+)$/i;
+
+// A labeled value that holds a secret: for a password, six or more
+// characters with a digit or a sign (a word alone is a form's label:
+// "Password: Required"); for a key or token, twelve or more with a letter
+// and a digit, as no plain word or setting has.
+function secretValue(name: string, value: string): boolean {
+  if (PLACEHOLDER.test(value)) return false;
+  if (PASSWORD.test(name)) return value.length >= 6 && /[^A-Za-z]/.test(value);
+  return value.length >= 12 && /[A-Za-z]/.test(value) && /\d/.test(value);
+}
+
+export type Redacted = Record<string, number>;
+
+// text with each secret-shaped value cut to [REDACTED:<kind>], counting each
+// kind cut into counts.
+export function redactSecretText(text: string, counts: Redacted = {}): string {
+  const cut = (kind: string) => {
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    return `[REDACTED:${kind}]`;
+  };
+  let out = text;
+  for (const [kind, shape] of SHAPES) out = out.replace(shape, () => cut(kind));
+  return out.replace(LABELED, (whole, name: string, sep: string, value: string) =>
+    PAGING.test(name) || !secretValue(name, value) ? whole : `${name}${sep}${cut(PASSWORD.test(name) ? "password" : "secret")}`);
+}
+
+// value with every string in it, however deep, so cut, and the count of
+// each kind cut; but for a file's bytes (a top-level data, in base64),
+// which a cut would break. Only plain objects and arrays are walked.
+export function redactSecrets<T>(value: T): { value: T; redacted: Redacted } {
+  const counts: Redacted = {};
+  const walk = (v: unknown, top: boolean): unknown => {
+    if (typeof v === "string") return redactSecretText(v, counts);
+    if (Array.isArray(v)) return v.map((x) => walk(x, false));
+    if (v === null || typeof v !== "object") return v;
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : walk(x, false)]));
+  };
+  return { value: walk(value, true) as T, redacted: counts };
+}
+
+// The line an answer's text carries for what was cut: "redacted: openai 1,
+// jwt 2 ...". The values are gone from the answer; the page still has them.
+export function redactedLine(counts: Redacted): string {
+  return `redacted: ${Object.entries(counts).map(([kind, n]) => `${kind} ${n}`).join(", ")} (secret-shaped values cut to [REDACTED:kind]; the page itself is unchanged)`;
+}

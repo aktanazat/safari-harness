@@ -428,7 +428,7 @@ safari imessage history "<chat>" --json # messages with attachment ids in files
 safari imessage search --from "<contact>" --days 7 --json # find messages and their files
 safari imessage files <id>... --out /absolute/folder --clipboard # save originals and copy file URLs
 safari imessage code                   # wait for a sign-in code by text
-safari imessage send "+1…" "hi"        # prints a draft; add --approved to send
+safari imessage send "+1…" "hi"        # prints a draft and its draftId; --approve <draftId> sends it once
 safari imessage send "+1…" --file ~/Pictures/a.jpg   # a photo; succeeds only once it uploaded
 ```
 
@@ -520,6 +520,11 @@ reference.
 Site reads explicitly marked safe to repeat can replace an unresponsive owned
 tab at its saved address, including a tab just recovered after closure.
 Unresponsive writes and a second unresponsive read are not retried.
+Secret-shaped values (API keys, JWTs, private keys, values after names such
+as `API_KEY=` or `password:`) are cut to `[REDACTED:kind]`, with a count, in
+what a model gets: its own tool answers (cookies excepted), REPL output and
+errors, and long answers saved to `~/.local/share/safari-harness/saved/`. A
+REPL script's own calls see pages as they are.
 
 
 ### Another Mac

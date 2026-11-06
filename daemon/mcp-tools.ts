@@ -11,6 +11,7 @@ import { invoke } from "./call.ts";
 import { checkCall } from "./guard.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
+import { redactedLine } from "./redact.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
 import { withTask } from "./rpc.ts";
 
@@ -55,9 +56,10 @@ const REPL_TOOL: Tool = {
       : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
     const notice = own && fresh !== undefined ? `${fresh}\n` : "";
     if (own) fresh = undefined;
+    const cut = r.redacted === undefined ? "" : `\n${redactedLine(r.redacted)}`;
     // The error first: output printed before it can be a page's snapshot.
-    if (r.error) throw new Error(`${notice}${r.error}${r.output ? `\noutput before the error:\n${r.output}` : ""}`);
-    const out = `${notice}${r.output || "(no output; return or console.log what you want back)"}`;
+    if (r.error) throw new Error(`${notice}${r.error}${r.output ? `\noutput before the error:\n${r.output}` : ""}${cut}`);
+    const out = `${notice}${r.output || "(no output; return or console.log what you want back)"}${cut}`;
     return r.hint === undefined ? out : `${out}\nhint: ${r.hint}`;
   },
 };

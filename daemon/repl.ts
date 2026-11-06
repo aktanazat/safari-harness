@@ -15,6 +15,7 @@ import { invoke as defaultInvoke, type Invoke } from "./call.ts";
 import { lineDiff } from "./tools.ts";
 import { addressedNote } from "./injection.ts";
 import { saveAnswer } from "./save.ts";
+import { redactSecretText, type Redacted } from "./redact.ts";
 import { nearest } from "./guard.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
@@ -35,7 +36,9 @@ const SPILL_HEAD_CHARS = 2_000;
 // page's whole snapshot, its error at the end.
 const ERROR_LINES = 8;
 
-export type ReplResult = { output: string; error?: string };
+// redacted: how many secret-shaped values of each kind were cut from the
+// output and error (redact.ts); absent when none were.
+export type ReplResult = { output: string; error?: string; redacted?: Redacted };
 
 type TabRow = { id: number; url?: string; title?: string; active?: boolean; front?: boolean };
 type Outcome = { ok?: boolean; navigated?: { url?: string; title?: string }; effect?: { url?: string } | "none"; newTab?: TabRow; dialogs?: unknown[]; next?: string };
@@ -786,7 +789,11 @@ export class ReplSession {
   async #exec(code: string, timeoutMs: number): Promise<ReplResult> {
     if (this.closed) return { output: "", error: "this session has ended" };
     this.#calls++;
+    // A draft a site made in this run cannot be approved in it (kit.ts).
+    this.kit.run = this.#calls;
     this.#out = [];
+    // What this run's answer had cut (redact.ts).
+    const cut: Redacted = {};
     let js: string;
     try {
       js = this.#transpiler.transformSync(code);
@@ -813,13 +820,14 @@ export class ReplSession {
       // prototype; a `return x` the transpiler let through, as x itself.
       const value = done !== null && typeof done === "object" && Object.getPrototypeOf(done) === null ? ("value" in done ? done.value : undefined) : done;
       if (value !== undefined) this.#out.push(show(value));
-      return { output: await this.#flush() };
+      const output = await this.#flush(cut);
+      return { output, ...(Object.keys(cut).length ? { redacted: cut } : {}) };
     } catch (e) {
       const where = scriptLines(code, js, e && typeof e === "object" && "stack" in e ? e.stack : undefined);
-      const text = errorText(e);
-      const output = await this.#flush(ERROR_LINES);
+      const text = redactSecretText(errorText(e), cut);
+      const output = await this.#flush(cut, ERROR_LINES);
       const error = this.#quiet ? text : await cutLines(text, "the error");
-      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}` };
+      return { output, error: `${error}${where ? `\nat ${where} of the script` : ""}${this.#hint(text)}`, ...(Object.keys(cut).length ? { redacted: cut } : {}) };
     } finally {
       clearTimeout(timer);
     }
@@ -843,11 +851,12 @@ export class ReplSession {
     return near === undefined ? "" : `\nhint: did you mean ${on}.${near}()?`;
   }
 
-  // The run's output; past SPILL_CHARS, or past lines, saved whole and its
-  // head returned with the path. A person reads a quiet session's output,
-  // not a file.
-  async #flush(lines = Infinity): Promise<string> {
-    const text = this.#out.join("\n");
+  // The run's output, its secret-shaped values cut and counted into cut
+  // (redact.ts); past SPILL_CHARS, or past lines, saved whole and its head
+  // returned with the path. A person reads a quiet session's output, not a
+  // file.
+  async #flush(cut: Redacted, lines = Infinity): Promise<string> {
+    const text = redactSecretText(this.#out.join("\n"), cut);
     this.#out = [];
     if (this.#quiet) return text;
     if (text.split("\n").length > lines) return cutLines(text, "output before the error", lines);

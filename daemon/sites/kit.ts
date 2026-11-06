@@ -4,10 +4,12 @@
 // session, so its requests carry the owner's Safari session the way the
 // site's own page would, and no tab the owner is using is touched. Anything
 // that sends or posts goes through draftOrSend: it returns the exact draft
-// until the owner approves it.
+// until the owner approves that draft.
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, randomBytes } from "node:crypto";
 import type { Invoke } from "../call.ts";
-import { rateLimited } from "../failures.ts";
+import { HarnessError, rateLimited } from "../failures.ts";
 import type { Limit } from "../pace.ts";
 
 export class NotSignedIn extends Error {
@@ -50,16 +52,29 @@ const HELD = /did not answer.*; reload it with goto and retry$/;
 // Slack call of a turn failed this way.
 export const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
 
+// The action of the approved send running now (draftOrSend). A request of
+// it whose tab vanished may have reached the site before the tab went: the
+// extension says "that tab is gone" after dispatch too (background.js), so
+// it is not sent again (SiteKit.call): the kit once posted a Slack message
+// twice so (audit SH-24).
+const sending = new AsyncLocalStorage<string>();
+
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
   // Where each origin's tab opens: the address its site last asked for.
   private homes = new Map<string, string>();
   // The origin of every tab the kit opened, gone ones included.
   private origins = new Map<number, string>();
-  // Tool calls for the sites. A call on a kit tab that is gone never ran,
-  // so it runs once more in the tab that takes its place; gone again, the
-  // error stands.
+  // Tool calls for the sites. A call on a kit tab that is gone runs once
+  // more in the tab that takes its place, unless it is part of an approved
+  // send; gone again, the error stands.
   readonly invoke: Invoke;
+  // The REPL run the session is in (repl.ts): a draft cannot be approved in
+  // the run that made it (draftOrSend).
+  run = 0;
+  // The drafts this session showed, by draftId (draftOrSend): a hash of what
+  // it would send, the run that made it, when, and whether it was approved.
+  readonly drafts = new Map<string, { payload: string; run: number; at: number; used?: true }>();
 
   // owned is told about each tab opened, so the REPL can close it with the
   // session even if close() is never reached. cwd is the session's folder,
@@ -85,6 +100,8 @@ export class SiteKit {
         return this.send(tool, { ...args, tab });
       }
       if (!GONE.test(e.message)) throw e;
+      const action = sending.getStore();
+      if (action !== undefined) throw new HarnessError("effect_unknown", `${action}: the ${origin} tab closed while its ${tool} was out (${e.message}), so it may have gone through; it was not sent again`, { next: `check ${origin} for it before sending again, which takes a new draft` });
       const tab = await this.reopen(origin, gone);
       onReopen?.(tab);
       return this.send(tool, { ...args, tab });
@@ -190,16 +207,40 @@ export class SiteKit {
   }
 }
 
-export type Draft = { status: "draft"; site: string; action: string; to?: string; text: string; note: string };
-export type Sent<T> = { status: "sent"; site: string; action: string; to?: string; result: T };
+export type Draft = { status: "draft"; draftId: string; site: string; action: string; from?: string; to?: string; text: string; note: string };
+export type Sent<T> = { status: "sent"; draftId: string; site: string; action: string; from?: string; to?: string; result: T };
+
+// How long a draft can be approved, as long as a REPL session lasts unused.
+const DRAFT_MS = 30 * 60_000;
 
 // Anything that sends, posts, or changes the owner's account: without
 // approved it sends nothing and returns the exact draft for the owner to
-// read; called again with approved: true after they say yes, it sends.
-export async function draftOrSend<T>(opts: { site: string; action: string; to?: string; text: string; approved?: boolean; send: () => Promise<T> }): Promise<Draft | Sent<T>> {
-  const { site, action, to, text } = opts;
-  if (opts.approved !== true) {
-    return { status: "draft", site, action, ...(to === undefined ? {} : { to }), text, note: "nothing was sent; show the owner this exact text, and call again with { approved: true } only after they approve it" };
+// read, with its draftId. Called again in a later run, with the same
+// arguments and approved: that draftId, after they say yes, it sends, once.
+// Approval was a flag the model set itself (approved: true): scripts
+// drafted and sent in one run, and a draft of one text to one channel let
+// another text go to another (audit SH-21, E-10). from names the account
+// it goes out as; bind, what else the send depends on (a file's bytes), so
+// that a change to either is a new draft.
+export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action: string; from?: string; to?: string; text: string; bind?: string; approved?: string | boolean; send: () => Promise<T> }): Promise<Draft | Sent<T>> {
+  const { site, action, from, to, text } = opts;
+  const shown = { site, action, ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) };
+  const payload = createHash("sha256").update(JSON.stringify([site, action, from, to, text, opts.bind])).digest("hex");
+  const now = Date.now();
+  for (const [id, d] of kit.drafts) if (now - d.at > DRAFT_MS) kit.drafts.delete(id);
+  if (opts.approved === undefined || opts.approved === false) {
+    const draftId = randomBytes(6).toString("hex");
+    kit.drafts.set(draftId, { payload, run: kit.run, at: now });
+    return { status: "draft", draftId, ...shown, text, note: `nothing was sent; show the owner this exact draft, and only after they approve it call again, in a later call, with the same arguments and { approved: "${draftId}" }` };
   }
-  return { status: "sent", site, action, ...(to === undefined ? {} : { to }), result: await opts.send() };
+  const refused = (why: string) => new HarnessError("invalid_argument", `nothing was sent: ${why}`, { retryable: false, next: "show the owner the draft and wait for their yes before approving it" });
+  const id = opts.approved;
+  if (typeof id !== "string") throw refused("approved takes the draftId of the draft the owner approved; call without approved for the draft");
+  const d = kit.drafts.get(id);
+  if (!d) throw refused(`no draft ${id} in this REPL session (a draft lasts ${DRAFT_MS / 60_000} min in the session that made it); draft it again`);
+  if (d.used) throw refused(`draft ${id} was approved once already, and a draft sends once; draft again for another send`);
+  if (d.payload !== payload) throw refused(`this ${action} is not draft ${id}: its text, recipient, sender, or file differs; draft it again`);
+  if (d.run === kit.run) throw refused(`draft ${id} was made in this same run, so the owner has not seen it; approve it in a later call`);
+  d.used = true;
+  return { status: "sent", draftId: id, ...shown, result: await sending.run(action, opts.send) };
 }
