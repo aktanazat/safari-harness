@@ -491,7 +491,10 @@ test("an approved send still running when its run timed out is not sent again by
     return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ts: "1.0", channel: "C1" }), truncated: false } };
   };
   const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
-  const code = "const c = await slack.getClient(); await c.postMessage('C1', 'hello', { approved: true })";
+  // The draft comes from an earlier run: a draft cannot be approved in the run that made it.
+  const drafted = await repl.run("const c = await slack.getClient(); const d = await c.postMessage('C1', 'hello'); d.status");
+  expect(drafted.output).toContain("draft");
+  const code = "await c.postMessage('C1', 'hello', { approved: d.draftId })";
   const first = await repl.run(code, 20);
   gate.resolve();
   const rerun = await afterTimedOut(repl, code);

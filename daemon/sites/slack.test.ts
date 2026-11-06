@@ -218,7 +218,7 @@ test("a draft's id approves only that draft's text, channel and sender, once, an
   expect(s.asked).toEqual([]);
   expect(await waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).toMatchObject({ status: "sent", draftId: draft.draftId, result: { ts: "1.0" } });
   await expect(waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).rejects.toThrow("approved once already");
-  expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" } }]);
+  expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" }, read: false }]);
 });
 
 // Audit SH-24: the extension says a tab is gone after the request left it
@@ -245,7 +245,7 @@ test("web-API reads go out as reads the daemon may repeat, and a post does not",
   const s = safari({ "conversations.history": { messages: [{ ts: "1.0", text: "hi" }] }, "chat.postMessage": { ts: "2.0", channel: "C1" } }, []);
   const c = await s.client();
   await waited(c.messageAt("C1", "1.0"));
-  await waited(c.postMessage("C1", "hello", { approved: true }));
+  await approved(s.kit, (ok) => c.postMessage("C1", "hello", { approved: ok }));
   expect(s.calls.map(({ method, read }) => ({ method, read }))).toEqual([{ method: "conversations.history", read: true }, { method: "chat.postMessage", read: false }]);
 });
 
