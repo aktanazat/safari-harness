@@ -127,3 +127,51 @@ test("a turn end Safari does not answer fails as JSON, and its agent's tab close
   await gone.promise;
   expect(closed).toContain(tab);
 }, 30_000);
+
+// On 11-03 a helper's Supabase tab closed between two of its clicks: the
+// user's message interrupted its lead, whose release named no task and so
+// reached every tab of the omp process (AuditSafariHarness-1). A release
+// that names no task (an omp still running the older extension) reaches
+// only the tabs no task names; a lead's reaches those and its own.
+test("a lead's turn end leaves its running helper's tab, and the helper's own end closes it", async () => {
+  const helperTask = JSON.stringify(["helper-session", "Geo", "lead-session"]);
+  const leadTask = JSON.stringify(["lead-session", "Main"]);
+  const open = async (url: string, task?: string) => ((await (await post("/rpc", { tool: "open", args: { url, background: true }, caller: process.pid, own: true, ...(task === undefined ? {} : { task }) })).json()) as { value: { id: number } }).value.id;
+  const helperTab = await open("https://helper.example/", helperTask);
+  const leadTab = await open("https://lead.example/", leadTask);
+  const untasked = await open("https://untasked.example/");
+  const release = async (task?: string) => {
+    const admission = { owner: process.pid, ...(task === undefined ? {} : { task }) };
+    const prepared = (await (await post("/turn-end/prepare", admission)).json()) as { tabs: number[] };
+    const res = await post("/turn-end", { ...admission, prepared });
+    expect(res.status).toBe(200);
+    return prepared.tabs.sort();
+  };
+  expect(await release()).toEqual([untasked]);
+  expect([helperTab, leadTab, untasked].map((tab) => closed.includes(tab))).toEqual([false, false, true]);
+  const later = await open("https://later.example/");
+  expect(await release(leadTask)).toEqual([leadTab, later].sort());
+  expect([helperTab, leadTab, later].map((tab) => closed.includes(tab))).toEqual([false, true, true]);
+  const next = (await (await post("/rpc", { tool: "info", args: { tab: helperTab }, caller: process.pid, own: true, task: helperTask })).json()) as { ok: boolean };
+  expect(next.ok).toBe(true);
+  expect(await release(helperTask)).toEqual([helperTab]);
+  expect(closed).toContain(helperTab);
+}, 30_000);
+
+// A stopping daemon took a release and could cut it as it stopped
+// (AuditSafariHarness-10). It refuses it as it refuses /rpc, so the
+// extension asks the next daemon. This test stops the daemon: it goes last.
+test("a stopping daemon answers the turn-end routes 503, as restarting", async () => {
+  silent = true;
+  // a call Safari leaves unanswered holds the stop open
+  const held = post("/rpc", { tool: "tabs", args: {}, caller: process.pid, own: true });
+  while (((await (await fetch(`${http}/health`)).json()) as { inFlight: number }).inFlight === 0);
+  expect((await post("/shutdown", { reason: "test" })).status).toBe(200);
+  const task = JSON.stringify(["stopping-session", "Main"]);
+  const prepare = await post("/turn-end/prepare", { owner: process.pid, task });
+  expect(prepare.status).toBe(503);
+  expect(await prepare.json()).toMatchObject({ ok: false, restarting: true });
+  const release = await post("/turn-end", { owner: process.pid, task, prepared: { owner: process.pid, task, epoch: "e", tabs: [] } });
+  expect(release.status).toBe(503);
+  await held.catch(() => undefined);
+}, 30_000);

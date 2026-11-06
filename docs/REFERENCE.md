@@ -140,8 +140,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
 ### Cleanup authority
 
 - An admitted completed turn from a helper closes only that helper's
-  disposable tabs and empty windows. Main-session completion or process
-  exit also releases abandoned descendants. The session and agent identity,
+  disposable tabs and empty windows. Main-session completion closes the
+  main task's own and those no task names, 15 s later unless the session
+  starts again first; never a helper's, which may still run. Process exit
+  releases all of them. The session and agent identity,
   not a group label or shared process id, keeps helpers apart. Clicked
   pages, script-changed pages, filled fields, site-global tabs and an agent
   page in front are included. Cancellation mid-turn or tab count alone is

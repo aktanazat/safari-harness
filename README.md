@@ -217,13 +217,20 @@ owned tab IDs with a call-generation token; it never closes a page.
 it; unrelated helpers do not. A request without a preparation is rejected.
 A release Safari does not answer fails with 503 and `{ok: false, error}`;
 its pages close at the first sweep Safari answers: the minute's sweep, or
-the one as the extension connects again.
+the one as the extension connects again. A stopping daemon answers both
+routes 503 with `{ok: false, restarting: true}`, and the omp extension
+asks again once the next daemon answers.
 omp tags browser calls with the session and agent identity (a helper's
 with its lead's session too), including calls through the CLI and shared
 REPLs. The main task and its direct helpers use tabs in one project window.
-Each helper's final `agent_end` releases only its pages. The shared window
-stays while another helper still has pages; an empty window closes.
-Main-session completion or process exit also releases abandoned descendants.
+Each helper's final `agent_end` releases only its pages. The main session's
+final `agent_end` releases its own pages and those no task names, 15 s
+later, unless the session starts again first (the user's message
+interrupting a reply ends it and starts the next run a second later); it
+never reaches a helper's pages, which may still be in use. A release that
+names no task reaches only the pages no task names. Process exit releases
+all of them. The shared window stays while another helper still has pages;
+an empty window closes.
 Different projects get different windows, even when they use the same group
 name. Clicked pages, filled fields, site-global tabs and an agent page in
 front are included. Pages explicitly kept for the user, pending handoffs

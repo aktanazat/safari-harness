@@ -15,7 +15,7 @@ import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeRetryMs, closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
-import { alive, currentOwner, currentTask, matchesTask, taskFamily, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, inTurn, matchesTask, taskFamily, taskParts, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -541,8 +541,29 @@ export function* tabsOwnedBy(owner: number | undefined, task?: string): Generato
   for (const [tab, recorded] of harnessTabs) if (matchesTask(recorded, owner, task)) yield tab;
 }
 
-function taskKey(owner: number, task?: string): number | string {
+// The calls of one task, of those under no task (null), or of every task
+// of the owner (undefined).
+function taskKey(owner: number, task?: string | null): number | string {
   return task === undefined ? owner : JSON.stringify([owner, task]);
+}
+
+// The call records a turn end with task reaches (inTurn in owner.ts).
+function turnKeys(owner: number, task: string | null | undefined): (number | string)[] {
+  return task !== null && task !== undefined && taskParts(task)?.length === 2 ? [taskKey(owner, task), taskKey(owner, null)] : [taskKey(owner, task)];
+}
+
+function turnTabs(owner: number, task: string | null | undefined): number {
+  let n = 0;
+  for (const t of harnessTabs.values()) if (inTurn(t, owner, task)) n++;
+  return n;
+}
+
+// A task's call record goes once nothing of it runs or remains open.
+function forgetCalls(owner: number, task: string | null): void {
+  const key = taskKey(owner, task);
+  if (activeCalls.get(key)?.pending.size) return;
+  for (const t of harnessTabs.values()) if (t.owner === owner && t.task === (task ?? undefined)) return;
+  activeCalls.delete(key);
 }
 
 function callsFor(key: number | string, epoch?: string): OwnerCalls {
@@ -556,16 +577,16 @@ function callsFor(key: number | string, epoch?: string): OwnerCalls {
   return calls;
 }
 
-async function drainTask(owner: number, task?: string): Promise<void> {
-  const key = taskKey(owner, task);
+async function drainTask(owner: number, task: string | null | undefined): Promise<void> {
+  const keys = turnKeys(owner, task);
   for (;;) {
-    const pending = activeCalls.get(key)?.pending;
-    if (pending?.size) {
+    const pending = keys.flatMap(key => [...activeCalls.get(key)?.pending ?? []]);
+    if (pending.length > 0) {
       await Promise.all(pending);
       continue;
     }
     let using: Promise<void> | undefined;
-    for (const tab of harnessTabs.values()) if (matchesTask(tab, owner, task) && tab.calls?.size) {
+    for (const tab of harnessTabs.values()) if (inTurn(tab, owner, task) && tab.calls?.size) {
       using = tab.calls.values().next().value;
       break;
     }
@@ -576,18 +597,22 @@ async function drainTask(owner: number, task?: string): Promise<void> {
 
 // Drain only. The runtime rechecks its canonical completion authority after
 // this returns, then commits a release carrying these exact resources.
-export async function prepareTurnEnd(owner: number, task?: string): Promise<TurnPreparation> {
+export async function prepareTurnEnd(owner: number, task?: string | null): Promise<TurnPreparation> {
   await drainTask(owner, task);
-  const calls = callsFor(taskKey(owner, task));
-  return { owner, ...(task === undefined ? {} : { task }), epoch: calls.epoch, tabs: [...tabsOwnedBy(owner, task)] };
+  const epoch = turnKeys(owner, task).map(key => callsFor(key).epoch).join(" ");
+  const tabs: number[] = [];
+  for (const [tab, t] of harnessTabs) if (inTurn(t, owner, task)) tabs.push(tab);
+  return { owner, ...(typeof task === "string" ? { task } : {}), epoch, tabs };
 }
 
-export function endTurn(owner: number, prepared?: TurnPreparation, task?: string): Promise<TurnReceipt> {
-  const key = taskKey(owner, task);
-  const pending = endingTurns.get(owner) ?? endingTurns.get(key);
+export function endTurn(owner: number, prepared?: TurnPreparation, task?: string | null): Promise<TurnReceipt> {
+  const keys = turnKeys(owner, task);
+  const pending = endingTurns.get(owner) ?? endingTurns.get(keys[0]);
   if (pending) return pending;
-  const owned = [...tabsOwnedBy(owner, task)];
-  if (prepared && (prepared.owner !== owner || prepared.task !== task || prepared.epoch !== (activeCalls.get(key)?.epoch ?? null) || prepared.tabs.length !== owned.length || owned.some(tab => !prepared.tabs.includes(tab)))) {
+  const owned: number[] = [];
+  for (const [tab, t] of harnessTabs) if (inTurn(t, owner, task)) owned.push(tab);
+  const epoch = keys.map(key => activeCalls.get(key)?.epoch ?? "none").join(" ");
+  if (prepared && (prepared.owner !== owner || prepared.task !== (task ?? undefined) || prepared.epoch !== epoch || prepared.tabs.length !== owned.length || owned.some(tab => !prepared.tabs.includes(tab)))) {
     return Promise.resolve({ ok: true, closed: 0, retained: owned.length, failed: 0, deferred: false, invalidated: true });
   }
   // Install the barrier synchronously: later owner calls wait for release,
@@ -595,9 +620,9 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
   const ending = Promise.resolve().then(async () => {
     await drainTask(owner, task);
     if (task === undefined) conditionalCaptures.forgetCaller(owner);
-    const before = tabsOpenedBy(owner, task);
+    const before = turnTabs(owner, task);
     for (const t of harnessTabs.values()) {
-      if (!matchesTask(t, owner, task)) continue;
+      if (!inTurn(t, owner, task)) continue;
       // A wait an idle close set is not owed at the turn's end: the
       // extension refuses only a close for idleness.
       if (!t.done) delete t.retry;
@@ -606,15 +631,16 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
-    await turnEnded(owner, task);
-    const retained = tabsOpenedBy(owner, task);
-    const failed = [...harnessTabs.values()].filter((t) => matchesTask(t, owner, task) && t.failed).length;
+    await turnEnded(owner, task ?? undefined);
+    const retained = turnTabs(owner, task);
+    const failed = [...harnessTabs.values()].filter((t) => inTurn(t, owner, task) && t.failed).length;
     return { ok: true as const, closed: before - retained, retained, failed, deferred: !bridge.connected };
   }).finally(() => {
-    endingTurns.delete(key);
-    if (task !== undefined && tabsOpenedBy(owner, task) === 0 && !activeCalls.get(key)?.pending.size) activeCalls.delete(key);
+    for (const key of keys) if (endingTurns.get(key) === ending) endingTurns.delete(key);
+    if (task === null || typeof task === "string") forgetCalls(owner, task);
+    if (keys.length > 1) forgetCalls(owner, null);
   });
-  endingTurns.set(key, ending);
+  for (const key of keys) endingTurns.set(key, ending);
   return ending;
 }
 
@@ -693,7 +719,7 @@ async function sweepOnce() {
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
   const due = [...harnessTabs].filter(([tab, t]) => {
-    if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task))?.pending.size)) return false;
+    if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task ?? null))?.pending.size)) return false;
     const handoff = handoffs.get(tab);
     if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
     const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
@@ -3709,7 +3735,7 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   const arrived = Date.now();
   if (owner === undefined) return queuing(arrived, () => invokeTool(name, args, model, news));
   const task = currentTask();
-  const key = taskKey(owner, task);
+  const key = taskKey(owner, task ?? null);
   let ended = 0;
   for (;;) {
     const ending = endingTurns.get(owner) ?? endingTurns.get(key);
@@ -3724,9 +3750,9 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   const settled = Promise.withResolvers<void>();
   const epoch = randomUUID();
   const aggregate = callsFor(owner, epoch);
-  const active = task === undefined ? aggregate : callsFor(key, epoch);
+  const active = callsFor(key, epoch);
   aggregate.pending.add(settled.promise);
-  if (active !== aggregate) active.pending.add(settled.promise);
+  active.pending.add(settled.promise);
   let resumed = false;
   for (const t of harnessTabs.values()) {
     if (!matchesTask(t, owner, task)) continue;
@@ -3747,9 +3773,9 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
     }
     if (call.tabs.size > 0) tabChanges++;
     aggregate.pending.delete(settled.promise);
-    if (active !== aggregate) active.pending.delete(settled.promise);
+    active.pending.delete(settled.promise);
     if (aggregate.pending.size === 0 && tabsOpenedBy(owner) === 0) activeCalls.delete(owner);
-    if (task !== undefined && active.pending.size === 0 && tabsOpenedBy(owner, task) === 0) activeCalls.delete(key);
+    forgetCalls(owner, task ?? null);
     settled.resolve();
   }
 }

@@ -102,6 +102,20 @@ export function taskFamily(task: string | undefined): string | undefined {
   return parts ? JSON.stringify([parts[2] ?? parts[0], "Main"]) : task;
 }
 
+// What a turn end reaches (endTurn in tools.ts): a task's own tabs, and
+// for a lead's task (omp's [session, agent], which names no lead of its
+// own) also those its process opened under no task, which only the lead
+// answers for. null reaches those alone: a release that names no task.
+// undefined reaches every tab of the process, as its exit does. Before
+// 11-06 a lead's release named no task and so reached its running
+// helpers' tabs: on 11-03 a helper's tab closed between two of its clicks
+// as the user's message interrupted its lead (AuditSafariHarness-1).
+export function inTurn(record: { owner?: number; task?: string }, owner: number | undefined, task: string | null | undefined): boolean {
+  if (record.owner !== owner) return false;
+  if (task === undefined || record.task === task) return true;
+  return record.task === undefined && (task === null || taskParts(task)?.length === 2);
+}
+
 // One sweep checks every watched pid each second (a signal-0 kill each),
 // and runs only while something is watched.
 const SWEEP_MS = 1000;

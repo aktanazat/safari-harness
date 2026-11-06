@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import safariTurnEnd from "./index.ts";
 import reads from "./fixtures/reads.json";
 
@@ -9,30 +9,48 @@ type ToolResult = { input: Record<string, unknown> } | undefined;
 type Hooks = {
   agent_end: (event: End, ctx: Context) => void | Promise<void>;
   tool_call: (event: ToolCall, ctx: Context) => ToolResult;
+  before_agent_start: (event: unknown, ctx: Context) => void;
 };
 const context = (kind: "main" | "sub", mode = "tui", id: string = kind): Context => ({ mode, agent: { kind, id }, sessionManager: { getSessionId: () => "session-a" } });
 const task = JSON.stringify(["session-a", "helper"]);
 
-async function withHook(run: (end: (event: End, ctx: Context) => unknown, tool: (event: ToolCall, ctx: Context) => ToolResult, requests: { path: string; body: unknown }[]) => Promise<void>) {
+// daemon: what the stand-in daemon answers a path, before its usual answer.
+async function withHook(run: (end: (event: End, ctx: Context) => unknown, tool: (event: ToolCall, ctx: Context) => ToolResult, requests: { path: string; body: unknown }[], start: (ctx: Context) => void, heard: (n: number) => Promise<void>) => Promise<void>, daemon?: (path: string) => Response | undefined) {
   const requests: { path: string; body: unknown }[] = [];
+  const waiting: { n: number; resolve: () => void }[] = [];
+  const heard = (n: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waiting.push({ n, resolve });
+    if (requests.length >= n) resolve();
+    return promise;
+  };
   const prepared = { owner: process.pid, task, epoch: "owned-generation", tabs: [101] };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === "/health") return Response.json({ ok: true });
     requests.push({ path, body: await request.json() });
-    return Response.json(path === "/turn-end/prepare" ? prepared : { ok: true, closed: 1, retained: 0, failed: 0, deferred: false });
+    for (const w of waiting) if (requests.length >= w.n) w.resolve();
+    return daemon?.(path) ?? Response.json(path === "/turn-end/prepare" ? prepared : { ok: true, closed: 1, retained: 0, failed: 0, deferred: false });
   } });
   const before = process.env.SAFARI_HARNESS_HTTP;
   process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
   const hooks: Partial<Hooks> = {};
   safariTurnEnd({ on<E extends keyof Hooks>(event: E, callback: Hooks[E]) { hooks[event] = callback; } });
   try {
-    await run(hooks.agent_end ?? (() => undefined), hooks.tool_call ?? (() => undefined), requests);
+    await run(hooks.agent_end ?? (() => undefined), hooks.tool_call ?? (() => undefined), requests, (ctx) => hooks.before_agent_start?.({}, ctx), heard);
   } finally {
+    jest.useRealTimers();
     server.stop(true);
     if (before === undefined) delete process.env.SAFARI_HARNESS_HTTP;
     else process.env.SAFARI_HARNESS_HTTP = before;
   }
 }
+
+const lead = JSON.stringify(["session-a", "main"]);
+const leadRelease = [
+  { path: "/turn-end/prepare", body: { owner: process.pid, task: lead } },
+  { path: "/turn-end", body: { owner: process.pid, task: lead, prepared: { owner: process.pid, task, epoch: "owned-generation", tabs: [101] } } },
+];
 
 test.each(["tui", "rpc", "json", "print"])("a helper's final completion in %s mode admits only its own task and is awaitable", async (mode) => {
   await withHook(async (end, _tool, requests) => {
@@ -44,14 +62,50 @@ test.each(["tui", "rpc", "json", "print"])("a helper's final completion in %s mo
   });
 });
 
-test("main completion still admits every task owned by its process", async () => {
-  await withHook(async (end, _tool, requests) => {
+// AuditSafariHarness-1 and -2: a lead's release named no task, so it
+// reached its running helpers' pages, and it went at once, so a reply the
+// user's next message interrupted closed the pages he was about to use.
+test("a lead's completion releases only its own task, after a pause", async () => {
+  await withHook(async (end, _tool, requests, _start, heard) => {
+    jest.useFakeTimers();
     await end({}, context("main"));
-    expect(requests).toEqual([
-      { path: "/turn-end/prepare", body: { owner: process.pid } },
-      { path: "/turn-end", body: { owner: process.pid, prepared: { owner: process.pid, task, epoch: "owned-generation", tabs: [101] } } },
-    ]);
+    jest.advanceTimersByTime(14_999);
+    expect(requests).toEqual([]);
+    jest.advanceTimersByTime(1);
+    await heard(2);
+    expect(requests).toEqual(leadRelease);
   });
+});
+
+// The end that a run starting again cancelled sends nothing: the one
+// release heard is the next end's, after its own pause.
+test("a lead's next run starting 200 ms after its end keeps its pages", async () => {
+  await withHook(async (end, _tool, requests, start, heard) => {
+    jest.useFakeTimers();
+    await end({}, context("main"));
+    jest.advanceTimersByTime(200);
+    start(context("main"));
+    jest.advanceTimersByTime(60_000);
+    await end({}, context("main"));
+    jest.advanceTimersByTime(15_000);
+    await heard(2);
+    expect(requests).toEqual(leadRelease);
+  });
+});
+
+// AuditSafariHarness-10: a release the daemon refused as it restarted was
+// dropped.
+test("a release a restarting daemon refused goes again once it answers", async () => {
+  let refused = false;
+  const restarting = (path: string) => {
+    if (refused || path !== "/turn-end/prepare") return undefined;
+    refused = true;
+    return Response.json({ ok: false, restarting: true, error: "the safari daemon is restarting (deploy)" }, { status: 503 });
+  };
+  await withHook(async (end, _tool, requests) => {
+    await end({}, context("sub", "tui", "helper"));
+    expect(requests.map((r) => r.path)).toEqual(["/turn-end/prepare", "/turn-end/prepare", "/turn-end"]);
+  }, restarting);
 });
 
 test.each([context("sub"), context("main"), context("sub", "print")])("a continuing turn admits no cleanup for %j", async (ctx) => {

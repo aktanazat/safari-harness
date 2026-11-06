@@ -91,7 +91,7 @@ export function currentTask(): string | undefined {
   return context === undefined ? sessionTask() : context.task;
 }
 
-type Missed = "refused" | "restarting";
+export type Missed = "refused" | "restarting";
 
 // How long a call waits for the daemon to answer again: launchd starts a
 // stopped daemon again within a second or two, and one that answered 503
@@ -128,6 +128,12 @@ async function back(base: string, ms: number): Promise<boolean> {
   return false;
 }
 
+// Whether the daemon answers again, not stopping, after it missed a request:
+// a deploy's restart may outlast launchd's, up to the 503 wait.
+export function daemonBack(base: string, missed: Missed): Promise<boolean> {
+  return back(base, Math.max(BACK_MS[missed], Math.min((deployingFor() ?? 0) * 1000, BACK_MS.restarting)));
+}
+
 // A call that runs in this process (call.ts) makes daemon calls of its own
 // along the way. Their answers leave the agent's news of its tabs
 // (continuity.ts) to the one the agent gets, which takes it once at the end.
@@ -155,9 +161,7 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const missed = typeof res === "string" ? res : undefined;
   let waited = 0;
   if (missed !== undefined) {
-    // a deploy's restart may outlast launchd's, up to the 503 wait
-    const ms = Math.max(BACK_MS[missed], Math.min((deployingFor() ?? 0) * 1000, BACK_MS.restarting));
-    if (await back(base, ms)) {
+    if (await daemonBack(base, missed)) {
       waited = Date.now() - sent;
       res = await attempt(base, body, effectful);
     }

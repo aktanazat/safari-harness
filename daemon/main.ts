@@ -12,8 +12,8 @@
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
 //     /calls         the last 24 h of calls and the extension's drops (calls.ts)
-//     /turn-end/prepare {owner} drain and identify exact owned resources
-//     /turn-end      {owner,prepared} release after runtime authorization
+//     /turn-end/prepare {owner,task?} drain and identify exact owned resources
+//     /turn-end      {owner,task?,prepared} release after runtime authorization
 //     /shutdown      {reason} stop once the calls in flight finish
 //     /space         the live page an agent window opens on, with its state
 //                    and controls; /agents, every agent at work (mission.ts)
@@ -277,8 +277,12 @@ const rpcServer = Bun.serve({
       return new Response(text, { headers: { "content-type": "application/json;charset=utf-8" } });
     }
     // The caller drains first, then releases the exact resources it was
-    // given; a newer call in between invalidates the preparation.
+    // given; a newer call in between invalidates the preparation. A stopping
+    // daemon refuses both, as it does /rpc, and the extension asks the next
+    // one (omp/index.ts): before 11-06 one could start here and be cut as
+    // the daemon stopped (AuditSafariHarness-10).
     if ((url.pathname === "/turn-end/prepare" || url.pathname === "/turn-end") && req.method === "POST") {
+      if (stopping) return Response.json({ ok: false, restarting: true, error: `the safari daemon is restarting (${stopping})` }, { status: 503 });
       const body = safeParse(await req.text());
       const owner = body?.owner;
       if (!Number.isInteger(owner) || Number(owner) <= 1) return Response.json({ ok: false, error: "owner must be a process id" }, { status: 400 });
@@ -286,12 +290,14 @@ const rpcServer = Bun.serve({
       if (task !== undefined && (typeof task !== "string" || task.length === 0)) return Response.json({ ok: false, error: "task must be a nonempty string" }, { status: 400 });
       inFlight++;
       try {
-        if (url.pathname === "/turn-end/prepare") return Response.json(await prepareTurnEnd(Number(owner), task));
+        // A release that names no task reaches the tabs no task names
+        // (inTurn in owner.ts), not every task's.
+        if (url.pathname === "/turn-end/prepare") return Response.json(await prepareTurnEnd(Number(owner), task ?? null));
         const prepared = body?.prepared;
         if (!prepared || typeof prepared !== "object" || !("owner" in prepared) || prepared.owner !== owner || !("epoch" in prepared) || typeof prepared.epoch !== "string" || !("tabs" in prepared) || !Array.isArray(prepared.tabs) || !prepared.tabs.every(tab => Number.isInteger(tab) && tab > 0)) {
           return Response.json({ ok: false, error: "a current owned-resource preparation is required" }, { status: 409 });
         }
-        return Response.json(await endTurn(Number(owner), prepared as TurnPreparation, task));
+        return Response.json(await endTurn(Number(owner), prepared as TurnPreparation, task ?? null));
       } catch (e) {
         // Its tabs are marked done by then, and a later sweep closes them
         // (tools.ts): from 10-30 01:05Z to 01:50Z, while Safari left
