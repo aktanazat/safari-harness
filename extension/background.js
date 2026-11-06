@@ -80,6 +80,7 @@ function connect() {
       // answers it: this page goes with the reload.
       if (msg.op === "reload") return api.runtime.reload();
       const answer = (obj) => sendOn(sock, obj, msg);
+      const asked = Date.now();
       handle(msg).then((value) => {
         if (msg.id !== undefined) answer({ id: msg.id, value });
       }, async (err) => {
@@ -87,8 +88,14 @@ function connect() {
         const text = String(err && err.message || err);
         // An id Safari no longer knows that no reload maps (adopt): the
         // answer says what closed its tab, as far as this page saw (goneText).
+        // A tab gone before the request came reached no page, so nothing
+        // ran (goneBefore): on 11-02 a click, a select and a goto on a tab
+        // closed long before were each answered as maybe done, and a
+        // snapshot there as not (MineSessionC-6).
         const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
-        answer({ id: msg.id, error: lost ? await goneText(Number(lost[1] ?? msg.args?.[0])) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text, ...(err?.failure ? { failure: err.failure } : {}) });
+        const id = lost ? Number(lost[1] ?? msg.args?.[0]) : undefined;
+        const failure = err?.failure ?? (lost && await goneBefore(id, asked) ? { code: "stale_view", effect: "none", retryable: false, next: "find the tab with tabs, or open it again" } : undefined);
+        answer({ id: msg.id, error: lost ? await goneText(id) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text, ...(failure ? { failure } : {}) });
       });
     };
     sock.onclose = (ev) => {
@@ -2010,6 +2017,15 @@ api.tabs.onRemoved.addListener((id, info) => {
   }
   goneRead.then(() => store.set({ gone: [...closedTabs] })).catch(() => {});
 });
+
+// Whether tab tabId was gone before at: closed then, or unknown to Safari
+// since the extension started, so a request that came at at reached no page.
+// One it closed while the request ran may have acted first.
+async function goneBefore(tabId, at) {
+  await goneRead;
+  const closed = Number.isSafeInteger(tabId) ? closedTabs.get(tabId) : undefined;
+  return closed === undefined || closed.at <= at;
+}
 
 // What the daemon is told of a tab Safari no longer knows.
 async function goneText(tabId) {

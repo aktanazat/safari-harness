@@ -917,8 +917,9 @@ export class ApplePasswords {
     const listed = await this.logins(site);
     const saved = listed.map((l) => l.username);
     const login = username ?? (saved.length === 1 ? saved[0] : undefined);
+    // A lookup that finds none fails before anything is typed (MineSessionC-6).
     if (login === undefined) {
-      throw new Error(saved.length === 0 ? `no saved login for ${site}` : `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
+      throw saved.length === 0 ? new HarnessError("not_content", `no saved login for ${site}`) : new HarnessError("invalid_argument", `several saved logins for ${site}; pass username: ${saved.join(", ")}`);
     }
     return { login, saved, sites: listed.find((l) => l.username === login && l.sites.includes(site))?.sites ?? [] };
   }
@@ -978,13 +979,13 @@ export class ApplePasswords {
     };
     const vault = await this.vault.logins(site).then((kept) => ({ kept }), (e: Error) => ({ why: e.message }));
     if (source === "vault" && "kept" in vault) {
-      if (username === undefined && vault.kept.length > 1) throw new Error(`several saved logins for ${site}; pass username: ${vault.kept.map((l) => l.username).join(", ")}`);
+      if (username === undefined && vault.kept.length > 1) throw new HarnessError("invalid_argument", `several saved logins for ${site}; pass username: ${vault.kept.map((l) => l.username).join(", ")}`);
       const kept = vault.kept.find((l) => username === undefined || l.username === username);
       if (kept) return { ...(await type(kept.username, form.password ? kept.password : null)), from: "vault" };
     }
     await this.session();
     const { login, saved } = await this.chosenLogin(site, username);
-    if (!saved.includes(login)) throw new Error(`no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
+    if (!saved.includes(login)) throw new HarnessError("not_content", `no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
     const secret = form.password ? await this.password(site, login) : null;
     const filled = await type(login, secret);
     if (secret === null) return filled;

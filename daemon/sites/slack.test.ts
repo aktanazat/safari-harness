@@ -33,8 +33,9 @@ afterAll(() => {
 // A method's answer is an object, or a list answered one per call in turn.
 function safari(methods: Record<string, object | object[]>, files: Served[]) {
   const asked: string[] = [];
-  // Each web-API call with the params the page would send.
-  const calls: { method: string; params: Record<string, unknown> }[] = [];
+  // Each web-API call with the params the page would send, and whether it
+  // went as a read the daemon may ask twice.
+  const calls: { method: string; params: Record<string, unknown>; read: boolean }[] = [];
   const fetched: { url: string; at: number }[] = [];
   const send: Invoke = async (tool, args) => {
     if (tool === "open") return { id: 1 };
@@ -43,7 +44,7 @@ function safari(methods: Record<string, object | object[]>, files: Served[]) {
       const method = /\/api\/([\w.]+)/.exec(String(args.expression))?.[1];
       if (method === undefined) return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM] } };
       asked.push(method);
-      calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}") });
+      calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}"), read: args.read === true });
       const answers = methods[method];
       const answer = Array.isArray(answers) ? answers.shift() : answers;
       return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ...answer }), truncated: false } };
@@ -155,6 +156,17 @@ test("postThread posts every reply in the thread of the top message it just post
   const sent = await waited((await s.client()).postThread("D1", "summary", ["details 1", "details 2"], { approved: true }));
   expect(sent.status).toBe("sent");
   expect(s.calls.map((c) => c.params.thread_ts)).toEqual([undefined, "9.0", "9.0"]);
+});
+
+// A read whose answer was lost may be asked again at once; a post may not
+// (mission.ts holds a lost post's retry). On 11-04 a lost messageAt answer
+// blocked the same read for four calls (MineSessionD-7).
+test("web-API reads go out as reads the daemon may repeat, and a post does not", async () => {
+  const s = safari({ "conversations.history": { messages: [{ ts: "1.0", text: "hi" }] }, "chat.postMessage": { ts: "2.0", channel: "C1" } }, []);
+  const c = await s.client();
+  await waited(c.messageAt("C1", "1.0"));
+  await waited(c.postMessage("C1", "hello", { approved: true }));
+  expect(s.calls.map(({ method, read }) => ({ method, read }))).toEqual([{ method: "conversations.history", read: true }, { method: "chat.postMessage", read: false }]);
 });
 
 // On 11-04 every first Slack call of a turn failed: the kit's tab had

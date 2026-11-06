@@ -1323,6 +1323,15 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   if (limit < 1 || limit > EVAL_MAX_MS) throw new Error(`timeoutMs must be from 1 to ${EVAL_MAX_MS} (5 minutes); split longer work across calls`);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
+  // Code that does not compile never runs: it fails here, as the page would
+  // fail it (content.js and pageEval compile the same "return (code)"),
+  // before any request, so nothing can have happened (MineSessionC-6).
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function("sh", `return (${code})`);
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new HarnessError("invalid_argument", `SyntaxError: ${e.message}`);
+  }
   // The extension gets eval's limit too, and answers first, as through
   // bridge.tab: code past it is told so, not that the request timed out.
   const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), limit], limit + 2000).catch((e: unknown) => {
@@ -2720,6 +2729,9 @@ export const SECRET_ENV: Param = { type: "string", description: "the CLI caller'
 // close, activate, and window act only on a tab the agent opened
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 const FRESH: Param = { type: "boolean", description: "load a site that showed a check in the last 10 min anyway" };
+// A site kit's request that only reads, so asking it twice is asking once:
+// it takes no lane, and a lost answer holds no retry (lanes.ts).
+const READ: Param = { type: "boolean", description: "the request only reads; it may run twice" };
 export const REF: Param = { description: "snapshot ref, CSS, visible text" };
 // A point of the tab's viewport in CSS px, as the page's clientX and
 // clientY count it: click's x and y, and real_input's (input.ts).
@@ -2756,13 +2768,13 @@ export function pageRead(want: unknown): PageRead | undefined {
   if (want && typeof want === "object" && !Array.isArray(want)) {
     const { query, root, diff, updates, since, ...rest } = want as Record<string, unknown>;
     const other = Object.keys(rest);
-    if (other.length > 0) throw new Error(`snapshot takes query, root, diff, updates, and since, not ${other.join(", ")}`);
-    if (updates !== undefined && typeof updates !== "boolean") throw new Error("snapshot updates must be true or false");
-    if (since !== undefined && (typeof since !== "string" || !since.length || since.length > 256)) throw new Error("snapshot since must be a retained revision");
-    if (diff === true && (updates === true || since !== undefined)) throw new Error("use diff or recoverable updates, not both");
+    if (other.length > 0) throw new HarnessError("invalid_argument", `snapshot takes query, root, diff, updates, and since, not ${other.join(", ")}`);
+    if (updates !== undefined && typeof updates !== "boolean") throw new HarnessError("invalid_argument", "snapshot updates must be true or false");
+    if (since !== undefined && (typeof since !== "string" || !since.length || since.length > 256)) throw new HarnessError("invalid_argument", "snapshot since must be a retained revision");
+    if (diff === true && (updates === true || since !== undefined)) throw new HarnessError("invalid_argument", "use diff or recoverable updates, not both");
     return { query: query === undefined ? undefined : str(query, "snapshot's query"), root: root === undefined ? undefined : str(root, "snapshot's root"), diff: diff === true, ...(updates === undefined ? {} : { updates }), ...(since === undefined ? {} : { since }) };
   }
-  throw new Error(`snapshot takes true, words, or {query, root, diff, updates, since}, not ${JSON.stringify(want)}`);
+  throw new HarnessError("invalid_argument", `snapshot takes true, words, or {query, root, diff, updates, since}, not ${JSON.stringify(want)}`);
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
@@ -3118,6 +3130,7 @@ export const TOOLS: Record<string, Tool> = {
   eval: {
     desc: "Run JS/await in DOM or site world (page:true). Prefer extract {query} over stale selectors. sh.q/qa shadow DOM; sh.text/jsonld/scripts/wait. Split work over timeoutMs.",
     params: { tab: TAB, expression: { type: "string", description: "JS (or file: path)" }, file: { type: "string" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, save: SAVE },
+    unlisted: { read: READ },
     required: ["tab"],
     run: saving("eval", async (a) => {
       const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
@@ -3132,7 +3145,7 @@ export const TOOLS: Record<string, Tool> = {
   fetch: {
     desc: "Request a URL with the page's cookies; returns status, type, and text.",
     params: { tab: TAB, url: { type: "string", description: "address" }, method: { type: "string", description: "default GET" }, body: { type: "string", description: "request body" }, maxBytes: { type: "number", description: "default 50000" }, save: SAVE },
-    unlisted: { headers: { type: "object", description: "request headers" }, base64: { type: "boolean", description: "body as base64" } },
+    unlisted: { headers: { type: "object", description: "request headers" }, base64: { type: "boolean", description: "body as base64" }, read: READ },
     required: ["tab", "url"],
     run: saving("fetch", (a) => pageFetch(a as { tab?: number; url: string; method?: string; headers?: Record<string, string>; body?: string; maxBytes?: number; base64?: boolean })),
   },
@@ -3880,11 +3893,15 @@ async function reopen(tool: string, args: Record<string, unknown>): Promise<stri
 // The extension says what closed a tab, from Safari's word (background.js);
 // of a close the harness made itself, its own record says more: at a
 // turn's end, by a cookies clear, or by a close call, and what it showed.
+// The new text keeps the answer's failure: one gone before it was asked
+// says nothing ran (MineSessionC-6).
 function goneWhy(e: unknown, tab: unknown): unknown {
   if (!(e instanceof Error) || !e.message.startsWith("that tab is gone") || tab === undefined || tab === "front") return e;
   const id = followTab(Number(tab));
   const closed = closedTabs.get(id);
-  return closed && !closed.found ? new Error(`that tab is gone: ${goneCause(id, tab)}; open it again`) : e;
+  if (!closed || closed.found) return e;
+  const message = `that tab is gone: ${goneCause(id, tab)}; open it again`;
+  return e instanceof HarnessError ? new HarnessError(e.code, message, { effect: e.effect, retryable: e.retryable, next: e.next }) : new Error(message);
 }
 
 // A page an agent opened that stops answering (a dialog holds it, or it is

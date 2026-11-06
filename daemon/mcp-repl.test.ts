@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failureOf } from "./failures.ts";
 
 // The MCP server loads mcp-tools.ts again from each release a deploy puts
 // in place (fresh.ts), in the same process. Two imports of it under
@@ -49,4 +50,17 @@ test("a repl call given file runs the code in that file, quotes, backslashes and
 test("a repl call with a parameter the tool does not take fails naming the ones it does", async () => {
   const { callTool } = await import("./mcp-tools.ts?release=names");
   await expect(callTool("repl", { script: "1 + 1" })).rejects.toThrow("unknown parameter script for repl (params: code, file, session)");
+});
+
+// On 11-03 x.com's rate limit inside a run came back command_failed,
+// effect none (AuditSafariHarness-23). The failure the run met is thrown
+// as the harness throws one, with its own code and effect.
+test("a repl run that fails on a rate limit answers rate_limited, as the server reports it", async () => {
+  const { callTool, closeSession } = await import("./mcp-tools.ts?release=failure");
+  try {
+    const error = await callTool("repl", { code: `throw Object.assign(new Error("x.com rate-limited this"), { code: "rate_limited", effect: "none", retryable: true, next: "ask that site again after it resets" })` }).catch((e: unknown) => e);
+    expect(failureOf(error, { effectful: false })).toMatchObject({ code: "rate_limited", effect: "none", retryable: true });
+  } finally {
+    await closeSession();
+  }
 });

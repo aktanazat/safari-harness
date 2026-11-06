@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
+import { failureOf } from "./failures.ts";
 import { FILL_TOOLS } from "./fill.ts";
 import { runAs } from "./owner.ts";
 import * as pair from "./pair.ts";
@@ -695,6 +696,20 @@ test("a fill where the vault keeps several logins fills none until a username is
   await expect(p.fill(7)).rejects.toThrow(`several saved logins for ${SITE}; pass username: ${other.username}, ${USER}`);
   expect(await p.fill(7, other.username)).toMatchObject({ username: other.username, from: "vault" });
   expect(page).toEqual(other);
+});
+
+// A lookup that finds no login fails before anything is typed, so it says
+// nothing happened: on 11-02 "no saved login" came back as maybe done
+// (MineSessionC-6).
+test("a fill naming a login nobody saved types nothing and says nothing happened", async () => {
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  await paired(p);
+  const error = await p.fill(7, "nobody@example.com").catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toStartWith("no saved login nobody@example.com");
+  expect(failureOf(error, { effectful: true })).toMatchObject({ effect: "none" });
+  expect(page).toEqual({});
 });
 
 test("fill with source apple types Apple Passwords' password over an old one the vault keeps, and the vault then keeps the new one", async () => {

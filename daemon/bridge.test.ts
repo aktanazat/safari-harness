@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { Bridge, MESSAGE_MAX, type ExtSocket } from "./bridge.ts";
+import { failureOf } from "./failures.ts";
 import { recent } from "./journal.ts";
 
 // An extension socket that answers every request with value, or never. Its
@@ -44,6 +45,22 @@ test("an extension whose socket stopped answering is replaced: that socket's act
   await expect(lost).rejects.toThrow("restarted before it answered");
   bridge.detach(old.sock);
   expect(await bridge.request("tabs.list")).toBe("answered by the new socket");
+});
+
+// "restarted before it answered; try again" must say retryable for a read,
+// and only for a read: an action may have run (MineSessionA-7).
+test("a request lost to an extension restart is unavailable: retryable as a read, uncertain as an action", async () => {
+  const bridge = new Bridge(5);
+  const old = extension(bridge);
+  bridge.attach(old.sock);
+  const lost = bridge.request("relay", [7, "eval", ["document.title"]], 60000).catch((e: unknown) => e);
+  await old.sent;
+  bridge.attach(extension(bridge).sock);
+  const error = await lost;
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("restarted before it answered");
+  expect(failureOf(error, { effectful: false })).toMatchObject({ code: "unavailable", effect: "none", retryable: true });
+  expect(failureOf(error, { effectful: true })).toMatchObject({ code: "unavailable", effect: "possibly_effected", retryable: false });
 });
 
 test("a second copy of the extension is refused while the connected one answers, and nothing it says moves requests or ticks", async () => {

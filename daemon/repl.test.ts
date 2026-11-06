@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
-import { ReplSession } from "./repl.ts";
+import { HarnessError, rateLimited } from "./failures.ts";
+import { PACE_TOOL } from "./pace.ts";
+import { ReplSession, type ReplResult } from "./repl.ts";
 import { callTool } from "./tools.ts";
 import { BrowserMemory } from "./browser-memory.ts";
 
@@ -411,4 +413,108 @@ test("a REPL snapshot preserves its read receipt so the same caller can save aft
     memory.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// A session whose open of slow.example waits until the test lets it
+// answer: a run held there passes its time limit, a real 20 ms timer,
+// which is what these tests are about.
+function heldSession() {
+  const gate = Promise.withResolvers<void>();
+  const opened: string[] = [];
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "tabs") return { tabs: opened.map((url) => ({ id: 7, url })) };
+    if (tool !== "open") return { ok: true };
+    if (String(args.url).includes("slow.example")) await gate.promise;
+    opened.push(String(args.url));
+    return { id: 7, url: String(args.url), title: "Example" };
+  };
+  return { repl: new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke }), gate, opened };
+}
+
+// The session's next run once the timed-out run has ended, asked until
+// it no longer answers that the run is still running.
+async function afterTimedOut(repl: ReplSession, code: string): Promise<ReplResult> {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const r = await repl.run(code);
+    if (!r.error?.includes("is still running") || Date.now() > deadline) return r;
+    const turn = Promise.withResolvers<void>();
+    setImmediate(turn.resolve);
+    await turn.promise;
+  }
+}
+
+// On 11-03 a run that timed out kept going, and its console.log came back
+// in the next run's answer (AuditSafariHarness-13).
+test("a run past its time limit keeps its output out of the next run, which does not run beside it", async () => {
+  const { repl, gate } = heldSession();
+  const a = await repl.run(`await openTab("https://slow.example/"); console.log("from run A"); "A done"`, 20);
+  expect(a.error).toContain("timed out after 0 s");
+  const b = await repl.run(`globalThis.bRan = true; "B done"`);
+  gate.resolve();
+  expect(b.output).not.toContain("from run A");
+  expect(b).toMatchObject({ error: expect.stringContaining("is still running"), failure: { effect: "none" } });
+  const c = await afterTimedOut(repl, `globalThis.cRan = true; "C done"`);
+  expect(c.output).toBe("from run A\nA done");
+  expect(c.error).toContain("has ended");
+  expect(await repl.run("`${typeof bRan} ${typeof cRan}`")).toEqual({ output: "undefined undefined" });
+});
+
+test("a run past its time limit sends no call after it", async () => {
+  const { repl, gate, opened } = heldSession();
+  await repl.run(`await openTab("https://slow.example/"); await openTab("https://late.example/")`, 20);
+  gate.resolve();
+  const after = await afterTimedOut(repl, "1");
+  // the run's own next turns, had its second open gone out
+  for (let turns = 0; turns < 20; turns++) {
+    const turn = Promise.withResolvers<void>();
+    setImmediate(turn.resolve);
+    await turn.promise;
+  }
+  expect(opened).toEqual(["https://slow.example/"]);
+  expect(after.error).toContain("this repl run passed its time limit");
+});
+
+// On 11-03 an approved post outlived its run's timeout, and the same
+// script run again posted a second time (AuditSafariHarness-22).
+test("an approved send still running when its run timed out is not sent again by a rerun", async () => {
+  const gate = Promise.withResolvers<void>();
+  const posts: string[] = [];
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 1, url: String(args.url) };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool !== "eval") return { ok: true };
+    const method = /\/api\/([\w.]+)/.exec(String(args.expression))?.[1];
+    if (method === undefined) return { result: { lastActiveTeamId: "T1", teams: [{ teamId: "T1", name: "Acme", domain: "acme", url: "https://acme.slack.com/", userId: "U1", signedIn: true, lastActive: true }] } };
+    await gate.promise;
+    posts.push(method);
+    return { result: { status: 200, retryAfter: null, text: JSON.stringify({ ok: true, ts: "1.0", channel: "C1" }), truncated: false } };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  const code = "const c = await slack.getClient(); await c.postMessage('C1', 'hello', { approved: true })";
+  const first = await repl.run(code, 20);
+  gate.resolve();
+  const rerun = await afterTimedOut(repl, code);
+  expect(posts).toEqual(["chat.postMessage"]);
+  expect(rerun.error).toContain("This code did not run");
+  expect(first.failure).toMatchObject({ code: "timeout", effect: "possibly_effected", retryable: false });
+});
+
+// A failure inside a run keeps its code, and says nothing happened only
+// while no call of the run may have changed a page (AuditSafariHarness-23,
+// MineSessionD-6).
+test.each([
+  { name: "a rate limit", code: "await snapshot(page)", thrown: () => rateLimited("x.com", Date.now() + 60_000), failure: { code: "rate_limited", effect: "none", retryable: true } },
+  { name: "a stale tab", code: "await snapshot(page)", thrown: () => new HarnessError("stale_view", "tab 7 had closed; it is open again, loaded fresh as tab 8"), failure: { code: "stale_view", effect: "none", retryable: true } },
+  { name: "a stale tab after a click", code: "await page.click('#send'); await snapshot(page)", thrown: () => new HarnessError("stale_view", "tab 7 had closed; it is open again, loaded fresh as tab 8"), failure: { code: "stale_view", effect: "possibly_effected", retryable: false } },
+])("a run failing on $name answers that failure", async ({ code, thrown, failure }) => {
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: String(args.url), title: "Example" };
+    if (tool === "tabs") return { tabs: [{ id: 7, url: "https://example.com/" }] };
+    if (tool === "snapshot") throw thrown();
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  await repl.run("await openTab('https://example.com')");
+  expect((await repl.run(code)).failure).toMatchObject(failure);
 });

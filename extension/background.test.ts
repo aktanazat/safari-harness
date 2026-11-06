@@ -581,6 +581,17 @@ test("a page that answered once takes each next request in one trip", async () =
   expect(b.trips).toEqual(["message tabInfo"]);
 });
 
+// A tab closed before an action was asked reached no page: the answer says
+// nothing ran, as a read's does (MineSessionC-6).
+test("an action asked of a tab already closed is answered as never sent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/", false);
+  b.close(tab);
+  const answer = await b.ask(tab, "click", ["1"]);
+  expect(answer.error).toStartWith("that tab is gone");
+  expect(answer.failure).toMatchObject({ code: "stale_view", effect: "none" });
+});
+
 test("a new page that reported in takes its first request in one trip", async () => {
   const b = await start();
   const tab = b.open("https://example.com/");

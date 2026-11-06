@@ -74,10 +74,11 @@ const BOOT_STATE_EXPR = `(() => {
 })()`;
 
 // Every page-world evaluation happens on the parked page; the tab is opened
-// there first, or SiteKit would open the origin's heavy root.
-async function pageEval<T>(kit: SiteKit, expression: string): Promise<T> {
+// there first, or SiteKit would open the origin's heavy root. read: it only
+// reads, so it may run twice (kit.ts eval).
+async function pageEval<T>(kit: SiteKit, expression: string, read = false): Promise<T> {
   await kit.tab(ORIGIN, PARK_URL);
-  return kit.eval<T>(ORIGIN, expression, { page: true });
+  return kit.eval<T>(ORIGIN, expression, { page: true, read });
 }
 
 // Boots the client in the background tab until it has stored the
@@ -90,7 +91,7 @@ async function bootClient(kit: SiteKit): Promise<Store> {
     const deadline = Date.now() + BOOT_MS;
     for (;;) {
       await Bun.sleep(1000);
-      const state = await kit.eval<{ url: string; teams: number }>(ORIGIN, BOOT_STATE_EXPR).catch(() => null);
+      const state = await kit.eval<{ url: string; teams: number }>(ORIGIN, BOOT_STATE_EXPR, { read: true }).catch(() => null);
       if (state && /\/(workspace-)?signin/.test(state.url)) throw new NotSignedIn(SITE);
       if (state && state.teams > 0) break;
       if (Date.now() > deadline) throw new Error(`Slack's client did not load in ${BOOT_MS / 1000} s`);
@@ -98,16 +99,16 @@ async function bootClient(kit: SiteKit): Promise<Store> {
   } finally {
     await kit.invoke("goto", { tab, url: PARK_URL }).catch(() => {});
   }
-  return pageEval<Store>(kit, STORE_EXPR);
+  return pageEval<Store>(kit, STORE_EXPR, true);
 }
 
 // The stored workspaces. An empty store means the owner is signed out, or
 // signed in but has not opened Slack in Safari since the store was cleared:
 // the landing page tells which, and the client is booted once for the latter.
 async function readStore(kit: SiteKit): Promise<Store> {
-  const store = await pageEval<Store>(kit, STORE_EXPR);
+  const store = await pageEval<Store>(kit, STORE_EXPR, true);
   if (store.teams.length) return store;
-  const landing = await pageEval<{ url: string; sessions: number | null }>(kit, LANDING_EXPR);
+  const landing = await pageEval<{ url: string; sessions: number | null }>(kit, LANDING_EXPR, true);
   if (landing.sessions === 0) throw new NotSignedIn(SITE);
   return bootClient(kit);
 }
@@ -154,7 +155,8 @@ async function paced<T extends { status: number; retryAfter?: string | null }>(k
 
 async function call<T>(kit: SiteKit, teamId: string, method: string, params: Record<string, unknown>): Promise<T & ApiResponse> {
   if (!/^[a-zA-Z][\w.]*$/.test(method)) throw new Error(`"${method}" is not a Slack method name`);
-  const answer = await paced(kit, ORIGIN, () => pageEval<Answer>(kit, requestExpr(teamId, method, params)));
+  const read = READ_VERB.test(method.slice(method.lastIndexOf(".") + 1));
+  const answer = await paced(kit, ORIGIN, () => pageEval<Answer>(kit, requestExpr(teamId, method, params), read));
   if (answer.signedOut) throw new NotSignedIn(SITE, `workspace ${teamId} has no session`);
   if (answer.status === 401 || answer.status === 403) throw new NotSignedIn(SITE, `HTTP ${answer.status}`);
   if (answer.truncated) throw new Error(`Slack's ${method} answer is longer than ${MAX_RESPONSE} characters; ask for fewer items`);
