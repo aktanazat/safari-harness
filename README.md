@@ -338,12 +338,16 @@ and Safari reloads the
 extension, which gives every tab a new id; the extension maps the ids
 agents hold to the new ones and tells the daemon, so each agent keeps its
 tabs. An agent session keeps its MCP server's code, and omp's extension,
-until it restarts.
+until it restarts. A named REPL session keeps the release that started it,
+so after a deploy its next call is refused until it ends
+(`safari repl --close <name>`); its bindings and tabs stay until then.
 
 Normal deployments must contain both the selected release and the running
 release in their Git history. Unknown or unrelated history is refused
-before a release is built or selected. Use the current installer; an old
-script without this check cannot enforce it.
+before a release is built or selected, with the files that differ. When a
+release in use has the same files under unrelated history,
+`scripts/dev-install.sh --same-tree [COMMIT]` deploys it. Use the current
+installer; an old script without this check cannot enforce it.
 
 `scripts/dev-install.sh --rollback` selects the previous release only when
 its reader supports the current writer's checkpoint and browser-memory
@@ -653,7 +657,8 @@ matching still asks Jev to choose or abstain.
 
 Add to an MCP client config. `timeout` (milliseconds, where the client reads
 one) lets a long call finish: `repl` runs for up to 120 s, and omp otherwise
-ends every call at 30 s.
+ends every call at 30 s. `scripts/dev-install.sh` raises omp's safari entry
+in `~/.omp/agent/mcp.json` to 130000 when it is missing or lower.
 
 the tool list keeps the repl help short. full examples stay in
 `safari guide repl` and the site guides.

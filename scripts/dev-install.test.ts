@@ -38,8 +38,8 @@ function select(id: string, absolute = false): void {
 function running(path = ""): void {
   writeFileSync(join(home, "health.json"), JSON.stringify({ root: path, extension: { connectedAt: 1 } }));
 }
-function invoke(target: string) {
-  return Bun.spawnSync(["/bin/bash", join(checkout, "scripts/dev-install.sh"), target], { env, stdout: "pipe", stderr: "pipe" });
+function invoke(...targets: string[]) {
+  return Bun.spawnSync(["/bin/bash", join(checkout, "scripts/dev-install.sh"), ...targets], { env, stdout: "pipe", stderr: "pipe" });
 }
 function expectRefused(target: string, message: string): void {
   const before = readlinkSync(current);
@@ -50,8 +50,8 @@ function expectRefused(target: string, message: string): void {
   expect(existsSync(join(data, ".current.new"))).toBe(false);
   expect(existsSync(join(home, "checkpoint-accepted"))).toBe(false);
 }
-function expectAccepted(target: string): void {
-  const result = invoke(target);
+function expectAccepted(...targets: string[]): void {
+  const result = invoke(...targets);
   expect(result.stderr.toString()).toBe("");
   expect(result.exitCode).toBe(checkpointAccepted);
   expect(readFileSync(join(home, "checkpoint-accepted"), "utf8")).toBe("check\n");
@@ -215,6 +215,28 @@ test("a sibling deployment is refused before it can create or switch a release",
   expect(existsSync(join(releases, short(sibling)))).toBe(false);
 });
 
+// SH-5 (11-06): the live release came from a history the checkout did not
+// contain; a refusal now says which files differ, so a merge can be judged.
+test("a sibling with other files is refused with the files that differ", () => {
+  git("checkout", "--quiet", "--detach", base);
+  writeFileSync(join(checkout, "daemon/slack-guard.ts"), "export {};\n");
+  git("add", "daemon/slack-guard.ts");
+  git("commit", "--quiet", "-m", "changed sibling");
+  const changed = git("rev-parse", "HEAD");
+  release(short(changed));
+  expectRefused(changed, "does not contain");
+  expect(invoke(changed).stderr.toString()).toContain(`files that differ from ${short(installed)} to ${short(changed)}:\n daemon/slack-guard.ts | 1 +`);
+  expectRefused("--same-tree", "does not contain");
+});
+
+// On 11-06 the live release 25d2832 and the release to deploy had the same
+// files but unrelated histories, and only an "ours" merge let it deploy.
+test("a sibling with the same files is refused with --same-tree as the way, which deploys it", () => {
+  expect(git("rev-parse", `${sibling}^{tree}`)).toBe(git("rev-parse", `${installed}^{tree}`));
+  expectRefused(sibling, "their files are the same: deploy with --same-tree");
+  expectAccepted("--same-tree", sibling);
+});
+
 test.each([7, 40])("a missing %i-character current commit is refused rather than treated as a first install", length => {
   const unknown = "f".repeat(length);
   select(unknown);
@@ -326,6 +348,23 @@ test("a deploy of a commit on origin/master logs no warning and records that it 
   expect(deployed).toMatchObject({ code: 0, err: "" });
   expect(deployed.log).toEndWith(`${short(descendant)} ${short(installed)} deploy`);
   expect(JSON.parse(readFileSync(join(releases, short(descendant), ".upstream"), "utf8"))).toMatchObject({ ahead: 0 });
+});
+
+// I-3 (11-06): omp's entry for safari had no timeout, so omp gave up on
+// calls at 30 s while they ran up to 120 s.
+test.each([
+  ["without a timeout", {}, 130000],
+  ["with a shorter timeout", { timeout: 30000 }, 130000],
+  ["with a longer timeout", { timeout: 200000 }, 200000],
+])("a deploy leaves omp's safari MCP entry %s waiting at least 130000 ms", (_, extra, want) => {
+  git("update-ref", "refs/remotes/origin/master", descendant);
+  const mcp = join(home, ".omp/agent/mcp.json");
+  mkdirSync(join(home, ".omp/agent"), { recursive: true });
+  const other = { command: "other", args: [] };
+  writeFileSync(mcp, JSON.stringify({ mcpServers: { safari: { command: "bun", args: [`${current}/daemon/mcp.ts`], ...extra }, other } }));
+  const deployed = deployThrough(descendant);
+  expect(deployed).toMatchObject({ code: 0, err: "" });
+  expect(JSON.parse(readFileSync(mcp, "utf8"))).toEqual({ mcpServers: { safari: { command: "bun", args: [`${current}/daemon/mcp.ts`], timeout: want }, other } });
 });
 
 // On 10-23 a call made while a deploy restarted the daemon said to install

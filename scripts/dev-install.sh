@@ -2,10 +2,17 @@
 # Deploy a commit of this checkout as the Safari Harness in use.
 #
 #   scripts/dev-install.sh [COMMIT]    deploy COMMIT (default: HEAD)
+#   scripts/dev-install.sh --same-tree [COMMIT]
+#                                      deploy COMMIT though it does not
+#                                      contain a release in use whose files
+#                                      are the same
 #   scripts/dev-install.sh --rollback  go back to the release deployed before
 #
 # Normal deploys must contain both the selected and running releases.
 # Merge their commits first; only --rollback deliberately goes backwards.
+# A refusal lists the files that differ. On 11-06 the live release came
+# from a history unrelated to the checkout's, with the same files, and was
+# deployable only after an "ours" merge; --same-tree takes that case.
 #
 # A deploy takes a commit, never the working tree: it copies the commit into
 # ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
@@ -53,9 +60,11 @@ BUILD="$HOME/Library/Caches/safari-harness/DerivedData"
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
 
+same_tree=""
+if [ "${1:-}" = --same-tree ]; then same_tree=1; shift; fi
 case "${1:-}" in
-  --rollback) what=rollback ;;
-  -*) echo "usage: $0 [COMMIT | --rollback]" >&2; exit 2 ;;
+  --rollback) [ -z "$same_tree" ] || { echo "usage: $0 [--same-tree] [COMMIT] | --rollback" >&2; exit 2; }; what=rollback ;;
+  -*) echo "usage: $0 [--same-tree] [COMMIT] | --rollback" >&2; exit 2 ;;
   *) what=deploy ;;
 esac
 
@@ -188,7 +197,19 @@ else
       exit 1
     fi
     if ! git -C "$ROOT" merge-base --is-ancestor "$live_full" "$full" 2>/dev/null; then
-      echo "$sha does not contain $live, a release in use; merge it first, or use --rollback for an intentional rollback; no release changed" >&2
+      if [ "$(git -C "$ROOT" rev-parse "$live_full^{tree}")" = "$(git -C "$ROOT" rev-parse "$full^{tree}")" ]; then
+        if [ -n "$same_tree" ]; then
+          echo "note: $sha does not contain $live, a release in use, but their files are the same; deploying with --same-tree"
+          continue
+        fi
+        echo "$sha does not contain $live, a release in use, but their files are the same: deploy with --same-tree, or merge it first; no release changed" >&2
+        exit 1
+      fi
+      {
+        echo "$sha does not contain $live, a release in use; merge it first, or use --rollback for an intentional rollback; no release changed"
+        echo "files that differ from $live to $sha:"
+        git -C "$ROOT" diff --stat "$live_full" "$full"
+      } >&2
       exit 1
     fi
   done
@@ -283,6 +304,19 @@ if [ -f "$CURRENT/docs/skill-head.md" ]; then
 fi
 [ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
   echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
+# omp waits 30 s for an MCP call unless the server's entry says longer,
+# and safari's calls run up to 120 s: until 11-06 about 60 calls in five
+# sessions came back "outcome unknown" while they still ran, and agents
+# retried them (I-3). So the entry's timeout is raised to 130000 ms.
+if jq -e '.mcpServers.safari' "$MCP" >/dev/null 2>&1 && ! jq -e '(.mcpServers.safari.timeout | numbers) >= 130000' "$MCP" >/dev/null 2>&1; then
+  cfg="$(realpath "$MCP")"
+  new="$(mktemp "$cfg.XXXXXX")"
+  chmod "$(stat -f %Lp "$cfg")" "$new"
+  jq '.mcpServers.safari.timeout = 130000' "$cfg" >"$new"
+  mv "$new" "$cfg"
+  jq -e '.mcpServers.safari.timeout == 130000' "$MCP" >/dev/null || { echo "could not set mcpServers.safari.timeout to 130000 in $MCP" >&2; exit 1; }
+  echo "omp's safari MCP server: timeout set to 130000 ms in $MCP (new omp sessions)"
+fi
 # New omp sessions load the runtime-authorized release hook. Existing
 # sessions keep their loaded hook; agent_end alone is not task authority.
 [ ! -d "$EXTENSIONS" ] || [ "$(readlink "$EXTENSIONS/safari-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/safari-harness"
