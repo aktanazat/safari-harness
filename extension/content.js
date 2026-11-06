@@ -2236,7 +2236,11 @@
     const viewport = { width: innerWidth, height: innerHeight, devicePixelRatio };
     if (!document.body) throw capturePrivacyError("the page has no document body yet: wait for it to load, then capture again");
     if (!viewport.width || !viewport.height) throw capturePrivacyError("the tab has no viewport (its window is minimized or off screen): show it with activate, or capture with shots {urls}");
-    if (window.visualViewport && (Math.abs(visualViewport.width - innerWidth) > 1 || Math.abs(visualViewport.height - innerHeight) > 1 || visualViewport.offsetLeft || visualViewport.offsetTop)) throw capturePrivacyError("reset page magnification before capturing");
+    // The visual viewport leaves out classic scroll bars, so at 100% it matches
+    // the layout viewport less them: the root's client box, the body's in
+    // quirks mode. innerWidth and innerHeight include the bars.
+    const layout = document.compatMode === "BackCompat" ? document.body : document.documentElement;
+    if (window.visualViewport && (Math.abs(visualViewport.width - layout.clientWidth) > 1 || Math.abs(visualViewport.height - layout.clientHeight) > 1 || visualViewport.offsetLeft || visualViewport.offsetTop)) throw capturePrivacyError("reset page magnification before capturing");
     const roots = [];
     const fields = [];
     const regions = new Map();

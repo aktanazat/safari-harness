@@ -8,6 +8,22 @@ const coverage = `
 
 benchRows("private captures in WebKit", [
   {
+    name: "a page at 100% with scroll bars is protected, not refused as magnified",
+    page: "private-capture.html",
+    steps: [{
+      op: "eval",
+      args: [`(async () => {
+        ${request}
+        const bars = innerWidth > document.documentElement.clientWidth && visualViewport.scale === 1;
+        const start = await request("start");
+        const prepare = await request("prepare");
+        await request("restore");
+        return { bars, start: start.value?.ok ?? start.error, prepare: prepare.value?.ok ?? prepare.error };
+      })()`],
+      answer: { value: { result: { bars: true, start: true, prepare: true } } },
+    }],
+  },
+  {
     name: "protection covers filled password, code and card fields without changing ordinary text fields",
     page: "private-capture.html",
     steps: [{

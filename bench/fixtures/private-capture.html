@@ -2,6 +2,10 @@
 <title>Private capture fixture</title>
 <style>
   html, body { margin: 0; width: 1280px; min-height: 1800px; }
+  /* Scroll bars that take layout space whatever the Mac's scroll bar setting,
+     so the page always has the classic bars the capture guard must allow. */
+  ::-webkit-scrollbar { width: 15px; height: 15px; background: #ddd; }
+  ::-webkit-scrollbar-thumb { background: #888; }
   input, #known, #split, #ordinary, #shadow, iframe, #bottom { position: absolute; box-sizing: border-box; border: 0; padding: 0; margin: 0; font: 16px/20px monospace; }
   input { left: 10px; width: 160px; height: 20px; }
   #password { top: 10px; }
