@@ -184,6 +184,35 @@ test("a named session's tab still answers in its next call after the command tha
   expect(second).toEqual({ output: "https://a.example/", started: false });
 }, 30_000);
 
+// SH-16 (11-06): a host started under release 25d2832 kept running it after
+// a deploy, its old site kits included, since each /run reset its idle end.
+// A host of another release, or one from before hosts said theirs, is
+// refused before it runs anything, with the way out.
+test.each([["another release's", "/elsewhere/releases/0ld0000"], ["a pre-11-06", undefined]])("a call refuses %s host and runs nothing in it", async (_, root) => {
+  const repl = join(state, "repl");
+  mkdirSync(repl, { recursive: true });
+  let ran = 0;
+  const stale = Bun.serve({
+    unix: join(repl, "stale.sock"),
+    fetch(req) {
+      if (new URL(req.url).pathname === "/run") ran += 1;
+      return Response.json({ id: "stale", pid: 1, host: "local", started: "", lastUsed: "", pwd: repl, tabs: [], ...(root === undefined ? {} : { root }) });
+    },
+  });
+  try {
+    const script = `const repl = await import(${JSON.stringify(HOST)});
+try { await repl.runInSession("stale", "1"); await Bun.write(Bun.stdout, JSON.stringify("ran")); } catch (e) { await Bun.write(Bun.stdout, JSON.stringify(String(e))); }
+process.exit(0);`;
+    const said = JSON.parse(await run([process.execPath, "-e", script])) as string;
+    expect(said).toContain("session stale runs another release of the harness");
+    expect(said).toContain("safari repl --close stale");
+    expect(ran).toBe(0);
+  } finally {
+    stale.stop(true);
+    rmSync(join(repl, "stale.sock"), { force: true });
+  }
+}, 30_000);
+
 // The tab a session's code opens, by a command this test's agent runs.
 async function sessionTab(url: string): Promise<number> {
   const { output } = (await command(`runInSession(${SESSION}, "(await openTab('${url}')).id")`)) as { output: string };

@@ -16,7 +16,7 @@
 //                                        that process does
 
 import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readdir, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +32,15 @@ const IDLE_MS = 30 * 60_000;
 const LOG_KEPT_MS = 7 * 24 * 60 * 60_000;
 // Longer than a session takes to answer once started (start).
 const STARTING_MS = 60_000;
+// The release this code runs from. A host runs its starter's release for
+// as long as it is used, and each /run resets its idle end, so after a
+// deploy it kept the old site kits (SH-16, 11-06: a host from 25d2832
+// lacked the owner-only Slack delete). Calls refuse a host of another.
+const ROOT = realpathSync(join(import.meta.dir, ".."));
 
-// owner: the agent that last ran code in the session (owner.ts).
-export type SessionInfo = { id: string; pid: number; host: string; started: string; lastUsed: string; pwd: string; tabs: { id: number; url: string }[]; owner?: number };
+// owner: the agent that last ran code in the session (owner.ts). root:
+// the host's release (absent from hosts started before 11-06).
+export type SessionInfo = { id: string; pid: number; host: string; started: string; lastUsed: string; pwd: string; tabs: { id: number; url: string }[]; owner?: number; root?: string };
 
 // A unix socket path must fit in 104 bytes; ids stay short and plain.
 export function checkSessionId(id: string): string {
@@ -112,6 +118,8 @@ export async function runInSession(id: string, code: string, opts: { host?: stri
     started = true;
   } else if (opts.host && opts.host !== running.host) {
     throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
+  } else if (running.root !== ROOT) {
+    throw new Error(`session ${id} runs another release of the harness (${running.root ?? "one from before 11-06"}) than this call (${ROOT}), so it may lack fixes deployed since; its bindings and tabs stay until it ends: end it (safari repl --close ${id}) and run again, or use another name`);
   }
   const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid, ...(task === undefined ? {} : { task }) });
   const result = { ...((await res.json()) as ReplResult), started };
@@ -214,7 +222,7 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
     async fetch(req) {
       const route = new URL(req.url).pathname;
       if (route === "/info") {
-        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs: session.tabs.map((p) => ({ id: p.id, url: p.url() })), ...(owner === undefined ? {} : { owner }) };
+        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs: session.tabs.map((p) => ({ id: p.id, url: p.url() })), root: ROOT, ...(owner === undefined ? {} : { owner }) };
         return Response.json(sessionInfo);
       }
       if (route === "/close") {
