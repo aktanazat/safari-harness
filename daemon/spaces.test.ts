@@ -1352,3 +1352,96 @@ test.each(CASES)("a $state window of a $owner agent after a $restart restart: $o
     await daemon.turnEnded(pid);
   }
 }, 15_000);
+
+// 11-03: tabs 916381 and 916584, held by a native sheet, failed to close 76
+// and 75 times in 11 hours: each call and turn end of their agent began
+// the wait for the next try again at a minute.
+test("a tab Safari will not close keeps its wait through its agent's calls and turn ends", async () => {
+  const s = safari();
+  const a = agent();
+  const t = await runAs(a.pid, () => callTool("open", { url: "https://sheet.example/", background: true })) as { id: number };
+  const close = s.ops["tabs.close"];
+  let tries = 0;
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== t.id) return close(args);
+    tries++;
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  };
+  try {
+    await endTurn(a.pid);
+    for (let i = 0; i < 3; i++) {
+      await runAs(a.pid, () => callTool("tabs", {}));
+      await endTurn(a.pid);
+    }
+    expect(tries).toBe(1);
+    setSystemTime(new Date(Date.now() + 60_000));
+    await endTurn(a.pid);
+    expect(tries).toBe(2);
+  } finally {
+    setSystemTime();
+    s.ops["tabs.close"] = close;
+    a.kill();
+    await a.exited;
+  }
+});
+
+// 11-06: the agents page, polled every 2 s, asked Safari to resolve the gone
+// window of each of 18 ended groups every time.
+test("an ended group's window Safari said is gone is not asked after again while no listing shows it", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => openTab("https://gone.example/", true, "gone"));
+  const { name } = t.space;
+  await spaceTool({ op: "grouped", name });
+  g.kill();
+  await g.exited;
+  await callTool("close", { tab: t.id });
+  await turnEnded(g.pid);
+  expect(pageIn(s.tabs, t.windowId)).toBeUndefined();
+  const resolve = s.ops["windows.resolve"];
+  let asked = 0;
+  s.ops["windows.resolve"] = (args) => {
+    if (args[0] === t.windowId) asked++;
+    return resolve(args);
+  };
+  try {
+    for (let i = 0; i < 3; i++) expect((await managedWindows()).some((w) => w.name === name)).toBe(false);
+    expect(asked).toBe(1);
+  } finally {
+    s.ops["windows.resolve"] = resolve;
+    await spaceTool({ op: "gone", name });
+  }
+});
+
+// Timer work checks that the extension is there, then waits on Safari: a
+// Safari the user quit meanwhile was started again by the sweep's next
+// request (11-05 20:55, 3.6 s after he quit it, no call in between).
+test("a sweep whose Safari quit after it looked never starts Safari again", async () => {
+  const s = safari();
+  const a = agent();
+  const t = await runAs(a.pid, () => callTool("open", { url: "https://quit.example/", background: true })) as { id: number };
+  const request = bridge.request;
+  const launched: string[][] = [];
+  const spawn = Bun.spawn;
+  // pgrep finds no Safari; open is recorded, not run
+  Bun.spawn = ((cmd: string[]) => {
+    if (cmd[0] === "open") launched.push(cmd);
+    return { exited: Promise.resolve(1) };
+  }) as unknown as typeof Bun.spawn;
+  bridge.request = function (this: typeof bridge, op: string, ...rest: unknown[]) {
+    if (op === "tabs.close") bridge.detach(s.sock);
+    return request.call(this, op, ...(rest as [unknown[]]));
+  } as typeof bridge.request;
+  try {
+    await endTurn(a.pid);
+    expect(launched).toEqual([]);
+  } finally {
+    bridge.request = request;
+    Bun.spawn = spawn;
+    connect(s.sock);
+    a.kill();
+    await a.exited;
+  }
+  await endTurn(a.pid);
+  expect(s.tabs.has(t.id)).toBe(false);
+}, 20_000);

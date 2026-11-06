@@ -180,6 +180,10 @@ export type ExtSocket = {
   close(code?: number, reason?: string): void;
 };
 
+// start: whether a request may start a Safari the user quit (socket). Work
+// no caller asked for (sweeps, the keeper, the pages' polls) never may.
+export type RequestOptions = { start?: boolean };
+
 type WireMessage = {
   id?: string | number;
   op?: string;
@@ -532,9 +536,12 @@ export class Bridge {
   // extension gone, it is reconnecting, Safari has quit, or the extension is
   // off. A quit Safari starts again hidden, without taking the screen; an
   // agent that got only "not connected" once spent 2 min before anyone
-  // opened it.
-  private async socket(): Promise<ExtSocket> {
+  // opened it. Without start (timer, keeper, and page work), no socket
+  // fails at once: the user may have quit Safari since that work looked
+  // (connected), and only a caller's own call may start it again.
+  private async socket(start: boolean): Promise<ExtSocket> {
     if (this.sock) return this.sock;
+    if (!start) throw new Error("Safari extension not connected");
     const taken = this.taken(CONNECT_MS);
     const running = await safariRunning();
     if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
@@ -555,8 +562,8 @@ export class Bridge {
     this.waiting.delete(resolve);
   }
 
-  async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000): Promise<unknown> {
-    const sock = await this.socket();
+  async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000, { start = true }: RequestOptions = {}): Promise<unknown> {
+    const sock = await this.socket(start);
     const reads = op === "relay" ? Object.hasOwn(PAGE_READS, String(args[1])) : Object.hasOwn(REPEATABLE, op);
     const answer = this.ask(sock, op, args, timeoutMs).catch((e: unknown) => {
       if (!reads || !(e instanceof Dropped) || e.why === "quit") throw e;
@@ -777,8 +784,8 @@ export class Bridge {
   // relay a DOM op into the content script of a specific tab: its top page,
   // or the embedded frame frameId. The extension gets the time limit too,
   // and answers first, so it never re-sends an op the daemon has given up on.
-  tab(tabId: number, op: string, args: unknown[] = [], timeoutMs = 30000, frameId = 0): Promise<unknown> {
-    return this.request("relay", [tabId, op, args, timeoutMs, frameId], timeoutMs + 2000);
+  tab(tabId: number, op: string, args: unknown[] = [], timeoutMs = 30000, frameId = 0, options: RequestOptions = {}): Promise<unknown> {
+    return this.request("relay", [tabId, op, args, timeoutMs, frameId], timeoutMs + 2000, options);
   }
 }
 

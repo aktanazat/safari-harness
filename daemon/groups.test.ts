@@ -252,7 +252,7 @@ test("an ended task's group goes once its tabs for the user are out, with its wi
   expect(await pass(h, d, new Map(), quiet)).toBe(false);
   expect(groups()).toEqual(["Work"]);
   expect(s.closed).toEqual([7]);
-  expect(told).toEqual([{ op: "release", name: TRIP }, { op: "gone", name: TRIP }]);
+  expect(told).toEqual([{ op: "release", name: TRIP, pass: expect.any(String) }, { op: "gone", name: TRIP }]);
   expect(readQueue()).toEqual({});
 });
 
@@ -384,4 +384,88 @@ test("a flag a make raised lets an ended task's group go and keeps a waiting win
     expect([groups(), Object.keys(readQueue())]).toEqual(deletes ? [[TRIP, "Work"], [TRIP]] : [["Work"], []]);
     expect(told.at(-1)).toEqual({ op: "plain", name: next.name, why: groupsOff() });
   }
+});
+
+// 11-06: a window opened to delete a group from (scratch) holds one tab, its
+// page, and Safari draws no tab bar for a plain window of one tab, so the
+// helper counted none there (measured live: {"tabs":0,"sidebar":false}).
+// Every delete from one waited, and 16 ended groups stayed for days.
+test("an ended group whose own window is gone goes from a window of one tab that shows no tab bar", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
+  s.tabs = 0;
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 0, left: 0 });
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), s.closed, told.at(-1), readQueue()]).toEqual([["Work"], [7], { op: "gone", name: TRIP }, {}]);
+});
+
+// 11-06: a delete that waited was tried again the next pass, 3 s on, with
+// nothing in keeper.log: 16 groups so made 865k tab lists in 49 h.
+test("a delete that waits is said once, and tried again only after a wait that grows", async () => {
+  const { s, h } = safari([{ kind: "local" }]);
+  // a tab opening meanwhile: the window of its size holds 3, not 1
+  s.tabs = 3;
+  const names = Array.from({ length: 16 }, (_, i) => `agent ${1000 + i}`);
+  const { d, told } = daemon(names.map((name) => ({ ...waiting, name, group: "grouped", ended: true })), { tabs: 0, left: 0 });
+  const given: Given = new Map();
+  const logged: string[] = [];
+  const releases = () => told.filter((t) => t.op === "release").length;
+  const start = Date.now();
+  try {
+    for (let i = 0; i < 3; i++) expect(await pass(h, d, given, (l) => logged.push(l))).toBe(true);
+    expect([releases(), logged.length, given.size]).toEqual([16, 16, 16]);
+    expect(logged[0]).toBe("agent 1000 waits: the window of its size holds 3 tabs, not 1");
+    setSystemTime(new Date(start + 31_000));
+    await pass(h, d, given, (l) => logged.push(l));
+    expect([releases(), logged.length]).toEqual([32, 16]);
+    // the second wait is twice as long
+    setSystemTime(new Date(start + 62_000));
+    await pass(h, d, given, (l) => logged.push(l));
+    expect(releases()).toBe(32);
+  } finally {
+    setSystemTime();
+  }
+});
+
+// 11-06: one keeper retried two groups his tabs held every 10 min for 17
+// hours, though such a group waits for the next keeper.
+test("a group a tab of his holds is not tried again by the same keeper, however long it runs", async () => {
+  const { h } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }]);
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 2, left: 1 });
+  const given: Given = new Map();
+  try {
+    await pass(h, d, given, quiet);
+    setSystemTime(new Date(Date.now() + 11 * 60_000));
+    await pass(h, d, given, quiet);
+  } finally {
+    setSystemTime();
+  }
+  expect(told.filter((t) => t.op === "release")).toHaveLength(1);
+});
+
+// 11-06: 18 ended groups whose agents had exited and whose windows were
+// gone stood in the daemon's records since 11-02, each delete from a
+// scratch window failing.
+test("an exited agent's group is left to the user after three failed deletes from a scratch window; a running agent's stays queued", async () => {
+  const { h } = safari([{ kind: "local" }, { kind: "group", name: "old (agent 5)" }, { kind: "group", name: "live (agent 6)" }]);
+  const exited = Bun.spawnSync(["true"]).pid;
+  changeQueue((q) => Object.assign(q, { "old (agent 5)": { owner: exited, since: 0 }, "live (agent 6)": { owner: process.pid, since: 0 } }));
+  const { d: answers, told } = daemon([{ ...waiting, name: "old (agent 5)", owner: exited, group: "grouped", ended: true }, { ...waiting, name: "live (agent 6)", group: "grouped", ended: true }], { tabs: 0, left: 0 });
+  // a scratch window of a size the helper finds no window of
+  const d: Daemon = async (op, a = {}) => (op === "scratch" ? (told.push({ op }), { ok: true, width: 1200, height: 870, tabs: 1 }) : answers(op, a));
+  const given: Given = new Map();
+  const logged: string[] = [];
+  const start = Date.now();
+  try {
+    for (let i = 0; i < 3; i++) {
+      setSystemTime(new Date(start + i * 10 * 60_000 + i * 1000));
+      await pass(h, d, given, (l) => logged.push(l));
+    }
+  } finally {
+    setSystemTime();
+  }
+  expect(told.filter((t) => t.op === "gone")).toEqual([{ op: "gone", name: "old (agent 5)" }]);
+  expect(Object.keys(readQueue())).toEqual(["live (agent 6)"]);
+  expect(logged.at(-2)).toStartWith("left old (agent 5) to the user: its agent exited, its window is gone, and 3 deletes from a window opened for it failed");
 });

@@ -784,7 +784,7 @@ const PAGE_LIST_MS = 10_000;
 
 async function tabList(maxAgeMs = PAGE_LIST_MS): Promise<TabInfo[] | undefined> {
   if (!bridge.connected) return undefined;
-  return recentTabs(maxAgeMs).catch(() => undefined);
+  return recentTabs(maxAgeMs, { start: false }).catch(() => undefined);
 }
 
 // An agent window's page, by its address (spaceWindow in spaces.ts).

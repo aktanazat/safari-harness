@@ -14,6 +14,7 @@
 // front turns group work off and gives him his app back.
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { alive, changeQueue, check, deleteGroup, deletesOff, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
@@ -33,6 +34,15 @@ const LOOP_MS = 3000;
 // keeper of a running agent's groups never tried again: agent 8780's stood
 // in his sidebar for hours.
 const RETRY_MS = 10 * 60_000;
+// A delete that waits (the user came back, a tab opening) goes again this
+// long after, then twice as long each time it waits again, up to RETRY_MS.
+// Before, a wait went again the next pass, and said nothing: on 11-06 16
+// ended groups waited so every 3 s for days, with no line in keeper.log.
+const WAIT_MS = 30_000;
+// After this many deletes from a window opened for it fail, an exited
+// agent's group whose own window is gone is the user's: on 11-06 18 such
+// groups stood in the daemon's records since 11-02.
+const SCRATCH_TRIES = 3;
 // A raise begun this long before a step can land after its first look.
 const RAISE_MS = 2000;
 const SAFARI = "com.apple.Safari";
@@ -42,12 +52,15 @@ const stop = (why: string): Outcome => ({ done: false, why, wait: false });
 
 // The window on screen: the one Safari window of its size, holding as many
 // tabs as the extension counts in it. Another count (a tab opening
-// meanwhile) waits.
+// meanwhile) waits. Safari draws no tab bar for a plain window of one tab,
+// where the helper counts none: a window opened to delete from (scratch)
+// holds only its page, and every delete from one waited (11-06).
 async function windowOf(h: Helper, s: { width: number; height: number; tabs?: number }): Promise<number | Outcome> {
   const found = (await h("find", { width: s.width, height: s.height })) as Answer & { window?: number };
   if (!found.ok || found.window === undefined) return stop(found.error ?? "its window is not on screen");
   const state = (await h("state", { window: found.window })) as Answer & { tabs?: number };
-  if (state.tabs !== s.tabs) return { done: false, why: `the window of its size holds ${state.tabs} tabs, not ${s.tabs}`, wait: true };
+  const tabs = state.tabs === 0 && s.tabs === 1 ? 1 : state.tabs;
+  if (tabs !== s.tabs) return { done: false, why: `the window of its size holds ${state.tabs} tabs, not ${s.tabs}`, wait: true };
   return found.window;
 }
 
@@ -103,55 +116,74 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
 }
 
 // Deletes the group from window's sidebar, then closes the window: its own,
-// or a scratch one, closed after every try. Whether to try again: a wait
-// does; a group holding pages is the user's, and leaves the queue; anything
-// else leaves the group queued, for RETRY_MS.
-async function deleteFrom(h: Helper, daemon: Daemon, name: string, window: number | Outcome, scratch: boolean, given: Given, log: Log): Promise<boolean> {
+// or a scratch one, closed after every try. Whether to try again next pass:
+// never, since what is left goes in given. A group holding pages is the
+// user's, and leaves the queue; one whose step waits goes again after its
+// wait (WAIT_MS on); anything else leaves the group queued, for RETRY_MS.
+// An exited agent's group a scratch window failed SCRATCH_TRIES times is
+// the user's.
+async function deleteFrom(h: Helper, daemon: Daemon, s: SpaceState, window: number | Outcome, scratch: boolean, given: Given, log: Log): Promise<boolean> {
+  const { name } = s;
   const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}`, log, () => deleteGroup(h, window, name)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
-  if (outcome.done || outcome.pages) {
-    if (!outcome.done) log(`left ${name} to the user: ${outcome.why}`);
+  const had = given.get(name);
+  const scratches = (had?.scratches ?? 0) + (scratch ? 1 : 0);
+  const leave = !outcome.done && !outcome.pages && scratch && scratches >= SCRATCH_TRIES && (s.owner === undefined || !alive(s.owner));
+  if (outcome.done || outcome.pages || leave) {
+    if (!outcome.done) log(`left ${name} to the user: ${leave ? `its agent exited, its window is gone, and ${scratches} deletes from a window opened for it failed; the last: ` : ""}${outcome.why}`);
     await daemon("gone", { name });
     changeQueue((q) => delete q[name]);
+    given.delete(name);
     return false;
   }
-  if (outcome.wait) return true;
+  if (outcome.wait) {
+    const waits = (had?.waits ?? 0) + 1;
+    if (waits === 1) log(`${name} waits: ${outcome.why}`);
+    given.set(name, { at: Date.now(), held: false, waits, scratches });
+    return false;
+  }
   log(`left ${name} queued: ${outcome.why}`);
-  given.set(name, { at: Date.now(), held: false });
+  given.set(name, { at: Date.now(), held: false, scratches });
   return false;
 }
 
 // A group whose own window is gone goes from a window opened for it.
-async function fromScratch(h: Helper, daemon: Daemon, name: string, given: Given, log: Log): Promise<boolean> {
+async function fromScratch(h: Helper, daemon: Daemon, s: SpaceState, given: Given, log: Log): Promise<boolean> {
   const scratch = (await daemon("scratch")) as SpaceState & { ok: boolean };
   if (!scratch.ok) return true;
-  return deleteFrom(h, daemon, name, await windowOf(h, scratch), true, given, log);
+  return deleteFrom(h, daemon, s, await windowOf(h, scratch), true, given, log);
 }
 
 // An ended task's group: the tabs for the user leave its window, then the
 // group goes with the page, from a window opened for it when its own is
 // gone. A tab that would not leave keeps the group, and it stays queued.
-async function clear(h: Helper, daemon: Daemon, name: string, given: Given, log: Log): Promise<boolean> {
-  const released = (await daemon("release", { name })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number };
+// pass: this keeper pass, whose releases share one list of Safari's tabs.
+async function clear(h: Helper, daemon: Daemon, s: SpaceState, pass: string, given: Given, log: Log): Promise<boolean> {
+  const { name } = s;
+  const released = (await daemon("release", { name, pass })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number };
   if (!released.ok) return true;
   if (released.left) {
     log(`left ${name} queued: ${released.left} of its tabs would not move out`);
     given.set(name, { at: Date.now(), held: true });
     return false;
   }
-  if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, name, given, log);
-  return deleteFrom(h, daemon, name, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, given, log);
+  if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, s, given, log);
+  return deleteFrom(h, daemon, s, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, given, log);
 }
 
 // One look at the windows and the queue; whether there is more to watch.
 // given: when this keeper last left each group queued, which it tries
-// again once RETRY_MS has passed; held: a tab of his would not leave it.
-export type Given = Map<string, { at: number; held: boolean }>;
+// again once its wait is over: RETRY_MS, or after waits waits a shorter
+// one; held: a tab of his would not leave it, and only the next keeper
+// tries again (on 11-06 one keeper retried two such groups every 10 min
+// for 17 hours); scratches: how many deletes from a scratch window failed.
+export type Given = Map<string, { at: number; held: boolean; waits?: number; scratches?: number }>;
 const retrying = (given: Given) => [...given.values()].some((g) => !g.held);
+const due = (g: { at: number; held: boolean; waits?: number }, now: number) => !g.held && now - g.at >= (g.waits ? Math.min(WAIT_MS * 2 ** (g.waits - 1), RETRY_MS) : RETRY_MS);
 export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): Promise<boolean> {
   const now = Date.now();
-  for (const [name, g] of given) if (now - g.at >= RETRY_MS) given.delete(name);
-  const { connected, spaces } = (await daemon("state")) as { connected: boolean; spaces: SpaceState[] };
+  const id = randomUUID();
+  const { connected, spaces } = (await daemon("state", { pass: id })) as { connected: boolean; spaces: SpaceState[] };
   const queue = Object.entries(readQueue());
   const known = new Set(spaces.map((s) => s.name));
   // Queued groups the daemon no longer knows, their agents exited: their
@@ -165,9 +197,11 @@ export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): P
     changeQueue((q) => delete q[name]);
   }
   const watching = spaces.some((s) => !s.ended && s.group === "grouped") || queue.some(([name, e]) => !known.has(name) && running(e.owner));
+  // A group the daemon no longer lists as ended is none of this keeper's.
+  for (const name of given.keys()) if (!spaces.some((s) => s.ended && s.name === name)) given.delete(name);
   // A live window still making is a stopped keeper's: this one tells each
   // outcome before its pass ends.
-  const todo = [...spaces.filter((s) => s.ended && !given.has(s.name)), ...spaces.filter((s) => !s.ended && (s.group === "waiting" || s.group === "making"))];
+  const todo = [...spaces.filter((s) => { const g = given.get(s.name); return s.ended && (!g || due(g, now)); }), ...spaces.filter((s) => !s.ended && (s.group === "waiting" || s.group === "making"))];
   // A group a failed delete left queued is tried again by this keeper, as
   // no other starts until an agent opens a window: on 10-30 window 5 waited
   // 55 min. One his tab holds waits for the next keeper: he may keep that
@@ -190,7 +224,7 @@ export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): P
   for (const s of todo) {
     const off = groupsOff();
     if (s.ended) {
-      if (!deletesOff()) more = (await clear(h, daemon, s.name, given, log)) || more;
+      if (!deletesOff()) more = (await clear(h, daemon, s, id, given, log)) || more;
     } else if (off && s.group === "waiting") await daemon("plain", { name: s.name, why: off });
     else more = (await convert(h, daemon, s, log)) || more;
   }
