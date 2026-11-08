@@ -29,5 +29,5 @@ test.each(["extract", "snapshot"] as const)("formatted %s reads expose the harne
   const value = kind === "extract" ? { text: "The observatory used a spectrometer." } : { snapshot: '- text "The observatory used a spectrometer."', nodes: 1, truncated: false };
   const formatted = formatResult({ title: page.title, url: page.url, ...value, memoryReceipt });
   expect(formatted).toContain("The observatory used a spectrometer.");
-  expect(formatted).toContain(`memoryReceipt: ${JSON.stringify(memoryReceipt)}`);
+  expect(formatted).toContain(`memoryReceipt: ${memoryReceipt.id}`);
 });

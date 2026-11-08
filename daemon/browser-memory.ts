@@ -468,12 +468,22 @@ export class BrowserMemory {
     for (const [id, candidate] of this.candidates) if (candidate.owner === owner) this.candidates.delete(id);
   }
 
-  saveResearch(receipt: string, owner: number, reason: string, task?: ResearchTask): MemoryPage {
+  private candidate(receipt: string, owner: number): ResearchCandidate {
     this.ensureOpen();
     this.pruneCandidates();
     const candidate = this.candidates.get(receipt);
     if (!candidate || candidate.owner !== owner || candidate.generation !== this.generation) throw new Error("that read receipt is expired, forgotten, or belongs to another caller; read the source again");
     if (!this.researchEligible(candidate.receipt.url)) throw new Error("agent research saving is off or this site is excluded");
+    return candidate;
+  }
+
+  researchSource(receipt: string, owner: number): { url: string; title: string; body: string } {
+    const candidate = this.candidate(receipt, owner);
+    return { url: candidate.receipt.url, title: candidate.title, body: candidate.body };
+  }
+
+  saveResearch(receipt: string, owner: number, reason: string, task?: ResearchTask): MemoryPage {
+    const candidate = this.candidate(receipt, owner);
     if (typeof reason !== "string" || !reason.trim() || reason.length > 1000) throw new Error("explain why this source is useful in at most 1000 characters; do not include private task details");
     const { url, readAt, partial } = candidate.receipt;
     const site = URL.parse(url)!.hostname;
@@ -621,6 +631,7 @@ export const browserMemory = {
   researchEligible: (url: string) => memory().researchEligible(url),
   researchGeneration: () => instance?.researchGeneration(),
   holdResearch: (input: { url: string; title: string; body: string; partial: boolean; readAt?: number }, owner: number, generation: number) => memory().holdResearch(input, owner, generation),
+  researchSource: (receipt: string, owner: number) => memory().researchSource(receipt, owner),
   saveResearch: (receipt: string, owner: number, reason: string, task?: ResearchTask) => memory().saveResearch(receipt, owner, reason, task),
   releaseResearch: (owner: number) => memory().releaseResearch(owner),
   close: () => { instance?.close(); instance = undefined; },

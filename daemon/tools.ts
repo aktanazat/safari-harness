@@ -2943,8 +2943,8 @@ export const TOOLS: Record<string, Tool> = {
     hidden: true,
   },
   save_source: {
-    desc: "Save a useful public source already read through extract or snapshot, using its memoryReceipt.id. Select sources used in the answer or useful to the task, not every page. Works after your tab closes; receipts expire. No private/project saving or memory settings changes. Keep reason free of private task details.",
-    params: { receipt: { type: "string", description: "memoryReceipt.id from a successful source read" }, reason: { type: "string", description: "why this source is useful, max 1000 characters; no private task details" } },
+    desc: "Save a useful public source already read through extract or snapshot, using the id on its memoryReceipt line. Select sources used in the answer or useful to the task, not every page. Saving checks that a signed-out visitor sees the same page. Works after your tab closes; receipts expire. No private/project saving or memory settings changes. Keep reason free of private task details.",
+    params: { receipt: { type: "string", description: "the memoryReceipt id from a successful source read" }, reason: { type: "string", description: "why this source is useful, max 1000 characters; no private task details" } },
     required: ["receipt", "reason"],
     run: saveResearchSource,
     hidden: true,
@@ -3688,6 +3688,12 @@ function raisedLine(d: Raised): string {
   return `${d.type} ${JSON.stringify(d.message)}${d.type === "alert" || d.type === "print" ? "" : `, ${answered}`}`;
 }
 
+// save_source needs only the receipt's id; the whole receipt as JSON was
+// 64-69 tokens on every read that held one.
+function receiptLine(value: object): string {
+  return "memoryReceipt" in value && value.memoryReceipt && typeof value.memoryReceipt === "object" && "id" in value.memoryReceipt ? `\nmemoryReceipt: ${String(value.memoryReceipt.id)}` : "";
+}
+
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings. max: the
 // characters a reply keeps (REPLY_CHARS), which a map's answer is fitted
@@ -3714,10 +3720,10 @@ export function formatResult(value: unknown, max = Infinity): string {
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
       const notes = `${v.guide ? `guide: ${v.guide}\n` : ""}${v.notes ? `${v.notes}\n` : ""}`;
       const update = v.update ? `update: ${JSON.stringify(v.update)}\n` : "";
-      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
+      return `# ${v.title} — ${v.url} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot}${receiptLine(value)}`;
     }
     if (typeof v.text === "string") {
-      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${v.dialogs?.length ? `\n…the page raised ${v.dialogs.map(raisedLine).join("; ")}` : ""}${"memoryReceipt" in value ? `\nmemoryReceipt: ${JSON.stringify(value.memoryReceipt)}` : ""}`;
+      if (typeof v.title === "string") return `# ${v.title} — ${v.url}\n${warn}\n${v.text}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${v.dialogs?.length ? `\n…the page raised ${v.dialogs.map(raisedLine).join("; ")}` : ""}${receiptLine(value)}`;
       // fetch and pdf read: their other fields, then the text as it is
       const { text, ...rest } = v;
       const { total } = value as { total?: unknown };
