@@ -277,6 +277,17 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
   const msg = { __safariHarness: 1, id: nextId(), op, args, ...(kept && { kept }) };
   let refused = false;
   if (op !== "memoryPage") keepAwake(tabId);
+  // A wait the page navigated under is sent again to the new page, whose
+  // meanwhile then starts there: on 11-08 a wait missed after a billing
+  // page moved to Stripe's checkout, and said the page did not change.
+  const from = op === "wait" && frameId === 0 ? api.tabs.get(tabId).then((t) => t.url, () => undefined) : null;
+  let moved = false;
+  const withFrom = async (res) => {
+    const was = moved ? await from : undefined;
+    const meanwhile = res?.value?.meanwhile;
+    if (!was || !Array.isArray(meanwhile) || meanwhile.some((l) => l.startsWith("url was: "))) return res;
+    return { ...res, value: { ...res.value, meanwhile: [`url was: ${was.slice(0, 120)}`, ...meanwhile.filter((l) => l !== "the page did not change")].slice(0, 3) } };
+  };
   for (;;) {
     await waitReady(tabId, Math.min(15000, deadline - Date.now() - 1000));
     let sent = false;
@@ -289,7 +300,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       if (known) {
         sent = true;
         const res = await unlessHeld(tabId, frameId, known === "script", sendUntilNavigation(tabId, budgeted(op, args, msg, began), left(), frameId, known === "script"), began);
-        if (res !== undefined) return res;
+        if (res !== undefined) return withFrom(res);
         sent = false;
         ways.get(tabId)?.delete(frameId);
       }
@@ -318,11 +329,12 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       learnWay(tabId, frameId, how);
       sent = true;
       const res = await sendUntilNavigation(tabId, budgeted(op, args, msg, began), left(), frameId, how === "script");
-      if (res !== undefined) return res;
+      if (res !== undefined) return withFrom(res);
       break;
     } catch (e) {
       if (e.timedOut && op === "eval") throw await ranPast(tabId, timeoutMs, args[0]);
       if (!e.navigated) throw e;
+      if (sent) moved = true;
       if (sent && gathers(op, args)) throw await wentOn(tabId, deadline);
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
