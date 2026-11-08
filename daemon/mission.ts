@@ -1269,6 +1269,9 @@ const SCRIPT = String.raw`
     if (opened) { opened.opener = null; event.preventDefault(); }
   });
   const byId = (id) => document.getElementById(id);
+  // A window's own name: "agent 14158, window 2" when its task gave none,
+  // which the page shows under its Rex tab's title instead.
+  const SPACE_NAME = byId("task-name")?.textContent ?? "";
   const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures", inspect_on: "Inspect only", inspect_off: "Allow actions", rex: "Show in Rex" };
   const SAY = { working: "Working", "waiting on the user": "Waiting on you", paused: "Paused", "user is driving": "You are driving", stopped: "Stopped", ended: "Ended" };
   const TONE = { working: "go", "waiting on the user": "ask", paused: "hold", "user is driving": "hold", stopped: "end", ended: "end" };
@@ -1528,7 +1531,9 @@ const SCRIPT = String.raw`
     }
     status.className = "status " + (TONE[a.status] || "go");
     setText(status, SAY[a.status] || a.status);
-    const title = a.rex ? a.rex + " · " + byId("task-name").textContent : byId("task-name").textContent;
+    const named = a.rex ? SPACE_NAME.replace(/^agent \d+/, a.rex) : SPACE_NAME;
+    setText(byId("task-name"), named);
+    const title = a.rex && named === SPACE_NAME ? a.rex + " · " + SPACE_NAME : named;
     if (document.title !== title) document.title = title;
     const over = a.status === "stopped" || a.status === "ended";
     setText(byId("who"), (a.inspectionOnly ? "Inspect only · " : "") + (a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : "")));
