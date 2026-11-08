@@ -150,8 +150,8 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const snap = (await call("snapshot", { tab })).snapshot as string;
 
   const q = await call("snapshot", { tab, query: "size" });
-  check("snapshot query keeps only matching lines, without dropdown options",
-    /^\[\d+\] label "Size"\n\[\d+\] combobox "Size" \{value="pick", 3 options\}$/.test(q.snapshot), q.snapshot);
+  check("snapshot query keeps only matching lines, without dropdown options or a label over its field",
+    /^\[\d+\] combobox "Size" \{value="pick", 3 options\}$/.test(q.snapshot), q.snapshot);
 
   check("a div with role=button is named by its text", /\] button "Menu"/.test(snap), snap);
 

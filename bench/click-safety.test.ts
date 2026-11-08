@@ -755,7 +755,7 @@ benchRows("replacement identity in WebKit", [
       })()`, true),
       { op: "element", args: ["2", "visible"], answer: { value: { value: true } } },
       { op: "click", args: ["2"], answer: { error: 'that control changed since the snapshot: it was button "Cart (2)", now button "Delete account"; re-run snapshot', failure: unsent } },
-      { op: "type", args: ["12", "4242", { noWaitAfter: true }], answer: { error: 'that control changed since the snapshot: it was textbox "Keyboard field", now textbox "Card number"; re-run snapshot', failure: unsent } },
+      { op: "type", args: ["11", "4242", { noWaitAfter: true }], answer: { error: 'that control changed since the snapshot: it was textbox "Keyboard field", now textbox "Card number"; re-run snapshot', failure: unsent } },
       state("({ clicks: safety.descendant, typed: document.getElementById('keyboard').value })", { clicks: 1, typed: "" }),
       { op: "snapshot" },
       { op: "click", args: ["2"], answer: { value: { ok: true } } },
