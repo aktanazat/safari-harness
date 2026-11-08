@@ -1,5 +1,6 @@
 import { afterAll, afterEach, expect, jest, test } from "bun:test";
 import { bridge } from "./bridge.ts";
+import { queuePopup } from "./continuity.ts";
 import { connect } from "./fake-safari.ts";
 import { runAs } from "./owner.ts";
 import { inLane } from "./lanes.ts";
@@ -116,6 +117,37 @@ test("reads go ahead on a busy tab, and a wait holds no lane", async () => {
   page.answer("8 wait");
   await click;
   expect(await waiting).toMatchObject({ found: true });
+});
+
+// On 11-08 an agent sent a type and a snapshot together; the snapshot read
+// the field before the typing landed, and nothing in it said so.
+test("an agent's read waits for its own acting call on the tab; another agent's read does not", async () => {
+  const page = safari();
+  const click = as(agent.pid, "click", { tab: 7, ref: "1" });
+  await settled();
+  const own = as(agent.pid, "info", { tab: 7 });
+  expect(await as(other, "info", { tab: 7 })).toMatchObject({ ok: true });
+  await settled();
+  expect(page.sent).toEqual(["7 click 1", "7 tabInfo"]);
+  page.answer("7 click 1");
+  await click;
+  expect(await own).toMatchObject({ ok: true });
+  expect(page.sent).toEqual(["7 click 1", "7 tabInfo", "7 tabInfo"]);
+});
+
+// A read that runs again after its agent's action keeps what its first
+// run collected: a popup waiting for the agent is told once, in the read's
+// answer or the click's, never lost to the read's first run.
+test("a read run again after its agent's click loses no popup waiting for that agent", async () => {
+  const page = safari();
+  queuePopup(agent.pid, { tab: 99, url: "https://popup.example/" });
+  const read = as(agent.pid, "info", { tab: 7 });
+  const click = as(agent.pid, "click", { tab: 7, ref: "1" });
+  await settled();
+  page.answer("7 click 1");
+  const answers = await Promise.all([read, click]);
+  expect(answers[0]).toMatchObject({ note: expect.stringContaining("read again after this agent's click") });
+  expect(answers.filter((a) => a && typeof a === "object" && "popup" in a)).toEqual([expect.objectContaining({ popup: expect.objectContaining({ tab: 99 }) })]);
 });
 
 test("a call that fails gives the tab to the next in line", async () => {

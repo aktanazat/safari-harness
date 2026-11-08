@@ -24,7 +24,7 @@ import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind
 import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAnswer, type Page } from "./map.ts";
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
-import { acts, affectsPage, inLane, queuing } from "./lanes.ts";
+import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
 import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
@@ -3821,7 +3821,8 @@ async function invokeTool(name: string, args: Record<string, unknown>, model: bo
     const result = redacted(withPageState(call.tool, await guard(call, model, async () => {
       for (let tries = 0; ; tries++) {
         try {
-          return await inLane(call.tool, call.args, resolveTab, () => missionCall(call.tool, call.args, (a) => news ? withTabNews(call.args.tab, () => revived(call.tool, a)) : revived(call.tool, a)));
+          const read = (a: Record<string, unknown>) => ordered(call.tool, a, resolveTab, () => revived(call.tool, a));
+          return await inLane(call.tool, call.args, resolveTab, () => missionCall(call.tool, call.args, (a) => news ? withTabNews(call.args.tab, () => read(a)) : read(a)));
         } catch (e) {
           const again = tries === 0 ? await lostReopened(e, call.tool, call.args) : undefined;
           if (again === undefined) throw e;
