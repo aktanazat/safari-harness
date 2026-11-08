@@ -128,6 +128,12 @@ export class SiteKit {
     return tab;
   }
 
+  // Whether the kit holds a tab on origin, so a page it shows may be left
+  // from an earlier call.
+  has(origin: string): boolean {
+    return this.tabs.has(origin);
+  }
+
   // The tab in place of gone, origin's tab that no longer exists: a new one
   // where the site last asked, or the one another call already opened.
   async reopen(origin: string, gone: number): Promise<number> {
@@ -180,12 +186,15 @@ export class SiteKit {
   // Waits for host's turn, gap ms after the request before it from any
   // agent or session (pace.ts); bucket names the one of host's limits the
   // request falls under. A host still rate-limited past a short wait fails
-  // at once with rate_limited.
-  async turn(host: string, gap: number, bucket?: string): Promise<void> {
-    const t = (await this.invoke("pace", { host, gap, bucket })) as { at: number } | Limit;
+  // at once with rate_limited. With within, a turn further off than that
+  // is not taken and the answer is false, at once.
+  async turn(host: string, gap: number, bucket?: string, within?: number): Promise<boolean> {
+    const t = (await this.invoke("pace", { host, gap, bucket, ...(within === undefined ? {} : { within }) })) as { at: number; taken?: false } | Limit;
     if ("resetAt" in t) throw rateLimited(t.host, t.resetAt, t.guessed);
+    if (t.taken === false) return false;
     const wait = t.at - Date.now();
     if (wait > 0) await Bun.sleep(wait);
+    return true;
   }
 
   // The rate limit a response tells of, held for every agent and session:
