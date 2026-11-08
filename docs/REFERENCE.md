@@ -1848,7 +1848,7 @@ Wait for the page, not the clock.
   notes, and read receipts or times alone are not new lines.
 - `any: ["Order placed", "Payment declined"]` ends on the first shown and
   says `which`; `text: "a|b"` does the same. `gone: "Loading"` waits for
-  body text to leave (not the title), `url` for a part of the address or a `/regex/` (pushState
+  body text to leave (not the title), `url` for a part of the address (`"a|b"` for either) or a `/regex/` (pushState
   included), and `quiet: true` for 500 ms without a change to the page
   (clocks, progress bars, and video aside) and with no request to its own
   site still out (one out past 2 s, such as a long poll, does not count).

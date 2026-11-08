@@ -123,11 +123,13 @@ export function keepRequest(entry: { method: string; url: string }, page: string
   return !to.pathname.split("/").some((segment) => BEACON.test(segment));
 }
 
-// A wait's url: /regex/ with its flags, or else a part of the address. A
-// bad regex throws, so wait refuses it before asking the page.
+// A wait's url: /regex/ with its flags, or else a part of the address, or
+// parts split by "|", any one of which will do, as a wait's text is. On
+// 11-08 a wait on "billing|payment" never matched: it looked for the "|".
+// A bad regex throws, so wait refuses it before asking the page.
 export function urlMatch(href: string, pattern: string): boolean {
   const re = /^\/(.+)\/([dgimsuvy]*)$/.exec(pattern);
-  return re ? new RegExp(re[1], re[2]).test(href) : href.includes(pattern);
+  return re ? new RegExp(re[1], re[2]).test(href) : pattern.split("|").some((part) => part !== "" && href.includes(part));
 }
 
 // How many request lines a receipt lists; the rest are counted.
