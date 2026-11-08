@@ -42,6 +42,7 @@ import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
 import { createVideoTool } from "./video-observation.ts";
 import { inputStateTool } from "./input-state.ts";
 import { PACE_TOOL } from "./pace.ts";
+import { PAGES_TOOL } from "./page-store.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -3367,6 +3368,7 @@ export const TOOLS: Record<string, Tool> = {
   video: createVideoTool({ call: (tool, args) => callTool(tool, args, false, false), admit: admitPageObservation, present: (tab, check, act) => inFront(tab, { tabs: listTabs, activate: activateTab }, act, check) }),
   input_state: inputStateTool(),
   pace: PACE_TOOL,
+  pages: PAGES_TOOL,
   native_preflight: {
     desc: "Check native drag or paste targets without scrolling or sending input.",
     hidden: true,
