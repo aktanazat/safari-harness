@@ -38,8 +38,9 @@ function safari() {
   const oldWindows = new Map<number, number>();
   // What the daemon told the extension of each tab it sized.
   const sized: { tab: number; whole: boolean }[] = [];
-  // Ops a Safari too loaded to answer leaves unanswered.
+  // Ops a Safari too loaded to answer leaves unanswered, each held as asked.
   const silent = new Set<string>();
+  const held: { id: string; op: string; args: unknown[] }[] = [];
   const ops: Record<string, (args: unknown[]) => unknown> = {
     "tabs.list": () => [...tabs.values()],
     "tabs.open": ([url, background, windowId]) => {
@@ -103,7 +104,11 @@ function safari() {
   const sock: ExtSocket = {
     send(data) {
       const { id, op, args } = JSON.parse(data) as { id?: string; op: string; args: unknown[] };
-      if (id === undefined || silent.has(op)) return;
+      if (id === undefined) return;
+      if (silent.has(op)) {
+        held.push({ id, op, args });
+        return;
+      }
       let reply: { value: unknown } | { error: string };
       try {
         reply = { value: ops[op](args) };
@@ -139,7 +144,7 @@ function safari() {
       tabs.set(id, { ...t, id, windowId: windows.get(t.windowId)! });
     }
   };
-  return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized, silent };
+  return { tabs, closed, sock, ops, reload, relaunch, oldTabs, regrouping, sized, silent, held };
 }
 
 test("an untracked living agent loses its disposable tabs and status page but not kept or personal pages", async () => {
@@ -1179,6 +1184,31 @@ test("an open goes on in its agent's window while Safari lists no tabs, and fail
     const tabs = s.tabs.size;
     await expect(runAs(o.pid, () => openTab("https://slow.example/3", true))).rejects.toThrow(/^extension stuck: /);
     expect(s.tabs.size).toBe(tabs);
+  } finally {
+    bridge.request = request;
+    s.silent.clear();
+    o.kill();
+  }
+});
+
+// On 11-08 a slow Safari carried out timed-out opens tens of seconds later:
+// agent 14158 had eight windows named "window 3", none of them known.
+test.each(["windows.open", "tabs.open"])("a window or tab Safari opens after its %s timed out is closed", async (op) => {
+  const s = safari();
+  const o = agent();
+  const request = bridge.request;
+  bridge.request = (asked, args, ms, opts) => request.call(bridge, asked, args, asked === op ? 50 : ms, opts);
+  try {
+    if (op === "tabs.open") await runAs(o.pid, () => openTab("https://late.example/0", true));
+    s.silent.add(op);
+    await expect(runAs(o.pid, () => openTab("https://late.example/1", true))).rejects.toThrow(/timed out/);
+    s.silent.clear();
+    const late = s.held.find((h) => h.op === op)!;
+    const value = s.ops[op](late.args) as { tabId?: number; id?: number };
+    const tab = value.tabId ?? value.id!;
+    bridge.handleMessage(JSON.stringify({ id: late.id, value }), s.sock);
+    await until(() => s.closed.includes(tab));
+    expect(s.tabs.has(tab)).toBe(false);
   } finally {
     bridge.request = request;
     s.silent.clear();
