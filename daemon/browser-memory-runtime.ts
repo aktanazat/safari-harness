@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { bridge } from "./bridge.ts";
-import { browserMemory, browserRecallQuery } from "./browser-memory.ts";
+import { browserMemory, browserRecallQuery, maskText } from "./browser-memory.ts";
 import { browserMemoryPage } from "./browser-memory-page.ts";
 import { localRequest } from "./requests.ts";
 import { redacted, unsecret } from "./redact.ts";
@@ -90,8 +90,7 @@ export async function researchRead<T extends object>(tab: number, read: () => Pr
     if (typeof source.url !== "string" || typeof source.title !== "string" || typeof source.body !== "string" || typeof source.partial !== "boolean" ||
         errorPage(source.url, source.title) || /\b(?:sign in|log in|access denied|not found|verify (?:you|your)|captcha|forbidden|internal server error)\b/i.test(source.title) ||
         ("challenge" in value && value.challenge) || ("error" in value && value.error) || ("loading" in value && value.loading)) return result;
-    if (!browserMemory.researchEligible(source.url) || await challengeOf(tab) !== undefined ||
-        !await verifyPublicMemorySource({ url: source.url, title: source.title, body: source.body }) || !alive(owner)) return result;
+    if (!browserMemory.researchEligible(source.url) || await challengeOf(tab) !== undefined || !alive(owner)) return result;
     if (!researchOwners.has(owner)) researchOwners.set(owner, watchOwner(owner, () => {
       researchOwners.delete(owner);
       browserMemory.releaseResearch(owner);
@@ -109,7 +108,10 @@ export async function saveResearchSource(args: Record<string, unknown>): Promise
   const owner = currentOwner();
   if (owner === undefined) throw new Error("this request has no live process owner; use local MCP or CLI caller context");
   const [session, agent, lead] = taskParts(currentTask()) ?? [];
-  const page = browserMemory.saveResearch(text(args.receipt, "receipt"), owner, text(args.reason, "reason"), session === undefined ? undefined : { session, agent, lead });
+  const receipt = text(args.receipt, "receipt");
+  const reason = text(args.reason, "reason");
+  if (!await verifyPublicMemorySource(browserMemory.researchSource(receipt, owner, reason), maskText)) throw new Error("this page is not the same for a signed-out visitor, or the site did not answer one; it was not saved");
+  const page = browserMemory.saveResearch(receipt, owner, reason, session === undefined ? undefined : { session, agent, lead });
   return { page, trust: BROWSER_MEMORY_TRUST };
 }
 

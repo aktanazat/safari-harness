@@ -38,7 +38,11 @@ const SUMMARY_MS = 60_000;
 const COLUMNS = "id, url, title, site, visitedAt, summary, note, state, error, observation, scope, reason, partial, session, agent, lead, summarySource, summaryEditedAt, noteEditedAt";
 const READABLE_SCOPE = "(observation='viewed' OR (observation='agent_research' AND scope='public'))";
 const RECEIPT_MS = 10 * 60_000;
-const MAX_CANDIDATES = 32;
+// A receipt is held for every eligible read, about 9 in 10 of them, and
+// checked only at save; when the check came first, about 1 in 4 held one,
+// against 32 receipts in all and 20 per caller.
+const MAX_CANDIDATES = 128;
+const MAX_CALLER_CANDIDATES = 80;
 const MAX_CANDIDATE_BYTES = 3 * 1_048_576;
 const PAGE_SCHEMA = `CREATE TABLE pages (
   id TEXT PRIMARY KEY, url TEXT NOT NULL, site TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
@@ -51,14 +55,26 @@ const PAGE_SCHEMA = `CREATE TABLE pages (
   UNIQUE(url,observation,scope))`;
 const STOP_WORDS = new Set("what did do i read viewed view visited visit see saw about on in the a an of for from was were me my at please find show page pages website websites is are to and with remember can you help tell look looking search searching article articles that this these those it we our need want using use recent recently latest earlier before after something anything how when where which".split(" "));
 
-function cleanText(value: string, limit: number): string {
-  if (typeof value !== "string") throw new Error("page text must be a string");
-  let text = redactUrl(value.slice(0, limit * 2).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""));
+// What a stored copy keeps of page text: secrets in addresses and those
+// typed into a tab masked. The public copy a save checks against is masked
+// the same way, so a masked line can still match it.
+export function maskText(value: string): string {
+  let text = redactUrl(value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""));
   for (const tab of tabSecrets.keys()) {
     const masked = unsecret(tab, text);
     if (typeof masked === "string") text = masked;
   }
-  return text.slice(0, limit).trim();
+  return text;
+}
+
+function cleanText(value: string, limit: number): string {
+  if (typeof value !== "string") throw new Error("page text must be a string");
+  return maskText(value.slice(0, limit * 2)).slice(0, limit).trim();
+}
+
+function researchReason(reason: string): string {
+  if (typeof reason !== "string" || !reason.trim() || reason.length > 1000) throw new Error("explain why this source is useful in at most 1000 characters; do not include private task details");
+  return cleanText(reason, 1000);
 }
 
 function host(value: string): string {
@@ -453,13 +469,15 @@ export class BrowserMemory {
     const readAt = input.readAt ?? this.now();
     if (!Number.isSafeInteger(readAt) || readAt <= this.now() - RECEIPT_MS || readAt > this.now()) return null;
     const bytes = Buffer.byteLength(body, "utf8");
-    while (this.candidates.size >= MAX_CANDIDATES || [...this.candidates.values()].filter((candidate) => candidate.owner === owner).length >= 20 ||
+    const again = [...this.candidates].find(([, candidate]) => candidate.owner === owner && candidate.receipt.url === normalized.url);
+    if (again) this.candidates.delete(again[0]);
+    while (this.candidates.size >= MAX_CANDIDATES || [...this.candidates.values()].filter((candidate) => candidate.owner === owner).length >= MAX_CALLER_CANDIDATES ||
         [...this.candidates.values()].reduce((total, candidate) => total + Buffer.byteLength(candidate.body, "utf8"), bytes) > MAX_CANDIDATE_BYTES) {
       const oldest = [...this.candidates].find(([, candidate]) => candidate.owner === owner) ?? this.candidates.entries().next().value;
       if (!oldest) break;
       this.candidates.delete(oldest[0]);
     }
-    const receipt: ResearchReceipt = { id: randomUUID(), url: normalized.url, readAt, partial: input.partial || input.body.length > MAX_BODY, scope: "public", expiresAt: readAt + RECEIPT_MS };
+    const receipt: ResearchReceipt = { id: again?.[0] ?? randomUUID(), url: normalized.url, readAt, partial: input.partial || input.body.length > MAX_BODY, scope: "public", expiresAt: readAt + RECEIPT_MS };
     this.candidates.set(receipt.id, { receipt, owner, generation, title: cleanText(input.title, 512), body });
     return { ...receipt };
   }
@@ -468,19 +486,30 @@ export class BrowserMemory {
     for (const [id, candidate] of this.candidates) if (candidate.owner === owner) this.candidates.delete(id);
   }
 
-  saveResearch(receipt: string, owner: number, reason: string, task?: ResearchTask): MemoryPage {
+  private candidate(receipt: string, owner: number): ResearchCandidate {
     this.ensureOpen();
     this.pruneCandidates();
     const candidate = this.candidates.get(receipt);
     if (!candidate || candidate.owner !== owner || candidate.generation !== this.generation) throw new Error("that read receipt is expired, forgotten, or belongs to another caller; read the source again");
     if (!this.researchEligible(candidate.receipt.url)) throw new Error("agent research saving is off or this site is excluded");
-    if (typeof reason !== "string" || !reason.trim() || reason.length > 1000) throw new Error("explain why this source is useful in at most 1000 characters; do not include private task details");
+    return candidate;
+  }
+
+  researchSource(receipt: string, owner: number, reason: string): { url: string; title: string; body: string } {
+    researchReason(reason);
+    const candidate = this.candidate(receipt, owner);
+    return { url: candidate.receipt.url, title: candidate.title, body: candidate.body };
+  }
+
+  saveResearch(receipt: string, owner: number, reason: string, task?: ResearchTask): MemoryPage {
+    const why = researchReason(reason);
+    const candidate = this.candidate(receipt, owner);
     const { url, readAt, partial } = candidate.receipt;
     const site = URL.parse(url)!.hostname;
     const hash = createHash("sha256").update(candidate.body).digest("hex");
     const previous = this.db.query<PageRow, [string]>("SELECT * FROM pages WHERE url=? AND observation='agent_research' AND scope='public'").get(url);
     if (previous?.hash === hash) {
-      this.db.query("UPDATE pages SET visitedAt=max(visitedAt,?), reason=?, partial=?, session=?, agent=?, lead=? WHERE id=?").run(readAt, cleanText(reason, 1000), Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null, previous.id);
+      this.db.query("UPDATE pages SET visitedAt=max(visitedAt,?), reason=?, partial=?, session=?, agent=?, lead=? WHERE id=?").run(readAt, why, Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null, previous.id);
       return publicPage(this.row(previous.id)!);
     }
     const id = previous?.id ?? randomUUID();
@@ -490,7 +519,7 @@ export class BrowserMemory {
       ON CONFLICT(url,observation,scope) DO UPDATE SET title=excluded.title,body=excluded.body,visitedAt=excluded.visitedAt,hash=excluded.hash,
       revision=excluded.revision,summary='',summarySource='none',summaryEditedAt=NULL,state=excluded.state,error=NULL,reason=excluded.reason,partial=excluded.partial,
       session=excluded.session,agent=excluded.agent,lead=excluded.lead`)
-      .run(id, url, site, candidate.title, candidate.body, readAt, hash, revision, this.config.summarize ? "pending" : "ready", cleanText(reason, 1000), Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null);
+      .run(id, url, site, candidate.title, candidate.body, readAt, hash, revision, this.config.summarize ? "pending" : "ready", why, Number(partial), task?.session ?? null, task?.agent ?? null, task?.lead ?? null);
     const overflow = this.db.query<{ id: string }, [number]>("SELECT id FROM pages ORDER BY visitedAt DESC,id LIMIT -1 OFFSET ?").all(MAX_PAGES);
     this.removeRows(overflow.map((row) => row.id));
     if (previous) this.compact();
@@ -621,6 +650,7 @@ export const browserMemory = {
   researchEligible: (url: string) => memory().researchEligible(url),
   researchGeneration: () => instance?.researchGeneration(),
   holdResearch: (input: { url: string; title: string; body: string; partial: boolean; readAt?: number }, owner: number, generation: number) => memory().holdResearch(input, owner, generation),
+  researchSource: (receipt: string, owner: number, reason: string) => memory().researchSource(receipt, owner, reason),
   saveResearch: (receipt: string, owner: number, reason: string, task?: ResearchTask) => memory().saveResearch(receipt, owner, reason, task),
   releaseResearch: (owner: number) => memory().releaseResearch(owner),
   close: () => { instance?.close(); instance = undefined; },

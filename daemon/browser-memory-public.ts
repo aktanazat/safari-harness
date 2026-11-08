@@ -11,7 +11,7 @@ blocked.addSubnet("2001:db8::", 32, "ipv6");
 blocked.addSubnet("2002::", 16, "ipv6");
 const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
-export async function verifyPublicMemorySource(source: { url: string; title: string; body: string }): Promise<boolean> {
+export async function verifyPublicMemorySource(source: { url: string; title: string; body: string }, mask: (text: string) => string): Promise<boolean> {
   const url = URL.parse(source.url);
   if (!url || url.protocol !== "https:" || url.username || url.password || url.port || url.search || isIP(url.hostname) || !url.hostname.includes(".") || /\.(?:local|localhost|internal|lan|home)$/.test(url.hostname) || source.body.length > 24000) return false;
   try {
@@ -61,9 +61,9 @@ export async function verifyPublicMemorySource(source: { url: string; title: str
       const code = Number.parseInt(hex ?? decimal ?? "", hex ? 16 : 10);
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : original;
     }).replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_original, name: string) => entities[name] ?? "").replace(/\s+/g, " ").trim();
-    const publicText = normalize(text);
+    const publicText = mask(normalize(text));
     const lines = source.body.split("\n").map(normalize).filter(Boolean);
-    return normalize(title) === normalize(source.title) && lines.length > 0 && lines.every((line) => publicText.includes(line));
+    return normalize(source.title) === mask(normalize(title)) && lines.length > 0 && lines.every((line) => publicText.includes(line));
   } catch {
     return false;
   }

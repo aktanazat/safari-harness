@@ -191,3 +191,57 @@ process.exit(0);
 `;
   expect(await readFixture(route, script)).toEqual({ status: 200, total: 2, titles: ["a", "helper"] });
 });
+
+// The signed-out copy is fetched for the one read an agent saves, not for
+// every read: the fixture's public check counts its calls and answers as
+// the test says.
+const PUBLIC_CHECK_SCRIPT = `
+import { mock } from "bun:test";
+let checks = 0;
+let publicCopyMatches = false;
+mock.module(${JSON.stringify(new URL("./browser-memory-public.ts", import.meta.url).href)}, () => ({
+  verifyPublicMemorySource: async () => { checks++; return publicCopyMatches; },
+}));
+const { bridge } = await import(${JSON.stringify(new URL("./bridge.ts", import.meta.url).href)});
+const { connect } = await import(${JSON.stringify(new URL("./fake-safari.ts", import.meta.url).href)});
+const { browserMemory } = await import(${JSON.stringify(new URL("./browser-memory.ts", import.meta.url).href)});
+const { callTool, formatResult } = await import(${JSON.stringify(new URL("./tools.ts", import.meta.url).href)});
+const { stopBrowserMemory } = await import(${JSON.stringify(new URL("./browser-memory-runtime.ts", import.meta.url).href)});
+const { runAs } = await import(${JSON.stringify(new URL("./owner.ts", import.meta.url).href)});
+const source = { url: "https://example.com/research", title: "Public report", body: "The report describes lithium battery recycling.", partial: false };
+browserMemory.configure({ researchEnabled: true, summarize: false });
+connect({
+  send(data) {
+    const { id, op, args } = JSON.parse(data);
+    let value = [];
+    if (op === "tabs.list") value = [{ id: 1, url: source.url, title: source.title }];
+    if (op === "probe") value = [{ frame: 0, url: source.url, title: source.title, text: source.body, markers: [], answered: [], frames: [] }];
+    if (op === "relay" && args[1] === "extract") value = { url: source.url, title: source.title, text: source.body, truncated: false, memorySource: source };
+    bridge.handleMessage(JSON.stringify({ id, value }));
+  },
+  close() {},
+});
+const invoke = (name, args) => runAs(process.pid, () => callTool(name, args));
+const read = await invoke("extract", { tab: 1, save: false });
+const checksDuringRead = checks;
+const reason = "Used the report's recycling figures.";
+const refused = await invoke("save_source", { receipt: read.memoryReceipt?.id, reason }).then(() => "saved", (error) => error.message);
+const savedAfterRefusal = browserMemory.list().total;
+publicCopyMatches = true;
+const saved = await invoke("save_source", { receipt: read.memoryReceipt?.id, reason });
+console.log(JSON.stringify({ checksDuringRead, line: formatResult(read).split("\\n").at(-1), receipt: read.memoryReceipt?.id, refused, savedAfterRefusal, saved: saved.page.url, checks }));
+await stopBrowserMemory();
+process.exit(0);
+`;
+
+test("a read holds its receipt without fetching the page signed out; save_source refuses a page whose signed-out copy differs", async () => {
+  const result = await readFixture("public-check", PUBLIC_CHECK_SCRIPT);
+  expect(result).toMatchObject({
+    checksDuringRead: 0,
+    refused: expect.stringContaining("signed-out visitor"),
+    savedAfterRefusal: 0,
+    saved: "https://example.com/research",
+    checks: 2,
+  });
+  expect(result.line).toBe(`memoryReceipt: ${result.receipt}`);
+});

@@ -902,8 +902,9 @@ Receipts are short-lived bearer capabilities; do not share their ids. Process
 ownership limits their lifetime and accidental cross-caller use. Local RPC
 process ids are not authenticated user or project authority.
 
-Eligible reads use HTTPS URLs without query strings, and their source text
-must independently match anonymous public HTML. Signed links and
+Eligible reads use HTTPS URLs without query strings. At save, the source
+text must independently match anonymous public HTML, or the save is refused;
+a read itself never waits on that fetch. Signed links and
 query-dependent public pages are skipped rather than replaying an address's
 access grant. Private account pages, drafts, credentials and access walls are
 excluded. Project-private saving is not supported without trusted project

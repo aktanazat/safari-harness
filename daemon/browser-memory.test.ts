@@ -445,6 +445,18 @@ test("the first and last sources in a full research batch remain savable", () =>
   expect(last.url).toBe("https://example.com/research/19");
 });
 
+test("a source read stays savable through a run of other reads, and a repeat read of one page keeps its receipt with the newer text", () => {
+  const memory = store();
+  memory.configure({ researchEnabled: true });
+  const source = memory.holdResearch({ ...input, partial: false }, 123);
+  if (!source) throw new Error("expected a held public research source");
+  for (let index = 0; index < 20; index++) memory.holdResearch({ ...input, url: `https://example.com/workspace/${index}`, body: "Workspace text a signed-out visitor never sees.", partial: false }, 123);
+  const steps = Array.from({ length: 100 }, (_, index) => memory.holdResearch({ ...input, url: "https://example.com/board", body: `Board after step ${index}.`, partial: false }, 123));
+  expect(new Set(steps.map((step) => step?.id)).size).toBe(1);
+  expect(memory.saveResearch(source.id, 123, "Used the study's recycling costs.").url).toBe(input.url);
+  expect(memory.detail(memory.saveResearch(steps[0]!.id, 123, "Used the board's last state.").id)?.body).toBe("Board after step 99.");
+});
+
 test("a foreign caller cannot save a receipt but the original caller still can", () => {
   const memory = store();
   memory.configure({ researchEnabled: true });
