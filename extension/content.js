@@ -4340,7 +4340,7 @@
 
   function urlMatch(href, pattern) {
     const re = /^\/(.+)\/([dgimsuvy]*)$/.exec(pattern);
-    return re ? new RegExp(re[1], re[2]).test(href) : href.includes(pattern);
+    return re ? new RegExp(re[1], re[2]).test(href) : pattern.split("|").some((part) => part !== "" && href.includes(part));
   }
 
   // Once a page reacts, wait at least span.min from the action and

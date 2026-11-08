@@ -59,11 +59,14 @@ for (const [where, rules] of copies) {
     for (const [method, url, page, kept] of REQUESTS) expect([method, url, rules.keepRequest({ method, url }, page)]).toEqual([method, url, kept]);
   });
 
-  test(`${where}: a wait's url is a part of the address, or a /regex/ with flags`, () => {
+  test(`${where}: a wait's url is a part of the address, parts split by |, or a /regex/ with flags`, () => {
     expect(rules.urlMatch("https://shop.example.com/order/123/done", "/done")).toBe(true);
     expect(rules.urlMatch("https://shop.example.com/cart", "/done")).toBe(false);
     expect(rules.urlMatch("https://shop.example.com/ORDER/123", "/order\\/\\d+/i")).toBe(true);
     expect(rules.urlMatch("https://shop.example.com/ORDER/123", "/order\\/\\d+/")).toBe(false);
+    expect(rules.urlMatch("https://console.example.com/settings/billing", "billing|payment")).toBe(true);
+    expect(rules.urlMatch("https://console.example.com/settings/payment", "billing|payment")).toBe(true);
+    expect(rules.urlMatch("https://console.example.com/settings/keys", "billing|payment")).toBe(false);
     expect(() => rules.urlMatch("", "/(/")).toThrow();
   });
 }

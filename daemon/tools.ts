@@ -1553,12 +1553,13 @@ async function blankHint(tab: number, end: number): Promise<string> {
 
 // Waits until the page shows what the wait asks for (ms is then the
 // timeout, at most WAIT_MAX_MS): a selector or text, the first of several
-// texts (any; which says which), text gone, an address (url: a part of it, or
-// /regex/), or a page that made no change for 500 ms with no request to its
-// own site still out (quiet). Text matches case and spacing aside. The page
-// reports the moment it sees it (waitFor in content.js); the time limit is
-// kept here, because Safari stops a content script's timers in a hidden
-// tab. At the limit the page gets at most a second to report what changed.
+// texts (any; which says which), text gone, an address (url: a part of it,
+// parts split by "|", or /regex/), or a page that made no change for 500 ms
+// with no request to its own site still out (quiet). Text matches case and
+// spacing aside. The page reports the moment it sees it (waitFor in
+// content.js); the time limit is kept here, because Safari stops a content
+// script's timers in a hidden tab. At the limit the page gets at most a
+// second to report what changed.
 // A miss also says where the tab is: often a redirect (signed out, sent
 // to the home page). A wait with only ms ends once the page is quiet, ms at
 // most: it slept all of it, and in the car and insurance searches of late
@@ -3244,7 +3245,7 @@ export const TOOLS: Record<string, Tool> = {
       selector: { type: "string", description: "CSS selector" },
       any: { type: "array", items: { type: "string" }, description: "texts; the first shown ends it" },
       gone: { type: "string", description: "text to disappear" },
-      url: { type: "string", description: "part of the URL, or /regex/" },
+      url: { type: "string", description: "part of the URL (a|b: either), or /regex/" },
       quiet: { type: "boolean", description: "no change or request to its site for 0.5 s" },
       changed: { type: "boolean", description: "new lines since last look (added)" },
       ms: { type: "number", description: "timeout" },
