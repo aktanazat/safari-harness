@@ -259,7 +259,7 @@ type Pending = {
 // limit: one, or each tabs.list caller that shared it (JOIN_MS). It ends
 // unanswered once the last of them gives up; ms is the longest limit, and
 // latencyKey what its answer's time counts under (a relay by its page op).
-type Asked = { id: string; op: string; latencyKey: string; detail: Record<string, unknown>; sock: ExtSocket; sent: number; epoch: number; ms: number; waiters: Set<Waiter> };
+type Asked = { id: string; op: string; latencyKey: string; detail: Record<string, unknown>; sock: ExtSocket; sent: number; epoch: number; ms: number; waiters: Set<Waiter>; opens?: unknown[] };
 type Waiter = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
 
 // One kind of request's timeouts in a row on the connected extension: how
@@ -290,11 +290,18 @@ const ELSEWHERE: Record<string, true> = { ...FROM_TAB, shot: true, window: true,
 // log held only timeouts, so no one could say which kinds were slow
 // (DaemonLogs).
 const SLOW_ANSWER_MS = 5000;
+// The requests Safari may still carry out after the daemon gave up on them:
+// on 11-08 a slow Safari opened the windows and tabs of timed-out opens
+// tens of seconds later, which no record named. Agent 14158 had eight
+// windows each named "window 3", each holding only its page.
+const OPENS: Record<string, true> = { "windows.open": true, "tabs.open": true };
 
 export class Bridge {
   private sock: ExtSocket | null = null;
   private seq = 0;
   private pending = new Map<string, Pending>();
+  // Opens no one waits on any longer (OPENS), until their late answer.
+  private abandoned = new Map<string, { op: string; args: unknown[]; sock: ExtSocket }>();
   private ticker: Timer | undefined;
   private waiting = new Set<() => void>(); // requests waiting for a socket, and a reload for the next one
   // Sockets that opened while another was connected, each waiting to learn
@@ -331,6 +338,7 @@ export class Bridge {
   public onMemory: (tab: number, url: string, revision: number) => void = () => {};
   public onConnect: () => void = () => {};
   public onDrop: (drop: { cause: DropCause; code?: number; lost: number }) => void = () => {};
+  public onLateOpen: (op: string, args: unknown[], value: unknown) => void = () => {};
 
   constructor(private readonly aliveMs = ALIVE_MS) {}
 
@@ -498,7 +506,13 @@ export class Bridge {
     // Safari call the page gave up on shows only that its page runs
     const safariSilent = msg.phase !== undefined;
     if (from === this.sock && !safariSilent) this.heard(key, p?.asked, msg.error === undefined);
-    if (!p) return;
+    if (!p) {
+      const gave = this.abandoned.get(key);
+      if (!gave) return;
+      this.abandoned.delete(key);
+      if (gave.sock === from && from === this.sock && msg.error === undefined) this.onLateOpen(gave.op, gave.args, msg.value);
+      return;
+    }
     this.pending.delete(key);
     clearTimeout(p.timer);
     // a typed refusal may name the address of the link it did not click
@@ -516,6 +530,7 @@ export class Bridge {
       clearTimeout(p.timer);
       lost.push(p);
     }
+    for (const [key, gave] of this.abandoned) if (gave.sock === sock) this.abandoned.delete(key);
     return lost;
   }
 
@@ -656,7 +671,7 @@ export class Bridge {
     }
     const id = `d${++this.seq}`;
     const relay = op === "relay";
-    const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set() };
+    const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set(), ...(Object.hasOwn(OPENS, op) ? { opens: args } : {}) };
     const each = (settle: (w: Waiter) => void) => {
       for (const w of asked.waiters) {
         clearTimeout(w.timer);
@@ -721,6 +736,7 @@ export class Bridge {
   // (ask), and stuck a while, the extension is asked to reload itself.
   private unanswered(asked: Asked) {
     this.pending.delete(asked.id);
+    if (asked.opens) this.abandoned.set(asked.id, { op: asked.op, args: asked.opens, sock: asked.sock });
     const now = Date.now();
     note("timeout", { op: asked.op, ...asked.detail, ms: asked.ms });
     if (asked !== this.listing) this.epoch++;

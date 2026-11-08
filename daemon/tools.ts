@@ -861,6 +861,21 @@ bridge.onConnect = () => {
   void sweepSpaces().catch(() => {});
 };
 
+// A window or tab Safari opened after its open timed out is no one's: its
+// agent heard the open fail and asks again (onLateOpen in bridge.ts). A
+// window holds only its page then, so closing the page closes the window.
+// A tab opened in front for him or reopened from /agents (owned false)
+// stays: he may be looking at it.
+bridge.onLateOpen = (op, args, value) => {
+  const opened = value as { tabId?: unknown; id?: unknown } | null;
+  const tab = op === "windows.open" ? opened?.tabId : args[3] === true ? opened?.id : undefined;
+  if (typeof tab !== "number") return;
+  bridge.request("tabs.close", [tab], 10000, { start: false }).then(
+    () => note("late open closed", { op, tab }),
+    (e: unknown) => note("late open not closed", { op, tab, error: e instanceof Error ? e.message : String(e) }),
+  );
+};
+
 // Old tab ids and their tabs' ids now: what the daemon keeps per tab, and
 // the ids agents hold, follow the tabs (continuity.ts). A reloaded
 // extension, or a Safari that started again, no longer knows which tabs

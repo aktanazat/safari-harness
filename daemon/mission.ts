@@ -29,6 +29,7 @@ import { affectsPage } from "./lanes.ts";
 import { captureSummaries, failureContextSummary, historyToolName, MissionHistory, type CaptureSummary, type FailureContext, type HistoryPicture } from "./mission-history.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
+import { rexTabOf, rexTitle, showRexTab, type RexTab } from "./rex.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
 import { closeTabsOf, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
@@ -83,6 +84,8 @@ type Agent = {
   takeovers: Set<Promise<number | undefined>>;
   owner?: number;
   process?: string;
+  // the Rex tab it runs in (rex.ts), that tab's title, and when it was read
+  rex?: { tab: RexTab; title?: string; read: number; reading?: true };
   first: number;
   last: number;
   calls: Call[];
@@ -194,12 +197,36 @@ function track(owner: number): Agent {
 }
 
 // Its program (claude, omp, codex, node), which tells two agents apart
-// better than a pid does.
+// better than a pid does, and the Rex tab it runs in.
 async function named(agent: Agent): Promise<void> {
   const ps = Bun.spawn(["ps", "-o", "comm=", "-p", String(agent.owner)], { stdout: "pipe", stderr: "ignore" });
   const path = (await new Response(ps.stdout).text()).trim();
   if (path) agent.process = basename(path);
+  const tab = agent.owner === undefined ? undefined : await rexTabOf(agent.owner);
+  if (tab) {
+    agent.rex = { tab, read: 0 };
+    await readRexTitle(agent);
+  }
   remember(agent);
+}
+
+// A Rex tab's title follows its task, so a live agent's summary older than
+// REX_TITLE_MS reads it again in the background; an ended agent's keeps the
+// title it last had.
+const REX_TITLE_MS = 15_000;
+
+async function readRexTitle(agent: Agent): Promise<void> {
+  const rex = agent.rex;
+  if (!rex || rex.reading || agent.owner === undefined) return;
+  rex.reading = true;
+  try {
+    rex.title = await rexTitle(rex.tab, agent.owner);
+  } catch (e) {
+    console.error(`[safari-harness] no Rex title for agent ${agent.owner}:`, e instanceof Error ? e.message : e);
+  } finally {
+    rex.read = Date.now();
+    delete rex.reading;
+  }
 }
 
 // On /agents: an agent seen within the hour, or one the user holds while
@@ -798,7 +825,7 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 
 // ---------- what the pages read ----------
 
-type Summary = { id: string; owner: number | null; process: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; inspectionOnly?: boolean; controlSecret?: string };
+type Summary = { id: string; owner: number | null; process: string | null; rex: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; inspectionOnly?: boolean; controlSecret?: string };
 // /agents.json, and what safari agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
 type WindowSummary = ManagedWindow & { closeSecret: string };
@@ -807,10 +834,12 @@ export type Overview = { now: number; agents: (Summary & { last: Call | null; ta
 
 function summaryOf(a: Agent): Summary {
   const status = statusOf(a);
+  if (a.rex && a.ended === undefined && Date.now() - a.rex.read >= REX_TITLE_MS) void readRexTitle(a);
   return {
     id: a.id,
     owner: a.owner ?? null,
     process: a.process ?? null,
+    rex: a.rex?.title ?? null,
     status,
     since: a.first,
     active: a.last,
@@ -957,7 +986,7 @@ const json = (v: unknown) => Response.json(v, { headers: { "cache-control": "no-
 
 // ---------- the controls ----------
 
-const ACTIONS = ["pause", "resume", "stop", "drive", "giveback", "pictures_on", "pictures_off", "inspect_on", "inspect_off"] as const;
+const ACTIONS = ["pause", "resume", "stop", "drive", "giveback", "pictures_on", "pictures_off", "inspect_on", "inspect_off", "rex"] as const;
 type Action = (typeof ACTIONS)[number];
 const isAction = (a: unknown): a is Action => typeof a === "string" && (ACTIONS as readonly string[]).includes(a);
 
@@ -1043,6 +1072,15 @@ async function control(owner: number | undefined, action: unknown, from: string,
   if (!agent || agent.ended !== undefined) return problem(409, "this agent has ended");
   if (agent.stopped !== undefined) return problem(409, "this agent is stopped");
   switch (action) {
+    case "rex":
+      if (!agent.rex) return problem(409, "this agent runs in no Rex tab");
+      try {
+        await showRexTab(agent.rex.tab);
+      } catch (e) {
+        return problem(503, `Rex did not show its tab: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      note("rex tab shown", { owner, from });
+      return Response.json({ ok: true, status: statusOf(agent) });
     case "inspect_on":
     case "inspect_off":
       agent.inspectionOnly = action === "inspect_on";
@@ -1231,11 +1269,12 @@ const SCRIPT = String.raw`
     if (opened) { opened.opener = null; event.preventDefault(); }
   });
   const byId = (id) => document.getElementById(id);
-  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures", inspect_on: "Inspect only", inspect_off: "Allow actions" };
+  const LABEL = { pause: "Pause", resume: "Resume", drive: "Let me drive", giveback: "Give back", stop: "Stop", pictures_on: "Save action pictures", pictures_off: "Stop saving pictures", inspect_on: "Inspect only", inspect_off: "Allow actions", rex: "Show in Rex" };
   const SAY = { working: "Working", "waiting on the user": "Waiting on you", paused: "Paused", "user is driving": "You are driving", stopped: "Stopped", ended: "Ended" };
   const TONE = { working: "go", "waiting on the user": "ask", paused: "hold", "user is driving": "hold", stopped: "end", ended: "end" };
   const DONE = {
     pause: () => "Paused.",
+    rex: () => "Its Rex tab is in front.",
     resume: () => "Resumed.",
     drive: (out) => out.tab === null ? "Paused. No tab is open." : "You are driving.",
     giveback: () => "Given back. It checks the tab before acting.",
@@ -1282,6 +1321,7 @@ const SCRIPT = String.raw`
   function who(a) {
     if (data.kind === "history") return a.owner === null ? "No agent" : "Agent " + a.owner;
     if (a.owner === null) return "Calls with no agent behind them";
+    if (a.rex) return a.rex + " (agent " + a.owner + ")";
     return "Agent " + a.owner + (a.process ? " (" + a.process + ")" : "");
   }
 
@@ -1293,9 +1333,10 @@ const SCRIPT = String.raw`
     if (!a.controls) return [];
     const pictures = a.pictures ? "pictures_off" : "pictures_on";
     const inspection = a.inspectionOnly ? "inspect_off" : "inspect_on";
-    if (a.status === "paused") return ["resume", "drive", "stop", pictures, inspection];
-    if (a.status === "user is driving") return ["giveback", "stop", pictures, inspection];
-    return ["pause", "drive", "stop", pictures, inspection];
+    const rex = a.rex ? ["rex"] : [];
+    if (a.status === "paused") return ["resume", ...rex, "drive", "stop", pictures, inspection];
+    if (a.status === "user is driving") return ["giveback", ...rex, "stop", pictures, inspection];
+    return ["pause", ...rex, "drive", "stop", pictures, inspection];
   }
 
   function buttons(a, target, prefix) {
@@ -1487,6 +1528,8 @@ const SCRIPT = String.raw`
     }
     status.className = "status " + (TONE[a.status] || "go");
     setText(status, SAY[a.status] || a.status);
+    const title = a.rex ? a.rex + " · " + byId("task-name").textContent : byId("task-name").textContent;
+    if (document.title !== title) document.title = title;
     const over = a.status === "stopped" || a.status === "ended";
     setText(byId("who"), (a.inspectionOnly ? "Inspect only · " : "") + (a.owner === null ? who(a) + ": nothing can pause them." : who(a) + (over ? ", worked for " + span(a.active - a.since) : ", at work for " + span(s.now - a.since)) + (raised(a) ? ", " + raised(a) : "")));
     draw(byId("controls"), a.id + "|" + actionsOf(a).join(), () => buttons(a, { id: data.id, secret: a.controlSecret }, ""));
