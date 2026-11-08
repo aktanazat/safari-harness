@@ -40,15 +40,22 @@ export function turnAt(host: string, gap: number, from = Date.now()): number {
 }
 
 // host's turn once a hold on it, or on its bucket, ends; a hold that ends
-// past WAIT_MS answers instead, and takes no turn.
-export function turn(host: string, gap: number, bucket?: string): { at: number } | Limit {
+// past WAIT_MS answers instead, and takes no turn. With within, a turn
+// further off than within ms is not taken either: its answer says when it
+// would be (taken: false), so a web search can ask another engine first.
+export function turn(host: string, gap: number, bucket?: string, within?: number): { at: number; taken?: false } | Limit {
   const key = hostOf(host);
   const now = Date.now();
   const held = [holds.get(key), bucket === undefined ? undefined : holds.get(`${key} ${bucket}`)]
     .filter((h): h is Hold => h !== undefined && h.until > now)
     .sort((a, b) => b.until - a.until)[0];
   if (held && held.until - now > WAIT_MS) return { host: key, resetAt: held.until, guessed: held.guessed };
-  return { at: turnAt(key, gap, held?.until ?? now) };
+  const from = held?.until ?? now;
+  if (within !== undefined) {
+    const at = Math.max(from, turns.get(key) ?? 0);
+    if (at - now > within) return { at, taken: false };
+  }
+  return { at: turnAt(key, gap, from) };
 }
 
 // Holds host, or its bucket, after a rate limit: until resetAt when the
@@ -75,6 +82,7 @@ export const PACE_TOOL: Tool = {
     do: { type: "string", enum: ["turn", "hold"], description: "default turn" },
     host: { type: "string", description: "host or address" },
     gap: { type: "number", description: "turn: ms after the turn before it" },
+    within: { type: "number", description: "turn: take it only if it starts within this many ms" },
     bucket: { type: "string", description: "the one of the host's limits the request falls under" },
     until: { type: "number", description: "hold: the reset the site named, epoch ms" },
     backoff: { type: "number", description: "hold: the first back-off, ms, when the site named no reset" },
@@ -85,6 +93,6 @@ export const PACE_TOOL: Tool = {
     const host = String(a.host);
     const bucket = a.bucket === undefined ? undefined : String(a.bucket);
     if (a.do === "hold") return hold(host, bucket, a.until === undefined ? undefined : Number(a.until), a.backoff === undefined ? undefined : Number(a.backoff));
-    return turn(host, Number(a.gap ?? 0), bucket);
+    return turn(host, Number(a.gap ?? 0), bucket, a.within === undefined ? undefined : Number(a.within));
   },
 };
