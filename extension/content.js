@@ -909,6 +909,9 @@
     // Whether the walk met words or a control a person sees (snapshot waits
     // on a page without them).
     let seen = false;
+    // Each labeled field a person sees, by element, for the label that
+    // names it (sameAsField).
+    const fields = new Map();
 
     // Pass 1: the kept elements as a tree, with loose text and block edges
     // in page order. `named` holds the ancestors naming themselves by their
@@ -940,6 +943,12 @@
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
         parent.kids.push(node);
         seen ||= actionable && !boxed;
+        // A field with no box of its own (appearance: none, 0 by 0) is one
+        // its label draws.
+        if (actionable && !boxed && el.labels?.length) {
+          const r = el.getBoundingClientRect();
+          if (r.width && r.height) fields.set(el, node);
+        }
         if (node.name === null && namedByContent(el)) {
           node.text = [];
           named = [...named, node];
@@ -1038,6 +1047,12 @@
       const st = stateOf(n.el);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
+      // A checkbox's or radio's submitted value says nothing its name does
+      // not: the browser's default "on", or its label again. A name taken
+      // from the group's name attribute is no label: there the value is all
+      // that tells one radio from the next.
+      const v = st.findIndex((s) => s.startsWith("value="));
+      if (v >= 0 && /^(checkbox|radio)$/.test(n.el.type) && (n.el.value === "on" || (n.name !== n.el.getAttribute("name") && n.name?.toLowerCase().includes(n.el.value.toLowerCase())))) st.splice(v, 1);
       const name = n.name ? clip(protectedFieldName(n.el, n.name, st), TEXT_MAX) : "";
       const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
       return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
@@ -1076,6 +1091,16 @@
       return r;
     };
     const short = (t) => t.length <= 24 && !t.includes(" | ");
+    // A label whose field prints its own line under the same name: the
+    // field's line is the one to act on, as an accessibility tree gives a
+    // label no line of its own. Lever's application form printed 51 such
+    // pairs, a quarter of its snapshot (11-08). A label keeps its line
+    // where its field is hidden (a styled checkbox) or named otherwise.
+    const squash = (t) => t.replace(/\s+/g, "").toLowerCase();
+    const sameAsField = (n) => {
+      const field = n.role === "label" && n.name ? fields.get(n.el.control) : undefined;
+      return !!field?.name && squash(field.name) === squash(n.name);
+    };
     const render = (node, depth) => {
       // nothing prints past the last line: stop reading the page there
       if (truncated) return;
@@ -1110,6 +1135,7 @@
         i++;
         if (c.group) { render(c, depth + 1); continue; }
         if (!c.actionable && !c.name && (c.role === "form" || c.role === "region")) { render(c, depth); continue; }
+        if (sameAsField(c)) { render(c, depth); continue; }
         if (!c.actionable && c.role === "img" && node.actionable) continue;
         if (c.actionable && c.fromPic && hrefOf(c) && textHrefs.has(hrefOf(c))) continue;
         const ek = elementKids(c);
@@ -1294,9 +1320,10 @@
     return one ? [one] : [];
   }
 
-  // A label stands for its field. The snapshot gives a label that wraps its
-  // field a ref of its own; typing into that ref or picking an option on it
-  // means the field. A label no field takes as its own (no for, nothing
+  // A label stands for its field. A label's ref (the snapshot prints one
+  // when its field is hidden or named otherwise) or a label found by its
+  // text means the field: typing into it or picking an option on it. A
+  // label no field takes as its own (no for, nothing
   // inside) may still name one through aria-labelledby: on 10-07
   // Robinhood's "Sell in" label named its combobox so, and getByLabel('Sell
   // in').selectOption answered that the label was no <select> or combobox.

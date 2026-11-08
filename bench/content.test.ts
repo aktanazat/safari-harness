@@ -113,26 +113,32 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
-    name: "a snapshot gives each field's state, and a password field's value never",
+    name: "a snapshot gives each field's state, and a password field's value never; a label prints no line of its own over its field",
     page: "form.html",
     steps: [{
       op: "snapshot",
       answer: {
         value: {
           snapshot: [
-            '[1] label "Email"',
-            '  [2] textbox "Email" {value="ada@example.com"}',
-            '[3] label "Password"',
-            '  [4] textbox "Password" {filled}',
-            '[5] label "Remember me"',
-            '  [6] checkbox "Remember me" {checked, value="on"}',
-            '[7] label "Plan"',
-            '  [8] combobox "Plan" {value="Pro", 2 options}',
-            '[9] button "Sign in"',
+            '[1] textbox "Email" {value="ada@example.com"}',
+            '[2] textbox "Password" {filled}',
+            '[3] checkbox "Remember me" {checked}',
+            '[4] combobox "Plan" {value="Pro", 2 options}',
+            '[5] button "Sign in"',
           ].join("\n"),
         },
       },
     }],
+  },
+  {
+    name: "a label keeps its line over a field no one sees, as the label is what a person clicks",
+    page: "styled-checkbox.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] label "Accept terms"\n  [2] checkbox "Accept terms"\n[3] label "Share data"\n  [4] checkbox "Share data"\n[5] checkbox "Newsletter"' } } }],
+  },
+  {
+    name: "a radio named only by its group keeps its value, which alone tells it from the others",
+    page: "radio-values.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: 'Size\n[1] radio "size" {value="s"}\n[2] radio "size" {value="m"}\n[3] radio "Pro plan"' } } }],
   },
   {
     name: "a new password fills a form that shows it as text, into the field marked new-password and the repeat field named so",
@@ -255,19 +261,17 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
-    name: "typing on a label's ref types into the field it labels",
+    name: "typing on a label types into the field it labels",
     page: "form.html",
     steps: [
-      { op: "snapshot" }, // [1] label "Email"
-      { op: "type", args: ["1", "grace@example.com"], answer: { value: { ok: true, kept: true } } },
+      { op: "type", args: ["form > label:nth-of-type(1)", "grace@example.com"], answer: { value: { ok: true, kept: true } } },
     ],
   },
   {
-    name: "select on a label's ref picks from the list it labels",
+    name: "select on a label picks from the list it labels",
     page: "form.html",
     steps: [
-      { op: "snapshot" }, // [7] label "Plan"
-      { op: "select", args: ["7", "Free"], answer: { value: { ok: true, value: "Free" } } },
+      { op: "select", args: ["form > label:nth-of-type(4)", "Free"], answer: { value: { ok: true, value: "Free" } } },
     ],
   },
   {
@@ -614,24 +618,24 @@ benchRows("content.js in WebKit", [
     name: "a click on a disabled button says it is disabled rather than that it pressed it",
     page: "disabled.html",
     steps: [
-      { op: "snapshot" }, // [5] button "Authorize" {disabled}
-      { op: "click", args: ["5"], answer: { error: expect.stringContaining("disabled") } },
+      { op: "snapshot" }, // [3] button "Authorize" {disabled}
+      { op: "click", args: ["3"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
     name: "typing into a disabled field says it is disabled rather than that the text was kept",
     page: "disabled.html",
     steps: [
-      { op: "snapshot" }, // [2] textbox "Name" {disabled}
-      { op: "type", args: ["2", "Ada"], answer: { error: expect.stringContaining("disabled") } },
+      { op: "snapshot" }, // [1] textbox "Name" {disabled}
+      { op: "type", args: ["1", "Ada"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
     name: "select on a disabled list says it is disabled rather than that the option was chosen",
     page: "disabled.html",
     steps: [
-      { op: "snapshot" }, // [4] combobox "Plan" {disabled}
-      { op: "select", args: ["4", "Pro"], answer: { error: expect.stringContaining("disabled") } },
+      { op: "snapshot" }, // [2] combobox "Plan" {disabled}
+      { op: "select", args: ["2", "Pro"], answer: { error: expect.stringContaining("disabled") } },
     ],
   },
   {
@@ -968,9 +972,9 @@ benchRows("content.js in WebKit", [
     name: "a root given as a ref from the latest snapshot, bracketed or not, reads that element alone",
     page: "slate-dialog.html",
     steps: [
-      { op: "snapshot" }, // [4] label "Occupation/Title"
-      { op: "snapshot", args: [{ root: "[4]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Relationship)[\s\S]*Occupation/) } } },
-      { op: "extract", args: [{ selector: "4" }], answer: { value: { text: expect.stringMatching(/^(?![\s\S]*Relationship)[\s\S]*Occupation/) } } },
+      { op: "snapshot" }, // [4] button "Save"
+      { op: "snapshot", args: [{ root: "[4]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Cancel)[\s\S]*Save/) } } },
+      { op: "extract", args: [{ selector: "4" }], answer: { value: { text: expect.stringMatching(/^(?![\s\S]*Cancel)[\s\S]*Save/) } } },
     ],
   },
   {

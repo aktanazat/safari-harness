@@ -1,0 +1,12 @@
+<!doctype html>
+<title>Styled checkbox</title>
+<!-- Checkboxes their labels draw: one input cut to one pixel, as sr-only
+     classes do, one with no box at all, so a person clicks the label. A
+     plain one beside them. -->
+<style>
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .tick input { appearance: none; width: 0; height: 0; margin: 0; border: 0; padding: 0; }
+</style>
+<label><input type="checkbox" class="sr-only"> Accept terms</label>
+<label class="tick"><input type="checkbox"><span>Share data</span></label>
+<label>Newsletter <input type="checkbox"></label>
