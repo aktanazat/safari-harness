@@ -68,16 +68,39 @@ type Lane = { holder: Holder; waiting: Turn[] };
 const lanes = new Map<number, Lane>();
 const heldLanes = new AsyncLocalStorage<{ tab: number; lane: Lane; active: boolean; owner: number | undefined }[]>();
 
+// Each tab's acting calls, by owner, in order of arrival: those still out,
+// and while a read of the tab is out, those that ended since. A read sees
+// the actions its own agent sent before or alongside it. On 11-08 a type
+// of "20" and a snapshot sent together on a billing page ran snapshot
+// first; it showed the old 25 and the agent concluded the typing was
+// ignored.
+type Action = { tool: string; owner: number | undefined; seq: number; ended: boolean; done: Promise<void> };
+const actions = new Map<number, Action[]>();
+const readers = new Map<number, number>();
+let arrivals = 0;
+
+// The reads that wait for their agent's actions on the tab, and are asked
+// again when one arrives while they run.
+const ORDERED_READS: Record<string, true> = { snapshot: true, extract: true, eval: true, data: true, element: true, info: true };
+
+function forgetEnded(tab: number) {
+  if (readers.has(tab)) return;
+  const out = (actions.get(tab) ?? []).filter((a) => !a.ended);
+  if (out.length) actions.set(tab, out);
+  else actions.delete(tab);
+}
+
 // What a call waited on for its turn: a lane here, its agent's last turn
-// ending (tools.ts callTool), the daemon restarting (rpc.ts).
-type Queue = { ms: number; on: string[] };
+// ending (tools.ts callTool), the daemon restarting (rpc.ts). order names
+// a call of the same agent that took the tab first, however short the wait.
+type Queue = { ms: number; on: string[]; order?: string };
 const queues = new AsyncLocalStorage<Queue>();
 
 // Runs a call that arrived at arrived, which before waited for on, and
 // notes its waits in its answer (withQueued).
 export async function queuing(arrived: number, run: () => Promise<unknown>, before = 0, on = ""): Promise<unknown> {
   const queue: Queue = { ms: before, on: before > 0 ? [on] : [] };
-  return withQueued(await queues.run(queue, run), queue.ms, queue.on.join(", "), arrived);
+  return withQueued(await queues.run(queue, run), queue.ms, queue.on.join(", "), arrived, queue.order);
 }
 
 // A call that waited a second or more for its turn says how long, on what,
@@ -85,9 +108,14 @@ export async function queuing(arrived: number, run: () => Promise<unknown>, befo
 // calls sent together each took 64 s, one a wait whose answer said 48 ms,
 // and nothing told where the time went. An answer that is not an object
 // (a list, a text) keeps its shape.
-export function withQueued(result: unknown, ms: number, on: string, arrived: number): unknown {
-  if (ms < 1000 || !result || typeof result !== "object" || Array.isArray(result)) return result;
-  const text = `this call waited ${Math.round(ms / 1000)} s for its turn (${on}), from ${new Date(arrived).toISOString().slice(11, 19)} UTC`;
+export function withQueued(result: unknown, ms: number, on: string, arrived: number, order?: string): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+  const notes = [
+    ...(order === undefined ? [] : [order]),
+    ...(ms < 1000 ? [] : [`this call waited ${Math.round(ms / 1000)} s for its turn (${on}), from ${new Date(arrived).toISOString().slice(11, 19)} UTC`]),
+  ];
+  if (!notes.length) return result;
+  const text = notes.join("; ");
   const had = "note" in result ? result.note : undefined;
   return { ...result, note: had === undefined ? text : `${String(had)}; ${text}` };
 }
@@ -100,27 +128,87 @@ export async function inLane<T>(tool: string, args: Record<string, unknown>, res
   // the page as they read it: they take its lane, as acting calls do, yet
   // stay reads for everything affectsPage decides.
   const gathers = tool === "harvest" || (tool === "extract" && (args.expand === true || args.scroll === true));
-  if (!acts(tool, args) && !gathers) return run();
+  if (!acts(tool, args) && !gathers) return Object.hasOwn(ORDERED_READS, tool) ? afterActions(tool, args, resolve, run) : run();
   const tab = await resolve(args.tab).catch(() => undefined);
   if (tab === undefined) return run();
   const inherited = heldLanes.getStore() ?? [];
   const held = inherited.find((held) => held.active && held.tab === tab && held.lane === lanes.get(tab) && held.owner === currentOwner());
   if (held) return run();
-  const asked = Date.now();
-  const before = lanes.get(tab)?.holder.tool;
-  const lane = await enter(tab, tool, currentOwner());
-  const queue = queues.getStore();
-  if (queue && before !== undefined) {
-    queue.ms += Date.now() - asked;
-    queue.on.push(`tab ${tab}'s ${before}`);
-  }
-  const scope = { tab, lane, active: true, owner: currentOwner() };
+  const owner = currentOwner();
+  const { promise: done, resolve: finish } = Promise.withResolvers<void>();
+  const action: Action = { tool, owner, seq: ++arrivals, ended: false, done };
+  actions.set(tab, [...(actions.get(tab) ?? []), action]);
   try {
-    return await heldLanes.run([...inherited, scope], run);
+    const asked = Date.now();
+    const before = lanes.get(tab)?.holder;
+    const lane = await enter(tab, tool, owner);
+    const queue = queues.getStore();
+    if (queue && before !== undefined) {
+      queue.ms += Date.now() - asked;
+      queue.on.push(`tab ${tab}'s ${before.tool}`);
+      if (owner !== undefined && before.owner === owner) queue.order = `ran after this agent's ${before.tool} on tab ${tab}, which arrived first; that ${before.tool} saw the page before this ${tool}`;
+    }
+    const scope = { tab, lane, active: true, owner };
+    try {
+      return await heldLanes.run([...inherited, scope], run);
+    } finally {
+      scope.active = false;
+      leave(tab, lane);
+    }
   } finally {
-    scope.active = false;
-    leave(tab, lane);
+    action.ended = true;
+    finish();
+    forgetEnded(tab);
   }
+}
+
+// A read waits for the acting calls its own agent already sent on the tab,
+// and one that arrives while the read waits or runs makes it run again once
+// that action ends, so the answer shows the page after both. Other agents'
+// reads never wait, nor does a read of the front tab, which would cost a
+// listing of Safari's tabs to name. An action still out after ORDER_WAIT_MS
+// (a click that waits for a page) is named in the answer instead.
+const ORDER_WAIT_MS = 10_000;
+
+async function ended(list: Action[]): Promise<boolean> {
+  const { promise: late, resolve } = Promise.withResolvers<false>();
+  const timer = setTimeout(() => resolve(false), ORDER_WAIT_MS);
+  try {
+    return await Promise.race([Promise.all(list.map((a) => a.done)).then(() => true), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function afterActions<T>(tool: string, args: Record<string, unknown>, resolve: (tab: unknown) => Promise<number>, run: () => Promise<T>): Promise<T> {
+  const owner = currentOwner();
+  if (owner === undefined || !/^\d+$/.test(String(args.tab))) return run();
+  const tab = await resolve(args.tab).catch(() => undefined);
+  if (tab === undefined || (heldLanes.getStore() ?? []).some((held) => held.active && held.tab === tab)) return run();
+  const mine = () => (actions.get(tab) ?? []).filter((a) => a.owner === owner);
+  const names = (list: Action[]) => [...new Set(list.map((a) => a.tool))].join(" and ");
+  const ahead = mine().filter((a) => !a.ended);
+  const asked = arrivals;
+  const notes: string[] = [];
+  readers.set(tab, (readers.get(tab) ?? 0) + 1);
+  let answer: T;
+  try {
+    if (ahead.length && !(await ended(ahead))) notes.push(`this agent's ${names(ahead)} on tab ${tab} was still running when this ${tool} answered`);
+    answer = await run();
+    const alongside = mine().filter((a) => a.seq > asked);
+    if (alongside.length) {
+      if (await ended(alongside)) {
+        answer = await run();
+        notes.push(`read again after this agent's ${names(alongside)} on tab ${tab}, which arrived while it ran`);
+      } else notes.push(`this agent's ${names(alongside)} on tab ${tab} arrived while this ${tool} ran and was still running when it answered`);
+    }
+  } finally {
+    const left = (readers.get(tab) ?? 1) - 1;
+    if (left > 0) readers.set(tab, left);
+    else readers.delete(tab);
+    forgetEnded(tab);
+  }
+  return notes.length ? (withQueued(answer, 0, "", Date.now(), notes.join("; ")) as T) : answer;
 }
 
 function enter(tab: number, tool: string, owner: number | undefined): Promise<Lane> {

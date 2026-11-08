@@ -118,6 +118,22 @@ test("reads go ahead on a busy tab, and a wait holds no lane", async () => {
   expect(await waiting).toMatchObject({ found: true });
 });
 
+// On 11-08 an agent sent a type and a snapshot together; the snapshot read
+// the field before the typing landed, and nothing in it said so.
+test("an agent's read waits for its own acting call on the tab; another agent's read does not", async () => {
+  const page = safari();
+  const click = as(agent.pid, "click", { tab: 7, ref: "1" });
+  await settled();
+  const own = as(agent.pid, "info", { tab: 7 });
+  expect(await as(other, "info", { tab: 7 })).toMatchObject({ ok: true });
+  await settled();
+  expect(page.sent).toEqual(["7 click 1", "7 tabInfo"]);
+  page.answer("7 click 1");
+  await click;
+  expect(await own).toMatchObject({ ok: true });
+  expect(page.sent).toEqual(["7 click 1", "7 tabInfo", "7 tabInfo"]);
+});
+
 test("a call that fails gives the tab to the next in line", async () => {
   const page = safari();
   const failing = as(agent.pid, "click", { tab: 7, ref: "gone" });
