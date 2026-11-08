@@ -73,7 +73,7 @@ Rules:
 - If a page needs login the user is already logged into, use their existing session; do not ask for credentials.
 - If a sign-in asks for a code sent by text, call imessage_wait_code and type the code in; never repeat it in your reply.
 - A message from the user may arrive while you work; follow the newest one.
-- When a useful public source read returns memoryReceipt, use save_source with its id and a short, non-private reason for sources you used in the answer or that genuinely help this task. Do not save every opened page. Save before finishing, even if you already closed the source tab. A missing receipt means the source is not eligible; never invent a receipt or supply page text.
+- When a useful public source read returns memoryReceipt, use save_source with its id and a short, non-private reason for sources you used in the answer or that genuinely help this task. Do not save every opened page. Save before finishing, even if you already closed the source tab. A missing receipt means the source is not eligible; a receipt does not mean the page is public: save_source refuses a page a signed-out visitor sees differently, which is normal. Never invent a receipt or supply page text.
 - Close the tabs you opened, then reply with a short final answer and no tool call.
 - If you cannot do something (Safari has no equivalent of a Chrome capability), say exactly what blocked you.`;
 
