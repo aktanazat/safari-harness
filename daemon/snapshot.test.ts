@@ -69,6 +69,27 @@ test("an action or a wait answers with the page after it, whole or only the line
   expect(await callTool("wait", { tab: 7, text: "Total", snapshot: true })).toMatchObject({ found: true, page: { snapshot: '[1] button "Pay"\nTotal $42.10\nShipping $5.00' } });
 });
 
+// On 11-08 open and click on a billing app each answered 0 nodes and "page
+// state: empty" while the app drew; a snapshot a moment later had it all.
+// Safari here has a page that has drawn once the daemon waits for it.
+test("an action's read that finds nothing reads again once the page goes quiet", async () => {
+  const sent: string[] = [];
+  let drawn = false;
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay") sent.push(args[1]);
+      if (op === "relay" && args[1] === "wait") drawn = true;
+      const page = drawn ? { nodes: 1, snapshot: '[1] button "Add funds"' } : { nodes: 0, snapshot: "" };
+      const value = op !== "relay" ? [] : args[1] === "snapshot" ? { url: "https://console.example/billing", title: "Billing", truncated: false, ...page } : args[1] === "wait" ? { found: true } : { ok: true };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  expect(await callTool("click", { tab: 7, ref: "Billing", snapshot: true })).toMatchObject({ page: { nodes: 1, snapshot: '[1] button "Add funds"' } });
+  expect(sent.filter((op) => op === "snapshot")).toHaveLength(2);
+});
+
 test("invalid action snapshot options refuse before the page receives an action", async () => {
   const sent = cartSafari();
   await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toBeInstanceOf(Error);

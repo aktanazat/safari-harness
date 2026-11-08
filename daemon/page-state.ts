@@ -202,9 +202,15 @@ const PAGE_TOOLS: Record<string, true> = { open: true, goto: true, snapshot: tru
 const PAGE_WRAPPERS: Record<string, true> = { click: true, type: true, press: true, select: true, hover: true, upload: true, history: true, scroll: true, wait: true, real_input: true };
 
 // Whether a read's arguments take part of the page, which says nothing of
-// the whole page's state.
+// the whole page's state; so does an action's snapshot of words or of
+// {query, root, diff} (pageRead in tools.ts). On 11-08 open's snapshot of
+// words on a billing page found none yet and said the page was empty.
 export function partialRead(args: Record<string, unknown>): boolean {
-  return ["query", "root", "ref", "selector", "interactive", "diff"].some((key) => args[key] !== undefined && args[key] !== false);
+  const want = args.snapshot;
+  const read = record(want);
+  return ["query", "root", "ref", "selector", "interactive", "diff"].some((key) => args[key] !== undefined && args[key] !== false) ||
+    (typeof want === "string" && want !== "true" && want !== "false") ||
+    (read !== undefined && ["query", "root", "diff"].some((key) => read[key] !== undefined && read[key] !== false));
 }
 
 export function withPageState(tool: string, value: unknown, scope?: { partial?: boolean }): unknown {
