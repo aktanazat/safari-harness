@@ -2764,12 +2764,19 @@ const SAVE: Param = { description: "true or absolute path; returns path,size,500
 
 // With snapshot an action also returns the page it led to, read as
 // snapshot reads it (with its bot-check probe; a whole page is the tab's
-// last snapshot for diff), saving the agent a separate read.
+// last snapshot for diff), saving the agent a separate read. A read that
+// finds nothing is asked again once the page goes quiet (SETTLE_MS at
+// most): on 11-08 open and click on a billing app each answered 0 nodes
+// while it drew, and a snapshot a moment later had the whole page.
+const SETTLE_MS = 3000;
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   const read = pageRead(want);
   if (read === undefined) return result;
-  const opened = newTabOf(result)?.id;
-  return { ...(result as object), page: await snapshot({ ...read, tab: opened ?? tab }) };
+  const at = newTabOf(result)?.id ?? tab;
+  const first = await snapshot({ ...read, tab: at });
+  if (first.nodes !== 0 || read.diff || read.updates || read.since !== undefined) return { ...(result as object), page: first };
+  await wait({ tab: at, quiet: true, ms: SETTLE_MS });
+  return { ...(result as object), page: await snapshot({ ...read, tab: at }) };
 }
 
 export type PageRead = { query?: string; root?: string; diff?: boolean; updates?: boolean; since?: string };
