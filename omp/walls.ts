@@ -7,6 +7,7 @@
 // by Safari is sent back to it once.
 
 import { daemonHttp } from "../daemon/rpc.ts";
+import { cutFenced } from "../daemon/injection.ts";
 import type { MapAnswer } from "../daemon/map.ts";
 
 export type Block = { type: string; text?: string };
@@ -265,7 +266,7 @@ async function safariCopy(url: string, task: string | undefined, wait: Record<st
     if (whole.length <= REPLY_CHARS) return { loaded, check, text: whole };
     const { saveAnswer } = await import("../daemon/save.ts");
     const path = await saveAnswer(whole);
-    const kept = formatResult(answer.value, REPLY_CHARS).slice(0, REPLY_CHARS);
+    const kept = cutFenced(formatResult(answer.value, REPLY_CHARS), REPLY_CHARS);
     return { loaded, check, text: `${kept}\n…cut at ${kept.length} of ${whole.length} characters; the whole copy is in ${path}` };
   } catch (e: unknown) {
     if (e instanceof Error && e.name === "TimeoutError") return { loaded: false, check: false, text: `error: Safari gave no answer in ${COPY_MS / 1000} s; it may still be loading the page, and safari map ${url} answers from that read once it is done` };
