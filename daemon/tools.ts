@@ -310,6 +310,7 @@ export type TurnPreparation = { owner: number; task?: string; epoch: string; tab
 type TurnReceipt = { ok: true; closed: number; retained: number; failed: number; deferred: boolean; invalidated?: true };
 const endingTurns = new Map<number | string, Promise<TurnReceipt>>();
 let sweepingTabs: Promise<void> | undefined;
+let sweepAgain = false;
 
 // Each tab the harness closed of late, with why, when, and what it showed,
 // for a later call that names it (goneWhy). Late in September a chat tab
@@ -694,7 +695,16 @@ function keptBy(tab: number, keeper: number) {
 // a rejection no one caught, from the extension's link dropping under a
 // sweep, ended the daemon at 10-29 03:44Z.
 function sweep(): Promise<void> {
-  sweepingTabs ??= sweepOnce().finally(() => { sweepingTabs = undefined; });
+  if (sweepingTabs) {
+    sweepAgain = true;
+    return sweepingTabs;
+  }
+  sweepingTabs = (async () => {
+    do {
+      sweepAgain = false;
+      await sweepOnce();
+    } while (sweepAgain);
+  })().finally(() => { sweepingTabs = undefined; });
   return sweepingTabs;
 }
 
@@ -716,11 +726,12 @@ async function sweepOnce() {
   // sweep lists the tabs, which notes what they show and finds those a
   // Safari that started again restored (sighted).
   if (!bridge.connected) return;
+  const known = [...harnessTabs];
   const listed = await listTabs({ start: false }).catch(() => undefined);
   if (listed === undefined) return;
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
-  const due = [...harnessTabs].filter(([tab, t]) => {
+  const due = known.filter(([tab, t]) => {
     if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task ?? null))?.pending.size)) return false;
     const handoff = handoffs.get(tab);
     if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
@@ -729,48 +740,48 @@ async function sweepOnce() {
     return t.done || exited || (disposable && now - t.used >= IDLE_MS);
   });
   if (due.length === 0) return;
-  for (const [, t] of due) t.closing = true;
-  // what each showed, for a later call that names it (closedTabs)
   await Promise.all(due.map(async ([tab, t]) => {
-    const link = bridge.extensionInfo?.connectedAt;
-    try {
-      if (harnessTabs.get(tab) !== t) return;
-      if (!shown.has(tab)) {
-        lost(tab, false);
-        return;
-      }
-      if (reconnectedSince(t)) return;
-      const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner));
-      const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string } | null;
-      if (res?.front) {
-        t.used = Date.now();
-      } else if (res?.ok !== true) {
-        if (res?.protected === "form") t.acted = true;
-        closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
-      } else {
-        // Record the resume point before dropping ownership, in the same
-        // file: the page it showed last listed, else last opened or loaded.
-        const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
-        recordClosed(tab, why, resumeAddress(shown.get(tab)?.url ?? t.url), t.owner, undefined, shown.get(tab)?.title);
-        forget(tab);
-        note("tab closed", { tab, owner: t.owner ?? null, why });
-      }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (message.startsWith("that tab is gone")) {
-        // its turn had ended, so it opens again as a closed one does, unless
-        // the user may have closed it
-        lost(tab, reconnectedSince(t));
-        return;
-      }
-      if (linkDropped(link)) console.error(`[safari-harness] closing tab ${tab} failed: ${message}; trying again on the next connection`);
-      else closeLater(tab, t, message);
-    } finally {
-      delete t.closing;
-      save();
+    if (harnessTabs.get(tab) !== t) return;
+    const page = shown.get(tab);
+    if (!page) {
+      lost(tab, false);
+      return;
     }
+    await closeTrackedTab(tab, t, page);
   }));
   await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
+}
+
+async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Promise<void> {
+  if (harnessTabs.get(tab) !== t || t.closing || reconnectedSince(t)) return;
+  t.closing = true;
+  const link = bridge.extensionInfo?.connectedAt;
+  try {
+    const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner));
+    const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string } | null;
+    if (res?.front) {
+      t.used = Date.now();
+    } else if (res?.ok !== true) {
+      if (res?.protected === "form") t.acted = true;
+      closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
+    } else {
+      const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+      recordClosed(tab, why, resumeAddress(shown?.url ?? t.url), t.owner, undefined, shown?.title);
+      forget(tab);
+      note("tab closed", { tab, owner: t.owner ?? null, why });
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message.startsWith("that tab is gone")) {
+      lost(tab, reconnectedSince(t));
+      return;
+    }
+    if (linkDropped(link)) console.error(`[safari-harness] closing tab ${tab} failed: ${message}; trying again on the next connection`);
+    else closeLater(tab, t, message);
+  } finally {
+    delete t.closing;
+    save();
+  }
 }
 
 // A close Safari itself did not make (a native sheet, a window off screen
@@ -862,19 +873,19 @@ bridge.onConnect = () => {
   void sweepSpaces().catch(() => {});
 };
 
-// A window or tab Safari opened after its open timed out is no one's: its
-// agent heard the open fail and asks again (onLateOpen in bridge.ts). A
-// window holds only its page then, so closing the page closes the window.
 // A tab opened in front for him or reopened from /agents (owned false)
 // stays: he may be looking at it.
-bridge.onLateOpen = (op, args, value) => {
-  const opened = value as { tabId?: unknown; id?: unknown } | null;
+bridge.onLateOpen = (op, args, value, context) => {
+  const opened = value as { tabId?: unknown; id?: unknown; url?: unknown } | null;
   const tab = op === "windows.open" ? opened?.tabId : args[3] === true ? opened?.id : undefined;
   if (typeof tab !== "number") return;
-  bridge.request("tabs.close", [tab], 10000, { start: false }).then(
-    () => note("late open closed", { op, tab }),
-    (e: unknown) => note("late open not closed", { op, tab, error: e instanceof Error ? e.message : String(e) }),
-  );
+  remember(tab, context.owner, Date.now(), context.task);
+  const t = harnessTabs.get(tab)!;
+  t.done = true;
+  const url = opened?.url ?? args[0];
+  if (typeof url === "string") t.url = url;
+  save();
+  void closeTrackedTab(tab, t).catch((e: unknown) => note("late open not closed", { op, tab, error: e instanceof Error ? e.message : String(e) }));
 };
 
 // Old tab ids and their tabs' ids now: what the daemon keeps per tab, and

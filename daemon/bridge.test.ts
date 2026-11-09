@@ -224,6 +224,19 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+test.each([6000, 7500])("a tab list answered within the extension's budget at %i ms succeeds without a timeout", async (ms) => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = holding(bridge);
+  pastGrace(bridge, ext.sock);
+  const list = bridge.request("tabs.list").catch((e: unknown) => e);
+  await settled();
+  jest.advanceTimersByTime(ms);
+  ext.answer(ext.asked[0].id, [{ id: 7, url: "https://example.com/", partial: "windows.getAll" }]);
+  expect(await list).toEqual([{ id: 7, url: "https://example.com/", partial: "windows.getAll" }]);
+  expect(bridge.health()).toMatchObject({ stuck: false, timeouts: {} });
+});
+
 // 10-13: tabs.list went unanswered for minutes while the extension answered
 // pages' relays, and map's opens each waited out 30 s on it.
 test("two requests of one kind in a row that time out make it stuck: the harness's own next one fails at once, and /health says so", async () => {
