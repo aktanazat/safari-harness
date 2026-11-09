@@ -521,7 +521,13 @@ carrying the page in context.
   moves.
 - Any other `click`, `press`, or `select` watches the page until it
   settles (300 ms at least, then 150 ms without a change, 800 ms at most).
-  A page that has not reacted by 300 ms gets 2 s for its first change,
+  A page that has not reacted by 300 ms and has nothing the action started
+  still out (a request to any site; a timer due within 2 s, intervals
+  included; a script, style sheet, image, or frame it put in that has not
+  loaded; an image given its address; a WebSocket message with no answer
+  yet) ends the watch at 450 ms. One with such a thing out, or one that
+  cannot say (a page open since before the extension was, or one keeping
+  an older copy of its page script), gets 2 s for its first change,
   which then has 0.5 s to settle. A request to the page's own site the
   action started holds the watch until it comes back, 3 s at most, and the
   page then gets the same 0.5 s to draw what it brought. It reports its
@@ -543,13 +549,17 @@ carrying the page in context.
   once with `real_input` before changing the account, the network, or the
   cookies, since each try may count against the site's limit. A script in
   `repl` prints an action's `next` as a `hint:` line.
-- `effect: "none"` means the page did not react, and `next` says what to
-  try: a real click (`real_input`), a child or parent of the control, or a
-  moment for a busy page. An effect shows the page moved, not that it did
-  what you meant: confirm what matters with a `wait` or a snapshot.
-  `none` does not prove nothing was sent: a request to another site (a form
-  behind hCaptcha) or a handler slower than the 2 s the receipt watches
-  goes unseen, so look before you repeat a submit.
+- `effect: "none"` means the page did not react while watched, and `next`
+  says what to try: look again before repeating it (a slow page may still
+  react, and the next snapshot or `wait` sees it), then a real click
+  (`real_input`) or a child or parent of the control. An effect shows the
+  page moved, not that it did what you meant: confirm what matters with a
+  `wait` or a snapshot. `none` does not prove nothing was sent: a request
+  to another site that came back at once (a form behind hCaptcha), or a
+  reaction later than the watch (450 ms with nothing out, 2 s otherwise)
+  that nothing above announced, goes unseen: a module the page loads with
+  `import()`, work in a Worker, an animation's end. Look before you repeat
+  a submit.
 - A page error saying the page refused for want of focus or a real click
   ("The document is not focused", a `NotAllowedError`), as a passkey,
   Touch ID, or clipboard call does in a tab Safari does not have in front
@@ -1888,10 +1898,12 @@ Wait for the page, not the clock.
   "<text>" --tab N` returns once the text is there, and `click`, `goto`, and
   `open` already wait for a page they load. A `click`, `press`, or `select`
   answers once the change it made settles, 800 ms at most once the page
-  reacts and 2 s when it has not, and once a request it started to the
-  page's own site comes back, 3 s at most; one whose `net` still lists a
-  `pending` request after that answers with `next` saying to `wait
-  --quiet` (or on text), which returns when that request's change lands.
+  reacts, 450 ms when it has not and has nothing the action started still
+  out, 2 s while a timer, a load, or a request it started is, and once a
+  request to the page's own site comes back, 3 s at most; one whose `net`
+  still lists a `pending` request after that answers with `next` saying to
+  `wait --quiet` (or on text), which returns when that request's change
+  lands.
   Past a minute of such waits in 10 minutes, the answer carries a `hint`
   to wait on text, a selector, or `changed` instead, once: again only when
   the total has doubled, or 10 minutes later. A script's

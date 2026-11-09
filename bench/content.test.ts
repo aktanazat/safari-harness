@@ -716,10 +716,11 @@ benchRows("content.js in WebKit", [
     name: "a missed wait reports the changed title and new and removed lines",
     page: "wait-late.html",
     steps: [
-      // The fixture reacts after the click's 2 s patience (10-05), during
-      // this wait. The receipt must not consume the change it summarizes.
+      // The fixture reacts at 3 s, past the 2 s the click watches for a
+      // timer it set (10-05, 11-09), during this wait. The receipt must
+      // not consume the change it summarizes.
       { op: "click", args: ["Search"] },
-      { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
+      { op: "wait", args: [null, { text: "Case details" }], timeout: 3000, answer: { error: "bench: wait did not answer within 3000 ms" } },
       { takeover: true },
       { sent: true, answer: { value: [
         { load: 1, message: { __safariHarnessReady: 1 } },
@@ -734,7 +735,7 @@ benchRows("content.js in WebKit", [
     steps: [
       // The later address and lines belong to this wait, not the click.
       { op: "click", args: ["Move"] },
-      { op: "wait", args: [null, { text: "Case details" }], timeout: 1500, answer: { error: "bench: wait did not answer within 1500 ms" } },
+      { op: "wait", args: [null, { text: "Case details" }], timeout: 3000, answer: { error: "bench: wait did not answer within 3000 ms" } },
       { takeover: true },
       { sent: true, answer: { value: [
         { load: 1, message: { __safariHarnessReady: 1 } },

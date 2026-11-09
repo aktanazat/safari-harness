@@ -376,9 +376,10 @@ await withPage(TARGETS, TARGETS_JS, async (tab) => {
 // reacted for 800 ms at most (its receipt), so the page it returns still
 // has the old title; a fixed pause, or a wait for a load that never comes
 // (3 s), would show the new one. The order of two events, not a time
-// budget. The mark matters: a page that shows no reaction is watched for
-// 2 s (RECEIPT_SPAN in content.js, since 10-05), past the retitle. The
-// link's scheme has no handler, so no app opens.
+// budget. The mark matters: a page that shows no reaction while a timer
+// the click set is out is watched for 2 s (RECEIPT_SPAN in content.js,
+// since 10-05), past the retitle. The link's scheme has no handler, so no
+// app opens.
 const LATER_JS = `document.head.appendChild(Object.assign(document.createElement("script"),
   { textContent: 'for (const id of ["later", "app"]) document.getElementById(id).onclick = () => { document.getElementById("mark").textContent = id + " clicked"; setTimeout(() => { document.title = id + " retitled"; }, 1500); }' }))`;
 

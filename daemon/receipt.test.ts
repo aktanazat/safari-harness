@@ -12,14 +12,14 @@ import { callTool } from "./tools.ts";
 // daemon/receipt.test.ts" markers, which carries site, keepRequest, and
 // urlMatch with the daemon's bodies, and the settle and text rules.
 
-type Span = { min: number; quiet: number; max: number; patience?: number; busy?: number; poll?: number };
+type Span = { min: number; quiet: number; max: number; patience?: number; idle?: number; busy?: number; poll?: number };
 type PageRules = {
   RECEIPT_SPAN: Span;
   QUIET_SPAN: Span;
   site: typeof site;
   keepRequest: typeof keepRequest;
   urlMatch: typeof urlMatch;
-  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null, back?: number | null) => number;
+  settleAt: (start: number, last: number, busy: boolean, span: Span, first?: number | null, back?: number | null, stirred?: number | null) => number;
   shows: (page: string, want: string) => boolean;
 };
 
@@ -273,6 +273,40 @@ test.each(REQUEST_ENDS)("an action's watch on its own request: %s", (_name, chan
 
 test("a late change settles relative to the action's start, not the clock's origin", () => {
   expect(inPage.settleAt(10000, 11200, false, inPage.RECEIPT_SPAN, 11200)).toBe(11350);
+});
+
+// The same clock with what the page's world says the action started and
+// has not finished (a request to any site, a timer): out until outUntil,
+// or null for a page that cannot say (no dialogs.js, or an older copy).
+// On a Lever form a click that changed nothing cost 2 s each time.
+function endsStirred(changes: number[], outUntil: number | null): number {
+  let first: number | null = null;
+  let last = 0;
+  let stirred: number | null = null;
+  for (let now = 0; now <= 10000; now++) {
+    if (changes.includes(now)) {
+      first ??= now;
+      last = now;
+    }
+    stirred = outUntil === null ? null : now < outUntil ? now : (stirred ?? 0);
+    if (now >= inPage.settleAt(0, last, false, inPage.RECEIPT_SPAN, first, null, stirred)) return now;
+  }
+  throw new Error("the page watch did not end within the fake clock's 10000 ms");
+}
+
+const STIRRED_ENDS: [string, number[], number | null, number][] = [
+  ["a page with nothing out ends the watch at 450 ms", [], 0, 450],
+  ["a first change within those 450 ms gets its quiet span", [400], 0, 550],
+  ["a first change after them is too late", [500], 0, 450],
+  ["a timer out until 800 ms that then draws is seen", [800], 800, 950],
+  ["something out until 800 ms that draws nothing ends a quiet span after", [], 800, 949],
+  ["something still out at 2 s ends the watch there", [], 5000, 2000],
+  ["a page that cannot say waits all of 2 s", [], null, 2000],
+  ["a page that cannot say still sees a change at 1200 ms", [1200], null, 1350],
+];
+
+test.each(STIRRED_ENDS)("an action's watch on what the page has out: %s", (_name, changes, outUntil, end) => {
+  expect(endsStirred(changes, outUntil)).toBe(end);
 });
 
 const QUIET_ENDS: [string, number[], number][] = [

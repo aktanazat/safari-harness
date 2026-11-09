@@ -1,8 +1,8 @@
 <!doctype html>
 <title>Request pending</title>
 <p id="result">Checking the request</p>
-<!-- On 10-05 clicks gained 2 s for a first reaction. These changes belong
-     to the following wait, so they arrive at 3 s, after that watch and
-     before the wait's 1.5 s limit. -->
+<!-- A click watches up to 2 s for a timer it set (10-05, 11-09). These
+     changes belong to the following wait, so they arrive at 3 s, after
+     that watch and before the wait's 3 s limit. -->
 <button onclick="setTimeout(() => { document.title = 'Request finished'; document.getElementById('result').textContent = 'No case found'; }, 3000)">Search</button>
 <button onclick="setTimeout(() => { location.hash = 'finished'; document.title = 'Request finished'; document.getElementById('result').innerHTML = '<p>First update</p><p>Second update</p><p>Third update</p><p>Last update</p>'; }, 3000)">Move</button>

@@ -4300,12 +4300,21 @@
   // redirect, but its security check was there in the next snapshot 2 s
   // later. A redirect can leave no dialogs.js request log; a lazy script
   // or a timer may also leave no pending request to hold the watch open.
+  // Since 11-09 a page whose world says nothing the action started is
+  // still out (no request to any site, no timer due within those 2 s, no
+  // script, style sheet, image, or frame it put in still loading, no
+  // WebSocket message without its answer) ends the watch 450 ms from the
+  // action, or 150 ms after the last such thing it was seen running: on a
+  // Lever form a click that changed nothing cost 2 s each time. A page that
+  // cannot say (no dialogs.js, or an older copy) keeps the 2 s. A native
+  // import() and an image never put in the page and given its address
+  // through setAttribute stay unseen.
   // A request to its own site the action started holds the watch until it
   // comes back, 3 s from the action at most, asked after every 100 ms. In
   // the two weeks of logs before 10-19, 191 of 955 clicks, keys, and options
   // answered at 800 ms with one still out, and 69 were followed by a call
   // to wait for it.
-  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800, patience: 2000, busy: 3000, poll: 100 };
+  const RECEIPT_SPAN = { min: 300, quiet: 150, max: 800, patience: 2000, idle: 450, busy: 3000, poll: 100 };
   // the most lines new since an action a receipt carries
   const SAID_MAX = 20;
   // wait's quiet: no change for 500 ms, for as long as the wait lasts
@@ -4315,6 +4324,8 @@
   // an action, and neither are the harness's own marks (data-sh-ref).
   const RESTLESS = "[role=timer], [role=marquee], [role=progressbar], progress, video, audio, canvas";
   const UNDRAWN = /^(SCRIPT|STYLE|LINK|META|NOSCRIPT|TEMPLATE)$/;
+  // what the page puts in that loads before it can draw what it brought
+  const LOADS = "script[src], link[href][rel~=stylesheet], link[href][rel~=preload], link[href][rel~=modulepreload], img[src], iframe[src]";
   const DIALOG_BOXES = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal="true"]';
   let watched = null; // [{ el, before }] while an action is watched
 
@@ -4352,10 +4363,15 @@
   // bound. A request the action started that is still out (busy) holds the
   // watch span.busy from the action, and one seen back at back counts as a
   // late reaction: the page gets that settling room to draw what it
-  // brought.
-  function settleAt(start, last, busy, span, first = start, back = null) {
+  // brought. While waiting for a first reaction, stirred is when the page
+  // last had something the action started still out (start if never), or
+  // null when the page cannot say: then the watch takes all of
+  // span.patience.
+  function settleAt(start, last, busy, span, first = start, back = null, stirred = null) {
     const reacted = back === null ? first : Math.max(first ?? back, back);
-    if (reacted === null && !busy && span.patience !== undefined) return start + span.patience;
+    if (reacted === null && !busy && span.patience !== undefined) {
+      return start + (stirred === null ? span.patience : Math.min(span.patience, Math.max(span.idle, stirred - start + span.quiet)));
+    }
     const max = Math.max(start, (reacted ?? start) - span.min) + span.max;
     if (busy) return Math.max(max, start + (span.busy ?? 0));
     return Math.min(max, Math.max(start + span.min, (back === null ? last : Math.max(last, back)) + span.quiet));
@@ -4386,14 +4402,14 @@
   }
 
   // Watches the page, shadow roots included, and hands seen each batch of
-  // the changes the page made (madeByPage).
+  // the changes the page made (madeByPage), and the whole batch.
   function watchPage(seen) {
     const opts = { childList: true, subtree: true, characterData: true, attributes: true };
     // a change inside a shadow root reaches only an observer on that root
     const watch = () => { for (const r of shadowRoots()) observer.observe(r, opts); };
     const observer = new MutationObserver((records) => {
       watch();
-      seen(records.filter(madeByPage));
+      seen(records.filter(madeByPage), records);
     });
     observer.observe(document.documentElement, opts);
     watch();
@@ -4480,6 +4496,25 @@
     let busy = false;
     let asked = -Infinity;
     let back = null;
+    // when the page last had a request, a timer, or a load the action
+    // started still out (settleAt's stirred)
+    let stirred = null;
+    // what the page put in since the action that is still loading
+    const loading = new Set();
+    const loads = (records) => {
+      for (const r of records) {
+        for (const n of r.addedNodes) {
+          if (n.nodeType !== Node.ELEMENT_NODE) continue;
+          for (const el of [n, ...n.querySelectorAll(LOADS)]) {
+            if (!el.matches(LOADS) || loading.has(el) || (el.tagName === "IMG" && el.complete)) continue;
+            loading.add(el);
+            const done = () => loading.delete(el);
+            el.addEventListener("load", done, { once: true });
+            el.addEventListener("error", done, { once: true });
+          }
+        }
+      }
+    };
     let wake = () => {};
     // An element counts with all it holds; text put in or taken out
     // changes the element it is in.
@@ -4501,7 +4536,8 @@
         }
       }
     };
-    const observer = watchPage((records) => {
+    const observer = watchPage((records, all) => {
+      loads(all);
       if (records.length) {
         tally(records);
         last = Date.now();
@@ -4532,18 +4568,21 @@
       const spin = document.hidden && !tickPort ? new MessageChannel() : null;
       const check = () => {
         const now = Date.now();
-        if (now >= settleAt(start, last, false, RECEIPT_SPAN, first, back) && !(busy && now < asked + RECEIPT_SPAN.poll)) {
+        if (now >= settleAt(start, last, false, RECEIPT_SPAN, first, back, stirred) && !(busy && now < asked + RECEIPT_SPAN.poll)) {
           asked = now;
           const heard = hear(start);
           const out = (heard?.pending ?? []).some((e) => keepRequest(e, location.href));
           if (busy && !out) back = now;
           busy = out;
+          if (!heard?.pending || !heard.timers) stirred = null;
+          else if (heard.pending.length || heard.loads || loading.size || heard.timers.some((due) => due <= start + RECEIPT_SPAN.patience)) stirred = now;
+          else stirred ??= start;
           if (first === start && !busy && !added && !removed && !changed.size &&
               location.href === url && focusedNow() === focus && dialogLog.length === raised &&
               !targets.some((t) => t.el.isConnected && t.before.join("\n") !== stateOf(t.el).join("\n")) &&
               !(heard?.requests ?? []).some((e) => keepRequest(e, location.href))) first = null;
         }
-        const at = settleAt(start, last, busy, RECEIPT_SPAN, first, back);
+        const at = settleAt(start, last, busy, RECEIPT_SPAN, first, back, stirred);
         if (now >= at) return finish();
         clearTimeout(timer);
         // A request that comes back without changing the page wakes nothing,

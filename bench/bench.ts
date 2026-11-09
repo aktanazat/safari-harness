@@ -75,8 +75,10 @@ const skip = unbuildable();
 // The test reporter names no skipped test, so the reason is printed once.
 if (skip !== null) console.warn(`the WebKit bench is skipped: ${skip}`);
 export const runner = skip === null ? build() : "";
-// A page in bench/fixtures; a query or hash after its name stays one.
+// A page in bench/fixtures; a query or hash after its name stays one. An
+// http address stays as it is.
 const page = (name: string) => {
+  if (name.startsWith("http:")) return name;
   const at = name.search(/[?#]/);
   return pathToFileURL(join(import.meta.dir, "fixtures", at < 0 ? name : name.slice(0, at))).href + (at < 0 ? "" : name.slice(at));
 };

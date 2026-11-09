@@ -1,0 +1,23 @@
+<!doctype html>
+<title>Late reactions</title>
+<p id="out">Nothing yet</p>
+<button>Nothing</button>
+<button onclick="setTimeout(() => { out.textContent = 'Changed after 800 ms'; }, 800)">Late 800</button>
+<button onclick="const id = setInterval(() => { out.textContent = 'Polled after 700 ms'; clearInterval(id); }, 700)">Poll</button>
+<button onclick="document.head.append(Object.assign(document.createElement('script'), { src: 'chunk.js?ms=800' }))">Chunk</button>
+<button onclick="const i = new Image(); i.onload = i.onerror = () => { out.textContent = 'Image came after 800 ms'; }; i.src = 'image?ms=800'">Image</button>
+<button onclick="socket.send('hi')">Socket</button>
+<script>
+  // click-watch.test.ts serves this page, a chunk and an image 800 ms late,
+  // and a socket that answers 600 ms late.
+  const socket = new WebSocket(`ws://${location.host}/socket`);
+  socket.onmessage = () => { out.textContent = "Socket answered after 600 ms"; };
+  // #old answers the receipt ask as dialogs.js did before 11-09, with no
+  // timers or loads: a page-world copy kept from before an extension reload
+  if (location.hash === "#old") {
+    addEventListener("__sh_receipt_ask", (e) => {
+      e.stopImmediatePropagation();
+      document.dispatchEvent(new CustomEvent("__sh_receipt_answer", { detail: JSON.stringify({ requests: [], pending: [], errors: [] }) }));
+    }, true);
+  }
+</script>
