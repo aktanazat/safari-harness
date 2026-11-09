@@ -146,7 +146,7 @@
   let owned = false;
   let announcing = false;
   const frames = new Map(); // native frame id -> callback not yet run
-  const timers = new Map(); // native timer id -> { fn, args, due, every }
+  const timers = new Map(); // native timer id -> { fn, args, due, every, set }
 
   // A wrapper is a proxy of the browser's own function, so it still reads
   // as native code to a site that checks (anti-bot scripts do).
@@ -166,13 +166,13 @@
     const [fn, ms, ...rest] = args;
     if (typeof fn !== "function") return Reflect.apply(set, self, args);
     const id = Reflect.apply(set, self, [() => { if (timers.delete(id)) fn.apply(window, rest); }, ms]);
-    timers.set(id, { fn, args: rest, due: performance.now() + Math.max(0, Number(ms) || 0), every: 0 });
+    timers.set(id, { fn, args: rest, due: performance.now() + Math.max(0, Number(ms) || 0), every: 0, set: Date.now() });
     return id;
   });
   window.setInterval = wrap(window.setInterval, (set, self, args) => {
     const [fn, ms, ...rest] = args;
     if (typeof fn !== "function") return Reflect.apply(set, self, args);
-    const timer = { fn, args: rest, due: 0, every: Math.max(1, Number(ms) || 0) };
+    const timer = { fn, args: rest, due: 0, every: Math.max(1, Number(ms) || 0), set: Date.now() };
     timer.due = performance.now() + timer.every;
     // A late native run right after a tick ran it would run it twice.
     const id = Reflect.apply(set, self, [() => {
@@ -468,9 +468,11 @@
   // ---------- action receipts ----------
   // content.js asks, as it ends an action's watch (withReceipt there), what
   // the page did since the action began: the requests it made, from the
-  // log (none while the log is off), those still out, and the errors it
-  // did not catch, which are kept whether the log is on or not. The answer
-  // goes back within the ask.
+  // log (none while the log is off), those still out, the errors it did
+  // not catch, which are kept whether the log is on or not, when the
+  // timers it set that are still set run next, and how many images given
+  // an address and WebSocket messages sent are still without their load,
+  // error, or answer. The answer goes back within the ask.
   const ERRORS_MAX = 20;
   const errors = (state.errors = []); // { t, message }; console read shows them too (pageCapture in background.js)
   const thrown = (message) => {
@@ -490,6 +492,26 @@
     try { why = e.reason instanceof Error ? e.reason.message : String(e.reason); } catch {}
     thrown(`unhandled rejection: ${why}`);
   });
+  const loads = new Map(); // image or WebSocket -> when its load or last send began
+  const heeded = new WeakSet();
+  const settles = (target, types) => {
+    loads.set(target, Date.now());
+    if (heeded.has(target)) return;
+    heeded.add(target);
+    for (const type of types) listen.call(target, type, () => loads.delete(target));
+  };
+  const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+  Object.defineProperty(HTMLImageElement.prototype, "src", {
+    ...src,
+    set: wrap(src.set, (set, self, args) => {
+      settles(self, ["load", "error"]);
+      return Reflect.apply(set, self, args);
+    }),
+  });
+  WebSocket.prototype.send = wrap(WebSocket.prototype.send, (send, self, args) => {
+    settles(self, ["message", "close"]);
+    return Reflect.apply(send, self, args);
+  });
   document.addEventListener("__sh_receipt_ask", (e) => {
     let since;
     try { since = JSON.parse(e.detail).since; } catch { return; }
@@ -497,6 +519,8 @@
       requests: net.on ? net.log.filter((x) => x.t - x.ms >= since).map(({ method, url, status, error }) => ({ method, url, status, error })) : null,
       pending: net.on ? [...flying].filter(([, t]) => t >= since).map(([x]) => ({ method: x.method, url: x.url })) : null,
       errors: errors.filter((x) => x.t >= since).map((x) => x.message),
+      timers: [...timers.values()].filter((t) => t.set >= since).map((t) => Date.now() + t.due - performance.now()),
+      loads: [...loads.values()].filter((t) => t >= since).length,
     });
   });
 })();
