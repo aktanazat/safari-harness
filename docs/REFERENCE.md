@@ -522,7 +522,7 @@ carrying the page in context.
   page) or `newTab`. Pass `snapshot: true` (CLI `--snapshot`) to get the
   page after it in the same call, `snapshot: "words"` (CLI
   `--snapshot=words`) for only its lines that have those words, or
-  `snapshot: {query, root, diff}` as the `snapshot` tool takes them: the
+  `snapshot: {query, root, diff, full}` as the `snapshot` tool takes them: the
   fastest way to act and then read. `wait` takes it too. A `snapshot` of a
   tab as the next call after an action there gets a note saying so, once.
 - An action or `eval` whose page leaves before it answers (a submit, a
@@ -1421,9 +1421,24 @@ the part you need.
   A dropdown the page draws itself, with no `<select>` behind it, opens on
   `click`: snapshot again, and each option in the list it opens has a ref
   to click.
-- `diff: true` returns only the lines that changed since your last snapshot
-  of that tab (`- ` gone, `+ ` new): the cheap way to see what an action did.
-  Each line gives its link's address, never `=[15]`.
+- Through the MCP server, a whole-page snapshot of a tab you read in the
+  last 2 minutes, with the same options, answers with only the lines that
+  changed since that read (`- ` gone, `+ ` new) and `changes: "delta"`,
+  or with an empty `snapshot` and `changes: "unchanged"`; its header says
+  which. Every other line and its ref is as that read showed it; each
+  changed line gives its link's address, never `=[15]`. An action's
+  `snapshot` reads the same way. `full: true` reads the whole page. Any
+  other snapshot of the tab in between (`full`, `query`, `root`, `diff`,
+  `everyAddress`, another `maxNodes`, or the CLI's) makes the next read
+  whole. The page also comes whole on the first read after it navigated or
+  reloaded, on the read the harness asks for after the user changed the
+  tab or an action's effect was uncertain, with `save`, when more than
+  half of it changed, and for calls without a task identity. The CLI,
+  scripts, MCP calls an omp eval cell makes, and `safari do` always get
+  the whole page.
+- `diff: true` returns the changed lines however long ago your last
+  snapshot of that tab was, and `(no change)` when none changed. Each line
+  gives its link's address, never `=[15]`.
 - `updates: true` returns `update: {kind, revision, baseRevision}`.
   Keep the full snapshot and its revision, then pass `since: "<revision>"`
   with the same read options. `kind: "unchanged"` keeps your text.
@@ -1889,7 +1904,7 @@ Wait for the page, not the clock.
   site still out (one out past 2 s, such as a long poll, does not count).
   Given together, all must hold. `url` and `quiet` read the top page, not
   its frames; `gone` holds once neither the page nor any frame shows it.
-- `snapshot: true`, words, or `{query, root, diff}` (CLI `--snapshot`,
+- `snapshot: true`, words, or `{query, root, diff, full}` (CLI `--snapshot`,
   `--snapshot=words`) answers with the page as the wait ends, as an
   action's does; a wait the page gave no answer comes without it.
 - A whole-page `snapshot` of a page that shows nothing a person sees yet,

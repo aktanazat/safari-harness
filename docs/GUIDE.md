@@ -60,6 +60,10 @@ Turns
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "words"` with
   only its lines that have them.
+- Through the MCP server, a snapshot of a tab you read in the last 2
+  minutes answers with only its changed lines (`- ` gone, `+ ` new), or
+  none when nothing changed; `full: true` reads the whole page. The CLI
+  prints the whole page every time.
 - Wait on the page, never the clock: `wait {text}` with words only the
   next page shows, `{selector}`, or `{changed: true}` for new lines. No
   `sleep` in bash or `eval`, no made-up words. `open`, `goto`, and `click`

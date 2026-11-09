@@ -600,10 +600,21 @@ function observed(tool: string, args: Record<string, unknown>, value: unknown): 
   if ("truncated" in value && value.truncated === true && !savedWhole) return false;
   if ("unchanged" in value && value.unchanged === true) return false;
   if (tool === "snapshot" && "update" in value && value.update && typeof value.update === "object" && "kind" in value.update && value.update.kind !== "full") return false;
+  if (tool === "snapshot" && "changes" in value && value.changes !== undefined) return false;
   if (tool === "shot") return captureSummaries(value).length > 0;
   if ("saved" in value && typeof value.saved === "string") return true;
   if (tool === "snapshot") return "snapshot" in value && typeof value.snapshot === "string";
   return tool === "extract" && "text" in value && typeof value.text === "string";
+}
+
+// Whether this agent must read tab whole before it acts there again
+// (checkAction). snapshot then answers with the whole page, not only its
+// changes, so the read the hold asks for is the one that releases it.
+export function mustReadWhole(tab: number): boolean {
+  const agent = scope.getStore()?.agent;
+  if (!agent) return false;
+  syncViews(agent);
+  return agent.views.has(followTab(tab)) || agent.sites.size > 0;
 }
 
 // A request whose effect does not hang on the tab it goes from: a fetch, or

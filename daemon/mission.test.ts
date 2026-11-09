@@ -443,6 +443,7 @@ test.each([
   { tool: "extract", args: {}, value: { text: "Continue", truncated: true } },
   { tool: "extract", args: {}, value: { text: "Continue", truncated: true, total: 3_000_000, saved: "/saved/book.txt" } },
   { tool: "snapshot", args: {}, value: { ...fullView, truncated: true } },
+  { tool: "snapshot", args: {}, value: { ...fullView, snapshot: "+ [1] button Continue", changes: "delta" } },
   { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "delta", revision: "new-revision", baseRevision: "old-revision", edits: [{ start: 0, deleteCount: 1, lines: ["Continue"] }] } } },
   { tool: "snapshot", args: { since: "old-revision" }, value: { snapshot: "", update: { kind: "unchanged", revision: "old-revision", baseRevision: "old-revision" } } },
   { tool: "shot", args: { ifChanged: true }, value: { unchanged: true, previous: { path: "/a/previous.png" } } },
@@ -471,6 +472,22 @@ test("reading a different tab cannot release the tab the user changed", async ()
   await call(a.pid, "snapshot", { tab: other });
   await expect(call(a.pid, "click", { tab, ref: "old" })).rejects.toMatchObject({ code: "stale_view" });
   await call(a.pid, "click", { tab: other, ref: "safe" });
+});
+
+// A repeat snapshot within 2 minutes answers with only the changed lines
+// (tools.ts), which release nothing; the read the refusal asks for must.
+test("a plain snapshot of a tab the user changed answers with the whole page and releases it", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://changed-read.example/");
+  const read = () => watched(a.pid, "snapshot", { tab }, () => runAs(a.pid, () => callTool("snapshot", { tab }, true), JSON.stringify(["session", "agent"]), true));
+  await read();
+  expect(await read()).toMatchObject({ snapshot: "", changes: "unchanged" });
+  await press(pageOf(tab), "drive");
+  await press(pageOf(tab), "giveback");
+  const after = await read();
+  expect(after).toMatchObject({ snapshot: "[1] button Continue" });
+  expect(after).not.toHaveProperty("changes");
+  await call(a.pid, "click", { tab, ref: "fresh" });
 });
 
 test("an uncertain identical action is blocked until observation, without blocking another target or deterministic validation retries", async () => {

@@ -7,7 +7,7 @@ import reads from "./fixtures/reads.json";
 
 type Context = { mode: string; agent: { kind: "main" | "sub"; id: string; parentId?: string }; sessionManager: { getSessionId(): string } };
 type End = { willContinue?: boolean };
-type ToolCall = { toolName: string; input: Record<string, unknown> };
+type ToolCall = { toolName: string; toolCallId?: string; input: Record<string, unknown> };
 type ToolResult = { input: Record<string, unknown> } | undefined;
 type Hooks = {
   agent_end: (event: End, ctx: Context) => void | Promise<void>;
@@ -130,6 +130,14 @@ test("mounted Safari inputs replace untrusted task identity without changing cal
     const input = { url: "https://example.com/", __safariTask: "forged" };
     expect(tool({ toolName: "mcp__safari_open", input }, context("sub", "rpc", "helper"))?.input).toEqual({ url: input.url, __safariTask: task });
     expect(input.__safariTask).toBe("forged");
+  });
+});
+
+test("a Safari call from an eval cell is marked as its code's, the agent's own call is not", async () => {
+  await withHook(async (_end, tool) => {
+    const ctx = context("sub", "rpc", "helper");
+    expect(tool({ toolName: "mcp__safari_snapshot", toolCallId: "js-mcp__safari_snapshot-1", input: { tab: 1 } }, ctx)?.input).toEqual({ tab: 1, __safariTask: task, __safariScript: true });
+    expect(tool({ toolName: "mcp__safari_snapshot", toolCallId: "toolu_1", input: { tab: 1 } }, ctx)?.input).toEqual({ tab: 1, __safariTask: task });
   });
 });
 

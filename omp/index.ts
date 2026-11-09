@@ -8,7 +8,7 @@ type Context = {
   agent?: { kind: "main" | "sub"; id: string; parentId?: string };
   sessionManager?: { getSessionId(): string };
 };
-type ToolCall = { toolName: string; input: Record<string, unknown> };
+type ToolCall = { toolName: string; toolCallId?: string; input: Record<string, unknown> };
 type ToolCallResult = { input: Record<string, unknown> } | { block: true; reason: string };
 type ExtensionApi = {
   on(event: "agent_end", handler: (event: AgentEnd, ctx: Context) => void | Promise<void>): void;
@@ -60,7 +60,10 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     if (task === undefined) return;
     if (event.toolName.startsWith("mcp__safari_")) {
       // Nested write xd:// dispatches emit this same canonical tool event.
-      return { input: { ...event.input, __safariTask: task } };
+      // omp's eval bridge names its calls js-<tool>-<uuid>: their answers
+      // reach the cell's code, so they read whole pages (mcp-tools.ts).
+      const script = event.toolCallId?.startsWith("js-") ? { __safariScript: true } : {};
+      return { input: { ...event.input, __safariTask: task, ...script } };
     }
     // Every shell command's calls carry the task, not only safari's:
     // scripts and REPL code it starts reach the daemon through rpc.ts too.
