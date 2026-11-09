@@ -1,0 +1,3 @@
+This release's MCP tools read __safariVerbatim and drop the __safari
+arguments they do not read (mcp-tools.ts). A release without this file
+refuses such a call, so the omp extension and fresh.ts look for it first.

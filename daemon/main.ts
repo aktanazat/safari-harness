@@ -245,7 +245,7 @@ const rpcServer = Bun.serve({
         const failure = failureOf(new HarnessError("invalid_argument", "bad json"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
       }
-      const { tool, args, caller, own, model, news, task } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown; task?: unknown };
+      const { tool, args, caller, own, model, news, task, verbatim } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown; task?: unknown; verbatim?: unknown };
       if (!tool) {
         const failure = failureOf(new HarnessError("invalid_argument", "missing tool"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
@@ -264,7 +264,7 @@ const rpcServer = Bun.serve({
         // news: false leaves the agent's news to a later call (rpc.ts).
         const pid = Number.isInteger(caller) && Number(caller) > 1 ? Number(caller) : undefined;
         owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
-        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false), task));
+        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false), task, verbatim === true));
         reply = { ok: true, value };
       } catch (e) {
         const failure = failureOf(e, { effectful: affectsPage(tool, args ?? {}) });

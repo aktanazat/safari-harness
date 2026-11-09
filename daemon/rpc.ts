@@ -148,13 +148,23 @@ export function takesNews(): boolean {
   return quiet.getStore() === undefined;
 }
 
+// The answer to an agent's own MCP tool call reaches its model as the daemon
+// gives it (mcp-tools.ts); a CLI's or an eval cell's goes through code that
+// may keep a few lines. Only the first may answer a repeat read with what
+// changed (snapshot, tools.ts).
+const verbatimCalls = new AsyncLocalStorage<true>();
+
+export function verbatim<T>(fn: () => T): T {
+  return verbatimCalls.run(true, fn);
+}
+
 // model: the call is one a model wrote, which the daemon checks and
 // watches (guard.ts).
 export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
   const base = daemonHttp();
   const asked = asker.getStore();
   const task = currentTask();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }), ...(verbatimCalls.getStore() ? { verbatim: true } : {}) });
   const effectful = affectsPage(tool, args);
   const sent = Date.now();
   let res = await attempt(base, body, effectful);

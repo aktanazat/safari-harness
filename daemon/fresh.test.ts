@@ -16,18 +16,22 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 const NEW_TOOLS = [{ name: "tabs", description: "[Safari] the new release's tabs", inputSchema: { type: "object", properties: {} } }];
 const release = join(scratch, "release");
-mkdirSync(join(release, "daemon"), { recursive: true });
-writeFileSync(join(release, "daemon", "mcp-tools.ts"), `export const listTools = () => ${JSON.stringify(NEW_TOOLS)};
+const marked = join(scratch, "marked");
+for (const root of [release, marked]) {
+  mkdirSync(join(root, "daemon"), { recursive: true });
+  writeFileSync(join(root, "daemon", "mcp-tools.ts"), `export const listTools = () => ${JSON.stringify(NEW_TOOLS)};
 export async function callTool(name: string, args: Record<string, unknown>) { return \`the new release ran \${name} \${JSON.stringify(args)}\`; }
 export async function closeSession() {}
 `);
+}
+writeFileSync(join(marked, "daemon", "mcp-marks.txt"), "");
 
-function daemon(code: string) {
+function daemon(code: string, root = release) {
   const server = Bun.serve({
     port: 0,
     fetch(req) {
       const { pathname } = new URL(req.url);
-      if (pathname === "/health") return Response.json({ ok: true, code, root: release });
+      if (pathname === "/health") return Response.json({ ok: true, code, root });
       if (pathname !== "/rpc") return new Response("not found", { status: 404 });
       return Response.json({ ok: true, value: [{ id: 3, url: "https://example.com/", title: "Example" }] });
     },
@@ -114,4 +118,18 @@ test("a server on the daemon's release lists its own tools without a release-cha
   await mcp.end();
   fake.stop();
   expect(listChanged(mcp.seen)).toEqual([]);
+});
+
+// The omp extension marks a call by the release the current link names,
+// and a deploy moves that link before the daemon runs that release.
+test("a release from before __safariVerbatim gets the call without the __safari arguments it would refuse", async () => {
+  const args = { tab: 3, __safariTask: "task", __safariVerbatim: true, __safariLater: true };
+  for (const [root, given] of [[release, { tab: 3, __safariTask: "task" }], [marked, args]] as const) {
+    const fake = daemon("0000000000000000", root);
+    const mcp = session(fake.url);
+    await mcp.request("initialize");
+    expect((await mcp.request("tools/call", { name: "snapshot", arguments: args })).result?.content?.[0]?.text).toBe(`the new release ran snapshot ${JSON.stringify(given)}`);
+    await mcp.end();
+    fake.stop();
+  }
 });

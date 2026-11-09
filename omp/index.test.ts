@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import safariTurnEnd from "./index.ts";
@@ -7,7 +7,7 @@ import reads from "./fixtures/reads.json";
 
 type Context = { mode: string; agent: { kind: "main" | "sub"; id: string; parentId?: string }; sessionManager: { getSessionId(): string } };
 type End = { willContinue?: boolean };
-type ToolCall = { toolName: string; input: Record<string, unknown> };
+type ToolCall = { toolName: string; toolCallId?: string; input: Record<string, unknown> };
 type ToolResult = { input: Record<string, unknown> } | undefined;
 type Hooks = {
   agent_end: (event: End, ctx: Context) => void | Promise<void>;
@@ -131,6 +131,36 @@ test("mounted Safari inputs replace untrusted task identity without changing cal
     expect(tool({ toolName: "mcp__safari_open", input }, context("sub", "rpc", "helper"))?.input).toEqual({ url: input.url, __safariTask: task });
     expect(input.__safariTask).toBe("forged");
   });
+});
+
+// A session keeps this extension across deploys, and a release from before
+// __safariVerbatim refuses a call that carries it (fresh.ts takesMarks).
+test("the model's own Safari call is marked while the current release takes the mark, an eval cell's never", async () => {
+  const home = mkdtempSync(join(tmpdir(), "marks-"));
+  try {
+    const data = join(home, ".local/share/safari-harness");
+    const old = join(home, "old");
+    mkdirSync(join(old, "daemon"), { recursive: true });
+    mkdirSync(data, { recursive: true });
+    const link = (to: string) => `symlinkSync(${JSON.stringify(to)}, ${JSON.stringify(join(data, ".current.new"))}); renameSync(${JSON.stringify(join(data, ".current.new"))}, ${JSON.stringify(join(data, "current"))});`;
+    const call = (toolCallId: string) => `tool({ toolName: "mcp__safari_snapshot", toolCallId: ${JSON.stringify(toolCallId)}, input: { tab: 1 } }, ctx).input`;
+    const code = `import { renameSync, symlinkSync } from "node:fs";
+import hook from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
+let tool;
+hook({ on(event, handler) { if (event === "tool_call") tool = handler; } });
+const ctx = { mode: "rpc", agent: { kind: "sub", id: "helper" }, sessionManager: { getSessionId: () => "session-a" } };
+const inputs = [];
+${[join(import.meta.dir, ".."), old, join(import.meta.dir, "..")].map((release) => `${link(release)} inputs.push([${call("toolu_1")}, ${call("js-mcp__safari_snapshot-1")}]);`).join("\n")}
+process.stdout.write(JSON.stringify(inputs));`;
+    const child = Bun.spawn([process.execPath, "-e", code], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
+    const [out, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ exit, error }).toEqual({ exit: 0, error: "" });
+    const marked = { tab: 1, __safariTask: task, __safariVerbatim: true };
+    const unmarked = { tab: 1, __safariTask: task };
+    expect(JSON.parse(out)).toEqual([[marked, unmarked], [unmarked, unmarked], [marked, unmarked]]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("the same agent id in another session receives another task identity", async () => {

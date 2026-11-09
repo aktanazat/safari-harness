@@ -66,10 +66,16 @@ export async function processName(pid: number): Promise<string | undefined> {
 
 // ---------- daemon side ----------
 
-const scope = new AsyncLocalStorage<{ owner?: number; task?: string }>();
+const scope = new AsyncLocalStorage<{ owner?: number; task?: string; verbatim?: boolean }>();
 
-export function runAs<T>(pid: number | undefined, fn: () => T, task?: string): T {
-  return scope.run({ owner: pid, task }, fn);
+// verbatim: the call's answer reaches its model as the daemon gives it, as
+// an agent's own MCP tool call's does (rpc.ts); the CLI's may go through a pipe.
+export function runAs<T>(pid: number | undefined, fn: () => T, task?: string, verbatim = false): T {
+  return scope.run({ owner: pid, task, verbatim }, fn);
+}
+
+export function verbatimCall(): boolean {
+  return scope.getStore()?.verbatim === true;
 }
 
 export function currentOwner(): number | undefined {

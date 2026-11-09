@@ -18,7 +18,7 @@
 // release's tools. Modules never unload: a session that calls before and
 // after a deploy holds both releases' tools (2.6 MB more, 10-21).
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { codeHash } from "./codehash.ts";
 import type * as Own from "./mcp-tools.ts";
@@ -29,6 +29,17 @@ export type McpTools = Pick<typeof Own, "listTools" | "callTool" | "closeSession
 // This server's own release, fixed as it starts: a deploy moves the
 // current link, never a release under it.
 const ROOT = realpathSync(join(import.meta.dir, ".."));
+
+// A release with this file reads __safariVerbatim and drops the __safari
+// arguments it does not read (mcp-tools.ts); an older one refuses a call
+// that carries any but __safariTask.
+export function takesMarks(root: string): boolean {
+  return existsSync(join(root, "daemon", "mcp-marks.txt"));
+}
+
+function unmarked(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([key]) => key === "__safariTask" || !key.startsWith("__safari")));
+}
 
 // The code calls run on: this release's (tools undefined) until the daemon
 // runs another. Its hash is taken at the first check, which a session may
@@ -100,11 +111,13 @@ export async function closeAll(): Promise<void> {
 
 // The daemon's release is known only at run time, so its module is loaded
 // by path. One from before mcp-tools.ts (a rollback past it) has none: calls
-// keep the code they run on.
+// keep the code they run on. The omp extension marks a call by the release
+// the current link names, and a deploy moves that link before it restarts
+// the daemon, so a release that takes no marks gets the call without them.
 async function load(root: string): Promise<McpTools | undefined> {
   try {
     const mod: McpTools = await import(join(root, "daemon", "mcp-tools.ts"));
-    return mod;
+    return takesMarks(root) ? mod : { ...mod, callTool: (name, args) => mod.callTool(name, unmarked(args)) };
   } catch {
     return undefined;
   }
