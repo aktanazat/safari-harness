@@ -87,7 +87,8 @@ process-wide ownership.
 - `snapshot(page, {interactive, showHidden, ref, selector, maxNodes})`, or
   `page.snapshot({...})`, returns `{tree, diff}`: the outline with `[ref]`s
   (600 lines unless `maxNodes`; past that it says where it was cut), and
-  what changed since this session's last snapshot of the same view.
+  what changed since this session's last snapshot of the same view. A link
+  in `.tree` gives its address, never the snapshot tool's `=[15]`.
 - `page.content()`, `page.title()`, `page.url()`, `page.evaluate(fn, arg)`
   (runs in the page; falls back to the extension's world when the page
   forbids scripts).

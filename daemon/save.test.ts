@@ -22,6 +22,13 @@ function extractOf(opts: Record<string, unknown>) {
   return { url: "https://shop.example/items", title: "Items", text: TEXT.slice(0, Math.max(limit, Number(opts.whole) || 0)), truncated: TEXT.length > limit, ...(TEXT.length > limit ? { total: TEXT.length } : {}) };
 }
 
+// A story line as content.js prints it: the comment count's address reads
+// "=[3]", the age's ref, unless the read asks for every address.
+function snapshotOf(opts: Record<string, unknown>) {
+  const comments = opts.everyAddress === true ? "/item?id=1" : "=[3]";
+  return { url: "https://news.example/", title: "News", nodes: 2, truncated: false, snapshot: `[3] link "2 hours ago" /item?id=1\n[4] link "30 comments" ${comments}` };
+}
+
 // A stand-in extension for tab 1. The ops the page is asked to run are
 // noted.
 const asked: string[] = [];
@@ -30,6 +37,7 @@ function answer(op: string, args: unknown[]): unknown {
   const [, dom, [opts]] = args as [number, string, [Record<string, unknown>]];
   asked.push(dom);
   if (dom === "extract") return opts.selector === "#none" ? { error: "no content root" } : extractOf(opts);
+  if (dom === "snapshot") return snapshotOf(opts);
   if (dom === "eval") return { ok: true, result: VALUES[String(opts)] };
   if (opts === LIMITED) return { status: 429, url: LIMITED, type: "application/json", text: LIMITED_BODY, truncated: false };
   return { status: 200, url: "https://shop.example/api", type: "application/json", text: "{}", truncated: false };
@@ -66,6 +74,14 @@ test("an expression's string value is saved as its text, any other value as JSON
   expect(readFileSync(html, "utf8")).toBe("<p>hi</p>");
   expect(JSON.parse(readFileSync(rows, "utf8"))).toEqual([{ a: 1 }]);
   expect(JSON.parse(readFileSync(none, "utf8"))).toBeNull();
+});
+
+// A file is searched line by line: grep for an address finds every link
+// that goes there.
+test("a saved snapshot gives every link's address, not the ref of a line that gave it", async () => {
+  const path = join(dir, "news.txt");
+  await callTool("snapshot", { tab: 1, save: path });
+  expect(readFileSync(path, "utf8").split("\n").filter((line) => line.includes("/item?id=1"))).toHaveLength(2);
 });
 
 test("a page's error is preserved without reporting or writing a saved file", async () => {
@@ -154,6 +170,20 @@ test("a read with save: false past the limit is cut, and writes nothing", async 
   expect(reply).toMatchObject({ text: TEXT.slice(0, 20000), truncated: true });
   expect(reply).not.toHaveProperty("saved");
   expect(files).toEqual([]);
+});
+
+// A reply keeps an answer's first 30,000 characters and saves it whole, for
+// the agent to read a part at a time: a link past the cut is found there by
+// its address.
+test("a snapshot answer saved past the reply's limit gives every link's address", async () => {
+  const home = mkdtempSync(join(tmpdir(), "save-home-"));
+  homes.push(home);
+  const snapshot = Array.from({ length: 600 }, (_, i) => `[${2 * i + 1}] link "story ${i}" /item?id=${i}\n[${2 * i + 2}] link "${i} comments" =[${2 * i + 1}]`).join("\n");
+  const code = `import { replyText } from ${JSON.stringify(join(import.meta.dir, "tools.ts"))};
+console.log(/the whole answer is in (\\S+):/.exec(await replyText(${JSON.stringify({ url: "https://news.example/", title: "News", nodes: 1200, truncated: false, snapshot })}))[1]);`;
+  const proc = Bun.spawn([process.execPath, "-e", code], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "inherit" });
+  const path = (await new Response(proc.stdout).text()).trim();
+  expect(readFileSync(path, "utf8").split("\n").filter((line) => line.endsWith("/item?id=599"))).toHaveLength(2);
 });
 
 // The daemon's folder is not the caller's; and a request that changes

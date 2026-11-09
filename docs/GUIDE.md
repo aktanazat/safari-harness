@@ -75,6 +75,8 @@ Turns
 - A read past its limit (`extract` and each `map` page: 20,000
   characters) shows its start, the whole length, and the file that holds
   all of it: grep or read that file, or pass `maxBytes`.
+- A link reading `=[15]` goes where line `[15]` goes; it is its own
+  element: click its own ref.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
 - A signed-in page by URL: `safari read URL --expect "known text"` reuses

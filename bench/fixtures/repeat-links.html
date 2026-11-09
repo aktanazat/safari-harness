@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Hacker News gives a story's address on both its age and its comment
+     count; Amazon's filter links share a path and differ only in a query
+     long enough for the snapshot to cut. -->
+<title>Front page</title>
+</head>
+<body>
+<table>
+  <tr><td><a href="https://example.org/one" onclick="return go(this)">Story one</a></td></tr>
+  <tr><td>291 points by <a href="/user?id=ada" onclick="return go(this)">ada</a> <a href="/item?id=1" onclick="return go(this)">2 hours ago</a> | <a href="/item?id=1" onclick="return go(this)">30 comments</a></td></tr>
+  <tr><td><a href="https://example.org/two" onclick="return go(this)">Story two</a></td></tr>
+  <tr><td>87 points by <a href="/user?id=ada" onclick="return go(this)">ada</a> <a href="/item?id=2" onclick="return go(this)">5 hours ago</a> | <a href="/item?id=2" onclick="return go(this)">12 comments</a></td></tr>
+</table>
+<nav>
+  <a href="/s?k=usb+c+charger&rh=n%3A2407761011%2Cp_n_feature_four_browse-bin%3A1" onclick="return go(this)">Free Shipping</a>
+  <a href="/s?k=usb+c+charger&rh=n%3A2407761011%2Cp_n_feature_four_browse-bin%3A2" onclick="return go(this)">Get It Tomorrow</a>
+</nav>
+<p id="out">Nothing opened</p>
+<script>
+  function go(a) {
+    document.getElementById("out").textContent = "Opened " + a.textContent;
+    return false;
+  }
+</script>
+</body>
+</html>
