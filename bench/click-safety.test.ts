@@ -311,6 +311,19 @@ benchRows("safe clicks in WebKit", [
       evaluate("document.getElementById('checkbox').checked", false),
     ],
   },
+  // On 11-08 ten of ten clicks on Wikipedia's [2] label "Main menu" failed
+  // as covered by button "Main menu": the menu's own checkbox, laid over it.
+  {
+    name: "a label's own checkbox laid over it takes the label's click, and another checkbox laid over a label does not",
+    page: "menu-checkbox.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('[1] label "Main menu"') } } },
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      evaluate("document.getElementById('main-menu-checkbox').checked", true),
+      { op: "click", args: ["Tools"], answer: { error: expect.stringContaining('covered by checkbox "Subscribe"') } },
+      evaluate("[document.getElementById('decoy').checked, document.getElementById('tools-checkbox').checked]", [false, false]),
+    ],
+  },
   {
     name: "a covered native select refuses without changing its selected value",
     page: targets,

@@ -1624,6 +1624,13 @@
     return false;
   }
 
+  // A label's own control laid over the label is no cover: Wikipedia lays
+  // each menu's checkbox, transparent, over its "Main menu" label, and a
+  // click there does what the label's click does.
+  function ownControl(el, hit) {
+    return el.localName === "label" && !!el.control && insideTarget(el.control, hit);
+  }
+
   // A cover named with its way out: up to three shown controls in the
   // dialog, or the fixed or sticky box, that holds the cover, or in the
   // cover itself, whose whole name says to close it ("Close", "Not now",
@@ -1751,12 +1758,13 @@
         const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
         points += 1;
         const hit = deepPoint(x, y, el.ownerDocument);
-        if (hit && insideTarget(el, hit)) {
-          const stopped = clickBlocked(hit);
+        const on = hit && (insideTarget(el, hit) ? hit : ownControl(el, hit) ? el : null);
+        if (on) {
+          const stopped = clickBlocked(on);
           if (!stopped) {
             const coveredFrame = frameCover(el.ownerDocument, x, y, scroll);
             if (coveredFrame) return coveredFrame;
-            return { hit, x, y };
+            return { hit: on, x, y };
           }
           return stopped;
         }
@@ -1779,7 +1787,7 @@
       const blocked = clickBlocked(el) || clickBlocked(point.hit);
       if (blocked) return blocked;
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
-      if (!hit || !insideTarget(el, hit)) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
+      if (!hit || !(insideTarget(el, hit) || ownControl(el, hit))) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
       return frameCover(el.ownerDocument, point.x, point.y);
     }, stopAfterEvent);
     if (clicked.error) return checks === 1 ? refused(el, clicked) : clicked;
