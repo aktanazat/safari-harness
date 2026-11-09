@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { takesMarks } from "../daemon/fresh.ts";
 import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemon/rpc.ts";
 import { setSessionTask } from "../daemon/session-task.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
@@ -8,7 +11,7 @@ type Context = {
   agent?: { kind: "main" | "sub"; id: string; parentId?: string };
   sessionManager?: { getSessionId(): string };
 };
-type ToolCall = { toolName: string; input: Record<string, unknown> };
+type ToolCall = { toolName: string; toolCallId?: string; input: Record<string, unknown> };
 type ToolCallResult = { input: Record<string, unknown> } | { block: true; reason: string };
 type ExtensionApi = {
   on(event: "agent_end", handler: (event: AgentEnd, ctx: Context) => void | Promise<void>): void;
@@ -60,7 +63,14 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     if (task === undefined) return;
     if (event.toolName.startsWith("mcp__safari_")) {
       // Nested write xd:// dispatches emit this same canonical tool event.
-      return { input: { ...event.input, __safariTask: task } };
+      // omp's eval bridge names its calls js-<tool>-<uuid>, and their answers
+      // reach the cell's code. The model's own calls, whose answers reach it
+      // as given, are marked: only those may answer with what changed
+      // (mcp-tools.ts). A session keeps this extension across deploys, so
+      // each call asks whether the release current names takes the mark.
+      const own = event.toolCallId !== undefined && !event.toolCallId.startsWith("js-")
+        && takesMarks(join(homedir(), ".local", "share", "safari-harness", "current")) ? { __safariVerbatim: true } : {};
+      return { input: { ...event.input, __safariTask: task, ...own } };
     }
     // Every shell command's calls carry the task, not only safari's:
     // scripts and REPL code it starts reach the daemon through rpc.ts too.

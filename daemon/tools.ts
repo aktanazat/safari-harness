@@ -15,7 +15,7 @@ import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeRetryMs, closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
-import { alive, currentOwner, currentTask, inTurn, matchesTask, taskFamily, taskParts, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, inTurn, matchesTask, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
@@ -36,7 +36,7 @@ import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
-import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, withGather, withTaskCancellation } from "./mission.ts";
+import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
 import { createVideoTool } from "./video-observation.ts";
@@ -1128,7 +1128,15 @@ function flagged(result: object): object {
 }
 
 const snapshotHistory = new SnapshotHistory();
-type SnapshotOptions = SnapshotView & { tab?: number; diff?: boolean; updates?: boolean; since?: string };
+// Each agent's last snapshot of each tab, while it may answer the next one
+// with only the changed lines.
+const lastReads = new SnapshotHistory();
+type SnapshotOptions = SnapshotView & { tab?: number; diff?: boolean; updates?: boolean; since?: string; full?: boolean };
+// A whole read of a page its agent read in the last 2 minutes answers with
+// only the changed lines. In omp's logs from 10-25 to 11-08, 406 of 449
+// repeat MCP reads of a page came within 2 minutes of the one before, and 17
+// of the other 43 came after the agent's context was compacted.
+const CHANGES_MS = 120_000;
 
 export async function snapshot(opts: SnapshotOptions = {}) {
   if (opts.since !== undefined && (typeof opts.since !== "string" || opts.since.length === 0 || opts.since.length > 256)) throw new HarnessError("invalid_argument", "since must be a snapshot revision from an earlier response");
@@ -1148,15 +1156,32 @@ export async function snapshot(opts: SnapshotOptions = {}) {
   // interactive keeps the lines with refs, a view of the page as a root or
   // a query is, so the next diff still runs from the whole page
   const snap = opts.interactive === true ? { ...shielded, snapshot: refLines(shielded.snapshot.split("\n")).join("\n") } : shielded;
+  const owner = currentOwner();
+  const task = currentTask();
+  const reader = owner === undefined || task === undefined ? undefined : [owner, task] as const;
+  const view = { ...opts, fallback: missed !== undefined };
+  // Only an agent's own whole read whose answer reaches it as given (an MCP
+  // tool call the omp extension marks as the model's; the CLI's may go
+  // through a pipe, and the harness's own reads never reach it) answers with
+  // changes, and only from its last snapshot of the tab, read the same way:
+  // any other snapshot of the tab ends that base.
+  const changing = reader !== undefined && verbatimCall() && fromModel() && opts.full !== true && !updates && !opts.diff
+    && !missed && opts.root === undefined && opts.query === undefined && opts.interactive !== true && opts.everyAddress !== true;
+  if (reader) lastReads.release(tab, reader, changing ? view : undefined);
   if (!updates && (missed || opts.root !== undefined || opts.query !== undefined || opts.interactive === true)) return missed ? { ...snap, note: missed } : snap;
-  const observed = snapshotHistory.observe(snap, tab, currentOwner(), { ...opts, fallback: missed !== undefined }, opts.since);
+  const observed = snapshotHistory.observe(snap, tab, owner, view, opts.since);
   if (updates) {
     // Classify the actual page, not the empty text of an unchanged update.
     const classified = withPageState("snapshot", snap, { partial: opts.root !== undefined || opts.query !== undefined || opts.interactive === true }) as typeof snap;
     return recoverSnapshot(missed ? { ...classified, note: missed } : classified, observed, missed ? "root-missed" : undefined);
   }
-  if (!opts.diff || observed.previous === undefined) return snap;
-  return { ...snap, snapshot: lineDiff(observed.previous.split("\n"), snap.snapshot.split("\n")) || "(no change)" };
+  if (opts.diff) return observed.previous === undefined ? snap : { ...snap, snapshot: lineDiff(observed.previous.split("\n"), snap.snapshot.split("\n")) || "(no change)" };
+  if (!changing) return snap;
+  const last = lastReads.observe(snap, tab, reader, view);
+  if (last.previous === undefined || Date.now() - (last.previousAt ?? 0) > CHANGES_MS || mustReadWhole(tab)) return snap;
+  const changes = lineDiff(last.previous.split("\n"), snap.snapshot.split("\n"));
+  if (changes.length * 2 > snap.snapshot.length) return snap;
+  return { ...withPageState("snapshot", snap) as typeof snap, snapshot: changes, changes: changes ? "delta" as const : "unchanged" as const };
 }
 
 // A root or selector that matches nothing in any frame reads the whole
@@ -1175,10 +1200,13 @@ async function narrowed<T>(option: "root" | "selector", value: string | undefine
 // their longest common subsequence. A link that reads "=[15]" is compared
 // and shown with the address line [15] gives: removing the first link to
 // an address changes no other line, and no line shown points at one that
-// is not.
+// is not. A line both share that read "=[15]" and now reads otherwise,
+// while [15] is still a link, comes again ("+ ") with its address: the
+// reader holds that "=[15]", and [15] may now give another address.
 export function lineDiff(before: string[], after: string[]): string {
+  const gives = new Map<string, string>();
   const a = addressed(before);
-  const b = addressed(after);
+  const b = addressed(after, gives);
   const n = a.length;
   const m = b.length;
   const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
@@ -1189,7 +1217,11 @@ export function lineDiff(before: string[], after: string[]): string {
   let i = 0;
   let j = 0;
   while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) { i++; j++; }
+    if (i < n && j < m && a[i] === b[j]) {
+      const to = pointsAt(before[i]);
+      if (to !== undefined && gives.has(to) && before[i] !== after[j]) out.push(`+ ${b[j]}`);
+      i++; j++;
+    }
     else if (i < n && (j === m || lcs[i + 1][j] >= lcs[i][j + 1])) out.push(`- ${a[i++]}`);
     else out.push(`+ ${b[j++]}`);
   }
@@ -1198,20 +1230,27 @@ export function lineDiff(before: string[], after: string[]): string {
 
 // A link's address ends its line, before its states ('[3] link "2 hours
 // ago" /item?id=1 {expanded}'), and a later link to it reads "=[3]" there
-// (content.js). The lines with each such link given the address again.
+// (content.js). The lines with each such link given the address again;
+// `gave` ends with the address each ref's link gives.
 const LINK_END = / (\S+)((?: \{[a-z, ]+\})?)$/;
-function addressed(lines: string[]): string[] {
-  const gave = new Map<string, string>();
+const POINTER = /^=\[((?:f\d+:)?\d+)\]$/;
+function addressed(lines: string[], gave = new Map<string, string>()): string[] {
   return lines.map((line) => {
     const own = /^[^[]*\[((?:f\d+:)?\d+)\] /.exec(line);
     const end = own && LINK_END.exec(line);
     if (!own || !end) return line;
-    const to = /^=\[((?:f\d+:)?\d+)\]$/.exec(end[1]);
+    const to = POINTER.exec(end[1]);
     const address = to ? gave.get(to[1]) : end[1];
     if (address === undefined) return line;
     gave.set(own[1], address);
     return to ? `${line.slice(0, end.index)} ${address}${end[2]}` : line;
   });
+}
+
+// The ref a line's link points at with "=[15]", if it does.
+function pointsAt(line: string): string | undefined {
+  const end = LINK_END.exec(line);
+  return end === null ? undefined : POINTER.exec(end[1])?.[1];
 }
 
 // A snapshot's lines that carry a ref ("[12] button ...", "h2 [3] link
@@ -2803,7 +2842,7 @@ async function withPage(result: unknown, tab: number, want: unknown): Promise<un
   return { ...(result as object), page: await snapshot({ ...read, tab: at }) };
 }
 
-export type PageRead = { query?: string; root?: string; diff?: boolean; updates?: boolean; since?: string };
+export type PageRead = { query?: string; root?: string; diff?: boolean; full?: boolean; updates?: boolean; since?: string };
 
 // An action's snapshot as a PageRead, or undefined for no read; the CLI
 // may pass true and false as words. A tool reads it before it acts, so a
@@ -2813,15 +2852,15 @@ export function pageRead(want: unknown): PageRead | undefined {
   if (want === true || want === "true") return {};
   if (typeof want === "string") return { query: want };
   if (want && typeof want === "object" && !Array.isArray(want)) {
-    const { query, root, diff, updates, since, ...rest } = want as Record<string, unknown>;
+    const { query, root, diff, full, updates, since, ...rest } = want as Record<string, unknown>;
     const other = Object.keys(rest);
-    if (other.length > 0) throw new HarnessError("invalid_argument", `snapshot takes query, root, diff, updates, and since, not ${other.join(", ")}`);
+    if (other.length > 0) throw new HarnessError("invalid_argument", `snapshot takes query, root, diff, full, updates, and since, not ${other.join(", ")}`);
     if (updates !== undefined && typeof updates !== "boolean") throw new HarnessError("invalid_argument", "snapshot updates must be true or false");
     if (since !== undefined && (typeof since !== "string" || !since.length || since.length > 256)) throw new HarnessError("invalid_argument", "snapshot since must be a retained revision");
     if (diff === true && (updates === true || since !== undefined)) throw new HarnessError("invalid_argument", "use diff or recoverable updates, not both");
-    return { query: query === undefined ? undefined : str(query, "snapshot's query"), root: root === undefined ? undefined : str(root, "snapshot's root"), diff: diff === true, ...(updates === undefined ? {} : { updates }), ...(since === undefined ? {} : { since }) };
+    return { query: query === undefined ? undefined : str(query, "snapshot's query"), root: root === undefined ? undefined : str(root, "snapshot's root"), diff: diff === true, ...(full === true ? { full: true } : {}), ...(updates === undefined ? {} : { updates }), ...(since === undefined ? {} : { since }) };
   }
-  throw new HarnessError("invalid_argument", `snapshot takes true, words, or {query, root, diff, updates, since}, not ${JSON.stringify(want)}`);
+  throw new HarnessError("invalid_argument", `snapshot takes true, words, or {query, root, diff, full, updates, since}, not ${JSON.stringify(want)}`);
 }
 
 function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<unknown>) {
@@ -3115,9 +3154,9 @@ export const TOOLS: Record<string, Tool> = {
       interactive: { type: "boolean", description: "only lines with refs" },
       save: SAVE,
     },
-    unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" }, everyAddress: { type: "boolean", description: "every link gives its address, never =[15]: a read for a file or a script" } },
+    unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" }, everyAddress: { type: "boolean", description: "every link gives its address, never =[15]: a read for a file or a script" }, full: { type: "boolean", description: "whole page, not just what changed" } },
     required: ["tab"],
-    run: saving("snapshot", async (a) => withNotes(await snapshot(a as SnapshotOptions))),
+    run: saving("snapshot", async (a) => withNotes(await snapshot({ ...a, ...(a.save ? { full: true } : {}) } as SnapshotOptions))),
   },
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
@@ -3687,7 +3726,7 @@ export function inputSchema(tool: Tool) {
   return { type: "object", properties: tool.params, ...(tool.required ? { required: tool.required } : {}) };
 }
 
-type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; documentId?: string; update?: SnapshotUpdate; challenge?: Challenge; guide?: string; notes?: string };
+type Snapshot = Shielded & { url: string; title: string; nodes: number; truncated: boolean; snapshot: string; documentId?: string; update?: SnapshotUpdate; changes?: "delta" | "unchanged"; challenge?: Challenge; guide?: string; notes?: string };
 type Incomplete = { reason: string; hint: string };
 type Raised = { type: string; message: string; answer: string | boolean | null };
 type Extract = Shielded & { url: string; title: string; text: string; truncated?: boolean; total?: number; saved?: string; incomplete?: Incomplete; harvested?: string; dialogs?: Raised[] };
@@ -3751,10 +3790,12 @@ export function formatResult(value: unknown, max = Infinity): string {
     const head = `# ${defused(String(v.title))} — ${v.url}`;
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root, raise maxNodes, or save it to a file" : "";
+      const changed = v.changes === "delta" ? "; changes since your last snapshot of this tab: - gone, + new; for the whole page, snapshot {tab, full: true}"
+        : v.changes === "unchanged" ? "; unchanged since your last snapshot of this tab; for the whole page, snapshot {tab, full: true}" : "";
       const check = v.challenge ? `challenge: ${JSON.stringify(v.challenge)}\n` : "";
       const notes = `${v.guide ? `guide: ${v.guide}\n` : ""}${v.notes ? `${v.notes}\n` : ""}`;
       const update = v.update ? `update: ${v.update.kind === "delta" ? fence(JSON.stringify(v.update)) : JSON.stringify(v.update)}\n` : "";
-      return `${head} (${v.nodes} nodes${note})\n${update}${check}${warn}${notes}${v.snapshot === "(no change)" ? v.snapshot : fence(v.snapshot)}${receiptLine(value)}`;
+      return `${head} (${v.nodes} nodes${note}${changed})\n${update}${check}${warn}${notes}${v.snapshot === "(no change)" ? v.snapshot : fence(v.snapshot)}${receiptLine(value)}`;
     }
     if (typeof v.text === "string") {
       if (typeof v.title === "string") return `${head}\n${warn}\n${fence(v.text)}${cutLine(v.text, v)}${v.incomplete ? `\n…incomplete: ${v.incomplete.reason}; ${v.incomplete.hint}` : ""}${v.harvested ? `\n…${v.harvested}` : ""}${v.dialogs?.length ? `\n…the page raised ${v.dialogs.map(raisedLine).join("; ")}` : ""}${receiptLine(value)}`;

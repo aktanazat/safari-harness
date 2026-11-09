@@ -13,7 +13,7 @@ import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { redactedLine } from "./redact.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
-import { withTask } from "./rpc.ts";
+import { verbatim, withTask } from "./rpc.ts";
 
 // This connection's own REPL session: its bindings last as long as the
 // connection runs this release, and its tabs close with it.
@@ -100,12 +100,17 @@ export function listTools(): unknown[] {
 
 const RUN_STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
 
-// A call's answer as the client reads it; a failed call throws.
+// A call's answer as the client reads it; a failed call throws. The omp
+// extension adds keys that begin __safari (omp/index.ts), and a session
+// keeps the extension it started with: one this release does not read is
+// dropped, so a later release's still calls this one after a rollback.
 export async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
-  const { __safariTask, ...input } = args;
+  const { __safariTask, __safariVerbatim } = args;
+  const input = Object.fromEntries(Object.entries(args).filter(([key]) => !key.startsWith("__safari")));
   const task = typeof __safariTask === "string" && __safariTask.trim() ? __safariTask : undefined;
   return withTask(task, async () => {
-    const value = name === "repl" ? await REPL_TOOL.run(checkCall({ repl: REPL_TOOL }, name, input, true).args) : await invoke(name, input, true);
+    const value = name === "repl" ? await REPL_TOOL.run(checkCall({ repl: REPL_TOOL }, name, input, true).args)
+      : __safariVerbatim === true ? await verbatim(() => invoke(name, input, true)) : await invoke(name, input, true);
     const answer = await replyText(value);
     const runSteps: unknown[] | undefined = name === "run" && value !== null && typeof value === "object"
       && "steps" in value && Array.isArray(value.steps) ? value.steps : undefined;

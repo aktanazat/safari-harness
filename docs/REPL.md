@@ -50,8 +50,10 @@ pending handoffs and personal pages remain protected.
 
 This identity follows every REPL run, including a named session reused by
 another helper. Reusing bindings does not reuse the previous caller's page
-ownership. The omp extension adds the reserved `__safariTask` MCP argument;
-the MCP boundary removes it before Safari validates the tool arguments.
+ownership. The omp extension adds the reserved `__safariTask` MCP argument,
+and `__safariVerbatim` to the model's own calls, not an eval cell's, when
+the current release has `daemon/mcp-marks.txt`; the MCP boundary removes
+every `__safari` argument before Safari validates the tool arguments.
 Shell commands run as written. Before each one runs, the extension saves
 its identity under the session id omp gives the command (`PI_SESSION_ID`),
 and the CLI calls the command makes, directly or through scripts, read it
