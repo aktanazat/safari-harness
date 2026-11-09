@@ -35,7 +35,7 @@ import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, typ
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
-import { partialRead, withPageState, stateLine } from "./page-state.ts";
+import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
@@ -3694,6 +3694,16 @@ function receiptLine(value: object): string {
   return "memoryReceipt" in value && value.memoryReceipt && typeof value.memoryReceipt === "object" && "id" in value.memoryReceipt ? `\nmemoryReceipt: ${String(value.memoryReceipt.id)}` : "";
 }
 
+// What open, goto, and info say of a tab, on one line, without what no
+// agent acts on: the window's name and group state (the keeper reads them
+// from the value; why it stays plain is kept) and a page state that judges
+// nothing. Printed whole, 27 opens of 11-04 to 11-08 took 104 tokens at
+// the median.
+function tabLine(value: object): string {
+  const { space, pageState, ...rest } = value as { space?: SpaceNote; pageState?: unknown };
+  return JSON.stringify({ ...rest, ...(pageState === undefined || plainState(value) ? {} : { pageState }), ...(space?.why ? { space: { group: space.group, why: space.why } } : {}) });
+}
+
 // One text form for every consumer (CLI, MCP, agent loop): trees and page
 // text stay readable instead of arriving as escaped JSON strings. max: the
 // characters a reply keeps (REPLY_CHARS), which a map's answer is fitted
@@ -3732,7 +3742,7 @@ export function formatResult(value: unknown, max = Infinity): string {
     }
     if (v.page !== undefined) {
       const { page, ...rest } = v;
-      return `${JSON.stringify(rest)}\n\n${formatResult(page)}`;
+      return `${tabLine(rest)}\n\n${formatResult(page)}`;
     }
     if (Array.isArray(v.steps)) {
       const lines = v.steps.map((s) => `[${s.step} ${s.tool}] ${s.error === undefined ? formatResult(s.value) : `error: ${s.error}`}`);
@@ -3756,6 +3766,12 @@ export function formatResult(value: unknown, max = Infinity): string {
       const earlier = v.earlier ? `(${v.earlier} earlier message${v.earlier === 1 ? "" : "s"} left out)\n` : "";
       return `# ${v.title} — ${v.url}\n${warn}${earlier}\n${v.messages.map((m) => `${m.from}: ${m.text.replaceAll("\n", "\n  ")}`).join("\n")}`;
     }
+    if (typeof v.url === "string" && typeof v.title === "string") return tabLine(value);
+    // eval's answer: the script's result, without the envelope that says it ran,
+    // unless the result carries its own ok, which would then read as a tool failure
+    const ran = value as { ok?: unknown; result?: unknown };
+    const ownOk = typeof ran.result === "object" && ran.result !== null && "ok" in ran.result;
+    if (ran.ok === true && ran.result !== undefined && !ownOk && Object.keys(ran).length === 2) return JSON.stringify(ran.result, null, 1);
   }
   return JSON.stringify(value, null, 1);
 }

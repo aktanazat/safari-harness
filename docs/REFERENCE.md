@@ -96,7 +96,8 @@ Safari is the user's everyday browser, so treat his tabs as his.
   tab group of the same name the first time the user has left the keyboard
   and mouse alone for 30 seconds; a window with fewer stays plain and closes
   with its tabs.
-  `open` says which under `space`: `group` is `waiting`,
+  `open`'s answer says which under `space` (printed only on the first open
+  that meets a reason the window stays plain; `--json` always has it): `group` is `waiting`,
   `making` (the keeper is turning it into a group now), `grouped`, or
   `plain` with `why` (the terminal lacks Accessibility permission,
   `bun run helpers` has not built scripts/spaces, or groups are off); a
@@ -300,6 +301,8 @@ output. `kind` is `content`, `login_wall`, `paywall`, `region_block`,
 `consent`, `loading`, `error`, `empty`, or `unjudged`. A title or address
 alone, an unread body, raw fetched HTML, and partial reads are not proof
 of readable content. A blank read does not prove a page is empty.
+`open`, `goto`, and `info` print their answer on one line, and leave out
+a `content` state and the plain `unjudged` one (`--json` keeps both).
 Classification uses the current returned facts, not another request or
 an access bypass. Ordinary articles discussing subscriptions or sign-in
 are not themselves walls. On a consent wall a snapshot shows, `next`
@@ -1563,7 +1566,8 @@ component in page order (Depop's price and shipping are in
 
 `eval {tab, expression}` runs JavaScript in the page; use it only when
 you know the exact code you need. Statements work, and
-the value of the last one comes back; `await` works at the top, and a
+the value of the last one comes back, printed as JSON (`--json`:
+`{ok: true, result}`); `await` works at the top, and a
 promise is awaited. A last statement that is a `try` gives the last
 value of the block that ran, `try` or `catch`. It sees the DOM;
 `page: true` runs it in the page's own world, where the site's script

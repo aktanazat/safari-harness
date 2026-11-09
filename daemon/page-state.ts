@@ -233,3 +233,10 @@ export function stateLine(value: unknown): string {
   const state = pageStateOf(record(value)?.pageState);
   return !state || state.kind === "content" || state.kind === "unjudged" ? "" : `page state: ${state.kind}; ${state.next}\n`;
 }
+
+// A state that tells the agent nothing it can act on: readable content, or
+// the plain reminder to read before judging.
+export function plainState(value: unknown): boolean {
+  const state = pageStateOf(record(value)?.pageState);
+  return !!state && (state.kind === "content" || state.next === NEXT.unjudged);
+}
