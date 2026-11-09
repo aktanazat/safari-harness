@@ -1382,9 +1382,11 @@ the part you need.
   ref whose element the page redrew as another control (another role or
   name) is refused before any event until a snapshot prints it again.
   Covered, hidden and disabled controls refuse action; a covered one names
-  up to three close controls of its cover by ref. Embedded-frame clicks
-  also check every readable containing frame. Never guess a ref, and read
-  again after an action to see what changed.
+  up to three close controls of its cover by ref. A label's own control
+  laid over it (Wikipedia's "Main menu" checkbox) is not a cover: the
+  label's click goes through. Embedded-frame clicks also check every
+  readable containing frame. Never guess a ref, and read again after an
+  action to see what changed.
 - `query` returns only the lines containing some text, such as a button label
   or a product name: the cheapest way to find one element on a long page.
   Matching ignores case and reaches into frames; a leading `(?i)` is

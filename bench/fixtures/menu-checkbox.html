@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Wikipedia's Vector 2022 skin opens a menu with a checkbox laid,
+     transparent, over the menu's label (#vector-main-menu-dropdown): the
+     snapshot names the label, and a click on it lands on the checkbox.
+     The Tools menu below has a transparent checkbox over its label that
+     is not the label's own, though it has a label of its own further
+     down. -->
+<title>Menus</title>
+<style>
+  .dropdown { position: relative; display: inline-block; margin: 20px; }
+  .dropdown > .dropdown-checkbox { position: absolute; top: 0; left: 0; z-index: 1; width: 100%; height: 100%; margin: 0; padding: 0; opacity: 0; cursor: pointer; }
+  .dropdown-label { display: inline-block; padding: 6px; border: 1px solid #a2a9b1; }
+  .icon { display: inline-block; width: 20px; height: 20px; background: #202122; }
+  .label-text { position: absolute; clip: rect(1px, 1px, 1px, 1px); width: 1px; height: 1px; margin: -1px; overflow: hidden; }
+  .dropdown-content { display: none; }
+  .dropdown-checkbox:checked ~ .dropdown-content { display: block; }
+</style>
+</head>
+<body>
+<div id="main-menu" class="dropdown" title="Main menu">
+  <input type="checkbox" id="main-menu-checkbox" role="button" aria-haspopup="true" class="dropdown-checkbox" aria-label="Main menu">
+  <label id="main-menu-label" for="main-menu-checkbox" class="dropdown-label" aria-hidden="true"><span class="icon"></span><span class="label-text">Main menu</span></label>
+  <div class="dropdown-content">
+    <a href="/wiki/Main_Page">Main page</a>
+    <a href="/wiki/Special:Random">Random article</a>
+  </div>
+</div>
+<div id="tools" class="dropdown">
+  <input type="checkbox" id="decoy" class="dropdown-checkbox" aria-label="Subscribe">
+  <label id="tools-label" for="tools-checkbox" class="dropdown-label">Tools</label>
+</div>
+<input type="checkbox" id="tools-checkbox" style="opacity:0">
+<label for="decoy">Subscribe</label>
+</body>
+</html>
