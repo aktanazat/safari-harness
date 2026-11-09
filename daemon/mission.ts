@@ -128,28 +128,54 @@ export function openMissionHistory(path: string): void {
     historyError = undefined;
     for (const record of history.list()) for (const id of record.spaces) spaceAgents.set(id, record.id);
     void history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
+    process.once("exit", flushHistory);
   } catch {
     historyError = "History could not be opened.";
     console.error("[safari-harness] mission history could not be opened");
   }
 }
 
-function remember(agent: Agent): void {
+// A call's start and end reach the file within HISTORY_FLUSH_MS, written
+// once for every agent with calls since: two writes of the whole file a call
+// held the daemon's one thread 4.7 to 9.2 ms (median of 400 calls, the
+// 448 KB history of 11-08). A crash loses at most that last stretch of
+// calls; every other change to a record is written at once.
+const HISTORY_FLUSH_MS = 500;
+const unsaved = new Set<Agent>();
+let flushing: Timer | undefined;
+
+function rememberSoon(agent: Agent): void {
+  unsaved.add(agent);
+  flushing ??= setTimeout(flushHistory, HISTORY_FLUSH_MS).unref();
+}
+
+function flushHistory(): void {
+  if (unsaved.size) remember();
+}
+
+function remember(agent?: Agent): void {
+  if (agent) unsaved.add(agent);
+  clearTimeout(flushing);
+  flushing = undefined;
+  const saving = [...unsaved];
+  unsaved.clear();
   try {
-    history.save({
-      id: agent.id, owner: agent.owner ?? null, process: agent.process ?? null,
-      since: agent.first, active: agent.last, raised: agent.raised, status: statusOf(agent),
-      ...(agent.ended === undefined ? {} : { ended: agent.ended }),
-      spaces: [...spaceAgents].filter(([, id]) => id === agent.id).map(([id]) => id),
-      pictures: agent.pictures,
-      ...(agent.inspectionOnly ? { inspectionOnly: true } : {}),
-      calls: agent.calls.map((c) => ({
+    history.save(...saving.map((a) => ({
+      id: a.id, owner: a.owner ?? null, process: a.process ?? null,
+      since: a.first, active: a.last, raised: a.raised, status: statusOf(a),
+      ...(a.ended === undefined ? {} : { ended: a.ended }),
+      spaces: [...spaceAgents].filter(([, id]) => id === a.id).map(([id]) => id),
+      pictures: a.pictures,
+      ...(a.inspectionOnly ? { inspectionOnly: true } : {}),
+      calls: a.calls.map((c) => ({
         t: c.t, tool: c.tool, tab: c.tab, ms: c.ms, code: c.code, evidence: c.evidence, picture: c.picture, failureContext: c.failureContext,
-        outcome: c.pendingNative ? agent.ended === undefined ? "running" : "interrupted" : c.ms === undefined ? "running" : c.error ? "failed" : "done",
+        outcome: c.pendingNative ? a.ended === undefined ? "running" : "interrupted" : c.ms === undefined ? "running" : c.error ? "failed" : "done",
       })),
-    });
-    const retained = new Map(history.list(agent.id)[0]?.calls.flatMap((c) => c.picture ? [[c.picture.id, c.picture] as const] : []) ?? []);
-    for (const call of agent.calls) if (call.picture) call.picture = retained.get(call.picture.id) ?? { id: call.picture.id, missing: "picture expired" };
+    })));
+    for (const a of saving) {
+      const retained = new Map(history.list(a.id)[0]?.calls.flatMap((c) => c.picture ? [[c.picture.id, c.picture] as const] : []) ?? []);
+      for (const call of a.calls) if (call.picture) call.picture = retained.get(call.picture.id) ?? { id: call.picture.id, missing: "picture expired" };
+    }
     historyError = undefined;
     void history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
   } catch {
@@ -277,7 +303,7 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
   const began = performance.now();
   let ran = false;
   const context = { agent, call, delegated: false, nested: false, trustedInspection: parent?.trustedInspection === true || tool === "video" && (args.do === undefined || args.do === "inspect"), tab: call.tab };
-  remember(agent);
+  rememberSoon(agent);
   try {
     return await scope.run(context, async () => {
       if (owner !== undefined && !completesNative(agent, tool, args)) await admit(agent, call);
@@ -301,7 +327,7 @@ export async function watched<T>(owner: number | undefined, tool: string, args: 
     agent.running.delete(call);
     agent.last = Date.now();
     if (call.error && context.tab !== undefined) call.tab = context.tab;
-    remember(agent);
+    rememberSoon(agent);
     if (call.error) void failureContextAfter(agent, call, context.tab ?? call.tab, agent.last);
     // A tab a call in flight opened after the user stopped its agent is marked
     // too: it closes with the others when the agent's turn ends.
@@ -933,6 +959,7 @@ function publicCall<T extends { tool: string; picture?: HistoryPicture }>(call: 
 }
 
 async function historyRows(url: URL): Promise<Response> {
+  flushHistory();
   const missions = history.list(url.searchParams.get("id") ?? undefined);
   await history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
   return json({ now: Date.now(), missions: missions.map((m) => ({ ...m, calls: m.calls.map((c) => publicCall(c, m.id)) })), ...(historyError ? { error: historyError } : {}) });

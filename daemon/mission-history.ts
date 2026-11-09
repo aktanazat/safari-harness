@@ -187,12 +187,13 @@ export class MissionHistory {
     return join(this.root, mission, `${id}.png`);
   }
 
-  save(value: unknown): void {
-    const entry = record(value, this.root);
-    if (!entry) throw new Error("Mission history record is invalid.");
+  save(...values: unknown[]): void {
+    const entries = values.map((value) => record(value, this.root)).filter((entry) => entry !== undefined);
+    if (entries.length !== values.length) throw new Error("Mission history record is invalid.");
     const before = this.receipts();
-    this.records = this.records.filter((r) => r.id !== entry.id);
-    this.records.push(entry);
+    const saving = new Set(entries.map((entry) => entry.id));
+    this.records = this.records.filter((r) => !saving.has(r.id));
+    this.records.push(...entries);
     this.trim();
     const kept = this.receipts();
     for (const receipt of before) if (!kept.has(receipt)) this.expired.add(receipt);

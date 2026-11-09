@@ -71,6 +71,32 @@ test.each([false, true])("restart restores inspection-only restrictions only for
   }
 });
 
+test("a burst of calls leaves the history file alone until the process exits, which writes every call", async () => {
+  const path = join(folder(), "history.json");
+  const missionUrl = new URL("./mission.ts", import.meta.url).href;
+  const script = `
+    import { statSync } from "node:fs";
+    import { openMissionHistory, watched } from ${JSON.stringify(missionUrl)};
+    openMissionHistory(${JSON.stringify(path)});
+    const before = statSync(${JSON.stringify(path)}, { throwIfNoEntry: false })?.ino ?? null;
+    for (let i = 0; i < 20; i++) await watched(undefined, "eval", {}, async () => ({ ok: true, result: i }));
+    console.log(JSON.stringify({ before, after: statSync(${JSON.stringify(path)}, { throwIfNoEntry: false })?.ino ?? null }));
+    process.exit(0);
+  `;
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const [text, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, error }).toEqual({ code: 0, error: "" });
+    const { before, after } = JSON.parse(text);
+    expect(after).toBe(before);
+    const calls = new MissionHistory(path).list().flatMap((m) => m.calls);
+    expect(calls).toHaveLength(20);
+    expect(calls.every((c) => c.tool === "eval" && c.outcome === "done")).toBe(true);
+  } finally {
+    if (child.exitCode === null) { child.kill(); await child.exited; }
+  }
+});
+
 test("durable history defaults to structural fields and drops typed values, page text, query tokens, titles, paths, and capabilities", () => {
   const path = join(folder(), "history.json");
   const history = new MissionHistory(path, () => now);
