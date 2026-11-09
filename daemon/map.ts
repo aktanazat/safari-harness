@@ -18,6 +18,7 @@ import { affectsPage } from "./lanes.ts";
 import { turnAt } from "./pace.ts";
 import { partialRead, type PageState } from "./page-state.ts";
 import { checked, keep, recall } from "./reads.ts";
+import { cutFenced, defused } from "./injection.ts";
 
 export const MAP_MAX_URLS = 20;
 const AT_ONCE = 6;
@@ -649,7 +650,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     ];
     const value = "value" in p ? p.value : undefined;
     const titled = !!value && typeof value === "object" && "title" in value;
-    const head = `${level} ${p.title && !titled ? `${p.title} — ` : ""}${p.url} (${notes.join("; ")})`;
+    const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${notes.join("; ")})`;
     const sep = i > 0 ? "\n\n" : depth > 0 ? "\n" : "";
     if (!p.ok) return rows.push({ page: p, depth, head, body: `error: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
     if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep });
@@ -695,5 +696,5 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     shares[i] = Math.min(rows[i].body.length, Math.max(0, Math.floor(room / (order.length - k))));
     room -= shares[i];
   });
-  return text(rows.map((r, i) => (shares[i] < r.body.length ? `${r.body.slice(0, shares[i])}\n…cut at ${shares[i]} of ${sizes[i].of}` : r.body)), lines);
+  return text(rows.map((r, i) => (shares[i] < r.body.length ? `${cutFenced(r.body, shares[i])}\n…cut at ${shares[i]} of ${sizes[i].of}` : r.body)), lines);
 }

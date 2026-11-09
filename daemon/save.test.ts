@@ -186,6 +186,21 @@ console.log(/the whole answer is in (\\S+):/.exec(await replyText(${JSON.stringi
   expect(readFileSync(path, "utf8").split("\n").filter((line) => line.endsWith("/item?id=599"))).toHaveLength(2);
 });
 
+// A reply past its limit ends the page's fence before its cut line, and the
+// whole answer it saves to the saved folder carries the same fence id.
+test("a reply cut at its limit ends the page's fence, and the whole answer it saved carries the same id", async () => {
+  const home = mkdtempSync(join(tmpdir(), "save-home-"));
+  homes.push(home);
+  const code = `const { replyText } = await import(${JSON.stringify(join(import.meta.dir, "tools.ts"))});
+console.log(await replyText({ url: "https://shop.example/", title: "Shop", nodes: 1, truncated: false, snapshot: "word ".repeat(10000) }));`;
+  const proc = Bun.spawn([process.execPath, "-e", code], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "inherit" });
+  const reply = await new Response(proc.stdout).text();
+  const id = /\n<<<page ([0-9a-f]{8}): /.exec(reply)?.[1];
+  expect(reply).toContain(`\n<<<end page ${id}>>>\n…cut at `);
+  const saved = /the whole answer is in (\S+):/.exec(reply)?.[1];
+  expect(readFileSync(String(saved), "utf8")).toContain(`\n<<<page ${id}: `);
+});
+
 // The daemon's folder is not the caller's; and a request that changes
 // something must not be sent for a save that cannot happen.
 test("a save path that is not absolute is refused before the page gets any request", async () => {
