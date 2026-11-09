@@ -176,6 +176,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   page it cannot read), is asked again 1, 2 and 4 minutes later, then
   every 15 minutes, until the tab closes or Safari no longer shows it. A
   close the extension's reconnect cut off goes again once it connects.
+- A harness-owned tab whose open answers after its caller timed out enters
+  the same cleanup queue. A failed close stays recorded for those retries,
+  including across a daemon restart.
 - A recoverable tab's safe HTTP(S) address is retained for five minutes
   after closure, including across daemon restarts. Addresses with a
   fragment, userinfo or a known secret in the path or query are not saved;
@@ -1099,6 +1102,10 @@ When Safari does not say which window is in front within 2.5 s, each row
 carries `partial` with the step it was at, and no `front` or `shown`: the
 list is still right, but which tab he is looking at is unknown.
 
+A tab list allows Safari up to 5 s to return its tabs, then up to 2.5 s to
+identify the front window. The daemon waits 8 s before declaring the list
+unanswered.
+
 ## close
 
 `close {tab}` (CLI `safari close <tab>`) closes a tab of yours. A finished
@@ -1636,7 +1643,10 @@ page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
 script files and inline scripts for a string or regex (an API path, an
 error message) and returns `{found: [{file, text}], searched, unread}`
 with `around` characters each side (200; `max` 20 matches), and
-`sh.wait(ms)` pauses (25 s at most). Code with quotes or several lines
+`sh.wait(ms)` pauses (25 s at most).
+Use `sh.wait(ms)` rather than a plain `setTimeout` in an owned background
+tab: it can also finish on the harness’s ticks when Safari suspends page
+timers. Code with quotes or several lines
 goes in a file: `eval {tab, file}` takes its absolute path in place of
 `expression`, and from a shell or another program `safari eval --file
 path` (or pipe it in), instead of escaping it onto one line; `--save

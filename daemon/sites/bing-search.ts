@@ -36,7 +36,7 @@ const COLLECT = `(async () => {
     const n = document.querySelectorAll("#b_results > li.b_algo").length;
     if (n !== last) { last = n; since = Date.now(); }
     else if (n > 0 && Date.now() - since > 1500) break;
-    await new Promise((r) => setTimeout(r, 150));
+    await (typeof sh === "undefined" ? new Promise((r) => setTimeout(r, 150)) : sh.wait(150));
   }
   const text = document.body ? document.body.innerText : "";
   const out = { url: location.href, captcha: !!document.querySelector("#b_captcha, .b_captcha") || /One last step|solve the challenge below|verify you are a human/i.test(text), results: [] };

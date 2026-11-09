@@ -27,6 +27,7 @@ import { note } from "./journal.ts";
 import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
+import { currentOwner, currentTask } from "./owner.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -111,10 +112,9 @@ const RELOADED_MS = 30000;
 // kept its socket open, and eight reloads in 50 minutes each went unheard.
 const IGNORED_FIX = "quit Safari and open it again (History > Reopen All Windows brings its windows back), or in Safari > Settings > Extensions turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
 
-// How long a tabs.list waits when its caller sets no limit: the extension
-// answers one within 2.5 s with what it has by then (background.js), and on
-// 10-13 map's opens each waited 30 s on one that never came.
-const LIST_MS = 5000;
+// The extension allows 5 s for tabs.query, then 2.5 s for the front window.
+// Wait past that bound so a partial list is not mistaken for a stuck link.
+const LIST_MS = 8000;
 
 // A request the extension did not answer within its limit, from a slow
 // Safari as from a stuck extension: an open goes on without the tab list
@@ -259,7 +259,8 @@ type Pending = {
 // limit: one, or each tabs.list caller that shared it (JOIN_MS). It ends
 // unanswered once the last of them gives up; ms is the longest limit, and
 // latencyKey what its answer's time counts under (a relay by its page op).
-type Asked = { id: string; op: string; latencyKey: string; detail: Record<string, unknown>; sock: ExtSocket; sent: number; epoch: number; ms: number; waiters: Set<Waiter>; opens?: unknown[] };
+type Opening = { args: unknown[]; owner?: number; task?: string };
+type Asked = { id: string; op: string; latencyKey: string; detail: Record<string, unknown>; sock: ExtSocket; sent: number; epoch: number; ms: number; waiters: Set<Waiter>; opens?: Opening };
 type Waiter = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer };
 
 // One kind of request's timeouts in a row on the connected extension: how
@@ -301,7 +302,7 @@ export class Bridge {
   private seq = 0;
   private pending = new Map<string, Pending>();
   // Opens no one waits on any longer (OPENS), until their late answer.
-  private abandoned = new Map<string, { op: string; args: unknown[]; sock: ExtSocket }>();
+  private abandoned = new Map<string, Opening & { op: string; sock: ExtSocket }>();
   private ticker: Timer | undefined;
   private waiting = new Set<() => void>(); // requests waiting for a socket, and a reload for the next one
   // Sockets that opened while another was connected, each waiting to learn
@@ -338,7 +339,7 @@ export class Bridge {
   public onMemory: (tab: number, url: string, revision: number) => void = () => {};
   public onConnect: () => void = () => {};
   public onDrop: (drop: { cause: DropCause; code?: number; lost: number }) => void = () => {};
-  public onLateOpen: (op: string, args: unknown[], value: unknown) => void = () => {};
+  public onLateOpen: (op: string, args: unknown[], value: unknown, context: Pick<Opening, "owner" | "task">) => void = () => {};
 
   constructor(private readonly aliveMs = ALIVE_MS) {}
 
@@ -510,7 +511,7 @@ export class Bridge {
       const gave = this.abandoned.get(key);
       if (!gave) return;
       this.abandoned.delete(key);
-      if (gave.sock === from && from === this.sock && msg.error === undefined) this.onLateOpen(gave.op, gave.args, msg.value);
+      if (gave.sock === from && from === this.sock && msg.error === undefined) this.onLateOpen(gave.op, gave.args, msg.value, gave);
       return;
     }
     this.pending.delete(key);
@@ -671,7 +672,7 @@ export class Bridge {
     }
     const id = `d${++this.seq}`;
     const relay = op === "relay";
-    const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set(), ...(Object.hasOwn(OPENS, op) ? { opens: args } : {}) };
+    const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set(), ...(Object.hasOwn(OPENS, op) ? { opens: { args, owner: currentOwner(), task: currentTask() } } : {}) };
     const each = (settle: (w: Waiter) => void) => {
       for (const w of asked.waiters) {
         clearTimeout(w.timer);
@@ -736,7 +737,7 @@ export class Bridge {
   // (ask), and stuck a while, the extension is asked to reload itself.
   private unanswered(asked: Asked) {
     this.pending.delete(asked.id);
-    if (asked.opens) this.abandoned.set(asked.id, { op: asked.op, args: asked.opens, sock: asked.sock });
+    if (asked.opens) this.abandoned.set(asked.id, { ...asked.opens, op: asked.op, sock: asked.sock });
     const now = Date.now();
     note("timeout", { op: asked.op, ...asked.detail, ms: asked.ms });
     if (asked !== this.listing) this.epoch++;

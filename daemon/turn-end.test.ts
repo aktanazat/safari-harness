@@ -118,7 +118,7 @@ test("a turn end Safari does not answer fails as JSON, and its agent's tab close
   const res = await post("/turn-end", { owner: process.pid, prepared });
   const body = await res.text();
   expect(res.status).toBe(503);
-  expect(JSON.parse(body)).toEqual({ ok: false, error: "extension request tabs.list timed out after 5000ms" });
+  expect(JSON.parse(body)).toEqual({ ok: false, error: expect.stringContaining("extension request tabs.list timed out") });
   expect(closed).not.toContain(tab);
   // the extension reloads, as the daemon has a stuck one do (bridge.ts)
   silent = false;
