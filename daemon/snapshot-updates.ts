@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export type SnapshotView = { root?: string; query?: string; maxNodes?: number; showHidden?: boolean; interactive?: boolean };
+export type SnapshotView = { root?: string; query?: string; maxNodes?: number; showHidden?: boolean; interactive?: boolean; everyAddress?: boolean };
 type SnapshotPage = { url: string; snapshot: string; documentId?: string };
 type Baseline = SnapshotPage & { key: string; tab: number; revision: string; bytes: number };
 export type SnapshotObservation = { revision: string; previous?: string; base?: Baseline; reason: string };

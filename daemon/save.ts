@@ -20,13 +20,15 @@ export type Target = { path: string } | { dir: string };
 // A saved read goes to a file, not into a model's context, so it is read
 // far past the limit a reply keeps to. One message between the extension
 // and the daemon carries it: an answer past MESSAGE_MAX (bridge.ts) fails
-// its call, and a character can take 3 bytes.
+// its call, and a character can take 3 bytes. A file is searched line by
+// line, so a saved snapshot's every link gives its address, never "=[15]"
+// (content.js).
 export const SAVED_CHARS = 2_000_000;
-const LIMITS: Record<SaveKind, Record<string, number>> = {
+const LIMITS: Record<SaveKind, Record<string, number | boolean>> = {
   extract: { maxBytes: SAVED_CHARS },
   fetch: { maxBytes: SAVED_CHARS },
   authenticated_read: { maxBytes: SAVED_CHARS },
-  snapshot: { maxNodes: 10_000 },
+  snapshot: { maxNodes: 10_000, everyAddress: true },
   eval: {},
 };
 

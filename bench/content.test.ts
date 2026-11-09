@@ -1310,4 +1310,19 @@ benchRows("content.js in WebKit", [
       { op: "click", args: ['a[href="/apply/frm?0000"]'], answer: { error: expect.stringMatching(/^nothing on the page matches/) } },
     ],
   },
+  // On 11-09 a quarter of spiegel.de's snapshot was addresses a line above
+  // had already given: a teaser's picture, title, and kicker link alike.
+  {
+    name: "a link to the address a line above gave reads that line's ref, still acts on its own element, and a query's lines and a read for a file keep the address",
+    page: "repeat-links.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('[3] link "2 hours ago" /item?id=1\n[4] link "30 comments" =[3]\n[5] link "Story two" https://example.org/two\n87 points by\n[6] link "ada" =[2]\n') } } },
+      // the same path under different long queries: the cut prints them alike
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('[9] link "Free Shipping" /s?…\n  [10] link "Get It Tomorrow" /s?…') } } },
+      { op: "click", args: ["4"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Opened 30 comments") } } },
+      { op: "snapshot", args: [{ query: "item?id=1" }], answer: { value: { snapshot: '[3] link "2 hours ago" /item?id=1\n[4] link "30 comments" /item?id=1' } } },
+      { op: "snapshot", args: [{ everyAddress: true }], answer: { value: { snapshot: expect.stringContaining('[3] link "2 hours ago" /item?id=1\n[4] link "30 comments" /item?id=1\n') } } },
+    ],
+  },
 ]);

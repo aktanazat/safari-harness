@@ -110,6 +110,18 @@ test("page.snapshot reads the page as snapshot(page) does", async () => {
   expect(await repl.run("await openTab('https://example.com')\nconst snap = await page.snapshot()\nsnap.tree")).toEqual({ output: "title: Example\nurl: https://example.com\nheading \"Example\"" });
 });
 
+// A script filters a tree's lines, and output past 10,000 characters is
+// saved for grep: a line it keeps names where its link goes.
+test("a script's tree gives every link's address, not the ref of a line that gave it", async () => {
+  const invoke = async (tool: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (tool === "open") return { id: 7, url: "https://news.example/", title: "News" };
+    if (tool === "snapshot") return { url: "https://news.example/", title: "News", truncated: false, snapshot: `[3] link "2 hours ago" /item?id=1\n[4] link "30 comments" ${args.everyAddress === true ? "/item?id=1" : "=[3]"}` };
+    return { ok: true };
+  };
+  const repl = new ReplSession("test", { cwd: mkdtempSync(join(tmpdir(), "repl-test-")), invoke });
+  expect(await repl.run("const news = await openTab('https://news.example/')\nconst { tree } = await snapshot(news)\ntree.split('\\n').find((line) => line.includes('30 comments'))")).toEqual({ output: '[4] link "30 comments" /item?id=1' });
+});
+
 test("page.fill types the text into the target it names", async () => {
   const { repl, calls } = session();
   await repl.run("await openTab('https://example.com')\nawait page.fill('#email', 'a@b.c')");
