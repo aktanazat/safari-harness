@@ -1603,20 +1603,25 @@ async function handle(msg) {
       return result.value;
     }
     case "tabs.list": {
-      const tabs = await bounded(api.tabs.query({}), "tabs.query", Date.now() + 2 * LIST_MS);
-      // Every window has an active tab; front is the one in the window the
-      // user had in front last, the tab tab: "front" names. shown is the one
-      // Safari shows in front, which may be in an agent window an agent raised.
-      // Past LIST_MS the tabs go without either, each partial with the phase
-      // Safari did not answer (see LIST_MS).
+      // Every window has an active tab, as Safari answers this list; front is
+      // the one in the window the user had in front last, the tab tab: "front"
+      // names. shown is the one Safari shows in front, which may be in an
+      // agent window an agent raised. Past LIST_MS the tabs go without either,
+      // each partial with the phase Safari did not answer (see LIST_MS).
+      const [, actives] = await Promise.all([tabsKnown(), bounded(api.tabs.query({ active: true }), "tabs.query", Date.now() + 2 * LIST_MS)]);
       const until = Date.now() + LIST_MS;
       const fronts = await Promise.all([frontWindow(false, until), frontWindow(true, until)]).then(([focused, shown]) => ({ focused, shown }), (e) => {
         if (!e.phase) throw e;
         return { partial: e.phase };
       });
-      return tabs
-        .filter((t) => t.id !== undefined)
-        .map((t) => ({ id: t.id, url: t.url, title: t.title, active: !!t.active, windowId: t.windowId, ...(fronts.partial ? { partial: fronts.partial } : {}), ...(t.active && t.windowId === fronts.focused ? { front: true } : {}), ...(t.active && t.windowId === fronts.shown ? { shown: true } : {}) }));
+      const tabs = new Map([...tabRows].map(([id, { tab }]) => [id, tab]));
+      const active = new Set();
+      for (const t of actives) {
+        if (t.id === undefined) continue;
+        tabs.set(t.id, t);
+        active.add(t.id);
+      }
+      return [...tabs.values()].map((t) => ({ id: t.id, url: t.url, title: t.title, active: active.has(t.id), windowId: t.windowId, ...(fronts.partial ? { partial: fronts.partial } : {}), ...(active.has(t.id) && t.windowId === fronts.focused ? { front: true } : {}), ...(active.has(t.id) && t.windowId === fronts.shown ? { shown: true } : {}) }));
     }
     case "tabs.open": {
       // owned: the daemon may close it, and its dialogs are answered here
@@ -2095,13 +2100,102 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 // OAuth consent tab an agent had raised (activate) closed as its turn
 // ended while he was authorizing in it, its callback with it (01a10ea8).
 async function inFront(tabId) {
-  const t = await api.tabs.get(tabId);
-  if (!t.active) return false;
-  // a front Safari cannot tell in time counts as his: the tab stays
+  // what Safari cannot tell in time counts as his: the tab stays
   const until = Date.now() + LIST_MS;
-  return Promise.all([frontWindow(false, until), frontWindow(true, until)]).then(([his, shown]) => t.windowId === his || t.windowId === shown, (e) => {
+  return bounded(api.tabs.get(tabId), "tabs.get", until).then(async (t) => {
+    if (!t.active) return false;
+    const [his, shown] = await Promise.all([frontWindow(false, until), frontWindow(true, until)]);
+    return t.windowId === his || t.windowId === shown;
+  }).catch((e) => {
     if (!e.phase) throw e;
     return true;
+  });
+}
+
+// ---------- Safari's tabs ----------
+// The tab list, the window in front, and whether a request's tab id names
+// an open tab come from Safari's tab events, kept here, not from asking
+// Safari each time: Safari answers the extension's calls in between the
+// pages it loads. On 11-07 and 11-08 the daemon gave up on 470 tab lists,
+// each of which asked Safari for every tab, then twice for its windows and
+// twice for the one focused last; of those calls Safari took 2 s or more
+// over, tabs.query took 3.4 s at the median (58 s at most), the window
+// calls 3.5 s. Which tab is active is not kept: WebKit drops an activation
+// it hears before the tab is open, and moves a tab to another window
+// without one, so a tab list asks Safari for the active tabs, and an idle
+// close for its tab. Every tab is read from Safari when first needed (a
+// page that starts, as one does after a reload, knows none), once an event
+// tells part of a tab no read had (one Safari swapped in, onReplaced), and
+// once the last read Safari answered was asked REFRESH_MS ago. A tab list
+// waits for that read and fails if Safari does not answer it within
+// 2 * LIST_MS, so a list misses a change no event told of for REFRESH_MS
+// at most. A read takes in each tab Safari answers, but not one an event
+// told of since the read was asked, which is newer, nor one that left
+// every window meanwhile.
+const REFRESH_MS = 10_000;
+let tabRows = new Map(); // tabId -> { tab, told }: the tab as last told, at event number told, or a read asked then
+let tabEvents = 0;
+let tabsMissing = true; // no read yet, or an event named a tab no read had
+let tabsFilling = null; // the read that fills them in, while it runs
+let readAt = -Infinity; // when the last read Safari answered was asked
+const goneMeanwhile = new Set(); // tabs that left every window while it ran
+
+function readTabs() {
+  const asked = tabEvents;
+  const at = Date.now();
+  return bounded(api.tabs.query({}), "tabs.query", at + 2 * LIST_MS).then((tabs) => {
+    const rows = new Map();
+    for (const t of tabs) {
+      if (t.id === undefined || goneMeanwhile.has(t.id)) continue;
+      const row = tabRows.get(t.id);
+      rows.set(t.id, row && row.told > asked ? row : { tab: t, told: asked });
+    }
+    for (const [id, row] of tabRows) if (row.told > asked && !rows.has(id)) rows.set(id, row);
+    tabRows = rows;
+    readAt = at;
+  }).finally(() => goneMeanwhile.clear());
+}
+
+// Settles once tabRows holds every tab, as Safari had them REFRESH_MS ago
+// or since, reading them first if it may not.
+function tabsKnown() {
+  if (!tabsFilling && (tabsMissing || Date.now() - readAt >= REFRESH_MS)) {
+    tabsMissing = false;
+    tabsFilling = readTabs().catch((e) => {
+      tabsMissing = true;
+      throw e;
+    }).finally(() => {
+      tabsFilling = null;
+    });
+  }
+  return tabsFilling ?? Promise.resolve();
+}
+
+// What an event tells of a tab: all of it (whole), or a change to one read.
+function tellTab(id, change, whole = false) {
+  const row = tabRows.get(id);
+  if (!row && !whole) {
+    tabsMissing = true;
+    return;
+  }
+  tabRows.set(id, { tab: { ...row?.tab, ...change, id }, told: ++tabEvents });
+}
+
+// A tab closed, swapped for another, or moved out of every open window,
+// which WebKit tells as attached to none.
+function dropTab(id) {
+  tabRows.delete(id);
+  if (tabsFilling) goneMeanwhile.add(id);
+}
+
+api.tabs.onCreated.addListener((t) => tellTab(t.id, t, true));
+api.tabs.onUpdated.addListener((id, info, t) => tellTab(id, { ...t, ...info }, typeof t?.windowId === "number"));
+api.tabs.onAttached.addListener((tabId, { newWindowId }) => (newWindowId === api.windows.WINDOW_ID_NONE ? dropTab(tabId) : tellTab(tabId, { windowId: newWindowId })));
+api.tabs.onRemoved.addListener((id) => dropTab(id));
+if (api.tabs.onReplaced) {
+  api.tabs.onReplaced.addListener((added, removed) => {
+    dropTab(removed);
+    tellTab(added, {});
   });
 }
 
@@ -2126,7 +2220,7 @@ async function inFront(tabId) {
 let adopted = null;
 
 async function resolveTab(tabId) {
-  if (await api.tabs.get(tabId).then(() => true, () => false)) return tabId;
+  if (tabRows.has(tabId) || await api.tabs.get(tabId).then(() => true, () => false)) return tabId;
   adopted ??= adopt();
   return (await adopted).tabs[tabId] ?? tabId;
 }
@@ -2284,17 +2378,16 @@ api.windows.onRemoved.addListener((id) => {
 async function frontWindow(agents, until = Date.now() + LIST_MS) {
   // Right after a reload, the lists hold the old ids until adopt maps them.
   if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
-  const [, open, last] = await Promise.all([
-    bounded(listsChanged, "window lists", until),
-    bounded(api.windows.getAll(), "windows.getAll", until),
-    bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
-      if (e.phase) throw e;
-      return undefined;
-    }),
-  ]);
+  await Promise.all([bounded(listsChanged, "window lists", until), bounded(tabsKnown(), "tabs.query", until)]);
   const { focusOrder, agentWindows } = windowLists;
-  const ids = new Set(open.map((w) => w.id));
-  return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));
+  const ids = new Set([...tabRows.values()].map(({ tab }) => tab.windowId));
+  const fits = (id) => ids.has(id) && (agents || !agentWindows.includes(id));
+  if (focusOrder.some(fits)) return focusOrder.find(fits);
+  const last = await bounded(api.windows.getLastFocused(), "windows.getLastFocused", until).then((w) => w.id, (e) => {
+    if (e.phase) throw e;
+    return undefined;
+  });
+  return [last, ...ids].find(fits);
 }
 
 // ---------- tabs agents work in ----------

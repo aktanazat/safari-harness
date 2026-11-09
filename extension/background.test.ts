@@ -131,6 +131,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const actives = new Map<number, number>();
   let focused = 1;
   let focusRead: { entered: () => void; wait: Promise<void> } | undefined;
+  let tabsRead: { entered: () => void; wait: Promise<void> } | undefined;
   // Each window's size, once one is set.
   const sizes = new Map<number, { width: number; height: number }>();
   // What Safari shows at each address the harness opens a tab on or loads
@@ -141,6 +142,9 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const served = new Map<string, Headers>();
   // Every address the extension fetched, in order.
   const fetched: string[] = [];
+  // Each call the extension made to Safari for its tabs and windows
+  // (tabs.get, tabs.query, windows.getAll, windows.getLastFocused), in order.
+  const asked: string[] = [];
   const onMessage = new Hook<[unknown, Sender]>();
   const onUpdated = new Hook<[number, { status?: string; url?: string }, { url: string }]>();
   const onActivated = new Hook<[{ tabId: number; windowId: number }]>();
@@ -148,10 +152,12 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   const onRemoved = new Hook<[number, { windowId: number; isWindowClosing: boolean }?]>();
   const heldCloses = new Set<number>();
   let picture: () => string | Promise<string> = () => `data:image/png;base64,${rasterData(rasterImage(8, 6, () => 9))}`;
-  // Safari stops answering windows.getAll (stallWindows), or the extension's
-  // local storage (stallStorage), or its first reads of one key (unread),
-  // or refuses every write to it (refuseWrites).
+  // Safari stops answering its window calls (stallWindows), or its reads of
+  // one tab (stallTabGets), or the extension's local storage (stallStorage),
+  // or its first reads of one key (unread), or refuses every write to it
+  // (refuseWrites).
   let windowsStalled = false;
+  let tabGetsStalled = false;
   let storageStalled = false;
   let writesRefused = false;
   let unreadLeft = unread?.times ?? 1;
@@ -239,16 +245,27 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       onCreated: hook(),
       onAttached: hook(),
       onReplaced: hook(),
-      get: async (id: number) => row(tabOf(id)),
-      // what Safari finds for a filter on active and windowId
-      query: async (q: { active?: boolean; windowId?: number } = {}) => [...tabs.values()].map(row).filter((t) => t.active === (q.active ?? t.active) && t.windowId === (q.windowId ?? t.windowId)),
+      get: async (id: number) => {
+        asked.push("tabs.get");
+        return tabGetsStalled ? never() : row(tabOf(id));
+      },
+      // what Safari finds for a filter on active and windowId, as it had them
+      // when asked: an answer it holds (holdTabsRead) comes late, unchanged
+      query: async (q: { active?: boolean; windowId?: number } = {}) => {
+        asked.push("tabs.query");
+        const found = [...tabs.values()].map(row).filter((t) => t.active === (q.active ?? t.active) && t.windowId === (q.windowId ?? t.windowId));
+        const held = tabsRead;
+        tabsRead = undefined;
+        if (held) { held.entered(); await held.wait; }
+        return found;
+      },
       // A tab the harness opens. Safari may tell of a tab before the call
       // that made it answers; here it always does, makeMs on.
       create: async ({ url, windowId = 1 }: { url: string; windowId?: number }) => {
         await made();
         const tab = { id: nextTab++, doc: pages.get(url) ?? new Doc(url), window: windowId };
         tabs.set(tab.id, tab);
-        browser.tabs.onCreated.fire({ id: tab.id, windowId });
+        browser.tabs.onCreated.fire(row(tab));
         if (!tab.doc.shut) copyIn(tab, tab.doc);
         return row(tab);
       },
@@ -332,17 +349,20 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       onRemoved: hook(),
       WINDOW_ID_NONE: -1,
       // A window the harness opens on a page, told of as tabs.create's is,
-      // or one a tab moves out to.
+      // or one a tab moves out to: Safari shows the tab there, its window's
+      // only one, and tells only that it moved (WebKit's didMoveTab).
       create: async ({ url, tabId }: { url?: string; tabId?: number }) => {
         await made();
         if (tabId !== undefined) {
           const moved = tabOf(tabId);
           moved.window = nextWindow++;
+          actives.set(moved.window, tabId);
+          browser.tabs.onAttached.fire(tabId, { newWindowId: moved.window, newPosition: 0 });
           return { id: moved.window, tabs: [row(moved)] };
         }
         const tab = { id: nextTab++, doc: new Doc(url ?? ""), window: nextWindow++ };
         tabs.set(tab.id, tab);
-        browser.tabs.onCreated.fire({ id: tab.id, windowId: tab.window });
+        browser.tabs.onCreated.fire(row(tab));
         copyIn(tab, tab.doc);
         return { id: tab.window, tabs: [row(tab)] };
       },
@@ -351,8 +371,13 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
         return { id, ...sizes.get(id) };
       },
       get: async (id: number) => ({ id }),
-      getAll: async () => (windowsStalled ? never() : [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) }))),
+      getAll: async () => {
+        asked.push("windows.getAll");
+        return windowsStalled ? never() : [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) }));
+      },
       getLastFocused: async () => {
+        asked.push("windows.getLastFocused");
+        if (windowsStalled) return never();
         const held = focusRead;
         focusRead = undefined;
         if (held) { held.entered(); await held.wait; }
@@ -416,6 +441,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     localReads,
     jar,
     fetched,
+    asked,
     sockets,
     // Safari takes ms to make each tab or window the harness asks for.
     slowMakes(ms: number) {
@@ -495,9 +521,26 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       const tab = { id: nextTab++, doc: new Doc(blank ? "" : "https://example.com/popup"), window };
       tab.doc.shut = blank;
       tabs.set(tab.id, tab);
-      browser.tabs.onCreated.fire({ id: tab.id, windowId: window, ...(opener ? { openerTabId: opener.id } : {}) });
+      browser.tabs.onCreated.fire({ ...row(tab), ...(opener ? { openerTabId: opener.id } : {}) });
       if (!blank) copyIn(tab, tab.doc);
       return tab;
+    },
+    // A tab Safari opens in front: it shows the tab before it tells of it,
+    // so onCreated says the tab is active and no onActivated follows
+    // (WebKit's didActivateTab drops one it hears before the tab is open).
+    openInFront(url: string, window = 1): Tab {
+      const tab = { id: nextTab++, doc: new Doc(url), window };
+      tabs.set(tab.id, tab);
+      actives.set(window, tab.id);
+      browser.tabs.onCreated.fire(row(tab));
+      copyIn(tab, tab.doc);
+      return tab;
+    },
+    // A tab leaves every open window, which WebKit tells as attached to
+    // none (didMoveTab).
+    leaveWindows(tab: Tab) {
+      tabs.delete(tab.id);
+      browser.tabs.onAttached.fire(tab.id, { newWindowId: -1, newPosition: 0 });
     },
     // The page in tab says a tab it opens is coming (content.js).
     announce(tab: Tab) {
@@ -515,10 +558,17 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       if (withWindow) browser.windows.onRemoved.fire(tab.window ?? 1);
     },
     stallWindows() { windowsStalled = true; },
+    stallTabGets() { tabGetsStalled = true; },
     holdFocusRead() {
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       focusRead = { entered: entered.resolve, wait: release.promise };
+      return { entered: entered.promise, release: release.resolve };
+    },
+    holdTabsRead() {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      tabsRead = { entered: entered.resolve, wait: release.promise };
       return { entered: entered.promise, release: release.resolve };
     },
     stallStorage() { storageStalled = true; },
@@ -1601,20 +1651,128 @@ test("a page that answered nothing fails the next request to it within a second 
 });
 
 // 10-13 and 10-16: tab lists came in storms, each waiting out the daemon's
-// limit.
+// limit. The front window is the one he focused last that has a tab; Safari
+// is asked only when he focused none.
 test("a tab list whose front window Safari will not tell answers within its limit, its tabs marked partial, and a close leaves the tab", async () => {
   const b = await start();
   const tab = b.open("https://example.com/");
   await b.own(tab);
-  b.focus(tab);
+  await b.request("tabs.select", [tab.id]);
   b.stallWindows();
   const listed = b.request("tabs.list", []);
   const closed = b.request("tabs.close", [tab.id, "idle"]);
   await b.clock.advance(2500);
   expect([await listed, await closed]).toEqual([
-    { value: [{ id: tab.id, url: "https://example.com/", title: "", active: true, windowId: 1, partial: "windows.getAll" }] },
+    { value: [{ id: tab.id, url: "https://example.com/", title: "", active: true, windowId: 1, partial: "windows.getLastFocused" }] },
     { value: { ok: false, front: true } },
   ]);
+});
+
+// 11-07 and 11-08: the daemon gave up on 470 tab lists while Safari was slow
+// to answer the extension, which asked it five times for each list and once
+// more for the tab of each request.
+test("once its tabs are read, a tab list asks Safari only which tabs are active, and a request to an open tab asks it nothing", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  b.focus(tab);
+  await b.request("tabs.list", []);
+  b.asked.length = 0;
+  expect((await b.request("tabs.list", [])).value).toEqual([{ id: tab.id, url: "https://example.com/", title: "", active: true, windowId: 1, front: true, shown: true }]);
+  expect((await b.ask(tab, "tabInfo")).value).toEqual({ url: "https://example.com/" });
+  expect(b.asked).toEqual(["tabs.query"]);
+});
+
+// Safari tells no event of some changes; a read of every tab shows them.
+test("a tab list once the last read of every tab is 10 s old waits for Safari's next read and lists what it has", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  const tab = b.open("https://example.com/a");
+  b.focus(his);
+  await b.request("tabs.list", []);
+  b.swap(tab, new Doc("https://example.com/b"));
+  await b.clock.advance(10_000);
+  const held = b.holdTabsRead();
+  const listed = b.request("tabs.list", []);
+  await held.entered;
+  await b.clock.advance(3400);
+  held.release();
+  expect(((await listed).value as { id: number; url: string }[]).find((t) => t.id === tab.id)?.url).toBe("https://example.com/b");
+});
+
+// 09-28: an agent read his MyChart page. A tab Safari opens in front may
+// never be told active, and the tab he left never told inactive.
+test("a tab Safari opens in front, telling only that it was made active, is his front tab, and the tab he left is not", async () => {
+  const b = await start();
+  const left = b.open("https://mychart.example/results");
+  b.focus(left);
+  await b.request("tabs.list", []);
+  const opened = b.openInFront("https://example.org/new");
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { id: number; front?: true }[]).filter((t) => t.front).map((t) => t.id)).toEqual([opened.id]);
+});
+
+// 10-05: an OAuth consent tab closed as he authorized in it. A tab moved to
+// a window of its own is shown there with no word that it is active.
+test("an idle close leaves an owned tab moved to a window of its own while that window is in front", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.focus(his);
+  const tab = b.open("https://accounts.example/consent");
+  await b.own(tab);
+  await b.request("tabs.list", []);
+  const sized = b.request("window", [tab.id, { width: 800, height: 600 }, false]);
+  await b.clock.advance(0);
+  expect((await sized).value).toMatchObject({ ok: true, windowId: tab.window });
+  b.focus(tab);
+  const closed = b.request("tabs.close", [tab.id, "idle"]);
+  await b.clock.advance(3000);
+  expect(await closed).toEqual({ value: { ok: false, front: true } });
+});
+
+test("an idle close leaves its tab while Safari does not say in time whether the tab is in front", async () => {
+  const b = await start();
+  const tab = b.open("https://accounts.example/consent");
+  await b.own(tab);
+  await b.request("tabs.list", []);
+  b.stallTabGets();
+  const closed = b.request("tabs.close", [tab.id, "idle"]);
+  await b.clock.advance(2500);
+  expect(await closed).toEqual({ value: { ok: false, front: true } });
+});
+
+test("a tab that leaves every open window is not listed", async () => {
+  const b = await start();
+  const gone = b.open("https://example.com/a");
+  const kept = b.open("https://example.com/c");
+  b.focus(gone);
+  await b.request("tabs.list", []);
+  b.leaveWindows(gone);
+  b.focus(kept);
+  expect(((await b.request("tabs.list", [])).value as { id: number }[]).map((t) => t.id)).toEqual([kept.id]);
+});
+
+// Safari answers a read of every tab with the tabs it had when asked: one
+// he closed before the answer came is gone.
+test("a tab he closes while Safari reads every tab is not listed", async () => {
+  const b = await start();
+  const kept = b.open("https://example.com/");
+  const closed = b.open("https://example.org/");
+  const held = b.holdTabsRead();
+  const listed = b.request("tabs.list", []);
+  await held.entered;
+  b.close(closed);
+  held.release();
+  expect(((await listed).value as { id: number }[]).map((t) => t.id)).toEqual([kept.id]);
+});
+
+// A tab an agent opened for him leaves the agent's window for one of its own
+// (tabs.detach); Safari tells of the move (onAttached).
+test("a tab moved to a window of its own is listed in that window", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  await b.request("tabs.list", []);
+  expect(await b.request("tabs.detach", [tab.id, 1])).toEqual({ value: { ok: true } });
+  expect(((await b.request("tabs.list", [])).value as { id: number; windowId: number }[]).map((t) => [t.id, t.windowId])).toEqual([[tab.id, tab.window]]);
 });
 
 // 10-20: Safari left the extension's local storage unanswered past 2.5 s,
