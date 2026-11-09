@@ -1,5 +1,4 @@
-import Ajv, { type ValidateFunction } from "ajv";
-import Ajv2020 from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv";
 import { createHash, randomUUID } from "node:crypto";
 
 export type SiteActionBinding = Readonly<{ tab: number; origin: string; document: string; frame: 0 }>;
@@ -67,7 +66,7 @@ function stable(value: unknown): unknown {
   if (!record(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
 }
-function compile(inputSchema: Record<string, unknown>): ValidateFunction {
+async function compile(inputSchema: Record<string, unknown>): Promise<ValidateFunction> {
   const check = (node: unknown) => {
     if (!record(node)) return;
     for (const [name, value] of Object.entries(node)) {
@@ -87,9 +86,11 @@ function compile(inputSchema: Record<string, unknown>): ValidateFunction {
   check(inputSchema);
   const dialect = inputSchema.$schema;
   if (dialect !== undefined && dialect !== "https://json-schema.org/draft/2020-12/schema" && dialect !== "http://json-schema.org/draft-07/schema#" && dialect !== "https://json-schema.org/draft-07/schema") throw new Error("unsupported JSON Schema dialect");
+  // Loaded here, not at the top: ajv took 30 ms of each safari command's
+  // start, and only this rarely used tool compiles a schema.
+  const Validator = dialect === "https://json-schema.org/draft/2020-12/schema" ? (await import("ajv/dist/2020.js")).default : (await import("ajv")).default;
   try {
-    const validator = dialect === "https://json-schema.org/draft/2020-12/schema" ? new Ajv2020(schemaOptions) : new Ajv(schemaOptions);
-    return validator.compile(inputSchema);
+    return new Validator(schemaOptions).compile(inputSchema);
   } catch {
     throw new Error("site action schema is invalid or unsupported");
   }
@@ -192,7 +193,7 @@ export class SiteActions {
     if (!record(raw) || raw.status !== "available" || raw.revision !== catalog.pageRevision || raw.name !== selection.name) throw new Error("site action schema changed or is unavailable");
     const inputSchema = boundedJSON(raw.inputSchema);
     if (!record(inputSchema)) throw new Error("site action schema must be an object");
-    const item = { inputSchema, validate: compile(inputSchema) };
+    const item = { inputSchema, validate: await compile(inputSchema) };
     catalog.schemas.set(selection.name, item);
     return { catalog, ...item };
   }

@@ -10,8 +10,9 @@ import { listTools } from "./mcp-tools.ts";
 // the modules of the repl (node:vm and the site kits), agent sessions,
 // guides, or launchd and its watch routines: loaded by every command, they
 // were 5 of the 26 ms `safari info` took, and 2 MB of each MCP server for its
-// whole session.
-const COMMAND_ONLY = /\/daemon\/(repl|repl-host|sessions|agent|guides|watch)\.ts$|\/daemon\/sites\/|\/cli\/launchd\.ts$/;
+// whole session. ajv, which only a site action's schema needs, was 11 of
+// the 53 ms `safari --help` took (11-08).
+const COMMAND_ONLY = /\/daemon\/(repl|repl-host|sessions|agent|guides|watch)\.ts$|\/daemon\/sites\/|\/cli\/launchd\.ts$|\/node_modules\/ajv\//;
 
 const REPO = join(import.meta.dir, "..");
 const home = await mkdtemp(join(tmpdir(), "safari-startup-"));
@@ -54,7 +55,7 @@ async function mcpCall(name: string, args: Record<string, unknown>) {
   return { text: reply.result.content[0].text, modules: await modules() };
 }
 
-test("a tool call from the CLI loads none of the repl's, sessions', guides', or launchd's modules", async () => {
+test("a tool call from the CLI loads none of the repl's, sessions', guides', launchd's, or ajv's modules", async () => {
   const { proc, modules } = spawn([join(REPO, "cli/safari.ts"), "info", "--tab", "7"]);
   proc.stdin.end();
   expect(await new Response(proc.stdout).text()).toContain("Example Domain");
