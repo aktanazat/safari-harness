@@ -1031,12 +1031,20 @@
       printed[ref] = fingerprints.get(ref);
       return ref;
     };
+    // A link to an address a line above already gave reads "=[15]", that
+    // line's ref, not the address again: a news page gives an article's
+    // address on its picture, its title, and its comment count. A query's
+    // lines keep theirs, which the query may have matched, and so does a
+    // read for a file or a script (everyAddress), searched line by line.
+    const gave = new Map();
     const push = (depth, text, n, lead = "") => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
       if (query && !query(lead + text) && !text.includes(FRAME_MARK)) return;
       if (lines.length >= maxLines) { truncated = true; return; }
-      const line = n ? `${lead}[${prefix}${refOf(n.el)}] ${text}` : lead + text;
+      const ref = n && `${prefix}${refOf(n.el)}`;
+      if (ref && !query && !opts.everyAddress && hrefOf(n) && !gave.has(hrefOf(n))) gave.set(hrefOf(n), ref);
+      const line = n ? `${lead}[${ref}] ${text}` : lead + text;
       lines.push(query ? line : "  ".repeat(depth) + line);
     };
     const hrefOf = (n) => (n.el && n.el.href) || null;
@@ -1047,6 +1055,7 @@
       const st = stateOf(n.el);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
+      const first = url && gave.get(hrefOf(n));
       // A checkbox's or radio's submitted value says nothing its name does
       // not: the browser's default "on", or its label again. A name taken
       // from the group's name attribute is no label: there the value is all
@@ -1055,7 +1064,7 @@
       if (v >= 0 && /^(checkbox|radio)$/.test(n.el.type) && (n.el.value === "on" || (n.name !== n.el.getAttribute("name") && n.name?.toLowerCase().includes(n.el.value.toLowerCase())))) st.splice(v, 1);
       const name = n.name ? clip(protectedFieldName(n.el, n.name, st), TEXT_MAX) : "";
       const frame = n.el.tagName === "IFRAME" || n.el.tagName === "FRAME" ? childToken.get(n.el) : undefined;
-      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? " " + url : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
+      return `${tag(n)}${name ? ` "${name}"` : ""}${url ? ` ${first ? `=[${first}]` : url}` : ""}${st.length ? ` {${st.join(", ")}}` : ""}${frame ? ` ${FRAME_MARK}${frame}@@` : ""}`;
     };
     // The text items from kids[from] up to the next element.
     const textItems = (kids, from) => {

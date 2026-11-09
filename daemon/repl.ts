@@ -1084,7 +1084,7 @@ export class ReplSession {
       if (!/^\d+$/.test(ref)) throw new Error(`snapshot's ref takes a ref from the top page ("12"); for ${ref} use selector`);
       root = `[data-sh-ref="${ref}"]`;
     }
-    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
+    const snap = (await page.call("snapshot", { root, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, interactive: !!opts.interactive, everyAddress: true })) as { url: string; title: string; snapshot: string; truncated: boolean; addressedToAI?: number; pageState?: PageState; memoryReceipt?: ResearchReceipt; memoryWarning?: string };
     this.showNotes(snap);
     const lines = snap.snapshot.split("\n");
     const cut = snap.truncated ? [`(cut at ${lines.length} lines: narrow with selector or ref, or raise maxNodes)`] : [];

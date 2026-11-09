@@ -1142,7 +1142,7 @@ export async function snapshot(opts: SnapshotOptions = {}) {
   // content.js), and a second wait here doubled the time a blank page took
   // to answer.
   const identifyDocument = updates || (opts.root === undefined && opts.query === undefined && opts.interactive !== true);
-  const read = (root: string | undefined) => researchRead(tab, () => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, identifyDocument }]) as Promise<Snapshot>, tab), !!(opts.diff || opts.interactive));
+  const read = (root: string | undefined) => researchRead(tab, () => withChallenge(relay(tab, "snapshot", [{ root, query: opts.query, maxNodes: opts.maxNodes, showHidden: !!opts.showHidden, everyAddress: opts.everyAddress === true, identifyDocument }]) as Promise<Snapshot>, tab), !!(opts.diff || opts.interactive));
   const { page, missed } = await narrowed("root", opts.root, read);
   const shielded = shieldSnapshot(page);
   // interactive keeps the lines with refs, a view of the page as a root or
@@ -1172,8 +1172,13 @@ async function narrowed<T>(option: "root" | "selector", value: string | undefine
 }
 
 // The lines only in `a` ("- ") and only in `b` ("+ "), in page order, from
-// their longest common subsequence.
-export function lineDiff(a: string[], b: string[]): string {
+// their longest common subsequence. A link that reads "=[15]" is compared
+// and shown with the address line [15] gives: removing the first link to
+// an address changes no other line, and no line shown points at one that
+// is not.
+export function lineDiff(before: string[], after: string[]): string {
+  const a = addressed(before);
+  const b = addressed(after);
   const n = a.length;
   const m = b.length;
   const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
@@ -1189,6 +1194,24 @@ export function lineDiff(a: string[], b: string[]): string {
     else out.push(`+ ${b[j++]}`);
   }
   return out.join("\n");
+}
+
+// A link's address ends its line, before its states ('[3] link "2 hours
+// ago" /item?id=1 {expanded}'), and a later link to it reads "=[3]" there
+// (content.js). The lines with each such link given the address again.
+const LINK_END = / (\S+)((?: \{[a-z, ]+\})?)$/;
+function addressed(lines: string[]): string[] {
+  const gave = new Map<string, string>();
+  return lines.map((line) => {
+    const own = /^[^[]*\[((?:f\d+:)?\d+)\] /.exec(line);
+    const end = own && LINK_END.exec(line);
+    if (!own || !end) return line;
+    const to = /^=\[((?:f\d+:)?\d+)\]$/.exec(end[1]);
+    const address = to ? gave.get(to[1]) : end[1];
+    if (address === undefined) return line;
+    gave.set(own[1], address);
+    return to ? `${line.slice(0, end.index)} ${address}${end[2]}` : line;
+  });
 }
 
 // A snapshot's lines that carry a ref ("[12] button ...", "h2 [3] link
@@ -3080,7 +3103,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
   snapshot: {
-    desc: "Page refs for actions; frame refs f3:12. Read again after acting.",
+    desc: "Page refs for actions; frame refs f3:12. =[15]: [15]'s URL. Read again after acting.",
     params: {
       tab: TAB,
       query: { type: "string", description: "only lines containing this text" },
@@ -3092,7 +3115,7 @@ export const TOOLS: Record<string, Tool> = {
       interactive: { type: "boolean", description: "only lines with refs" },
       save: SAVE,
     },
-    unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" } },
+    unlisted: { showHidden: { type: "boolean", description: "include text the page hides (the injection shield drops it)" }, everyAddress: { type: "boolean", description: "every link gives its address, never =[15]: a read for a file or a script" } },
     required: ["tab"],
     run: saving("snapshot", async (a) => withNotes(await snapshot(a as SnapshotOptions))),
   },
@@ -3785,7 +3808,7 @@ export const REPLY_CHARS = 30_000;
 export async function replyText(value: unknown): Promise<string> {
   const text = formatResult(value);
   if (text.length <= REPLY_CHARS) return text;
-  const path = await saveAnswer(text);
+  const path = await saveAnswer(addressed(text.split("\n")).join("\n"));
   const kept = formatResult(value, REPLY_CHARS).slice(0, REPLY_CHARS);
   return `${kept}\n…cut at ${kept.length} of ${text.length} characters; the whole answer is in ${path}: read the part you need from it, or narrow the read (query, root, selector)`;
 }

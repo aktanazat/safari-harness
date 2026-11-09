@@ -362,7 +362,8 @@ Escalate in this order:
 6. Many pages of the same kind: one `map` call, never a loop (`safari guide map`)
 
 - Link addresses are shortened: tracking codes become `?…`. Click the ref;
-  it opens the full address.
+  it opens the full address. A link to the very address a line above gave
+  reads `=[15]`, that line's ref, instead of the address again.
 - Embedded frames print under their `iframe` line. Refs inside a frame from
   another site look like `f3:12`; use them like any ref. Text and selector
   targets also reach into frames. Sign-in forms inside frames (Apple's
@@ -447,10 +448,10 @@ carrying the page in context.
   2,000,000 characters, and `snapshot` up to 10,000 lines, unless you set
   `maxBytes` or `maxNodes`. A read cut even there adds `truncated: true`, and a
   snapshot's bot-check note stays.
-- The file holds `extract`'s text (`.txt`), `snapshot`'s outline (`.txt`),
-  `fetch`'s body as the server sent it (`.json`, `.html`, or `.txt`, from its
-  type), and `eval`'s value: a string as it is (`.txt`), anything else as JSON
-  (`.json`).
+- The file holds `extract`'s text (`.txt`), `snapshot`'s outline with each
+  link's address, never `=[15]` (`.txt`), `fetch`'s body as the server sent
+  it (`.json`, `.html`, or `.txt`, from its type), and `eval`'s value: a
+  string as it is (`.txt`), anything else as JSON (`.json`).
 - An error the page answers with (a `selector` that matches nothing) comes
   back as it is, and nothing is written.
 - CLI: `--save` for a new file in the saved folder, `--save=<file>` for a
@@ -1363,7 +1364,11 @@ the part you need.
 - `snapshot` returns a compact outline of the page. Each element you can act
   on carries a ref like `[12]`; headings (`h1`…`h6`), landmarks, and the
   page's own text print without one, each piece of text once, where it
-  sits. A link's address follows its name. Table cells join with ` | `.
+  sits. A link's address follows its name, or `=[15]` where the line of
+  `[15]` above gave the same address: the link is its own element, so
+  click its own ref. A `query`'s lines, a saved read, the file a long
+  reply is saved to, and a repl `.tree` give every address. Table cells
+  join with ` | `.
   A control with no role (a span with a click handler) gets a ref when it
   shows a hand cursor and has a label, title, or test id. In a list that
   floats over the page, such as a dropdown's options or a menu, the hand
@@ -1404,6 +1409,7 @@ the part you need.
   to click.
 - `diff: true` returns only the lines that changed since your last snapshot
   of that tab (`- ` gone, `+ ` new): the cheap way to see what an action did.
+  Each line gives its link's address, never `=[15]`.
 - `updates: true` returns `update: {kind, revision, baseRevision}`.
   Keep the full snapshot and its revision, then pass `since: "<revision>"`
   with the same read options. `kind: "unchanged"` keeps your text.

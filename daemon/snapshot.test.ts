@@ -117,3 +117,23 @@ test("a snapshot with interactive keeps only the lines with refs, unindented", a
   expect(await callTool("snapshot", { tab: 8, interactive: true })).toMatchObject({ snapshot: '[1] textbox "Email"\n[2] button "Next"' });
   expect(await callTool("snapshot", { tab: 8, diff: true })).toMatchObject({ snapshot: "(no change)" });
 });
+
+// A story's address on its photo, title, comment count, and share link, as
+// WebKit printed it before and after the photo went: the title then gives
+// the address, and the other two point at it.
+test("a diff gives a link its address: removing the first link to one is one changed line", async () => {
+  const pages = [
+    '[1] link "Photo" /story\n[2] link "Story title" =[1]\n[3] link "12 comments" =[1]\n[4] link "Share" =[1]\n[5] button "Hide photo"',
+    '[2] link "Story title" /story\n[3] link "12 comments" =[2]\n[4] link "Share" =[2]\n[5] button "Hide photo"',
+  ];
+  connect({
+    send(data: string) {
+      const { id, op } = JSON.parse(data);
+      const value = op === "relay" ? { url: "https://news.example/", title: "News", nodes: 5, truncated: false, snapshot: pages.shift() } : [];
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  await callTool("snapshot", { tab: 9 });
+  expect(await callTool("snapshot", { tab: 9, diff: true })).toMatchObject({ snapshot: '- [1] link "Photo" /story' });
+});
