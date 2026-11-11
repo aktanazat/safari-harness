@@ -126,6 +126,17 @@ test("a draft without approval sends nothing", async () => {
   expect(db.query("SELECT COUNT(*) n FROM message").get()).toEqual({ n: 1 });
 });
 
+test("a bare number in only a group drafts a new one-to-one chat, not the group", async () => {
+  db.exec(`
+    INSERT INTO chat VALUES ('iMessage;+;chat100','chat100','Trip','iMessage',43);
+    INSERT INTO handle VALUES ('+15305550100');
+    INSERT INTO chat_handle_join VALUES (3,3);
+  `);
+  expect(await waited(send({ to: "+1 (530) 555-0100", text: TEXT }))).toMatchObject({ status: "draft", chat: null, to: "+1 (530) 555-0100", recent: [] });
+  expect(await waited(send({ to: "iMessage;+;chat100", text: TEXT }))).toMatchObject({ status: "draft", chat: "iMessage;+;chat100" });
+  expect(attempts).toEqual([]);
+});
+
 // Audit SH-21: approved: true sent on a first call no one saw, and the
 // approving call resolved its recipient again, so a draft to one chat could
 // go to another.
