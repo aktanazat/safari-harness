@@ -48,6 +48,9 @@
 //                             row then shows
 //   close                     closes the window
 //   lock {ms} / unlock        one helper at a time on the group queue
+//   cancelPrint {width, height}  cancels a print sheet on the one Safari
+//                             window of that size, at any level: {cancelled,
+//                             why}; any other sheet stays (daemon/sheets.ts)
 // Needs Accessibility permission for the app that runs it (gate says).
 import AppKit
 import ApplicationServices
@@ -158,13 +161,15 @@ func window(_ req: [String: Any]) throws -> AXUIElement {
     return w
 }
 
-// The ids of Safari's windows of width x height points.
-func windowsOfSize(_ width: Double, _ height: Double) throws -> [CGWindowID] {
+// The ids of Safari's windows of width x height points. A window a sheet
+// holds is drawn above every app's (layer 8 under a print sheet, 11-11),
+// and only cancelPrint looks there.
+func windowsOfSize(_ width: Double, _ height: Double, anyLayer: Bool = false) throws -> [CGWindowID] {
     let pid = try safari().pid
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
     return list.compactMap { info in
         guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
-              (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              anyLayer || (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
               let b = info[kCGWindowBounds as String] as? [String: Any],
               let w = (b["Width"] as? NSNumber)?.doubleValue, let h = (b["Height"] as? NSNumber)?.doubleValue,
               abs(w - width) < 1, abs(h - height) < 1 else { return nil }
@@ -307,6 +312,16 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
             if poll(2000, { sheet(w) == nil ? true : nil }) == nil { out["closed"] = false }
         }
         return out
+    case "cancelPrint":
+        guard AXIsProcessTrusted() else { throw Failure(message: "the terminal the agent runs in has no Accessibility permission") }
+        guard let width = (req["width"] as? NSNumber)?.doubleValue, let height = (req["height"] as? NSNumber)?.doubleValue else { throw Failure(message: "cancelPrint needs width and height") }
+        let ids = try windowsOfSize(width, height, anyLayer: true)
+        guard ids.count == 1 else { return ["cancelled": false, "why": "Safari has \(ids.count) windows of \(Int(width)) x \(Int(height)) points"] }
+        guard let w = try? window(["window": NSNumber(value: ids[0])]) else { throw Failure(message: "Safari's window of \(Int(width)) x \(Int(height)) points is closed or on another desktop") }
+        guard let s = sheet(w) else { return ["cancelled": false, "why": "the window has no sheet"] }
+        guard button(s, "Print") != nil, let cancel = button(s, "Cancel") else { return ["cancelled": false, "why": "the window's sheet is no print sheet"] }
+        guard perform(cancel, kAXPressAction), poll(2000, { sheet(w) == nil ? true : nil }) != nil else { throw Failure(message: "the print sheet stayed open") }
+        return ["cancelled": true]
     case "lock":
         try lock((req["ms"] as? NSNumber)?.intValue ?? 60000)
         return [:]

@@ -17,7 +17,9 @@ type Hooks = {
 const context = (kind: "main" | "sub", mode = "tui", id: string = kind): Context => ({ mode, agent: { kind, id }, sessionManager: { getSessionId: () => "session-a" } });
 const task = JSON.stringify(["session-a", "helper"]);
 
-// daemon: what the stand-in daemon answers a path, before its usual answer.
+// daemon: what the stand-in daemon answers a path, before its usual answer,
+// which for /rpc is the space tool's sheets: no window to look at, so no
+// helper starts (sheets.ts).
 async function withHook(run: (end: (event: End, ctx: Context) => unknown, tool: (event: ToolCall, ctx: Context) => ToolResult, requests: { path: string; body: unknown }[], start: (ctx: Context) => void, heard: (n: number) => Promise<void>) => Promise<void>, daemon?: (path: string) => Response | undefined) {
   const requests: { path: string; body: unknown }[] = [];
   const waiting: { n: number; resolve: () => void }[] = [];
@@ -33,7 +35,7 @@ async function withHook(run: (end: (event: End, ctx: Context) => unknown, tool: 
     if (path === "/health") return Response.json({ ok: true });
     requests.push({ path, body: await request.json() });
     for (const w of waiting) if (requests.length >= w.n) w.resolve();
-    return daemon?.(path) ?? Response.json(path === "/turn-end/prepare" ? prepared : { ok: true, closed: 1, retained: 0, failed: 0, deferred: false });
+    return daemon?.(path) ?? Response.json(path === "/rpc" ? { ok: true, value: { windows: [] } } : path === "/turn-end/prepare" ? prepared : { ok: true, closed: 1, retained: 0, failed: 0, deferred: false });
   } });
   const before = process.env.SAFARI_HARNESS_HTTP;
   process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
@@ -50,9 +52,13 @@ async function withHook(run: (end: (event: End, ctx: Context) => unknown, tool: 
 }
 
 const lead = JSON.stringify(["session-a", "main"]);
+// a released turn's look for a print sheet left on its windows; its task is
+// whatever the process running the test has
+const look = { path: "/rpc", body: expect.objectContaining({ tool: "space", args: { op: "sheets" }, caller: process.pid, news: false }) };
 const leadRelease = [
   { path: "/turn-end/prepare", body: { owner: process.pid, task: lead } },
   { path: "/turn-end", body: { owner: process.pid, task: lead, prepared: { owner: process.pid, task, epoch: "owned-generation", tabs: [101] } } },
+  look,
 ];
 
 test.each(["tui", "rpc", "json", "print"])("a helper's final completion in %s mode admits only its own task and is awaitable", async (mode) => {
@@ -61,8 +67,20 @@ test.each(["tui", "rpc", "json", "print"])("a helper's final completion in %s mo
     expect(requests).toEqual([
       { path: "/turn-end/prepare", body: { owner: process.pid, task } },
       { path: "/turn-end", body: { owner: process.pid, task, prepared: { owner: process.pid, task, epoch: "owned-generation", tabs: [101] } } },
+      look,
     ]);
   });
+});
+
+// A print sheet a page left holds its window's other tabs, which then would
+// not close: a receipt that counted them skipped the look, and the sheet
+// stayed until the user cancelled it.
+test("a turn end with a tab that would not close still looks for a print sheet a page left", async () => {
+  const held = (path: string) => path === "/turn-end" ? Response.json({ ok: true, closed: 1, retained: 1, failed: 1, deferred: false }) : undefined;
+  await withHook(async (end, _tool, requests) => {
+    await end({}, context("sub", "tui", "helper"));
+    expect(requests.slice(2)).toEqual([look]);
+  }, held);
 });
 
 // AuditSafariHarness-1 and -2: a lead's release named no task, so it
@@ -75,7 +93,7 @@ test("a lead's completion releases only its own task, after a pause", async () =
     jest.advanceTimersByTime(14_999);
     expect(requests).toEqual([]);
     jest.advanceTimersByTime(1);
-    await heard(2);
+    await heard(3);
     expect(requests).toEqual(leadRelease);
   });
 });
@@ -91,7 +109,7 @@ test("a lead's next run starting 200 ms after its end keeps its pages", async ()
     jest.advanceTimersByTime(60_000);
     await end({}, context("main"));
     jest.advanceTimersByTime(15_000);
-    await heard(2);
+    await heard(3);
     expect(requests).toEqual(leadRelease);
   });
 });
@@ -107,7 +125,7 @@ test("a release a restarting daemon refused goes again once it answers", async (
   };
   await withHook(async (end, _tool, requests) => {
     await end({}, context("sub", "tui", "helper"));
-    expect(requests.map((r) => r.path)).toEqual(["/turn-end/prepare", "/turn-end/prepare", "/turn-end"]);
+    expect(requests.map((r) => r.path)).toEqual(["/turn-end/prepare", "/turn-end/prepare", "/turn-end", "/rpc"]);
   }, restarting);
 });
 

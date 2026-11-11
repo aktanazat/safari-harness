@@ -13,6 +13,7 @@ import { remoteCall } from "./host.ts";
 import { secretType, typeSecret, type CallerEnv } from "./secret.ts";
 import { TOOLS, pageRead, runSteps, type PageRead } from "./tools.ts";
 import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
+import { cancelLeftSheets } from "./sheets.ts";
 
 // model: the call counts as the model's own, as invoke's does.
 export type Invoke = (tool: string, args: Record<string, unknown>, model?: boolean) => Promise<unknown>;
@@ -77,9 +78,16 @@ async function invokeInner(tool: string, args: Record<string, unknown>, model: b
   // reaches the daemon before the code has come.
   const routed = model && !coded ? await asReal(tool, args, real) : undefined;
   if (!routed && !coded && nameIn(CALLER_NAMES, tool) === undefined) {
-    const result = await rpc(tool, args, model);
-    claimSpaces(nameIn(DAEMON_NAMES, tool) ?? tool, result);
-    return result;
+    const name = nameIn(DAEMON_NAMES, tool) ?? tool;
+    try {
+      const result = await rpc(tool, args, model);
+      claimSpaces(name, result);
+      return result;
+    } finally {
+      // a print sheet the closed tab's page left on its window, which may
+      // be what held a close that failed
+      if (name === "close") await cancelLeftSheets().catch(() => {});
+    }
   }
   return withNews(args.tab, () => runHere(tool, args, model, coded, routed, caller));
 }

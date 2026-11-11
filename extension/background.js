@@ -1695,10 +1695,12 @@ async function handle(msg) {
         if (!frames.length || frames.some((frame) => typeof frame.result !== "boolean")) return { ok: false, protected: "unreadable" };
         if (frames.some((frame) => frame.result)) return { ok: false, protected: "form" };
       }
-      // resolve once Safari has dropped the tab, so a following list omits it
+      // resolve once Safari has dropped the tab, so a following list omits
+      // it, with the window it was in: a print sheet a frame of the page
+      // raised stays on that window (sheets.ts)
       let onRemoved;
       const gone = new Promise((resolve) => {
-        onRemoved = (id) => { if (id === tabId) resolve(true); };
+        onRemoved = (id, info) => { if (id === tabId) resolve({ ok: true, ...(typeof info?.windowId === "number" ? { windowId: info.windowId } : {}) }); };
         api.tabs.onRemoved.addListener(onRemoved);
       });
       // A native sheet on the tab (a sign-in or permission prompt) or a
@@ -1712,11 +1714,11 @@ async function handle(msg) {
       const within = (p, ms) => Promise.race([p, new Promise((resolve) => timers.push(setTimeout(resolve, ms, false)))]);
       closing.add(tabId);
       try {
-        if (await within(api.tabs.remove(tabId).then(() => gone), 5000)) return { ok: true };
+        if (await within(api.tabs.remove(tabId).then(() => gone), 5000)) return gone;
         if (!only && await ownsTab(tabId)) {
           api.tabs.update(tabId, { url: "about:blank" }).catch(() => {});
           for (let i = 0; i < 10; i++) {
-            if (await within(gone, 1000)) return { ok: true };
+            if (await within(gone, 1000)) return gone;
             api.tabs.remove(tabId).catch(() => {});
           }
         }

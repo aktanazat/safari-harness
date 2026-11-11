@@ -13,7 +13,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { closeRetryMs, closeWindow, daemonWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
@@ -312,6 +312,10 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
     recordClosed(id, why, resumeAddress(held?.url));
     forget(id);
     save();
+    // the window the tab was in, for its agent's caller to look at (sheets.ts)
+    const { windowId, ...answer } = res as { windowId?: unknown };
+    lookForSheet(typeof windowId === "number" ? windowId : undefined);
+    return answer;
   } else if (res && typeof res === "object" && "protected" in res && res.protected === "form") {
     const mine = harnessTabs.get(id);
     if (mine) mine.acted = true;
@@ -800,7 +804,7 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Pro
     // the user's (inFront in background.js).
     const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && shown.url?.startsWith("https://www.google.com/search?") === true;
     const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner)) || unread;
-    const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string } | null;
+    const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string; windowId?: number } | null;
     if (res?.front) {
       t.used = Date.now();
     } else if (res?.ok !== true) {
@@ -811,6 +815,7 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Pro
       recordClosed(tab, why, resumeAddress(shown?.url ?? t.url), t.owner, undefined, shown?.title);
       forget(tab);
       note("tab closed", { tab, owner: t.owner ?? null, why });
+      lookForSheet(res.windowId ?? shown?.windowId);
     }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -3498,10 +3503,12 @@ export const TOOLS: Record<string, Tool> = {
       }
     },
   },
-  // Agent windows and their tab groups, for the keeper (keeper.ts).
+  // Agent windows and their tab groups, for the keeper (keeper.ts), and the
+  // windows a print sheet may hold, for the caller that cancels it
+  // (sheets.ts).
   space: {
-    desc: "Agent windows and their tab groups, for the tab group keeper.",
-    params: { op: { type: "string", description: "state, making, grouped, plain, waiting, release, gone, scratch, or raised" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" } },
+    desc: "Agent windows and their tab groups, for the tab group keeper, and the windows a print sheet may hold.",
+    params: { op: { type: "string", description: "state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, or looked" }, name: { type: "string", description: "the window's name" }, why: { type: "string", description: "why it stays plain" }, id: { type: "string", description: "looked: the window's id from sheets" }, look: { type: "number", description: "looked: the window's look from sheets" }, cancelled: { type: "boolean", description: "looked: a print sheet was cancelled" } },
     required: ["op"],
     hidden: true,
     run: spaceTool,

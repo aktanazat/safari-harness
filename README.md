@@ -49,6 +49,9 @@ daemon/
   keeper.ts         runs groups.ts from the agent's terminal, which has the
                     Accessibility permission the daemon lacks; call.ts starts
                     it after an open
+  sheets.ts         cancels a print sheet a page left on an agent window once
+                    its tab closed, from the agent's terminal: call.ts after a
+                    close, the omp extension as a turn ends
   handoff.ts        handoff's caller half: alerts the user's phone, with a
                     picture of the page, when a step needs him and he is away
                     from the Mac; the daemon raises the tab and notifies
@@ -173,8 +176,9 @@ scripts/
   pairing.swift     helper: the pairing code read off Apple's window, and
                     its Save Password button; needs Accessibility permission
   spaces.swift      helper: works an agent window's tab group sidebar through
-                    Accessibility, Safari left in the background; needs
-                    Accessibility permission
+                    Accessibility, Safari left in the background, and cancels
+                    a print sheet a closed tab left; needs Accessibility
+                    permission
   bench.swift       test bench: content.js, start.js, and dialogs.js in a
                     WebKit view no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
@@ -734,6 +738,9 @@ unlisted, answer `-32000 not supported` — never a fake result.
 - Messages and browsing history need Full Disk Access, and real input
   needs Accessibility; the launchd daemon has neither, so those tools run in
   the calling process (terminal or MCP server)
+- a print sheet a page's frame raises stays on its window once the tab
+  closes, and Safari then draws that window above every app's; only
+  Accessibility cancels it, so the agent's terminal does (sheets.ts)
 
 ## Tests
 

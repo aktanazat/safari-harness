@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { takesMarks } from "../daemon/fresh.ts";
 import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemon/rpc.ts";
 import { setSessionTask } from "../daemon/session-task.ts";
+import { cancelLeftSheets } from "../daemon/sheets.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
 
 type AgentEnd = { willContinue?: boolean };
@@ -130,21 +131,30 @@ const RELEASE_MS = 30_000;
 
 // A release the daemon missed as it restarted (a deploy) goes again once
 // it answers: before 11-06 it was dropped, and the turn's pages stayed
-// until the 20-minute idle close (AuditSafariHarness-10).
+// until the 20-minute idle close (AuditSafariHarness-10). Once the daemon
+// has answered, a print sheet a page left on a window the turn closed
+// (sheets.ts) is cancelled from here, where the terminal's Accessibility
+// permission is; a tab that would not close may be one that sheet held.
 async function release(pi: ExtensionApi, task?: string): Promise<void> {
   const admission = { owner: process.pid, ...(task === undefined ? {} : { task }) };
   const base = daemonHttp();
-  try {
-    let missed = await releaseOnce(base, admission);
-    if (missed !== undefined && await daemonBack(base, missed)) missed = await releaseOnce(base, admission);
-    if (missed === "restarting") throw new Error("the daemon was restarting, and did not answer again in time");
-  } catch (e: unknown) {
+  const warn = (e: unknown) => {
     const timedOut = e instanceof Error && e.name === "TimeoutError";
     pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 20 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
+  };
+  try {
+    let answer = await releaseOnce(base, admission);
+    if (typeof answer === "string" && await daemonBack(base, answer)) answer = await releaseOnce(base, admission);
+    if (answer === "restarting") throw new Error("the daemon was restarting, and did not answer again in time");
+    if (typeof answer === "string") return;
+    if (answer.failed > 0) warn(new Error(`could not close ${answer.failed} tab(s); they close when this process exits`));
+    await cancelLeftSheets();
+  } catch (e: unknown) {
+    warn(e);
   }
 }
 
-async function releaseOnce(base: string, admission: { owner: number; task?: string }): Promise<Missed | undefined> {
+async function releaseOnce(base: string, admission: { owner: number; task?: string }): Promise<Missed | { failed: number }> {
   const signal = AbortSignal.timeout(RELEASE_MS);
   const post = async (path: string, body: unknown): Promise<Response | Missed> => {
     let res: Response;
@@ -165,8 +175,5 @@ async function releaseOnce(base: string, admission: { owner: number; task?: stri
   const res = await post("/turn-end", { ...admission, prepared });
   if (typeof res === "string") return res;
   const result: unknown = await res.json();
-  if (result && typeof result === "object" && "failed" in result && typeof result.failed === "number" && result.failed > 0) {
-    throw new Error(`could not close ${result.failed} tab(s); they close when this process exits`);
-  }
-  return undefined;
+  return { failed: result && typeof result === "object" && "failed" in result && typeof result.failed === "number" ? result.failed : 0 };
 }
