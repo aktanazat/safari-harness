@@ -83,6 +83,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              --secret env --env VAR: this call's variable VAR)
   safari press <key> [--ref R] --tab N       press a key
   safari select <ref> [option] --tab N       choose a dropdown option; none lists them
+  safari refill --tab N                      put back the form fields a click sent on
+                                             before the page emptied them (an error, a sign-in)
   safari hover <ref> --tab N                 hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
@@ -98,7 +100,7 @@ const USAGE = `safari — drive Safari from the terminal
   unused; --keep on open, or safari keep <tab>, leaves one open for him.
 
   Actions (open goto back forward reload click clickat type press select
-  hover upload) and wait take --snapshot to print the page after them too,
+  refill hover upload) and wait take --snapshot to print the page after them too,
   or --snapshot=<words> for only its lines that have those words.
 
   Reads (snapshot eval extract fetch read) take --save to write the whole output

@@ -41,6 +41,7 @@ import { localRequest } from "./requests.ts";
 import { browserMemoryRoute, startBrowserMemory, stopBrowserMemory } from "./browser-memory-runtime.ts";
 import { pruneSaved } from "./save.ts";
 import { sweepPlaybookLearning } from "./playbooks.ts";
+import { sweepDrafts } from "./drafts.ts";
 
 const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
 const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
@@ -76,6 +77,13 @@ openLoads(loadsFile(httpPort));
 // Files of agents that have exited, and reads saved over a week ago
 void pruneSaved();
 sweepPlaybookLearning();
+// Form drafts past their day, which a stopped daemon's timer never deleted;
+// a folder it cannot read leaves them to the next save or refill.
+try {
+  sweepDrafts();
+} catch (e) {
+  console.error("[safari-harness] form drafts not swept:", e instanceof Error ? e.message : String(e));
+}
 // What the user taught in a tab (teach mode) is saved as he stops it; a
 // notification tells him its name, or why it was not saved.
 bridge.onRecording = (recording) => {

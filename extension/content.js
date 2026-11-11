@@ -466,6 +466,10 @@
   let healedNow = null; // the heal the running request made
   let carried = null; // the fingerprints the running request brought (adopt)
   let acting = false; // whether the running request acts on its target (ACTS)
+  // Whether the running request reads for the action the daemon sends next
+  // (formDraft before a click): a heal it finds is left for that action to
+  // make and report.
+  let peeking = false;
   let changedNow = null; // the changed control the running request met (changedSince)
   // How much of an element's surroundings a fingerprint keeps: enough to
   // tell one row's "Delete" from the next.
@@ -625,6 +629,7 @@
       const m = matchFingerprint(fp, els.map(candidateOf));
       if (!("index" in m)) return null;
       const el = els[m.index];
+      if (peeking) return el;
       healedNow = { ref, now: ensureRef(el) };
       refMap.set(ref, el);
       remember(ref, fp);
@@ -2960,7 +2965,7 @@
   }
 
   // What the extension asks every frame at once, by name.
-  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts, card: cardForm };
+  window.__safariHarnessProbe = { login: loginForm, code: codeField, change: changeForm, challenge: challengeFacts, card: cardForm, draft: draftFrame };
 
   async function fillCode(host, code) {
     if (location.hostname !== host) return { error: `the page moved to ${location.hostname}; nothing was filled` };
@@ -3046,6 +3051,254 @@
       filled.push(token);
     }
     return { filled, kept, cardFieldsLeftAlone: cards };
+  }
+
+  // ---------- form drafts ----------
+
+  // What a form held when a click or an Enter sent it on (Submit, Next,
+  // Continue), for the daemon to keep and refill to put back when the page
+  // answers with an error, the form emptied by its check, or a sign-in
+  // (daemon/drafts.ts). A draft holds nothing the page keeps back: no
+  // password, card, or code field, no field the harness typed a secret
+  // into, no value holding one.
+  const STEP_WORDS = /^\W*(?:next|continue|proceed|review|go on|save (?:and|&) (?:continue|next))\b/i;
+  const SEND_WORDS = /^\W*(?:submit|send|finish|complete|confirm|apply|register|sign ?up|create|save|update|place|pay|book|reserve|purchase|buy|check ?out|request|post|enroll)\b/i;
+  const NOT_SENT_ON = /\b(?:search|filter|sort)\b/i;
+  const STEP_CONTROLS = "button, input[type=submit], input[type=image], input[type=button], [role=button], a[href]";
+  // Words that say what a control does are few: a longer name is a card or
+  // a row holding a button.
+  const STEP_WORDS_MAX = 40;
+  const DRAFT_FIELDS_MAX = 200;
+  const DRAFT_VALUE_MAX = 5000;
+
+  // What a draft keeps of a field: its text, its choice, or whether it is
+  // checked; of a file, a password, a hidden or search field, or a slider,
+  // nothing.
+  function draftKind(el) {
+    if (el.localName === "select") return "select";
+    if (el.localName === "textarea") return "text";
+    if (el.localName !== "input" || /^(?:hidden|file|password|submit|button|reset|image|search|range|color)$/.test(el.type)) return null;
+    return el.type === "checkbox" || el.type === "radio" ? el.type : "text";
+  }
+
+  // The frame's fields a draft can hold, each keyed the same at the draft,
+  // at the look after the click, and at refill, on this load or the next:
+  // its kind, its name (else id, else label), a checkbox's or radio's
+  // value, and its place among the frame's fields so keyed.
+  function draftFields() {
+    const seen = new Map();
+    const fields = [];
+    for (const el of deepQueryAll("input, select, textarea")) {
+      const kind = draftKind(el);
+      if (!kind) continue;
+      const by = el.getAttribute("name") ? ["name", el.getAttribute("name")] : el.getAttribute("id") ? ["id", el.getAttribute("id")] : ["label", accessibleName(el)];
+      if (!by[1]) continue;
+      const base = JSON.stringify([kind, ...by, kind === "checkbox" || kind === "radio" ? el.value : ""]);
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      fields.push({ el, kind, key: `${base}#${n}` });
+    }
+    return fields;
+  }
+
+  // A styled checkbox or radio hides its input behind its label.
+  const draftShown = (el) => shown(el) || ((el.type === "checkbox" || el.type === "radio") && [...(el.labels ?? [])].some(shown));
+  const encloses = (box, el) => {
+    for (let n = el; n; n = parentOf(n)) if (n === box) return true;
+    return false;
+  };
+  const stepIn = (scope, form, final) => (scope && !scope.closest("[role=search]") ? { scope, form, final } : null);
+
+  // Whether a click on el sends a form on: a form's submit button, or a
+  // control whose words say it sends or moves a form on, and not one that
+  // searches, filters, or sorts, nor a link elsewhere. Answers the fields'
+  // scope, the form, and whether it is the last step (final), or null.
+  function clickStep(el) {
+    const control = el.closest(STEP_CONTROLS) ?? (el.matches("input, select, textarea, label, option") ? null : el);
+    if (!control || (control.localName === "a" && !control.matches("[role=button]") && !/^(?:#|javascript:)/i.test(control.getAttribute("href")))) return null;
+    const words = accessibleName(control).replace(/\s+/g, " ").trim();
+    const said = words.length <= STEP_WORDS_MAX ? words : "";
+    const submits = control.form != null && (control.localName === "button" ? control.type === "submit" : control.localName === "input" && /^(?:submit|image)$/.test(control.type));
+    const step = STEP_WORDS.test(said);
+    if ((!submits && !step && !SEND_WORDS.test(said)) || NOT_SENT_ON.test(said)) return null;
+    const form = control.form ?? control.closest("form");
+    return stepIn(form ?? fieldsAround(control), form, !step);
+  }
+
+  // An Enter in a one-line field submits its form (pressKey): a step when
+  // the form's submit button says Next or Continue.
+  function enterStep(el) {
+    const form = el.localName === "input" && TEXT_INPUTS.has(el.type) ? el.closest("form") : null;
+    if (!form) return null;
+    const button = [...form.querySelectorAll("button, input[type=submit], input[type=image]")].find((b) => b.localName !== "button" || b.type === "submit");
+    const words = button ? accessibleName(button).replace(/\s+/g, " ").trim() : "";
+    const said = words.length <= STEP_WORDS_MAX ? words : "";
+    return NOT_SENT_ON.test(said) ? null : stepIn(form, form, !STEP_WORDS.test(said));
+  }
+
+  // A form drawn with no <form> around it (React's): the nearest of the
+  // control's ancestors, 8 at most, holding two fields a draft can keep.
+  function fieldsAround(control) {
+    let box = parentOf(control);
+    for (let up = 0; box && up < 8; up++, box = parentOf(box)) {
+      if (deepQueryAll("input, select, textarea", box).filter(draftKind).length >= 2) return box;
+    }
+    return null;
+  }
+
+  // Which form a draft is of, the same on the page's next load: its id when
+  // the page's author wrote it, its name, where it sends, else the page's
+  // path. Read from attributes: a field named id or action shadows the
+  // form's own property.
+  function formKey({ scope, form }) {
+    const id = (form ?? scope).getAttribute("id") ?? "";
+    if (STABLE_ID.test(id)) return id;
+    let sends = "";
+    try {
+      sends = form?.getAttribute("action") ? new URL(form.getAttribute("action"), document.baseURI).pathname : "";
+    } catch {
+      // an action that is no address
+    }
+    return form?.getAttribute("name") || sends || location.pathname;
+  }
+
+  // Which page a draft is of: its path and query, and a route in its hash
+  // (#/apply). On a job board every company's application shares the site
+  // and the fields' names: a draft goes back only to its own page.
+  const draftPage = () => location.pathname + location.search + (/^#!?\//.test(location.hash) ? location.hash : "");
+
+  // What a draft keeps of a field as it stands, or null for nothing: a
+  // checkbox is kept when checked, or unchecked from how it loaded.
+  function draftValue(el, kind) {
+    if (kind === "radio") return el.checked ? { checked: true } : null;
+    if (kind === "checkbox") return el.checked ? { checked: true } : el.defaultChecked ? { checked: false } : null;
+    if (kind === "select") {
+      const values = [...el.selectedOptions].map((o) => o.value).filter(Boolean);
+      return values.length === 0 ? null : { value: el.multiple ? values : values[0] };
+    }
+    const value = String(el.value ?? "");
+    return value && value.length <= DRAFT_VALUE_MAX && !holdsCode(el, value) && unsecret(value) === value ? { value } : null;
+  }
+
+  // The fields a click on ref, or an Enter in it (how "Enter"; no ref: the
+  // focused field), sends on with their form: { final, form, page, origin,
+  // fields }, each field with what fieldFacts says of it and what a draft
+  // keeps of it; null when it sends no form on. A field disabled,
+  // read-only, not on show, or empty is left out.
+  function formDraft(ref, how) {
+    const enter = how === "Enter";
+    const target = ref === null ? focusedNow() : enter ? fieldOf(resolve(ref)) : resolve(ref, true);
+    if (!target) return ref === null ? null : missing(ref);
+    const step = enter ? enterStep(target) : clickStep(target);
+    if (!step) return null;
+    const fields = [];
+    for (const { el, kind, key } of draftFields()) {
+      if (fields.length === DRAFT_FIELDS_MAX) break;
+      if (!(step.form && el.form === step.form) && !encloses(step.scope, el)) continue;
+      if (el.disabled || el.readOnly || !draftShown(el) || secretField(el) || secretKind(el) !== null) continue;
+      const kept = draftValue(el, kind);
+      if (kept) fields.push({ key, ...fieldFacts(el), label: accessibleName(el).slice(0, 80), ...kept });
+    }
+    return { final: step.final, form: formKey(step), page: draftPage(), origin: location.origin, fields };
+  }
+
+  // How this frame stands after a click sent a draft's form on (the
+  // daemon's look, drafts.ts): its page, how many of the draft's fields
+  // (keys) it shows and how many of those are empty now, whether it asks to
+  // sign in, and in the top page its address, title, what its alerts and
+  // status lines on show say, and its opening text. Never a field's value.
+  function draftFrame(keys) {
+    const want = new Set(Array.isArray(keys) ? keys : []);
+    let present = 0;
+    let empty = 0;
+    for (const { el, kind, key } of want.size ? draftFields() : []) {
+      if (!want.has(key) || el.disabled || !draftShown(el)) continue;
+      present++;
+      if (kind === "radio" ? !el.checked : kind !== "checkbox" && !el.value) empty++;
+    }
+    const facts = { origin: location.origin, page: draftPage(), present, empty, signIn: loginFields().password !== null };
+    if (!want.size || window !== window.top) return facts;
+    const alerts = deepQueryAll("[role=alert], [role=status], [aria-live=assertive], [aria-live=polite]").filter(shown).map((a) => textOf(a, 300)).filter(Boolean).join("\n");
+    return { ...facts, url: location.href, title: document.title, alerts: unsecret(alerts), text: unsecret((document.body?.innerText ?? "").slice(0, 4000)) };
+  }
+
+  // A list whose choice is still the page's own: none, or the one it loaded
+  // with.
+  const asLoaded = (el) => !el.value || [...el.selectedOptions].every((o) => o.defaultSelected) || (el.selectedIndex === 0 && ![...el.options].some((o) => o.defaultSelected));
+  const choiceOf = (el) => [...el.selectedOptions].map((o) => o.value).join("\n");
+
+  // Puts back a draft the daemon kept for this frame's page: of the drafts
+  // given, the one whose fields the page holds most. Each of its fields
+  // still empty, or a list still at the page's own choice, gets its text or
+  // choice, and each checkbox and radio is set as it was. A field holding
+  // other text is left as it is, and one the page keeps back now gets
+  // nothing. Nothing is sent. The answer counts the fields that hold their
+  // draft's value now and names by label those that do not, never a value.
+  async function refill(drafts, page) {
+    const here = new Map(draftFields().map((f) => [f.key, f]));
+    const ours = (Array.isArray(drafts) ? drafts : []).filter((d) => d?.origin === location.origin && Array.isArray(d.fields));
+    if (!ours.length || page !== draftPage()) return { error: "the page moved since refill looked at it; nothing was refilled" };
+    const held = (d) => d.fields.filter((f) => here.has(f?.key)).length;
+    const draft = ours.reduce((best, d) => (held(d) > held(best) ? d : best));
+    const left = [];
+    const absent = [];
+    const set = [];
+    let filled = 0;
+    for (const field of draft.fields) {
+      const label = String(field?.label || field?.name || "a field");
+      const found = here.get(field?.key);
+      if (!found) {
+        absent.push(label);
+        continue;
+      }
+      const { el, kind } = found;
+      if (el.disabled || el.readOnly || secretField(el) || secretKind(el) !== null) {
+        left.push(label);
+        continue;
+      }
+      if (kind === "checkbox" || kind === "radio") {
+        if (el.checked !== (field.checked === true)) el.click();
+        set.push([el, kind, field.checked === true, label]);
+        continue;
+      }
+      if (kind === "select") {
+        const want = [field.value].flat().map(String);
+        if (choiceOf(el) === want.join("\n")) {
+          filled++;
+          continue;
+        }
+        if (!asLoaded(el) || ![...el.options].some((o) => want.includes(o.value))) {
+          left.push(label);
+          continue;
+        }
+        if (el.multiple) for (const o of el.options) o.selected = want.includes(o.value);
+        else Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, want[0]);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        set.push([el, kind, want.join("\n"), label]);
+        continue;
+      }
+      const want = String(field.value ?? "");
+      if (el.value) {
+        if (keeps(el.value, want)) filled++;
+        else left.push(label);
+        continue;
+      }
+      if (!(await focusField(el))) {
+        left.push(label);
+        continue;
+      }
+      fillValue(el, want);
+      set.push([el, kind, want, label]);
+    }
+    if (set.length) await whenPage(() => false, RECEIPT_SPAN.min);
+    const lost = [];
+    for (const [el, kind, want, label] of set) {
+      const holds = el.isConnected && (kind === "checkbox" || kind === "radio" ? el.checked === want : kind === "select" ? choiceOf(el) === want : keeps(el.value, want));
+      if (holds) filled++;
+      else lost.push(label);
+    }
+    return { filled, ...(left.length ? { left } : {}), ...(absent.length ? { missing: absent } : {}), ...(lost.length ? { lost } : {}) };
   }
 
   // ---------- card fill ----------
@@ -5657,6 +5910,8 @@
     fillCode,
     fillNewPassword,
     fillAddress,
+    formDraft,
+    refill,
     fillCard,
     locate,
     pressMark,
@@ -5680,7 +5935,7 @@
   };
   // Ops that may raise a dialog, and extract when it gathers (expand,
   // scroll): the page's dialogs are armed while they run.
-  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download", "harvest"]);
+  const DIALOG_OPS = new Set(["click", "clickAt", "type", "press", "select", "hover", "upload", "history", "download", "harvest", "refill"]);
   // Ops that act on the element a ref names, and locate when a real click
   // follows it (the daemon's locate, for real_input): a ref whose control
   // changed is refused before any event (changedSince).
@@ -5746,6 +6001,7 @@
     changedNow = null;
     adopt(msg.kept);
     acting = ACTS.has(msg.op) || (msg.op === "locate" && msg.args?.[1]?.act === true);
+    peeking = msg.op === "formDraft";
     const armed = DIALOG_OPS.has(msg.op) || (msg.op === "extract" && (msg.args?.[0]?.expand === true || msg.args?.[0]?.scroll === true));
     try {
       out = armed ? withDialogs(() => fn(...(msg.args || []))) : fn(...(msg.args || []));
@@ -5754,6 +6010,7 @@
     } finally {
       carried = null;
       acting = false;
+      peeking = false;
     }
     // Every handler resolves its target before its first await, so a heal
     // made now is this request's.

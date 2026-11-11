@@ -61,15 +61,15 @@ test("acting calls on a tab another call is acting on wait their turns in order;
   const third = as(other, "type", { tab: 7, ref: "3", text: "hi" });
   const elsewhere = as(other, "click", { tab: 8, ref: "4" });
   await settled();
-  expect(page.sent).toEqual(["7 click 1", "8 click 4"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "8 formDraft 4", "8 click 4"]);
   page.answer("7 click 1");
   await first;
   await settled();
-  expect(page.sent).toEqual(["7 click 1", "8 click 4", "7 click 2"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "8 formDraft 4", "8 click 4", "7 formDraft 2", "7 click 2"]);
   page.answer("7 click 2");
   expect(await second).toMatchObject({ ok: true });
   expect(await third).toMatchObject({ ok: true });
-  expect(page.sent).toEqual(["7 click 1", "8 click 4", "7 click 2", "7 type 3"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "8 formDraft 4", "8 click 4", "7 formDraft 2", "7 click 2", "7 type 3"]);
   page.answer("8 click 4");
   expect(await elsewhere).toMatchObject({ ok: true });
 });
@@ -87,7 +87,7 @@ test("a call that has waited just under 10 s still gets the tab when it frees, a
   page.answer("7 click 1");
   expect(await first).not.toHaveProperty("note");
   expect(await second).toMatchObject({ ok: true, note: expect.stringMatching(/^this call waited 10 s for its turn \(tab 7's click\), from \d\d:\d\d:\d\d UTC$/) });
-  expect(page.sent).toEqual(["7 click 1", "7 type 2"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "7 type 2"]);
 });
 
 test("a call still waiting after 10 s fails, naming the call that holds the tab and for how long", async () => {
@@ -99,7 +99,7 @@ test("a call still waiting after 10 s fails, naming the call that holds the tab 
   await settled();
   jest.advanceTimersByTime(10_000);
   await expect(second).rejects.toThrow(`tab 7 is busy with click from sleep pid ${agent.pid} for 10 s; wait or use your own tab`);
-  expect(page.sent).toEqual(["7 click 1"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1"]);
   page.answer("7 click 1");
   await first;
 });
@@ -112,7 +112,7 @@ test("reads go ahead on a busy tab, and a wait holds no lane", async () => {
   const waiting = as(other, "wait", { tab: 8, text: "Saved" });
   await settled();
   expect(await as(agent.pid, "type", { tab: 8, ref: "4", text: "hi" })).toMatchObject({ ok: true });
-  expect(page.sent).toEqual(["7 click 1", "7 tabInfo", "8 wait", "8 type 4"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "7 tabInfo", "8 wait", "8 type 4"]);
   page.answer("7 click 1");
   page.answer("8 wait");
   await click;
@@ -128,11 +128,11 @@ test("an agent's read waits for its own acting call on the tab; another agent's 
   const own = as(agent.pid, "info", { tab: 7 });
   expect(await as(other, "info", { tab: 7 })).toMatchObject({ ok: true });
   await settled();
-  expect(page.sent).toEqual(["7 click 1", "7 tabInfo"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "7 tabInfo"]);
   page.answer("7 click 1");
   await click;
   expect(await own).toMatchObject({ ok: true });
-  expect(page.sent).toEqual(["7 click 1", "7 tabInfo", "7 tabInfo"]);
+  expect(page.sent).toEqual(["7 formDraft 1", "7 click 1", "7 tabInfo", "7 tabInfo"]);
 });
 
 // A read that runs again after its agent's action keeps what its first
@@ -156,11 +156,11 @@ test("a call that fails gives the tab to the next in line", async () => {
   await settled();
   const next = as(other, "click", { tab: 7, ref: "2" });
   await settled();
-  expect(page.sent).toEqual(["7 click gone"]);
+  expect(page.sent).toEqual(["7 formDraft gone", "7 click gone"]);
   page.answer("7 click gone");
   await expect(failing).rejects.toThrow("no element gone on the page");
   await settled();
-  expect(page.sent).toEqual(["7 click gone", "7 click 2"]);
+  expect(page.sent).toEqual(["7 formDraft gone", "7 click gone", "7 formDraft 2", "7 click 2"]);
   page.answer("7 click 2");
   expect(await next).toMatchObject({ ok: true });
 });
@@ -202,9 +202,9 @@ test("an inherited asynchronous continuation cannot reuse a composite lane after
   await settled();
   later.resolve();
   await settled();
-  expect(page.sent).toEqual(["7 click hold"]);
+  expect(page.sent).toEqual(["7 formDraft hold", "7 click hold"]);
   page.answer("7 click hold");
   await holder;
   await continuation;
-  expect(page.sent).toEqual(["7 click hold", "7 type later"]);
+  expect(page.sent).toEqual(["7 formDraft hold", "7 click hold", "7 type later"]);
 });

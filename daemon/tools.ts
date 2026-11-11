@@ -32,6 +32,7 @@ import { recordingsTool } from "./recordings.ts";
 import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
+import { afterStep, checkpoint, refill } from "./drafts.ts";
 import { CARD_PHONE } from "./passkey.ts";
 import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, type ConditionalCaptureResult } from "./evidence.ts";
 import { createResearchReport } from "./research.ts";
@@ -1451,24 +1452,32 @@ export function refLines(lines: string[]): string[] {
   return lines.filter((l) => /\[(?:f\d+:)?\d+\]/.test(l)).map((l) => l.trimStart());
 }
 
+// A click that sends a form on (Submit, Next, Continue) keeps what the form
+// holds first, and looks at the page it led to after (drafts.ts).
 export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const ref = opts.ref;
   if (ref !== undefined) {
-    try {
-      return await relay(tab, "click", opts.noWaitAfter === true ? [ref, { noWaitAfter: true }] : [ref]);
-    } catch (error) {
-      if (!(error instanceof HarnessError) || error.effect !== "none" || error.recovery?.kind !== "present") throw error;
-      const { document, target, frame } = error.recovery;
-      const retryRef = frame === undefined || (typeof ref === "string" && /^f\d+:/.test(ref)) ? ref : `f${frame}:${ref}`;
-      return inFront(tab, { tabs: listTabs, activate: activateTab },
-        () => relay(tab, "click", [retryRef, opts.noWaitAfter === true
-          ? { noWaitAfter: true, expectedDocument: document, expectedTarget: target }
-          : { expectedDocument: document, expectedTarget: target }]));
-    }
+    const sent = await checkpoint(tab, [ref]);
+    const result = await clickRef(tab, ref, opts.noWaitAfter === true);
+    return sent ? afterStep(tab, sent, result, opts.noWaitAfter !== true) : result;
   }
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
   throw new HarnessError("invalid_argument", "click needs ref or x+y");
+}
+
+async function clickRef(tab: number, ref: number | string, noWaitAfter: boolean): Promise<unknown> {
+  try {
+    return await relay(tab, "click", noWaitAfter ? [ref, { noWaitAfter: true }] : [ref]);
+  } catch (error) {
+    if (!(error instanceof HarnessError) || error.effect !== "none" || error.recovery?.kind !== "present") throw error;
+    const { document, target, frame } = error.recovery;
+    const retryRef = frame === undefined || (typeof ref === "string" && /^f\d+:/.test(ref)) ? ref : `f${frame}:${ref}`;
+    return inFront(tab, { tabs: listTabs, activate: activateTab },
+      () => relay(tab, "click", [retryRef, noWaitAfter
+        ? { noWaitAfter: true, expectedDocument: document, expectedTarget: target }
+        : { expectedDocument: document, expectedTarget: target }]));
+  }
 }
 
 // The page's answer says whether the field kept the text, never the text:
@@ -1486,10 +1495,14 @@ export async function type(opts: { tab?: number; ref: number | string; text: str
   return { ...Object.fromEntries(Object.entries(answer).filter(([k]) => k !== "value")), typed: `${text.length} chars` };
 }
 
+// An Enter in a one-line field submits its form: it keeps what the form
+// holds first, as a click does.
 export async function press(opts: { tab?: number; ref?: number | string; key: string; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const args = [opts.ref ?? null, str(opts.key, "key")];
-  return relay(tab, "press", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
+  const sent = args[1] === "Enter" ? await checkpoint(tab, args) : null;
+  const result = await relay(tab, "press", opts.noWaitAfter === true ? [...args, { noWaitAfter: true }] : args);
+  return sent ? afterStep(tab, sent, result, opts.noWaitAfter !== true) : result;
 }
 
 // A ref scrolls its element to the middle of the view: on 09-29 an agent
@@ -3544,6 +3557,12 @@ export const TOOLS: Record<string, Tool> = {
     unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],
     run: action(watched((a) => press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean }))),
+  },
+  refill: {
+    desc: "Put back form fields saved before a click or Enter sent the form on, after the page emptied them.",
+    params: { tab: TAB, snapshot: PAGE },
+    required: ["tab"],
+    run: action((a) => refill(a.tab)),
   },
   select: {
     desc: "Choose a dropdown option by label or value; without option, list the options.",

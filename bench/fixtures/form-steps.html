@@ -1,0 +1,41 @@
+<!doctype html>
+<title>Application</title>
+<!-- A two-step application whose check fails on Submit and gives the form
+     back empty, at its first step, with only an error: everything typed
+     into it is gone. -->
+<form id="application" action="/apply" method="post">
+  <fieldset id="one">
+    <label>First name <input name="first_name" autocomplete="given-name"></label>
+    <label>Last name <input name="last_name" autocomplete="family-name"></label>
+    <label>Email <input type="email" name="email" autocomplete="email"></label>
+    <label>Create a password <input type="password" name="password" autocomplete="new-password"></label>
+    <label>Member ID <input name="member_id"></label>
+    <label>Country <select name="country"><option value="">Choose</option><option value="US">United States</option><option value="CA">Canada</option></select></label>
+    <p>Contact by</p>
+    <label><input type="radio" name="contact" value="email"> Email</label>
+    <label><input type="radio" name="contact" value="phone"> Phone</label>
+    <label><input type="checkbox" name="updates"> Send me updates</label>
+    <button type="button" id="next">Next</button>
+  </fieldset>
+  <fieldset id="two" hidden>
+    <label>Cover letter <textarea name="cover"></textarea></label>
+    <label>Card number <input name="card_number" autocomplete="cc-number"></label>
+    <label>Security code <input name="cvv"></label>
+    <label>Verification code <input name="otp" autocomplete="one-time-code"></label>
+    <button>Submit application</button>
+  </fieldset>
+</form>
+<p id="said" role="alert"></p>
+<script>
+  next.addEventListener("click", () => {
+    one.hidden = true;
+    two.hidden = false;
+  });
+  application.addEventListener("submit", (e) => {
+    e.preventDefault();
+    application.reset();
+    two.hidden = true;
+    one.hidden = false;
+    said.textContent = "Something went wrong. Please try again.";
+  });
+</script>

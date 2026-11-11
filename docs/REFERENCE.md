@@ -513,8 +513,8 @@ carrying the page in context.
   inside a paragraph). Digits alone are a ref: write `text=15` for the text
   15 (a day in a date picker). Use a snapshot ref when several elements
   share a label.
-- Each action has its own section: `click`, `type`, `press`, `select`,
-  `hover`, `upload`, `scroll`, `history`, `dialog`, `real_input`
+- Each action has its own section: `click`, `type`, `press`, `refill`,
+  `select`, `hover`, `upload`, `scroll`, `history`, `dialog`, `real_input`
   (`safari guide click`).
 - `type` and `select` on a label's ref, or its text (`getByLabel` in the
   REPL), act on the field it labels: the one it holds or names with `for`,
@@ -601,7 +601,7 @@ carrying the page in context.
   then `real_input`; a passkey or Touch ID prompt that then opens needs the
   user (`handoff`).
 - One acting call runs on a tab at a time: `click`, `type`, `press`,
-  `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`,
+  `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`, `refill`,
   `login_fill`, `card_fill`, `autofill`, and `dialog` or `passwords` when they act.
   Another acting call on that tab waits its turn, up to 10 s, then fails
   with "tab N is busy with click from omp pid P for S s". Reads, `wait`,
@@ -646,6 +646,11 @@ Every answer cuts the value of an address parameter named `code`, `state`,
 `session`, `auth`, `password`, or `otp`, in any case, to `...`: in tabs,
 `info`, `browsing_history`, `net`, snapshot links, and where `open`,
 `goto`, or an action went. `order=7` stays as it is.
+A form's fields are kept on this Mac for a day before a `click` or an
+Enter sends the form on (`refill`), readable by the user alone; a
+password, a one-time code, a card, or a private number's field never is,
+nor a field holding a secret the harness typed, nor a value shaped like
+one.
 
 Signing in, in this order:
 
@@ -2048,6 +2053,14 @@ what an action reports).
   claimed; two agents acting at the same moment may each see the other's
   file. A download that starts after the action's own short wait for the
   page shows up in `~/Downloads` alone.
+- A click that sends a form on (its submit button, or a control whose
+  words say Submit, Next, Continue, Send, Save, Pay and the like; not one
+  that searches, filters, or sorts) first keeps what the form's fields
+  hold (`refill`). When the page then shows the form with those fields
+  emptied, or a sign-in or an error page, the answer's `note` says so and
+  names `refill`. A form's last step that went through deletes its draft.
+  A click at x/y and `real_input` (so a model's click on a site marked
+  `real`) keep nothing.
 
 ## type
 
@@ -2129,7 +2142,39 @@ what an action reports).
 Enter in a one-line text field submits its form unless the page took the
 key (cancelled its keydown or keypress); elsewhere, a text area included,
 it goes only to the page. It reports what it caused as `click` does
-(`safari guide reference acting`), files it downloaded included.
+(`safari guide reference acting`), files it downloaded included. An Enter
+that submits a form keeps its fields first, as a click does (`refill`).
+
+## refill
+
+`refill {tab}` puts back what the tab's form held just before a `click` or
+an Enter sent it on (Submit, Next, Continue), once the page emptied it: a
+check that failed and cleared the fields, an error page, or a sign-in in
+between. It fills only fields still empty and lists still at the page's
+own choice, sets checkboxes and radios as they were, and sends nothing:
+read the form, then click Submit yourself. It answers `{ok, filled}`, with
+`left` naming by label the fields that hold other text or are locked,
+`missing` those the page no longer has, and `lost` those the page emptied
+again; never a value. Only a frame on the page the form was on, at the
+same path and query, gets its fields: on a job board every company's
+application shares the site, and one's answers never go into another's.
+
+- Kept: the text, choices, checkboxes, and radios of the form's fields on
+  show, enabled, and not read-only, 5,000 characters a field and 30,000 a
+  form at most. Never a password, a one-time code, a card's number or
+  security code, a social security, passport, license, tax, or bank
+  number, a field the harness typed a secret into, or a value shaped like
+  one of these.
+- The drafts live in `~/.local/share/safari-harness/form-drafts`, the
+  folder 0700 and each site's file 0600, named by a hash and not the site;
+  the form and its page are kept as hashes too. A draft is deleted a day
+  after its last save, and once its form's last step went through: the
+  page left the form for one that is no error or sign-in, or emptied it
+  and said, in its title, an alert, or a status line, that it went
+  through. Only pages on http or https keep one, and only a form with two
+  fields or more besides checkboxes.
+- Nothing kept for the page fails with `nothing to refill`: type the
+  fields.
 
 ## select
 
