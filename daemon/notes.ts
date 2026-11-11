@@ -190,6 +190,18 @@ export function readerFor(url: string, name: string): Reader | Shipped {
   throw new Error(`no reader ${name} saved for ${host}; ${saved.length ? `saved: ${saved.join(", ")}` : "save one with learn {site, reader, expression}"}`);
 }
 
+// The readers saved for the page at url's site and the sites above it,
+// nearest first, each name once, with the page a saved one was written
+// from: a model that reads many pages of one kind is offered them (tools.ts).
+export function readersOn(url: string): { name: string; source?: string }[] {
+  const names = new Set<string>();
+  return sitesOf(siteHost(url)).flatMap((site) => Object.entries(readersAt(site)).flatMap(([name, reader]) => {
+    if (names.has(name)) return [];
+    names.add(name);
+    return [{ name, ...("source" in reader && reader.source ? { source: reader.source } : {}) }];
+  }));
+}
+
 // ---------- real input ----------
 
 // A site whose controls ignore scripted input: on 09-30 EOIR's Submit and

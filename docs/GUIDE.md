@@ -88,6 +88,11 @@ Turns
   checks the returned content, not account identity. It never falls back
   to an anonymous request. For a JSON request the page made that you need
   to run again, read `safari guide request_catalog`.
+- Reading one kind of page again and again (a pull request's checks, a
+  doc page, listings): the third read's `hint` gives a faster route, the
+  page's own JSON request (`request_catalog try`, then the one `save` call
+  its answer gives) or the site's readers. Take it instead of loading the
+  page again.
 - `innerText` empty on a page that shows text: shadow DOM. Read it with
   `snapshot` or `extract`, or `sh.text(sh.q(selector))` in `eval`.
 - Photo addresses: `extract {as: "images"}`, not srcset scripts. A PDF:
