@@ -305,10 +305,12 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         return gate()
     case "find":
         guard let width = (req["width"] as? NSNumber)?.doubleValue, let height = (req["height"] as? NSNumber)?.doubleValue else { throw Failure(message: "find needs width and height") }
+        var count = 0
         guard let ids = poll(3000, { () -> [CGWindowID]? in
-            let ids = try? windowsOfSize(width, height)
-            return ids?.count == 1 ? ids : nil
-        }) else { throw Failure(message: "Safari has no one window of \(Int(width)) x \(Int(height)) points") }
+            let ids = (try? windowsOfSize(width, height)) ?? []
+            count = ids.count
+            return ids.count == 1 ? ids : nil
+        }) else { throw Failure(message: "Safari has \(count) windows of \(Int(width)) x \(Int(height)) points") }
         return ["window": ids[0]]
     case "dismiss":
         let pid = try safari().pid

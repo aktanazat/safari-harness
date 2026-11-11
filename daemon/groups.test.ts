@@ -225,6 +225,20 @@ test("a window that ended after the keeper looked gets no group", async () => {
   expect(told).toEqual([{ op: "making", name: TRIP }]);
 });
 
+// 11-11: Safari held two windows of a new agent window's size, and the
+// keeper left it plain with no line in keeper.log.
+test("a window the keeper cannot find stays plain, and keeper.log says why", async () => {
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+  const two = "Safari has 2 windows of 1003 x 781 points";
+  const twice: Helper = (op, a) => (op === "find" ? Promise.resolve({ ok: false, error: two }) : h(op, a));
+  const { d, told } = daemon([waiting]);
+  const lines: string[] = [];
+  expect(await pass(twice, d, new Map(), (line) => { lines.push(line); })).toBe(false);
+  expect([s.menus, groups()]).toEqual([0, []]);
+  expect(told).toEqual([{ op: "plain", name: TRIP, why: two }]);
+  expect(lines).toEqual([`making ${TRIP}: ${two}`]);
+});
+
 // A handoff shows Safari for his passkey while the keeper makes another
 // agent's group: before, the keeper took that for its own step's doing,
 // switched him back to his terminal, and turned group work off.
