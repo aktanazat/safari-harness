@@ -8,7 +8,7 @@ AWS event pages (`events.builder.aws.com/<code>`) sign in with an AWS Builder ID
 
 ## Signing in
 - The page asks for the email first, then the password. "Continue with Google" on an email whose Builder ID uses a password ends at "This email is already associated with an AWS Builder ID using a different sign-in method", with a button back to the original method.
-- A new browser is asked for a code after the password. The mail comes from `no-reply@login.awsapps.com` (not signin.aws), subject "Verify your identity": 6 digits, valid 10 minutes, a new one after 60 seconds. Type it with `secret: "page"` from the opened mail.
+- A new browser is asked for a code after the password. The mail comes from `no-reply@login.awsapps.com` (not signin.aws), subject "Verify your identity": 6 digits, valid 10 minutes, a new one after 60 seconds. Type it with `type {text: "{{code}}", secret: "mail", sender: "login.awsapps.com"}`, as its domain is not the page's.
 
 ## Resetting the password
 - "Forgot password?" switches the page to "Forgot password" / "Security check" at the same address: "Please click verify to start your security challenge", with Verify and Continue. Verify opens a captcha. Wait for the page to change; if it stays, report that the reset cannot continue without a human check rather than sending a handoff.

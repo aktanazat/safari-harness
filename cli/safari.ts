@@ -78,7 +78,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari click <ref> --tab N                 click by snapshot ref
   safari clickat <x> <y> --tab N             click by coordinates
   safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
-                                             code texted to him (--secret passwords: his saved one;
+                                             code texted or mailed to him (--secret mail: Gmail only;
+                                             --secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
   safari press <key> [--ref R] --tab N       press a key
   safari select <ref> [option] --tab N       choose a dropdown option; none lists them

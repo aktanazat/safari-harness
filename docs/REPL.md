@@ -143,8 +143,10 @@ action result is not safe to repeat until a fresh read shows what happened.
   `getByRole(role, {name})`, `getByPlaceholder`; their text never reads as
   a ref.
 - `fill(text, opts)` and `type(text, opts)` take where a `{{code}}` in text
-  comes from, as the type tool does: `{secret: "page", from: <mail tab id>}`
-  for an emailed code, `{secret: "passwords"}` for an authenticator code.
+  comes from, as the type tool does: none for a code texted or mailed to
+  the owner, `{secret: "mail"}` for a mailed one, `{secret: "page", from:
+  <tab id>}` for one a tab shows, `{secret: "passwords"}` for an
+  authenticator code.
   A value from the owner's vault is typed from the shell instead:
   `mem-secret run VAR -- safari type <ref> '{{code}}' --tab N --secret env
   --env VAR` (only a CLI call's own environment is read).

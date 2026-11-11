@@ -14,7 +14,7 @@ This is the user's pharmacy account: prescriptions, stores, and payment. Show th
 ## Signing in
 - Email first, then a one-time code or a passkey; there is no password step. `goto` `https://www.cvs.com/account-login/look-up`, click the email field, type the email, and click `Continue`. A "Passkey not recognized" dialog follows; `Sign in another way` goes to `/account-login/one-time-passcode`.
 - That page shows its form, or with the "Keep me signed in" cookie goes to the home page by itself within about 10 s, with no code, and the prescription list loads.
-- If it stays on "Choose how to get your code", pick `Email` and `Send code`. The code comes from info@alerts.cvs.com ("Your requested verification code from CVS"); by text it comes from 63641, read with `imessage_wait_code`. Never repeat it. A passkey prompt is the user's to approve: call `handoff` and let him.
+- If it stays on "Choose how to get your code", pick `Email` and `Send code`. The code comes from info@alerts.cvs.com ("Your requested verification code from CVS"): type it with `{{code}}` and `secret: "mail"`. By text it comes from 63641: type it with `{{code}}` and `sender: "63641"`. Never repeat it. A passkey prompt is the user's to approve: call `handoff` and let him.
 - Try the sign-in once. The email step repeated 10 minutes after a failed try once brought Akamai's "Processing your request" page (an iframe titled "Challenge Content") and "It looks like you're having problems connecting". That is a bot check: the result carries `challenge`. Wait for it to clear, then check the prescriptions page before trying again; if it stays, report the blocked sign-in rather than handing it off.
 
 ## Refilling

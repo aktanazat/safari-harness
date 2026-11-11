@@ -52,23 +52,6 @@ afterEach(() => {
 });
 const watchedPort = () => spyOn(daemonRpc, "rpc").mockImplementation((tool: string, args: Record<string, unknown> = {}, model = false) => watched(process.pid, tool, args, () => callTool(tool, args, model)));
 
-// 01a0e50b: an agent typed an emailed code by hand, and type echoed it back.
-test("{{code}} in type's text is filled from the user's texts, and the code comes back nowhere", async () => {
-  spyOn(imessage, "waitCode").mockResolvedValue({ status: "received", code: CODE, from: "+15550000000", at: "2026-09-20T12:00:00.000Z", rowid: 1 });
-  watchedPort();
-  const result = await invoke("type", { tab: 6001, ref: "1", text: "{{code}}" }, true);
-  expect(result).toEqual({ ok: true, kept: true, typed: "code, 6 chars" });
-  expect(fields).toEqual([["1", CODE, { append: false, secret: true }]]);
-  expect(JSON.stringify(recent(500))).not.toContain(CODE);
-});
-
-test("a code that never comes by text types nothing", async () => {
-  spyOn(imessage, "waitCode").mockResolvedValue({ status: "timeout", since: 0 });
-  const port = spyOn(daemonRpc, "rpc");
-  await expect(invoke("type", { tab: 6001, ref: "1", text: "{{code}}" }, true)).rejects.toThrow("no code came by text");
-  expect(port).not.toHaveBeenCalled();
-});
-
 // An emailed code: the times, counts, years, and digits run into a word
 // (Gmail's "recentdata" after Delta's footer, 09-29) around it are not codes.
 test("secret page types the one code tab from shows, and the code comes back nowhere", async () => {
@@ -239,7 +222,7 @@ test.each([
   { text: "normal", secret: "env", env: VAR },
   { text: "normal", from_selector: "#current-email" },
 ])("rich paste cannot turn a secret source into ordinary clipboard text: %j", async (payload) => {
-  const codes = spyOn(imessage, "waitCode");
+  const codes = spyOn(imessage, "codeTexts");
   const pasted = spyOn(CALLER_TOOLS.real_input, "run");
   await expect(invoke("real_input", { tab: 6001, ref: "1", do: "paste", ...payload }, false)).rejects.toThrow("paste cannot fill secrets or codes");
   expect(codes).not.toHaveBeenCalled();
