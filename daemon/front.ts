@@ -7,6 +7,7 @@
 // Accessibility permission, so both the caller and the launchd daemon can
 // run them; each passes its own way of reaching tabs.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -144,7 +145,20 @@ const PAUSE_MS = 1000;
 const PAUSE_MAX_MS = 10000;
 let presentation = Promise.resolve();
 
+// The tab a call holds in front, for the calls its act makes. A real_input
+// click that check-live asked for inside its own hold on the tab waited
+// for that hold to end, and the hold for the click (11-11, 12 minutes).
+// Such a call acts at once, the tab being in front already; one for
+// another tab fails, since showing that tab would take the screen from the
+// hold. A call made after the hold ends waits its turn.
+const holding = new AsyncLocalStorage<{ tab: number; over: boolean }>();
+
 export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>, check?: () => void): Promise<T> {
+  const held = holding.getStore();
+  if (held && !held.over) {
+    if (held.tab === tab) return act();
+    throw new Error(`tab ${held.tab} is in front for this call, so tab ${tab} cannot come forward inside it`);
+  }
   const previous = presentation;
   const done = Promise.withResolvers<void>();
   presentation = done.promise;
@@ -155,9 +169,11 @@ export async function inFront<T>(tab: number, ops: TabOps, act: () => Promise<T>
       throw new Error(`the user kept typing or clicking for ${PAUSE_MAX_MS / 1000} s, so the tab stayed behind his app and nothing was done; try again in a moment`);
     }
     const giveBack = await show(tab, ops, check);
+    const hold = { tab, over: false };
     try {
-      return await act();
+      return await holding.run(hold, act);
     } finally {
+      hold.over = true;
       await giveBack();
     }
   } finally {

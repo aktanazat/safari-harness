@@ -13,6 +13,7 @@ import { watched } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
 import * as daemonRpc from "./rpc.ts";
 import * as spaces from "./spaces.ts";
+import { rowsOf } from "./tabs-view.ts";
 import { callTool } from "./tools.ts";
 
 // real_input clicks a tab that is not in front by pressing the element
@@ -283,6 +284,16 @@ test("the tab Safari shows while it is the app in front takes the real mouse: ac
   m.app = front.SAFARI;
   expect(await click(3)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect(m.asked.filter((a) => a.startsWith("pressMark"))).toEqual([]);
+});
+
+// check-live holds its popup page's tab in front itself and asks for a real
+// click there; on 11-11 the click waited for that hold to end, and the hold
+// for the click, for 12 minutes.
+test("a real click asked for while its caller holds the tab in front clicks there at once", async () => {
+  const m = mac();
+  const ops = { tabs: async () => rowsOf(await daemonRpc.rpc("tabs", { all: true })), activate: (tab: number) => daemonRpc.rpc("activate", { tab }) };
+  expect(await front.inFront(21, ops, () => invoke("real_input", { tab: 21, do: "click", ref: "#go" }, true))).toEqual({ ok: true, at: { x: 140, y: 160 } });
+  expect({ paused: run(m, "idle").length, clicks: run(m, "click") }).toEqual({ paused: 1, clicks: [["click", "140", "160", "--count", "1", "--button", "left"]] });
 });
 
 test("the real mouse clicks where the tab's page is: negative points on a display above the main one, and nothing where Safari's front window shows a page of another shape", async () => {
