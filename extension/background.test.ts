@@ -7,6 +7,7 @@
 import { expect, test } from "bun:test";
 
 const SOURCE = `${await Bun.file(new URL("./upgrades.js", import.meta.url)).text()}\n${await Bun.file(new URL("./background.js", import.meta.url)).text()}`;
+const START = await Bun.file(new URL("./start.js", import.meta.url)).text();
 
 type Msg = { __safariHarness?: number; id: string; op: string; args?: unknown[]; kept?: unknown };
 type Reply = { id: string; value?: unknown; error?: string; failure?: unknown };
@@ -228,6 +229,22 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     onUpdated.fire(tab.id, { status: "complete" }, row(tab));
   }
 
+  // start.js as Safari's manifest runs it in doc, the document in tab's
+  // frame frameId. Safari runs it again in each open page as the extension
+  // reloads (11-11), and its messaging reaches this load either way.
+  // Answers what background.js answered its report, if it reported.
+  function startIn(tab: Tab, doc: Doc, frameId = 0): Promise<unknown> {
+    let reply: unknown;
+    const sendMessage = (m: unknown) => {
+      const sender = { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId };
+      [reply] = [...onMessage.listeners].map((f) => f(m, sender)).filter((r) => r !== undefined);
+      return Promise.resolve(reply);
+    };
+    const page = { addEventListener: () => {}, dispatchEvent: () => true };
+    new Function("window", "browser", "document", "addEventListener", START)(doc.world, { runtime: { sendMessage } }, page, () => {});
+    return Promise.resolve(reply);
+  }
+
   // When background.js asked Safari to reload the extension, by the clock.
   const reloadsAsked: number[] = [];
   const browser = {
@@ -432,13 +449,15 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       copyIn(tab, tab.doc, reported);
       return tab;
     },
-    // A tab whose page was open since before the extension reloaded: its
-    // copy of the script holds the claim and answers no one. was is the id
-    // Safari gave the tab before the reload, which its page keeps from when
-    // it reported in (content.js).
-    openFromBefore(url: string, was?: number): Tab {
+    // A tab whose page was open since before the extension reloaded:
+    // start.js ran in it then, as in every page, and in a tab agents worked
+    // in (copy) so did content.js, whose copy holds the claim and answers no
+    // one. was is the id Safari gave the tab before the reload, which its
+    // page keeps from when it reported in.
+    openFromBefore(url: string, was?: number, copy = true): Tab {
       const tab = { id: nextTab++, doc: new Doc(url, false) };
-      tab.doc.world.__safariHarnessInjected = {};
+      tab.doc.world.__safariHarnessStart = true;
+      if (copy) tab.doc.world.__safariHarnessInjected = {};
       if (was !== undefined) Object.assign(tab.doc.world, { __safariHarnessTab: was, __safariHarnessWindow: 1 });
       tabs.set(tab.id, tab);
       return tab;
@@ -544,12 +563,9 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     // start.js alone, as Safari's manifest leaves a page, and reports in.
     // Answers what background.js answered it.
     report(tab: Tab, doc: Doc, frameId = 0): Promise<unknown> {
-      doc.world.__safariHarnessStart = true;
       if (frameId === 0) tab.doc = doc;
       else (tab.frames ??= new Map()).set(frameId, doc);
-      const sender = { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId };
-      const [reply] = [...onMessage.listeners].map((f) => f({ __safariHarnessStart: 1 }, sender)).filter((r) => r !== undefined);
-      return Promise.resolve(reply);
+      return startIn(tab, doc, frameId);
     },
     // He sizes window.
     size(window: number, width: number, height: number) {
@@ -582,10 +598,14 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     },
     // The keepalive alarm wakes the extension, which connects unless it is.
     wake() { browser.alarms.onAlarm.fire({ name: "sh-keepalive" }); },
-    // Safari loads the extension again (a deploy), its tabs still open, and
-    // empties session storage; the background page's variables stay here.
-    reloaded() {
+    // Safari loads the extension again (a deploy), its tabs still open,
+    // empties session storage, and runs start.js again in each page, whose
+    // report background.js answers before it reads the pages' ids (11-11);
+    // the background page's variables stay here.
+    async reloaded() {
       kept.clear();
+      for (const tab of tabs.values()) for (const [frameId, doc] of [[0, tab.doc] as const, ...(tab.frames ?? [])]) if (!doc.shut) startIn(tab, doc, frameId);
+      await settle();
       browser.runtime.onInstalled.fire();
     },
     reloadsAsked,
@@ -1371,16 +1391,20 @@ test("a popup that finished loading before the harness claimed it is recorded on
 // A deploy reloads the extension, and Safari gives every tab a new id; the
 // daemon, and agents through it, still hold the old ones. An extension that
 // kept the new ids to itself would leave the daemon behind, and a daemon
-// the same deploy restarted would never hear them.
+// the same deploy restarted would never hear them. On 11-11 Safari ran
+// start.js again in each open page as the extension reloaded, and its
+// report put the new ids in place of the old ones: a tab open from before
+// was gone by the id it had.
 test("a reloaded extension tells the daemon each tab's new id, and again each time it connects", async () => {
   const b = await start();
   const tab = b.openFromBefore("https://example.com/", 3);
-  b.reloaded();
+  const untouched = b.openFromBefore("https://example.org/", 4, false);
+  await b.reloaded();
   await b.clock.advance(0);
   b.drop();
   b.reconnect();
   await b.clock.advance(0);
-  const renumbered = { op: "tab", kind: "renumbered", tabs: { 3: tab.id } };
+  const renumbered = { op: "tab", kind: "renumbered", tabs: { 3: tab.id, 4: untouched.id } };
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([renumbered, renumbered]);
 });
 
@@ -1398,7 +1422,7 @@ test("a daemon reconnect confirms unchanged owned tabs but never personal, close
   b.reconnect();
   await b.clock.advance(0);
   expect(b.told.filter(m => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { [owned.id]: owned.id } }]);
-  b.reloaded();
+  await b.reloaded();
   await b.clock.advance(0);
   b.told.length = 0;
   b.drop();
@@ -1434,7 +1458,7 @@ test("a reloaded extension tells the daemon each tab's new id while Safari refus
   const b = await start();
   const tab = b.openFromBefore("https://example.com/", 3);
   b.refuseWrites();
-  b.reloaded();
+  await b.reloaded();
   await b.clock.advance(0);
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: tab.id } }]);
 });

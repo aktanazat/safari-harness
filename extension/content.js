@@ -6034,7 +6034,7 @@
     }
     return Promise.resolve(settle(out));
   }
-  // A page open since before the extension reloaded keeps this world bound
+  // A page open since before the extension reloaded keeps this copy bound
   // to the old load's messaging, which reaches no one: the extension asks
   // through executeScript then (sendUntilNavigation in background.js).
   window.__safariHarnessRun = (msg) => (window.__safariHarnessInjected === claim ? answer(msg) : null);

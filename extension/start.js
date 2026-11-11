@@ -8,6 +8,9 @@
 // stands in for content.js where the page must hear before any agent comes.
 
 (() => {
+  // Safari runs this again in each page open as the extension reloads, in
+  // the world its first run left (11-11).
+  const again = window.__safariHarnessStart === true;
   window.__safariHarnessStart = true;
   const api = (typeof browser !== "undefined" && browser.runtime) ? browser : chrome;
 
@@ -30,7 +33,10 @@
     // The page drops its request log and keeps its own fetch.
     if (r) document.dispatchEvent(new Event("__sh_net_off"));
   });
-  report();
+  // A second run reports nothing, as content.js's guard had a copy do: its
+  // answer would put the tab's new ids in place of the old ones adopt (in
+  // background.js) reads to map each old id to its new one.
+  if (!again) report();
   addEventListener("pageshow", (e) => { if (e.persisted && !window.__safariHarnessInjected) report(); });
 
   // Safari gives a tab a page opens no opener, so the page says one is
