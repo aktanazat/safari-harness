@@ -661,6 +661,12 @@ function redeemDraft(id: unknown, payload: string): void {
   }
 }
 
+function oneHandle(to: string): boolean {
+  if (/^[^\s@]+@[^\s@]+$/.test(to)) return true;
+  const digits = to.replace(/\D/g, "").length;
+  return digits >= 7 && digits <= 15 && /^(?:(?:tel|sms):)?\+?[\d\s().\p{Pd}\u2212]+$/iu.test(to);
+}
+
 export async function send(opts: { to: string; text?: string; files?: string[]; approved?: string | boolean }) {
   const text = String(opts.text ?? "");
   const files = filesToSend(opts.files);
@@ -671,10 +677,10 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
   try {
     const names = nameIndex(loadContacts());
     let c: ChatRow | null = null;
-    // A new conversation is allowed only to an explicit phone number or email,
-    // and a bare one means that person, never a group they are in.
-    const handleLike = to.includes("@") || handleKey(to).length >= 10;
-    const bare = /^[^\s@]+@[^\s@]+$/.test(to) || (handleKey(to).length >= 7 && !/\p{L}/u.test(to.replace(/^(?:tel|sms):/i, "")));
+    // A new conversation is allowed only to one explicit phone number or
+    // email, and a bare one means that person, never a group they are in.
+    const bare = oneHandle(to);
+    const handleLike = bare && (to.includes("@") || handleKey(to).length >= 10);
     try {
       c = resolveChat(db, to, names, bare);
     } catch (e) {
