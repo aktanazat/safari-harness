@@ -787,6 +787,27 @@ benchRows("replacement identity in WebKit", [
     ],
   },
   {
+    name: "a ref number the page wrote on a control is never given to a second control",
+    page: identity,
+    steps: [
+      evaluate(`(() => { document.querySelector("button").setAttribute("data-sh-ref", "1"); return true; })()`, true),
+      { op: "snapshot" },
+      { op: "click", args: ["1"] },
+      approvals(["A"]),
+    ],
+  },
+  {
+    name: "a huge or fractional ref number the page wrote cannot derail the count of refs after an extension takeover",
+    page: identity,
+    steps: [
+      evaluate(`(() => { document.getElementById("result").setAttribute("data-sh-ref", "1e300"); document.body.setAttribute("data-sh-ref", "0.5"); return true; })()`, true),
+      { takeover: true },
+      { op: "snapshot" },
+      { op: "click", args: ["1"] },
+      approvals(["A"]),
+    ],
+  },
+  {
     name: "an action on a ref the page redrew as another control is refused before any event until a snapshot prints it again",
     page: targets,
     steps: [
