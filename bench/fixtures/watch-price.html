@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  .was { text-decoration: line-through; }
+  .gone { display: none; }
+  .plain { text-decoration: none; position: relative; }
+  .plain::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid; }
+</style>
+</head>
+<body>
+  <div class="struck"><span class="was">$129.99</span><span>$79.99</span></div>
+  <div class="del"><del>$99.00</del><b>$64.50</b></div>
+  <div class="s-hidden"><s>$1,499.00</s> <span class="gone">$9.99</span> $1,299.00</div>
+  <div class="del-restyled"><del class="plain">$99.00</del> $74.00</div>
+  <div class="split"><span>$</span><span>79</span><span>.</span><span>49</span></div>
+  <div class="sup">$1,299<sup>.99</sup></div>
+</body>
+</html>

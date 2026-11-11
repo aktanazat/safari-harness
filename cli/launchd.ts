@@ -15,7 +15,7 @@ import { connectHost } from "../daemon/host.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
 import { alert } from "../daemon/phone.ts";
 import { ReplSession } from "../daemon/repl.ts";
-import { lastValue, parseWatch, runWatch, stateFile, type How, type Watch } from "../daemon/watch.ts";
+import { history, lastValue, parseWatch, runWatch, stateFile, type HistoryRow, type How, type Watch } from "../daemon/watch.ts";
 import { isRunning, loadSession, runSession, type SessionRecord } from "../daemon/sessions.ts";
 
 const HOME = homedir();
@@ -332,15 +332,25 @@ export async function routineAddScript(name: string | undefined, file: string, s
   });
 }
 
-export async function routineAddWatch(name: string | undefined, url: string, reads: Partial<Record<How, string>>, schedule: Schedule): Promise<string> {
+export async function routineAddWatch(name: string | undefined, url: string, reads: Partial<Record<How, string>>, kind: string | undefined, schedule: Schedule): Promise<string> {
   const n = checkName(name);
-  const watch = await parseWatch(url, reads);
+  const watch = await parseWatch(url, reads, kind);
   return replaceRoutine(n, async () => {
     if (existsSync(join(ROUTINES, `${n}.md`)) || existsSync(join(ROUTINES, `${n}.js`))) throw new Error(`routine ${n} runs a model or a script; remove it first, or give the watch another name`);
     await rm(stateFile(n), { force: true });
     await saveRoutine({ name: n, schedule, created: new Date().toISOString(), watch });
-    return `watch ${n} scheduled ${describe(schedule)}: ${watch.how} ${watch.what} on ${url}`;
+    return `watch ${n} scheduled ${describe(schedule)}: ${watchOf(watch)}`;
   });
+}
+
+const watchOf = (w: Watch) => `${w.kind ? `${w.kind} ` : ""}${w.how} ${w.what} on ${w.url}`;
+
+// The watch's series of readings, oldest first.
+export async function routineHistory(name: string | undefined): Promise<HistoryRow[]> {
+  const n = checkName(name);
+  const meta = await readMeta(n);
+  if (!meta?.watch) throw new Error(meta ? `routine ${n} is not a watch; only a watch keeps readings` : `no routine named ${n}`);
+  return history(n, meta.watch.kind);
 }
 
 export async function routineList(): Promise<Array<{ name: string; schedule: string; loaded: boolean; paused: boolean; pauseReason?: string; session?: string; watch?: string; lastValue?: string; lastRun?: string }>> {
@@ -356,7 +366,7 @@ export async function routineList(): Promise<Array<{ name: string; schedule: str
       name: meta.name, schedule: describe(meta.schedule), loaded, paused: meta.paused === true,
       ...(meta.pauseReason ? { pauseReason: meta.pauseReason } : {}),
       ...(meta.session ? { session: meta.session.id } : {}),
-      ...(meta.watch ? { watch: `${meta.watch.how} ${meta.watch.what} on ${meta.watch.url}`, lastValue: lastValue(meta.name) } : {}),
+      ...(meta.watch ? { watch: watchOf(meta.watch), lastValue: lastValue(meta.name) } : {}),
       lastRun: existsSync(last) ? (await readFile(last, "utf8")).trim() : undefined,
     });
   }

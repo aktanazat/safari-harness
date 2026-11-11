@@ -3124,6 +3124,9 @@ safari routine add stock --every 30 --watch https://example.com/item --selector 
 safari routine add rate --every 60 --watch https://example.com/rates --text "30-year fixed ([0-9.]+)%"
 safari routine add cart --every 15 --watch https://example.com/cart --eval "document.querySelectorAll('.item').length"
 safari routine add orders --at 09:00 --watch https://example.com/orders --replay orders
+safari routine add tv --every 60 --watch https://example.com/tv --selector ".price" --kind price
+safari routine add dmv --every 15 --watch https://example.com/book --selector ".slot" --kind availability
+safari routine history tv
 ```
 
 - Give one way to read the value: `--selector` (the element's text),
@@ -3134,18 +3137,51 @@ safari routine add orders --at 09:00 --watch https://example.com/orders --replay
   explicit current request, parameter values and the same approval gates.
 - Each run opens the page in a background tab, reads the value, and closes
   the tab. The first run only records the value. After that, a different
-  value alerts `<name>: <old> -> <new> (<url>)`. The last value is kept in
-  `~/.local/share/safari-harness/state/<name>.json`.
+  value alerts `<name>: <old> -> <new> (<url>)`.
+- Every reading goes into the watch's series: its last 100, each cut to
+  2,000 characters, in `~/.local/share/safari-harness/state/<name>.json`,
+  which only the user's account can read. `safari routine history <name>`
+  prints them oldest first, each with its time and, on a price watch, the
+  price read from it, or, on an availability watch, whether it counted as
+  open (`--json` for one line).
+- `--kind price` alerts only on a real drop: when the price falls below
+  every price in the series, as `<name>: price dropped to <price>, below
+  <lowest>, the lowest of the last <n> readings (<url>)`. A rise, a return
+  to an older price, or a new wording around the same price alerts no one.
+  The price is the reading's first amount, the first with a currency mark
+  when any has one, passing over amounts after `was`, `list`, `regular`,
+  `original`, `compare at`, `MSRP`, `typical price` or `save`, amounts
+  before `off`, and percentages. It reads `1,299.00`, `1,29,999`, `3.459`
+  and `12,99`; a number it cannot read whole (`1.299,00`) is no price. With
+  `--selector` it also leaves out crossed-out text (`s`, `del`, `strike`, a
+  line through it) and hidden text, so a sale's struck "was" price is never
+  read as the price. A reading with no price exits 1 with `no price in
+  <value>`, and is kept.
+- `--kind availability` alerts the first time something opens after a
+  reading of none, with what opened: `<name>: open now: <reading> (<url>)`.
+  While it stays open it alerts no one, however the reading changes; once
+  it reads none again, the next opening alerts again. None is a page that
+  shows nothing for the read (no element, no match, an empty eval), a
+  reading of `0`, `[]`, `false` or `none`, or one that says `sold out`,
+  `out of stock`, `unavailable`, `not (currently) available`, `none
+  available`, `nothing left`, `fully booked`, `notify me`, `coming soon` or
+  `no appointments` (or slots, times, dates, openings, tickets, seats),
+  anywhere in it. So read only the slots: a selector that matches only an
+  open slot is the surest read, and a page that lists a closed day beside
+  an open one reads as none. A page that breaks and shows nothing reads as
+  none too, not as an error. `routine history` shows how each reading
+  counted.
 - A bot check or a sign-in page where the value should be alerts
   `<name> needs you: <site> shows a check` (or `a sign-in page`), at most
   once a day. The run never solves it; once he clears it, the next run
   reads the value again.
-- `routine list` shows each watch's last value and last run; `routine run
-  <name>` runs it now.
+- `routine list` shows each watch's kind, last value and last run;
+  `routine run <name>` runs it now.
 - The alerts count toward the 6 an hour. A run whose alert cannot go keeps
-  the old value, exits 1, and notes `the user was not told: <why>`; the
-  next run tries again.
+  the series as it was, exits 1, and notes `the user was not told: <why>`;
+  the next run tries again.
 - A watch cannot take the name of a routine that runs a model.
+  Adding a watch again under its name starts its series over.
 
 ### Scripts: a fixed task at a set time
 
