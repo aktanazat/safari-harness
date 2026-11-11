@@ -18,7 +18,7 @@ import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
-import { firstNotes, learn, pageHost, readerFor, realInputSite, realInputSites } from "./notes.ts";
+import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
 import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAnswer, type Page } from "./map.ts";
@@ -29,7 +29,8 @@ import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.t
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
-import { endpointOf } from "./request-catalog.ts";
+import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
+import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { CARD_PHONE } from "./passkey.ts";
 import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, type ConditionalCaptureResult } from "./evidence.ts";
@@ -2329,7 +2330,9 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
   }
   const page = (await relay(tab, "tabInfo")) as { url?: string };
   if (URL.parse(page.url ?? "")?.origin !== requested.origin) throw new HarnessError("unavailable", "the owned site tab moved to another site; open a signed-in page there first");
-  const response = (await pageFetch({ tab, url: requested.href, maxBytes: limit, pageOnly: true, ...(format === "json" ? { headers: { accept: "application/json" } } : {}) })) as { status?: number; url?: string; type?: string | null; text?: string; truncated?: boolean; note?: string };
+  // Many pages' scripts mark their JSON requests so: on 11-11 GitHub
+  // answered a pull request's page_data/status_checks 406 without it.
+  const response = (await pageFetch({ tab, url: requested.href, maxBytes: limit, pageOnly: true, ...(format === "json" ? { headers: { accept: "application/json", "x-requested-with": "XMLHttpRequest" } } : {}) })) as { status?: number; url?: string; type?: string | null; text?: string; truncated?: boolean; note?: string };
   const final = URL.parse(response.url ?? "");
   if (!final || final.origin !== requested.origin || /\/(?:login|log-in|signin|sign-in|captcha|challenge)(?:\/|$)/i.test(final.pathname) || final.pathname === "/account/access") throw new HarnessError("unavailable", "the site redirected this read to sign-in or another site; open the page and complete its sign-in first");
   if (response.status === undefined || response.status < 200 || response.status >= 300) throw new HarnessError("unavailable", `the signed-in page answered HTTP ${response.status ?? "unknown"}`);
@@ -3153,6 +3156,126 @@ function readerHint(tab: unknown, result: unknown): unknown {
   return n === 3 ? beside(result, "hint", `a third eval on ${host}: save a script you run again as a reader, learn {site: "${host}", reader: "<name>", expression}, then eval {tab, reader: "<name>"}`) : result;
 }
 
+// A model's third read of one kind of page in a task (scrapes.ts) is
+// offered, once, a faster way to the same data, beside a read of the page's
+// text: a snapshot, an extract, or the pages of a map. A page read again
+// whose own JSON request holds texts it shows is offered that request
+// (request_catalog try checks it once and answers the one call that saves
+// it), looked for again on its next reads when it has not made it yet or
+// the read answered only what changed; other pages, the readers of their
+// site. The offer goes on the read's last answer (invokeTool), after any
+// read again for an action that came while it ran. Its wording holds no
+// value, path, or field name from the page, and the read keeps its answer
+// if making it fails or takes longer than OFFER_MS.
+async function scrapeOffer(tool: string, a: Record<string, unknown>, page: unknown): Promise<unknown> {
+  const owner = currentOwner();
+  if ((tool !== "snapshot" && tool !== "extract") || !fromModel() || owner === undefined || a.save || a.interactive || a.diff || a.updates || a.since !== undefined
+    || (a.as !== undefined && a.as !== "text") || page === null || typeof page !== "object") return page;
+  const { url, snapshot: lines, text, documentId, changes } = page as Partial<Snapshot> & { text?: unknown };
+  const read = typeof lines === "string" ? lines : typeof text === "string" ? text : undefined;
+  if (typeof url !== "string" || read === undefined) return page;
+  const tab = typeof a.tab === "number" ? followTab(a.tab) : undefined;
+  const task = String(taskKey(owner, currentTask()));
+  const seen = scraped(owner, task, tab, url, documentId);
+  if (!seen) return page;
+  const again = seen.again && tab !== undefined;
+  const request = again && changes === undefined ? await by(pageRequestRoute(tab, url, read), Date.now() + OFFER_MS) : undefined;
+  if (again && request === undefined && !seen.last) {
+    deferred(owner, task, seen.kind);
+    return page;
+  }
+  try {
+    return beside(page, "hint", `${scrapesOf(seen.kind)}: ${request ?? readerRoute(url, seen.kind)}`);
+  } catch {
+    return page;
+  }
+}
+
+// On 11-11 finding a page's own request took 0.115 s on a GitHub pull
+// request and 0.062 s on Apple's docs; an extension that stops answering
+// holds each relay to its 30 s timeout, which a read does not wait out.
+const OFFER_MS = 1_000;
+
+function scrapesOf(kind: string): string {
+  return `this task keeps reading ${kind.replace(/^https?:\/\//, "").slice(0, 100)} pages`;
+}
+
+// The JSON request of its own a page read again got the most of its texts
+// from: of the requests request_catalog accepts (readerOffers), the latest
+// 12 whose whole bodies the page keeps, each through its field with the
+// most texts the page shows that is no longer than the page's read, or
+// failing one its field with the most, and one with 2 texts or more. On
+// 11-11 Apple's SwiftUI Text page read as 21,738 characters, while the
+// references field of its text.json held 61,152 and primaryContentSections
+// the article in 14,213. Only in a tab of this task's, which try and run
+// need. The request goes by its number in net read: its path and field
+// names are the page's own words, kept to the step's JSON.
+async function pageRequestRoute(tab: number, page: string, shown: string): Promise<string | undefined> {
+  const held = harnessTabs.get(tab);
+  if (!held || !matchesTask(held, currentOwner(), currentTask())) return undefined;
+  const { entries } = (await relay(tab, "netRead")) as { entries: NetEntry[] };
+  const offers = readerOffers(entries, page).slice(-12);
+  if (!offers.length) return undefined;
+  const fieldsOf = fieldsShownOn(shown);
+  const found = await Promise.all(offers.map(async ({ request }) => {
+    const e = entries[request]!;
+    const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame).catch(() => undefined)) as { text?: string; truncated?: boolean; arriving?: boolean } | undefined;
+    const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOf(kept.text);
+    const most = fields[0];
+    return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= shown.length) ?? most };
+  }));
+  const best = found.reduce((top, fields, i) => ((fields?.pick.shown ?? 0) > (found[top]?.pick.shown ?? 1) ? i : top), -1);
+  const chosen = found[best];
+  if (chosen === undefined) return undefined;
+  const { request, observedAt, path } = offers[best]!;
+  const { most, pick } = chosen;
+  const saved = savedAs(new URL(path, page).href);
+  const step = saved === undefined ? { do: "try", tab, request, observedAt, field: pick.field, type: pick.type } : { do: "run", tab, name: saved };
+  const run = `run ${JSON.stringify({ steps: [{ tool: "request_catalog", args: step }] })}`;
+  if (saved !== undefined) return `the page got its data from its own JSON request ${request} in net read, which request_catalog has saved: ${run} reads it without loading the page`;
+  return `the page got its data from its own JSON request ${request} in net read: a field of it holds ${pick.shown} of the texts the page shows, in ${pick.chars} characters against ${shown.length} for the page`
+    + `${most !== pick ? ` (another holds ${most.shown}, in ${most.chars})` : ""}. ${run} reads that field once without loading the page, and its answer is the one call that saves it`;
+}
+
+// The readers saved for url's site, those written from a page of this kind
+// first, or how to save one.
+function readerRoute(url: string, kind: string): string {
+  const host = pageHost(url) ?? new URL(url).host;
+  const readers = readersOn(url);
+  const fitting = readers.filter((r) => r.source !== undefined && pageKind(r.source) === kind);
+  const names = (fitting.length ? fitting : readers).slice(0, 5).map((r) => r.name);
+  const name = fitting.length || names.length === 1 ? names[0] : "<name>";
+  return names.length
+    ? `readers saved for ${host}: ${names.join(", ")}; eval {tab, reader: "${name}"} reads a page as data, and map {urls, what: "eval", reader: "${name}"} reads many at once`
+    : `save a script that reads one as a reader, learn {site: "${host}", reader: "<name>", expression}; then map {urls, what: "eval", reader: "<name>"} reads many as data`;
+}
+
+// map reads its pages in tabs it closes: a kind read through it is offered
+// only the site's readers. Every page of the answer counts, and a kind
+// beside the one offered keeps its offer for a later read.
+function mapOffer(a: Record<string, unknown>, answer: MapAnswer): unknown {
+  const owner = currentOwner();
+  if (!fromModel() || owner === undefined || a.save || (a.what !== undefined && a.what !== "extract" && a.what !== "snapshot") || (a.as !== undefined && a.as !== "text")) return answer;
+  const task = String(taskKey(owner, currentTask()));
+  let hint: string | undefined;
+  for (const page of answer.pages.flatMap((p) => ("items" in p ? p.items : [p]))) {
+    if (!page.ok || page.from !== undefined) continue;
+    const url = page.finalUrl ?? page.url;
+    const seen = scraped(owner, task, undefined, url);
+    if (!seen) continue;
+    if (hint !== undefined) {
+      deferred(owner, task, seen.kind);
+      continue;
+    }
+    try {
+      hint = `${scrapesOf(seen.kind)}: ${readerRoute(url, seen.kind)}`;
+    } catch {
+      // a host no reader can be saved for (siteHost)
+    }
+  }
+  return hint === undefined ? answer : beside(answer, "hint", hint);
+}
+
 export const TOOLS: Record<string, Tool> = {
   audit: {
     desc: "Run real axe accessibility checks in readable page frames. Returns findings and explicit skipped frames, not a compliance certificate.",
@@ -3494,7 +3617,7 @@ export const TOOLS: Record<string, Tool> = {
     required: ["urls"],
     // The model's map call was checked (guard.ts); its opens, waits, reads,
     // and closes are the harness's, and pass each read the options map has.
-    run: (a) => (a.follow === undefined ? mapPages : followPages)(a, (tool, args) => callTool(tool, args, false)),
+    run: async (a) => mapOffer(a, await (a.follow === undefined ? mapPages : followPages)(a, (tool, args) => callTool(tool, args, false))),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
@@ -4108,7 +4231,7 @@ async function invokeTool(name: string, args: Record<string, unknown>, model: bo
     const result = redacted(withPageState(call.tool, await guard(call, model, async () => {
       for (let tries = 0; ; tries++) {
         try {
-          const read = (a: Record<string, unknown>) => ordered(call.tool, a, resolveTab, () => revived(call.tool, a));
+          const read = async (a: Record<string, unknown>) => scrapeOffer(call.tool, a, await ordered(call.tool, a, resolveTab, () => revived(call.tool, a)));
           return await inLane(call.tool, call.args, resolveTab, () => missionCall(call.tool, call.args, (a) => news ? withTabNews(call.args.tab, () => read(a)) : read(a)));
         } catch (e) {
           const again = tries === 0 ? await lostReopened(e, call.tool, call.args) : undefined;

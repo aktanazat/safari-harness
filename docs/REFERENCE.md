@@ -2378,8 +2378,10 @@ one GET from an agent-owned tab on that origin and returns the readable
 text without navigating to the requested address. Omit `--tab` to reuse
 an owned tab on that site, or open its root in a background tab. Pass
 `--format raw` for unmodified HTML or JSON, or `--format json` to ask for
-JSON (`Accept: application/json`) and refuse anything else; `--max-bytes`
-defaults to 50,000 and accepts at most 2,000,000.
+JSON as many pages' own scripts do (`Accept: application/json`,
+`X-Requested-With: XMLHttpRequest`; GitHub's page data answers 406
+without the second) and refuse anything else; `--max-bytes` defaults to
+50,000 and accepts at most 2,000,000.
 
 The reply includes status, content type, final address, `source: "page"`,
 and `auth: "unverified"` unless `--expect` matched the response. A
@@ -2397,12 +2399,32 @@ same-origin JSON GET for later, use its index in the unfiltered list and
 its exact `t` timestamp:
 
 ```
+safari request_catalog try --tab N --request I --observed-at T \
+  --field data.items --type array
 safari request_catalog save --tab N --name catalog-items \
   --request I --observed-at T --field data.items --type array
 safari request_catalog run --tab N --name catalog-items
 safari request_catalog list
 safari request_catalog forget --name catalog-items
 ```
+
+`try` makes the same checks and the same fresh request as `save`, saves
+nothing, and returns the live value, `same` (whether it kept every text
+of that field the page got), and in `next` the one `save` call that keeps
+it.
+
+A model that keeps reading one kind of page in a task (one origin and
+path, ids aside) by `snapshot`, `extract` or `map` gets a `hint` on its
+third read, once. When it read the same page again and that page got its
+data from one of its own JSON requests, the hint gives the request's
+number in `net read` and how many of the page's texts its best field
+holds (the one no longer than the page's read, when one is), with the
+`try` step to run; a request the page has not made yet, or a read that
+answered only what changed, is looked at again on the next two reads.
+Otherwise the hint names the readers saved for the site, or how to save
+one. The hint's words hold no value, path or field name from the page
+(the field goes only in the step), and nothing is saved until the `save`
+call.
 
 From MCP, call `run` with one step, for example
 `{"steps":[{"tool":"request_catalog","args":{"do":"list"}}]}`.

@@ -194,9 +194,174 @@ async function live(entry: Pick<Entry, "origin" | "path" | "status" | "contentTy
   }
 }
 
+// Folded the same way on both sides of a comparison: lower case, each run of
+// white space one space.
+const folded = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
+
+// A JSON string as a text a page shows and few pages share by chance: 8 to
+// 300 characters, or from 4 with a space, digit, dot, dash, or underscore
+// in it, and not an address. Numbers are left out: counts and times match
+// any page.
+function textOf(value: string): string | undefined {
+  const text = folded(value).trim();
+  return text.length <= 300 && (text.length >= 8 || (text.length >= 4 && /[\s\d._-]/.test(text)))
+    && !/^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/.test(text) ? text : undefined;
+}
+
+function textsOf(value: unknown, into = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    const text = textOf(value);
+    if (text !== undefined) into.add(text);
+  } else if (value !== null && typeof value === "object") for (const child of Object.values(value)) textsOf(child, into);
+  return into;
+}
+
+// Where each word of a folded text starts, so a text is looked for only
+// where its rarest word is: on 11-11 matching 12 bodies of 89 KB (63,012
+// strings) against a 300,000-character page by reading the page for each
+// string took 544 ms of the daemon's one thread.
+function wordsAt(page: string): Map<string, number[]> {
+  const at = new Map<string, number[]>();
+  for (const { 0: word, index } of page.matchAll(/[\p{L}\p{N}]+/gu)) {
+    const starts = at.get(word);
+    if (starts) starts.push(index);
+    else at.set(word, [index]);
+  }
+  return at;
+}
+
+// Whether the page has text as words of its own: text there with no letter
+// or digit on either side, so each of text's words is a word of the page.
+function onPage(page: string, words: Map<string, number[]>, text: string): boolean {
+  let rarest: { starts: number[]; offset: number } | undefined;
+  for (const { 0: word, index } of text.matchAll(/[\p{L}\p{N}]+/gu)) {
+    const starts = words.get(word);
+    if (!starts) return false;
+    if (!rarest || starts.length < rarest.starts.length) rarest = { starts, offset: index };
+  }
+  if (!rarest) return false;
+  for (const start of rarest.starts) {
+    const at = start - rarest.offset;
+    if (at >= 0 && page.startsWith(text, at) && !/[\p{L}\p{N}]/u.test(page[at - 1] ?? " ") && !/[\p{L}\p{N}]/u.test(page[at + text.length] ?? " ")) return true;
+  }
+  return false;
+}
+
+// The fields of a page's own JSON response that hold what the page shows:
+// each object and array below the root that save would accept as a field
+// (no index in its path, no key with a dot, which a path cannot name), with
+// how many of its texts the page's text has as words of its own and its
+// length as JSON, most texts first, and of two that hold as many the deeper.
+// A root array has no field that holds every row, so it gives none. The
+// page is read once for all the bodies looked at against it.
+export function fieldsShownOn(page: string): (body: string) => { field: string; type: "array" | "object"; shown: number; chars: number }[] {
+  const text = folded(page);
+  const words = wordsAt(text);
+  const shows = new Map<string, boolean>();
+  return (body) => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(body); } catch { return []; }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const found: { field: string; type: "array" | "object"; shown: number; chars: number; depth: number }[] = [];
+    const walk = (value: unknown, path: string[]): Set<string> => {
+      if (typeof value === "string") {
+        const t = textOf(value);
+        if (t === undefined) return new Set();
+        let shown = shows.get(t);
+        if (shown === undefined) shows.set(t, (shown = onPage(text, words, t)));
+        return shown ? new Set([t]) : new Set();
+      }
+      if (value === null || typeof value !== "object") return new Set();
+      const shown = new Set<string>();
+      for (const [key, child] of Object.entries(value)) for (const t of walk(child, [...path, key])) shown.add(t);
+      if (shown.size > 0 && path.length > 0 && !path.some((part) => /^\d+$/.test(part) || part.includes("."))) {
+        const type = Array.isArray(value) ? "array" : "object";
+        try { found.push({ ...checkOf({ field: path.join("."), type }), type, shown: shown.size, chars: JSON.stringify(value).length, depth: path.length }); } catch { /* not a field save accepts */ }
+      }
+      return shown;
+    };
+    walk(parsed, []);
+    return found.sort((a, b) => b.shown - a.shown || b.depth - a.depth).map(({ field, type, shown, chars }) => ({ field, type, shown, chars }));
+  };
+}
+
+// The name of the saved request to url's exact endpoint, if one is saved.
+export function savedAs(url: string): string | undefined {
+  const { origin, pathname } = new URL(url);
+  return readCatalog().entries.find((entry) => entry.origin === origin && entry.path === pathname)?.name;
+}
+
+// A name for a request to path that no saved one has: the last words of its
+// path, 24 characters at most, without the ids (a word with a digit).
+// /octo/repo/pull/7/page_data/status_checks gives page-data-status-checks.
+function nameFor(path: string, entries: Entry[]): string {
+  let base = "";
+  for (const word of path.toLowerCase().replace(/\.json$/, "").split(/[^a-z0-9]+/).filter((w) => /^[a-z]+$/.test(w)).reverse()) {
+    const longer = base ? `${word}-${base}` : word;
+    if (longer.length > 24) break;
+    base = longer;
+  }
+  base ||= "page-data";
+  let name = base;
+  for (let n = 2; entries.some((entry) => entry.name === name); n++) name = `${base}-${n}`;
+  return name;
+}
+
+function observedArgs(args: Record<string, unknown>): { check: Check; request: number; at: number } {
+  const check = checkOf({ field: args.field, type: args.type });
+  if (!Number.isSafeInteger(args.request) || Number(args.request) < 0) throw new Error("request must be the exact nonnegative index from net read");
+  return { check, request: Number(args.request), at: atOf(args.observedAt) };
+}
+
+// The observation save and try start from: the owned page's own top-document
+// GET at that index and time, whole, and its field under check.
+async function observed(request: number, at: number, check: Check, context: Context, call: Call) {
+  if (at < context.timeOrigin) throw new Error("the selected observation predates this document");
+  const captured = fields(await call("net", { tab: context.tab, do: "read" }));
+  if (!Array.isArray(captured.entries)) throw new Error("the owned page did not return its observed requests");
+  const seen = fields(captured.entries[request]);
+  if (seen.t !== at || seen.method !== "GET" || (seen.kind !== "fetch" && seen.kind !== "xhr")
+    || (seen.frame !== undefined && seen.frame !== 0) || seen.error !== undefined) throw new Error("the exact successful top-document GET observation is missing or changed");
+  const requestedUrl = endpointOf(seen.url);
+  const url = new URL(requestedUrl);
+  if (url.origin !== new URL(context.url).origin) throw new Error("the observed request is not on this owned tab's exact origin");
+  const status = statusOf(seen.status);
+  const matches = captured.entries.filter((candidate: unknown) => {
+    const entry = fields(candidate);
+    return entry.url === seen.url && entry.t === at && (entry.frame ?? 0) === 0;
+  });
+  if (matches.length !== 1) throw new Error("this observation is ambiguous; capture a new uniquely identified response");
+  const body = fields(await call("net", { tab: context.tab, do: "read", body: request }));
+  if (body.url !== requestedUrl || body.t !== at || body.method !== "GET" || body.kind !== seen.kind
+    || body.status !== status || (body.frame !== undefined && body.frame !== 0) || body.note !== undefined || body.error !== undefined) throw new Error("the observed body is missing, incomplete, ambiguous, or belongs to a different request");
+  return { url, status, kind: seen.kind, original: checkedJson(body.text, check) };
+}
+
+// try runs an observed request once as save would, and saves nothing: its
+// answer is the live value, whether it has every text the page got, and the
+// one call that saves it (or runs the saved one).
+async function tried(args: Record<string, unknown>, call: Call) {
+  const { check, request, at } = observedArgs(args);
+  const context = await contextOf(args.tab, call);
+  const { url, status, original } = await observed(request, at, check, context, call);
+  const result = await live({ origin: url.origin, path: url.pathname, status, contentType: "", check, shape: original.shape }, context, call);
+  if (!result.ok) return result;
+  const before = textsOf(original.value);
+  const after = textsOf(result.value);
+  const kept = [...before].filter((text) => after.has(text)).length;
+  const same = before.size > 0 ? kept === before.size : JSON.stringify(result.value) === JSON.stringify(original.value);
+  const { entries } = readCatalog();
+  const saved = entries.find((entry) => entry.origin === url.origin && entry.path === url.pathname);
+  const step = (to: Record<string, unknown>) => `run ${JSON.stringify({ steps: [{ tool: "request_catalog", args: to }] })}`;
+  const next = saved ? `already saved as ${saved.name}; ${step({ do: "run", tab: context.tab, name: saved.name })} reads it again`
+    : `${same ? "the live read has the data the page got" : `the live read kept ${kept} of the ${before.size} texts the page got (data that changes between loads differs)`}; one call saves it: ${step({ do: "save", tab: context.tab, name: nameFor(url.pathname, entries), request, observedAt: at, field: check.field, type: check.type })}`;
+  return { ...result, same, next };
+}
+
 export async function requestCatalogTool(args: Record<string, unknown>, call: Call = rpc): Promise<unknown> {
   const action = args.do ?? "list";
-  const allowed = action === "save" ? ["do", "name", "tab", "request", "observedAt", "field", "type"]
+  const observing = ["do", "tab", "request", "observedAt", "field", "type"];
+  const allowed = action === "save" ? [...observing, "name"] : action === "try" ? observing
     : action === "run" ? ["do", "name", "tab"] : action === "forget" ? ["do", "name"] : ["do"];
   if (Object.keys(args).some((key) => !allowed.includes(key))) throw new Error("this catalog operation cannot accept a new URL, method, credentials, script, or response check");
   if (action === "list") return { entries: readCatalog().entries, limit: MAX_ENTRIES, private: true };
@@ -216,35 +381,16 @@ export async function requestCatalogTool(args: Record<string, unknown>, call: Ca
     const context = await contextOf(args.tab, call);
     return { name, observation: entry.observation, ...await live(entry, context, call) };
   }
-  if (action !== "save") throw new Error("do must be save, list, run, or forget");
+  if (action === "try") return tried(args, call);
+  if (action !== "save") throw new Error("do must be save, try, list, run, or forget");
   const name = nameOf(args.name);
-  const check = checkOf({ field: args.field, type: args.type });
-  if (!Number.isSafeInteger(args.request) || Number(args.request) < 0) throw new Error("request must be the exact nonnegative index from net read");
-  const at = atOf(args.observedAt);
+  const { check, request, at } = observedArgs(args);
   const context = await contextOf(args.tab, call);
-  if (at < context.timeOrigin) throw new Error("the selected observation predates this document");
-  const captured = fields(await call("net", { tab: context.tab, do: "read" }));
-  if (!Array.isArray(captured.entries)) throw new Error("the owned page did not return its observed requests");
-  const observed = fields(captured.entries[Number(args.request)]);
-  if (observed.t !== at || observed.method !== "GET" || (observed.kind !== "fetch" && observed.kind !== "xhr")
-    || (observed.frame !== undefined && observed.frame !== 0) || observed.error !== undefined) throw new Error("the exact successful top-document GET observation is missing or changed");
-  const requestedUrl = endpointOf(observed.url);
-  const url = new URL(requestedUrl);
-  if (url.origin !== new URL(context.url).origin) throw new Error("the observed request is not on this owned tab's exact origin");
-  const status = statusOf(observed.status);
-  const matches = captured.entries.filter((candidate: unknown) => {
-    const entry = fields(candidate);
-    return entry.url === observed.url && entry.t === at && (entry.frame ?? 0) === 0;
-  });
-  if (matches.length !== 1) throw new Error("this observation is ambiguous; capture a new uniquely identified response");
-  const body = fields(await call("net", { tab: context.tab, do: "read", body: Number(args.request) }));
-  if (body.url !== requestedUrl || body.t !== at || body.method !== "GET" || body.kind !== observed.kind
-    || body.status !== status || (body.frame !== undefined && body.frame !== 0) || body.note !== undefined || body.error !== undefined) throw new Error("the observed body is missing, incomplete, ambiguous, or belongs to a different request");
-  const original = checkedJson(body.text, check);
+  const { url, status, kind, original } = await observed(request, at, check, context, call);
   const result = await live({ origin: url.origin, path: url.pathname, status, contentType: "", check, shape: original.shape }, context, call);
   if (!result.ok) return { name, saved: false, ...result };
   await unchanged(context, call);
-  const entry: Entry = { name, origin: url.origin, path: url.pathname, method: "GET", observation: { source: "net", kind: observed.kind, tab: context.tab, at, status }, check,
+  const entry: Entry = { name, origin: url.origin, path: url.pathname, method: "GET", observation: { source: "net", kind, tab: context.tab, at, status }, check,
     shape: result.shape, verifiedAt: result.verifiedAt, status: result.status, contentType: result.contentType };
   changeCatalog((catalog) => {
     if (catalog.entries.some((candidate) => candidate.name === name)) throw new Error("this name is already checked; forget it explicitly before replacing it");
@@ -256,15 +402,15 @@ export async function requestCatalogTool(args: Record<string, unknown>, call: Ca
 
 export const REQUEST_CATALOG_TOOLS: Record<string, Tool> = {
   request_catalog: {
-    desc: "Save and rerun a private checked JSON GET from your owned tab's observed traffic. Never grants permission for an account action. Save needs an exact net index/timestamp and a meaningful nonempty field/type check; run needs its exact name and an owned same-origin tab.",
+    desc: "Save and rerun a private checked JSON GET from your owned tab's observed traffic. Never grants permission for an account action. Save needs an exact net index/timestamp and a meaningful nonempty field/type check; try checks the same once without saving and answers the save call; run needs its exact name and an owned same-origin tab.",
     params: {
-      do: { type: "string", enum: ["save", "list", "run", "forget"], description: "default list" },
-      tab: { type: "number", description: "local owned numeric tab; required for save and run" },
-      name: { type: "string", description: "exact short public lowercase name; required except for list" },
-      request: { type: "number", description: "save: exact nonnegative index in the unfiltered net read entries" },
-      observedAt: { type: "number", description: "save: t from that exact observed request" },
-      field: { type: "string", description: "save: public JSON field path, e.g. data.orders; array indices allowed" },
-      type: { type: "string", enum: [...TYPES], description: "save: field type; containers/strings must be nonempty and booleans true" },
+      do: { type: "string", enum: ["save", "try", "list", "run", "forget"], description: "default list" },
+      tab: { type: "number", description: "local owned numeric tab; required for save, try and run" },
+      name: { type: "string", description: "exact short public lowercase name; required for save, run and forget" },
+      request: { type: "number", description: "save, try: exact nonnegative index in the unfiltered net read entries" },
+      observedAt: { type: "number", description: "save, try: t from that exact observed request" },
+      field: { type: "string", description: "save, try: public JSON field path, e.g. data.orders; array indices allowed" },
+      type: { type: "string", enum: [...TYPES], description: "save, try: field type; containers/strings must be nonempty and booleans true" },
     },
     hidden: true,
     run: (args) => requestCatalogTool(args),

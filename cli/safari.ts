@@ -161,6 +161,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari request_catalog list                list privately saved JSON reads
   safari request_catalog save --tab N --name NAME --request I --observed-at T --field F --type array
                                              check and save an observed GET
+  safari request_catalog try --tab N --request I --observed-at T --field F --type array
+                                             check an observed GET once, save nothing;
+                                             answers the call that saves it
   safari request_catalog run --tab N --name NAME
                                              rerun its unchanged result check
   safari request_catalog forget --name NAME  delete its private record
