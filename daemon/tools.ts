@@ -1209,7 +1209,8 @@ async function narrowed<T>(option: "root" | "selector", value: string | undefine
 }
 
 // The lines only in `a` ("- ") and only in `b` ("+ "), in page order, from
-// their longest common subsequence. A link that reads "=[15]" is compared
+// a longest common subsequence; between two shared lines, the removed
+// before the added. A link that reads "=[15]" is compared
 // and shown with the address line [15] gives: removing the first link to
 // an address changes no other line, and no line shown points at one that
 // is not. A line both share that read "=[15]" and now reads otherwise,
@@ -1219,25 +1220,153 @@ export function lineDiff(before: string[], after: string[]): string {
   const gives = new Map<string, string>();
   const a = addressed(before);
   const b = addressed(after, gives);
-  const n = a.length;
-  const m = b.length;
-  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-  }
+  const { removed, added } = unshared(a, b);
   const out: string[] = [];
   let i = 0;
   let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
+  while (i < a.length || j < b.length) {
+    if (i < a.length && removed[i]) out.push(`- ${a[i++]}`);
+    else if (j < b.length && added[j]) out.push(`+ ${b[j++]}`);
+    else {
       const to = pointsAt(before[i]);
       if (to !== undefined && gives.has(to) && before[i] !== after[j]) out.push(`+ ${b[j]}`);
       i++; j++;
     }
-    else if (i < n && (j === m || lcs[i + 1][j] >= lcs[i][j + 1])) out.push(`- ${a[i++]}`);
-    else out.push(`+ ${b[j++]}`);
   }
   return out.join("\n");
+}
+
+// Which lines of `a` and of `b` lie outside a longest common subsequence,
+// chosen by a walk from the start: a shared line first, then a removed
+// one, then an added one, whichever still leads to a longest subsequence.
+// A table of every pair of lines told the walk which: it took 128 MB for
+// two 8,000-line snapshots with one line changed (audit, 11-09), so only
+// pages whose table fits in 2 MiB still use it. Larger ones judge each
+// step by how many edits from the end it leaves, which Myers's search
+// finds level by level, the same walk in memory linear in the lines.
+// Past a budget of levels, any longest subsequence: Myers's linear-space
+// search (GNU diff's compareseq, without its heuristics) changes as few
+// lines, perhaps paired otherwise among repeated ones.
+function unshared(a: string[], b: string[]): { removed: Uint8Array; added: Uint8Array } {
+  const ids = new Map<string, number>();
+  const id = (line: string) => {
+    let n = ids.get(line);
+    if (n === undefined) ids.set(line, n = ids.size);
+    return n;
+  };
+  const x = Int32Array.from(a, id);
+  const y = Int32Array.from(b, id);
+  const removed = new Uint8Array(x.length);
+  const added = new Uint8Array(y.length);
+  const far = 0x7fffffff;
+  // `removes(i, j, e)`: whether removing x[i] still leads to a longest
+  // subsequence, where (i, j) is e edits from the end.
+  const walk = (removes: (i: number, j: number, e: number) => boolean, e: number) => {
+    let i = 0;
+    let j = 0;
+    while (i < x.length || j < y.length) {
+      if (i < x.length && j < y.length && x[i] === y[j]) { i++; j++; continue; }
+      if (i < x.length && (j === y.length || removes(i, j, e))) removed[i++] = 1;
+      else added[j++] = 1;
+      e--;
+    }
+    return { removed, added };
+  };
+
+  if ((x.length + 1) * (y.length + 1) <= 1 << 20) {
+    const lcs = Array.from({ length: x.length + 1 }, () => new Uint16Array(y.length + 1));
+    for (let i = x.length - 1; i >= 0; i--) {
+      for (let j = y.length - 1; j >= 0; j--) lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+    return walk((i, j) => lcs[i + 1][j] >= lcs[i][j + 1], 0);
+  }
+
+  // levels[e][k - delta + e]: the least i on diagonal k (i - j) from
+  // which (i, j) is at most e edits from the end.
+  const delta = x.length - y.length;
+  const levels: Int32Array[] = [];
+  const budget = Math.max(1 << 20, 32 * (x.length + y.length));
+  const near = (i: number, j: number, e: number) => {
+    const k = i - j;
+    return e >= 0 && k >= delta - e && k <= delta + e && levels[e][k - delta + e] <= i;
+  };
+  for (let e = 0; !near(0, 0, e - 1); e++) {
+    if ((e + 1) * (e + 1) > budget) break;
+    const level = new Int32Array(2 * e + 1).fill(far);
+    for (let k = delta - e; k <= delta + e; k += 2) {
+      let i = e === 0 ? x.length : far;
+      if (e >= 2 && k >= delta - e + 2 && k <= delta + e - 2) i = levels[e - 2][k - delta + e - 2];
+      // A step to diagonal k + 1 removes a line, to k - 1 adds one; from
+      // the first point it may start at.
+      const down = e >= 1 && k + 1 <= delta + e - 1 ? levels[e - 1][k + 1 - delta + e - 1] : far;
+      if (down !== far && (down >= 1 || (x.length >= 1 && -k <= y.length))) i = Math.min(i, Math.max(down - 1, 0));
+      const right = e >= 1 && k - 1 >= delta - e + 1 ? levels[e - 1][k - 1 - delta + e - 1] : far;
+      if (right !== far && (right >= k || (k <= x.length && y.length >= 1))) i = Math.min(i, Math.max(right, k));
+      if (i === far) continue;
+      while (i > 0 && i - k > 0 && x[i - 1] === y[i - k - 1]) i--;
+      level[k - delta + e] = i;
+    }
+    levels.push(level);
+  }
+  if (near(0, 0, levels.length - 1)) return walk((i, j, e) => near(i + 1, j, e - 1), levels.length - 1);
+
+  // Indexed by diagonal (x - y), from -(y.length + 1) to x.length + 1.
+  const shift = y.length + 1;
+  const fd = new Int32Array(x.length + y.length + 3);
+  const bd = new Int32Array(x.length + y.length + 3);
+
+  // A point some shortest edit script from (xoff, yoff) to (xlim, ylim)
+  // passes through, about halfway along it.
+  const middle = (xoff: number, xlim: number, yoff: number, ylim: number): [number, number] => {
+    const dmin = xoff - ylim;
+    const dmax = xlim - yoff;
+    const fmid = xoff - yoff;
+    const bmid = xlim - ylim;
+    const odd = ((fmid - bmid) & 1) !== 0;
+    let fmin = fmid, fmax = fmid, bmin = bmid, bmax = bmid;
+    fd[shift + fmid] = xoff;
+    bd[shift + bmid] = xlim;
+    for (;;) {
+      if (fmin > dmin) fd[shift + --fmin - 1] = -1;
+      else ++fmin;
+      if (fmax < dmax) fd[shift + ++fmax + 1] = -1;
+      else --fmax;
+      for (let d = fmax; d >= fmin; d -= 2) {
+        const lo = fd[shift + d - 1];
+        const hi = fd[shift + d + 1];
+        let i = lo < hi ? hi : lo + 1;
+        while (i < xlim && i - d < ylim && x[i] === y[i - d]) i++;
+        fd[shift + d] = i;
+        if (odd && bmin <= d && d <= bmax && bd[shift + d] <= i) return [i, i - d];
+      }
+      if (bmin > dmin) bd[shift + --bmin - 1] = far;
+      else ++bmin;
+      if (bmax < dmax) bd[shift + ++bmax + 1] = far;
+      else --bmax;
+      for (let d = bmax; d >= bmin; d -= 2) {
+        const lo = bd[shift + d - 1];
+        const hi = bd[shift + d + 1];
+        let i = lo < hi ? lo : hi - 1;
+        while (xoff < i && yoff < i - d && x[i - 1] === y[i - d - 1]) i--;
+        bd[shift + d] = i;
+        if (!odd && fmin <= d && d <= fmax && i <= fd[shift + d]) return [i, i - d];
+      }
+    }
+  };
+
+  const compare = (xoff: number, xlim: number, yoff: number, ylim: number): void => {
+    while (xoff < xlim && yoff < ylim && x[xoff] === y[yoff]) { xoff++; yoff++; }
+    while (xoff < xlim && yoff < ylim && x[xlim - 1] === y[ylim - 1]) { xlim--; ylim--; }
+    if (xoff === xlim) added.fill(1, yoff, ylim);
+    else if (yoff === ylim) removed.fill(1, xoff, xlim);
+    else {
+      const [xmid, ymid] = middle(xoff, xlim, yoff, ylim);
+      compare(xoff, xmid, yoff, ymid);
+      compare(xmid, xlim, ymid, ylim);
+    }
+  };
+  compare(0, x.length, 0, y.length);
+  return { removed, added };
 }
 
 // A link's address ends its line, before its states ('[3] link "2 hours
