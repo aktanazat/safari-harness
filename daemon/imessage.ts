@@ -674,7 +674,7 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
     // A new conversation is allowed only to an explicit phone number or email,
     // and a bare one means that person, never a group they are in.
     const handleLike = to.includes("@") || handleKey(to).length >= 10;
-    const bare = handleLike && /^(\+?[\d\s().-]+|[^\s@]+@[^\s@]+)$/.test(to);
+    const bare = /^[^\s@]+@[^\s@]+$/.test(to) || (handleKey(to).length >= 7 && !/\p{L}/u.test(to.replace(/^(?:tel|sms):/i, "")));
     try {
       c = resolveChat(db, to, names, bare);
     } catch (e) {
