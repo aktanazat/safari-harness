@@ -21,7 +21,9 @@
 //   input key SPEC                Enter, Tab, Escape, Backspace, ArrowUp, cmd+a, shift+Tab
 //   input idle MS MAX             waits until the user has let go of keys and
 //                                 buttons for MS, MAX at most: {"idle"}
-//   input front                   {"bundleId"} of the frontmost app
+//   input front                   {"bundleId"} of the frontmost app; while one
+//                                 with no Dock icon holds the front, "under":
+//                                 the one with a Dock icon whose window is topmost
 //   input activate BUNDLEID       brings that app to the front
 //   input window W H              Safari's window of that size, the screen
 //                                 holding most of it, and the main display's
@@ -564,8 +566,24 @@ func idle(_ args: [String]) {
 
 // ---------- apps ----------
 
+// The frontmost app, and, while one with no Dock icon holds the front (a
+// prompt, as SecurityAgent's for a keychain password is, or a panel), the
+// app the user sees in front: the one with a Dock icon whose window is
+// topmost on screen.
 func front() {
-    printJSON(["bundleId": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""])
+    let app = NSWorkspace.shared.frontmostApplication
+    var out: [String: Any] = ["bundleId": app?.bundleIdentifier ?? ""]
+    if app?.activationPolicy != .regular {
+        let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+        out["under"] = list.lazy.compactMap { info -> String? in
+            guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+                  let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let owner = NSRunningApplication(processIdentifier: pid), owner.activationPolicy == .regular else { return nil }
+            return owner.bundleIdentifier ?? ""
+        }.first ?? ""
+    }
+    printJSON(out)
 }
 
 // Activates the app and waits up to two seconds until it is frontmost.

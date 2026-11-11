@@ -59,6 +59,8 @@ type Page = {
   probeError?: string;
   clipboardRestored?: boolean;
   inFrontInstead?: string;
+  // a prompt that comes up as Safari is raised (Mac.prompt)
+  promptOnRaise?: string;
 };
 type Mac = {
   app: string;
@@ -73,6 +75,9 @@ type Mac = {
   boxes: string[];
   // the tab agent window 2 showed when the helper pressed
   pressedIn?: number;
+  // a prompt holding the front, app behind it; a prompt has no Dock icon,
+  // and the helper's activate fails while one is up
+  prompt?: string;
   shows(windowId: number): number | undefined;
 };
 
@@ -172,9 +177,13 @@ function mac(page: Page = {}): Mac {
       if (!completion || !(await completion())) throw new Error("paste completion was not acknowledged");
       return { pasted: true, clipboardRestored: page.clipboardRestored ?? true };
     }
-    if (args[0] === "front") return { bundleId: m.app };
+    if (args[0] === "front") return m.prompt ? { bundleId: m.prompt, under: m.app } : { bundleId: m.app };
     if (args[0] === "activate" && args[1] === front.SAFARI && page.inFrontInstead) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${page.inFrontInstead} is in front`);
-    if (args[0] === "activate") m.app = args[1];
+    if (args[0] === "activate") {
+      m.app = args[1];
+      if (args[1] === front.SAFARI && page.promptOnRaise) m.prompt = page.promptOnRaise;
+      if (m.prompt) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${m.prompt} is in front`);
+    }
     if (args[0] === "press") {
       m.pressedIn = m.shows(2);
       const pressed = page.press ?? { pressed: true };
@@ -426,6 +435,17 @@ test("when Safari does not come to the front, no key is sent, and trying again n
   page.inFrontInstead = undefined;
   expect(await INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).toMatchObject({ ok: true });
   expect(run(m, "key")).toHaveLength(1);
+});
+
+// On 11-11 SecurityAgent asked for a keychain password as real input raised
+// Safari, and the raise failed. Seeing an app other than Safari in front,
+// giving back gave nothing back, and once the prompt went Safari stayed in
+// front over his terminal, where the tab group keeper makes no group.
+test("a prompt that takes the front as Safari comes forward leaves the user's app in front once it goes", async () => {
+  const m = mac({ promptOnRaise: "com.apple.SecurityAgent" });
+  await expect(INPUT_TOOLS.real_input.run({ tab: 21, do: "key", key: "Enter" })).rejects.toMatchObject({ code: "unavailable", effect: "none" });
+  m.prompt = undefined;
+  expect({ app: m.app, keys: run(m, "key") }).toEqual({ app: GHOSTTY, keys: [] });
 });
 
 test.each([
