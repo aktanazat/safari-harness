@@ -253,6 +253,18 @@ function bounded(step, phase, until) {
     if (ms >= SLOW_MS) send({ op: "note", kind: "slow-phase", phase, ms });
   });
 }
+// dims, a point taller at a time while another window has its size: the
+// keeper finds an agent's window by its size (spaces.swift find). On 11-11
+// a window left from the morning had the size a new one was given, and the
+// keeper left the new one plain. A window list Safari does not give within
+// LIST_MS leaves the size as asked.
+async function untakenSize(dims, own) {
+  const all = await bounded(api.windows.getAll(), "windows.getAll", Date.now() + LIST_MS).catch(() => []);
+  const others = all.filter((w) => w.id !== own);
+  let height = dims.height;
+  while (others.some((w) => w.width === dims.width && w.height === height)) height++;
+  return { width: dims.width, height };
+}
 // The page lays out at a window's new size a moment after Safari sizes it,
 // so the window tool reads the viewport again until it changes, for up to
 // VIEWPORT_MS: seven window calls in one slice answered the viewport from
@@ -1896,9 +1908,7 @@ async function handle(msg) {
       const was = await view();
       let sized;
       if (whole || alone) {
-        const others = (await api.windows.getAll()).filter((w) => w.id !== t.windowId);
-        while (others.some((w) => w.width === dims.width && w.height === dims.height)) dims.height++;
-        sized = await api.windows.update(t.windowId, { ...dims, state: "normal" });
+        sized = await api.windows.update(t.windowId, { ...(await untakenSize(dims, t.windowId)), state: "normal" });
       } else {
         const w = await api.windows.create({ tabId, focused: false, ...dims });
         await markAgentWindow(w.id);
@@ -1918,15 +1928,16 @@ async function handle(msg) {
     // windows only through Accessibility, finds it by size.
     case "windows.open": {
       const [url, size] = args;
-      const dims = size ? { width: Math.round(size.width), height: Math.round(size.height) } : {};
+      const dims = size ? await untakenSize({ width: Math.round(size.width), height: Math.round(size.height) }) : {};
       const [tab] = await harnessMade(async () => {
         const w = await api.windows.create({ url, focused: false, ...dims });
         return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
       });
       await markAgentWindow(tab.windowId);
       await ownTab(tab.id);
-      if (size) await api.windows.update(tab.windowId, dims);
-      return { windowId: tab.windowId, tabId: tab.id };
+      if (!size) return { windowId: tab.windowId, tabId: tab.id };
+      const sized = await api.windows.update(tab.windowId, dims);
+      return { windowId: tab.windowId, tabId: tab.id, size: { width: sized.width, height: sized.height } };
     }
     // The id a window the daemon knew before the extension reloaded has
     // now, or null once it is gone.

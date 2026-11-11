@@ -68,7 +68,9 @@ const GROUP_AT = 3;
 const PAGE = `http://127.0.0.1:${Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)}/space`;
 
 // Window sizes no other window is likely to have, one per assignment, from
-// a random start so a restarted daemon does not reuse its last run's.
+// a random start so a restarted daemon does not reuse its last run's. The
+// extension makes a window taller still while another has its size, and
+// the window keeps the size Safari gave it.
 let sized = Math.floor(Math.random() * 5000);
 const MIN_WIDTH = 1000;
 function nextSize(): Size {
@@ -235,9 +237,9 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const name = spaceName(group, owner);
       const size = nextSize();
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-      const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number };
+      const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number; size?: Size };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
@@ -332,8 +334,10 @@ export function spaceNote(s: Space): SpaceNote {
 }
 
 // What an agent window's page says in its address (spaceWindow): the
-// window's id, name, and size. A copy the user opened from /agents, which
-// links pages by id and name alone, is his.
+// window's id and name, and the size asked for it, which marks the page as
+// the window's own; Safari may have made the window taller (Space.size). A
+// copy the user opened from /agents, which links pages by id and name
+// alone, is his.
 function pageAt(t: TabInfo): { tab: number; window: number; id: string; name: string; size: Size } | undefined {
   if (!t.url?.startsWith(`${PAGE}?`) || t.windowId === undefined) return undefined;
   const q = new URL(t.url).searchParams;

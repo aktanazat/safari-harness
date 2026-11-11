@@ -1757,6 +1757,32 @@ test("sizing a tab in its agent's window sizes that window, at a size no other w
   expect([b.sizeOf(windowId), b.sizeOf(his.window ?? 1)]).toEqual([{ width: 390, height: 845 }, { width: 390, height: 844 }]);
 });
 
+// 11-11: a window left from the morning had the size a new agent window
+// was given, and its keeper, finding two windows of that size, left the
+// new one plain.
+test("an agent's window opens at a size no other window has, and the daemon is told the size Safari gave it", async () => {
+  const b = await start();
+  const his = b.open("https://example.org/");
+  b.size(1, 1001, 777);
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(0);
+  const { value } = await made;
+  const { windowId } = value as { windowId: number };
+  expect(value).toMatchObject({ size: { width: 1001, height: 778 } });
+  expect([b.sizeOf(windowId), b.sizeOf(his.window ?? 1)]).toEqual([{ width: 1001, height: 778 }, { width: 1001, height: 777 }]);
+});
+
+// Safari took up to 8.5 s to list its windows, 34 times from 11-09 to
+// 11-11 (journal), and the harness models a list it never gives.
+test("an agent's window still opens, at the size asked, when Safari will not list its windows in time", async () => {
+  const b = await start();
+  b.open("https://example.org/");
+  b.stallWindows();
+  const made = b.request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+  await b.clock.advance(2500);
+  expect((await made).value).toMatchObject({ size: { width: 1001, height: 777 } });
+});
+
 // Through 10-16 a page silent to a ping held each request to it for the
 // ping's 5 s and more, 807 times, one tab 39 times.
 test("a page that answered nothing fails the next request to it within a second and answers again once it is free", async () => {
