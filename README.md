@@ -69,6 +69,9 @@ daemon/
                     alerted when it changes, with no model
   recordings.ts     teach mode's recordings, saved for the user alone (0600),
                     each typed secret kept only as its kind
+  drafts.ts         what a form held before a click or Enter sent it on, kept
+                    for the user alone (0600) a day, no secret in it; refill
+                    puts it back when the page emptied the form
   replay.ts         a recording done again in a background tab, each step's
                     target found by its fingerprint
   playbooks.ts      opt-in agent runs stored as verified, parameterized

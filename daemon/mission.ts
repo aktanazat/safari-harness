@@ -527,7 +527,7 @@ async function failureContextAfter(agent: Agent, call: Call, tab: number | undef
 }
 
 const OBSERVATIONS: Record<string, true> = { snapshot: true, extract: true, shot: true };
-const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, passwords: true, site_actions: true, react: true };
+const PICTURE_ACTIONS: Record<string, true> = { open: true, click: true, type: true, press: true, select: true, goto: true, history: true, upload: true, eval: true, fetch: true, scroll: true, dialog: true, window: true, autofill: true, login_fill: true, card_fill: true, refill: true, passwords: true, site_actions: true, react: true };
 const OUTPUT_OPTIONS: Record<string, true> = { snapshot: true, save: true, out: true, timeoutMs: true, maxBytes: true, diff: true, noWaitAfter: true, ifChanged: true };
 const INSPECTION_READS = new Set("tabs info snapshot extract shot report data wait run element painted lookalikes net console browsing_history status doctor action_finish input_state audit".split(" "));
 

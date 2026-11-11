@@ -331,6 +331,12 @@ function token(s: string): boolean {
 
 const SECRETS: [string, (s: string) => boolean][] = [["password", password], ["card number", card], ["verification code", code], ["token", token]];
 
+// The kind of secret a text looks like, or undefined. A form draft holds
+// no value that looks like one either (drafts.ts).
+export function secretLook(text: string): string | undefined {
+  return SECRETS.find(([, looks]) => looks(text))?.[0];
+}
+
 // ---------- the learn tool ----------
 
 type LearningFile = "notes" | "readers" | "real";
@@ -410,7 +416,7 @@ function historyText(history: LearningHistory): string {
 }
 
 function refuseSecret(text: string, why: string) {
-  const secret = SECRETS.find(([, looks]) => looks(text))?.[0];
+  const secret = secretLook(text);
   const known = [...tabSecrets.keys()].some((tab) => unsecret(tab, text) !== text);
   if (secret || known || redactUrl(text) !== text) throw new Error(`not saved: this looks like a ${secret ?? "secret"}. ${why}`);
 }
@@ -436,7 +442,7 @@ function sourceFor(host: string, given: unknown): string | undefined {
     throw new Error("source has an invalid encoded path");
   }
   for (const tab of tabSecrets.keys()) path = String(unsecret(tab, path));
-  path = path.split("/").map((part) => SECRETS.some(([, looks]) => looks(part)) ? "..." : part).join("/");
+  path = path.split("/").map((part) => secretLook(part) ? "..." : part).join("/");
   refuseSecret(path, "A source never holds credentials or tokens");
   refuseInstructions(path);
   url.pathname = path;

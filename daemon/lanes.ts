@@ -38,6 +38,7 @@ const ACTING: Record<string, (a: Record<string, unknown>) => boolean> = {
   login_fill: always,
   card_fill: always,
   autofill: always,
+  refill: always,
   passwords: (a) => a.do === "fill" || a.do === "code" || a.do === "change" || a.do === "change-type",
   dialog: (a) => a.do === "accept" || a.do === "dismiss",
   react: (a) => a.do === "enable" || a.do === "disable",

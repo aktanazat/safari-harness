@@ -153,7 +153,10 @@ import { TOOLS } from "./tools.ts";
 // 28,084: on 10-02 a script's emailed code waited 30 s for a text
 // message, and the documented way to type a mailed code took five calls
 // and showed the model the code; {{code}} now finds it in Gmail itself.
-const TOOL_LIST_MAX_BYTES = 28_084;
+// refill (328) brought it to 28,412: a form that an error, its own check,
+// or a sign-in emptied was typed again field by field (form-steps.html:
+// seven type, select, and click calls); refill puts it back in one (11-11).
+const TOOL_LIST_MAX_BYTES = 28_412;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

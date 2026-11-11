@@ -79,7 +79,7 @@ test("a name written another way runs, with a note saying what was used", async 
 test("a snapshot ref copied with its display brackets reaches the observed control", async () => {
   const sent = safari(() => ({ value: { ok: true } }));
   expect(await model(108, "click", { tab: 7, ref: "[6]" })).toMatchObject({ ok: true });
-  expect(sent).toEqual(["7 click 6"]);
+  expect(sent).toEqual(["7 formDraft 6", "7 click 6"]);
 });
 
 test("a parameter the tool does not take fails before the page is asked, naming the nearest one", async () => {
