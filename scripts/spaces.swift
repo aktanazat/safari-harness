@@ -28,7 +28,8 @@
 //   spaces OP ['<json>']      one request, for a person at a terminal
 // Requests are {"op": OP, ...}; answers {"ok": true, ...} or {"ok": false,
 // "error"}. OPs, the most on one Safari window by its CGWindowID (window):
-//   gate                      {idleMs, locked, front, safariActive, trusted}
+//   gate                      {idleMs, locked, front, frontPid (its process,
+//                             0 for none), safariActive, trusted}
 //   find {width, height}      {window}: the one Safari window of that size
 //   state                     {tabs, sidebar, shown}
 //   sidebar {show}            shows or hides the window's sidebar
@@ -137,17 +138,23 @@ func screenLocked() -> Bool {
 
 // The frontmost app. NSWorkspace hears of a change through the run loop,
 // which a long serve would otherwise never turn, so it turns it first.
-func frontApp() -> String {
+func frontApplication() -> NSRunningApplication? {
     RunLoop.current.run(until: Date())
-    return NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+    return NSWorkspace.shared.frontmostApplication
+}
+
+func frontApp() -> String {
+    frontApplication()?.bundleIdentifier ?? ""
 }
 
 func gate() -> [String: Any] {
-    let front = frontApp()
+    let app = frontApplication()
+    let front = app?.bundleIdentifier ?? ""
     return [
         "idleMs": idleMs() ?? 0,
         "locked": screenLocked(),
         "front": front,
+        "frontPid": app?.processIdentifier ?? 0,
         "safariActive": front == SAFARI,
         "trusted": AXIsProcessTrusted(),
     ]
