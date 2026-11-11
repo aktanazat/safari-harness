@@ -27,11 +27,8 @@ export const DRAFT_MS = 24 * 60 * 60 * 1000;
 const FORMS_MAX = 8;
 const FIELDS_MAX = 200;
 const VALUE_MAX = 5_000;
-// A page can fill fields the agent never sees, and the secret check of a
-// value can cost as its length squared: 200 values of 20,000 characters
-// held the daemon 55 s on 11-11 (redact.ts LABELED on "a.a.a..."); within
-// these caps the worst such page holds it 105 ms. A draft checks and keeps
-// this many characters of values at most.
+// A page can fill fields the agent never sees, with any amount of text:
+// one click adds this many characters of values to a draft at most.
 const DRAFT_CHARS_MAX = 30_000;
 const TEXT_MAX = 2000;
 const LABEL_MAX = 80;

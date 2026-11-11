@@ -83,6 +83,25 @@ test("links, ids, uuids, hashes, labels and paging tokens stay whole", () => {
   expect(counts).toEqual({});
 });
 
+// Where a shape or a name starts and ends, which redact.ts works out in
+// code rather than in one pattern.
+test.each([
+  ["a name starts at its run's start or after a dot, so 1-next.token's is token", k("1-next.to", "ken=abc123def456ghi"), "1-next.token=[REDACTED:secret]", { secret: 1 }],
+  ["a name never starts inside a word, so 2fa_token has none", k("2fa_to", "ken=abc123def456ghi"), k("2fa_to", "ken=abc123def456ghi"), {}],
+  ["a name starts at its run's start when that is a letter, so x.pwd.token's value is a password", k("x.pwd.to", "ken=abc123"), "x.pwd.token=[REDACTED:password]", { password: 1 }],
+  ["a name starts at its run's start when that is a letter, so x.next.token is paging and stays", k("x.next.to", "ken=abc123def456ghi"), k("x.next.to", "ken=abc123def456ghi"), {}],
+  ["a JWT is found after a first part too short to start one", k("eyJ", "short.", FAKE.jwt), "eyJshort.[REDACTED:jwt]", { jwt: 1 }],
+  ["a JWT needs 8 characters in each part", k("eyJ", "Fixture01.", "eyJ", "short.", "Fixture0123"), k("eyJ", "Fixture01.", "eyJ", "short.", "Fixture0123"), {}],
+  ["an sk- key needs 20 characters after sk-", k("sk-", "Fixture012345678901 ", "sk-", "Fixture0123456789012"), k("sk-", "Fixture012345678901 [REDACTED:openai]"), { openai: 1 }],
+  ["a Slack token needs 10 characters after xoxb-", k("xo", "xb-", "Fixture01 ", "xo", "xb-", "Fixture012"), k("xo", "xb-", "Fixture01 [REDACTED:slack]"), { slack: 1 }],
+  ["a key's BEGIN with no END after it cuts nothing", k("-----BEGIN ", "PRIVATE KEY-----\nMIIFixture0123\n"), k("-----BEGIN ", "PRIVATE KEY-----\nMIIFixture0123\n"), {}],
+  ["a key's block runs from its first BEGIN to the first END after it", k("-----BEGIN ", "PRIVATE KEY-----\nMIIa\n-----BEGIN ", "RSA PRIVATE KEY-----\nMIIb\n-----END ", "RSA PRIVATE KEY-----\ntail"), "[REDACTED:private_key]\ntail", { private_key: 1 }],
+])("%s", (_case, text, out, cut) => {
+  const counts = {};
+  expect(redactSecretText(text, counts)).toBe(out);
+  expect(counts).toEqual(cut);
+});
+
 test("a structure's strings are cut however deep, a file's base64 bytes left whole", () => {
   const { value, redacted } = redactSecrets({ data: FAKE.openai, rows: [{ text: `key ${FAKE.openai}` }], n: 3 });
   expect(value).toEqual({ data: FAKE.openai, rows: [{ text: "key [REDACTED:openai]" }], n: 3 });

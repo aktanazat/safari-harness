@@ -110,16 +110,21 @@ export function unsecret(tab: number, value: unknown): unknown {
 // and a long answer saved to a file (save.ts). A site's own calls inside a
 // REPL script see the page as it is, and what an approved send sends is
 // never touched. The shapes carry a prefix no ordinary text has, so a
-// link, an id, a uuid or a hash stays whole.
-const SHAPES: [kind: string, shape: RegExp][] = [
-  ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
-  ["jwt", /\beyJ[\w-]{8,}\.eyJ[\w-]{8,}\.[\w-]{8,}/g],
+// link, an id, a uuid or a hash stays whole. A shape that asks more of a
+// run than its prefix and length (a digit in it, a JWT's other two parts)
+// takes the whole run its prefix starts, and holds says whether that is a
+// secret: a pattern that looks ahead from each prefix reads the rest of
+// the run once per prefix, and on 160,000 characters of "sk-sk-sk-..."
+// takes 3.3 s, the time growing as the square of the length (11-11).
+const SHAPES: [kind: string, shape: RegExp, holds?: (match: string) => boolean][] = [
+  // the first part's run alone, when the other two do not follow it
+  ["jwt", /\beyJ[\w-]{8,}(?:\.eyJ[\w-]{8,}\.[\w-]{8,})?/g, (match) => match.includes(".")],
   ["anthropic", /\bsk-ant-[\w-]{20,}/g],
   // OpenAI's, and the many providers that copied its sk- (Braintrust,
   // DeepSeek): a digit among 20 or more characters, so a CSS class such as
   // sk-spinner-double-bounce stays.
-  ["openai", /\bsk-(?=[\w-]*\d)[\w-]{20,}/g],
-  ["slack", /\bx(?:ox[abposre]|app)-(?=[\w-]*\d)[\w-]{10,}/g],
+  ["openai", /\bsk-[\w-]*/g, (match) => match.length >= 23 && /\d/.test(match)],
+  ["slack", /\bx(?:ox[abposre]|app)-[\w-]*/g, (match) => match.length >= 15 && /\d/.test(match)],
   ["aws", /\bAKIA[0-9A-Z]{16}\b/g],
   ["github", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,})/g],
   ["supabase", /\bsb_secret_[\w-]{20,}/g],
@@ -128,11 +133,39 @@ const SHAPES: [kind: string, shape: RegExp][] = [
   ["perplexity", /\bpplx-[A-Za-z0-9]{40,}/g],
 ];
 
+// A private key's block runs from its BEGIN line to the first END line
+// after it. With no END after one BEGIN there is none after a later one,
+// so the search stops there; a pattern searches on to the text's end from
+// every BEGIN in it (160,000 characters of BEGIN lines, 0.23 s, 11-11).
+const KEY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
+const KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/g;
+
+function cutKeys(text: string, cut: (kind: string) => string): string {
+  let out = "";
+  let from = 0;
+  KEY_BEGIN.lastIndex = 0;
+  for (let begin = KEY_BEGIN.exec(text); begin; begin = KEY_BEGIN.exec(text)) {
+    KEY_END.lastIndex = KEY_BEGIN.lastIndex;
+    if (!KEY_END.exec(text)) break;
+    out += text.slice(from, begin.index) + cut("private_key");
+    from = KEY_BEGIN.lastIndex = KEY_END.lastIndex;
+  }
+  return out + text.slice(from);
+}
+
 // A value after a name that says it is a credential: OPENAI_API_KEY=...,
 // "X-API-Key": "...", password: ... Its name stays, so the reader knows
 // what was there. A name of a page or a cursor (nextPageToken, sync_token)
-// is paging, not a secret, and stays whole.
-const LABELED = /(?<![\w-])((?:[A-Za-z][\w.-]*?)?(?:api[_-]?key|apikey|secret(?:[_-]?key)?|token|passw(?:or)?d|pwd|access[_-]?key(?:[_-]?id)?|private[_-]?key|client[_-]?secret|credentials?|[_-]key))(["']?\s*[:=]\s*["']?)([^\s"'`<>,;(){}[\]\\]+)/gi;
+// is paging, not a secret, and stays whole. The name ends with the
+// credential's word and starts where its run of letters, digits, _, - and
+// dots does or just after a dot in it: at the first such place that is a
+// letter, or at the word itself when the word starts at one (2fa_token has
+// no name). The word is found first and the name read back from it: a
+// pattern that tries the place after each dot in turn reads the run once
+// from each, and on 160,000 characters of "a.a.a..." takes 20 s, the time
+// growing as the square of the length (11-11).
+const CREDENTIAL = /(?:api[_-]?key|apikey|secret(?:[_-]?key)?|token|passw(?:or)?d|pwd|access[_-]?key(?:[_-]?id)?|private[_-]?key|client[_-]?secret|credentials?|[_-]key)(?=["']?\s*[:=])/gi;
+const LABEL_VALUE = /(["']?\s*[:=]\s*["']?)([^\s"'`<>,;(){}[\]\\]+)/y;
 const PAGING = /page|next|cursor|continuation|sync/i;
 const PASSWORD = /passw(?:or)?d|pwd|credential/i;
 const PLACEHOLDER = /^(?:\*+|•+|x{3,}|\.{3,}|null|none|nil|undefined|true|false|required|optional|redacted|changeme|example|your[\w-]*|\$\w+)$/i;
@@ -147,6 +180,31 @@ function secretValue(name: string, value: string): boolean {
   return value.length >= 12 && /[A-Za-z]/.test(value) && /\d/.test(value);
 }
 
+function cutLabeled(text: string, cut: (kind: string) => string): string {
+  let out = "";
+  let from = 0;
+  CREDENTIAL.lastIndex = 0;
+  for (let word = CREDENTIAL.exec(text); word; word = CREDENTIAL.exec(text)) {
+    const end = CREDENTIAL.lastIndex;
+    let start = word.index;
+    while (start > 0 && /[\w.-]/.test(text[start - 1])) start--;
+    while (start < word.index && !/[A-Za-z]/.test(text[start])) {
+      start++;
+      while (start < word.index && text[start - 1] !== ".") start++;
+    }
+    if (start === word.index && start > 0 && /[\w-]/.test(text[start - 1])) continue;
+    LABEL_VALUE.lastIndex = end;
+    const label = LABEL_VALUE.exec(text);
+    if (!label) continue;
+    CREDENTIAL.lastIndex = LABEL_VALUE.lastIndex;
+    const name = text.slice(start, end);
+    if (PAGING.test(name) || !secretValue(name, label[2])) continue;
+    out += text.slice(from, start) + name + label[1] + cut(PASSWORD.test(name) ? "password" : "secret");
+    from = CREDENTIAL.lastIndex;
+  }
+  return out + text.slice(from);
+}
+
 export type Redacted = Record<string, number>;
 
 // text with each secret-shaped value cut to [REDACTED:<kind>], counting each
@@ -156,10 +214,9 @@ export function redactSecretText(text: string, counts: Redacted = {}): string {
     counts[kind] = (counts[kind] ?? 0) + 1;
     return `[REDACTED:${kind}]`;
   };
-  let out = text;
-  for (const [kind, shape] of SHAPES) out = out.replace(shape, () => cut(kind));
-  return out.replace(LABELED, (whole, name: string, sep: string, value: string) =>
-    PAGING.test(name) || !secretValue(name, value) ? whole : `${name}${sep}${cut(PASSWORD.test(name) ? "password" : "secret")}`);
+  let out = cutKeys(text, cut);
+  for (const [kind, shape, holds] of SHAPES) out = out.replace(shape, (match) => (holds && !holds(match) ? match : cut(kind)));
+  return cutLabeled(out, cut);
 }
 
 // value with every string in it, however deep, so cut, and the count of
