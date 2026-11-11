@@ -598,6 +598,27 @@ test("an agent sizing its tab sizes its own window, which the keeper then looks 
   h.kill();
 });
 
+// 11-11: a window left from the morning had the size a new agent window
+// was given. Safari opens the new one taller, and the keeper looks for it
+// at that size.
+test("an agent's window Safari opened taller than asked is looked for at Safari's size", async () => {
+  const s = safari();
+  const open = s.ops["windows.open"]!;
+  const asked: { width: number; height: number }[] = [];
+  s.ops["windows.open"] = (args) => {
+    const size = args[1] as { width: number; height: number };
+    asked.push(size);
+    return { ...(open(args) as object), size: { width: size.width, height: size.height + 1 } };
+  };
+  const h = agent();
+  const t = await runAs(h.pid, () => openTab("https://h.example/", true));
+  for (const site of ["h2", "h3"]) await runAs(h.pid, () => openTab(`https://${site}.example/`, true));
+  const { spaces } = (await spaceTool({ op: "state" })) as { spaces: { name: string; width: number; height: number }[] };
+  expect(asked).toHaveLength(1);
+  expect(spaces.find((x) => x.name === t.space.name)).toMatchObject({ width: asked[0]!.width, height: asked[0]!.height + 1 });
+  h.kill();
+});
+
 // 10-07: every agent window became a tab group, a one-page look included,
 // and the keeper missed 55 of 91 deletes as the user worked, each miss an
 // empty window left in his Safari. A window with fewer tabs stays plain and
