@@ -743,14 +743,47 @@ benchRows("replacement identity in WebKit", [
     ],
   },
   {
-    name: "an extension takeover recovers distinguishable business identity from kept fingerprints",
+    name: "an extension takeover recovers distinguishable business identity from the old copy's fingerprints",
     page: identity,
     steps: [
       { op: "snapshot" },
       redraw(["C", "A", "B"], true),
       { takeover: true },
-      { op: "click", args: ["2"], kept: true, answer: { value: { ok: true, healed: { ref: "2" } } } },
+      { op: "click", args: ["2"], answer: { value: { ok: true, healed: { ref: "2" } } } },
       approvals(["B"]),
+    ],
+  },
+  {
+    name: "an extension takeover keeps the refs the old copy gave",
+    page: identity,
+    steps: [
+      { op: "snapshot" },
+      { takeover: true },
+      { op: "click", args: ["2"], answer: { value: { ok: true } } },
+      approvals(["B"]),
+    ],
+  },
+  {
+    name: "after an extension takeover, each old ref whose row the page redrew presses its own row",
+    page: identity,
+    steps: [
+      { op: "snapshot" },
+      redraw(["C", "A", "B"]),
+      { takeover: true },
+      { op: "click", args: ["2"] },
+      { op: "click", args: ["1"] },
+      approvals(["B", "A"]),
+    ],
+  },
+  {
+    name: "an extension takeover still refuses a ref whose control changed since the snapshot",
+    page: targets,
+    steps: [
+      relabel("Cart (2)"),
+      { op: "snapshot" },
+      relabel("Delete account"),
+      { takeover: true },
+      { op: "click", args: ["2"], answer: { error: 'that control changed since the snapshot: it was button "Cart (2)", now button "Delete account"; re-run snapshot', failure: unsent } },
     ],
   },
   {

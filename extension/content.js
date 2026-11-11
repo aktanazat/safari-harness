@@ -15,18 +15,23 @@
   // then ignores every message, and the new one numbers its refs after the
   // ones already on the page. The new one first retires the old one (see
   // __safariHarnessRetire at the end), whose page listeners and watches
-  // would otherwise run on for the page's life with no one to answer.
+  // would otherwise run on for the page's life with no one to answer, and
+  // takes the refs it gave with their fingerprints: a ref from a snapshot
+  // taken before the reload still names its element, and an action on a
+  // control that changed since is refused as before. From 10-22 to 11-11
+  // every deploy made each ref in the pages open across it stale. A copy
+  // from before 11-11 hands over nothing.
   if (window.__safariHarnessInjected) return;
   const takeover = window.__safariHarnessInjected === null;
-  if (takeover) window.__safariHarnessRetire?.();
+  const handed = takeover ? window.__safariHarnessRetire?.() : undefined;
   const claim = {};
   window.__safariHarnessInjected = claim;
   // This copy's life in the page: its page listeners end with it.
   const life = new AbortController();
 
   const REF_ATTR = "data-sh-ref";
-  let refSeq = 0;
-  const refMap = new Map(); // ref -> element
+  let refSeq = handed?.refSeq ?? 0;
+  const refMap = new Map(handed?.refMap); // ref -> element
   if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) refSeq = Math.max(refSeq, Number(el.getAttribute(REF_ATTR)) || 0);
 
   // ---------- role / name computation (ARIA-lite) ----------
@@ -461,7 +466,7 @@
   // the page that matches it; the reply says so (healed: { ref, now }).
   // Teach mode keeps the same fingerprint of each step's target, for a
   // replay to find the target again.
-  const fingerprints = new Map(); // ref -> fingerprint, kept after its element leaves
+  const fingerprints = new Map(handed?.fingerprints); // ref -> fingerprint, kept after its element leaves
   const FINGERPRINTS_MAX = 5000;
   let healedNow = null; // the heal the running request made
   let carried = null; // the fingerprints the running request brought (adopt)
@@ -6029,12 +6034,14 @@
   // stop them. Its tick port closed with the load that opened it. A watch
   // after an action and a sleep in eval end by themselves within seconds;
   // ending the sleep early would run the rest of the old eval sooner. A
-  // copy from before this hook stays.
+  // copy from before this hook stays. The newer copy takes the refs this
+  // one gave (see the claim at the top).
   window.__safariHarnessRetire = () => {
     if (privateCapture) restorePrivateCapture(privateCapture.mark);
     life.abort();
     pendingWait?.done(false);
     pendingDownload?.(null);
+    return { refSeq, refMap, fingerprints };
   };
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
