@@ -24,6 +24,9 @@ const { affectsPage } = await import("./lanes.ts");
 const { watched } = await import("./mission.ts");
 const daemonRpc = await import("./rpc.ts");
 const { callTool } = await import("./tools.ts");
+// secret.ts loads Gmail's kit as a mailed code is first looked for; loaded
+// from disk then, it would take real time while the fake clock runs on.
+await import("./sites/google.ts");
 
 const CODE = "482915";
 const OTHER = "777777";

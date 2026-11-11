@@ -22,12 +22,15 @@
 import { challengeOf } from "./challenge.ts";
 import { HarnessError } from "./failures.ts";
 import { met } from "./reads.ts";
-import { COLLECT as BING } from "./sites/bing-search.ts";
-import { COLLECT as GOOGLE } from "./sites/google-search.ts";
 import { closeTab, evaluate, heldSearchTab, navigate, openSearchTab, resolveTab } from "./tools.ts";
 
-// Each engine's host, and the read that collects its results page.
-const READS: Record<string, string> = { "www.google.com": GOOGLE, "www.bing.com": BING };
+// Each engine's host, and the read that collects its results page, loaded
+// as the engine is first searched: every CLI call and MCP server loads
+// this file, and the site modules are the repl's (startup.test.ts).
+const READS: Record<string, () => Promise<{ COLLECT: string }>> = {
+  "www.google.com": () => import("./sites/google-search.ts"),
+  "www.bing.com": () => import("./sites/bing-search.ts"),
+};
 
 // A failure of the tab, not of the search: the tab is gone, its page
 // stopped answering (background.js), or the extension's link went down
@@ -45,7 +48,7 @@ export async function searchPage(url: string): Promise<unknown> {
   if (!u || read === undefined) throw new HarnessError("invalid_argument", "url must be a results page of Google or Bing: https://www.google.com/search?q=… or https://www.bing.com/search?q=…");
   const engine = engines.get(u.hostname) ?? { queue: Promise.resolve() };
   engines.set(u.hostname, engine);
-  const loaded = engine.queue.then(() => load(engine, url, read));
+  const loaded = engine.queue.then(async () => load(engine, url, (await read()).COLLECT));
   engine.queue = loaded.catch(() => {});
   return loaded;
 }
