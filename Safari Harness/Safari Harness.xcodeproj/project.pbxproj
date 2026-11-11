@@ -21,6 +21,7 @@
 		8854B8B730666DB500E7A747 /* manifest.json in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B430666DB500E7A747 /* manifest.json */; };
 		8854B8B830666DB500E7A747 /* content.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B530666DB500E7A747 /* content.js */; };
 		8854B8C230666DB500E7A747 /* dialogs.js in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8C130666DB500E7A747 /* dialogs.js */; };
+		A11CE00730666DB500E7A747 /* start.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01730666DB500E7A747 /* start.js */; };
 		8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */ = {isa = PBXBuildFile; fileRef = 8854B8B930666DB500E7A747 /* toolbar-icon.svg */; };
 		A11CE00130666DB500E7A747 /* upgrades.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01130666DB500E7A747 /* upgrades.js */; };
 		A11CE00230666DB500E7A747 /* app-checks.js in Resources */ = {isa = PBXBuildFile; fileRef = A11CE01230666DB500E7A747 /* app-checks.js */; };
@@ -88,6 +89,7 @@
 		8854B8B430666DB500E7A747 /* manifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = manifest.json; path = ../../extension/manifest.json; sourceTree = "<group>"; };
 		8854B8B530666DB500E7A747 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = content.js; path = ../../extension/content.js; sourceTree = "<group>"; };
 		8854B8C130666DB500E7A747 /* dialogs.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = dialogs.js; path = ../../extension/dialogs.js; sourceTree = "<group>"; };
+		A11CE01730666DB500E7A747 /* start.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = start.js; path = ../../extension/start.js; sourceTree = "<group>"; };
 		8854B8B930666DB500E7A747 /* toolbar-icon.svg */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = "toolbar-icon.svg"; path = "../../extension/toolbar-icon.svg"; sourceTree = "<group>"; };
 		A11CE01130666DB500E7A747 /* upgrades.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = upgrades.js; path = ../../extension/upgrades.js; sourceTree = "<group>"; };
 		A11CE01230666DB500E7A747 /* app-checks.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = app-checks.js; path = ../../extension/app-checks.js; sourceTree = "<group>"; };
@@ -180,6 +182,7 @@
 				8854B8B430666DB500E7A747 /* manifest.json */,
 				8854B8B530666DB500E7A747 /* content.js */,
 				8854B8C130666DB500E7A747 /* dialogs.js */,
+				A11CE01730666DB500E7A747 /* start.js */,
 				8854B8B930666DB500E7A747 /* toolbar-icon.svg */,
 				A11CE01130666DB500E7A747 /* upgrades.js */,
 				A11CE01230666DB500E7A747 /* app-checks.js */,
@@ -313,6 +316,7 @@
 			files = (
 				8854B8B830666DB500E7A747 /* content.js in Resources */,
 				8854B8C230666DB500E7A747 /* dialogs.js in Resources */,
+				A11CE00730666DB500E7A747 /* start.js in Resources */,
 				8854B8B730666DB500E7A747 /* manifest.json in Resources */,
 				8854B8B630666DB500E7A747 /* background.js in Resources */,
 				8854B8BA30666DB500E7A747 /* toolbar-icon.svg in Resources */,

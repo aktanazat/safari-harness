@@ -291,6 +291,80 @@ benchRows("content.js in WebKit", [
     frames: 1,
     steps: [{ op: "snapshot", args: [{ refPrefix: "f1:" }], frame: "frame.html", answer: { value: { snapshot: '[f1:1] button "Frame button"' } } }],
   },
+  // Safari's manifest puts start.js, not content.js, in every frame of
+  // every page (11-11): a tab gets content.js once an agent comes to it,
+  // its page long loaded.
+  {
+    name: "a tab no agent works in drops its request log, and says when its page opens a tab",
+    page: "popup.html",
+    untouched: true,
+    steps: [
+      { pageEval: "window[Symbol.for('safari-harness.page')].net.on", answer: { value: false } },
+      // window.open, then a click on a link to a new tab
+      { pageEval: "document.querySelector('button').click(), true" },
+      { pageEval: "document.getElementById('newtab').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })), true" },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
+    ],
+  },
+  // Safari runs no script again in a page it puts back from its
+  // back-forward cache.
+  {
+    name: "a page put back from the back-forward cache reports in again while it holds no copy of content.js",
+    page: "type.html",
+    untouched: true,
+    steps: [
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }] } },
+      { pageEval: "dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false })), dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })), true" },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }] } },
+      { adopt: true },
+      { sent: true },
+      { pageEval: "dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })), true" },
+      { sent: true, answer: { value: [] } },
+    ],
+  },
+  {
+    name: "a tab an agent comes to after it loaded gets a copy in each frame, each frame where its parent's snapshot marks it",
+    page: "frames.html",
+    frames: 1,
+    untouched: true,
+    steps: [
+      { adopt: true },
+      { op: "snapshot", answer: { value: { snapshot: '[1] iframe "Child" @@frame:<frame.html>@@' } } },
+      { op: "snapshot", args: [{ refPrefix: "f1:" }], frame: "frame.html", answer: { value: { snapshot: '[f1:1] button "Frame button"' } } },
+      { op: "click", args: ["Frame button"], frame: "frame.html", answer: { value: { ok: true } } },
+    ],
+  },
+  {
+    name: "typing in a tab an agent came to after it loaded gives the page the input it listens for",
+    page: "type.html",
+    untouched: true,
+    steps: [
+      { adopt: true },
+      { op: "snapshot" }, // [1] Name
+      { op: "type", args: ["1", "Ada"], answer: { value: { ok: true, kept: true } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw Ada") } } },
+    ],
+  },
+  {
+    name: "a confirm the page raises as an agent clicks, in a tab it came to after it loaded, is answered and reported",
+    page: "confirm.html",
+    untouched: true,
+    steps: [
+      { adopt: true },
+      { op: "click", args: ["Delete"], answer: { value: { ok: true, dialogs: [{ type: "confirm", message: "Delete the draft?", answer: false }] } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Kept") } } },
+    ],
+  },
+  {
+    name: "a bot check is named in a tab an agent came to after it loaded",
+    page: "aws-waf.html",
+    untouched: true,
+    steps: [
+      { adopt: true },
+      { op: "wait", args: [null, { text: "Solve the puzzle" }], timeout: 2000, answer: { value: { found: true } } },
+      { op: "eval", args: [`window.__safariHarnessProbe.challenge(${JSON.stringify(PROBE)})`], answer: { value: { ok: true, result: { markers: ["#captcha-container .amzn-captcha-modal", ".amzn-captcha-modal"] } } } },
+    ],
+  },
   // On 10-19 SheerID's form sat in a frame inside a dialog over Adorama's
   // page: extract read the page behind it, a wait for its text to go
   // answered at once, and its lower button stayed below the dialog's fold.
@@ -723,6 +797,7 @@ benchRows("content.js in WebKit", [
       { op: "wait", args: [null, { text: "Case details" }], timeout: 3000, answer: { error: "bench: wait did not answer within 3000 ms" } },
       { takeover: true },
       { sent: true, answer: { value: [
+        { load: 1, message: { __safariHarnessStart: 1 } },
         { load: 1, message: { __safariHarnessReady: 1 } },
         { load: 2, message: { __safariHarnessReady: 1 } },
         { load: 1, answer: { value: { found: false, meanwhile: ["title was: Request pending", "new: No case found", "gone: Checking the request"] } } },
@@ -738,6 +813,7 @@ benchRows("content.js in WebKit", [
       { op: "wait", args: [null, { text: "Case details" }], timeout: 3000, answer: { error: "bench: wait did not answer within 3000 ms" } },
       { takeover: true },
       { sent: true, answer: { value: [
+        { load: 1, message: { __safariHarnessStart: 1 } },
         { load: 1, message: { __safariHarnessReady: 1 } },
         { load: 2, message: { __safariHarnessReady: 1 } },
         { load: 1, answer: { value: { found: false, meanwhile: [expect.stringMatching(/^url was: .*\/wait-late.html$/), "title was: Request pending", "new: Last update"] } } },
@@ -1101,6 +1177,7 @@ benchRows("content.js in WebKit", [
         sent: true,
         answer: {
           value: [
+            { load: 1, message: { __safariHarnessStart: 1 } },
             { load: 1, message: { __safariHarnessReady: 1 } },
             { load: 2, message: { __safariHarnessReady: 1 } },
             { load: 2, message: { __safariHarnessPopup: 1 } },
@@ -1118,6 +1195,7 @@ benchRows("content.js in WebKit", [
         sent: true,
         answer: {
           value: [
+            { load: 1, message: { __safariHarnessStart: 1 } },
             { load: 1, message: { __safariHarnessReady: 1 } },
             { load: 1, message: { __safariHarnessPopup: 1 } },
           ],
@@ -1133,7 +1211,7 @@ benchRows("content.js in WebKit", [
     page: "popup.html",
     steps: [
       { op: "eval", args: ["document.getElementById('newtab').click(), true"], answer: { value: { ok: true, result: true } } },
-      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }, { load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
     ],
   },
   {
@@ -1141,7 +1219,7 @@ benchRows("content.js in WebKit", [
     page: "popup.html",
     steps: [
       { op: "click", args: ["New tab"], answer: { value: { expect: "tab" } } },
-      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
+      { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }, { load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
     ],
   },
   {
@@ -1155,6 +1233,7 @@ benchRows("content.js in WebKit", [
         sent: true,
         answer: {
           value: [
+            { load: 1, message: { __safariHarnessStart: 1 } },
             { load: 1, message: { __safariHarnessReady: 1 } },
             { load: 2, message: { __safariHarnessReady: 1 } },
             { load: 1, answer: { value: { found: false } } },

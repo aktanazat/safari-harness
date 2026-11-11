@@ -102,12 +102,14 @@ class Clock {
 // see as window there; a world made before this load of the extension keeps
 // messaging that reaches no one (live false). ran lists the requests its
 // copy of content.js ran, and does answers each; a held document (a dialog
-// open on it) answers nothing.
+// open on it) answers nothing, and a stuck one (a frame stuck loading) runs
+// no script.
 class Doc {
   readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] }, __safariHarnessFrame: crypto.randomUUID().replaceAll("-", ""), innerWidth: 800, innerHeight: 600 };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
+  stuck = false;
   // Safari lets the extension put no script in a blank tab, and says so.
   shut = false;
   // What Safari gives as the tab's title while it shows this document.
@@ -300,6 +302,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
           const doc = frameOf(frameId);
           if (!doc || (doc.shut && target.allFrames)) continue;
           if (doc.shut) throw new Error(refused);
+          if (doc.stuck) return never();
           if (files) {
             copyIn(tab, doc, true, frameId);
             results.push({ frameId, result: null });
@@ -531,6 +534,23 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       copyIn(tab, doc, true, frameId);
       return doc;
     },
+    // A tab whose page holds no script yet.
+    bare(url: string): Tab {
+      const tab = { id: nextTab++, doc: new Doc(url) };
+      tabs.set(tab.id, tab);
+      return tab;
+    },
+    // doc, shown in tab's top page or its embedded frame frameId, holds
+    // start.js alone, as Safari's manifest leaves a page, and reports in.
+    // Answers what background.js answered it.
+    report(tab: Tab, doc: Doc, frameId = 0): Promise<unknown> {
+      doc.world.__safariHarnessStart = true;
+      if (frameId === 0) tab.doc = doc;
+      else (tab.frames ??= new Map()).set(frameId, doc);
+      const sender = { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId };
+      const [reply] = [...onMessage.listeners].map((f) => f({ __safariHarnessStart: 1 }, sender)).filter((r) => r !== undefined);
+      return Promise.resolve(reply);
+    },
     // He sizes window.
     size(window: number, width: number, height: number) {
       sizes.set(window, { width, height });
@@ -608,6 +628,86 @@ test("after a new load, a page Safari put no script in still answers its first r
   await b.ask(tab, "tabInfo");
   b.navigate(tab, new Doc("https://example.org/"), false);
   expect((await b.ask(tab, "tabInfo")).value).toEqual({ url: "https://example.org/" });
+});
+
+// Safari's manifest puts start.js, not content.js, in every frame of every
+// page (11-11): content.js costs each frame 0.4 MB, and goes only into
+// tabs agents work in.
+test("a page in a tab no agent works in gets no content.js, and a request puts a copy in each frame that reported in", async () => {
+  const b = await start();
+  const tab = b.bare("https://example.com/");
+  expect(await b.report(tab, tab.doc)).toEqual({ content: false, dialogs: null, tab: tab.id, window: 1 });
+  const ad = new Doc("https://ads.example.net/slot");
+  expect(await b.report(tab, ad, 5)).toEqual({ content: false, dialogs: null, tab: tab.id, window: 1 });
+  // Safari's manifest leaves an about:blank frame out; its parent reads it.
+  const blank = new Doc("about:blank");
+  tab.frames?.set(6, blank);
+  await b.clock.advance(1000);
+  expect([tab.doc, ad].map((d) => d.world.__safariHarnessInjected)).toEqual([undefined, undefined]);
+
+  expect((await b.ask(tab, "tabInfo")).value).toEqual({ url: "https://example.com/" });
+  expect(tab.doc.ran).toEqual(["tabInfo"]);
+  expect(ad.world.__safariHarnessInjected).toBeDefined();
+  expect(blank.world.__safariHarnessInjected).toBeUndefined();
+  expect(b.told.filter((m) => m.op === "note")).toEqual([]);
+});
+
+test("a new page in a tab agents work in, or one the harness owns, gets content.js as it reports in, and takes its first request in one trip", async () => {
+  const b = await start();
+  const driven = b.bare("https://example.com/");
+  await b.report(driven, driven.doc);
+  await b.ask(driven, "tabInfo");
+  const next = new Doc("https://example.org/");
+  b.navigate(driven, next, false);
+  expect(await b.report(driven, next)).toMatchObject({ content: true });
+  const owned = b.bare("https://example.net/");
+  await b.own(owned);
+  expect(await b.report(owned, owned.doc)).toMatchObject({ content: true, dialogs: { accept: false, text: null } });
+  await settle();
+  expect([next, owned.doc].map((d) => d.world.__safariHarnessInjected)).toEqual([expect.any(Object), expect.any(Object)]);
+
+  b.trips.length = 0;
+  expect((await b.ask(driven, "tabInfo")).value).toEqual({ url: "https://example.org/" });
+  expect(b.trips).toEqual(["message tabInfo"]);
+});
+
+// The daemon gives a probe 2 s (challenge.ts).
+test("an embedded frame stuck loading as it reports in holds a probe of its tab no longer than one there before", async () => {
+  const b = await start();
+  const tab = b.bare("https://example.com/");
+  await b.report(tab, tab.doc);
+  await b.ask(tab, "tabInfo");
+  tab.doc.world.__safariHarnessProbe = { login: () => ({ origin: "https://example.com" }) };
+  const ad = new Doc("https://ads.example.net/slot");
+  ad.stuck = true;
+  await b.report(tab, ad, 5);
+  let answer: Answer | undefined;
+  b.request("probe", [tab.id, "login"]).then((a) => { answer = a; });
+  await b.clock.advance(500);
+  expect(answer?.value).toEqual([{ frame: 0, origin: "https://example.com" }]);
+});
+
+// Safari may fail a script whose document went away while it ran, and
+// with it the script in every other frame.
+test("copies Safari refused a tab's embedded frames as an agent came go in with the tab's next request", async () => {
+  const b = await start();
+  const tab = b.bare("https://shop.example/checkout");
+  await b.report(tab, tab.doc);
+  const card = new Doc("https://pay.example/card");
+  await b.report(tab, card, 6);
+  const ad = new Doc("https://ads.example.net/slot?1");
+  await b.report(tab, ad, 5);
+  // the ad frame goes on to its next ad as the script runs in it
+  Object.defineProperty(ad.world, "__safariHarnessStart", {
+    get() {
+      tab.frames?.set(5, new Doc("https://ads.example.net/slot?2"));
+      return true;
+    },
+  });
+  await b.ask(tab, "tabInfo");
+  expect(card.world.__safariHarnessInjected).toBeUndefined();
+  await b.ask(tab, "tabInfo");
+  expect(card.world.__safariHarnessInjected).toBeDefined();
 });
 
 test("a request the page no longer takes goes to its new document, once", async () => {

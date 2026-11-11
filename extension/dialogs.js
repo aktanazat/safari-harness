@@ -43,13 +43,14 @@
     seen("prompt", message, answer);
     return answer;
   };
-  // A page may print as it loads, before content.js has said whose tab
+  // A page may print as it loads, before the extension has said whose tab
   // this is: Gmail's print view likely does, and on 10-14 requests to a
-  // harness tab on it failed for 43.7 s (AkylUsage). Until content.js says
-  // (a policy, or __sh_dialog_known once the extension answered its
-  // report), a print waits: in a tab the harness owns it is then answered
-  // as an armed one is, in the user's it shows. With no word in
-  // PRINT_WAIT_MS (no extension to answer), it shows.
+  // harness tab on it failed for 43.7 s (AkylUsage). Until it says (a
+  // policy from content.js, or __sh_dialog_known once the extension
+  // answered start.js's or content.js's report), a print waits: in a tab
+  // the harness owns it is then answered as an armed one is, in the user's
+  // it shows. With no word in PRINT_WAIT_MS (no extension to answer), it
+  // shows.
   const PRINT_WAIT_MS = 3000;
   let known = false;
   let heldPrint = null;
@@ -86,7 +87,7 @@
       releasePrint();
     } catch {}
   });
-  // content.js's word that this tab is not the harness's (print, above).
+  // The word that this tab is not the harness's (print, above).
   document.addEventListener("__sh_dialog_known", () => {
     known = true;
     releasePrint();
@@ -409,8 +410,9 @@
   });
 
   // A tab no agent works in keeps the page's own fetch and XMLHttpRequest:
-  // content.js says so once the page reports in, and a copy the page took
-  // meanwhile logs nothing. net start (pageCapture) puts the log back.
+  // start.js or content.js says so once the page reports in, and a copy the
+  // page took meanwhile logs nothing. net start (pageCapture) puts the log
+  // back.
   const swap = (from, to) => {
     if (window.fetch === from.fetch) window.fetch = to.fetch;
     if (XHR.open === from.open) XHR.open = to.open;
