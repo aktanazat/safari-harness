@@ -187,7 +187,6 @@ async function clear(h: Helper, daemon: Daemon, s: SpaceState, pass: string, giv
   return deleteFrom(h, daemon, s, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, given, log);
 }
 
-// One look at the windows and the queue; whether there is more to watch.
 // given: when this keeper last left each group queued, which it tries
 // again once its wait is over: RETRY_MS, or after waits waits a shorter
 // one; held: a tab of his would not leave it, and only the next keeper
@@ -196,9 +195,11 @@ async function clear(h: Helper, daemon: Daemon, s: SpaceState, pass: string, giv
 export type Given = Map<string, { at: number; held: boolean; waits?: number; scratches?: number }>;
 const retrying = (given: Given) => [...given.values()].some((g) => !g.held);
 const due = (g: { at: number; held: boolean; waits?: number }, now: number) => !g.held && now - g.at >= (g.waits ? Math.min(WAIT_MS * 2 ** (g.waits - 1), RETRY_MS) : RETRY_MS);
-export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): Promise<boolean> {
+
+// One look at the windows and the queue: what is due now, and whether
+// anything else is still watched. id: the pass it is for.
+async function look(daemon: Daemon, given: Given, log: Log, id?: string) {
   const now = Date.now();
-  const id = randomUUID();
   const { connected, spaces } = (await daemon("state", { pass: id })) as { connected: boolean; spaces: SpaceState[] };
   const queue = Object.entries(readQueue());
   const known = new Set(spaces.map((s) => s.name));
@@ -218,6 +219,13 @@ export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): P
   // A live window still making is a stopped keeper's: this one tells each
   // outcome before its pass ends.
   const todo = [...spaces.filter((s) => { const g = given.get(s.name); return s.ended && (!g || due(g, now)); }), ...spaces.filter((s) => !s.ended && (s.group === "waiting" || s.group === "making"))];
+  return { connected, todo, watching };
+}
+
+// A look, and what is due done; whether there is more to watch.
+export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): Promise<boolean> {
+  const id = randomUUID();
+  const { connected, todo, watching } = await look(daemon, given, log, id);
   // A group a failed delete left queued is tried again by this keeper, as
   // no other starts until an agent opens a window: on 10-30 window 5 waited
   // 55 min. One his tab holds waits for the next keeper: he may keep that
@@ -247,6 +255,25 @@ export async function pass(h: Helper, daemon: Daemon, given: Given, log: Log): P
   return more || retrying(given);
 }
 
+// Passes while there is more to watch, then gives up its pid file and
+// looks once more, acting on no window: an open that finds a keeper
+// running starts none (call.ts), so a window one filled during the last
+// pass would wait with no keeper. A window due then, the pid file goes
+// back before the next pass acts, as the daemon holds a window being made
+// open only while a keeper runs (spaces.ts). Ended groups are left to the
+// next keeper: one due then may be one the last pass let be (deletes off,
+// no permission), which a pass at once would only let be again.
+export async function keep(h: Helper, daemon: Daemon, log: Log): Promise<void> {
+  const given: Given = new Map();
+  for (;;) {
+    writeFileSync(files.keeper, String(process.pid));
+    while (await pass(h, daemon, given, log)) await Bun.sleep(LOOP_MS);
+    rmSync(files.keeper, { force: true });
+    const { todo, watching } = await look(daemon, given, log);
+    if (!watching && todo.every((s) => s.ended)) return;
+  }
+}
+
 if (import.meta.main) {
   // a few lines a day on 10-21; a log that only grows still fills a disk
   trimLog(files.log, 1000);
@@ -256,17 +283,11 @@ if (import.meta.main) {
     appendFileSync(files.log, `${new Date().toISOString()} ${line}\n`);
   };
   const daemon: Daemon = (op, args = {}) => rpc("space", { ...args, op });
-  const given: Given = new Map();
   const locked = await helper("lock", { ms: 0 });
   try {
-    if (locked.ok) {
-      writeFileSync(files.keeper, String(process.pid));
-      const h = guarded(helper);
-      while (await pass(h, daemon, given, log)) await Bun.sleep(LOOP_MS);
-    } else if (!(await helper("gate")).ok) {
-      // No helper to lock with: one pass tells each waiting window why.
-      await pass(helper, daemon, given, log);
-    }
+    if (locked.ok) await keep(guarded(helper), daemon, log);
+    // No helper to lock with: one pass tells each waiting window why.
+    else if (!(await helper("gate")).ok) await pass(helper, daemon, new Map(), log);
   } catch (e) {
     log(`stopped: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
