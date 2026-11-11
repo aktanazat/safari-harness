@@ -135,15 +135,17 @@ const CHAT_COLS = "c.ROWID id, c.guid, c.chat_identifier ident, c.display_name d
 // A chat by guid, handle, group name, or contact name. A person's direct chat
 // wins over group chats they are in; if that person has several direct chats
 // (different numbers), the most recent one is theirs. Anything else ambiguous
-// is an error listing the candidates.
-function resolveChat(db: Database, q: string, names: Map<string, string>): ChatRow {
+// is an error listing the candidates. `direct` leaves groups out unless named
+// by guid.
+function resolveChat(db: Database, q: string, names: Map<string, string>, direct = false): ChatRow {
   const needle = String(q ?? "").trim();
   if (!needle) throw new Error("give a chat: its id from imessage_chats, a phone number, an email, or a contact name");
   const exact = db.query(`SELECT ${CHAT_COLS} FROM chat c WHERE c.guid = ?`).get(needle) as ChatRow | null;
   if (exact) return exact;
   const key = handleKey(needle);
   const lower = needle.toLowerCase();
-  const all = db.query(`SELECT ${CHAT_COLS}, (SELECT MAX(message_date) FROM chat_message_join j WHERE j.chat_id = c.ROWID) d FROM chat c ORDER BY d DESC`).all() as (ChatRow & { d: number | null })[];
+  const all = (db.query(`SELECT ${CHAT_COLS}, (SELECT MAX(message_date) FROM chat_message_join j WHERE j.chat_id = c.ROWID) d FROM chat c ORDER BY d DESC`).all() as (ChatRow & { d: number | null })[])
+    .filter((c) => !direct || c.style !== 43);
   const who = (c: ChatRow) => [c.ident, ...participants(db, c.id)];
   const isPerson = (c: ChatRow) => who(c).some((h) => (key.length >= 7 && handleKey(h) === key) || (names.get(handleKey(h)) ?? "").toLowerCase().includes(lower));
   const tiers = [
@@ -669,11 +671,13 @@ export async function send(opts: { to: string; text?: string; files?: string[]; 
   try {
     const names = nameIndex(loadContacts());
     let c: ChatRow | null = null;
+    // A new conversation is allowed only to an explicit phone number or email,
+    // and a bare one means that person, never a group they are in.
+    const handleLike = to.includes("@") || handleKey(to).length >= 10;
+    const bare = handleLike && /^(\+?[\d\s().-]+|[^\s@]+@[^\s@]+)$/.test(to);
     try {
-      c = resolveChat(db, to, names);
+      c = resolveChat(db, to, names, bare);
     } catch (e) {
-      // A new conversation is allowed only to an explicit phone number or email.
-      const handleLike = to.includes("@") || handleKey(to).length >= 10;
       if (!handleLike || !/^no chat matches/.test(String((e as Error).message))) throw e;
     }
     const recent = c
