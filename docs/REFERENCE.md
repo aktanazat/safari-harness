@@ -2161,10 +2161,11 @@ application shares the site, and one's answers never go into another's.
 
 - Kept: the text, choices, checkboxes, and radios of the form's fields on
   show, enabled, and not read-only, 5,000 characters a field and 30,000 a
-  form at most. Never a password, a one-time code, a card's number or
-  security code, a social security, passport, license, tax, or bank
-  number, a field the harness typed a secret into, or a value shaped like
-  one of these.
+  form at most: a click keeps the first fields on the page that fit, and
+  the form's draft then drops the fields it has held longest. Never a
+  password, a one-time code, a card's number or security code, a social
+  security, passport, license, tax, or bank number, a field the harness
+  typed a secret into, or a value shaped like one of these.
 - The drafts live in `~/.local/share/safari-harness/form-drafts`, the
   folder 0700 and each site's file 0600, named by a hash and not the site;
   the form and its page are kept as hashes too. A draft is deleted a day

@@ -27,8 +27,8 @@ export const DRAFT_MS = 24 * 60 * 60 * 1000;
 const FORMS_MAX = 8;
 const FIELDS_MAX = 200;
 const VALUE_MAX = 5_000;
-// A page can fill fields the agent never sees, with any amount of text:
-// one click adds this many characters of values to a draft at most.
+// A page can fill fields the agent never sees, with any amount of text: a
+// draft keeps this many characters of values at most.
 const DRAFT_CHARS_MAX = 30_000;
 const TEXT_MAX = 2000;
 const LABEL_MAX = 80;
@@ -54,6 +54,16 @@ export type Look = { frame: number; origin: string; page?: string; present: numb
 export type Outcome = "unseen" | "kept" | "emptied" | "signIn" | "error" | "sent";
 
 const short = (v: unknown, max = TEXT_MAX): v is string => typeof v === "string" && v.length <= max;
+
+// The run of fields from the first whose values come to DRAFT_CHARS_MAX
+// characters at most.
+function withinChars(fields: DraftField[]): DraftField[] {
+  let chars = 0;
+  return fields.filter((f) => {
+    chars += "value" in f ? [f.value].flat().join("").length : 0;
+    return chars <= DRAFT_CHARS_MAX;
+  });
+}
 
 // A field of formDraft's answer, checked: it comes from the page.
 function fieldOf(v: unknown): DraftField | null {
@@ -197,10 +207,15 @@ function takenOf(v: unknown): { final: boolean; form: string; page: string; orig
 
 // Keeps what a click or an Enter is about to send on (formDraft's answer),
 // merged into the draft its form had on this page (an earlier step's),
-// each field's newer value winning and a radio group's newer choice
-// replacing the older. A draft is kept with two fields at least that are
-// not checkboxes: one is no work to type again. Answers the step with its
-// draft, or null when it sends no form on or its form has none.
+// each field's newer value winning in its place and a radio group's newer
+// choice replacing the older. Refill sets the fields in the draft's order,
+// so a list another's choices hang on (a country, its state) stays ahead
+// of it. Past FIELDS_MAX fields or DRAFT_CHARS_MAX characters the draft
+// drops the fields it has held longest, and none of the step's: a step's
+// fields come to DRAFT_CHARS_MAX at most, the first on the page kept. A
+// draft is kept with two fields at least that are not checkboxes: one is
+// no work to type again. Answers the step with its draft, or null when it
+// sends no form on or its form has none.
 export function saveDraft(tab: number, answer: unknown, now = Date.now()): Sent | null {
   const taken = takenOf(answer);
   if (!taken) return null;
@@ -208,15 +223,14 @@ export function saveDraft(tab: number, answer: unknown, now = Date.now()): Sent 
   const page = hashOf(taken.page);
   const site = readSite(taken.origin, now);
   const prior = site.find((d) => d.form === form && d.page === page);
-  let chars = 0;
-  const fields = taken.fields.filter((f) => {
-    chars += "value" in f ? [f.value].flat().join("").length : 0;
-    return chars <= DRAFT_CHARS_MAX;
-  }).filter((f) => !secret(tab, f));
+  const fields = withinChars(taken.fields).filter((f) => !secret(tab, f));
   const chosen = new Set(fields.filter((f) => f.type === "radio").map((f) => f.name));
   const merged = new Map((prior?.fields ?? []).filter((f) => f.type !== "radio" || !chosen.has(f.name)).map((f) => [f.key, f]));
   for (const f of fields) merged.set(f.key, f);
-  const kept = [...merged.values()].slice(0, FIELDS_MAX);
+  const sent = new Set(fields);
+  const ranked = [...fields, ...[...merged.values()].filter((f) => !sent.has(f)).reverse()];
+  const keep = new Set(withinChars(ranked).slice(0, FIELDS_MAX));
+  const kept = [...merged.values()].filter((f) => keep.has(f));
   if (kept.filter((f) => f.type !== "checkbox").length < 2) return null;
   writeSite(taken.origin, [{ origin: taken.origin, form, page, at: now, fields: kept }, ...site.filter((d) => d !== prior)].slice(0, FORMS_MAX));
   sweepDrafts(now);
