@@ -41,11 +41,11 @@ function kept<K, V>(map: Map<K, V>, key: K, value: V): V {
 // Counts a model's read of the page at url in task, in tab (none for a map
 // page). From the third read of one kind of page, answers it once: whether
 // this address was read before (a page read again may come from the JSON
-// request it made, while a kind read across pages needs a reader), and
-// whether this read is the last one to offer on. The answer holds the
-// kind's offer, so two reads at once make one; a read that offers nothing
-// yet gives it back (deferred).
-export function scraped(owner: number, task: string, tab: number | undefined, url: string, document?: string): { kind: string; again: boolean; last: boolean } | undefined {
+// request it made, while a kind read across pages needs a reader), whether
+// this read is the kind's first to look for that request, and whether it is
+// the last one to offer on. The answer holds the kind's offer, so two reads
+// at once make one; a read that offers nothing yet gives it back (deferred).
+export function scraped(owner: number, task: string, tab: number | undefined, url: string, document?: string): { kind: string; again: boolean; first: boolean; last: boolean } | undefined {
   const kind = pageKind(url);
   if (kind === undefined) return undefined;
   let tasks = owners.get(owner);
@@ -67,7 +67,7 @@ export function scraped(owner: number, task: string, tab: number | undefined, ur
   kept(seen.pages, page, before + 1);
   if (++seen.reads < OFFER_AT || seen.offered) return undefined;
   seen.offered = true;
-  return { kind, again: before > 0, last: seen.reads >= OFFER_AT + LOOKS - 1 };
+  return { kind, again: before > 0, first: seen.reads === OFFER_AT, last: seen.reads >= OFFER_AT + LOOKS - 1 };
 }
 
 export function deferred(owner: number, task: string, kind: string): void {
