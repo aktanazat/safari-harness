@@ -29,7 +29,7 @@ import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.t
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
-import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
+import { endpointOf, fieldsShownOn, savedAs, type ShownFields } from "./request-catalog.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { CARD_PHONE } from "./passkey.ts";
@@ -3217,7 +3217,8 @@ function readerHint(tab: unknown, result: unknown): unknown {
 // site. The offer goes on the read's last answer (invokeTool), after any
 // read again for an action that came while it ran. Its wording holds no
 // value, path, or field name from the page, and the read keeps its answer
-// if making it fails or takes longer than OFFER_MS.
+// if making it fails or takes longer than OFFER_MS, with LATE_MS more on
+// the kind's first look.
 async function scrapeOffer(tool: string, a: Record<string, unknown>, page: unknown): Promise<unknown> {
   const owner = currentOwner();
   if ((tool !== "snapshot" && tool !== "extract") || !fromModel() || owner === undefined || a.save || a.interactive || a.diff || a.updates || a.since !== undefined
@@ -3230,7 +3231,7 @@ async function scrapeOffer(tool: string, a: Record<string, unknown>, page: unkno
   const seen = scraped(owner, task, tab, url, documentId);
   if (!seen) return page;
   const again = seen.again && tab !== undefined;
-  const request = again && changes === undefined ? await by(pageRequestRoute(tab, url, read), Date.now() + OFFER_MS) : undefined;
+  const request = again && changes === undefined ? await by(pageRequestRoute(tab, url, read, seen.first), Date.now() + OFFER_MS + (seen.first ? LATE_MS : 0)) : undefined;
   if (again && request === undefined && !seen.last) {
     deferred(owner, task, seen.kind);
     return page;
@@ -3246,6 +3247,14 @@ async function scrapeOffer(tool: string, a: Record<string, unknown>, page: unkno
 // request and 0.062 s on Apple's docs; an extension that stops answering
 // holds each relay to its 30 s timeout, which a read does not wait out.
 const OFFER_MS = 1_000;
+// A page read as its load ends may not have asked for its data yet: on
+// 11-11 a GitHub pull request asked for its checks about 0.5 to 0.8 s after
+// goto answered, and a snapshot's look at 0.3 s found nothing, so in a loop
+// of goto and snapshot reads 3 and 4 offered nothing and read 5 only
+// readers. The second look does not wait for the page to go quiet: a wait
+// started on a page ends the one already waiting there (waitFor in
+// content.js), which may be the agent's own.
+const LATE_MS = 1_000;
 
 function scrapesOf(kind: string): string {
   return `this task keeps reading ${kind.replace(/^https?:\/\//, "").slice(0, 100)} pages`;
@@ -3260,26 +3269,31 @@ function scrapesOf(kind: string): string {
 // references field of its text.json held 61,152 and primaryContentSections
 // the article in 14,213. Only in a tab of this task's, which try and run
 // need. The request goes by its number in net read: its path and field
-// names are the page's own words, kept to the step's JSON.
-async function pageRequestRoute(tab: number, page: string, shown: string): Promise<string | undefined> {
+// names are the page's own words, kept to the step's JSON. A kind's first
+// look (late) that finds none looks once more LATE_MS later.
+async function pageRequestRoute(tab: number, page: string, shown: string, late: boolean): Promise<string | undefined> {
   const held = harnessTabs.get(tab);
   if (!held || !matchesTask(held, currentOwner(), currentTask())) return undefined;
-  const { entries } = (await relay(tab, "netRead")) as { entries: NetEntry[] };
-  const offers = readerOffers(entries, page).slice(-12);
-  if (!offers.length) return undefined;
-  const fieldsOf = fieldsShownOn(shown);
-  const found = await Promise.all(offers.map(async ({ request }) => {
-    const e = entries[request]!;
-    const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame).catch(() => undefined)) as { text?: string; truncated?: boolean; arriving?: boolean } | undefined;
-    const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOf(kept.text);
-    const most = fields[0];
-    return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= shown.length) ?? most };
-  }));
-  const best = found.reduce((top, fields, i) => ((fields?.pick.shown ?? 0) > (found[top]?.pick.shown ?? 1) ? i : top), -1);
-  const chosen = found[best];
+  let fieldsOf: ShownFields | undefined;
+  const look = async () => {
+    const { entries } = (await relay(tab, "netRead")) as { entries: NetEntry[] };
+    const offers = readerOffers(entries, page).slice(-12);
+    if (!offers.length) return undefined;
+    const fieldsOn = (fieldsOf ??= fieldsShownOn(shown));
+    const found = await Promise.all(offers.map(async ({ request }) => {
+      const e = entries[request]!;
+      const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame).catch(() => undefined)) as { text?: string; truncated?: boolean; arriving?: boolean } | undefined;
+      const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOn(kept.text);
+      const most = fields[0];
+      return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= shown.length) ?? most };
+    }));
+    const best = found.reduce((top, fields, i) => ((fields?.pick.shown ?? 0) > (found[top]?.pick.shown ?? 1) ? i : top), -1);
+    const chosen = found[best];
+    return chosen === undefined ? undefined : { ...offers[best]!, ...chosen };
+  };
+  const chosen = (await look()) ?? (late ? await Bun.sleep(LATE_MS).then(look) : undefined);
   if (chosen === undefined) return undefined;
-  const { request, observedAt, path } = offers[best]!;
-  const { most, pick } = chosen;
+  const { request, observedAt, path, most, pick } = chosen;
   const saved = savedAs(new URL(path, page).href);
   const step = saved === undefined ? { do: "try", tab, request, observedAt, field: pick.field, type: pick.type } : { do: "run", tab, name: saved };
   const run = `run ${JSON.stringify({ steps: [{ tool: "request_catalog", args: step }] })}`;

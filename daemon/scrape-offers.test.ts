@@ -5,8 +5,10 @@ import { join } from "node:path";
 
 // A model reads a pull request page four times through a stand-in
 // extension, in a process whose HOME is a temp directory. The page shows
-// the checks its own JSON request got; the run follows the third read's
-// hint to request_catalog try, then the save call try answers.
+// the checks its own JSON request got, and each read is a load of it that
+// asks for them only after the read, as GitHub did on 11-11. The run
+// follows the third read's hint to request_catalog try and the save call
+// try answers, then reads once more.
 const home = mkdtempSync(join(tmpdir(), "scrape-offers-test-"));
 const at = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);
 const script = `
@@ -28,10 +30,15 @@ const script = `
     ],
   });
   const shown = '- heading "Checks"\\n- link "buildkite/bun" [1]\\n- text "Build #140103 started"\\n- link "Claude Code Review" [2]\\n- text "Code review in progress"';
+  // The page asks for its checks 500 ms after each load, on the clock: the
+  // daemon's looks and deadlines run on real timers in this process, which
+  // no fake clock here drives.
+  let load = loaded;
+  const asks = 500;
   const requests = (origin, path) => [
-    { kind: "fetch", method: "GET", url: origin + "/notifications/indicator", status: 200, t: loaded + 10, body: '{"mode":"global"}' },
-    { kind: "fetch", method: "GET", url: origin + path + "/page_data/status_checks", status: 200, t: loaded + 20, body: checks.slice(0, 100) },
-  ];
+    { kind: "fetch", method: "GET", url: origin + "/notifications/indicator", status: 200, t: load, body: '{"mode":"global"}' },
+    { kind: "fetch", method: "GET", url: origin + path + "/page_data/status_checks", status: 200, t: load + asks, body: checks.slice(0, 100) },
+  ].filter((request) => request.t <= Date.now());
   const tabs = new Map();
   let windows = 0, markers = 900, opened = 200, documents = 0;
   const answer = (op, args) => {
@@ -43,7 +50,7 @@ const script = `
     if (op !== "relay") return { ok: true };
     const tab = tabs.get(Number(args[0]));
     const { origin, pathname } = new URL(tab.url);
-    if (args[1] === "snapshot") return { url: tab.url, title: "Checks", nodes: 5, truncated: false, snapshot: shown, documentId: "load-" + ++documents };
+    if (args[1] === "snapshot") { load = Date.now(); return { url: tab.url, title: "Checks", nodes: 5, truncated: false, snapshot: shown, documentId: "load-" + ++documents }; }
     if (args[1] === "netRead") return { entries: requests(origin, pathname) };
     if (args[1] === "netBody") return args[2][0].url.endsWith("/status_checks") ? { text: checks, truncated: false, arriving: false } : { text: '{"mode":"global"}', truncated: false, arriving: false };
     if (args[1] === "tabInfo") return { url: tab.url };
@@ -67,7 +74,8 @@ const script = `
     const { id: tab } = await model("open", { url: "https://ci.example/o/r/pull/7", background: true });
     out.tab = tab;
     out.hints = [];
-    for (let read = 0; read < 4; read++) out.hints.push((await model("snapshot", { tab })).hint ?? null);
+    const read = async () => out.hints.push((await model("snapshot", { tab })).hint ?? null);
+    for (let n = 0; n < 3; n++) await read();
     const offered = out.hints.find((hint) => hint !== null) ?? "";
     out.step = JSON.parse(offered.match(/run (\\{.*\\}) reads/)?.[1] ?? "null")?.steps[0].args;
     const tried = await requestCatalogTool(out.step, harness);
@@ -77,6 +85,7 @@ const script = `
     out.save = JSON.parse(tried.next.slice(tried.next.indexOf("{"))).steps[0].args;
     out.saved = await requestCatalogTool(out.save, harness);
     out.stored = readFileSync(catalog, "utf8");
+    await read();
   } catch (error) {
     out.failed = error instanceof Error ? error.message : String(error);
   } finally {
@@ -106,7 +115,7 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
-test("a page read again is offered its own JSON request on the third read, and only then", () => {
+test("a page read again is offered its own JSON request on the third read, though it asks for it after each read, and only then", () => {
   expect(result.hints.map((hint) => hint !== null)).toEqual([false, false, true, false]);
   expect(result.step).toMatchObject({ do: "try", tab: result.tab, request: 1, field: "statusChecks", type: "array" });
 });
