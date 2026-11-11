@@ -821,10 +821,11 @@ things unless its saved task explicitly says to.
   daemon asks for), a page already open
   gets a fresh copy of the harness's script at the next call to it, and
   that copy stops the one left behind: its page listeners come off and a
-  wait it held ends. It takes the old copy's refs, so a ref from a
-  snapshot taken before the reload still works; in a page open since
-  before the release of November 11, 2026 that added this, take a new
-  snapshot. A page open since before the release of September
+  wait it held ends. It takes the old copy's refs and the secrets it
+  typed, so a ref from a snapshot taken before the reload still works
+  and a secret stays hidden; in a page open since before the release
+  of November 11, 2026 that added this, take a new snapshot. A page
+  open since before the release of September
   28, 2026 that added this keeps its old copy's listeners running beside
   the new one until the page reloads; it answers nothing. Such a page
   cannot message the extension: a tab its link or `window.open` makes

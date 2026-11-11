@@ -297,7 +297,7 @@
   // whether it is filled. Autofill puts these in without the agent typing,
   // and a show-password toggle turns a password field into a text field. A
   // field the harness filled with a secret (keepSecret) is one too.
-  const secretFields = new WeakSet();
+  const secretFields = handed?.secretFields ?? new WeakSet();
   function secretField(el) {
     return secretFields.has(el) || el.type === "password" || /\b(current-password|new-password|cc-(number|csc|exp)|one-time-code)/.test(el.getAttribute("autocomplete") ?? "");
   }
@@ -307,9 +307,10 @@
   // it: USCIS names its code field by a label that repeats the code, so a
   // snapshot printed it past the field's {filled} (USCIS, 09-30). fields
   // are where it went; every answer has texts cut (unsecret, in answer).
-  // They last as long as this page. A text under 3 characters is not kept:
-  // a cut of every "4" would garble the page and hide next to nothing.
-  const secretTexts = new Set();
+  // They last as long as this page: a copy that takes over keeps them. A
+  // text under 3 characters is not kept: a cut of every "4" would garble
+  // the page and hide next to nothing.
+  const secretTexts = handed?.secretTexts ?? new Set();
   function keepSecret(fields, ...texts) {
     for (const f of fields) secretFields.add(f);
     for (const t of texts) if (typeof t === "string" && t.length >= 3) secretTexts.add(t);
@@ -6035,13 +6036,13 @@
   // after an action and a sleep in eval end by themselves within seconds;
   // ending the sleep early would run the rest of the old eval sooner. A
   // copy from before this hook stays. The newer copy takes the refs this
-  // one gave (see the claim at the top).
+  // one gave (see the claim at the top) and the secrets it was given.
   window.__safariHarnessRetire = () => {
     if (privateCapture) restorePrivateCapture(privateCapture.mark);
     life.abort();
     pendingWait?.done(false);
     pendingDownload?.(null);
-    return { refSeq, refMap, fingerprints };
+    return { refSeq, refMap, fingerprints, secretFields, secretTexts };
   };
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
