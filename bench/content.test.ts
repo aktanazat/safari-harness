@@ -1243,6 +1243,17 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a secret typed before a takeover stays hidden after it, in its field and where the page repeats it",
+    page: "type.html",
+    steps: [
+      { op: "snapshot" }, // [1] textbox "Name"
+      { op: "type", args: ["1", "hunter2-secret", { secret: true }], answer: { value: { ok: true, kept: true } } },
+      { takeover: true },
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('[1] textbox "Name" {focused, filled}') } } },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Page saw ...") } } },
+    ],
+  },
+  {
     name: "a card list reads every card, one with an extra field too, each field in a column of its own by where it sits",
     page: "cards.html",
     steps: [{
