@@ -1,0 +1,27 @@
+<!doctype html>
+<title>URLSession | Developer Documentation</title>
+<!-- A documentation page its script draws, as Apple's developer docs are
+     (11-08): the navigation, a color picker, and the footer come first,
+     and the topic only once its data comes back (?ms= holds it back). With
+     #done the page asks for nothing: a short page, already whole. With
+     #signin it shows a short sign-in heading at once, and still asks. -->
+<body>
+<div id="app">
+  <nav><a href="/">Developer</a> <a href="/documentation">Documentation</a> <a href="/forums">Forums</a> <a href="/account">Account</a></nav>
+  <div class="color-scheme"><label>Light</label> <label>Dark</label> <label>Auto</label></div>
+  <div class="router-content"></div>
+  <footer>
+    <p>Platforms: iOS, iPadOS, macOS, tvOS, visionOS, watchOS. Tools: Swift, SwiftUI, Xcode, Xcode Cloud, SF Symbols.</p>
+    <p>Copyright © 2026. All rights reserved. Terms of Use. Privacy Policy. Agreements and Guidelines.</p>
+  </footer>
+</div>
+<script>
+  const ms = new URLSearchParams(location.search).get("ms") ?? "1200";
+  if (location.hash === "#signin") document.querySelector(".router-content").innerHTML = "<main><h1>Sign in</h1><p>Use your work email.</p></main>";
+  if (location.hash !== "#done") {
+    fetch(`topic.json?ms=${ms}`).then((r) => r.json()).then((topic) => {
+      document.querySelector(".router-content").innerHTML = `<main><h1>${topic.title}</h1><p>${topic.abstract}</p></main>`;
+    });
+  }
+</script>
+</body>
