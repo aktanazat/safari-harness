@@ -304,6 +304,9 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
         sent = false;
         ways.get(tabId)?.delete(frameId);
       }
+      // Copies of the script going into the tab's frames (as an agent comes
+      // to the tab, or a new page in it reports in) go in, or give up, first.
+      await entering.get(tabId);
       // A page may hold no copy of the script that answers: one left behind
       // when the extension reloaded answers nothing, and Safari skips
       // injecting some pages (after a redirect). Put a fresh copy in. An
@@ -675,6 +678,7 @@ async function openedPage(tabId, until) {
       let loading = false;
       if (ms > 0) {
         try {
+          await entering.get(tabId);
           const res = await sendUntilNavigation(tabId, { __safariHarness: 1, id: nextId(), op: "loaded", args: [ms] }, Math.min(ms + 500, left));
           loading = res?.value?.loading === true;
         } catch (e) {
@@ -713,6 +717,30 @@ async function ensureContent(tabId, frameId = 0, ms = PING_MS, takeOver = false)
   const late = Promise.withResolvers();
   const timer = setTimeout(late.resolve, ms, false);
   return Promise.race([inject, late.promise]).finally(() => clearTimeout(timer));
+}
+
+// Puts a copy of content.js, marked this load's, in each of the frames
+// (frameIds or allFrames) that start.js reported in from and that holds
+// none: Safari's manifest leaves some frames out (about:blank, srcdoc),
+// which their parent reads. A second copy that finds one running stops
+// (the claim at the top of content.js), so a frame whose copy was refused
+// or held up takes one the next time. Embedded frames come and go as a
+// page runs, so one that takes none is no news. Settles once each copy is
+// in or refused, or after ms; refused hears of a call Safari refused
+// whole.
+function putContent(tabId, frames, ms, refused = () => {}) {
+  const put = api.scripting.executeScript({
+    target: { tabId, ...frames },
+    func: (load) => {
+      if (!window.__safariHarnessStart || window.__safariHarnessInjected) return false;
+      window.__safariHarnessLoad = load;
+      return true;
+    },
+    args: [LOAD],
+  }).then((marked) => Promise.allSettled(marked.filter((r) => r.result === true).map((r) => api.scripting.executeScript({ target: { tabId, frameIds: [r.frameId] }, files: ["content.js"] }))), refused);
+  const late = Promise.withResolvers();
+  const timer = setTimeout(late.resolve, ms);
+  return Promise.race([put, late.promise]).finally(() => clearTimeout(timer));
 }
 
 // ---------- one trip per request ----------
@@ -801,6 +829,7 @@ function frameOf(args) {
 
 // Frame id -> the token its content script printed into its parent's snapshot.
 async function frameTokens(tabId) {
+  await contentIn(tabId);
   const results = await api.scripting.executeScript({ target: { tabId, allFrames: true }, func: () => window.__safariHarnessFrame || null });
   const byToken = new Map();
   for (const r of results) if (r.frameId !== 0 && typeof r.result === "string") byToken.set(r.result, r.frameId);
@@ -1094,6 +1123,7 @@ async function probeFrames(tabId, what, arg) {
   keepAwake(tabId);
   await waitReady(tabId, 15000);
   await unlessSilent(tabId, 0);
+  await entering.get(tabId);
   const ask = (frames) => api.scripting.executeScript({
     target: { tabId, ...frames },
     func: (w, a) => (window.__safariHarnessProbe ? window.__safariHarnessProbe[w](a) : null),
@@ -1596,6 +1626,8 @@ async function handle(msg) {
     case "memory.capture": {
       const [tabId, url, revision] = args;
       if (revision !== memoryRevision || !await memoryAllowed(tabId, url) || revision !== memoryRevision) return { skipped: true };
+      // The user's own page holds no copy of content.js until one reads it.
+      await putContent(tabId, { frameIds: [0] }, PING_MS);
       const result = await toTab(tabId, "memoryPage", [url], 5000);
       if (revision !== memoryRevision || !await memoryAllowed(tabId, url) || revision !== memoryRevision) return { skipped: true };
       if (result?.error) throw new Error("the page could not be read for memory");
@@ -2299,18 +2331,67 @@ async function frontWindow(agents, until = Date.now() + LIST_MS) {
 
 // ---------- tabs agents work in ----------
 // A tab the harness owns, opened, or sent a page request, and a tab one of
-// those opened, keeps a request log on each new page (dialogs.js); any
-// other tab's page drops its log once it reports in, so the user's own tabs
-// run their own fetch. A tab is marked before its page can report in. Kept
-// in session storage, which outlives this page while Safari runs.
+// those opened, keeps a request log on each new page (dialogs.js) and gets
+// content.js in each frame: the page it shows once it is marked, and each
+// new page as it reports in (start.js). Any other tab's page drops its log
+// once it reports in, so the user's own tabs run their own fetch, and holds
+// no content.js, which cost a page 0.9 MB of memory, and 0.4 MB more for
+// each embedded frame (11-11). A tab is marked before its page can report
+// in. Kept in session storage, which outlives this page while Safari runs.
 const drivenTabs = new Set();
 const drivenRead = store.get("driven").then(({ driven = [] }) => { for (const id of driven) drivenTabs.add(id); }, () => {});
+// A request waits for the copies going into its tab before it asks a frame
+// (toTab): the top page's, and, as an agent first comes to the tab, its
+// embedded frames', for at most QUICK_MS, as one frame stuck loading holds
+// up the rest (probeFrames). A frame that reports in later takes its copy
+// without holding up the tab's requests.
+const entering = new Map(); // tabId -> its copies of content.js going in
+// Tabs whose embedded frames took no copies as an agent came, as Safari
+// refused the call (a frame went to its next page as it ran): the tab's
+// next request puts them in.
+const unswept = new Set();
 
 function drive(tabId) {
-  if (drivenTabs.has(tabId)) return;
-  drivenTabs.add(tabId);
-  drivenRead.then(() => store.set({ driven: [...drivenTabs] })).catch(() => {});
+  if (!drivenTabs.has(tabId)) {
+    drivenTabs.add(tabId);
+    drivenRead.then(() => store.set({ driven: [...drivenTabs] })).catch(() => {});
+    goingIn(tabId, putContent(tabId, { frameIds: [0] }, QUICK_MS));
+  } else if (!unswept.delete(tabId)) return;
+  goingIn(tabId, putContent(tabId, { allFrames: true }, QUICK_MS, () => unswept.add(tabId)));
 }
+
+function goingIn(tabId, copies) {
+  const all = Promise.all([entering.get(tabId), copies]);
+  entering.set(tabId, all);
+  all.finally(() => { if (entering.get(tabId) === all) entering.delete(tabId); });
+}
+
+// The tab is one agents work in, with a copy in each frame.
+async function contentIn(tabId) {
+  drive(tabId);
+  await entering.get(tabId);
+}
+
+// Each frame's start.js reports in as its page loads. One in a tab agents
+// work in or the harness owns gets content.js, which reports in itself
+// once it runs, as does a recorded tab's top page (teach mode); any other
+// gets none, and is told to drop its request log. A top page that got none
+// makes the tab ready. A tab the harness owns gets its dialog policy back
+// at once, so dialogs.js answers the page's dialogs before content.js is
+// in.
+api.runtime.onMessage.addListener((m, sender) => {
+  if (!m || m.__safariHarnessStart !== 1 || !sender.tab) return;
+  const tabId = sender.tab.id;
+  const frameId = sender.frameId || 0;
+  return Promise.all([policyOf(tabId), drivenRead, recRead]).then(([dialogs]) => {
+    const content = dialogs !== null || drivenTabs.has(tabId) || (frameId === 0 && recTabs.has(tabId));
+    if (content) {
+      const copy = putContent(tabId, { frameIds: [frameId] }, PING_MS);
+      if (frameId === 0) goingIn(tabId, copy);
+    } else if (frameId === 0) markReady(tabId);
+    return { content, dialogs, tab: tabId, window: sender.tab.windowId };
+  });
+});
 
 // ---------- tabs that change id, and popups ----------
 // Safari may swap a tab for another under a new id (a page it prepared

@@ -16,7 +16,11 @@ extension/          Safari MV3 web extension (background page + content script)
                     ops to the content script (executeScript fallback included)
   content.js        aria snapshot with [ref]s; click/type/press/select/hover/
                     upload/scroll/history on a ref, CSS selector, or visible
-                    text; extract, eval, fetch/XHR/console capture, login fill
+                    text; extract, eval, fetch/XHR/console capture, login fill;
+                    only in the tabs agents work in
+  start.js          the small script in every frame of every page: reports
+                    the frame in, so background.js puts content.js there in a
+                    tab agents work in, and says when a user's page opens a tab
 daemon/
   main.ts           ws :37333 (extension + CDP shim), http :37334 (/rpc /health
                     /calls)
@@ -165,8 +169,8 @@ scripts/
   spaces.swift      helper: works an agent window's tab group sidebar through
                     Accessibility, Safari left in the background; needs
                     Accessibility permission
-  bench.swift       test bench: content.js and dialogs.js in a WebKit view
-                    no window shows, sent what background.js sends
+  bench.swift       test bench: content.js, start.js, and dialogs.js in a
+                    WebKit view no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
                     restart only what changed (see Deploys)
   fake-extension.ts test double that speaks the extension protocol
@@ -790,12 +794,15 @@ only its own locally served test pages.
 `bun test` also runs content.js in Safari's WebKit without Safari:
 `bench/*.test.ts` build `scripts/bench.swift` into `.build/` (rebuilt only
 when it changes), open each page in `bench/fixtures` in a web view no window
-shows, with dialogs.js in the page's world and content.js in its own, and
-send the requests background.js sends. A row is one behavior: a page, the
-requests, and the answers they must get (`bench/bench.ts` has the fields),
-so a new behavior takes one page and one row. `scripts/bench extension`,
-built by `bun run helpers`, takes the same requests one JSON line at a time
-(its header lists them), for trying a page by hand. On a Mac without
-Apple's command line tools the rows are skipped, and the run prints why.
-The bench cannot show Safari's own messaging, frame stitching, a background
-tab's timers and painting, or real focus; those need Safari itself.
+shows, with dialogs.js in the page's world and start.js in its own, put
+content.js in each frame start.js reports in from, as background.js does in
+a tab agents work in (an `untouched` row leaves it out until an `adopt`
+step), and send the requests background.js sends. A row is one behavior: a
+page, the requests, and the answers they must get (`bench/bench.ts` has the
+fields), so a new behavior takes one page and one row. `scripts/bench
+extension`, built by `bun run helpers`, takes the same requests one JSON
+line at a time (its header lists them), for trying a page by hand. On a Mac
+without Apple's command line tools the rows are skipped, and the run prints
+why. The bench cannot show Safari's own messaging, frame stitching, a
+background tab's timers and painting, or real focus; those need Safari
+itself.

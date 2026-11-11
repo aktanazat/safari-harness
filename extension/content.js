@@ -1,7 +1,8 @@
 // Safari Harness content script.
-// Runs in every page. Implements the DOM-side verbs the daemon calls:
-// aria snapshots with stable element refs, click/type/scroll by ref,
-// JS evaluation, and extraction.
+// Runs in each frame of a tab agents work in: start.js reports the frame
+// in, and background.js puts this there. Implements the DOM-side verbs the
+// daemon calls: aria snapshots with stable element refs, click/type/scroll
+// by ref, JS evaluation, and extraction.
 //
 // This is a clean-room implementation of the same contract Aside's
 // injected.ts snapshot module provides for Chrome, adapted to Safari's
@@ -688,12 +689,12 @@
   }
 
   // ---------- embedded frames ----------
-  // Every frame runs this script. Each frame's copy has a token and tells
-  // its parent frame; the parent maps the <iframe> element to that token and
-  // prints it in the snapshot (FRAME_MARK), and the extension, which knows
-  // each frame's token and id, puts the frame's own snapshot there. The
-  // parent also says hello to frames loaded before it, so either may start
-  // first.
+  // Every frame of the tab runs this script. Each frame's copy has a token
+  // and tells its parent frame; the parent maps the <iframe> element to that
+  // token and prints it in the snapshot (FRAME_MARK), and the extension,
+  // which knows each frame's token and id, puts the frame's own snapshot
+  // there. The parent also says hello to frames loaded before it, so either
+  // may start first.
   const FRAME_MARK = "@@frame:";
   const frameToken = Math.random().toString(36).slice(2, 10);
   window.__safariHarnessFrame = frameToken;

@@ -1,17 +1,22 @@
 // Offline WebKit bench for the extension's page scripts (bench/*.test.ts).
 // A web view that no window shows opens a page with extension/dialogs.js in
-// the page's own world and extension/content.js in a world of its own, as
-// Safari's manifest puts them there, and sends content.js the requests
-// background.js sends. The web view is Safari's own WebKit, so the page's
-// DOM, styles, and layout are the ones Safari computes.
+// the page's own world and extension/start.js in a world of its own, as
+// Safari's manifest puts them there, puts extension/content.js in each
+// frame start.js reports in from, as background.js does in a tab agents
+// work in, and sends content.js the requests background.js sends. The web
+// view is Safari's own WebKit, so the page's DOM, styles, and layout are
+// the ones Safari computes.
 //   bench EXTENSION_DIR
 //     Reads one JSON request a line on stdin, until stdin closes, and prints
 //     one JSON line for each, in order:
-//       {"load": URL, "frames": N, "timeout": MS}
+//       {"load": URL, "frames": N, "untouched": true, "timeout": MS}
 //           opens URL, and answers once the page has loaded and content.js
 //           has reported in from it and from N embedded frames (default 0):
 //           {"url", "frames": [{"url", "token"}]}, token being the frame's
-//           window.__safariHarnessFrame
+//           window.__safariHarnessFrame. untouched: a tab no agent works
+//           in, whose frames get no content.js until an adopt; the load
+//           answers once start.js has reported in from the page and N
+//           embedded frames, with {"url", "frames": [{"url"}]}
 //       {"op": NAME, "args": [...], "frame": URL, "kept": true, "timeout": MS}
 //           hands content.js {__safariHarness: 1, id, op: NAME, args} as
 //           tabs.sendMessage does, in the page or in the embedded frame at
@@ -28,14 +33,20 @@
 //           already there keeps the old load's API, which reaches no one;
 //           ops go to the fresh copy. Answers {"value": {"url"}} once the
 //           fresh copy has reported in.
+//       {"adopt": true, "timeout": MS}
+//           an agent comes to an untouched tab: content.js goes into each
+//           frame start.js reported in from, as background.js's drive puts
+//           it there, and the tab is one agents work in from then on.
+//           Answers {"value": {"url", "frames": [{"url", "token"}]}} once
+//           each copy has reported in.
 //       {"sent": true}
-//           what the page's copies sent the extension since the page
+//           what the page's scripts sent the extension since the page
 //           loaded or since the last sent: {"value": [{"load", "message"}]},
 //           load counting the extension's loads from 1. An answer a copy
 //           gave after its load ended, which reaches no one in Safari, is
 //           there as {"load", "answer"}.
-//     MS bounds the request (default 10000 for load, 5000 for op and
-//     takeover). What the bench itself cannot do prints {"error": "bench: ..."}.
+//     MS bounds the request (default 10000 for load, 5000 for op, takeover,
+//     and adopt). What the bench itself cannot do prints {"error": "bench: ..."}.
 // Nothing shows, nothing takes focus, and the pages keep no data on disk.
 import AppKit
 import WebKit
@@ -63,11 +74,12 @@ func extensionScript(_ name: String, _ source: String) -> String {
         + "\n} catch (e) { window.webkit.messageHandlers.bench.postMessage({ threw: \"\(name): \" + ((e && e.stack) || e), url: location.href }); } }"
 }
 
-// The part of the extension API content.js uses, in content.js's world, as
-// one load of the extension gives it; a takeover makes the next load. The
-// ready message gets background.js's answer for a tab the harness opened,
-// the tabs agents work in: dialogs answered by the default policy, and the
-// page's requests logged.
+// The part of the extension API start.js and content.js use, in their
+// world, as one load of the extension gives it; a takeover makes the next
+// load. start.js's report gets background.js's answer from the bench
+// (benchStart). The ready message gets background.js's answer for a tab
+// the harness opened, the tabs agents work in: dialogs answered by the
+// default policy, and the page's requests logged.
 let runtimeShim = #"""
 (() => {
   const sent = [];
@@ -85,6 +97,7 @@ let runtimeShim = #"""
         sendMessage: (msg) => {
           sent.push({ load, message: msg });
           if (ended()) return Promise.reject(new Error("the extension reloaded"));
+          if (msg && msg.__safariHarnessStart === 1) return window.webkit.messageHandlers.benchStart.postMessage({ url: location.href });
           if (!msg || msg.__safariHarnessReady !== 1) return Promise.resolve(undefined);
           window.webkit.messageHandlers.bench.postMessage({ ready: String(window.__safariHarnessFrame), url: location.href });
           return Promise.resolve({ dialogs: { accept: false, text: null }, tab: 1, window: 1, net: true });
@@ -109,8 +122,9 @@ let runtimeShim = #"""
 })();
 """#
 
-final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply {
     let world = WKContentWorld.world(name: "Safari Harness")
+    let start: String
     let content: String
     let dialogs: String
     let optional: [String: String]
@@ -129,11 +143,15 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var mainURL: String?
     var threw: String?
     var frames: [(url: String, token: String, info: WKFrameInfo)] = []
+    // A tab no agent works in yet, and the frames start.js reported in from.
+    var untouched = false
+    var started: [(url: String, info: WKFrameInfo)] = []
     // What the latest snapshot in each frame (the page's own under "")
     // answered for background.js to keep, which keeps it across a load.
     var kept: [String: [String: Any]] = [:]
 
-    init(content: String, dialogs: String, optional: [String: String]) {
+    init(start: String, content: String, dialogs: String, optional: [String: String]) {
+        self.start = start
         self.content = content
         self.dialogs = dialogs
         self.optional = optional
@@ -157,6 +175,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         window.orderBack(nil)
         super.init()
         scripts.add(self, contentWorld: world, name: "bench")
+        scripts.addScriptMessageHandler(self, contentWorld: world, name: "benchStart")
         scripts.add(self, contentWorld: .page, name: "bench")
         web.navigationDelegate = self
         configureScripts([:])
@@ -170,7 +189,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         }
         add("dialogs.js", dialogs, .atDocumentStart, .page)
         add("bench shim", runtimeShim, .atDocumentStart, world)
-        add("content.js", content, .atDocumentEnd, world)
+        add("start.js", start, .atDocumentEnd, world)
         if request["appChecks"] as? Bool == true {
             add("axe", optional["vendor/axe-4.10.3.min.js"]!, .atDocumentStart, world)
             add("app-checks", optional["app-checks.js"]!, .atDocumentStart, world)
@@ -207,6 +226,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                 web.navigationDelegate = nil
                 let scripts = web.configuration.userContentController
                 scripts.removeScriptMessageHandler(forName: "bench", contentWorld: world)
+                scripts.removeScriptMessageHandler(forName: "benchStart", contentWorld: world)
                 scripts.removeScriptMessageHandler(forName: "bench", contentWorld: .page)
                 window.contentView = nil
                 window.close()
@@ -237,6 +257,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             let limit = ms ?? 10000
             after(limit) { [self] in reply(problem("\(target) did not load within \(limit) ms: \(loadState(want))")) }
             configureScripts(request)
+            untouched = request["untouched"] as? Bool == true
             load(target, frames: want, reply: reply)
         } else if let op = request["op"] as? String {
             let limit = ms ?? 5000
@@ -250,16 +271,20 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             let limit = ms ?? 5000
             after(limit) { reply(problem("the fresh copy of content.js did not report in within \(limit) ms")) }
             takeover(reply: reply)
+        } else if request["adopt"] as? Bool == true {
+            let limit = ms ?? 5000
+            after(limit) { reply(problem("content.js did not report in from every frame within \(limit) ms")) }
+            adopt(reply: reply)
         } else if request["sent"] as? Bool == true {
             web.callAsyncJavaScript("return JSON.stringify({ value: __benchSent() })", arguments: [:], in: nil, in: world) { result in
                 switch result {
                 case .success(let answer as String): reply(Data(answer.utf8))
-                case .success: reply(problem("the page has no record of what content.js sent"))
-                case .failure(let error): reply(problem("cannot read what content.js sent: \(error.localizedDescription)"))
+                case .success: reply(problem("the page has no record of what its scripts sent"))
+                case .failure(let error): reply(problem("cannot read what the page's scripts sent: \(error.localizedDescription)"))
                 }
             }
         } else {
-            reply(problem("a request has load, op, takeover, or sent: \(text)"))
+            reply(problem("a request has load, op, takeover, adopt, or sent: \(text)"))
         }
     }
 
@@ -311,6 +336,11 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         loaded = false
         progress = { [self] in
             if let threw { return reply(problem(threw)) }
+            if untouched {
+                let embedded = started.filter { !$0.info.isMainFrame }
+                guard loaded, let top = started.first(where: { $0.info.isMainFrame }), embedded.count >= want else { return }
+                return reply(line(["url": top.url, "frames": embedded.map { ["url": $0.url] }]))
+            }
             guard loaded, let mainURL, frames.count >= want else { return }
             reply(line(["url": mainURL, "frames": frames.map { ["url": $0.url, "token": $0.token] }]))
         }
@@ -321,8 +351,10 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     func loadState(_ want: Int) -> String {
         if !loaded { return "the page is still loading" }
-        if mainURL == nil { return "content.js did not report in from the page" }
-        return "content.js reported in from \(frames.count) of \(want) embedded frames"
+        let script = untouched ? "start.js" : "content.js"
+        let reported = untouched ? started.filter { !$0.info.isMainFrame }.count : frames.count
+        if untouched ? !started.contains(where: { $0.info.isMainFrame }) : mainURL == nil { return "\(script) did not report in from the page" }
+        return "\(script) reported in from \(reported) of \(want) embedded frames"
     }
 
     // A new document, whose scripts report in afresh.
@@ -330,6 +362,7 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         mainURL = nil
         threw = nil
         frames = []
+        started = []
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -362,6 +395,41 @@ final class Bench: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             else { frames.append((url, token, message.frameInfo)) }
         }
         progress?()
+    }
+
+    // background.js's answer to start.js's report: in a tab agents work in,
+    // one the harness opened, the default dialog policy, and then
+    // content.js goes into the frame (putContent).
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+        let url = (message.body as? [String: Any])?["url"] as? String ?? ""
+        started.append((url, message.frameInfo))
+        guard !untouched else {
+            replyHandler(["content": false, "tab": 1, "window": 1], nil)
+            progress?()
+            return
+        }
+        replyHandler(["content": true, "dialogs": ["accept": false, "text": NSNull()], "tab": 1, "window": 1], nil)
+        putContent(message.frameInfo)
+    }
+
+    func putContent(_ frame: WKFrameInfo) {
+        web.evaluateJavaScript(extensionScript("content.js", content) + "\ntrue", in: frame, in: world) { [self] result in
+            if case .failure(let error) = result { abort?("content.js did not go in: \(error.localizedDescription)") }
+        }
+    }
+
+    // ---------- adopt ----------
+
+    func adopt(reply: @escaping (Data) -> Void) {
+        guard untouched else { return reply(problem("the tab is already one agents work in")) }
+        untouched = false
+        let want = started.filter { !$0.info.isMainFrame }.count
+        progress = { [self] in
+            if let threw { return reply(problem(threw)) }
+            guard let mainURL, frames.count >= want else { return }
+            reply(line(["value": ["url": mainURL, "frames": frames.map { ["url": $0.url, "token": $0.token] }]]))
+        }
+        for frame in started { putContent(frame.info) }
     }
 
     // ---------- ops ----------
@@ -437,7 +505,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let optionalNames = ["vendor/axe-4.10.3.min.js", "vendor/react-hook-18.3.1.js", "app-checks.js", "site-actions.js", "site-actions-start.js"]
 let optional = Dictionary(uniqueKeysWithValues: optionalNames.map { ($0, source($0)) })
-let bench = Bench(content: source("content.js"), dialogs: source("dialogs.js"), optional: optional)
+let bench = Bench(start: source("start.js"), content: source("content.js"), dialogs: source("dialogs.js"), optional: optional)
 Thread.detachNewThread {
     while let request = readLine() {
         DispatchQueue.main.async { bench.take(request) }

@@ -13,6 +13,7 @@ async function upgradeSettings() {
 }
 
 async function upgradeDocuments(tabId) {
+  await contentIn(tabId);
   const results = await api.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: () => ({ document: window.__safariHarnessFrame ?? null, url: location.href }),

@@ -30,8 +30,13 @@ export type Step = {
   // the extension reloads and puts a fresh copy of content.js in the page,
   // as background.js's takeover does
   | { takeover: true }
-  // what the page's copies sent the extension so far, by extension load
+  // an agent comes to an untouched tab: content.js goes into each frame,
+  // as background.js's drive puts it there
+  | { adopt: true }
+  // what the page's scripts sent the extension so far, by extension load
   | { sent: true }
+  // a script the page's own world runs, as the page's script would
+  | { pageEval: string }
 );
 
 export type Row = {
@@ -39,6 +44,9 @@ export type Row = {
   page: string;
   // embedded frames running their own copy, all reported in before the steps
   frames?: number;
+  // a tab no agent works in: start.js reports in from the page and its
+  // frames, and content.js stays out until an adopt step
+  untouched?: true;
   steps: Step[];
 };
 
@@ -83,11 +91,12 @@ const page = (name: string) => {
   return pathToFileURL(join(import.meta.dir, "fixtures", at < 0 ? name : name.slice(0, at))).href + (at < 0 ? "" : name.slice(at));
 };
 
-// The answers in order: the load's, then one per step. Frame tokens are
-// random, so each prints as its frame's page in angle brackets.
+// The answers in order: the load's, then one per step. Frame tokens, from
+// the load and from an adopt, are random, so each prints as its frame's page
+// in angle brackets.
 async function answers(row: Row): Promise<unknown[]> {
   const requests = [
-    { load: page(row.page), frames: row.frames ?? 0 },
+    { load: page(row.page), frames: row.frames ?? 0, untouched: row.untouched },
     ...row.steps.map((s) => ("op" in s ? { op: s.op, args: s.args, frame: s.frame && page(s.frame), kept: s.kept, timeout: s.timeout }
       : "load" in s ? { load: page(s.load), timeout: s.timeout }
       : { ...s, answer: undefined })),
@@ -97,13 +106,17 @@ async function answers(row: Row): Promise<unknown[]> {
   proc.stdin.end();
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) throw new Error(`the bench exited ${code}: ${err.trim()}`);
-  const [first, ...rest] = out.trim().split("\n");
-  const loaded = JSON.parse(first) as { frames?: { url: string; token: string }[] };
-  return [loaded, ...rest.map((l) => {
+  type Frames = { frames?: { url: string; token?: string }[] };
+  const lines = out.trim().split("\n");
+  const frames = lines.flatMap((l, i) => {
+    const parsed = JSON.parse(l) as Frames & { value?: Frames };
+    return (i === 0 ? parsed.frames : row.steps[i - 1] && "adopt" in row.steps[i - 1] ? parsed.value?.frames : undefined) ?? [];
+  });
+  return lines.map((l) => {
     let named = l;
-    for (const f of loaded.frames ?? []) named = named.replaceAll(f.token, `<${basename(f.url)}>`);
+    for (const f of frames) if (f.token) named = named.replaceAll(f.token, `<${basename(f.url)}>`);
     return JSON.parse(named) as unknown;
-  })];
+  });
 }
 
 // One test per row, under title, all skipped on a Mac that cannot build the
