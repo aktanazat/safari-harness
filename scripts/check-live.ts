@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { inFront } from "../daemon/front.ts";
+import { inFront, SAFARI } from "../daemon/front.ts";
 import { groupsOff } from "../daemon/groups.ts";
 import { dataFile } from "../daemon/phone.ts";
 
@@ -1321,7 +1321,11 @@ try {
   else if (!grouped) {
     const kept = names.every((n) => listed.has(n));
     check("each task's window of three tabs is offered to the keeper, which keeps it till its group is made", kept, { offered: [...offered], listed: [...listed], names });
-    if (kept) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or keeper.log says why): ${JSON.stringify(await spaceRows())}`);
+    if (kept) {
+      // The keeper waits, logging nothing, while Safari is in front (11-11).
+      const why = (await frontNow()).app === SAFARI ? "Safari is in front, and the keeper makes no group while it is" : "the user was at the keys, or keeper.log says why";
+      console.log(`SKIP tab groups: none made within 2 min (${why}): ${JSON.stringify(await spaceRows())}`);
+    }
   } else {
     await checkFront("each task's window becomes a tab group of its own, with the user's front app unchanged", true, groupApp, await frontNow());
     for (const t of tasks) stopProgram(t.pid);
