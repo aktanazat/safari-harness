@@ -711,6 +711,14 @@ export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" |
   return owners;
 }
 
+// The daemon's own window for group (no agent's), read off its page in
+// tabs as ownersByPage reads an agent's: search tabs live in one
+// (openSearchTab in tools.ts).
+export function daemonWindow(group: string, tabs: TabInfo[]): number | undefined {
+  const space = runAs(undefined, () => heldSpace(group));
+  return space && tabs.find((t) => pageAt(t)?.id === space.id)?.windowId;
+}
+
 // The agent windows open now, and whose each is (tabs-view.ts): a tab in
 // one is that agent's.
 export function windowOwners(task?: string): Map<number, number | undefined> {

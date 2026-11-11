@@ -2,6 +2,7 @@ import { expect, setSystemTime, test } from "bun:test";
 import type { Invoke } from "../call.ts";
 import { PACE_TOOL } from "../pace.ts";
 import { searchKey } from "../page-store.ts";
+import { googleSearch, HumanCheck } from "./google-search.ts";
 import { SiteKit } from "./kit.ts";
 import { webSearch } from "./web-search.ts";
 
@@ -11,11 +12,10 @@ const TEN = Array.from({ length: 10 }, (_, i) => ({ title: `Keel ${i}`, url: `ht
 // page while google.blocked is set, else ten results; Bing answers with
 // one. pace is the daemon's own (pace.ts) and pages the given store, by
 // default one that keeps the searches it is given. Records the host of
-// each page load.
+// each results page loaded.
 function safari(pages?: (args: Record<string, unknown>) => unknown) {
   const loaded: string[] = [];
   const google = { blocked: true };
-  const tabs = new Map<number, string>();
   const saved = new Map<string, { engine: string; results: unknown[]; at: number }>();
   const store = pages ?? ((args: Record<string, unknown>) => {
     if (args.do === "find") return { pages: [] };
@@ -23,24 +23,15 @@ function safari(pages?: (args: Record<string, unknown>) => unknown) {
     if (args.do === "save_search") saved.set(searchKey(String(args.query)), { engine: String(args.engine), results: args.results as unknown[], at: Date.now() });
     return { ok: true };
   });
-  const land = (raw: string) => {
-    const url = new URL(raw);
-    loaded.push(url.hostname);
-    return url.hostname === "www.google.com" && google.blocked ? `https://www.google.com/sorry/index?continue=${encodeURIComponent(raw)}` : raw;
-  };
   const send: Invoke = async (tool, args) => {
     if (tool === "pace") return PACE_TOOL.run(args);
     if (tool === "pages") return store(args);
-    if (tool === "open" || tool === "goto") {
-      const id = tool === "open" ? tabs.size + 1 : Number(args.tab);
-      tabs.set(id, land(String(args.url)));
-      return { id };
-    }
-    if (tool === "eval") {
-      const url = new URL(tabs.get(Number(args.tab)) ?? "");
-      if (url.hostname === "www.bing.com") return { result: { url: url.href, captcha: false, results: [{ title: "Keel Infrastructure", url: "https://example.com/keel", snippet: "Bitfarms is now Keel Infrastructure." }] } };
-      const sorry = url.pathname.startsWith("/sorry");
-      return { result: { url: url.href, captcha: sorry, results: sorry ? [] : TEN, next: null } };
+    if (tool === "search_page") {
+      const url = new URL(String(args.url));
+      loaded.push(url.hostname);
+      if (url.hostname === "www.bing.com") return { url: url.href, captcha: false, results: [{ title: "Keel Infrastructure", url: "https://example.com/keel", snippet: "Bitfarms is now Keel Infrastructure." }] };
+      if (google.blocked) return { url: `https://www.google.com/sorry/index?continue=${encodeURIComponent(url.href)}`, captcha: true, results: [], next: null };
+      return { url: url.href, captcha: false, results: TEN, next: null };
     }
     throw new Error(`no ${tool} here`);
   };
@@ -77,9 +68,19 @@ test("Google's human check sends the search to Bing and says so; later searches 
   expect(loaded).toEqual(["www.google.com", "www.bing.com", "www.bing.com"]);
 }));
 
-// The omp override keeps one kit per agent task across searches, so its
-// Google tab still shows the check an earlier search met.
-test("after the rest, a kit whose Google tab still shows an earlier check asks Google again", () => later(async () => {
+// The check shows in the one Google tab every search loads in
+// (search-tabs.ts), where the owner passes it: a search from the REPL that
+// meets it rests Google for every search too.
+test("a Google search from the REPL that meets the human check rests every Google search", () => later(async () => {
+  const { loaded, kit } = safari();
+  await expect(googleSearch(kit).search("Bitfarms renamed Keel Infrastructure")).rejects.toBeInstanceOf(HumanCheck);
+  setSystemTime(new Date(Date.now() + 60_000));
+  await expect(googleSearch(kit).search("Keel Infrastructure ticker")).rejects.toMatchObject({ code: "rate_limited" });
+  expect(loaded).toEqual(["www.google.com"]);
+}));
+
+// Google's rest ends, and the next search asks it again.
+test("after the rest, searches ask Google again", () => later(async () => {
   const { loaded, google, kit } = safari();
   await webSearch(kit).search("Bitfarms renamed Keel Infrastructure");
   google.blocked = false;

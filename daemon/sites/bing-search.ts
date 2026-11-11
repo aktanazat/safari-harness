@@ -1,9 +1,9 @@
 // Bing Search for the REPL and web search: the organic results of a query,
-// read off the results page in a background tab of the kit's own, as
-// google-search.ts reads Google's. On 11-08 Bing gave a useful result on
-// 18 of 20 real agent queries (Google 16) with no bot check in 51 loads, so
-// web-search.ts sends a search here when Google's turn is far off or Google
-// asks for its human check.
+// read off the results page the daemon loads in its own tab for Bing
+// (search-tabs.ts), as google-search.ts reads Google's. On 11-08 Bing gave
+// a useful result on 18 of 20 real agent queries (Google 16) with no bot
+// check in 51 loads, so web-search.ts sends a search here when Google's
+// turn is far off or Google asks for its human check.
 
 import type { SiteKit } from "./kit.ts";
 import type { SearchPage } from "./google-search.ts";
@@ -24,11 +24,12 @@ function onSite(url: string, site: string): boolean {
 
 type Collected = { url: string; captcha: boolean; results: { title: string; url: string; snippet: string }[] };
 
-// Runs in the results page. Bing streams its organic results in after the
-// page is readable: the read waits for the pager (the list's end), or for
-// the count to hold 1.5 s, 6 s at most. Result links go through Bing's
-// /ck/a redirect, whose u parameter is "a1" and the address in base64url.
-const COLLECT = `(async () => {
+// Runs in the results page (search-tabs.ts). Bing streams its organic
+// results in after the page is readable: the read waits for the pager (the
+// list's end), or for the count to hold 1.5 s, 6 s at most. Result links go
+// through Bing's /ck/a redirect, whose u parameter is "a1" and the address
+// in base64url.
+export const COLLECT = `(async () => {
   const until = Date.now() + 6000;
   let last = -1, since = Date.now();
   while (Date.now() < until) {
@@ -78,13 +79,7 @@ export function bingSearch(kit: SiteKit) {
       const sites = [...asked.matchAll(SITE)].map((m) => m[2].toLowerCase().replace(/^https?:\/\//, ""));
       const q = asked.replace(SITE, (_, space: string, site: string) => `${space}${site.replace(/^https?:\/\//, "").split("/")[0]}`);
       const url = `${ORIGIN}/search?q=${encodeURIComponent(q)}`;
-      const had = kit.has(ORIGIN);
-      const tab = await kit.tab(ORIGIN, url);
-      let got = await kit.eval<Collected>(ORIGIN, COLLECT, { read: true });
-      if (URL.parse(got.url)?.searchParams.get("q") !== q && (had || !got.captcha)) {
-        await kit.invoke("goto", { tab, url });
-        got = await kit.eval<Collected>(ORIGIN, COLLECT, { read: true });
-      }
+      const got = (await kit.invoke("search_page", { url })) as Collected;
       if (got.captcha) throw new Error(`bing search is asking for a human check at ${got.url}`);
       const results = sites.length ? got.results.filter((r) => sites.some((site) => onSite(r.url, site))) : got.results;
       return { query: asked, start: 0, results: results.slice(0, opts.limit ?? PAGE_SIZE) };

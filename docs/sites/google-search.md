@@ -7,7 +7,7 @@ hosts: google.com, www.google.com
 No sign-in is needed. Google's "unusual traffic" check does not clear by waiting: use `web_search` or another source rather than asking the user to clear it. For 10 minutes after it shows, every agent's `open`, `goto`, and `map` of Google fails at once and says so.
 
 ## In safari repl
-The `googleSearch` global loads the results page in a background tab of its own and reads the organic results off it, so Google sees the owner's normal Safari session. It is a read; nothing is clicked or changed. Searches go out one at a time, at least three seconds apart, in turn with every map's Google searches, and a query that lands on Google's "unusual traffic" page throws an error naming that page; use another permitted source then.
+The `googleSearch` global loads the results page in the harness's own background tab for Google, which every agent's searches share, and reads the organic results off it, so Google sees the owner's normal Safari session. It is a read; nothing is clicked or changed. Searches go out one at a time, at least three seconds apart, in turn with every map's Google searches, and a query that lands on Google's "unusual traffic" page throws an error naming that page; every agent's Google searches then rest 10 minutes, so use another permitted source meanwhile.
 
 - `googleSearch.search(query, {limit, start})`: one page of organic results (`title`, `url`, `snippet`) plus `nextStart`, the `start` of the page after it when there is one; `start` is Google's page offset (0, 10, 20, ...), `limit` caps the results kept (default 10).
 

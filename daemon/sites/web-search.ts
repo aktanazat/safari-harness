@@ -11,7 +11,7 @@
 
 import { HarnessError } from "../failures.ts";
 import { bingSearch } from "./bing-search.ts";
-import { GOOGLE_GAP_MS, googleSearch, HumanCheck, type SearchResult } from "./google-search.ts";
+import { GOOGLE_GAP_MS, GOOGLE_REST_MS, googleSearch, HumanCheck, type SearchResult } from "./google-search.ts";
 import type { SiteKit } from "./kit.ts";
 
 const GOOGLE = "https://www.google.com";
@@ -22,8 +22,6 @@ const BING_GAP_MS = 3000;
 // Google gap: an agent searching alone, one search after another, stays on
 // Google, and Bing takes the searches that would queue behind it.
 const NEAR_MS = GOOGLE_GAP_MS;
-// How long Google rests after its human check.
-const GOOGLE_REST_MS = 10 * 60_000;
 // A query asked again this soon is answered from the store.
 const REPEAT_MS = 10 * 60_000;
 
@@ -77,7 +75,6 @@ export function webSearch(kit: SiteKit) {
             notes.push("Google returned no readable results, so Bing answered.");
           } catch (e) {
             if (!(e instanceof HumanCheck)) throw e;
-            await kit.invoke("pace", { do: "hold", host: GOOGLE, until: Date.now() + GOOGLE_REST_MS });
             notes.push(`Google asked for its human check, so Bing answered; searches use Bing until ${clock(Date.now() + GOOGLE_REST_MS)}.`);
           }
           googleOpen = false;

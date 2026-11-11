@@ -176,6 +176,14 @@ Safari is the user's everyday browser, so treat his tabs as his.
   page it cannot read), is asked again 1, 2 and 4 minutes later, then
   every 15 minutes, until the tab closes or Safari no longer shows it. A
   close the extension's reconnect cut off goes again once it connects.
+- Web searches (`web_search`, the REPL's `googleSearch`) load their
+  results in one background tab per engine that the harness itself holds,
+  in its own "web search" window: no agent's turn end or exit closes it,
+  and a search loads there rather than opening a tab. It closes once no
+  search has used it for 20 minutes, unless Safari shows it in front, as
+  when the user passes Google's human check in it. Google's results page
+  has a frame the extension cannot check for unsent forms, so that check
+  is skipped for a tab still showing them.
 - A harness-owned tab whose open answers after its caller timed out enters
   the same cleanup queue. A failed close stays recorded for those retries,
   including across a daemon restart.

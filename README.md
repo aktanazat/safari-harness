@@ -83,6 +83,9 @@ daemon/
                     a check that stays bars its host for every agent
   pace.ts           one pacer by host for every agent and REPL session:
                     turns apart, and holds until a rate limit resets
+  search-tabs.ts    the tab each web search engine's results load in: one
+                    per engine for every agent, the daemon's own, closed
+                    once unused 20 minutes
   mission.ts        live task controls and bounded private history; a fresh
                     view is required after the user gives control back
   mission-history.ts private restart-safe history and optional action pictures
