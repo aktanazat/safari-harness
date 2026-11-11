@@ -1888,14 +1888,50 @@ export async function netStop(opts: { tab?: number } = {}) {
   return relay(tab, "net", [false]);
 }
 
+type NetEntry = { url: string; method?: string; kind?: string; status?: number; t: number; frame?: number; body?: string; error?: string };
+
+// The requests request_catalog can save as the site's own reader: a JSON GET
+// the top page made to its own origin, without a query. The latest per path.
+function readerOffers(entries: NetEntry[], page: string | undefined): { request: number; observedAt: number; path: string }[] {
+  if (!page || !URL.canParse(page)) return [];
+  const origin = new URL(page).origin;
+  const byPath = new Map<string, { request: number; observedAt: number; path: string }>();
+  entries.forEach((e, request) => {
+    if (e.method !== "GET" || (e.kind !== "fetch" && e.kind !== "xhr") || (e.frame ?? 0) !== 0 || e.error !== undefined
+      || e.status === undefined || e.status < 200 || e.status > 299 || !/^\s*[[{]/.test(e.body ?? "") || !URL.canParse(e.url)) return;
+    const u = new URL(e.url);
+    if (u.origin === origin && !u.search && !u.hash && !u.username && !u.password) byPath.set(u.pathname, { request, observedAt: e.t, path: u.pathname });
+  });
+  return [...byPath.values()];
+}
+
 // The requests the page made, or with url only those whose address has
 // that part, each with its index in the whole list, which body takes.
-export async function netRead(opts: { tab?: number; url?: string } = {}) {
-  const tab = await resolveTab(opts.tab);
-  const read = (await relay(tab, "netRead")) as { entries: { url: string }[] };
-  const { url } = opts;
+function netShown(read: { entries: NetEntry[] }, url: string | undefined) {
   if (url === undefined) return read;
   return { entries: read.entries.flatMap((e, index) => (e.url.includes(url) ? [{ index, ...e }] : [])) };
+}
+
+export async function netRead(opts: { tab?: number; url?: string } = {}) {
+  const tab = await resolveTab(opts.tab);
+  return netShown((await relay(tab, "netRead")) as { entries: NetEntry[] }, opts.url);
+}
+
+// net read for the agent: the requests, and those it can save as a reader
+// that asks for the same data without the page.
+async function netReadOffering(opts: { tab?: number; url?: string } = {}) {
+  const tab = await resolveTab(opts.tab);
+  const read = (await relay(tab, "netRead")) as { entries: NetEntry[] };
+  const page = (await relay(tab, "tabInfo")) as { url?: string };
+  const { url } = opts;
+  const shown = netShown(read, url);
+  const readers = readerOffers(read.entries, page.url).filter((o) => url === undefined || read.entries[o.request]!.url.includes(url));
+  if (!readers.length) return shown;
+  return {
+    ...shown,
+    readers,
+    next: "to read one again without the page, save it as this site's reader: run {steps:[{tool:\"request_catalog\",args:{do:\"save\",tab,name,request,observedAt,field,type}}]}, field the JSON path of its rows (safari guide request_catalog)",
+  };
 }
 
 // One request's whole body, as the page's world keeps it (dialogs.js):
@@ -2120,11 +2156,11 @@ async function readableHtml(html: string) {
   return { title: decodedHtml(title).trim(), content: visible, login, shell: visible.length < 40 && /<script\b/i.test(html) && /(?:id=["'](?:root|app|__next)["']|loading)/i.test(html) };
 }
 
-export async function authenticatedRead(opts: { tab?: number; url: string; format?: "raw" | "text"; expect?: string; maxBytes?: number }) {
+export async function authenticatedRead(opts: { tab?: number; url: string; format?: "raw" | "text" | "json"; expect?: string; maxBytes?: number }) {
   const requested = URL.parse(str(opts.url, "url"));
   if (!requested || !["http:", "https:"].includes(requested.protocol) || requested.username || requested.password) throw new HarnessError("invalid_argument", "read needs a full http or https address without credentials");
   const format = opts.format ?? "text";
-  if (format !== "raw" && format !== "text") throw new HarnessError("invalid_argument", "format must be raw or text");
+  if (format !== "raw" && format !== "text" && format !== "json") throw new HarnessError("invalid_argument", "format must be raw, text, or json");
   const expect = opts.expect === undefined ? undefined : str(opts.expect, "expect");
   if (expect !== undefined && !expect.trim()) throw new HarnessError("invalid_argument", "expect needs the content that confirms the requested page");
   const limit = opts.maxBytes === undefined ? 50_000 : num(opts.maxBytes, "maxBytes");
@@ -2151,12 +2187,13 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
   }
   const page = (await relay(tab, "tabInfo")) as { url?: string };
   if (URL.parse(page.url ?? "")?.origin !== requested.origin) throw new HarnessError("unavailable", "the owned site tab moved to another site; open a signed-in page there first");
-  const response = (await pageFetch({ tab, url: requested.href, maxBytes: limit, pageOnly: true })) as { status?: number; url?: string; type?: string | null; text?: string; truncated?: boolean; note?: string };
+  const response = (await pageFetch({ tab, url: requested.href, maxBytes: limit, pageOnly: true, ...(format === "json" ? { headers: { accept: "application/json" } } : {}) })) as { status?: number; url?: string; type?: string | null; text?: string; truncated?: boolean; note?: string };
   const final = URL.parse(response.url ?? "");
   if (!final || final.origin !== requested.origin || /\/(?:login|log-in|signin|sign-in|captcha|challenge)(?:\/|$)/i.test(final.pathname) || final.pathname === "/account/access") throw new HarnessError("unavailable", "the site redirected this read to sign-in or another site; open the page and complete its sign-in first");
   if (response.status === undefined || response.status < 200 || response.status >= 300) throw new HarnessError("unavailable", `the signed-in page answered HTTP ${response.status ?? "unknown"}`);
   const type = response.type ?? null;
   if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", "this response is not readable text; use download for a file");
+  if (format === "json" && !/[/+]json\b/i.test(type)) throw new HarnessError("not_content", "this response is not JSON");
   const html = /^text\/html\b/i.test(type) ? await readableHtml(response.text) : undefined;
   if (html && (html.login || html.shell || /\b(?:sign in|log in|login|just a moment|verify you are human|captcha)\b/i.test(html.title))) throw new HarnessError("unavailable", "the site returned a sign-in, challenge, or loading page instead of the requested content");
   if (/[/+]json\b/i.test(type)) {
@@ -2167,7 +2204,7 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
       if (typeof error === "string" && /\b(?:unauthorized|unauthenticated|not authenticated|sign in|log in|login required)\b/i.test(error)) throw new HarnessError("unavailable", "the site returned a sign-in error instead of the requested content");
     }
   }
-  const content = format === "raw" || !html ? response.text : html.content;
+  const content = format !== "text" || !html ? response.text : html.content;
   if (expect !== undefined && !(html ? `${html.title}\n${html.content}` : content).includes(expect)) throw new HarnessError("unavailable", "the page did not contain the content expected for this signed-in read");
   return { ok: true, requestedUrl: requested.href, url: final.href, tab, status: response.status, type, format, content, ...(html ? { title: html.title } : {}), truncated: response.truncated === true, source: "page" as const, auth: expect === undefined ? "unverified" as const : "content_matched" as const, ...(response.note ? { note: response.note } : {}) };
 }
@@ -3248,12 +3285,12 @@ export const TOOLS: Record<string, Tool> = {
   },
   authenticated_read: {
     desc: "Read text/raw through an owned same-origin tab, never anonymously; rejects sign-in pages. expect checks content, not account identity.",
-    params: { tab: { type: "number", description: "owned tab; omit to reuse or open site root" }, url: { type: "string", description: "full address" }, format: { type: "string", enum: ["text", "raw"], description: "text (default) or raw" }, expect: { type: "string", description: "required content phrase" }, maxBytes: { type: "number", description: "default 50000, max 2000000" }, save: SAVE },
+    params: { tab: { type: "number", description: "owned tab; omit to reuse or open site root" }, url: { type: "string", description: "full address" }, format: { type: "string", enum: ["text", "raw", "json"], description: "default text" }, expect: { type: "string", description: "required content phrase" }, maxBytes: { type: "number", description: "default 50000, max 2000000" }, save: SAVE },
     required: ["url"],
     run: async (a) => {
-      if (a.save === undefined || a.save === false) return authenticatedRead(a as { tab?: number; url: string; format?: "text" | "raw"; expect?: string; maxBytes?: number });
+      if (a.save === undefined || a.save === false) return authenticatedRead(a as { tab?: number; url: string; format?: "text" | "raw" | "json"; expect?: string; maxBytes?: number });
       const target = targetOf(a.save, "file");
-      const result = await authenticatedRead(withLimit("authenticated_read", a) as { tab?: number; url: string; format?: "text" | "raw"; expect?: string; maxBytes?: number });
+      const result = await authenticatedRead(withLimit("authenticated_read", a) as { tab?: number; url: string; format?: "text" | "raw" | "json"; expect?: string; maxBytes?: number });
       return saveOutput("authenticated_read", result, target, async () => result.url);
     },
   },
@@ -3380,9 +3417,9 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab"],
     run: (a) => {
       if (a.body !== undefined) return netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do });
-      if (a.url === undefined) return capture({ start: netStart, read: netRead, stop: netStop }, a);
+      if (a.url === undefined) return capture({ start: netStart, read: netReadOffering, stop: netStop }, a);
       if (a.do !== undefined && a.do !== "read") throw new Error("url goes with do: read");
-      return netRead({ tab: a.tab as number | undefined, url: str(a.url, "url") });
+      return netReadOffering({ tab: a.tab as number | undefined, url: str(a.url, "url") });
     },
   },
   console: {

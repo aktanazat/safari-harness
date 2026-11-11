@@ -28,6 +28,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   const [tab, dom, [key], , frame] = args as [number, string, [{ url: string; t: number }], number, number];
   if (op !== "relay" || tab !== 1) return { value: [] };
   if (dom === "netRead") return { value: { entries: LOG } };
+  if (dom === "tabInfo") return { value: { url: "https://portal.example/app" } };
   const kept = KEPT[`${frame} ${key.url} ${key.t}`];
   return kept ? { value: kept } : { error: "that request's body is not kept" };
 }
@@ -69,4 +70,13 @@ test("a list read for part of a url holds only those requests, each with the ind
   const { entries } = (await callTool("net", { tab: 1, url: "portal.example/case" })) as { entries: { index: number; t: number }[] };
   expect(entries.map((e) => e.t)).toEqual([10, 30]);
   for (const e of entries) expect(await callTool("net", { tab: 1, body: e.index })).toMatchObject({ t: e.t });
+});
+
+test("a read offers the page's own plain JSON GETs as readers, with what request_catalog save takes", async () => {
+  expect(await callTool("net", { tab: 1 })).toMatchObject({
+    readers: [{ request: 2, observedAt: 25, path: "/export" }, { request: 3, observedAt: 27, path: "/events" }],
+    next: expect.stringContaining("request_catalog"),
+  });
+  expect(await callTool("net", { tab: 1, url: "export" })).toMatchObject({ readers: [{ request: 2, observedAt: 25, path: "/export" }] });
+  expect(await callTool("net", { tab: 1, url: "portal.example/case" })).not.toHaveProperty("readers");
 });

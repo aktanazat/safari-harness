@@ -2308,6 +2308,11 @@ arriving comes back as far as it came, with a note. A body no longer kept:
 the call says so; `fetch` its url to ask again. CLI: `safari net --url
 offer-acceptance --tab N`, then `safari net read --body -1 --tab N`.
 
+A read that saw the page ask its own site for JSON with a plain GET (no
+query) lists those requests as `readers`, each with its `request` index and
+`observedAt` time: save one with `request_catalog` and later calls get the
+same data in one request, without loading or reading the page.
+
 ## console
 
 `console {tab, do: "start"}` records the page's console messages from that
@@ -2356,8 +2361,9 @@ without it.
 one GET from an agent-owned tab on that origin and returns the readable
 text without navigating to the requested address. Omit `--tab` to reuse
 an owned tab on that site, or open its root in a background tab. Pass
-`--format raw` for unmodified HTML or JSON; `--max-bytes` defaults to
-50,000 and accepts at most 2,000,000.
+`--format raw` for unmodified HTML or JSON, or `--format json` to ask for
+JSON (`Accept: application/json`) and refuse anything else; `--max-bytes`
+defaults to 50,000 and accepts at most 2,000,000.
 
 The reply includes status, content type, final address, `source: "page"`,
 and `auth: "unverified"` unless `--expect` matched the response. A

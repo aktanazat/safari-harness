@@ -18,7 +18,7 @@ test("a saved observed GET refuses changed results and stores no response values
     const call = async (tool, args) => {
       if (tool === "request_catalog_context") return { tab, url: "https://catalog.example/workspace", ready: "complete", timeOrigin: at - 1000 };
       if (tool === "net") return args.body === undefined ? { entries: [observation] } : { ...observation, text: original };
-      if (tool === "authenticated_read") return { ok: true, tab, requestedUrl: url, url, status: 200, type: "application/json", format: "raw", source: "page", truncated: false, content: current };
+      if (tool === "authenticated_read") return { ok: true, tab, requestedUrl: url, url, status: 200, type: "application/json", format: args.format, source: "page", truncated: false, content: current };
       throw new Error("unexpected browser tool " + tool);
     };
     const saved = await requestCatalogTool({ do: "save", name: "items", tab, request: 0, observedAt: at, field: "items", type: "array" }, call);
