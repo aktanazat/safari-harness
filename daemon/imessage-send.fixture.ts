@@ -130,15 +130,18 @@ test("a bare number drafts to its one-to-one chat or a new one, never a group it
   db.exec(`
     INSERT INTO chat VALUES ('iMessage;+;chat100','chat100','Trip','iMessage',43);
     INSERT INTO chat VALUES ('iMessage;-;+15305550199','+15305550199',NULL,'iMessage',45);
-    INSERT INTO handle VALUES ('+15305550100'),('+15305550199'),('+376312345');
-    INSERT INTO chat_handle_join VALUES (3,3),(3,4),(4,4),(3,5);
+    INSERT INTO handle VALUES ('+15305550100'),('+15305550199'),('+376312345'),('ann@x.com');
+    INSERT INTO chat_handle_join VALUES (3,3),(3,4),(4,4),(3,5),(3,6);
   `);
-  for (const to of ["+1 (530) 555-0100", "+1 (530) 555\u20110100", "530\u2013555\u20130100", "tel:+15305550100"]) {
+  for (const to of ["+1 (530) 555-0100", "+1 (530) 555\u20110100", "530\u2013555\u20130100", "tel:+15305550100", "Ann@X.com"]) {
     expect(await waited(send({ to, text: TEXT }))).toMatchObject({ status: "draft", chat: null, to, recent: [] });
   }
   await expect(waited(send({ to: "+376 312 345", text: TEXT }))).rejects.toThrow(/^no chat matches/);
   expect(await waited(send({ to: "+1 (530) 555-0199", text: TEXT }))).toMatchObject({ status: "draft", chat: "iMessage;-;+15305550199" });
   expect(await waited(send({ to: "iMessage;+;chat100", text: TEXT }))).toMatchObject({ status: "draft", chat: "iMessage;+;chat100" });
+  for (const to of ["+1 530 555 0199, +1 530 555 0100", "+15305550199 +15305550100"]) {
+    expect(await waited(send({ to, text: TEXT }))).toMatchObject({ status: "draft", chat: "iMessage;+;chat100" });
+  }
   expect(attempts).toEqual([]);
 });
 
