@@ -560,7 +560,10 @@ A routine is a prompt file in `~/.local/share/safari-harness/routines/` plus a
 launchd agent `at.aktan.safari-harness.routine.<name>` that runs
 `omp -p --auto-approve` with it. A watch (`--watch <url>` with `--selector`,
 `--text`, `--eval`, or `--replay`) runs no model: each run reads one value off
-the page and alerts the user's phone when it changes. A script (`--script
+the page, keeps it in a series of its last 100 readings (`routine history`),
+and alerts the user's phone when it changes; with `--kind price`, only when
+the price falls below every price in the series, and with `--kind
+availability`, only when something opens after none. A script (`--script
 <file.js>`) runs no model either: each run is one `safari repl` call, and
 what it prints goes to the user's phone; `run --dry` gives it `DRY = true`
 and sends nothing. `--on YYYY-MM-DD` runs any routine once, on that day.

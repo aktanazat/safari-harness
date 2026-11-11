@@ -220,13 +220,17 @@ const USAGE = `safari — drive Safari from the terminal
                                              drive another Mac's Safari through ssh
   safari mcp                                 run the MCP stdio server (thin client)
   safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
-  safari routine list | run <name> [--dry] | pause|resume|remove <name>
+  safari routine list | history <name> | run <name> [--dry] | pause|resume|remove <name>
                                              new tasks run through omp; --session continues
                                              saved Safari work; --on runs once on that day
   safari routine add <name> --at HH:MM|--every MIN --watch <url>
                       --selector CSS | --text REGEX | --eval JS | --replay <recording>
+                      [--kind price|availability]
                                              a watch: no model; texts your phone when the
-                                             value it reads off the page changes
+                                             value it reads off the page changes; a price
+                                             watch when it falls below its recent lowest,
+                                             an availability watch when one opens; history
+                                             prints its recent readings
   safari routine add <name> --at HH:MM [--on YYYY-MM-DD] --script <file.js>
                                              a script: no model; runs a repl script and
                                              texts your phone what it printed; run --dry
@@ -795,7 +799,7 @@ async function main() {
 
   if (cmd === "routine") {
     const [sub, ...r] = rest;
-    const { parseSchedule, routineAdd, routineAddScript, routineAddWatch, routineList, routinePause, routineResume, routineRemove, routineRun } = await import("./launchd.ts");
+    const { parseSchedule, routineAdd, routineAddScript, routineAddWatch, routineHistory, routineList, routinePause, routineResume, routineRemove, routineRun } = await import("./launchd.ts");
     const pos = r.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, r));
     if (sub === "add") {
       const schedule = parseSchedule(flag("at", r), flag("every", r), flag("on", r));
@@ -803,14 +807,17 @@ async function main() {
       const script = flag("script", r);
       const session = flag("session", r);
       if (session !== undefined && (script !== undefined || url !== undefined)) fail("--session continues model work; do not combine it with --script or --watch");
+      if (url === undefined && flag("kind", r) !== undefined) fail("--kind is for a watch: give --watch <url> too");
       if (script !== undefined) {
         if (url !== undefined || pos.length > 1) fail("a script routine takes a name, a schedule, and --script: no task, no --watch");
         console.log(await routineAddScript(pos[0], resolve(script), schedule));
       } else if (url === undefined) console.log(await routineAdd(pos[0], pos.slice(1).join(" "), schedule, flag("model", r), session));
       else if (pos.length > 1) fail("a watch runs no model, so it takes no task");
-      else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, schedule));
+      else console.log(await routineAddWatch(pos[0], url, { selector: flag("selector", r), text: flag("text", r), eval: flag("eval", r), replay: flag("replay", r) }, flag("kind", r), schedule));
     } else if (sub === "list") {
       print(await routineList());
+    } else if (sub === "history") {
+      print(await routineHistory(pos[0]));
     } else if (sub === "run") {
       const { code, log, note } = await routineRun(pos[0], { dry: hasFlag("dry", r), scheduled: hasFlag("scheduled", r), generation: flag("generation", r) });
       if (note !== undefined) console.log(note);
@@ -825,7 +832,7 @@ async function main() {
       console.log(await routineResume(pos[0]));
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
-    } else fail("usage: safari routine add|list|run|pause|resume|remove", 2);
+    } else fail("usage: safari routine add|list|history|run|pause|resume|remove", 2);
     return;
   }
 
