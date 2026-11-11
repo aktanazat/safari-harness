@@ -22,7 +22,9 @@ import { met, walled } from "./reads.ts";
 // made has been taken up.
 
 type Page = { url: string; check?: "box" | "block" | "wall"; text?: string };
-type Mac = { app: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; use(tab: number): void };
+// prompt: one holding the front, app behind it, with no Dock icon; the
+// helper's activate fails while it is up
+type Mac = { app: string; prompt?: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; use(tab: number): void };
 const MAIL = "com.apple.mail";
 
 // Mail is in front. Safari's window shows the user's tab 3; the agent's tab
@@ -64,8 +66,11 @@ function mac(tab: number, page: Page): Mac {
     close() {},
   });
   spyOn(front, "input").mockImplementation(async (args) => {
-    if (args[0] === "activate") m.app = args[1];
-    return args[0] === "front" ? { bundleId: m.app } : {};
+    if (args[0] === "activate") {
+      m.app = args[1];
+      if (m.prompt) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${m.prompt} is in front`);
+    }
+    return args[0] === "front" ? (m.prompt ? { bundleId: m.prompt, under: m.app } : { bundleId: m.app }) : {};
   });
   spyOn(front, "notify").mockImplementation((text) => void m.notices.push(text));
   spyOn(telegram, "sendTelegram").mockImplementation(async (line, picture) => void m.texts.push({ line, picture: picture !== undefined && existsSync(picture) }));
@@ -192,6 +197,8 @@ test.each([
   ["stays on the tab", () => {}, { activated: [72, 3], app: MAIL }],
   ["has gone to another app", (m: Mac) => { m.app = "com.apple.Notes"; }, { activated: [72], app: "com.apple.Notes" }],
   ["has gone to another tab", (m: Mac) => m.use(3), { activated: [72], app: front.SAFARI }],
+  ["has a prompt come up over Safari", (m: Mac) => { m.prompt = "com.apple.SecurityAgent"; }, { activated: [72, 3], app: MAIL }],
+  ["has gone to another app, a prompt then over it", (m: Mac) => { m.app = "com.apple.Notes"; m.prompt = "com.apple.SecurityAgent"; }, { activated: [72], app: "com.apple.Notes" }],
 ])("a user who %s when the check clears gets back only what they have not taken back themselves", async (_how, act, after) => {
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(72, page);

@@ -7,7 +7,7 @@ import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge 
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
-import { frontApp, inFront, input, notify, raiseSafari, SAFARI, show } from "./front.ts";
+import { inFront, input, notify, raiseSafari, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
@@ -2011,7 +2011,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
         if (challenge === undefined) met(now.url ?? "", null);
         // gone elsewhere, they have taken back what they wanted themselves;
         // the tab sits in an agent window, which never holds the front tab
-        if (now.shown && (await frontApp().catch(() => undefined)) === SAFARI) await giveBack();
+        if (now.shown) await giveBack();
         return;
       }
     }

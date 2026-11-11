@@ -102,6 +102,16 @@ export async function frontApp(): Promise<string | undefined> {
   return r && typeof r === "object" && "bundleId" in r && typeof r.bundleId === "string" ? r.bundleId : undefined;
 }
 
+// Whether Safari is in front as the user sees it: the frontmost app, or,
+// while one with no Dock icon holds the front (a prompt, as SecurityAgent's
+// for a keychain password is), the one whose window is topmost. An app he
+// brought forward meanwhile is his, a prompt over it or not.
+async function safariInFront(): Promise<boolean> {
+  const r = await input(["front"]).catch(() => undefined);
+  if (!r || typeof r !== "object") return false;
+  return ("bundleId" in r && r.bundleId === SAFARI) || ("under" in r && r.under === SAFARI);
+}
+
 // A macOS notification from the harness. text goes in as an argument, so
 // none of it is read as script.
 export function notify(text: string): void {
@@ -113,14 +123,18 @@ export function notify(text: string): void {
 // Giving back is best effort: what the tab was shown for has happened, and
 // an error would invite a retry that repeats it. A user who brought another
 // app forward meanwhile keeps it: on 10-07 he went back to his terminal
-// mid-reply, and giving back raised Safari again before his app.
+// mid-reply, and giving back raised Safari again before his app. A prompt
+// is no app he brought forward: on 11-11 SecurityAgent asked for a
+// keychain password as real input raised Safari, nothing was given back,
+// and once the prompt went Safari stayed in front over his terminal, where
+// the tab group keeper makes no group.
 export async function show(tab: number, ops: TabOps, check?: () => void): Promise<() => Promise<void>> {
   const [bundleId, tabs] = await Promise.all([frontApp(), ops.tabs()]);
   const target = tabs.find((t) => t.id === tab);
   if (!target) throw new Error(`no tab ${tab}`);
   const back = [tabs.find((t) => t.windowId === target.windowId && t.active && t.id !== tab), tabs.find((t) => t.front && t.windowId !== target.windowId)];
   const giveBack = async () => {
-    if ((await frontApp().catch(() => undefined)) !== SAFARI) return;
+    if (!(await safariInFront())) return;
     for (const t of back) if (t) await ops.activate(t.id).catch(() => {});
     if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
   };
