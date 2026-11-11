@@ -15,7 +15,7 @@ import { HarnessError } from "./failures.ts";
 import type { InputState } from "./input-state.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
+import { CODE_ACCOUNT, CODE_SENDER, REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
 import { rowsOf } from "./tabs-view.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -504,7 +504,7 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       targetX: X, targetY: Y,
       html: { type: "string", description: "HTML paste representation; text is the plain fallback" },
       tsv: { type: "string", description: "tab-separated paste representation" },
-      append: { type: "boolean", description: "keep the field's text" }, env: SECRET_ENV,
+      append: { type: "boolean", description: "keep the field's text" }, env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT,
     },
     required: ["tab", "do"],
     run: async (a) => {

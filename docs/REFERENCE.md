@@ -649,12 +649,10 @@ Signing in, in this order:
    Passwords pairs by itself; never ask for the pairing code in chat.
 3. A site that offers a passkey or Touch ID sign-in: click its passkey
    button, then `handoff` (`safari guide handoff`) so the user can touch the sensor.
-4. A code sent by text: call `imessage_wait_code` right after asking the site to
-   send it, then type the returned `code` into the field. On `timeout`, call
-   again with its `since` to keep waiting. Never repeat the code in a reply.
-   A code sent by mail: `gmail.waitForMail` in `repl`, then
-   `type {text: "{{code}}", secret: "page", from: <mail tab>}`
-   (`safari guide gmail`).
+4. A code the site sends, by text or by mail: ask the site to send it, then
+   `type {tab, ref, text: "{{code}}"}`, which waits for the code, types it
+   unseen, and says only where it came from (`safari guide reference
+   type`). Never repeat a code in a reply.
 
 Pick a verification method by its label (a phone option may call him), and
 read the result before Next. Never sign him out.
@@ -2070,20 +2068,43 @@ what an action reports).
   holds already (after a `click` on it, or a `type`) takes the text at
   once. A field the page never takes (in a hidden tab the user opened,
   which draws no frames) fails and says to `activate` the tab first.
-- A one-time code the site texted the user: write `{{code}}` where it
-  goes, `type {tab, ref, text: "{{code}}"}`. The harness waits up to 30 s
-  for the text, types the code, and answers `typed: "code, 6 chars"`; the
-  field then reads `filled` in snapshots, and the tab's answers have the
-  code cut (`safari guide reference logged-in`). `secret: "passwords"`
-  types the code his Apple Passwords keeps for the site instead, as
-  `passwords {do: "code"}` does. An emailed code: open the email in
-  another tab and pass `secret: "page", from: <that tab>`; the one code it
-  shows (4 to 8 digits standing alone, 6 when lengths differ, or 6 to 8
-  letters and digits on a line that says code) is typed, and a page with
-  more or none fails saying how many. `real_input {do: "type", text:
-  "{{code}}"}` takes the same. A code typed into the first of a row of 4
-  to 8 boxes (each one character, or named like "Digit 1 of 6") goes one
-  digit to a box, and every box in the row is kept secret.
+- A one-time code the site sent the user: write `{{code}}` where it goes,
+  `type {tab, ref, text: "{{code}}"}`. The harness waits up to 30 s for
+  it: in his texts from the start, the minute before the call included,
+  and in his Gmail from 10 s on, as Gmail's tab takes about 10 s to open
+  (account 0; `account: 1` or an address picks another). It types the
+  code and answers `typed: "code, 6 chars"` and where it came from,
+  `source: "text from 63641"` or `"mail from codes@shop.example"`, never
+  the code; the field then reads `filled` in snapshots, and the tab's
+  answers have the code cut (`safari guide reference logged-in`). A text
+  counts when its last line binds it to the page's host or one above it
+  (`@shop.example #123456`), or else when it names the page's site: its
+  domain, or the name before the domain as one to three words ("Shop
+  Example", "Wells Fargo"). Mail counts when it comes from the page's
+  domain and shows one code. Docs, Sites, and Apps Script pages on
+  google.com are sites of their own, which take no Google code. Passed
+  over: a code typed before, so a resend's new code is typed and not the
+  old one, and any code that does not count. `secret: "sms"` waits for a
+  text alone and `secret: "mail"` for mail alone, from the start: a
+  mailed code takes about 12 s so, and 22 s without. `sender` (a number,
+  an address, or a domain) takes a code only from there, any text from
+  that number included, for a site whose texts do not name it or that
+  mails from another domain; give only a sender the site's guide or its
+  own page names. Matching by name cannot tell a brand's lookalike
+  (chase.co for Chase), or a site named for a word code texts use, from
+  the brand: type a code only into the site that sent it. A wait that
+  finds none fails after 30 s saying where it looked and what it passed
+  over. The answer comes as soon as the code does; a Gmail tab still
+  opening then closes after it. `secret: "passwords"` types the code his
+  Apple Passwords keeps for the site instead, as `passwords {do: "code"}`
+  does. A code shown in a tab: pass `secret: "page", from: <that
+  tab>`; the one code it shows (4 to 8 digits standing alone, 6 when
+  lengths differ, or 6 to 8 letters and digits on a line that says code)
+  is typed, and a page with more or none fails saying how many.
+  `real_input {do: "type", text: "{{code}}"}` takes the same. A code typed
+  into the first of a row of 4 to 8 boxes (each one character, or named
+  like "Digit 1 of 6") goes one digit to a box, and every box in the row
+  is kept secret.
   an emailed code can be read from one selected message without removing
   older messages. pass `from_selector: "<CSS selector>"` with `secret: "page"`.
   the selection must match exactly one message and contain exactly one code.
@@ -3057,10 +3078,10 @@ The file ids, the result, and the CLI are in `safari guide reference messages`.
 
 ## imessage_wait_code
 
-`imessage_wait_code` waits for a sign-in code sent by text. Call it right
-after asking the site to send the code, then type the returned `code`
-into the field with `{{code}}`; never repeat it. On `timeout`, call again
-with its `since` to keep waiting.
+`imessage_wait_code` waits for a sign-in code sent by text and returns
+it, for a code that must be read. To fill a field, `type {text:
+"{{code}}"}` waits for the code itself and never shows it. Never repeat
+a code. On `timeout`, call again with its `since` to keep waiting.
 
 ## imessage_send
 

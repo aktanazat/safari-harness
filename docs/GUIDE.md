@@ -159,8 +159,8 @@ Signing in, in this order
 1. A session: most of his sites are signed in.
 2. `passwords` `fill`: no prompt, no code in chat. `safari guide passwords`.
 3. A passkey: click its button, then `handoff`.
-4. A code: `imessage_wait_code`; an emailed one, `gmail.waitForMail` in
-   `repl`, then `type {text:"{{code}}", secret:"page", from:<mail tab>}`.
+4. A code, texted or mailed: `type {text:"{{code}}"}` waits for it and
+   types it unseen; `secret:"mail"` when it comes by mail.
 Never type a password from memory or chat. Never print a password, code,
 cookie, or token, in a reply or a log line. Never sign him out.
 

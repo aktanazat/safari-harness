@@ -149,7 +149,11 @@ import { TOOLS } from "./tools.ts";
 // fills that stalled on the Mac's Touch ID until he came back. The
 // release imported on 11-04 listed 28,057; passwords' description lost
 // "source:apple skips vault", which its source parameter already says.
-const TOOL_LIST_MAX_BYTES = 28_055;
+// type's secret "mail" and its "texted or mailed" (32) brought it to
+// 28,084: on 10-02 a script's emailed code waited 30 s for a text
+// message, and the documented way to type a mailed code took five calls
+// and showed the model the code; {{code}} now finds it in Gmail itself.
+const TOOL_LIST_MAX_BYTES = 28_084;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

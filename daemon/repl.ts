@@ -106,10 +106,10 @@ function textTarget(text: unknown): string {
 }
 
 // type's code sources ({{code}} in the text), as the type tool takes them.
-type CodeSource = { secret?: string; from?: number; from_selector?: string };
+type CodeSource = { secret?: string; from?: number; from_selector?: string; sender?: string; account?: number | string };
 function codeSource(opts: CodeSource = {}): CodeSource {
-  const { secret, from, from_selector } = opts;
-  return { ...(secret === undefined ? {} : { secret }), ...(from === undefined ? {} : { from }), ...(from_selector === undefined ? {} : { from_selector }) };
+  const { secret, from, from_selector, sender, account } = opts;
+  return { ...(secret === undefined ? {} : { secret }), ...(from === undefined ? {} : { from }), ...(from_selector === undefined ? {} : { from_selector }), ...(sender === undefined ? {} : { sender }), ...(account === undefined ? {} : { account }) };
 }
 
 // A url glob as Playwright reads one: ** is any text, * any text but "/",
@@ -218,9 +218,10 @@ export class Locator {
   async paste(text: string, opts: PasteOptions = {}): Promise<void> {
     await this.#page.act("real_input", { do: "paste", ref: this.target, text: String(text), ...(opts.html === undefined ? {} : { html: opts.html }), ...(opts.tsv === undefined ? {} : { tsv: opts.tsv }) });
   }
-  // opts names where a {{code}} in text comes from: { secret: "page", from:
-  // <mail tab> } for an emailed one. Without it, a script's emailed code
-  // waited 30 s for a text message (10-02).
+  // opts names where a {{code}} in text comes from: { secret: "mail" } for
+  // a mailed one, which skips the wait for a text, or { secret: "page",
+  // from: <mail tab> }. On 10-02 a script's emailed code waited 30 s for a
+  // text message.
   async fill(text: string, opts?: CodeSource & { noWaitAfter?: boolean }): Promise<void> {
     await this.#page.act("type", { ref: this.target, text: String(text), ...codeSource(opts), ...(opts?.noWaitAfter === true ? { noWaitAfter: true } : {}) });
   }

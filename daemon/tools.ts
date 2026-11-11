@@ -2998,6 +2998,9 @@ export type Tool = {
 export const TAB: Param = { description: 'open id or "front"' };
 // The variable secret "env" types (secret.ts): type's and real_input's.
 export const SECRET_ENV: Param = { type: "string", description: "the CLI caller's environment variable for secret env" };
+// Where a sent code may come from (secret.ts): type's and real_input's.
+export const CODE_SENDER: Param = { type: "string", description: "{{code}}: only codes from this number, address, or domain, one the site's guide or page names; its texts need not name the site" };
+export const CODE_ACCOUNT: Param = { description: "{{code}}: the Gmail account mailed codes come to: 0 (default), 1, or its address" };
 // close, activate, and window act only on a tab the agent opened
 const OWN_TAB: Param = { type: "number", description: "tab id from open" };
 const FRESH: Param = { type: "boolean", description: "load a site that showed a check in the last 10 min anyway" };
@@ -3479,11 +3482,11 @@ export const TOOLS: Record<string, Tool> = {
     run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
   },
   type: {
-    desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes; secret page reads from, scoped by from_selector.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "page", "passwords"], description: "code source" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
+    desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "mail", "page", "passwords"], description: "code source" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
     // MCP client is never offered it: safari type --secret env --env VAR
-    unlisted: { env: SECRET_ENV, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
+    unlisted: { env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
     run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
   },

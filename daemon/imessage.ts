@@ -62,7 +62,7 @@ function messageText(text: string | null, body: Uint8Array | null): string {
 
 type Contact = { name: string; phones: string[]; emails: string[] };
 
-function handleKey(handle: string): string {
+export function handleKey(handle: string): string {
   if (handle.includes("@")) return handle.trim().toLowerCase();
   const digits = handle.replace(/\D/g, "");
   return digits.length > 10 ? digits.slice(-10) : digits;
@@ -415,37 +415,70 @@ export function findCode(text: string): string | null {
   return best?.code ?? null;
 }
 
+// The code of a text: the one its last line binds to a site in the WebOTP
+// form ("@shop.example #123456", Apple adding "%apple.com"), so the site
+// it is for is known, or else the one findCode finds.
+const BOUND = /^@([a-z\d.-]+\.[a-z]{2,}) #([a-z\d]{4,10})(?:\s|$)/i;
+
+function codeOf(text: string): { code: string; bound?: string } | null {
+  const bound = BOUND.exec(text.split("\n").findLast((line) => line.trim())?.trim() ?? "");
+  if (bound) return { code: bound[2], bound: bound[1].toLowerCase() };
+  const code = findCode(text);
+  return code ? { code } : null;
+}
+
+// A text with a code in it. handle: the number or address it came from;
+// from: the contact's name for it, else the handle; at: ms since 1970.
+export type CodeText = { rowid: number; at: number; handle: string; from: string; text: string; code: string; bound?: string };
+export type CodeTexts = { read(): CodeText[]; last(): number; close(): void };
+
+// The texts with a code that come in after row after, or from time since
+// on (ms since 1970; the minute before by default, as the code often lands
+// before the call). Each read gives those new since the last, oldest first;
+// last is the newest row of all, for a later wait to start after.
+export function codeTexts(opts: { after?: number; since?: number } = {}): CodeTexts {
+  const db = openChatDb();
+  try {
+    const names = nameIndex(loadContacts());
+    const incoming = db.query<MsgRow, [number, number]>(`
+      SELECT ${MSG_COLS} FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id
+      WHERE m.ROWID > ? AND m.date >= ? AND m.is_from_me = 0 AND ${REAL} ORDER BY m.ROWID`);
+    let cursor = opts.after ?? 0;
+    const floor = opts.after === undefined ? toAppleNs(opts.since ?? Date.now() - 60_000) : 0;
+    return {
+      read: () => incoming.all(cursor, floor).flatMap((r) => {
+        cursor = Math.max(cursor, r.rowid);
+        const message = toMessage(r, names);
+        const found = codeOf(message.text);
+        return found ? [{ rowid: r.rowid, at: Date.parse(message.at), handle: r.handle ?? "", from: message.from, text: message.text, ...found }] : [];
+      }),
+      last: () => Math.max(cursor, db.query<{ n: number }, []>("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get()?.n ?? 0),
+      close: () => db.close(),
+    };
+  } catch (e) {
+    db.close();
+    throw e;
+  }
+}
+
 // A poll is one read by row id: about a microsecond on a 160,000-message
 // database, so a 90-second wait costs about 2 ms of CPU. At 1.5 s a code sat
 // unseen for 0.75 s on average.
-const CODE_POLL_MS = 100;
+export const CODE_POLL_MS = 100;
 
 export async function waitCode(opts: { seconds?: number; since?: number } = {}) {
   const seconds = Math.min(Math.max(Number(opts.seconds ?? 30), 1), 90);
   const deadline = Date.now() + seconds * 1000;
-  const db = openChatDb();
+  const texts = codeTexts(opts.since === undefined ? {} : { after: Number(opts.since) });
   try {
-    const names = nameIndex(loadContacts());
-    const incoming = db.query(`
-      SELECT ${MSG_COLS} FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id
-      WHERE m.ROWID > ? AND m.date >= ? AND m.is_from_me = 0 AND ${REAL} ORDER BY m.ROWID`);
-    // Without `since`, look back a minute: the code often lands before the call.
-    let cursor = Number(opts.since ?? 0);
-    const floor = opts.since === undefined ? toAppleNs(Date.now() - 60_000) : 0;
     for (;;) {
-      for (const r of incoming.all(cursor, floor) as MsgRow[]) {
-        cursor = Math.max(cursor, r.rowid);
-        const code = findCode(messageText(r.text, r.body));
-        if (code) return { status: "received", code, from: toMessage(r, names).from, at: toDate(r.date), rowid: r.rowid };
-      }
-      if (Date.now() >= deadline) {
-        const max = (db.query("SELECT IFNULL(MAX(ROWID), 0) n FROM message").get() as { n: number }).n;
-        return { status: "timeout", since: Math.max(cursor, max) };
-      }
+      const [first] = texts.read();
+      if (first) return { status: "received", code: first.code, from: first.from, at: new Date(first.at).toISOString(), rowid: first.rowid };
+      if (Date.now() >= deadline) return { status: "timeout", since: texts.last() };
       await Bun.sleep(CODE_POLL_MS);
     }
   } finally {
-    db.close();
+    texts.close();
   }
 }
 
