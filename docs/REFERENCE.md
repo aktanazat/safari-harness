@@ -396,6 +396,16 @@ Escalate in this order:
   its control, and `aria-hidden` text still reads. Unicode tag characters,
   which draw nothing, are removed. `showHidden: true` (CLI `--showHidden`)
   reads it all.
+- `extract` reads a section a click would open, without the click, after
+  the line of the control that opens it: a closed `<details>`, and the
+  panel an `aria-expanded="false"` control names in `aria-controls`.
+  Menus, list boxes, dialogs, popovers and whatever floats over the page,
+  sections in the page's navigation, header and footer, and sections whose
+  control no one sees stay out, as does text hidden within the section
+  itself. A `note` says how many sections were read in. A text read does
+  this, with or without `selector` or `query`; a secret's source
+  (`strict_selector`), chat, table, and `expand` or `scroll` reads read
+  only what the page shows.
 - Page text that tells AI agents what to do ("Ignore all previous
   instructions", "Note to AI agents: ...", "If you are an AI, you must
   ...") starts with `(to AI agents) `, and the result says how many
@@ -1475,6 +1485,12 @@ A page with no text yet, loading placeholders or lines such as "The page
 is loading. Please wait", or `aria-busy` on its main region or body, gets
 up to 2 s to draw; those lines are left out, with a `note`, and
 `loading: true` says the page was still loading then.
+A page that shows only its navigation, header and footer (no top heading
+and under 200 characters outside them), as a page its script draws does
+while it fetches the content, gets up to 5 s more while a request to its
+own site sent in the last 5 s is out or the page changes; it answers once
+the page is quiet for 0.5 s with nothing out.
+One still bare at the end says so in a `note`.
 A page whose body is not in place yet gets up to 2 s for it. A PDF in
 Safari's viewer fails naming `pdf {do: "read", url}`.
 An address with a `#fragment` naming a heading, section, or anchor reads

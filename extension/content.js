@@ -3365,18 +3365,188 @@
   // spaces here, using the matching rules' one list (INVISIBLE).
   const FILLER = /^(?: +|(?:the page is )?loading[.…]*(?: please wait\b.*)?|please wait[.…]*)$/i;
 
+  // ---------- sections a click opens ----------
+  // A closed <details> or the panel an aria-expanded="false" control names
+  // in aria-controls: page text a person reads with one click. On 11-08
+  // rate tables in such sections stayed out of reads of top search
+  // results. They are read after their control's line, without the click,
+  // which may change the site's state. A menu, list box, dialog, or popover,
+  // and the page's navigation, header, or footer, is no such section.
+  const CHROME = "nav, aside, [role=banner], [role=navigation], [role=contentinfo], [role=complementary], [role=search]";
+  const chrome = (el) => el.matches(CHROME) || (el.matches("header, footer") && !el.parentElement?.closest("article, aside, main, nav, section, [role=main]"));
+  const inChrome = (el) => {
+    for (let e = el; e; e = e.parentElement) if (chrome(e)) return true;
+    return false;
+  };
+  const NO_SECTION = "dialog, [role=dialog], [role=alertdialog], [role=menu], [role=menubar], [role=listbox], [role=tree], [role=grid], [role=tooltip], select, datalist";
+  const POPUP = "[role=combobox], [role=menuitem], [aria-haspopup]:not([aria-haspopup=false])";
+
+  // Whether el sits where a person sees it: drawn, and in no box
+  // visibleText cuts (clear, of a pixel, clipped, or put off the page).
+  // A control hidden that way opens nothing anyone reads.
+  function inView(el) {
+    if (!el.getClientRects().length) return false;
+    for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
+      const style = getComputedStyle(e);
+      const r = e.getBoundingClientRect();
+      if ((style.display !== "contents" && r.width <= 1 && r.height <= 1) || transparent(e, style) || unseenBox(e, style)) return false;
+    }
+    return getComputedStyle(el).visibility === "visible";
+  }
+
+  // The sections under root a click would open, outermost first in page
+  // order, each with its control and the nodes it holds. What opens
+  // floating over the page is a popover: on 11-11 Stack Overflow's share
+  // sheets read as 26 "Copy link" sections.
+  function collapsedIn(root) {
+    const found = new Map();
+    const floating = (nodes) => {
+      const boxes = nodes.filter((n) => n.nodeType === Node.ELEMENT_NODE);
+      return boxes.length > 0 && boxes.every((el) => el.hasAttribute("popover") || /^(?:absolute|fixed)$/.test(getComputedStyle(el).position));
+    };
+    const take = (control, panel, nodes) => {
+      if (!control || !panel || found.has(panel) || !root.contains(panel) || panel.matches(NO_SECTION) || inChrome(panel) || floating(nodes)) return;
+      if (control.matches(POPUP) || inChrome(control) || !inView(control) || !(panel.parentElement && inView(panel.parentElement))) return;
+      found.set(panel, { control, nodes });
+    };
+    for (const box of root.querySelectorAll("details:not([open])")) {
+      const summary = box.querySelector(":scope > summary");
+      take(summary, box, [...box.childNodes].filter((n) => n !== summary));
+    }
+    for (const control of root.querySelectorAll('[aria-expanded="false"][aria-controls]')) {
+      for (const id of control.getAttribute("aria-controls").split(/\s+/)) {
+        const panel = id ? control.getRootNode().getElementById(id) : null;
+        if (panel && (!panel.getClientRects().length || getComputedStyle(panel).visibility !== "visible")) take(control, panel, [panel]);
+      }
+    }
+    const all = new Set(found.keys());
+    const outer = [...found].filter(([panel]) => ![...all].some((p) => p !== panel && p.contains(panel)));
+    outer.sort(([, a], [, b]) => (a.control.compareDocumentPosition(b.control) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    return { all, outer };
+  }
+
+  // A box no one would see once its section opens, by its style alone: it
+  // is not laid out, so unseenBox cannot measure it.
+  function parkedStyle(style) {
+    if (style.position === "static") return false;
+    const away = (v) => parseFloat(v) <= -999;
+    const shift = /^matrix\((.*)\)$/.exec(style.transform)?.[1].split(",").map(parseFloat) ?? [];
+    if (away(style.left) || away(style.top) || shift[4] <= -999 || shift[5] <= -999) return true;
+    if (style.position !== "absolute" && style.position !== "fixed") return false;
+    return clipShut(style.clip) || (parseFloat(style.width) <= 1 && parseFloat(style.height) <= 1 && style.overflowX !== "visible");
+  }
+
+  // A closed section's text as innerText would read it open. What hides
+  // inside it on its own stays out, as on the page; the sections in panels
+  // read as open, and a panel hidden by visibility passes it to its words.
+  function sectionText(nodes, panels) {
+    const read = (n, veiled) => {
+      if (n.nodeType === Node.TEXT_NODE) {
+        const el = n.parentElement;
+        const style = el && getComputedStyle(el);
+        return !style || faintText(el, style) || (style.visibility !== "visible" && !veiled) ? "" : n.nodeValue.replace(/\s+/g, " ");
+      }
+      if (n.nodeType !== Node.ELEMENT_NODE || UNDRAWN.test(n.tagName) || n.tagName === "SELECT" || n.tagName === "TEXTAREA") return "";
+      if (n.tagName === "BR") return "\n";
+      const style = getComputedStyle(n);
+      const panel = panels.has(n);
+      if (!panel && (style.display === "none" || transparent(n, style) || parkedStyle(style))) return "";
+      const under = style.visibility !== "visible" && (panel || veiled);
+      const t = [...drawnChildren(n)].map((k) => read(k, under)).join("");
+      const d = style.display;
+      if (d.startsWith("inline") || d === "contents") return t;
+      if (d === "table-cell") return `${t}\t`;
+      if (d === "table-row") return `${t}\n`;
+      return n.tagName === "P" ? `\n\n${t}\n\n` : `\n${t}\n`;
+    };
+    return nodes.map((n) => read(n, false)).join("");
+  }
+
+  // Whether line holds name as whole words: "More" is not in "Moreover".
+  function holdsWords(line, name) {
+    const letter = (c) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
+    for (let i = line.indexOf(name); i >= 0; i = line.indexOf(name, i + 1)) {
+      if (!letter(line[i - 1]) && !letter(line[i + name.length])) return true;
+    }
+    return false;
+  }
+
+  // text with each closed section under root put in after the line of its
+  // control: the next line that is its name, else the next holding it, in
+  // page order; at the end when none does (a control named by an icon);
+  // and how many.
+  function withSections(root, text) {
+    const { all, outer } = collapsedIn(root);
+    const lines = text.split("\n");
+    const flat = lines.map((l) => l.replace(/\s+/g, " ").trim());
+    const after = new Map();
+    const tail = [];
+    let at = 0;
+    let sections = 0;
+    for (const [, { control, nodes }] of outer) {
+      const words = sectionText(nodes, all);
+      if (!words.trim()) continue;
+      sections++;
+      const name = (control.innerText ?? "").replace(/[ \t]+/g, " ").trim().split("\n")[0].trim();
+      let i = name ? flat.indexOf(name, at) : -1;
+      if (i < 0 && name) i = flat.findIndex((l, k) => k >= at && holdsWords(l, name));
+      if (i < 0) {
+        tail.push(words);
+        continue;
+      }
+      after.set(i, [...(after.get(i) ?? []), words]);
+      at = i;
+    }
+    const read = lines.map((l, k) => [l, ...(after.get(k) ?? [])].join("\n")).join("\n");
+    return { text: [read, ...tail].join("\n"), sections };
+  }
+
   // An element's text as extract returns it: spaces and blank lines run
-  // together, skeleton and loading lines left out, and whether there were any.
-  function tidyText(root) {
-    const lines = readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
+  // together, skeleton and loading lines left out, and whether there were
+  // any; with opened, closed sections read in (withSections), and how many.
+  function tidyText(root, opened = false) {
+    const drawn = readText(root, visibleText);
+    const { text: raw, sections } = opened ? withSections(root, drawn) : { text: drawn, sections: 0 };
+    const lines = raw.replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").split("\n");
     const filler = (l) => FILLER.test(l.replace(INVISIBLE, " "));
     const joinersOnly = (l) => /^[\u2060\uFEFF ]+$/.test(l);
     const text = lines.filter((l) => !filler(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text, filler: lines.some((l) => filler(l) && !joinersOnly(l)) };
+    return { text, filler: lines.some((l) => filler(l) && !joinersOnly(l)), sections };
   }
 
   // A page that marks its main region or body aria-busy is still filling in.
   const ariaBusy = () => !!document.querySelector("body[aria-busy='true'], main[aria-busy='true'], [role='main'][aria-busy='true']");
+
+  // A read that holds only a page's chrome: no top heading, and under
+  // SHELL_CHARS characters, spaces aside, outside its navigation, header,
+  // and footer. A page its script draws shows these first: on 11-08
+  // Apple's developer docs read as their navigation and footer, and Zoom's
+  // API docs as "Search ⌃ L Powered by Scalar". Such a read waits, up to
+  // SHELL_WAIT_MS, while the page fetches from its own site (fetching) or
+  // changes; a page quiet for QUIET_SPAN.quiet with nothing out answers.
+  const SHELL_CHARS = 200;
+  const SHELL_WAIT_MS = 5000;
+  function shellOnly(root, text) {
+    const chars = (t) => t.replace(/\s+/g, "").length;
+    let left = chars(text);
+    if (left >= SHELL_CHARS * 25) return false;
+    if ([...root.querySelectorAll("h1, [role=heading][aria-level='1']")].some((h) => !inChrome(h) && chars(visibleText(h)) > 0)) return false;
+    for (const el of root.querySelectorAll("header, footer, " + CHROME)) {
+      if (chrome(el) && !(el.parentElement && inChrome(el.parentElement))) left -= chars(readText(el, visibleText));
+    }
+    return left < SHELL_CHARS;
+  }
+
+  // Whether the page waits on a request to its own site it sent within
+  // SHELL_WAIT_MS, where its script fetches what it draws; null when its
+  // world cannot say. One out longer is a long poll, not content. Images
+  // and sockets carry no text, and a lazy image in a hidden tab may never
+  // load.
+  function fetching() {
+    const heard = hear(Date.now() - SHELL_WAIT_MS);
+    if (!heard?.pending) return null;
+    return heard.pending.some((e) => keepRequest(e, location.href));
+  }
 
   // Whether the page says it is still loading: skeleton or loading lines in
   // what extract reads, or aria-busy. On 10-05 Cvent's sign-on page showed
@@ -3452,7 +3622,7 @@
     const note = `this is the section #${id} the address names; extract with selector "body" reads the whole page`;
     const start = target.closest(HEADINGS) ?? (norm(target.textContent) ? null : [...document.body.querySelectorAll(HEADINGS)].find((h) => target.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING));
     if (!start) {
-      const read = tidyText(target);
+      const read = tidyText(target, true);
       return read.text ? { root: target, read, note } : null;
     }
     const level = headingLevel(start);
@@ -3461,9 +3631,9 @@
     while (!unit.nextElementSibling && unit.parentElement && unit.parentElement !== document.body) unit = unit.parentElement;
     const units = [unit];
     for (let el = unit.nextElementSibling; el && !ends(el) && ![...el.querySelectorAll(HEADINGS)].some(ends); el = el.nextElementSibling) units.push(el);
-    const reads = units.map(tidyText);
+    const reads = units.map((u) => tidyText(u, true));
     const text = reads.map((r) => r.text).filter(Boolean).join("\n\n");
-    return text ? { root: unit.parentElement, units, read: { text, filler: reads.some((r) => r.filler) }, note } : null;
+    return text ? { root: unit.parentElement, units, read: { text, filler: reads.some((r) => r.filler), sections: reads.reduce((n, r) => n + r.sections, 0) }, note } : null;
   }
 
   // query keeps the lines containing it, searched across the whole body. A
@@ -3499,9 +3669,10 @@
     // holds back for the read after it. A near-empty root reads within a
     // clock tick, which per character would hold back seconds.
     let pace = 0;
+    const opened = opts.strict_selector !== true;
     const readAt = () => {
       const began = Date.now();
-      const got = at.read ?? tidyText(at.root);
+      const got = at.read ?? tidyText(at.root, opened);
       pace = (Date.now() - began) / Math.max(at.root.textContent.length, 1000);
       return got;
     };
@@ -3514,17 +3685,28 @@
         return read.text !== "" && !read.filler && !ariaBusy();
       }, DRAW_WAIT_MS);
     }
+    let shell = waits && !at.read && read.text !== "" && !at.root.matches(DIALOG_BOXES) && shellOnly(at.root, read.text) && fetching() === true;
+    const end = Date.now() + SHELL_WAIT_MS;
+    while (shell) {
+      const changed = await whenPage(() => true, Math.min(QUIET_SPAN.quiet, end - Date.now()));
+      at = fragmentSection() ?? contentRoot();
+      read = readAt();
+      shell = !at.read && shellOnly(at.root, read.text);
+      if (Date.now() >= end || (!changed && fetching() !== true)) break;
+    }
     const harvest = opts.expand || opts.scroll ? await harvestIn(at.root, opts, read, by, pace) : null;
     if (harvest) read = harvest.read;
     const loading = waits && (read.filler || ariaBusy());
     let { text } = read;
     const notes = [at.note];
+    if (shell) notes.push("the page showed little beyond its navigation, header, and footer");
+    if (read.sections) notes.push(`${read.sections} collapsed section${read.sections === 1 ? " is" : "s are"} read in where ${read.sections === 1 ? "it sits" : "they sit"}, though closed on the page`);
     if (opts.query) {
       text = text.split("\n").filter(queryMatch(opts.query)).join("\n");
       // A selector or section that leaves the lines out: on 10-23 a
       // podcast's transcript sat outside its main region, and three reads
       // of selector "main" said no line on the page held the words (SR-9).
-      const elsewhere = !text && at.root !== document.body ? tidyText(document.body).text.split("\n").filter(queryMatch(opts.query)).length : 0;
+      const elsewhere = !text && at.root !== document.body ? tidyText(document.body, opened).text.split("\n").filter(queryMatch(opts.query)).length : 0;
       if (elsewhere) notes.push(`no line in ${opts.selector ? `selector "${opts.selector}"` : "this section"} contains "${opts.query}", but ${elsewhere} line${elsewhere === 1 ? "" : "s"} elsewhere on the page do${elsewhere === 1 ? "es" : ""}: ${opts.selector ? "leave selector out" : 'extract with selector "body"'}`);
       else if (!text) notes.push(`no line on the page contains "${opts.query}" (the page has ${read.text.length} characters of text)`);
     } else if (!text && !opts.selector) {
