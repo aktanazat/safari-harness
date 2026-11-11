@@ -13,9 +13,9 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { closeRetryMs, closeWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
+import { closeRetryMs, closeWindow, daemonWindow, heldSpace, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
-import { alive, currentOwner, currentTask, inTurn, matchesTask, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
+import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
 import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
@@ -45,6 +45,7 @@ import { createVideoTool } from "./video-observation.ts";
 import { inputStateTool } from "./input-state.ts";
 import { PACE_TOOL } from "./pace.ts";
 import { PAGES_TOOL } from "./page-store.ts";
+import { searchPage } from "./search-tabs.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -157,6 +158,36 @@ function webAddress(url: unknown): string {
 export async function openTab(url: string, background = false, group?: string, owned = background, isolated = false): Promise<TabInfo & { space: SpaceNote }> {
   const address = webAddress(url);
   return openIn(group, await spaceWindow(group, undefined, isolated), address, background, owned, isolated);
+}
+
+// The daemon's own window that search tabs open in.
+const SEARCH_GROUP = "web search";
+
+// A tab the daemon holds for a web search engine (search-tabs.ts), opened
+// at url in its own window: no agent's turn end or exit closes it, only 20
+// minutes unused (sweepOnce).
+export async function openSearchTab(url: string): Promise<number> {
+  return runAs(undefined, async () => {
+    const t = await openTab(url, true, SEARCH_GROUP);
+    own(t.id, undefined);
+    const held = harnessTabs.get(t.id);
+    if (held) {
+      held.url = t.url;
+      held.search = true;
+      save();
+    }
+    return t.id;
+  });
+}
+
+// The id now of a tab openSearchTab gave, while the harness holds it as
+// one, listed or made on the extension's current connection: a Safari that
+// started again may give the old id to another tab, even one of the
+// user's (sighted), and a close, unlike one at idle, takes any tab.
+export function heldSearchTab(tab: number): number | undefined {
+  const now = followTab(tab);
+  const t = harnessTabs.get(now);
+  return t?.search === true && !t.closing && !reconnectedSince(t) ? now : undefined;
 }
 
 // The daemon's own pages (mission.ts): an agent's open of one goes in its
@@ -297,8 +328,9 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // failed: its last close by a sweep did not close it; retry: how many of
 // those closes in a row failed or were refused, and when the next may go
 // (sweepOnce); stuck: the last was Safari's own failure to close it, which
-// its agent's calls and turn ends do not end (closeLater).
-type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number };
+// its agent's calls and turn ends do not end (closeLater). search: the
+// daemon's own tab for a web search engine's results (search-tabs.ts).
+type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number; search?: true };
 const harnessTabs = new Map<number, HarnessTab>();
 // the used time the file of tabs holds for each, as last written (save)
 const written = new WeakMap<HarnessTab, number>();
@@ -738,7 +770,7 @@ async function sweepOnce() {
     const handoff = handoffs.get(tab);
     if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
     const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
-    const disposable = !t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined);
+    const disposable = t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined));
     return t.done || exited || (disposable && now - t.used >= IDLE_MS);
   });
   if (due.length === 0) return;
@@ -759,7 +791,14 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Pro
   t.closing = true;
   const link = bridge.extensionInfo?.connectedAt;
   try {
-    const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner));
+    // A search tab holds no one's work, but Google's results page has a
+    // frame the extension cannot read for unsent forms, so an idle close of
+    // one is refused (11-11). One the list shows at its results, and not in
+    // front, closes as a finished tab does; the extension checks any other
+    // as it does an idle one, a tab whose front it cannot tell counting as
+    // the user's (inFront in background.js).
+    const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && shown.url?.startsWith("https://www.google.com/search?") === true;
+    const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner)) || unread;
     const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string } | null;
     if (res?.front) {
       t.used = Date.now();
@@ -825,7 +864,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.ambiguousRestore ? { ambiguousRestore: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.ambiguousRestore ? { ambiguousRestore: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.search ? { search: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -919,11 +958,14 @@ function renumber(tabs: Map<number, number>, kind: "renumbered" | "restored"): v
 // What each harness tab shows, from a list of Safari's tabs. A tab the
 // list lacks, last seen on an earlier connection of the extension, was
 // lost to a Safari that started again; so was one whose id the list gives
-// a tab showing another page, as Safari may hand an old id to another tab.
+// a tab showing another page, or in a window not its own (a search tab's
+// is the daemon's search window), as Safari may hand an old id to another
+// tab.
 function sighted(tabs: TabInfo[]): void {
   const now = bridge.extensionInfo?.connectedAt;
   const listed = new Map(tabs.map((t) => [t.id, t]));
   const owners = ownersByPage(tabs);
+  const searchWindow = daemonWindow(SEARCH_GROUP, tabs);
   let reconnecting = false;
   for (const tab of harnessTabs.values()) {
     if (tab.seen === now) continue;
@@ -960,13 +1002,13 @@ function sighted(tabs: TabInfo[]): void {
     const sameFamily = t.seen !== now && owner?.family === true && owner.task === taskFamily(t.task) &&
       familyOwners?.get(JSON.stringify([t.owner, owner.task, t.url])) === t.task &&
       !legacyTasks?.has(JSON.stringify([t.owner, t.task]));
-    const matchesWindow = owner?.family === true ? sameFamily : owner?.task === t.task;
+    const matchesWindow = t.search === true ? shown?.windowId === searchWindow : owner?.family === true ? sameFamily : owner?.task === t.task;
     if (shown && (t.seen === now || (t.url !== undefined && shown.url === t.url && shown.windowId !== undefined && owner?.owner === t.owner && matchesWindow))) {
       changed ||= t.url !== shown.url || t.seen !== now;
       t.url = shown.url;
       t.seen = now;
       t.unsafe = shown.url !== undefined && resumeAddress(shown.url) === undefined ? true : undefined;
-    } else if (t.seen !== now && t.owner !== undefined && t.url !== undefined && !t.closing) missing.push([id, t]);
+    } else if (t.seen !== now && (t.owner !== undefined || t.search === true) && t.url !== undefined && !t.closing) missing.push([id, t]);
   }
   if (changed) save();
   for (let i = missing.length - 1; i >= 0; i--) {
@@ -975,22 +1017,28 @@ function sighted(tabs: TabInfo[]): void {
     lost(id, false);
     missing.splice(i, 1);
   }
-  if (missing.length > 0) restored(missing, tabs);
+  if (missing.length > 0) restored(missing, tabs, searchWindow);
 }
 
-function restored(lost: [number, HarnessTab][], tabs: TabInfo[]): void {
+function restored(lost: [number, HarnessTab][], tabs: TabInfo[], searchWindow?: number): void {
   const owners = ownersByPage(tabs);
   const markers = [...owners.values()];
   const free = new Map<string, number[]>();
   for (const t of tabs) {
     const owner = t.windowId === undefined ? undefined : owners.get(t.windowId);
-    if (owner?.owner === undefined || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
-    const key = JSON.stringify([owner.owner, owner.task ?? null, owner.family === true ? "family" : "legacy", t.url]);
+    const search = t.windowId !== undefined && t.windowId === searchWindow;
+    if ((owner?.owner === undefined && !search) || t.url === undefined || harnessTabs.has(t.id) || keepers.has(t.id)) continue;
+    const key = JSON.stringify(search ? ["search", t.url] : [owner?.owner, owner?.task ?? null, owner?.family === true ? "family" : "legacy", t.url]);
     free.set(key, [...(free.get(key) ?? []), t.id]);
   }
   const was = new Map<string, number[]>();
   for (const [id, t] of lost) {
     if (t.ambiguousRestore) continue;
+    if (t.search === true) {
+      const key = JSON.stringify(["search", t.url]);
+      was.set(key, [...(was.get(key) ?? []), id]);
+      continue;
+    }
     const legacy = markers.some((marker) => marker.owner === t.owner && marker.task === t.task && marker.family !== true);
     const family = taskFamily(t.task);
     const grouped = markers.some((marker) => marker.owner === t.owner && marker.task === family && marker.family === true);
@@ -3747,6 +3795,13 @@ export const TOOLS: Record<string, Tool> = {
   input_state: inputStateTool(),
   pace: PACE_TOOL,
   pages: PAGES_TOOL,
+  search_page: {
+    desc: "Load a results page of Google or Bing in the daemon's own tab for that engine and read its results (search-tabs.ts, sites/web-search.ts).",
+    params: { url: { type: "string", description: "https://www.google.com/search?q=… or https://www.bing.com/search?q=…" } },
+    required: ["url"],
+    hidden: true,
+    run: (a) => searchPage(str(a.url, "url")),
+  },
   native_preflight: {
     desc: "Check native drag or paste targets without scrolling or sending input.",
     hidden: true,
