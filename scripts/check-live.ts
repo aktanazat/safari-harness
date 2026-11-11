@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
-import { frontApp, inFront } from "../daemon/front.ts";
+import { inFront } from "../daemon/front.ts";
 import { dataFile } from "../daemon/phone.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
@@ -33,6 +33,34 @@ let failed = 0;
 function check(name: string, pass: boolean, detail: unknown) {
   if (!pass) failed++;
   console.log(`${pass ? "PASS" : "FAIL"} ${name}${pass ? "" : `\n     got: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`}`);
+}
+
+// The app in front, with its process. A check that a step left the app in
+// front where it was cannot judge a step during which that app quit: macOS
+// then puts in front the app that was there before it, often Safari. On
+// 11-11 another session's scratch app, quit and opened again every minute
+// or two, failed two such checks; no harness call raised Safari in either
+// run, and the system log has the app's own quit give Safari the front.
+// Such a check is skipped, saying so; one whose app still runs fails.
+type FrontApp = { app?: string; pid?: number };
+async function frontNow(): Promise<FrontApp> {
+  const osa = Bun.spawn(["osascript", "-l", "JavaScript", "-e", 'ObjC.import("AppKit"); const a = $.NSWorkspace.sharedWorkspace.frontmostApplication; a.isNil() ? "{}" : JSON.stringify({ app: a.bundleIdentifier.js, pid: a.processIdentifier })'], { stdout: "pipe", stderr: "ignore" });
+  const r: unknown = JSON.parse(await new Response(osa.stdout).text());
+  return r && typeof r === "object" && "app" in r && typeof r.app === "string" && "pid" in r && typeof r.pid === "number" ? { app: r.app, pid: r.pid } : {};
+}
+// An ended process its parent has not waited for still answers kill(pid, 0).
+const running = (pid: number) => !/^(Z|$)/.test(Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)]).stdout.toString().trim());
+// An app that quits gives up the front a moment before its process ends,
+// so a changed app's process is given 2 s to end.
+async function checkFront(name: string, pass: boolean, before: FrontApp, after: FrontApp, detail: Record<string, unknown> = {}) {
+  if (pass && before.app !== after.app && before.pid !== undefined) {
+    for (let waited = 0; waited < 2000 && running(before.pid); waited += 100) await Bun.sleep(100);
+    if (!running(before.pid)) {
+      console.log(`SKIP ${name}: ${before.app} quit during the step; ${after.app ?? "no app"} is in front now`);
+      return;
+    }
+  }
+  check(name, pass && before.app === after.app, { ...detail, appBefore: before, appAfter: after });
 }
 
 function refOf(snap: string, pattern: RegExp): string {
@@ -837,7 +865,7 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   const snap = await call("snapshot", { tab });
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
   const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
-  const [userApp, textsBefore] = [await frontApp(), alertTexts()];
+  const [userApp, textsBefore] = [await frontNow(), alertTexts()];
   process.env.SAFARI_HARNESS_AWAY = "0";
   try {
     const both = await Promise.all([0, 1].map(() => CALLER_TOOLS.handoff.run({ tab, why: SELF_TEST, ms: 8000 }))) as { done: boolean; joined?: true; challenge?: unknown; waitedMs: number }[];
@@ -846,8 +874,8 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   } finally {
     delete process.env.SAFARI_HARNESS_AWAY;
   }
-  const [nowFront, nowApp] = [((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id, await frontApp()];
-  check("handoff gives back the tab and app the user had in front", nowFront === userFront && nowApp === userApp, { nowFront, userFront, nowApp, userApp });
+  const [nowFront, nowApp] = [((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id, await frontNow()];
+  await checkFront("handoff gives back the tab and app the user had in front", nowFront === userFront, userApp, nowApp, { nowFront, userFront });
   const textsAfter = alertTexts();
   check("handoff with the user at the Mac sends nothing", textsAfter === textsBefore, { textsBefore, textsAfter });
 });
@@ -1006,7 +1034,7 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
   const before = (await call("tabs")).tabs as Tab[];
   const front = before.find((t) => t.front)?.id;
   const shown = before.find((t) => t.shown)?.id;
-  const app = await frontApp();
+  const app = await frontNow();
   await inFront(tab, TAB_OPS, async () => {
     const view = pngSize(await Bun.file((await call("shot", { tab })).path).bytes());
     const one = pngSize(await Bun.file((await call("shot", { tab, ref: "#b" })).path).bytes());
@@ -1018,7 +1046,7 @@ await withPage('<button id=b style="width:200px;height:50px">Shot</button><div s
   const current = (await call("tabs")).tabs as Tab[];
   const after = current.find((t) => t.front)?.id;
   const shownAfter = current.find((t) => t.shown)?.id;
-  check("shots give the user's front tab and app back", shown !== undefined && shownAfter === shown && after === front && (await frontApp()) === app, { front, after, shown, shownAfter, app });
+  await checkFront("shots give the user's front tab and app back", shown !== undefined && shownAfter === shown && after === front, app, await frontNow(), { front, after, shown, shownAfter });
 });
 
 // ---------- real input ----------
@@ -1033,13 +1061,13 @@ await withPage(TRUST, "", async (tab) => {
   const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   await call("click", { tab, ref: "#b" });
   const scripted = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
-  const app = await frontApp();
+  const app = await frontNow();
   const clicked = await CALLER_TOOLS.real_input.run({ tab, do: "click", ref: "#b" });
-  const stayed = await frontApp();
+  const stayed = await frontNow();
   const real = (await call("eval", { tab, expression: "document.getElementById('b').dataset.trusted" })).result;
   check("real_input click is a trusted event where click is not", scripted === "false" && real === "true", { scripted, real });
   const background = !!clicked && typeof clicked === "object" && "background" in clicked && clicked.background === true;
-  check("real_input clicks a tab behind with the app in front left there", background && stayed === app, { clicked, app, stayed });
+  await checkFront("real_input clicks a tab behind with the app in front left there", background, app, stayed, { clicked });
   await CALLER_TOOLS.real_input.run({ tab, do: "type", ref: "#f", text: "abc" });
   await CALLER_TOOLS.real_input.run({ tab, do: "key", key: "Backspace" });
   const typed = (await call("eval", { tab, expression: "document.getElementById('f').value" })).result;
@@ -1216,15 +1244,14 @@ async function agentWithTabs() {
   const { pid, lines } = await agentProgram(`for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 2);
   return { pid, ids: lines.map((line) => openedTab(line)) };
 }
-const appBefore = await frontApp();
+const appBefore = await frontNow();
 const userWindow = ((await call("tabs")).tabs as Placed[]).find((t) => t.front)?.windowId;
 const agents = await Promise.all([agentWithTabs(), agentWithTabs()]);
 try {
   const placed = (await call("tabs")).tabs as Placed[];
   const [wa, wb] = agents.map((a) => [...new Set(a.ids.map((id) => placed.find((t) => t.id === id)?.windowId))]);
   check("each agent's tabs share one window of its own, not the user's", wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { wa, wb, userWindow });
-  const appAfter = await frontApp();
-  check("agent windows open behind the user's app", appAfter === appBefore, { appBefore, appAfter });
+  await checkFront("agent windows open behind the user's app", true, appBefore, await frontNow());
   for (const a of agents) stopProgram(a.pid);
   let left = true;
   for (let waited = 0; left && waited < 20000; waited += 1000) {
@@ -1261,7 +1288,7 @@ async function within(ms: number, done: () => Promise<boolean>) {
   }
   return done();
 }
-const groupApp = await frontApp();
+const groupApp = await frontNow();
 const tasks = await Promise.all([agentWithGroup("check-live-a"), agentWithGroup("check-live-b")]);
 try {
   const names = tasks.map((t) => t.space.name);
@@ -1269,10 +1296,10 @@ try {
   const grouped = await within(120_000, async () => (await spaceRows()).filter((r) => names.includes(r.name) && r.group === "grouped").length === 2);
   if (!grouped) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or groups are off): ${JSON.stringify(await spaceRows())}`);
   else {
-    check("each task's window becomes a tab group of its own, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
+    await checkFront("each task's window becomes a tab group of its own, with the user's front app unchanged", true, groupApp, await frontNow());
     for (const t of tasks) stopProgram(t.pid);
     const gone = await within(120_000, async () => !(await spaceRows()).some((r) => names.includes(r.name)));
-    if (gone) check("a task's tab group goes once its agent exits, with the user's front app unchanged", (await frontApp()) === groupApp, { groupApp });
+    if (gone) await checkFront("a task's tab group goes once its agent exits, with the user's front app unchanged", true, groupApp, await frontNow());
     else console.log(`SKIP tab group delete: not done within 2 min (the user was at the keys): ${JSON.stringify(await spaceRows())}`);
   }
 } finally {
