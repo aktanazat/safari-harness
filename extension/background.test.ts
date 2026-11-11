@@ -115,6 +115,10 @@ class Doc {
   shut = false;
   // What Safari gives as the tab's title while it shows this document.
   title = "";
+  // Safari may carry the report of the copy of content.js put in this
+  // document in late; this one comes as the copy runs its first request,
+  // the order the 11-11 timings point to.
+  late = false;
   does: (op: string, msg: Msg) => unknown = () => ({ url: this.url });
   constructor(readonly url: string, readonly live = true) {}
 }
@@ -207,9 +211,15 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     if (w.__safariHarnessInjected) return;
     const claim = {};
     w.__safariHarnessInjected = claim;
+    const reportIn = () => onMessage.fire({ __safariHarnessReady: 1 }, { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId });
+    let unsaid = report && doc.live && doc.late;
     const answer = async (m: Msg): Promise<Reply> => {
       if (m.op === "ping") return { id: m.id, value: true };
       doc.ran.push(m.op);
+      if (unsaid) {
+        unsaid = false;
+        reportIn();
+      }
       // content.js sends a failure it reports as { error } as an error,
       // with the failure a refusal before any event carries
       const value = await doc.does(m.op, m);
@@ -218,7 +228,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     w.__safariHarnessRun = (m: Msg) => (w.__safariHarnessInjected === claim ? answer(m) : null);
     if (!doc.live) return;
     doc.listeners.push((m) => (m.__safariHarness === 1 && w.__safariHarnessInjected === claim ? answer(m) : undefined));
-    if (report) onMessage.fire({ __safariHarnessReady: 1 }, { tab: { id: tab.id, windowId: tab.window ?? 1 }, frameId });
+    if (report && !doc.late) reportIn();
   }
 
   // The tab loads doc; Safari skips putting the script in some pages.
@@ -488,11 +498,12 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     update(tab: Tab, info: { status?: string; url?: string }) {
       onUpdated.fire(tab.id, info, row(tab));
     },
-    // The page changes and Safari puts its script in, before the tab's new
-    // load is seen.
+    // The page changes, and Safari puts start.js in it, which reports in,
+    // before the tab's new load is seen; in a tab agents work in,
+    // background.js puts content.js in then.
     swap(tab: Tab, doc: Doc) {
       tab.doc = doc;
-      copyIn(tab, doc);
+      startIn(tab, doc);
     },
     // A page request as the daemon sends it (bridge.tab).
     ask(tab: Tab, op: string, args: unknown[] = []): Promise<Answer> {
@@ -830,6 +841,28 @@ test.each(loads)("%s of a page that sends the tab on while it is checked answers
   b.swap(tab, signIn);
   await b.clock.advance(0);
   expect(answer?.value).toMatchObject({ url: signIn.url, title: "Sign in" });
+});
+
+// A page's own script that sends the tab on reaches it as one update,
+// already "complete" (10-06), and the new page reports in before its copy
+// of content.js is in.
+test.each(loads)("%s of a page whose own script sends the tab on asks the page it lands on whether it still loads", async (_tool, load) => {
+  const b = await start();
+  const first = new Doc("https://example.com/redirect");
+  first.does = never;
+  b.serve(first);
+  let answer: Answer | undefined;
+  load(b, first.url).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  const tab = b.showing(first);
+  await b.clock.advance(300);
+  const landed = new Doc("https://example.com/landed");
+  landed.title = "Landed";
+  landed.does = (op) => (op === "loaded" ? { loading: true } : { url: landed.url });
+  b.swap(tab, landed);
+  b.update(tab, { status: "complete", url: landed.url });
+  await b.clock.advance(0);
+  expect(answer?.value).toMatchObject({ url: landed.url, title: "Landed", loading: true });
 });
 
 test.each(loads)("%s follows a load that begins after the loaded reply while it still waits for a title", async (_tool, load) => {
@@ -1540,6 +1573,28 @@ test("an action whose page changes only its address's hash answers with that pag
   await b.clock.advance(0);
   expect(answer?.value).toMatchObject({ ok: true, effect: { added: 3 } });
   expect(tab.doc.ran).toEqual(["click"]);
+});
+
+// 11-11: a back answered in 5 ms with no page (check-live), and the next
+// action reported the page the back went to as its own. The back's page had
+// just loaded, and by the timings the copy of content.js put in it as it
+// reported in reported in itself only as the back ran.
+test("an action whose page's copy of content.js reports in as it runs answers with the page the action led to", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  await b.ask(tab, "tabInfo");
+  const next = new Doc("https://example.org/");
+  next.late = true;
+  next.does = (op) => (op === "history" ? { ok: true, expect: "script" } : { url: next.url });
+  b.update(tab, { status: "loading", url: next.url });
+  await b.report(tab, next);
+  b.update(tab, { status: "complete" });
+  let answer: Answer | undefined;
+  b.ask(tab, "history", ["back"]).then((a) => { answer = a; });
+  await b.clock.advance(100);
+  b.navigate(tab, new Doc("https://example.com/"));
+  await b.clock.advance(0);
+  expect(answer?.value).toEqual({ ok: true, navigated: { url: "https://example.com/", title: "" } });
 });
 
 // What a page's origin keeps, as the page's own script sees it.

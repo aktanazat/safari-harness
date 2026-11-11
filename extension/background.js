@@ -610,20 +610,24 @@ async function act(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = null)
 }
 
 // Calls fn when the frame's document gives way to another: Safari's tab
-// update "loading", or the new document's script reporting in (content.js).
-// A page's own script that sends the tab on (location.href, location.replace)
+// update "loading", or the new document's start.js reporting in. A page's
+// own script that sends the tab on (location.href, location.replace)
 // reaches the tab as one update already "complete", with no "loading", the
-// same update a change of the address's hash makes; only the new copy of
-// the script tells the two apart. On 10-06 a wait sent to a page that did
-// so never answered: the new page had what it waited for.
+// same update a change of the address's hash makes; only the new
+// document's report tells the two apart. On 10-06 a wait sent to a page
+// that did so never answered: the new page had what it waited for. A copy
+// of content.js reports in too, but each goes into a document already
+// there (putContent, ensureContent), and its word may come while a request
+// it took runs: on 11-11 a back so cut short answered with no page, and the
+// next action reported the page the back went to as its own.
 function onNewDocument(tabId, frameId, fn) {
   const onNav = (id, info) => { if (id === tabId && info.status === "loading") fn(); };
-  const onReady = (m, sender) => { if (m && m.__safariHarnessReady === 1 && sender.tab?.id === tabId && (sender.frameId || 0) === frameId) fn(); };
+  const onStart = (m, sender) => { if (m && m.__safariHarnessStart === 1 && sender.tab?.id === tabId && (sender.frameId || 0) === frameId) fn(); };
   api.tabs.onUpdated.addListener(onNav);
-  api.runtime.onMessage.addListener(onReady);
+  api.runtime.onMessage.addListener(onStart);
   return () => {
     api.tabs.onUpdated.removeListener(onNav);
-    api.runtime.onMessage.removeListener(onReady);
+    api.runtime.onMessage.removeListener(onStart);
   };
 }
 
@@ -2380,19 +2384,22 @@ async function contentIn(tabId) {
 // gets none, and is told to drop its request log. A top page that got none
 // makes the tab ready. A tab the harness owns gets its dialog policy back
 // at once, so dialogs.js answers the page's dialogs before content.js is
-// in.
+// in. From a top page's report on, the tab's requests wait for its copy,
+// the reads that decide whether it gets one included, and a read Safari
+// refuses fails none of them: that report tells a pending request its page
+// is new (onNewDocument), and the request asked again would otherwise
+// reach the page before its copy.
 api.runtime.onMessage.addListener((m, sender) => {
   if (!m || m.__safariHarnessStart !== 1 || !sender.tab) return;
   const tabId = sender.tab.id;
   const frameId = sender.frameId || 0;
-  return Promise.all([policyOf(tabId), drivenRead, recRead]).then(([dialogs]) => {
+  const decided = Promise.all([policyOf(tabId), drivenRead, recRead]).then(([dialogs]) => {
     const content = dialogs !== null || drivenTabs.has(tabId) || (frameId === 0 && recTabs.has(tabId));
-    if (content) {
-      const copy = putContent(tabId, { frameIds: [frameId] }, PING_MS);
-      if (frameId === 0) goingIn(tabId, copy);
-    } else if (frameId === 0) markReady(tabId);
-    return { content, dialogs, tab: tabId, window: sender.tab.windowId };
+    if (!content && frameId === 0) markReady(tabId);
+    return { content, dialogs, copy: content ? putContent(tabId, { frameIds: [frameId] }, PING_MS) : null };
   });
+  if (frameId === 0) goingIn(tabId, decided.then(({ copy }) => copy, () => {}));
+  return decided.then(({ content, dialogs }) => ({ content, dialogs, tab: tabId, window: sender.tab.windowId }));
 });
 
 // ---------- tabs that change id, and popups ----------
