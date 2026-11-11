@@ -488,3 +488,24 @@ test("an exited agent's group is left to the user after three failed deletes fro
   expect(Object.keys(readQueue())).toEqual(["live (agent 6)"]);
   expect(logged.at(-2)).toStartWith("left old (agent 5) to the user: its agent exited, its window is gone, and 3 deletes from a window opened for it failed");
 });
+
+// 11-08: a group named agent 3910, left in his sidebar, kept each later
+// window of that name waiting, and the keeper tried them again every 3 s,
+// a keeper.log line each time: 935 in what it kept.
+test("a window named like a tab group already in the sidebar stays plain with its sidebar hidden, said once, and is not tried again", async () => {
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "group", name: TRIP }, { kind: "tab" }, { kind: "tab" }]);
+  const space = { ...waiting };
+  const { d: answers, told } = daemon([]);
+  // as the daemon: a plain window is listed no more
+  const d: Daemon = async (op, a = {}) => {
+    if (op === "state") return { connected: true, spaces: space.group === "plain" ? [] : [space] };
+    if (op === "making" || op === "waiting" || op === "plain" || op === "grouped") space.group = op;
+    return answers(op, a);
+  };
+  const given: Given = new Map();
+  const logged: string[] = [];
+  for (let i = 0; i < 3; i++) await pass(h, d, given, (l) => logged.push(l));
+  expect([groups(), s.menus, s.sidebar, readQueue()]).toEqual([[TRIP], 0, false, {}]);
+  expect(told).toEqual([{ op: "making", name: TRIP }, { op: "plain", name: TRIP, why: expect.stringContaining(`a tab group named ${TRIP} is already in the sidebar`) }]);
+  expect(logged).toEqual([expect.stringContaining(`making ${TRIP}: a tab group named ${TRIP} is already in the sidebar`)]);
+});

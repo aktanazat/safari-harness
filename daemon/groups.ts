@@ -268,7 +268,10 @@ export async function deleteGroup(h: Helper, window: number, name: string): Prom
 
 // Makes all of window's own tabs a new tab group named name, which the
 // window then shows, with its sidebar hidden. A group of that name already
-// there (a task's last one, still to be deleted) makes it wait.
+// there is none the harness will delete, as no window gets a name the
+// queue or another window holds (spaces.ts), so the window stays plain:
+// waiting on one left in his sidebar, agent 3910's windows were tried
+// every 3 s, 935 times in what keeper.log kept of 11-08.
 export async function makeGroup(h: Helper, window: number, name: string): Promise<Outcome> {
   const start = await check(h);
   if ("done" in start) return start;
@@ -281,7 +284,10 @@ export async function makeGroup(h: Helper, window: number, name: string): Promis
   if (!shown.ok) return stop(shown.error ?? "the sidebar did not show");
   const rows = await readRows(h, window);
   if (!Array.isArray(rows)) return rows;
-  if (rows.some((r) => r.kind === "group" && r.name === name)) return later(`a tab group named ${name} is still there`);
+  if (rows.some((r) => r.kind === "group" && r.name === name)) {
+    await h("sidebar", { window, show: false });
+    return stop(`a tab group named ${name} is already in the sidebar, and the harness will not delete it (rename or delete it in Safari to free the name)`);
+  }
   const isLocal = (r: Row) => r.kind === "local";
   const unselected = await selectAlone(h, window, isLocal, "the window's own tabs");
   if (unselected) return unselected;
