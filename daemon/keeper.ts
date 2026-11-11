@@ -68,8 +68,9 @@ async function windowOf(h: Helper, s: { width: number; height: number; tabs?: nu
 // Safari in front after it is the step's doing, unless someone else
 // brought it forward meanwhile: the user (the step posts no keys or mouse,
 // so he touched them), or an agent's call for him (activate, a handoff).
-// Then it stays in front for him. deletes: whether the flag it raises then
-// stops deletes too, or makes only.
+// Then it stays in front for him. Nor is it when his app quit meanwhile,
+// its own quit giving Safari the front (11-11). deletes: whether the flag
+// it raises then stops deletes too, or makes only.
 async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () => Promise<Outcome>, deletes = true): Promise<Outcome> {
   const since = Date.now();
   const before = (await h("gate")) as Answer & Gate;
@@ -80,11 +81,26 @@ async function step(h: Helper, daemon: Daemon, what: string, log: Log, run: () =
   if (after.idleMs <= Date.now() - since) return outcome;
   const raised = (await daemon("raised")) as { at: number };
   if (raised.at >= since - RAISE_MS) return outcome;
+  if (await ended(before.frontPid)) {
+    log(`${what}: ${before.front} quit meanwhile`);
+    return outcome;
+  }
   turnOff(`Safari came to the front while ${what}`, deletes);
   spawnSync(INPUT, ["activate", before.front]);
   // A step done stays done: on 10-22 agent 42229's group, deleted, was
   // left queued as if it were still there.
   return outcome.done ? outcome : { ...outcome, ...stop(groupsOff()!) };
+}
+
+// An app that quits gives up the front about 30 ms before its process
+// ends (11-11), so the process is given 500 ms to end; a real steal waits
+// that long for its flag. An ended process its parent has not waited for
+// still answers kill(pid, 0), so ps reads its state.
+async function ended(pid: number): Promise<boolean> {
+  if (!pid) return false;
+  const gone = () => /^(Z|$)/.test(spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim());
+  for (let waited = 0; waited < 500 && !gone(); waited += 50) await Bun.sleep(50);
+  return gone();
 }
 
 // A waiting window becomes its task's group. The daemon holds the window

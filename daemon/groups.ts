@@ -37,7 +37,7 @@ import { createInterface } from "node:readline";
 
 export type Answer = Record<string, unknown> & { ok: boolean; error?: string; closed?: boolean };
 export type Helper = (op: string, args?: Record<string, unknown>) => Promise<Answer>;
-export type Gate = { idleMs: number; locked: boolean; front: string; safariActive: boolean; trusted: boolean };
+export type Gate = { idleMs: number; locked: boolean; front: string; frontPid: number; safariActive: boolean; trusted: boolean };
 type Row = { kind: string; name?: string; selected: boolean };
 type Item = { id: string; title: string; enabled: boolean };
 type Sheet = { text: string[]; buttons: string[] };

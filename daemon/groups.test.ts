@@ -30,6 +30,7 @@ function safari(rows: Row[]) {
     tabs: 2,
     idleMs: 60_000,
     front: "com.mitchellh.ghostty",
+    frontPid: process.pid,
     sidebar: false,
     shown: "",
     menus: 0,
@@ -47,7 +48,7 @@ function safari(rows: Row[]) {
     s.on[op]?.();
     switch (op) {
       case "gate":
-        return ok({ idleMs: s.idleMs, locked: false, front: s.front, safariActive: false, trusted: true });
+        return ok({ idleMs: s.idleMs, locked: false, front: s.front, frontPid: s.frontPid, safariActive: false, trusted: true });
       case "find":
         return a.width === 1003 && a.height === 781 ? ok({ window: 7 }) : { ok: false, error: "no Safari window is that size" };
       case "state":
@@ -366,6 +367,24 @@ test("a delete that worked while Safari came forward turns group work off, and t
   const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
   await pass(h, d, new Map(), quiet);
   expect([groups(), readQueue(), groupsOff()]).toEqual([["Work"], {}, expect.stringContaining("Safari came to the front")]);
+});
+
+// 11-11: the app in front, a scratch app another session quit and opened
+// again every minute or two, quit during steps; its own quit gave Safari
+// the front.
+test("a delete during which his app quit, giving Safari the front, leaves group work on", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }, { kind: "group", name: "Work" }]);
+  s.tabs = 1;
+  const app = Bun.spawn(["sleep", "60"]);
+  s.frontPid = app.pid;
+  s.on.press = () => {
+    app.kill();
+    s.front = "com.apple.Safari";
+  };
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), readQueue(), groupsOff()]).toEqual([["Work"], {}, undefined]);
 });
 
 // 10-30: with group work off for a day after a make left its group, ended
