@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // A model reads a pull request page four times through a stand-in
-// extension, in a process whose HOME is a temp directory. The page shows
-// the checks its own JSON request got, and each read is a load of it that
-// asks for them only after the read, as GitHub did on 11-11. The run
+// extension, in a process whose HOME is a temp directory. Each read is a
+// load of the page, which asks for its checks with its own JSON request and
+// shows them only after the read, as GitHub did on 11-11. The run
 // follows the third read's hint to request_catalog try and the save call
 // try answers, then reads once more.
 const home = mkdtempSync(join(tmpdir(), "scrape-offers-test-"));
@@ -29,10 +29,11 @@ const script = `
       { displayName: "Claude Code Review", description: "Code review in progress" },
     ],
   });
-  const shown = '- heading "Checks"\\n- link "buildkite/bun" [1]\\n- text "Build #140103 started"\\n- link "Claude Code Review" [2]\\n- text "Code review in progress"';
-  // The page asks for its checks 500 ms after each load, on the clock: the
-  // daemon's looks and deadlines run on real timers in this process, which
-  // no fake clock here drives.
+  const loading = '- heading "Checks"';
+  const drawn = "Checks\\nbuildkite/bun\\nBuild #140103 started\\nClaude Code Review\\nCode review in progress";
+  // The page asks for its checks 500 ms after each load and shows them 100
+  // ms later, on the clock: the daemon's looks and deadlines run on real
+  // timers in this process, which no fake clock here drives.
   let load = loaded;
   const asks = 500;
   const requests = (origin, path) => [
@@ -50,11 +51,11 @@ const script = `
     if (op !== "relay") return { ok: true };
     const tab = tabs.get(Number(args[0]));
     const { origin, pathname } = new URL(tab.url);
-    if (args[1] === "snapshot") { load = Date.now(); return { url: tab.url, title: "Checks", nodes: 5, truncated: false, snapshot: shown, documentId: "load-" + ++documents }; }
+    if (args[1] === "snapshot") { load = Date.now(); return { url: tab.url, title: "Checks", nodes: 1, truncated: false, snapshot: loading, documentId: "load-" + ++documents }; }
     if (args[1] === "netRead") return { entries: requests(origin, pathname) };
     if (args[1] === "netBody") return args[2][0].url.endsWith("/status_checks") ? { text: checks, truncated: false, arriving: false } : { text: '{"mode":"global"}', truncated: false, arriving: false };
     if (args[1] === "tabInfo") return { url: tab.url };
-    if (args[1] === "eval") return { ok: true, result: { url: tab.url, ready: "complete", timeOrigin: loaded } };
+    if (args[1] === "eval") return { ok: true, result: { url: tab.url, ready: "complete", timeOrigin: loaded, text: Date.now() >= load + asks + 100 ? drawn : "Checks" } };
     if (args[1] === "fetch") return { status: 200, url: args[2][0], type: "application/json; charset=utf-8", text: checks, truncated: false };
     return { ok: true, url: tab.url };
   };
@@ -115,7 +116,7 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
-test("a page read again is offered its own JSON request on the third read, though it asks for it after each read, and only then", () => {
+test("a page read again is offered its own JSON request on the third read, though it asks for and shows that data after each read, and only then", () => {
   expect(result.hints.map((hint) => hint !== null)).toEqual([false, false, true, false]);
   expect(result.step).toMatchObject({ do: "try", tab: result.tab, request: 1, field: "statusChecks", type: "array" });
 });

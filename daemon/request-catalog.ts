@@ -247,8 +247,6 @@ function onPage(page: string, words: Map<string, number[]>, text: string): boole
   return false;
 }
 
-export type ShownFields = (body: string) => { field: string; type: "array" | "object"; shown: number; chars: number }[];
-
 // The fields of a page's own JSON response that hold what the page shows:
 // each object and array below the root that save would accept as a field
 // (no index in its path, no key with a dot, which a path cannot name), with
@@ -256,7 +254,7 @@ export type ShownFields = (body: string) => { field: string; type: "array" | "ob
 // length as JSON, most texts first, and of two that hold as many the deeper.
 // A root array has no field that holds every row, so it gives none. The
 // page is read once for all the bodies looked at against it.
-export function fieldsShownOn(page: string): ShownFields {
+export function fieldsShownOn(page: string): (body: string) => { field: string; type: "array" | "object"; shown: number; chars: number }[] {
   const text = folded(page);
   const words = wordsAt(text);
   const shows = new Map<string, boolean>();

@@ -29,7 +29,7 @@ import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.t
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
-import { endpointOf, fieldsShownOn, savedAs, type ShownFields } from "./request-catalog.ts";
+import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { afterStep, checkpoint, refill } from "./drafts.ts";
@@ -3260,14 +3260,17 @@ async function scrapeOffer(tool: string, a: Record<string, unknown>, page: unkno
 // request and 0.062 s on Apple's docs; an extension that stops answering
 // holds each relay to its 30 s timeout, which a read does not wait out.
 const OFFER_MS = 1_000;
-// A page read as its load ends may not have asked for its data yet: on
-// 11-11 a GitHub pull request asked for its checks about 0.5 to 0.8 s after
-// goto answered, and a snapshot's look at 0.3 s found nothing, so in a loop
-// of goto and snapshot reads 3 and 4 offered nothing and read 5 only
-// readers. The second look does not wait for the page to go quiet: a wait
-// started on a page ends the one already waiting there (waitFor in
-// content.js), which may be the agent's own.
-const LATE_MS = 1_000;
+// A page read as its load ends may not have asked for its data yet, nor
+// drawn it: on 11-11, after goto answered, three GitHub pull requests asked
+// for their checks within 0.25 to 0.58 s and showed them within 0.61 to
+// 1.22 s (12 loads), so in a loop of goto and snapshot no read showed the
+// checks and the offer had nothing to match them to. The look after the
+// read matches against the page as it is then. It does not wait for the
+// page to go quiet: a wait started on a page ends the one already waiting
+// there (waitFor in content.js), which may be the agent's own.
+const LATE_MS = 1_500;
+// The page's address and text when the look after a read runs.
+const PAGE_NOW = "({ url: location.href, text: document.body?.innerText ?? '' })";
 
 function scrapesOf(kind: string): string {
   return `this task keeps reading ${kind.replace(/^https?:\/\//, "").slice(0, 100)} pages`;
@@ -3276,42 +3279,49 @@ function scrapesOf(kind: string): string {
 // The JSON request of its own a page read again got the most of its texts
 // from: of the requests request_catalog accepts (readerOffers), the latest
 // 12 whose whole bodies the page keeps, each through its field with the
-// most texts the page shows that is no longer than the page's read, or
-// failing one its field with the most, and one with 2 texts or more. On
-// 11-11 Apple's SwiftUI Text page read as 21,738 characters, while the
-// references field of its text.json held 61,152 and primaryContentSections
-// the article in 14,213. Only in a tab of this task's, which try and run
-// need. The request goes by its number in net read: its path and field
-// names are the page's own words, kept to the step's JSON. A kind's first
-// look (late) that finds none looks once more LATE_MS later.
+// most texts the page shows that is no longer than the page, or failing one
+// its field with the most, and one with 2 texts or more. On 11-11 Apple's
+// SwiftUI Text page read as 21,738 characters, while the references field
+// of its text.json held 61,152 and primaryContentSections the article in
+// 14,213. Only in a tab of this task's, which try and run need. The request
+// goes by its number in net read: its path and field names are the page's
+// own words, kept to the step's JSON. A kind's first look (late) that finds
+// none looks once more LATE_MS later, against the read and what the page
+// shows then, the longer of the two its length, or against the read alone
+// on a page that refuses an eval.
 async function pageRequestRoute(tab: number, page: string, shown: string, late: boolean): Promise<string | undefined> {
   const held = harnessTabs.get(tab);
   if (!held || !matchesTask(held, currentOwner(), currentTask())) return undefined;
-  let fieldsOf: ShownFields | undefined;
-  const look = async () => {
+  const look = async (text: string, size: number) => {
     const { entries } = (await relay(tab, "netRead")) as { entries: NetEntry[] };
     const offers = readerOffers(entries, page).slice(-12);
     if (!offers.length) return undefined;
-    const fieldsOn = (fieldsOf ??= fieldsShownOn(shown));
+    const fieldsOf = fieldsShownOn(text);
     const found = await Promise.all(offers.map(async ({ request }) => {
       const e = entries[request]!;
       const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame).catch(() => undefined)) as { text?: string; truncated?: boolean; arriving?: boolean } | undefined;
-      const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOn(kept.text);
+      const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOf(kept.text);
       const most = fields[0];
-      return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= shown.length) ?? most };
+      return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= size) ?? most };
     }));
     const best = found.reduce((top, fields, i) => ((fields?.pick.shown ?? 0) > (found[top]?.pick.shown ?? 1) ? i : top), -1);
     const chosen = found[best];
-    return chosen === undefined ? undefined : { ...offers[best]!, ...chosen };
+    return chosen === undefined ? undefined : { ...offers[best]!, ...chosen, size };
   };
-  const chosen = (await look()) ?? (late ? await Bun.sleep(LATE_MS).then(look) : undefined);
+  const later = async () => {
+    await Bun.sleep(LATE_MS);
+    const now = ((await relay(tab, "eval", [PAGE_NOW]).catch(() => undefined)) as { result?: { url?: unknown; text?: unknown } } | undefined)?.result;
+    if (typeof now?.url !== "string" || typeof now.text !== "string") return look(shown, shown.length);
+    return now.url === page ? look(`${shown}\n${now.text}`, Math.max(shown.length, now.text.length)) : undefined;
+  };
+  const chosen = (await look(shown, shown.length)) ?? (late ? await later() : undefined);
   if (chosen === undefined) return undefined;
-  const { request, observedAt, path, most, pick } = chosen;
+  const { request, observedAt, path, most, pick, size } = chosen;
   const saved = savedAs(new URL(path, page).href);
   const step = saved === undefined ? { do: "try", tab, request, observedAt, field: pick.field, type: pick.type } : { do: "run", tab, name: saved };
   const run = `run ${JSON.stringify({ steps: [{ tool: "request_catalog", args: step }] })}`;
   if (saved !== undefined) return `the page got its data from its own JSON request ${request} in net read, which request_catalog has saved: ${run} reads it without loading the page`;
-  return `the page got its data from its own JSON request ${request} in net read: a field of it holds ${pick.shown} of the texts the page shows, in ${pick.chars} characters against ${shown.length} for the page`
+  return `the page got its data from its own JSON request ${request} in net read: a field of it holds ${pick.shown} of the texts the page shows, in ${pick.chars} characters against ${size} for the page`
     + `${most !== pick ? ` (another holds ${most.shown}, in ${most.chars})` : ""}. ${run} reads that field once without loading the page, and its answer is the one call that saves it`;
 }
 
