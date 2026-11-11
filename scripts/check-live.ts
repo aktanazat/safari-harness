@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { inFront } from "../daemon/front.ts";
+import { groupsOff } from "../daemon/groups.ts";
 import { dataFile } from "../daemon/phone.ts";
 
 const HTTP = "http://127.0.0.1:37334/rpc";
@@ -1237,10 +1238,12 @@ try {
 // Two agents, each a program that opens two background tabs through the CLI
 // and then keeps running: each pair lands in one window of that agent's own,
 // never the user's, while the app he has in front stays in front. Once an
-// agent exits, its tabs close and its window with them.
+// agent exits, its tabs close and its window with them. Without --new, an
+// agent's open on a site it has a tab on loads in that tab (since 10-05),
+// and both opens here got one tab.
 type Placed = { id: number; windowId?: number; front?: boolean };
 async function agentWithTabs() {
-  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--json"];
+  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--json", "--new"];
   const { pid, lines } = await agentProgram(`for (let i = 0; i < 2; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 2);
   return { pid, ids: lines.map((line) => openedTab(line)) };
 }
@@ -1250,7 +1253,7 @@ const agents = await Promise.all([agentWithTabs(), agentWithTabs()]);
 try {
   const placed = (await call("tabs")).tabs as Placed[];
   const [wa, wb] = agents.map((a) => [...new Set(a.ids.map((id) => placed.find((t) => t.id === id)?.windowId))]);
-  check("each agent's tabs share one window of its own, not the user's", wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { wa, wb, userWindow });
+  check("each agent's tabs share one window of its own, not the user's", agents.every((a) => new Set(a.ids).size === 2) && wa.length === 1 && wb.length === 1 && wa[0] !== undefined && wa[0] !== wb[0] && ![wa[0], wb[0]].includes(userWindow), { ids: agents.map((a) => a.ids), wa, wb, userWindow });
   await checkFront("agent windows open behind the user's app", true, appBefore, await frontNow());
   for (const a of agents) stopProgram(a.pid);
   let left = true;
@@ -1265,21 +1268,27 @@ try {
 
 // ---------- each task's own tab group ----------
 
-// Two agents, each a program that opens a background tab for a task through
-// the CLI and keeps running: once the user has left the keyboard and mouse
-// alone 30 s, each window becomes a Safari tab group named for its task,
-// and the app he has in front never changes. Once an agent exits, its group
-// goes. While he works the groups wait, and the check says so, not failing.
+// Two agents, each a program that opens three background tabs for a task
+// through the CLI and keeps running: once the user has left the keyboard
+// and mouse alone 30 s, each window becomes a Safari tab group named for
+// its task, and the app he has in front never changes. Once an agent exits,
+// its group goes. While he works the groups wait, and the check says so,
+// not failing. A window is the keeper's only once it holds three of its
+// agent's tabs (GROUP_AT in spaces.ts, since 10-07); with one tab, this
+// check skipped every run from then to 11-11, so a window never offered to
+// the keeper now fails it.
 type SpaceRow = { name: string; group: string; ended: boolean };
 async function agentWithGroup(task: string) {
-  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--group", task, "--json"];
-  const { pid, lines } = await agentProgram(`process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 1);
+  const argv = [process.execPath, CLI, "open", HOME, "--bg", "--group", task, "--json", "--new"];
+  const { pid, lines } = await agentProgram(`for (let i = 0; i < 3; i++) process.stdout.write(Bun.spawnSync(${JSON.stringify(argv)}).stdout.toString().trim() + "\\n"); await Bun.sleep(600000);`, 3);
+  for (const line of lines) openedTab(line);
   const opened: unknown = lines[0]?.startsWith("{") ? JSON.parse(lines[0]) : null;
   const space = opened && typeof opened === "object" && "space" in opened ? opened.space : null;
   if (!space || typeof space !== "object" || !("name" in space) || typeof space.name !== "string" || !("group" in space) || typeof space.group !== "string") throw new Error(`safari open --group failed: ${lines[0]}`);
-  return { pid, space: { name: space.name, group: space.group } };
+  return { pid, space: { name: space.name, group: space.group, why: "why" in space && typeof space.why === "string" ? space.why : undefined } };
 }
-const spaceRows = async () => ((await call("space", { op: "state" })) as { spaces: SpaceRow[] }).spaces;
+const spaceState = async () => (await call("space", { op: "state" })) as { connected: boolean; spaces: SpaceRow[] };
+const spaceRows = async () => (await spaceState()).spaces;
 // Whether done comes true within ms, looked at once a second.
 async function within(ms: number, done: () => Promise<boolean>) {
   for (let waited = 0; waited < ms; waited += 1000) {
@@ -1293,9 +1302,27 @@ const tasks = await Promise.all([agentWithGroup("check-live-a"), agentWithGroup(
 try {
   const names = tasks.map((t) => t.space.name);
   check("each agent's window is named for its task", tasks.every((t) => t.space.name.startsWith("check-live-")) && names[0] !== names[1], tasks.map((t) => t.space));
-  const grouped = await within(120_000, async () => (await spaceRows()).filter((r) => names.includes(r.name) && r.group === "grouped").length === 2);
-  if (!grouped) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or groups are off): ${JSON.stringify(await spaceRows())}`);
-  else {
+  const off = tasks.find((t) => t.space.group === "plain")?.space.why;
+  // The state lists no window the keeper refused and made plain (its gate
+  // failed: no Accessibility, or no scripts/spaces; or a make stopped, as
+  // keeper.log says), and a state whose tab listing failed lists no waiting
+  // one, so only a connected state says which are still the keeper's.
+  const offered = new Set<string>();
+  let listed = new Set<string>();
+  const grouped = off === undefined && (await within(120_000, async () => {
+    const state = await spaceState();
+    const rows = state.spaces.filter((r) => names.includes(r.name));
+    for (const r of rows) offered.add(r.name);
+    if (state.connected) listed = new Set(rows.map((r) => r.name));
+    return rows.filter((r) => r.group === "grouped").length === 2;
+  }));
+  const offNow = grouped ? undefined : (off ?? groupsOff());
+  if (offNow !== undefined) console.log(`SKIP tab groups: ${offNow}`);
+  else if (!grouped) {
+    const kept = names.every((n) => listed.has(n));
+    check("each task's window of three tabs is offered to the keeper, which keeps it till its group is made", kept, { offered: [...offered], listed: [...listed], names });
+    if (kept) console.log(`SKIP tab groups: none made within 2 min (the user was at the keys, or keeper.log says why): ${JSON.stringify(await spaceRows())}`);
+  } else {
     await checkFront("each task's window becomes a tab group of its own, with the user's front app unchanged", true, groupApp, await frontNow());
     for (const t of tasks) stopProgram(t.pid);
     const gone = await within(120_000, async () => !(await spaceRows()).some((r) => names.includes(r.name)));
