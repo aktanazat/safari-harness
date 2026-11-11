@@ -2141,14 +2141,16 @@ async function inFront(tabId) {
 // Safari gives every tab and window a new id when the extension reloads (a
 // deploy, or the daemon's reload in connect), and agents and the daemon
 // still hold the old ones. Each page keeps the ids its tab and window had
-// when it reported in (content.js), in the extension's own world, which
-// outlives the reload. The extension reads those marks once it is reloaded,
-// or at the first request for a tab or window Safari no longer knows: each
-// old id maps to the new id, and the marks become the new ids for the next
-// reload. The maps live in storage.local, which outlives a reload too; an
-// alias goes with its tab. On a Mac nearly out of memory Safari refuses
-// every write there ("Disk I/O error", 10-20 and 10-21) until it is quit:
-// the ids still reach the daemon, and are only not kept for the next reload.
+// when it reported in (start.js, or content.js), in the extension's own
+// world, which outlives the reload; Safari runs start.js again in each page
+// as it reloads the extension, and that run keeps them. The extension reads
+// those marks once it is reloaded, or at the first request for a tab or
+// window Safari no longer knows: each old id maps to the new id, and the
+// marks become the new ids for the next reload. The maps live in
+// storage.local, which outlives a reload too; an alias goes with its tab.
+// On a Mac nearly out of memory Safari refuses every write there ("Disk I/O
+// error", 10-20 and 10-21) until it is quit: the ids still reach the daemon,
+// and are only not kept for the next reload.
 // The daemon is told each old tab id's new one (sendIds), so what it keeps
 // per tab, and the ids agents hold, follow their tabs. What is kept here in
 // session storage (the tabs the harness owns, and those it drives) does
