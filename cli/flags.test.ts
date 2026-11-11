@@ -124,3 +124,21 @@ test("pdf read with a url, as a flag or a word, asks for that address's text and
   expect(await safari(["pdf", "read", url])).toEqual({ err: "", code: 0 });
   expect(calls).toEqual([{ tool: "pdf", args: { do: "read", url } }, { tool: "pdf", args: { do: "read", url } }]);
 });
+
+// From 10-05 to 11-11 open's --new took the word after it as its value:
+// `safari open <url> --bg --new --group trip` opened a tab in no window for
+// trip. Other tools' flags that take no value did the same, however they
+// were written: `close --confirm --window 3` closed no window.
+test("a tool's flag that takes no value leaves the flag or word after it to the command", async () => {
+  calls.length = 0;
+  expect(await safari(["open", "https://example.com/", "--bg", "--new", "--group", "trip"])).toEqual({ err: "", code: 0 });
+  expect(await safari(["close", "--confirm", "--window", "3"])).toEqual({ err: "", code: 0 });
+  expect(await safari(["map", "--what", "snapshot", "--every-address", "https://a.example/", "https://b.example/"])).toEqual({ err: "note: used --everyAddress for --every-address", code: 0 });
+  expect(await safari(["call", "close", "--confirm", '{"tab":7}'])).toEqual({ err: "", code: 0 });
+  expect(calls.filter((c) => ["open", "close", "map"].includes(c.tool))).toEqual([
+    { tool: "open", args: { url: "https://example.com/", background: true, new: true, group: "trip" } },
+    { tool: "close", args: { window: 3, confirm: true } },
+    { tool: "map", args: { urls: ["https://a.example/", "https://b.example/"], what: "snapshot", everyAddress: true } },
+    { tool: "close", args: { tab: 7, confirm: true } },
+  ]);
+});

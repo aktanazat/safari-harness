@@ -443,6 +443,8 @@ function toolDef(cmd: string): Tool | undefined {
   return name === undefined ? undefined : TOOLS[name] ?? CALLER_TOOLS[name];
 }
 
+const toolsOf = (tool: string): Record<string, Tool> => (Object.hasOwn(TOOLS, tool) ? TOOLS : CALLER_TOOLS);
+
 // Flags every command takes, and those a command reads beside its tool's
 // parameters (open --bg, snapshot --max).
 const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet"];
@@ -465,11 +467,11 @@ const PATH_PARAMS: Record<string, string[]> = { shot: ["out"], shots: ["out"], r
 // tool nor the command takes fails, naming those they do: learn --note
 // once dropped the fact it carried, and the command still went through.
 function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unknown> {
-  const tools = Object.hasOwn(TOOLS, tool) ? TOOLS : CALLER_TOOLS;
+  const tools = toolsOf(tool);
   const own = COMMAND_FLAGS[cmd] ?? [];
   const args: Record<string, unknown> = {};
   for (const [i, a] of argv.entries()) {
-    if (!a.startsWith("--") || isFlagValue(i, argv)) continue;
+    if (!a.startsWith("--") || isFlagValue(i, argv, tool)) continue;
     const eq = a.indexOf("=");
     const given = a.slice(2, eq < 0 ? undefined : eq);
     if (COMMON_FLAGS.includes(given) || own.includes(given)) continue;
@@ -1000,7 +1002,8 @@ async function main() {
     return;
   }
 
-  const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
+  const named = toolName(cmd === "call" ? (rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) ?? "") : cmd);
+  const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest, named));
   // A command's words are words, not its call's JSON: on 09-30 an agent
   // wrote `safari dialog --tab front '{"do":"read"}'`, which sent the whole
   // object as do, and open, snapshot, and goto failed on theirs with errors
@@ -1236,9 +1239,15 @@ async function main() {
 // ..." and failed at its second word.
 const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true, snapshot: true, approved: true, clipboard: true, diff: true, updates: true, ifChanged: true, includeValues: true, page: true, annotate: true, full: true, live: true, tiles: true, history: true, json: true, list: true, bitwarden: true, save: true, all: true, quiet: true, changed: true, showHidden: true, base64: true, front: true, dry: true, scheduled: true, background: true, raw: true, id: true, fresh: true };
 
-function isFlagValue(i: number, argv: string[]): boolean {
+// So is a boolean parameter of the command's tool, however it is written,
+// as flagArgs reads it: left off the list above, open's --new took the word
+// after it as its value from 10-05 to 11-11, and `open <url> --new --group
+// trip` opened no window for trip. Only that tool's: open's site is a
+// boolean, and passwords' a site's name.
+function isFlagValue(i: number, argv: string[], tool?: string): boolean {
   const prev = argv[i - 1];
-  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && (!Object.hasOwn(BOOLEAN_FLAGS, prev.slice(2)) || argv[i] === "true" || argv[i] === "false")) || isSavePath(i, argv));
+  const bare = (name: string) => Object.hasOwn(BOOLEAN_FLAGS, name) || (tool !== undefined && paramFor(toolsOf(tool), tool, name)?.[1].type === "boolean");
+  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && (!bare(prev.slice(2)) || argv[i] === "true" || argv[i] === "false")) || isSavePath(i, argv));
 }
 
 function jsonObject(word: string | undefined): boolean {
