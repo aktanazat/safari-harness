@@ -6,9 +6,12 @@ import { join } from "node:path";
 // A model reads a pull request page four times through a stand-in
 // extension, in a process whose HOME is a temp directory. Each read is a
 // load of the page, which asks for its checks with its own JSON request and
-// shows them only after the read, as GitHub did on 11-11. The run
-// follows the third read's hint to request_catalog try and the save call
-// try answers, then reads once more.
+// shows them only after the read, as GitHub did on 11-11. The checks, each
+// with its link, run longer as JSON than the page, while their summary
+// does not, as on Apache Airflow's pull request 76911 that day; the summary
+// holds 2 of the texts the page shows and the checks 12. The run follows
+// the third read's hint to request_catalog try and the save call try
+// answers, then reads once more.
 const home = mkdtempSync(join(tmpdir(), "scrape-offers-test-"));
 const at = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);
 const script = `
@@ -24,13 +27,18 @@ const script = `
   const loaded = Date.now() - 5000;
   const checks = JSON.stringify({
     channel: "eyJjIjoicmVwbzoxIn0=--private-fixture-channel",
+    statusRollup: { summary: { title: "Some checks were not successful", description: "1 failing, 5 successful checks" } },
     statusChecks: [
-      { displayName: "buildkite/bun", description: "Build #140103 started" },
-      { displayName: "Claude Code Review", description: "Code review in progress" },
+      { displayName: "buildkite/bun", description: "Build #140103 started", targetUrl: "https://buildkite.example/bun/bun/builds/140103" },
+      { displayName: "Claude Code Review", description: "Code review in progress", targetUrl: "https://ci.example/o/r/actions/runs/19284756/job/55123409" },
+      { displayName: "CI / lint (pull_request)", description: "Successful in 1m", targetUrl: "https://ci.example/o/r/actions/runs/19284756/job/55123410" },
+      { displayName: "CI / test (ubuntu-latest)", description: "Failing after 12m", targetUrl: "https://ci.example/o/r/actions/runs/19284756/job/55123411" },
+      { displayName: "CI / test (macos-latest)", description: "Successful in 14m", targetUrl: "https://ci.example/o/r/actions/runs/19284756/job/55123412" },
+      { displayName: "CodeQL / Analyze (javascript)", description: "Successful in 3m", targetUrl: "https://ci.example/o/r/actions/runs/19284757/job/55123413" },
     ],
   });
   const loading = '- heading "Checks"';
-  const drawn = "Checks\\nbuildkite/bun\\nBuild #140103 started\\nClaude Code Review\\nCode review in progress";
+  const drawn = ["Checks", "Some checks were not successful", "1 failing, 5 successful checks", ...JSON.parse(checks).statusChecks.flatMap((c) => [c.displayName, c.description])].join("\\n");
   // The page asks for its checks 500 ms after each load and shows them 100
   // ms later, on the clock: the daemon's looks and deadlines run on real
   // timers in this process, which no fake clock here drives.
@@ -116,7 +124,7 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
-test("a page read again is offered its own JSON request on the third read, though it asks for and shows that data after each read, and only then", () => {
+test("a page read again is offered its own JSON request on the third read, through the field that holds most of what it shows, though it asks for and shows that data after each read, and only then", () => {
   expect(result.hints.map((hint) => hint !== null)).toEqual([false, false, true, false]);
   expect(result.step).toMatchObject({ do: "try", tab: result.tab, request: 1, field: "statusChecks", type: "array" });
 });
@@ -127,7 +135,7 @@ test("the hint's words outside its step carry no path or field name the page cho
 });
 
 test("the offered try saves nothing, and the one save call it answers keeps the route without the page's values", () => {
-  expect(result.tried).toMatchObject({ same: true, value: [{ displayName: "buildkite/bun" }, { displayName: "Claude Code Review" }] });
+  expect(result.tried).toMatchObject({ same: true, value: ["buildkite/bun", "Claude Code Review", "CI / lint (pull_request)", "CI / test (ubuntu-latest)", "CI / test (macos-latest)", "CodeQL / Analyze (javascript)"].map((displayName) => ({ displayName })) });
   expect(result.savedByTry).toBe(false);
   expect(result.save).toMatchObject({ do: "save", tab: result.tab, request: 1, field: "statusChecks", type: "array" });
   expect(result.saved).toMatchObject({ ok: true, saved: true });

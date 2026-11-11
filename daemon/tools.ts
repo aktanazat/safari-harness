@@ -3279,16 +3279,19 @@ function scrapesOf(kind: string): string {
 // The JSON request of its own a page read again got the most of its texts
 // from: of the requests request_catalog accepts (readerOffers), the latest
 // 12 whose whole bodies the page keeps, each through its field with the
-// most texts the page shows that is no longer than the page, or failing one
-// its field with the most, and one with 2 texts or more. On 11-11 Apple's
-// SwiftUI Text page read as 21,738 characters, while the references field
-// of its text.json held 61,152 and primaryContentSections the article in
-// 14,213. Only in a tab of this task's, which try and run need. The request
-// goes by its number in net read: its path and field names are the page's
-// own words, kept to the step's JSON. A kind's first look (late) that finds
-// none looks once more LATE_MS later, against the read and what the page
-// shows then, the longer of the two its length, or against the read alone
-// on a page that refuses an eval.
+// most texts the page shows that is no longer than the page and holds 2 of
+// them or more and a quarter as many as its field with the most, or failing
+// one that field, and one with 2 texts or more. On 11-11 Apple's SwiftUI
+// Text page read as 21,738 characters, while the references field of its
+// text.json held 178 of its texts in 61,152 and primaryContentSections the
+// article, 79, in 14,213; Apache Airflow's pull request 76911 read as
+// 20,024, while its checks held 127 in 78,903 and their summary 1 in 219,
+// through which it offered nothing. Only in a tab of this task's, which try
+// and run need. The request goes by its number in net read: its path and
+// field names are the page's own words, kept to the step's JSON. A kind's
+// first look (late) that finds none looks once more LATE_MS later, against
+// the read and what the page shows then, the longer of the two its length,
+// or against the read alone on a page that refuses an eval.
 async function pageRequestRoute(tab: number, page: string, shown: string, late: boolean): Promise<string | undefined> {
   const held = harnessTabs.get(tab);
   if (!held || !matchesTask(held, currentOwner(), currentTask())) return undefined;
@@ -3302,7 +3305,7 @@ async function pageRequestRoute(tab: number, page: string, shown: string, late: 
       const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame).catch(() => undefined)) as { text?: string; truncated?: boolean; arriving?: boolean } | undefined;
       const fields = kept?.text === undefined || kept.truncated || kept.arriving ? [] : fieldsOf(kept.text);
       const most = fields[0];
-      return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= size) ?? most };
+      return most === undefined ? undefined : { most, pick: fields.find((f) => f.chars <= size && f.shown > 1 && f.shown * 4 >= most.shown) ?? most };
     }));
     const best = found.reduce((top, fields, i) => ((fields?.pick.shown ?? 0) > (found[top]?.pick.shown ?? 1) ? i : top), -1);
     const chosen = found[best];

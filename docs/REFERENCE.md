@@ -2497,13 +2497,13 @@ path, ids aside) by `snapshot`, `extract` or `map` gets a `hint` on its
 third read, once. When it read the same page again and that page got its
 data from one of its own JSON requests, the hint gives the request's
 number in `net read` and how many of the page's texts its best field
-holds (the one no longer than the page's read, when one is), with the
-`try` step to run; a request the page has not made yet, or a read that
-answered only what changed, is looked at again on the next two reads.
-Otherwise the hint names the readers saved for the site, or how to save
-one. The hint's words hold no value, path or field name from the page
-(the field goes only in the step), and nothing is saved until the `save`
-call.
+holds (the one no longer than the page's read, when one holds 2 or more
+and a quarter as many as the field with the most), with the `try` step to
+run; a request the page has not made yet, or a read that answered only
+what changed, is looked at again on the next two reads. Otherwise the
+hint names the readers saved for the site, or how to save one. The hint's
+words hold no value, path or field name from the page (the field goes
+only in the step), and nothing is saved until the `save` call.
 
 From MCP, call `run` with one step, for example
 `{"steps":[{"tool":"request_catalog","args":{"do":"list"}}]}`.
