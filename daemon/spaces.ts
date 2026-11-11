@@ -368,7 +368,9 @@ function passTabs(pass: unknown): Promise<TabInfo[]> | undefined {
 // then ends as that; release reports whether the owned group is empty
 // without moving any protected or foreign page. gone forgets the group;
 // scratch opens a window to delete from a group whose own window is gone;
-// raised says when a call last brought Safari to the front.
+// raised says when a call last brought Safari to the front. sheets lists
+// the windows to look at for a print sheet (lookForSheet), and looked
+// says a caller looked at one.
 // None asks anything of a quit Safari, or starts one he quit meanwhile.
 export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
   const name = String(a.name ?? "");
@@ -454,8 +456,37 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
     }
     case "raised":
       return { at: lastRaised() };
+    case "sheets": {
+      const known = new Set([...spaces.values(), ...closing.values(), ...ended]);
+      for (const s of unlooked.keys()) if (!known.has(s)) unlooked.delete(s);
+      return { windows: [...unlooked].map(([s, look]) => ({ id: s.id, ...s.size, look })) };
+    }
+    case "looked": {
+      const s = [...unlooked.keys()].find((k) => k.id === a.id);
+      if (!s) return { ok: false };
+      if (unlooked.get(s) === a.look) unlooked.delete(s);
+      // the close its sheet held goes again now, not at its next try
+      if (a.cancelled === true && unclosed.delete(s)) void sweep().catch(() => {});
+      return { ok: true };
+    }
   }
-  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, or raised");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, or looked");
+}
+
+// A print sheet a frame of a page raised stays on its window once the
+// harness has closed that tab: Safari then draws the window above every
+// app's, and the window's own page does not close, so that close was
+// asked again until the user pressed Cancel (11-11). The daemon has no
+// Accessibility to cancel it; its callers do (sheets.ts). Each window to
+// look at, one a close took a tab from or whose page would not close,
+// gets the number of its latest look, so a look made before a later close
+// leaves that close's look due.
+const unlooked = new Map<Space, number>();
+let looks = 0;
+
+export function lookForSheet(window: number | undefined): void {
+  const space = [...spaces.values(), ...closing.values(), ...ended].find((s) => s.window === window);
+  if (space) unlooked.set(space, ++looks);
 }
 
 // A window page Safari would not close (a native sheet holds it, or the
@@ -524,11 +555,15 @@ async function end(space: Space) {
       if (!why.startsWith("that tab is gone")) {
         if (linkDropped(link)) throw e;
         failedClose(space, space.name, why);
+        // a page kept for the user may hold his own print, which no close
+        // of the harness's left
+        if (pagesIn(inWindow, space).length === 0) unlooked.set(space, ++looks);
         return;
       }
     }
   }
   unclosed.delete(space);
+  unlooked.delete(space);
   ended.delete(space);
   save();
 }

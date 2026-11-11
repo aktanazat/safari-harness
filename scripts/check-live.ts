@@ -1170,14 +1170,17 @@ try {
 // bears its title; the sheet is counted through System Events, by that
 // title. Safari keeps the sheet once the tab is gone, and its window above
 // every app's: on 11-11 the next run's real clicks landed on that window
-// and its tabs would not close. So the sheet is cancelled in the window of
-// the frame it had, whether or not the close went through, and checked gone.
+// and its tabs would not close. The close goes as an agent's does
+// (call.ts), which cancels a print sheet so left (sheets.ts). One that
+// outlived the step anyway is cancelled in the window of the frame it
+// had, and checked gone.
 {
   const title = `check-live-sheet-${Date.now()}`;
   const osa = (script: string) => Bun.spawnSync(["osascript", "-e", `tell application "System Events" to tell process "Safari" to ${script}`], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
   const win = `(first window whose name is "${title}")`;
   const tab = (await call("open", { url: HOME, background: true })).id as number;
   let frame: string[] = [];
+  const framed = () => `(first window whose position is {${frame[0]}, ${frame[1]}} and size is {${frame[2]}, ${frame[3]}})`;
   try {
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
@@ -1187,14 +1190,15 @@ try {
     await Bun.sleep(2500);
     const sheets = osa(`count sheets of ${win}`);
     frame = osa(`get {position, size} of ${win}`).split(", ");
-    const closed = await call("close", { tab }).then(() => true, (e: Error) => e.message);
+    const closed = await invoke("close", { tab }).then(() => true, (e: Error) => e.message);
     check("a harness tab closes although a native sheet holds it", sheets === "1" && closed === true && !(await tabIds()).has(tab), { sheets, closed, current });
+    // a window that closed with its sheet counts none
+    const left = frame.length === 4 ? osa(`count sheets of ${framed()}`) : "no window";
+    check("the harness cancels the print sheet a tab it closed left on its window", sheets === "1" && ["", "0"].includes(left), { sheets, left });
   } finally {
     if (frame.length === 4) {
-      const at = `(first window whose position is {${frame[0]}, ${frame[1]}} and size is {${frame[2]}, ${frame[3]}})`;
-      osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${at})`);
-      // a window that closed with its sheet counts none
-      check("no print sheet outlives the step that raised it", await within(3000, async () => ["", "0"].includes(osa(`count sheets of ${at}`))), osa(`count sheets of ${at}`));
+      osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${framed()})`);
+      check("no print sheet outlives the step that raised it", await within(3000, async () => ["", "0"].includes(osa(`count sheets of ${framed()}`))), osa(`count sheets of ${framed()}`));
     }
     if ((await tabIds()).has(tab)) await call("close", { tab }).catch(() => {});
   }

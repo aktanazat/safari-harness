@@ -1152,6 +1152,11 @@ is done with it. `close` on a tab already closed does not fail: it answers
   closing a tab. A tab the harness opened still closes, within about 15 s;
   `close` on any other tab so held, or in a window off screen, fails within
   about 5 s and says so: tell the user rather than retrying.
+- A print sheet a frame of the page raised stays on the window once its
+  tab closes, and Safari draws that window above every app's. The harness
+  cancels it right after your `close` and as your turn ends, from your
+  terminal, which needs Accessibility permission for it. Only a print
+  sheet goes, and only on a harness window, never the user's.
 
 ## keep
 
@@ -2249,7 +2254,8 @@ application shares the site, and one's answers never go into another's.
 - A print dialog a page raises as it loads (Gmail's print view likely does) is
   answered like any other dialog in a tab of yours: it shows in `dialogs`
   and no print sheet opens. In the user's tab the print sheet shows as
-  usual.
+  usual. A print an embedded frame raises is Safari's own sheet; once its
+  tab closes, the harness cancels it (`close`).
 
 ## real_input
 

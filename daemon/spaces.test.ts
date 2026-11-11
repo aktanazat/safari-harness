@@ -64,12 +64,14 @@ function safari() {
       const now = oldWindows.get(id as number) ?? (id as number);
       return [...tabs.values()].some((t) => t.windowId === now) ? now : null;
     },
+    // with the window the tab was in, as onRemoved tells it (background.js)
     "tabs.close": ([id, only]) => {
       const now = oldTabs.get(id as number) ?? (id as number);
       if (only === "idle" && !owned.has(now)) return { ok: false };
+      const windowId = tabs.get(now)?.windowId;
       tabs.delete(now);
       closed.push(now);
-      return { ok: true };
+      return { ok: true, ...(windowId === undefined ? {} : { windowId }) };
     },
     // windows.create({tabId}), while the tab is still in that window
     "tabs.detach": ([id, windowId]) => {
@@ -1145,6 +1147,104 @@ test("an ended window waiting to try its close again asks Safari nothing until t
     await pass(180_000);
     setSystemTime();
     q.kill();
+  }
+});
+
+// The windows the space tool names to a caller to look at for a print
+// sheet (sheets.ts), and the window an agent's page names, at the size it
+// opened at.
+const looks = async () => ((await spaceTool({ op: "sheets" })) as { windows: { id: string; width: number; height: number; look: number }[] }).windows;
+function named(page: Tab) {
+  const url = new URL(page.url);
+  const [width, height] = url.searchParams.get("size")!.split("x").map(Number);
+  return { id: url.searchParams.get("id")!, width, height };
+}
+
+// On 11-11 a print sheet a page's frame raised stayed on its agent window
+// once the harness had closed that tab, and held the window above every
+// app's until the user pressed Cancel. Only the agent's terminal can
+// cancel it, so the daemon names the window to the agent's caller.
+test("a tab the harness closes, by a close call or as its turn ends, leaves its window, at its size, for its caller to look at for a print sheet", async () => {
+  const s = safari();
+  const ways = [(pid: number, tab: number) => runAs(pid, () => callTool("close", { tab })), (pid: number) => endTurn(pid)];
+  for (const close of ways) {
+    const a = agent();
+    const open = async (url: string) => s.tabs.get(((await runAs(a.pid, () => callTool("open", { url, background: true }))) as { id: number }).id)!;
+    try {
+      const t = await open("https://printed.example/");
+      // a tab kept for the user holds the window open past the turn's end
+      const kept = await open("https://kept.example/");
+      await runAs(a.pid, () => callTool("keep", { tab: kept.id }));
+      const window = named(pageIn(s.tabs, t.windowId)!);
+      expect((await looks()).some((w) => w.id === window.id)).toBe(false);
+      await close(a.pid, t.id);
+      expect((await looks()).filter((w) => w.id === window.id).map(({ id, width, height }) => ({ id, width, height }))).toEqual([window]);
+    } finally {
+      a.kill();
+      await a.exited;
+    }
+  }
+});
+
+// That window's own page would not close behind the sheet, and its close
+// was asked again after one, two, four, then every 15 minutes.
+test("a window whose page a print sheet held closes as soon as its caller cancels the sheet", async () => {
+  const s = safari();
+  const a = agent();
+  const t = await runAs(a.pid, () => openTab("https://printed.example/", true));
+  const page = pageIn(s.tabs, t.windowId)!;
+  const window = named(page);
+  const close = s.ops["tabs.close"];
+  let sheet = true;
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] === page.id && sheet) throw new Error("extension request tabs.close timed out after 10000ms");
+    return close(args);
+  };
+  await runAs(a.pid, () => callTool("close", { tab: t.id }));
+  // the tab's close was looked at before the sheet held the page
+  const [closed] = (await looks()).filter((w) => w.id === window.id);
+  await spaceTool({ op: "looked", id: window.id, look: closed.look, cancelled: false });
+  a.kill();
+  await a.exited;
+  await turnEnded(a.pid);
+  const [held] = (await looks()).filter((w) => w.id === window.id);
+  expect(held).toMatchObject(window);
+  sheet = false;
+  await spaceTool({ op: "looked", id: window.id, look: held.look, cancelled: true });
+  await until(() => s.closed.includes(page.id), 1000);
+  expect((await looks()).some((w) => w.id === window.id)).toBe(false);
+});
+
+// A page kept for the user stays in its agent's window once that agent's
+// task is over, and a print sheet there may be his own, live: no close of
+// the harness's left it, so the window's own page failing to close is no
+// reason to look.
+test("a window whose page would not close while it holds a page kept for the user is left out of the print sheet look", async () => {
+  const s = safari();
+  const q = agent();
+  const daemon = await daemonOn(47347, "kept-print");
+  let tracked = true;
+  try {
+    daemon.loadSpaces(join(dir, "kept-print.json"), () => tracked);
+    const owned = await runAs(q.pid, () => daemon.spaceWindow());
+    const page = pageIn(s.tabs, owned.window)!;
+    const kept = { id: next++, url: "https://kept.example/", windowId: owned.window, active: true };
+    s.tabs.set(kept.id, kept);
+    // the one look at untracked windows a load asks for, while its task runs
+    await daemon.sweep();
+    const close = s.ops["tabs.close"];
+    let tried = 0;
+    s.ops["tabs.close"] = (args) => {
+      if (args[0] !== page.id) return close(args);
+      tried++;
+      throw new Error("extension request tabs.close timed out after 10000ms");
+    };
+    tracked = false;
+    await daemon.turnEnded(q.pid);
+    expect({ tried, look: await daemon.spaceTool({ op: "sheets" }) }).toEqual({ tried: 1, look: { windows: [] } });
+  } finally {
+    q.kill();
+    await q.exited;
   }
 });
 
