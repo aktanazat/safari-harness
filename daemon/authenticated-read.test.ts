@@ -57,6 +57,7 @@ test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog
     expect(await runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/api/rows`, format: "json" }))).toMatchObject({ format: "json", content: '{"rows":[1]}' });
     await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/api/rows`, format: "raw" }))).rejects.toThrow("HTTP 400");
     await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/incidental`, format: "json" }))).rejects.toThrow("not JSON");
+    await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/visible-login`, format: "json" }))).rejects.toThrow("sign-in, challenge, or loading page");
   } finally {
     agent.kill();
     await agent.exited;

@@ -42,7 +42,7 @@ function checkOf(value: unknown): Check {
   return { field, type: check.type as FieldType };
 }
 
-function endpointOf(value: unknown): string {
+export function endpointOf(value: unknown): string {
   const url = playbookUrl(value);
   if (value !== url || url.length > 500) throw new Error("the observed endpoint must be an exact public path without a query, fragment, credentials, or a shortened URL");
   const gate = gateOfStep({ kind: "navigate", url });

@@ -29,6 +29,7 @@ import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.t
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
+import { endpointOf } from "./request-catalog.ts";
 import { replay } from "./replay.ts";
 import { CARD_PHONE } from "./passkey.ts";
 import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, type ConditionalCaptureResult } from "./evidence.ts";
@@ -1891,16 +1892,18 @@ export async function netStop(opts: { tab?: number } = {}) {
 type NetEntry = { url: string; method?: string; kind?: string; status?: number; t: number; frame?: number; body?: string; error?: string };
 
 // The requests request_catalog can save as the site's own reader: a JSON GET
-// the top page made to its own origin, without a query. The latest per path.
+// the top page made to its own origin, at an address save accepts. The
+// latest per path.
 function readerOffers(entries: NetEntry[], page: string | undefined): { request: number; observedAt: number; path: string }[] {
-  if (!page || !URL.canParse(page)) return [];
-  const origin = new URL(page).origin;
+  const origin = URL.parse(page ?? "")?.origin;
+  if (!origin) return [];
   const byPath = new Map<string, { request: number; observedAt: number; path: string }>();
   entries.forEach((e, request) => {
     if (e.method !== "GET" || (e.kind !== "fetch" && e.kind !== "xhr") || (e.frame ?? 0) !== 0 || e.error !== undefined
-      || e.status === undefined || e.status < 200 || e.status > 299 || !/^\s*[[{]/.test(e.body ?? "") || !URL.canParse(e.url)) return;
-    const u = new URL(e.url);
-    if (u.origin === origin && !u.search && !u.hash && !u.username && !u.password) byPath.set(u.pathname, { request, observedAt: e.t, path: u.pathname });
+      || e.status === undefined || e.status < 200 || e.status > 299 || !/^\s*[[{]/.test(e.body ?? "")) return;
+    let endpoint: URL;
+    try { endpoint = new URL(endpointOf(e.url)); } catch { return; }
+    if (endpoint.origin === origin) byPath.set(endpoint.pathname, { request, observedAt: e.t, path: endpoint.pathname });
   });
   return [...byPath.values()];
 }
@@ -1925,7 +1928,17 @@ async function netReadOffering(opts: { tab?: number; url?: string } = {}) {
   const page = (await relay(tab, "tabInfo")) as { url?: string };
   const { url } = opts;
   const shown = netShown(read, url);
-  const readers = readerOffers(read.entries, page.url).filter((o) => url === undefined || read.entries[o.request]!.url.includes(url));
+  const offered = readerOffers(read.entries, page.url).filter((o) => url === undefined || read.entries[o.request]!.url.includes(url));
+  const whole = await Promise.all(offered.map(async ({ request }) => {
+    const e = read.entries[request]!;
+    try {
+      const kept = (await bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame)) as { truncated: boolean; arriving: boolean };
+      return !kept.truncated && !kept.arriving;
+    } catch {
+      return false;
+    }
+  }));
+  const readers = offered.filter((_, i) => whole[i]);
   if (!readers.length) return shown;
   return {
     ...shown,
@@ -2193,9 +2206,9 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
   if (response.status === undefined || response.status < 200 || response.status >= 300) throw new HarnessError("unavailable", `the signed-in page answered HTTP ${response.status ?? "unknown"}`);
   const type = response.type ?? null;
   if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", "this response is not readable text; use download for a file");
-  if (format === "json" && !/[/+]json\b/i.test(type)) throw new HarnessError("not_content", "this response is not JSON");
   const html = /^text\/html\b/i.test(type) ? await readableHtml(response.text) : undefined;
   if (html && (html.login || html.shell || /\b(?:sign in|log in|login|just a moment|verify you are human|captcha)\b/i.test(html.title))) throw new HarnessError("unavailable", "the site returned a sign-in, challenge, or loading page instead of the requested content");
+  if (format === "json" && !/[/+]json\b/i.test(type)) throw new HarnessError("not_content", "this response is not JSON");
   if (/[/+]json\b/i.test(type)) {
     let body: unknown;
     try { body = JSON.parse(response.text); } catch {}
