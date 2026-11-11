@@ -23,8 +23,7 @@ import { nameIn } from "./guard.ts";
 import { CODE_POLL_MS, codeTexts, handleKey, type CodeText, type CodeTexts } from "./imessage.ts";
 import { site } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { gmail, type GmailThreadSummary } from "./sites/google.ts";
-import { SiteKit } from "./sites/kit.ts";
+import type { GmailThreadSummary } from "./sites/google.ts";
 
 const CODE = "{{code}}";
 
@@ -207,8 +206,12 @@ type MailWatch = { looked(): boolean; failed(): string | undefined; stop(): Prom
 // when given, that came after since, and adds the code of each to found;
 // mail that shows other than one code is skipped. Until the 11-11 review
 // mail that named the domain counted from any sender, a lookalike's too.
-// stop ends it, its Gmail tab closed.
-function watchMail(s: Site, sender: string | undefined, account: unknown, since: number, typed: Set<string>, skipped: Set<string>, found: Sent[]): MailWatch {
+// stop ends it, its Gmail tab closed. Gmail's kit loads only for a mailed
+// code: every CLI call and MCP server loads this file, and a static import
+// put sites/google.ts and sites/kit.ts in each (startup.test.ts).
+async function watchMail(s: Site, sender: string | undefined, account: unknown, since: number, typed: Set<string>, skipped: Set<string>, found: Sent[]): Promise<MailWatch> {
+  const { gmail } = await import("./sites/google.ts");
+  const { SiteKit } = await import("./sites/kit.ts");
   const kit = new SiteKit((tool, args) => rpc(tool, args));
   const mail = gmail(kit);
   const box = typeof account === "number" || typeof account === "string" ? account : 0;
@@ -311,7 +314,7 @@ async function sentCode(a: Record<string, unknown>, source: "sms" | "mail" | und
       found.sort((x, y) => x.at - y.at);
       const best = found.at(-1);
       if (best) return best;
-      if (mailable && !mail && Date.now() >= mailFrom) mail = watchMail(s, sender, a.account, start - BEFORE_MS, typed, skipped, found);
+      if (mailable && !mail && Date.now() >= mailFrom) mail = await watchMail(s, sender, a.account, start - BEFORE_MS, typed, skipped, found);
       const failed = mail?.failed();
       if (failed !== undefined && !texts) throw new Error(`Gmail could not be read: ${failed}${problems.length ? `; ${problems.join("; ")}` : ""}`);
       if (Date.now() >= start + WAIT_MS) throw new Error(missed(s, sender, texts !== undefined, mail, skipped, problems));
