@@ -119,7 +119,7 @@ async function convert(h: Helper, daemon: Daemon, s: SpaceState, log: Log): Prom
     outcome = await step(h, daemon, `making ${s.name}`, log, () => makeGroup(h, window, s.name), false);
     // No group was made, unless group work turned off on the way.
     if (!outcome.done && !groupsOff()) changeQueue((q) => delete q[s.name]);
-  }
+  } else if (!window.done && !window.wait) log(`making ${s.name}: ${window.why}`);
   if (typeof outcome === "number") return true;
   // A group a failed make left stays queued: its window goes on as a
   // group's, so its record waits, as a group's, for the delete. Told plain,
