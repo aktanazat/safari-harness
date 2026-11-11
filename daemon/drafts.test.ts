@@ -6,7 +6,6 @@ import { bridge } from "./bridge.ts";
 import { DRAFT_MS, outcome, refill, saveDraft, type Draft, type Look } from "./drafts.ts";
 import { connect } from "./fake-safari.ts";
 import * as phone from "./phone.ts";
-import * as redact from "./redact.ts";
 import { keepSecret, tabSecrets } from "./redact.ts";
 import { callTool } from "./tools.ts";
 
@@ -167,14 +166,10 @@ test("a click on a form that keeps no draft looks at nothing and deletes nothing
   expect(names()).toEqual([["order", "reason"]]);
 });
 
-// The secret check of a value can cost as its length squared: 200 such
-// values held the daemon 55 s on 11-11.
-test("of a page's long values, a click's secret checks read 30,000 characters at most", () => {
-  const checked = spyOn(redact, "redactSecretText");
+test("of a page's long values, one click adds 30,000 characters to a draft at most", () => {
   saveDraft(TAB, step(Array.from({ length: 200 }, (_, i) => text(`t${i}`, "a.".repeat(2500)))));
-  const read = checked.mock.calls.filter(([t]) => t.startsWith("a.")).reduce((n, [t]) => n + t.length, 0);
-  expect(read).toBeGreaterThan(0);
-  expect(read).toBeLessThanOrEqual(30_000);
+  const kept = sites().flatMap((s) => s.drafts.flatMap((d) => d.fields.map((f) => ("value" in f ? [f.value].flat().join("").length : 0))));
+  expect(kept.reduce((n, c) => n + c, 0)).toBe(30_000);
 });
 
 // What the look after a click makes of the page: only "sent" on a last
