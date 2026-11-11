@@ -1168,12 +1168,16 @@ try {
 // closes anyway: the extension loads a blank page in it, which Safari soon
 // stops waiting on. The tab is made current in its window, which then
 // bears its title; the sheet is counted through System Events, by that
-// title, and cancelled if the close failed.
+// title. Safari keeps the sheet once the tab is gone, and its window above
+// every app's: on 11-11 the next run's real clicks landed on that window
+// and its tabs would not close. So the sheet is cancelled in the window of
+// the frame it had, whether or not the close went through, and checked gone.
 {
   const title = `check-live-sheet-${Date.now()}`;
   const osa = (script: string) => Bun.spawnSync(["osascript", "-e", `tell application "System Events" to tell process "Safari" to ${script}`], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
   const win = `(first window whose name is "${title}")`;
   const tab = (await call("open", { url: HOME, background: true })).id as number;
+  let frame: string[] = [];
   try {
     await call("eval", { tab, expression: `document.title = ${JSON.stringify(title)}` });
     await call("window", { tab, width: 420, height: 380 });
@@ -1182,13 +1186,17 @@ try {
     await call("eval", { tab, expression: "(() => { const f = document.createElement('iframe'); document.body.append(f); setTimeout(() => f.contentWindow.print(), 200); return 1; })()" });
     await Bun.sleep(2500);
     const sheets = osa(`count sheets of ${win}`);
+    frame = osa(`get {position, size} of ${win}`).split(", ");
     const closed = await call("close", { tab }).then(() => true, (e: Error) => e.message);
     check("a harness tab closes although a native sheet holds it", sheets === "1" && closed === true && !(await tabIds()).has(tab), { sheets, closed, current });
   } finally {
-    if ((await tabIds()).has(tab)) {
-      osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${win})`);
-      await call("close", { tab }).catch(() => {});
+    if (frame.length === 4) {
+      const at = `(first window whose position is {${frame[0]}, ${frame[1]}} and size is {${frame[2]}, ${frame[3]}})`;
+      osa(`perform action "AXPress" of (value of attribute "AXCancelButton" of sheet 1 of ${at})`);
+      // a window that closed with its sheet counts none
+      check("no print sheet outlives the step that raised it", await within(3000, async () => ["", "0"].includes(osa(`count sheets of ${at}`))), osa(`count sheets of ${at}`));
     }
+    if ((await tabIds()).has(tab)) await call("close", { tab }).catch(() => {});
   }
 }
 
