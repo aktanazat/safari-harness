@@ -32,7 +32,13 @@
   const REF_ATTR = "data-sh-ref";
   let refSeq = handed?.refSeq ?? 0;
   const refMap = new Map(handed?.refMap); // ref -> element
-  if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) refSeq = Math.max(refSeq, Number(el.getAttribute(REF_ATTR)) || 0);
+  // A page can write the attribute too: a number no count reaches
+  // (Infinity, 1e300) would stop the count and give each new ref the
+  // same number.
+  if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) {
+    const n = Number(el.getAttribute(REF_ATTR));
+    if (Number.isInteger(n) && n < 1e9) refSeq = Math.max(refSeq, n);
+  }
 
   // ---------- role / name computation (ARIA-lite) ----------
 
@@ -439,10 +445,12 @@
 
   // ---------- snapshot ----------
 
+  // An element keeps a ref only while this copy's map names it there: a
+  // page can write the attribute, and a number this copy had not reached
+  // yet would go to the next control too, both printed as one ref.
   function ensureRef(el) {
     let ref = el.getAttribute(REF_ATTR);
-    if (ref && (refMap.has(ref) ? refMap.get(ref) !== el : fingerprints.has(ref) || carried?.[ref])) ref = null;
-    if (!ref) {
+    if (refMap.get(ref) !== el) {
       refSeq += 1;
       ref = String(refSeq);
       el.setAttribute(REF_ATTR, ref);
