@@ -166,10 +166,24 @@ test("a click on a form that keeps no draft looks at nothing and deletes nothing
   expect(names()).toEqual([["order", "reason"]]);
 });
 
-test("of a page's long values, one click adds 30,000 characters to a draft at most", () => {
-  saveDraft(TAB, step(Array.from({ length: 200 }, (_, i) => text(`t${i}`, "a.".repeat(2500)))));
+test("however many clicks go into a form's draft, it keeps whole fields of 30,000 characters at most, the last click's first", () => {
+  const at = Date.now();
+  for (let c = 0; c < 40; c++) saveDraft(TAB, step(Array.from({ length: 200 }, (_, i) => text(`c${c}f${i}`, "a.".repeat(2000)))), at + c);
   const kept = sites().flatMap((s) => s.drafts.flatMap((d) => d.fields.map((f) => ("value" in f ? [f.value].flat().join("").length : 0))));
-  expect(kept.reduce((n, c) => n + c, 0)).toBe(30_000);
+  expect(kept.reduce((n, c) => n + c, 0)).toBe(28_000);
+  expect(names()).toEqual([["c39f0", "c39f1", "c39f2", "c39f3", "c39f4", "c39f5", "c39f6"]]);
+});
+
+test("past 30,000 characters or 200 fields, a draft drops the fields it has held longest, never the last click's, and keeps each one's place", () => {
+  const at = Date.now();
+  const long = (c: string) => `${c}.`.repeat(2500);
+  saveDraft(TAB, step([text("a", long("a")), text("b", long("b"))]), at);
+  saveDraft(TAB, step([text("c", long("c")), text("d", long("d"))]), at + 1);
+  saveDraft(TAB, step([text("e", long("e")), text("a", long("n")), text("f", long("f")), text("g", long("g"))]), at + 2);
+  expect(sites()[0].drafts[0].fields.map((f) => ("value" in f ? `${f.name}=${String(f.value)[0]}` : f.name))).toEqual(["a=n", "c=c", "d=d", "e=e", "f=f", "g=g"]);
+  saveDraft(TAB, step(Array.from({ length: 150 }, (_, i) => text(`x${i}`, "v")), false, SITE, "/many"), at + 3);
+  saveDraft(TAB, step(Array.from({ length: 100 }, (_, i) => text(`y${i}`, "v")), false, SITE, "/many"), at + 4);
+  expect(names()[0]).toEqual([...Array.from({ length: 100 }, (_, i) => `x${i + 50}`), ...Array.from({ length: 100 }, (_, i) => `y${i}`)]);
 });
 
 // What the look after a click makes of the page: only "sent" on a last
