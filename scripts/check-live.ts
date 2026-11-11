@@ -64,7 +64,10 @@ async function withPage(html: string, setup: string, body: (tab: number) => Prom
 //   then --after-install: the reload leaves the daemon and the pairing
 //   alone, and a tab opened before it answers at once by the id it had.
 //   Safari gives every tab a new id on a reload and the extension maps the
-//   old ones, except across the reload that installs that mapping.
+//   old ones, except across the reload that installs that mapping; refs
+//   from the page's old script likewise (content.js hands them over). To
+//   check what is installed, run `safari extension reload` in place of
+//   the deploy.
 const HEALTH = "http://127.0.0.1:37334/health";
 const INSTALL_STATE = "/private/var/tmp/check-live-install.json";
 const health = async () => (await (await fetch(HEALTH)).json()) as { pid: number; inFlight: number };
