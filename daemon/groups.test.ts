@@ -2,8 +2,8 @@ import { afterAll, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changeQueue, deleteGroup, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Helper } from "./groups.ts";
-import { pass, type Daemon, type Given, type SpaceState } from "./keeper.ts";
+import { changeQueue, deleteGroup, files, groupsOff, guarded, keeperRunning, makeGroup, readQueue, startHelper, turnOff, type Answer, type Helper } from "./groups.ts";
+import { keep, pass, type Daemon, type Given, type SpaceState } from "./keeper.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "groups-test-"));
 Object.assign(files, { queue: join(dir, "groups.json"), off: join(dir, "groups-off.json"), keeper: join(dir, "keeper.pid"), log: join(dir, "keeper.log") });
@@ -508,4 +508,76 @@ test("a window named like a tab group already in the sidebar stays plain with it
   expect([groups(), s.menus, s.sidebar, readQueue()]).toEqual([[TRIP], 0, false, {}]);
   expect(told).toEqual([{ op: "making", name: TRIP }, { op: "plain", name: TRIP, why: expect.stringContaining(`a tab group named ${TRIP} is already in the sidebar`) }]);
   expect(logged).toEqual([expect.stringContaining(`making ${TRIP}: a tab group named ${TRIP} is already in the sidebar`)]);
+});
+
+// A keeper whose last pass finds nothing due still reads as running to an
+// open that lands then, which so starts none (call.ts), and the window
+// that open fills would wait for its agent's next open. The keeper making
+// its group reads as running too: the daemon holds a window being made
+// open only while one runs (spaces.ts).
+test("a window filled as the keeper takes its last look still becomes its task's group", async () => {
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "tab" }, { kind: "tab" }]);
+  const space = { ...waiting, owner: Bun.spawnSync(["true"]).pid };
+  const { d: answers } = daemon([]);
+  let looks = 0;
+  let started: boolean | undefined;
+  let making: boolean | undefined;
+  const d: Daemon = async (op, a = {}) => {
+    if (op !== "state") {
+      if (op === "making") making = keeperRunning();
+      if (op === "making" || op === "waiting" || op === "plain" || op === "grouped") space.group = op;
+      return answers(op, a);
+    }
+    // The first look lists no window, its two tabs not yet enough; the
+    // third opens then, and its call starts a keeper only if none runs.
+    if (++looks === 1) {
+      [s.tabs, space.tabs] = [3, 3];
+      started = !keeperRunning();
+      return { connected: true, spaces: [] };
+    }
+    return { connected: true, spaces: space.group === "waiting" ? [space] : [] };
+  };
+  await keep(h, d, quiet);
+  expect([started, making, groups()]).toEqual([false, true, [TRIP]]);
+}, 10_000);
+
+// A last pass that works on a window and finds nothing more is no last
+// look: a window another open fills meanwhile still becomes a group.
+test("a window filled while the keeper's last pass works on another still becomes its task's group", async () => {
+  const OTHER = "other (agent 42)";
+  const { s, h, groups } = safari([{ kind: "local", selected: true }, { kind: "group", name: OTHER }, { kind: "tab" }, { kind: "tab" }]);
+  s.tabs = 3;
+  const exited = Bun.spawnSync(["true"]).pid;
+  const spaces = [{ ...waiting, name: OTHER, tabs: 3, owner: exited }, { ...waiting, owner: exited }];
+  const { d: answers } = daemon([]);
+  let looks = 0;
+  let started: boolean | undefined;
+  const d: Daemon = async (op, a = {}) => {
+    if (op === "state") return { connected: true, spaces: ++looks === 1 ? [] : spaces.filter((x) => x.group === "waiting" && (x.tabs ?? 0) >= 3) };
+    const space = spaces.find((x) => x.name === a.name);
+    // the other window's third tab opens as the keeper starts on this one
+    if (space?.name === OTHER && op === "making") {
+      spaces[1].tabs = 3;
+      started = !keeperRunning();
+    }
+    if (space && (op === "making" || op === "waiting" || op === "plain" || op === "grouped")) space.group = op;
+    return answers(op, a);
+  };
+  await keep(h, d, quiet);
+  expect([started, groups()]).toEqual([false, [OTHER, TRIP]]);
+}, 10_000);
+
+// The last look acts on nothing: an ended group the last pass let be, with
+// deletes off, is no cause for another pass at once, which would spin.
+test("a keeper whose ended group waits on deletes turned off stops after one more look", async () => {
+  const { h } = safari([{ kind: "local" }, { kind: "group", name: TRIP, selected: true }]);
+  turnOff("a step stopped");
+  const { d: answers } = daemon([{ ...waiting, group: "grouped", ended: true }]);
+  let looks = 0;
+  const d: Daemon = async (op, a = {}) => {
+    if (op === "state" && ++looks > 9) throw new Error("the keeper looks on and on");
+    return answers(op, a);
+  };
+  await keep(h, d, quiet);
+  expect(looks).toBe(2);
 });
