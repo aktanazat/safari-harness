@@ -51,7 +51,7 @@ export function targetOf(save: unknown, as: "file" | "folder"): Target {
 type File = { body: string | Uint8Array; ext: string };
 
 function fileOf(kind: SaveKind, r: Record<string, unknown>): File {
-  if (kind === "authenticated_read" && typeof r.content === "string") return { body: r.content, ext: r.format === "raw" ? extOf(r.type) : "txt" };
+  if (kind === "authenticated_read" && typeof r.content === "string") return { body: r.content, ext: r.format === "text" ? "txt" : extOf(r.type) };
   if (kind === "snapshot" && r.update !== undefined) return { body: JSON.stringify(r, null, 1), ext: "json" };
   if (kind === "snapshot" && typeof r.snapshot === "string") return { body: r.snapshot, ext: "txt" };
   if (kind === "extract" && typeof r.text === "string") return { body: r.text, ext: "txt" };

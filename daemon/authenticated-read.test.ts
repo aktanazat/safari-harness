@@ -36,8 +36,10 @@ test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog
         if (action === "tabInfo") value = tabs.get(tab);
         else if (action === "fetch") {
           const url = String(input[0]);
+          const accept = (input[1] as { headers?: Record<string, string> } | undefined)?.headers?.accept;
           const text = url.endsWith("/visible-login") ? signIn : url.endsWith("/title-only") ? titleOnly : dashboard;
-          value = { status: 200, url, type: "text/html", text };
+          value = !url.endsWith("/api/rows") ? { status: 200, url, type: "text/html", text }
+            : accept === "application/json" ? { status: 200, url, type: "application/json", text: '{"rows":[1]}' } : { status: 400, url, type: "application/json", text: "{}" };
         } else if (action === "eval") value = { result: true };
       }
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
@@ -52,6 +54,9 @@ test("a read opens one owned tab, reuses it, and ignores a hidden sign-in dialog
     expect([explicit.tab, repeated.tab, opens]).toEqual([first.tab, first.tab, 1]);
     await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/visible-login`, expect: "Active orders" }))).rejects.toThrow("sign-in, challenge, or loading page");
     await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/title-only`, expect: "Active orders" }))).rejects.toThrow("sign-in, challenge, or loading page");
+    expect(await runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/api/rows`, format: "json" }))).toMatchObject({ format: "json", content: '{"rows":[1]}' });
+    await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/api/rows`, format: "raw" }))).rejects.toThrow("HTTP 400");
+    await expect(runAs(agent.pid, () => callTool("authenticated_read", { tab: first.tab, url: `${origin}/incidental`, format: "json" }))).rejects.toThrow("not JSON");
   } finally {
     agent.kill();
     await agent.exited;

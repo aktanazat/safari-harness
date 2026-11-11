@@ -168,7 +168,7 @@ async function live(entry: Pick<Entry, "origin" | "path" | "status" | "contentTy
   const requestedUrl = entry.origin + entry.path;
   if (new URL(context.url).origin !== entry.origin) throw new Error("run only in an owned tab on this record's exact origin");
   await unchanged(context, call);
-  const response = fields(await call("authenticated_read", { tab: context.tab, url: requestedUrl, format: "raw", maxBytes: MAX_RESPONSE }));
+  const response = fields(await call("authenticated_read", { tab: context.tab, url: requestedUrl, format: "json", maxBytes: MAX_RESPONSE }));
   await unchanged(context, call);
   const summary = {
     requestedUrl,
@@ -180,7 +180,7 @@ async function live(entry: Pick<Entry, "origin" | "path" | "status" | "contentTy
     check: { ...entry.check, passed: false },
   };
   try {
-    if (response.ok !== true || response.source !== "page" || response.tab !== context.tab || response.format !== "raw"
+    if (response.ok !== true || response.source !== "page" || response.tab !== context.tab || response.format !== "json"
       || response.requestedUrl !== requestedUrl || response.url !== requestedUrl || response.truncated !== false) throw new Error("the live read failed, was truncated, changed endpoint, or did not come from this owned page");
     const status = statusOf(response.status);
     if (status !== entry.status) throw new Error("the original successful HTTP status changed");

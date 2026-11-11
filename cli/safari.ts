@@ -156,7 +156,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari read <url> [--tab N] [--expect text]
                                              readable text without navigating to the URL;
                                              --expect checks content, not account identity;
-                                             --format raw keeps HTML or JSON unchanged
+                                             --format raw keeps HTML or JSON unchanged;
+                                             --format json asks for JSON and refuses anything else
   safari request_catalog list                list privately saved JSON reads
   safari request_catalog save --tab N --name NAME --request I --observed-at T --field F --type array
                                              check and save an observed GET
