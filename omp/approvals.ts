@@ -25,9 +25,8 @@ import { STEP_TOOLS } from "../daemon/call.ts";
 import { checkCall, checkStep } from "../daemon/guard.ts";
 import { isAway } from "../daemon/phone.ts";
 import { rpc } from "../daemon/rpc.ts";
-import { secretType } from "../daemon/secret.ts";
 
-type Kind = "secret" | "login" | "card" | "message" | "shortcut" | "handoff";
+type Kind = "secret" | "login" | "message" | "shortcut" | "handoff";
 
 export type Ask = {
   kind: Kind;
@@ -88,9 +87,10 @@ const grants = new Map<string, number>();
 const VAR = /^[A-Z_][A-Z0-9_]*$/;
 const SECRET_RUN = /\bmem-secret\s+run\s+((?:\S+\s+)*?)--\s+([^\n]*)/g;
 const VAULT_SHELL = /\bmem-secret\s+(?:edit|keychain-restore)\b|\bsops\s+(?:-d\b|--decrypt\b|decrypt\b|exec-env\b|exec-file\b)|engram-age-identity/;
-// The safari CLI calls the daemon itself, so its fills, codes and texts
-// never reach the Safari tools this gate reads.
-const SAFARI_SHELL = /\bsafari\s+(?:fill|passwords|bitwarden|imessage\s+send)\b|\bsafari\s[^\n]*(?:\{\{code\}\}|--secret\b|\b(?:passwords|bitwarden|imessage_send)\b)/i;
+// The safari CLI calls the daemon itself, so its texts never reach the
+// Safari tools this gate reads. Fills, codes and saved cards go without
+// asking (owner order 2026-11-13), from a tool or the CLI alike.
+const SAFARI_SHELL = /\bsafari\s+imessage\s+send\b|\bsafari\s[^\n]*\bimessage_send\b/i;
 
 function text(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -141,45 +141,9 @@ async function pageOf(tab: unknown): Promise<Place> {
   return { where: `tab ${String(tab)}` };
 }
 
-function loginAsk(verb: string, scope: string, detail: string, reuseMs: number, place: Place): Ask {
-  const title = place.host ?? "This page";
-  return { kind: "login", verb, item: { name: title }, title, detail, where: place.where, scope, reuseMs: place.host ? reuseMs : 0, auth: true };
-}
-
-const CODE_FROM: Record<string, string> = { sms: "Code from your texts", mail: "Code from your email", page: "Code from another tab", passwords: "Code from Apple Passwords", env: "Code from a variable" };
-
-// A call as the daemon will run it (guard.ts), and where it acts.
+// A call as the daemon will run it (guard.ts), and where it acts. Fills
+// (saved logins, passwords, sign-in codes, cards) never ask.
 async function safariAsk(tool: string, a: Record<string, unknown>, place: () => Promise<Place>): Promise<Ask | undefined> {
-  if (tool === "passwords" || tool === "bitwarden") {
-    const user = text(a.username);
-    switch (a.do ?? (tool === "bitwarden" ? "fill" : undefined)) {
-      case "fill":
-        return loginAsk("fill a saved password", user ?? "", user ? `Password for ${user}` : "Saved password", REUSE_MS, await place());
-      case "code":
-        return loginAsk("fill a sign-in code", "code", "Sign-in code", REUSE_MS, await place());
-      case "change": {
-        const site = text(a.site);
-        return loginAsk("change a saved password", "change", user ? `New password for ${user}` : "New password", 0, site ? { host: site, where: site } : await place());
-      }
-      case "card-fill": {
-        const { host, where } = await place();
-        const amount = text(a.amount);
-        const card = text(a.card) ?? "Saved card";
-        const detail = [amount, host].filter(Boolean).join(" at ") || undefined;
-        return { kind: "card", verb: "fill a saved card", item: { name: card }, title: card, detail, where, scope: amount ?? "", reuseMs: host ? REUSE_MS : 0, auth: true };
-      }
-      case "card-save": {
-        const card = text(a.name) ?? "New card";
-        return { kind: "card", verb: "save a card", item: { name: card }, title: card, detail: "Save to this Mac", scope: "save", reuseMs: 0, auth: true };
-      }
-      default:
-        return undefined;
-    }
-  }
-  if (secretType(tool, a)) {
-    const how = text(a.secret);
-    return loginAsk("type a sign-in code", how ?? "code", (how && CODE_FROM[how]) ?? "Code from your texts or email", REUSE_MS, await place());
-  }
   if (tool === "imessage_send" && a.approved !== undefined && a.approved !== false) {
     const files = Array.isArray(a.files) ? a.files.map(String) : [];
     const body = String(a.text ?? "");

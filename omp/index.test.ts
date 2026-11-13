@@ -230,20 +230,33 @@ test("a secret command a lead's agent runs is turned back when the user presses 
   }
 });
 
-// Shapes the daemon reads as a secret step though they do not name one the
-// usual way: a code typed from his texts, a fill under another parameter
-// name, the safari CLI from a shell.
+// Fills never ask (owner order 2026-11-13): a code typed from his texts, a
+// saved password under another parameter name, the safari CLI's fill.
 test.each([
-  ["mcp__safari_type", { ref: "12", text: "{{code}}" }, "type a sign-in code"],
-  ["mcp__safari_passwords", { action: "fill" }, "fill a saved password"],
-  ["bash", { command: "safari fill login --tab 3" }, "use Safari in your name"],
-])("a lead's %s call the daemon would run as a secret step waits for the user's ok", async (toolName, input, verb) => {
+  ["mcp__safari_type", { ref: "12", text: "{{code}}" }],
+  ["mcp__safari_passwords", { action: "fill" }],
+  ["bash", { command: "safari fill login --tab 3" }],
+])("a lead's %s fill runs without asking, though its terminal would answer Esc", async (toolName, input) => {
   const before = process.env.SAFARI_HARNESS_AWAY;
   process.env.SAFARI_HARNESS_AWAY = "0";
   try {
     await withHook(async (_end, tool) => {
       const result = await tool({ toolName, input }, { ...context("main"), hasUI: true, ui: escapes } as Context);
-      expect(result).toEqual({ block: true, reason: expect.stringContaining(`the user denied this (${verb}:`) });
+      expect(result).toEqual(toolName === "bash" ? undefined : { input: expect.objectContaining(input) });
+    });
+  } finally {
+    if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
+    else process.env.SAFARI_HARNESS_AWAY = before;
+  }
+});
+
+test("a text the safari CLI would send in his name still waits for his ok", async () => {
+  const before = process.env.SAFARI_HARNESS_AWAY;
+  process.env.SAFARI_HARNESS_AWAY = "0";
+  try {
+    await withHook(async (_end, tool) => {
+      const result = await tool({ toolName: "bash", input: { command: "safari imessage send --to +15550100 --text hi" } }, { ...context("main"), hasUI: true, ui: escapes } as Context);
+      expect(result).toEqual({ block: true, reason: expect.stringContaining("the user denied this (use Safari in your name:") });
     });
   } finally {
     if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
