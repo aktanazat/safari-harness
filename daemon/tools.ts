@@ -3,7 +3,8 @@
 
 import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
+import { challengeNamed, challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
+import { handedOff, paced, paces, seenLater, settledVisit, waitsInVain } from "./checks.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
@@ -1139,28 +1140,34 @@ async function ontoMainDisplay(tab: number, size: { width: number; height: numbe
 
 // snapshot says when the tab shows a bot check (challenge.ts), as open,
 // goto, and a missed wait do: the agent hands it to the user with handoff.
-// A result still coming has its probe sent beside it.
-async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
-  const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
-  return challenge ? { ...r, challenge } : r;
+// A result still coming has its probe sent beside it. A block it shows is
+// learned for the site (checks.ts).
+async function withChallenge<T extends { url?: string }>(result: T | Promise<T>, tab: number): Promise<T> {
+  const [r, found] = await Promise.all([result, challengeNamed(tab)]);
+  seenLater(tab, r.url, found);
+  return found ? { ...r, challenge: found.challenge } : r;
 }
 
 // open and goto wait out a Cloudflare check that lets the browser through
-// (settledChallenge), and then answer with the page behind it. The task
+// (settledChallenge), as long as the site's learned check says it takes
+// (checks.ts), and then answer with the page behind it. The task
 // remembers a check that stays, and forgets it once a page of its site
-// loads with none (reads.ts).
-async function afterWall(t: TabInfo, tab: number): Promise<object> {
-  const { challenge, top } = await settledChallenge(tab);
+// loads with none (reads.ts). visit is the visit's pacing (paced).
+async function afterWall(t: TabInfo, tab: number, visit: { gap?: number; note?: string } = {}): Promise<object> {
+  const { challenge, top, note } = await settledVisit(tab, t.url ?? "", visit.gap);
   const { title: _, ...rest } = t;
   const page = top ? { ...rest, url: top.url, ...(top.title ? { title: top.title } : {}) } : t;
   met(page.url ?? "", challenge ?? null);
-  return challenge ? { ...page, challenge } : page;
+  const result = challenge ? { ...page, challenge } : page;
+  const notes = [visit.note, note].filter((n) => n !== undefined);
+  return notes.length ? { ...result, note: notes.join("; ") } : result;
 }
 
 // A model's open or goto of a host that showed any agent a check that does
 // not clear by itself fails at once (reads.ts); fresh: true loads it anyway.
+// A site that turns away visits too close together is paced instead.
 function unwalled(url: string, fresh: unknown): void {
-  const wall = fromModel() && fresh !== true ? walled(url) : undefined;
+  const wall = fromModel() && fresh !== true && !paces(url) ? walled(url) : undefined;
   if (wall) throw new HarnessError("blocked", wall.error, { next: wall.error });
 }
 
@@ -1906,7 +1913,9 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
     // what the tab shows, each read left out when it has no answer by the end
-    const [now, challenge, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeOf(tab), end), drew ? undefined : blankHint(tab, end)]);
+    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? undefined : blankHint(tab, end)]);
+    seenLater(tab, now?.url, shown);
+    const challenge = shown?.challenge;
     const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);
     // A miss is not ok: on 10-16 agents read a wait's ok: true beside
     // found: false, after 20 s, as the page they waited for (HuntsUsage).
@@ -1975,7 +1984,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     // Cloudflare's wall often lets Safari through by itself (challenge.ts),
     // so the user hears only of one still up PASS_MS later, or of the check
     // that takes its place.
-    if (until === undefined && passesByItself(initial)) {
+    if (until === undefined && passesByItself(initial) && !waitsInVain(first.url)) {
       const { challenge } = await settledChallenge(tab, PASS_MS);
       tab = followTab(tab);
       if (challenge?.where === "block") throw new Error(blocked(challenge));
@@ -1986,6 +1995,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
         h.done = true;
         h.byItself = true;
         met(now.url ?? "", null);
+        handedOff(now.url ?? "", true, Date.now() - h.start);
         return;
       }
       initial = challenge ?? initial;
@@ -2009,6 +2019,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : shows) {
         h.done = true;
         if (challenge === undefined) met(now.url ?? "", null);
+        if (challenge === undefined && seen) handedOff(now.url ?? "", false, Date.now() - h.start);
         // gone elsewhere, they have taken back what they wanted themselves;
         // the tab sits in an agent window, which never holds the front tab
         if (now.shown) await giveBack();
@@ -3469,6 +3480,7 @@ export const TOOLS: Record<string, Tool> = {
       pageRead(a.snapshot);
       const address = webAddress(a.url);
       unwalled(address, a.fresh);
+      const visit = await paced(address);
       const group = a.group === undefined ? undefined : str(a.group, "group");
       const space = daemonPage(address) ? heldSpace(group) : await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
@@ -3477,7 +3489,7 @@ export const TOOLS: Record<string, Tool> = {
         const { tab: t, was } = reused;
         try {
           if (t.file) return await fileOpened(t, false);
-          const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+          const result = await withPage(withNotes(flagged(await afterWall(t, t.id, visit))), t.id, a.snapshot);
           return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
         } finally {
           loading.delete(t.id);
@@ -3495,7 +3507,7 @@ export const TOOLS: Record<string, Tool> = {
         if (a.site === true && held) held.site = true;
         save();
         if (t.file) return await fileOpened(t, !a.keep);
-        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+        const result = await withPage(withNotes(flagged(await afterWall(t, t.id, visit))), t.id, a.snapshot);
         const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
         return had === undefined ? result : beside(result, "hint", had);
       } finally {
@@ -3547,8 +3559,9 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "url"],
     run: action(async (a) => {
       unwalled(str(a.url, "url"), a.fresh);
+      const visit = await paced(str(a.url, "url"));
       const t = await navigate(a.tab, str(a.url, "url"));
-      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab)));
+      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab, visit)));
     }),
   },
   activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
@@ -4105,7 +4118,7 @@ export const TOOLS: Record<string, Tool> = {
     },
     // true marks the site for real input, false unmarks it (notes.ts); the
     // CLI passes it as text, --real true.
-    unlisted: { real: { description: "true marks the site for real input; false unmarks it" } },
+    unlisted: { real: { description: "true marks the site for real input; false unmarks it" }, checks: { description: "false forgets the bot check open and goto learned" } },
     required: ["site"],
     run: learn,
   },

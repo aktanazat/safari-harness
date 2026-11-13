@@ -2839,6 +2839,26 @@ plain sentence of at most 300 characters.
 - `learn {site, real: true}` (CLI `--real true`) marks the site for real
   input (`safari guide reference acting`), and `real: false` unmarks it unless the site's
   guide marks it; `learn {site}` shows the mark.
+- Bot checks are learned without being asked. When `open` or `goto` meets
+  a bot check that stands in for the page, or a later `snapshot` or
+  missed `wait` on that tab shows the site turning the browser away, the
+  harness keeps, in `<host>.checks.json` beside the notes: the check, the
+  signal that named it (a title, a marker, a frame's host), how long it
+  took to let Safari through by itself, how often waiting did not clear
+  it and how often a person did in a `handoff`, and, for a block, the gap
+  since the visit before. The next visit, any agent's, applies it:
+  - a site that turned away a visit that came too soon after the last one
+    has its next visit held until the gap that got through has passed
+    (twice the gap that did not, at least 20 s, at most 60 s), and the
+    result's `note` says how long it waited;
+  - a check that let Safari through by itself is waited on as long as it
+    took (up to 35 s), and one that waiting failed to clear twice is not
+    waited on: `open` answers at once and `handoff` calls the user
+    without its 35 s wait.
+  `learn {site}` shows what was learned, `learn {site, history: true}`
+  lists each change, and `learn {site, checks: false}` (CLI `--checks
+  false`) forgets it. The harness never answers a check; this only
+  chooses when to load and how long to wait.
 - Never a secret: a fact that looks like a password, a verification code,
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").

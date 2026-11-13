@@ -9,6 +9,10 @@ import { followPages, mapPages, type Listing, type Page } from "./map.ts";
 import { runAs } from "./owner.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
 
+// The bot checks map meets are learned into site notes (checks.ts): kept
+// out of the user's.
+process.env.SAFARI_HARNESS_NOTES = mkdtempSync(join(tmpdir(), "map-notes-"));
+
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
 // a wait asks for (a page that is not there), it gives a wait no answer (a
