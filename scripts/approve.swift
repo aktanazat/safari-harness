@@ -59,25 +59,32 @@ let monoName = ["BerkeleyMono-Regular", "Berkeley Mono"].first { NSFont(name: $0
 func mono(_ size: CGFloat) -> Font { monoName.map { .custom($0, size: size) } ?? .system(size: size, design: .monospaced) }
 let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
+// The window's state lives here, not in @State: on macOS 27.2 the SDK's
+// @State is a macro whose plugin ships only with Xcode, so Command Line
+// Tools alone cannot build it.
 final class Model: ObservableObject {
     @Published var checking = false
+    @Published var shown = reduceMotion
+    /// The button under the pointer: true for the approve one.
+    @Published var hovered: Bool?
 }
 
 struct Action: ButtonStyle {
     let primary: Bool
+    let model: Model
 
     func makeBody(configuration: Configuration) -> some View {
-        Face(configuration: configuration, primary: primary)
+        Face(configuration: configuration, primary: primary, model: model)
     }
 
     struct Face: View {
         let configuration: Configuration
         let primary: Bool
-        @State private var hover = false
+        @ObservedObject var model: Model
         @Environment(\.isEnabled) private var enabled
 
         var body: some View {
-            let lit = hover || configuration.isPressed
+            let lit = model.hovered == primary || configuration.isPressed
             configuration.label
                 .font(.system(size: 15, weight: primary ? .medium : .regular))
                 .foregroundStyle(primary ? card : ink)
@@ -86,7 +93,11 @@ struct Action: ButtonStyle {
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(primary ? ink.opacity(lit ? 0.84 : 1) : ink.opacity(lit ? 0.1 : 0.06)))
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .opacity(enabled ? 1 : 0.5)
-                .onHover { h in withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { hover = h } }
+                .onHover { h in
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                        if h { model.hovered = primary } else if model.hovered == primary { model.hovered = nil }
+                    }
+                }
                 .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
         }
@@ -135,7 +146,6 @@ struct Card: View {
     let request: Request
     @ObservedObject var model: Model
     let decide: (Bool) -> Void
-    @State private var shown = reduceMotion
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -164,7 +174,7 @@ struct Card: View {
             }
             HStack(spacing: 10) {
                 Button { decide(false) } label: { Text(request.deny ?? "Deny") }
-                    .buttonStyle(Action(primary: false))
+                    .buttonStyle(Action(primary: false, model: model))
                     .keyboardShortcut(.cancelAction)
                 Button { decide(true) } label: {
                     HStack(spacing: 8) {
@@ -172,7 +182,7 @@ struct Card: View {
                         Text(request.approve ?? "Approve")
                     }
                 }
-                .buttonStyle(Action(primary: true))
+                .buttonStyle(Action(primary: true, model: model))
                 .keyboardShortcut(.defaultAction)
             }
             .disabled(model.checking)
@@ -182,9 +192,9 @@ struct Card: View {
         .frame(width: 380, alignment: .leading)
         .background(ZStack { Glass(); card.opacity(0.8) }.clipShape(shape))
         .overlay(shape.strokeBorder(rim, lineWidth: 1))
-        .opacity(shown ? 1 : 0)
-        .offset(y: shown ? 0 : -8)
-        .onAppear { withAnimation(.easeOut(duration: 0.22)) { shown = true } }
+        .opacity(model.shown ? 1 : 0)
+        .offset(y: model.shown ? 0 : -8)
+        .onAppear { withAnimation(.easeOut(duration: 0.22)) { model.shown = true } }
     }
 }
 
