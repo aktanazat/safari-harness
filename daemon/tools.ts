@@ -4,7 +4,7 @@
 import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeNamed, challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
-import { handedOff, paced, paces, seenLater, settledVisit, waitsInVain } from "./checks.ts";
+import { handedOff, paced, seenLater, settledVisit, waitsInVain } from "./checks.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
@@ -1165,9 +1165,8 @@ async function afterWall(t: TabInfo, tab: number, visit: { gap?: number; note?: 
 
 // A model's open or goto of a host that showed any agent a check that does
 // not clear by itself fails at once (reads.ts); fresh: true loads it anyway.
-// A site that turns away visits too close together is paced instead.
 function unwalled(url: string, fresh: unknown): void {
-  const wall = fromModel() && fresh !== true && !paces(url) ? walled(url) : undefined;
+  const wall = fromModel() && fresh !== true ? walled(url) : undefined;
   if (wall) throw new HarnessError("blocked", wall.error, { next: wall.error });
 }
 
@@ -1984,7 +1983,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     // Cloudflare's wall often lets Safari through by itself (challenge.ts),
     // so the user hears only of one still up PASS_MS later, or of the check
     // that takes its place.
-    if (until === undefined && passesByItself(initial) && !waitsInVain(first.url)) {
+    const prewait = until === undefined && passesByItself(initial) && !waitsInVain(first.url);
+    if (prewait) {
       const { challenge } = await settledChallenge(tab, PASS_MS);
       tab = followTab(tab);
       if (challenge?.where === "block") throw new Error(blocked(challenge));
@@ -1995,9 +1995,10 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
         h.done = true;
         h.byItself = true;
         met(now.url ?? "", null);
-        handedOff(now.url ?? "", true, Date.now() - h.start);
+        handedOff(now.url ?? "", "itself", Date.now() - h.start);
         return;
       }
+      if (passesByItself(challenge)) handedOff(first.url ?? "", "stayed", PASS_MS);
       initial = challenge ?? initial;
     }
     h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
@@ -2019,7 +2020,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : shows) {
         h.done = true;
         if (challenge === undefined) met(now.url ?? "", null);
-        if (challenge === undefined && seen) handedOff(now.url ?? "", false, Date.now() - h.start);
+        // after a skipped wait, a check could also have cleared by itself
+        if (challenge === undefined && seen && (prewait || !passesByItself(initial))) handedOff(now.url ?? "", "person", Date.now() - h.start);
         // gone elsewhere, they have taken back what they wanted themselves;
         // the tab sits in an agent window, which never holds the front tab
         if (now.shown) await giveBack();

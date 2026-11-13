@@ -2850,11 +2850,14 @@ plain sentence of at most 300 characters.
   - a site that turned away a visit that came too soon after the last one
     has its next visit held until the gap that got through has passed
     (twice the gap that did not, at least 20 s, at most 60 s), and the
-    result's `note` says how long it waited;
+    result's `note` says how long it waited. Visits asked for at once (a
+    `map`, two agents) each take their own turn. A block a minute or more
+    after the visit before is no pacing: the site stays a wall that is not
+    loaded again;
   - a check that let Safari through by itself is waited on as long as it
-    took (up to 35 s), and one that waiting failed to clear twice is not
-    waited on: `open` answers at once and `handoff` calls the user
-    without its 35 s wait.
+    took (up to 35 s), and one that stayed through `handoff`'s 35 s wait
+    twice is not waited on: `open` answers at once and `handoff` calls
+    the user without its 35 s wait.
   `learn {site}` shows what was learned, `learn {site, history: true}`
   lists each change, and `learn {site, checks: false}` (CLI `--checks
   false`) forgets it. The harness never answers a check; this only

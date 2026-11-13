@@ -9,6 +9,7 @@
 // shopping task met Yelp's DataDome check six times in 2 h 22 min (SR-2).
 
 import { passesByItself, type Challenge } from "./challenge.ts";
+import { paces } from "./checks.ts";
 import { currentOwner, currentTask, watchOwner } from "./owner.ts";
 import { site } from "./receipt.ts";
 
@@ -112,11 +113,14 @@ export function keep(read: string, url: string, value: unknown) {
 
 // A check that stood in for a page of url's site, or turned the browser
 // away, as an open or a goto of this task met it (tools.ts); a page of the
-// site that loads with none ends it.
+// site that loads with none ends it. A block of a site that turns away
+// visits too close together is no wall: the next visit is spaced out
+// instead (checks.ts).
 export function met(url: string, challenge: Challenge | null | undefined) {
   const pid = owner();
   const host = URL.parse(url)?.hostname;
   if (!host || challenge === undefined || challenge?.where === "box") return;
+  if (challenge?.where === "block" && paces(url)) return;
   const wall = host.replace(/^www\./, "");
   if (challenge === null) walls.delete(wall);
   else if (!passesByItself(challenge)) walls.set(wall, { at: Date.now(), challenge });

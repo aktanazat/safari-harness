@@ -145,7 +145,7 @@ export function named(frames: Facts[]): { challenge: Challenge; signal: string }
   for (const rule of RULES) {
     const marker = frames.flatMap((f) => f.markers).find((m) => rule.markers?.includes(m)) ?? top.markers.find((m) => rule.topMarkers?.includes(m));
     const frame = frames.flatMap((f) => f.frames).find((u) => rule.frames?.test(u));
-    const signal = rule.url?.test(top.url) ? "address" : rule.title?.test(top.title) ? `title "${top.title}"` : rule.text?.test(top.text) ? "page words"
+    const signal = rule.url?.test(top.url) ? "address" : rule.title?.test(top.title) ? "title" : rule.text?.test(top.text) ? "page words"
       : top.source !== undefined && rule.source?.test(top.source) ? "page source" : marker !== undefined ? `marker ${marker}` : frame !== undefined ? `frame ${URL.parse(frame)?.host ?? "?"}` : undefined;
     if (signal === undefined) continue;
     const answer = rule.answer;

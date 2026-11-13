@@ -25,6 +25,14 @@ const LOST = "https://lost.example/";
 const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
 const SPLASH = "https://splash.example/";
+// reflex-gate's rule (11-12): a visit to a gate's host within 15 s of the
+// one before is turned away. BANNED turns away every visit.
+const GATE = "https://gate.example/";
+const BUSY = "https://busy.example/";
+const BANNED = "https://banned.example/";
+const GATE_MS = 15_000;
+const gateLast = new Map<string, number>();
+const gateBlocked = new Set<number>();
 // eBay's error page, as its guide names it (docs/sites/ebay.md); FLAKY's
 // goes when it loads again, as eBay's searches' did in the October hunts
 // (AkylHunts AH4).
@@ -122,6 +130,13 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
+    const gate = [GATE, BUSY].find((g) => url.startsWith(g));
+    if (gate) {
+      const last = gateLast.get(gate);
+      if (last !== undefined && performance.now() - last < GATE_MS) gateBlocked.add(tab.id);
+      gateLast.set(gate, performance.now());
+    }
+    if (url === BANNED) gateBlocked.add(tab.id);
     return { value: file ? { ...tab, url, ...file } : tab };
   }
   if (op === "tabs.navigate") {
@@ -152,6 +167,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     probes.set(tab, seen);
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
     if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
+    if (gateBlocked.has(tab)) return { value: [{ frame: 0, url, title: "", text: "Blocked: automated browser detected.", markers: [], answered: [], frames: [] }] };
     if (url === SPLASH && seen <= 3) return { value: [{ frame: 0, url, title: "One moment, please...", text: "Please wait while your request is being verified...", markers: [], answered: [], frames: [] }] };
     return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING || url === SPLASH ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
@@ -486,6 +502,47 @@ test.each([CLEARING, SPLASH])("a bot check that lets the browser through is wait
   const [page] = await waited(map({ urls: [url] }));
   expect(page).toMatchObject({ url, ok: true, value: { text: `text of ${url}` } });
   expect(page).not.toHaveProperty("challenge");
+});
+
+// The first visit too soon after the last is turned away and learned
+// (checks.ts): every visit after it, as soon after as it is asked for, is
+// held until the site lets it through.
+test("a site that turns away visits too close together has its next visits spaced out", async () => {
+  jest.useFakeTimers();
+  const visit = async () => {
+    const [page] = await waited(map({ urls: [GATE] }));
+    jest.advanceTimersByTime(2000);
+    return page.ok ? "page" : (page.challenge?.where ?? "failed");
+  };
+  const seen = [];
+  for (let i = 0; i < 5; i++) seen.push(await visit());
+  expect(seen).toEqual(["page", "block", "page", "page", "page"]);
+});
+
+test("pages of a paced site asked for at once are spaced out too", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [BUSY] }));
+  jest.advanceTimersByTime(2000);
+  const [blocked] = await waited(map({ urls: [BUSY] }));
+  expect(blocked.ok).toBe(false);
+  const pages = await waited(map({ urls: [`${BUSY}a`, `${BUSY}b`], concurrency: 2 }));
+  expect(pages.map((p) => p.ok)).toEqual([true, true]);
+});
+
+// One block a minute or more after the visit before is no pacing: the
+// site stays a wall that is not loaded again (reads.ts).
+test("a site that turns away visits however far apart they are is not loaded again", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [BANNED], fresh: true }));
+  jest.advanceTimersByTime(70_000);
+  await waited(map({ urls: [BANNED], fresh: true }));
+  // past the 10 minutes a wall is kept
+  jest.advanceTimersByTime(11 * 60_000);
+  await waited(map({ urls: [BANNED] }));
+  const before = loaded.length;
+  const [page] = await waited(map({ urls: [BANNED] }));
+  expect(page.error).toContain("not loaded again");
+  expect(loaded.length).toBe(before);
 });
 
 test("a tab that will not close is reported on its page, and every page still answers", async () => {

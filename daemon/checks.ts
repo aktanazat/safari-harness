@@ -19,9 +19,10 @@ const PACE_MIN_MS = 20_000;
 // waiting is given up on a check after it failed this many visits running
 const VAIN = 2;
 
-// When each host was last visited, and the gap before each tab's visit.
+// When each host's last visit started, and each tab's visit: its host and
+// the gap since the visit to that host before it.
 const visits = new Map<string, number>();
-const gaps = new Map<number, number>();
+const gaps = new Map<number, { host: string; gap: number }>();
 
 const today = () => new Date().toLocaleDateString("sv");
 const seconds = (ms: number) => `${Math.round(ms / 1000)} s`;
@@ -33,7 +34,7 @@ function spacing(c: CheckLearned | undefined): number | undefined {
 }
 
 // A site whose blocks came from visits too close together: its block is
-// spaced out (paced), not a wall to skip (reads.ts walled).
+// spaced out (paced), not a wall to skip (reads.ts met).
 export const paces = (url: string) => spacing(checkLearned(url)) !== undefined;
 
 // A check that waiting has not cleared on this site.
@@ -42,45 +43,47 @@ export function waitsInVain(url: unknown): boolean {
   return c !== undefined && c.clearedMs === undefined && (c.waitFailed ?? 0) >= VAIN;
 }
 
-// Called as a visit to url starts: waits out the gap the site needs since
-// the last visit, and answers that visit's gap and a note when it waited.
+// Called as a visit to url starts: takes the site's next turn, the gap it
+// learned to need after the last visit, before waiting for it, so visits
+// asked for at once (a map, two agents) are spaced too. Answers the visit's
+// gap and a note when it waited.
 export async function paced(url: string): Promise<{ gap?: number; note?: string }> {
   const host = pageHost(url);
   if (host === undefined) return {};
   const last = visits.get(host);
   const need = spacing(checkLearned(url));
-  let note: string | undefined;
-  if (last !== undefined && need !== undefined) {
-    const wait = need - (Date.now() - last);
-    if (wait > 0) {
-      await Bun.sleep(wait);
-      note = `waited ${seconds(wait)} before loading: ${host} turned away visits that came too soon after the last (learned bot check)`;
-    }
-  }
   const now = Date.now();
-  visits.set(host, now);
-  return { ...(last === undefined ? {} : { gap: now - last }), ...(note ? { note } : {}) };
+  const start = last !== undefined && need !== undefined ? Math.max(now, last + need) : now;
+  visits.set(host, start);
+  const wait = start - now;
+  if (wait > 0) await Bun.sleep(wait);
+  const note = wait > 0 ? `waited ${seconds(wait)} before loading: ${host} turned away visits that came too soon after the last (learned bot check)` : undefined;
+  return { ...(last === undefined ? {} : { gap: start - last }), ...(note ? { note } : {}) };
 }
 
-type Seen = { challenge: Challenge | null | undefined; signal?: string; waitedOn?: number; waited: number };
+type Seen = { challenge: Challenge | null | undefined; signal?: string; waitedOn?: number };
 
+// What a visit gap ms after the one before showed. A block that came
+// PACE_MS or more after the last visit is not one of pacing: the site
+// turns the browser away however far apart its visits are, and stays a
+// wall (reads.ts met). Any other answer is a visit that got through.
 function learnt(url: string, gap: number | undefined, s: Seen): void {
   learnCheck(url, (was) => {
     const c = s.challenge;
     if (c === null) return was;
-    if (c === undefined || c.where === "box") {
-      if (was === undefined) return undefined;
-      const next = { ...was };
-      if (s.waitedOn !== undefined && c === undefined) next.clearedMs = Math.max(was.clearedMs ?? 0, s.waitedOn);
-      if (c === undefined && gap !== undefined && was.blockedGapMs !== undefined && gap > was.blockedGapMs && (was.passedGapMs === undefined || gap < was.passedGapMs)) next.passedGapMs = gap;
-      return next;
-    }
-    const next: CheckLearned = { ...was, kind: c.kind, where: c.where, signal: s.signal ?? was?.signal ?? "unnamed", last: today() };
-    if (c.where === "block" && gap !== undefined) {
+    const next: CheckLearned | undefined = c === undefined || c.where === "box" ? (was === undefined ? undefined : { ...was }) : { ...was, kind: c.kind, where: c.where, signal: s.signal ?? was?.signal ?? "unnamed", last: today() };
+    if (next === undefined) return undefined;
+    if (s.waitedOn !== undefined && c === undefined) next.clearedMs = Math.max(was?.clearedMs ?? 0, s.waitedOn);
+    if (gap === undefined) return next;
+    if (c?.where === "block") {
+      if (gap >= PACE_MS) {
+        delete next.blockedGapMs;
+        delete next.passedGapMs;
+        return next;
+      }
       next.blockedGapMs = Math.max(was?.blockedGapMs ?? 0, gap);
       if (next.passedGapMs !== undefined && next.passedGapMs <= next.blockedGapMs) delete next.passedGapMs;
-    }
-    if (passesByItself(c) && s.waited > 0) next.waitFailed = (was?.waitFailed ?? 0) + 1;
+    } else if (next.blockedGapMs !== undefined && gap > next.blockedGapMs && (next.passedGapMs === undefined || gap < next.passedGapMs)) next.passedGapMs = gap;
     return next;
   });
 }
@@ -89,31 +92,35 @@ function learnt(url: string, gap: number | undefined, s: Seen): void {
 // (settledChallenge), as long as the site learned it takes, then learning
 // what it showed. gap is the visit's, from paced.
 export async function settledVisit(tab: number, url: string, gap: number | undefined) {
-  if (gap === undefined) gaps.delete(tab);
-  else gaps.set(tab, gap);
+  const host = pageHost(url);
+  if (gap === undefined || host === undefined) gaps.delete(tab);
+  else gaps.set(tab, { host, gap });
   const was = checkLearned(url);
   const vain = waitsInVain(url);
   const waited = was?.clearedMs !== undefined ? Math.min(PASS_MS, Math.max(SETTLE_MS, was.clearedMs + 2000)) : vain ? 0 : SETTLE_MS;
   const s = await settledChallenge(tab, waited);
   const page = s.top?.url ?? url;
-  learnt(page, gap, { ...s, waited });
+  learnt(page, pageHost(page) === host ? gap : undefined, s);
   const note = vain && s.challenge && passesByItself(s.challenge) ? `not waited on: waiting never cleared this check on ${pageHost(page)} (learned bot check); hand it to the user` : undefined;
   return { ...s, ...(note ? { note } : {}) };
 }
 
 // A check a later read of the tab showed (snapshot, a missed wait): a block
-// there is learned against the gap before the tab's visit.
+// there is learned against the gap before the tab's visit, when it is of
+// the site that visit loaded.
 export function seenLater(tab: number, url: string | undefined, found: { challenge: Challenge; signal: string } | null | undefined): void {
   if (!url || !found || found.challenge.where !== "block") return;
-  learnt(url, gaps.get(tab), { ...found, waited: 0 });
+  const visit = gaps.get(tab);
+  learnt(url, visit?.host === pageHost(url) ? visit?.gap : undefined, found);
 }
 
-// How a handoff on a page of url ended: the check let Safari through by
-// itself waitedMs into the handoff, after open or goto had waited
-// SETTLE_MS on it, or a person cleared it.
-export function handedOff(url: string, byItself: boolean, waitedMs: number): void {
+// How a handoff on a page of url went: the check let Safari through by
+// itself waitedMs into it, after open or goto had waited SETTLE_MS on it;
+// it stayed through handoff's PASS_MS wait; or a person cleared it.
+export function handedOff(url: string, how: "itself" | "stayed" | "person", waitedMs: number): void {
   learnCheck(url, (was) => {
     if (was === undefined) return undefined;
-    return byItself ? { ...was, clearedMs: Math.max(was.clearedMs ?? 0, SETTLE_MS + waitedMs) } : { ...was, person: (was.person ?? 0) + 1 };
+    if (how === "itself") return { ...was, clearedMs: Math.max(was.clearedMs ?? 0, SETTLE_MS + waitedMs) };
+    return how === "stayed" ? { ...was, waitFailed: (was.waitFailed ?? 0) + 1 } : { ...was, person: (was.person ?? 0) + 1 };
   });
 }
