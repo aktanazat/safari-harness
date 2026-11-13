@@ -792,24 +792,32 @@ things unless its saved task explicitly says to.
 
 In an omp session the harness's omp extension asks the user before a step
 that uses his secrets or acts in his name runs: `passwords` with `do` fill,
-code, change, card-fill or card-save; `type` with `secret`; `imessage_send`
-with `approved`; the first `handoff` call; and outside this harness
-`mac_shortcut`, `mac_handoff`, and shell or eval code that runs
-`mem-secret run`, `edit` or `keychain-restore`, or decrypts with `sops`. A
-popup on his Mac names what, where, and his latest request, and the omp
-session that asked shows the same card in place of its prompt: Enter there
-approves through the popup, so it still takes Touch ID (a handoff's "Show
-me" does not), and Esc denies. While he is away from the Mac the same
-request reaches his phone for Face ID once he has set it up
-(`safari passwords approvals-phone`).
+code, change, card-fill or card-save; `bitwarden` fill; `type` or
+`real_input` with `secret` or `{{code}}`; `imessage_send` with `approved`;
+the first `handoff` call; and outside this harness `mac_shortcut`,
+`mac_handoff`, and shell or eval code that runs `mem-secret run`, `edit` or
+`keychain-restore`, decrypts with `sops`, or calls the `safari` CLI to fill,
+type a code, or send a text. It reads each call and run step as the daemon
+will, with other names for its tool and parameters folded in. A popup on
+his Mac names the thing and one fact about it (the command, the amount,
+the text), and the omp session that asked shows the same card in place of
+its prompt: Enter there approves through the popup, so it still takes
+Touch ID (a handoff's "Show me" does not), and Esc denies. While he is away
+from the Mac the same request reaches his phone for Face ID once he has set
+it up (`safari passwords approvals-phone`).
 
-- A yes covers the same step for that session 10 minutes; a text and a
-  password change ask every time, and so does a secret command with no
-  named variables.
+- A yes covers the same step for that session 10 minutes: the same exact
+  shell command, or the same fill on the same site. A text, a password
+  change, a command that opens the whole vault, and a fill whose site
+  cannot be known before it runs ask every time.
+- Popups show one at a time. One waiting behind another shows "After the
+  one on your Mac" in the terminal, where Enter does nothing until it is on
+  screen; Esc still denies it.
 - A lead with a terminal waits for the answer as long as the popup lives.
   Any other call that waits 25 s comes back "waiting for the user's ok":
   make the same call again; it joins the popup already showing.
-- A no comes back as a blocked call. Do not retry it; ask him in chat.
+- A no comes back as a blocked call. Do not retry it; ask him in chat. A
+  popup that closed with no answer says so; that call may be made again.
 - Headless (print-mode) sessions and their helpers are not asked.
 - The popup is a consent gate for agents that use these tools, not a wall:
   a shell can still reach the vault key. Do not go around it.

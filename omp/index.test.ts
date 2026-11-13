@@ -230,6 +230,27 @@ test("a secret command a lead's agent runs is turned back when the user presses 
   }
 });
 
+// Shapes the daemon reads as a secret step though they do not name one the
+// usual way: a code typed from his texts, a fill under another parameter
+// name, the safari CLI from a shell.
+test.each([
+  ["mcp__safari_type", { ref: "12", text: "{{code}}" }, "type a sign-in code"],
+  ["mcp__safari_passwords", { action: "fill" }, "fill a saved password"],
+  ["bash", { command: "safari fill login --tab 3" }, "use Safari in your name"],
+])("a lead's %s call the daemon would run as a secret step waits for the user's ok", async (toolName, input, verb) => {
+  const before = process.env.SAFARI_HARNESS_AWAY;
+  process.env.SAFARI_HARNESS_AWAY = "0";
+  try {
+    await withHook(async (_end, tool) => {
+      const result = await tool({ toolName, input }, { ...context("main"), hasUI: true, ui: escapes } as Context);
+      expect(result).toEqual({ block: true, reason: expect.stringContaining(`the user denied this (${verb}:`) });
+    });
+  } finally {
+    if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
+    else process.env.SAFARI_HARNESS_AWAY = before;
+  }
+});
+
 type Block = { type: string; text?: string };
 type Result = { toolName: string; toolCallId: string; input: Record<string, unknown>; content: Block[] };
 type WebHooks = {

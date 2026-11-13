@@ -20,7 +20,7 @@ export type Invoke = (tool: string, args: Record<string, unknown>, model?: boole
 
 const CALLER_NAMES = Object.keys(CALLER_TOOLS);
 const DAEMON_NAMES = Object.keys(TOOLS);
-const STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
+export const STEP_TOOLS = { ...TOOLS, ...CALLER_TOOLS };
 
 // A call that runs in this process: a caller tool, a type that fills in a
 // code (secret.ts), or a run with one among its steps or with real: true,

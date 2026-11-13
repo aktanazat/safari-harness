@@ -10,7 +10,6 @@ import { asksOf, decide, type TerminalUi } from "./approvals.ts";
 type AgentEnd = { willContinue?: boolean };
 type Context = {
   mode: string;
-  cwd?: string;
   hasUI?: boolean;
   ui?: TerminalUi;
   agent?: { kind: "main" | "sub"; id: string; parentId?: string };
@@ -35,11 +34,8 @@ const leadOfAgent = new Map<string, string>();
 const leadOfHelper = new Map<string, string>();
 // By lead session, the mode its own agent last ran in: a print-mode lead
 // is a headless run (a scheduled routine) with nobody at the Mac, so
-// neither it nor its helpers wait for the approval popup. asked: the
-// user's latest request to that lead, the why an approval popup quotes;
-// omp hands a tool_call handler no reason of the agent's own.
+// neither it nor its helpers wait for the approval popup.
 const leadMode = new Map<string, string>();
-const asked = new Map<string, string>();
 
 function taskOf(ctx: Context): string | undefined {
   const session = ctx.sessionManager?.getSessionId();
@@ -77,7 +73,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     const lead = helping ?? own;
     if (ctx.agent?.kind === "main") leadMode.set(lead, ctx.mode);
     if (leadMode.get(lead) !== "print") {
-      const asks = await asksOf(event.toolName, event.input, ctx.cwd ?? process.cwd(), asked.get(lead));
+      const asks = await asksOf(event.toolName, event.input);
       const reason = asks.length ? await decide(asks, lead, ctx.agent?.kind === "main" && ctx.hasUI ? ctx.ui : undefined) : undefined;
       if (reason !== undefined) return { block: true, reason };
     }
@@ -133,10 +129,9 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     const reason = session === undefined ? undefined : unanswered(session);
     return reason === undefined ? undefined : { continue: true, additionalContext: reason };
   });
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", (_event, ctx) => {
     const session = ctx.sessionManager?.getSessionId();
     if (ctx.agent?.kind === "sub") return;
-    if (session !== undefined && event && typeof event === "object" && "prompt" in event && typeof event.prompt === "string") asked.set(session, event.prompt);
     clearTimeout(releasing.get(session ?? ""));
     releasing.delete(session ?? "");
     if (session !== undefined) newRun(session);
