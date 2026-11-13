@@ -19,6 +19,8 @@ import LocalAuthentication
 import SwiftUI
 
 struct Request: Decodable {
+    let kind: String?
+    let attach: String?
     let asker: String
     let title: String
     let detail: String?
@@ -45,6 +47,8 @@ func role(_ light: NSColor, _ dark: NSColor) -> Color {
 
 let card = role(hex(0xffffff), hex(0x141414))
 let raised = role(hex(0xf1f1ee), hex(0x1c1c1c))
+// The window shadow outlines the card in light; dark needs a faint rim.
+let rim = role(.clear, hex(0xffffff, 0.1))
 let edge = role(hex(0x141413, 0.1), hex(0xffffff, 0.08))
 let ink = role(hex(0x141413), hex(0xf5f5f4))
 let muted = role(hex(0x141413, 0.66), hex(0xf5f5f4, 0.66))
@@ -78,10 +82,9 @@ struct Action: ButtonStyle {
                 .font(.system(size: 15, weight: primary ? .medium : .regular))
                 .foregroundStyle(primary ? card : ink)
                 .frame(maxWidth: .infinity)
-                .frame(height: 40)
-                .background(RoundedRectangle(cornerRadius: 10).fill(primary ? ink.opacity(lit ? 0.84 : 1) : lit ? raised : card))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(primary ? .clear : edge, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .frame(height: 44)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(primary ? ink.opacity(lit ? 0.84 : 1) : ink.opacity(lit ? 0.1 : 0.06)))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .opacity(enabled ? 1 : 0.5)
                 .onHover { h in withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { hover = h } }
                 .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
@@ -90,34 +93,54 @@ struct Action: ButtonStyle {
     }
 }
 
+// The kind's line glyph inside the clay "needs you" disc.
+let glyphs = ["secret": "key", "login": "person.badge.key", "card": "creditcard", "message": "message", "shortcut": "bolt", "handoff": "hand.raised"]
+
 struct Mark: View {
     let asker: String
+    let kind: String?
     let checking: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            if checking {
-                Circle().strokeBorder(faint, style: StrokeStyle(lineWidth: 1.5, dash: [2, 2.4])).frame(width: 14, height: 14)
-                Text("Touch ID").foregroundStyle(faint)
-            } else {
-                Circle().fill(clay).frame(width: 14, height: 14)
-                    .overlay(Text("!").font(.system(size: 10, weight: .bold)).foregroundStyle(card))
-                Text(asker).foregroundStyle(muted)
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(checking ? raised : clay)
+                Image(systemName: checking ? "touchid" : glyphs[kind ?? ""] ?? "exclamationmark")
+                    .font(.system(size: checking ? 13 : 11, weight: .semibold))
+                    .foregroundStyle(checking ? clay : card)
             }
+            .frame(width: 24, height: 24)
+            Text(checking ? "Touch ID" : asker).foregroundStyle(checking ? faint : muted)
         }
-        .font(.system(size: 13))
-        .frame(height: 18)
+        .font(.system(size: 13, weight: .medium))
+        .frame(height: 24)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: checking)
     }
+}
+
+// The window behind the card: the desktop shows faintly through it.
+struct Glass: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
 struct Card: View {
     let request: Request
     @ObservedObject var model: Model
     let decide: (Bool) -> Void
+    @State private var shown = reduceMotion
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            Mark(asker: request.asker, checking: model.checking)
+            Mark(asker: request.asker, kind: request.kind, checking: model.checking)
             Text(request.title)
                 .font(.system(size: 28, weight: .medium))
                 .tracking(-0.56)
@@ -125,25 +148,27 @@ struct Card: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 20)
+                .padding(.top, 22)
             if let detail = request.detail {
-                Text(detail)
-                    .font(request.mono == true ? mono(13) : .system(size: 15))
-                    .lineSpacing(request.mono == true ? 3 : 5)
-                    .foregroundStyle(muted)
-                    .lineLimit(request.mono == true ? 3 : 6)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 8)
+                Detail(text: detail, command: request.mono == true, bubble: request.kind == "message")
+                    .padding(.top, request.mono == true || request.kind == "message" ? 14 : 8)
             }
-            HStack(spacing: 8) {
+            if let attach = request.attach {
+                Label(attach, systemImage: "paperclip")
+                    .font(.system(size: 13))
+                    .foregroundStyle(faint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: request.kind == "message" ? .trailing : .leading)
+                    .padding(.top, 10)
+            }
+            HStack(spacing: 10) {
                 Button { decide(false) } label: { Text(request.deny ?? "Deny") }
                     .buttonStyle(Action(primary: false))
                     .keyboardShortcut(.cancelAction)
                 Button { decide(true) } label: {
                     HStack(spacing: 8) {
-                        if request.auth != false { Image(systemName: "touchid").font(.system(size: 15)) }
+                        if request.auth != false { Image(systemName: "touchid").font(.system(size: 16)) }
                         Text(request.approve ?? "Approve")
                     }
                 }
@@ -153,10 +178,61 @@ struct Card: View {
             .disabled(model.checking)
             .padding(.top, 28)
         }
-        .padding(32)
-        .frame(width: 400, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(card))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(edge, lineWidth: 1))
+        .padding(28)
+        .frame(width: 380, alignment: .leading)
+        .background(ZStack { Glass(); card.opacity(0.8) }.clipShape(shape))
+        .overlay(shape.strokeBorder(rim, lineWidth: 1))
+        .opacity(shown ? 1 : 0)
+        .offset(y: shown ? 0 : -8)
+        .onAppear { withAnimation(.easeOut(duration: 0.22)) { shown = true } }
+    }
+}
+
+// The one fact under the title: a command sits in a well, a text in a
+// bubble the way Messages shows it, anything else as a plain line.
+struct Detail: View {
+    let text: String
+    let command: Bool
+    let bubble: Bool
+
+    var body: some View {
+        if command {
+            (Text("$ ").foregroundStyle(faint) + Text(text))
+                .font(mono(13))
+                .lineSpacing(3)
+                .foregroundStyle(ink.opacity(0.8))
+                .lineLimit(3)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(raised))
+        } else if bubble {
+            Text(text)
+                .font(.system(size: 15))
+                .lineSpacing(3)
+                .foregroundStyle(card)
+                .lineLimit(6)
+                .truncationMode(.tail)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 5, topTrailingRadius: 18, style: .continuous).fill(clay))
+                .padding(.leading, 36)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            Text(text)
+                .font(.system(size: 15))
+                .lineSpacing(5)
+                .foregroundStyle(muted)
+                .lineLimit(6)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -178,7 +254,7 @@ final class Asker: NSObject, NSApplicationDelegate {
         panel = Panel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

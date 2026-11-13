@@ -39,8 +39,11 @@ const ENDED = "This link has ended";
 
 type Row = { lead: string; value: string; mono?: true };
 // What the page shows: the approval surface's title, its one line (mono:
-// a command), its rows, and its buttons' words.
-type View = { title: string; line?: string; mono?: true; rows: Row[]; approve: string; deny: string };
+// a command; bubble: a text he sends), a text's attachments, its rows, its
+// buttons' words, and the kind of step for the header's glyph.
+type View = { title: string; line?: string; mono?: true; bubble?: true; attach?: string; mark?: Mark; rows: Row[]; approve: string; deny: string };
+const MARKS = ["secret", "login", "card", "message", "shortcut", "handoff"] as const;
+type Mark = (typeof MARKS)[number];
 type State = "pending" | "approved" | "denied" | "expired";
 type Asked = {
   id: string;
@@ -100,7 +103,19 @@ function viewOf(r: Record<string, unknown>, verb: string): View {
   ];
   const approve = clean(r.approve, "request.approve", 30) ?? "Approve";
   const deny = clean(r.deny, "request.deny", 30) ?? "Deny";
-  return { title, ...(line === undefined ? {} : { line }), ...(r.mono === true && line !== undefined ? { mono: true as const } : {}), rows, approve, deny };
+  const attach = clean(r.attach, "request.attach", 300);
+  const mark = MARKS.find((m) => m === r.kind);
+  return {
+    title,
+    ...(line === undefined ? {} : { line }),
+    ...(r.mono === true && line !== undefined ? { mono: true as const } : {}),
+    ...(mark === "message" && line !== undefined ? { bubble: true as const } : {}),
+    ...(attach === undefined ? {} : { attach }),
+    ...(mark === undefined ? {} : { mark }),
+    rows,
+    approve,
+    deny,
+  };
 }
 
 function enrolled(): { rpId: string; credential: Credential } | undefined {
@@ -301,30 +316,38 @@ body {
 }
 main { max-width: 34rem; margin: 0 auto; padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
 h1, p, dl, dd { margin: 0; }
-.card { padding: 32px; border: 1px solid var(--edge); border-radius: 16px; background: var(--card); }
+.card { padding: 32px; border: 1px solid var(--edge); border-radius: 18px; background: var(--card); }
 @media (max-width: 600px) { .card { padding: 24px; } }
 .head { display: flex; align-items: center; gap: 12px; font-size: 13px; line-height: 18px; }
-.state { display: inline-flex; align-items: center; gap: 8px; }
+.state { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; }
 .state.needs { color: var(--muted); }
 .state.good { color: var(--good); }
 .state.bad { color: var(--bad); }
 .state.quiet { color: var(--muted); }
 .glyph { display: none; flex: none; width: 14px; height: 14px; }
+.glyph.needs { width: 24px; height: 24px; }
 .glyph path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .state.needs .glyph.needs, .state.good .glyph.good, .state.bad .glyph.bad { display: block; }
-.glyph.needs circle { fill: var(--clay); }
-.glyph.needs path { stroke: var(--card); }
-.glyph.needs .dot { fill: var(--card); }
+.glyph.needs .disc { fill: var(--clay); }
+.glyph.needs path, .glyph.needs g circle, .glyph.needs rect { fill: none; stroke: var(--card); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.glyph.needs g .dot { fill: var(--card); stroke: none; }
 h1 { margin-top: 20px; font-size: 28px; line-height: 34px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .line { margin-top: 8px; color: var(--muted); overflow-wrap: anywhere; }
-.line.mono { line-height: 20px; }
+.line.mono { margin-top: 14px; padding: 11px 14px; border-radius: 10px; background: var(--raised); color: var(--ink); line-height: 20px; }
+.line.mono::before { content: "$ "; color: var(--faint); }
+.line.bubble { width: fit-content; max-width: calc(100% - 36px); margin: 14px 0 0 auto; padding: 10px 14px; border-radius: 18px 18px 5px 18px; background: var(--clay); color: var(--card); line-height: 21px; }
+.attach { display: flex; justify-content: flex-start; align-items: center; gap: 6px; margin-top: 10px; color: var(--faint); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.attach.mine { justify-content: flex-end; }
+.attach svg { flex: none; width: 14px; height: 14px; }
+.attach path, .fid path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.fid { flex: none; width: 18px; height: 18px; }
 hr { margin: 20px 0; border: 0; border-top: 1px solid var(--edge); }
 .rows { display: grid; gap: 8px; }
 .row { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: 12px; }
 .row dt { color: var(--faint); }
 .row dd { overflow-wrap: anywhere; unicode-bidi: plaintext; }
 .mono { font-family: "Berkeley Mono", "SF Mono", ui-monospace, monospace; font-size: 13px; }
-.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 28px; }
+.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 28px; }
 button {
   display: inline-flex;
   align-items: center;
@@ -332,18 +355,18 @@ button {
   gap: 8px;
   min-height: 44px;
   padding: 10px 16px;
-  border: 1px solid var(--edge);
-  border-radius: 10px;
-  background: transparent;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--ink);
   font: inherit;
   cursor: pointer;
   transition: background-color 150ms ease-out, border-color 150ms ease-out;
 }
-button.approve { border-color: var(--ink); background: var(--ink); color: var(--card); font-weight: 500; }
+button.approve { background: var(--ink); color: var(--card); font-weight: 500; }
 @media (hover: hover) {
-  button:hover { background: var(--raised); }
-  button.approve:hover { border-color: var(--muted); background: var(--muted); }
+  button:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+  button.approve:hover { background: var(--muted); }
 }
 button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 button:disabled { opacity: 0.5; cursor: default; }
@@ -360,7 +383,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 const SCRIPT = String.raw`
 "use strict";
 {
-  const [state, word, shown, title, line, rule, rows, act, go, goText, no, noText, note] = ["state", "word", "shown", "title", "line", "rule", "rows", "act", "go", "goText", "no", "noText", "note"].map((id) => document.getElementById(id));
+  const [state, word, shown, title, line, attach, attachText, rule, rows, act, go, goText, no, noText, note] = ["state", "word", "shown", "title", "line", "attach", "attachText", "rule", "rows", "act", "go", "goText", "no", "noText", "note"].map((id) => document.getElementById(id));
   const base = location.pathname.replace(/\/+$/, "");
   const b64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const raw = (text) => Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
@@ -499,11 +522,15 @@ const SCRIPT = String.raw`
       return end("No answer from the Mac", "bad", NO_ANSWER);
     }
     const yes = o.kind === "setup" ? setUp : approve;
+    for (const g of state.querySelectorAll(".glyph.needs g")) g.setAttribute("display", g.dataset.mark === (o.mark || "none") ? "inline" : "none");
     word.textContent = o.asker;
     title.textContent = o.title;
     line.textContent = o.line || "";
-    line.className = o.mono ? "line mono" : "line";
+    line.className = o.mono ? "line mono" : o.bubble ? "line bubble" : "line";
     line.hidden = !o.line;
+    attachText.textContent = o.attach || "";
+    attach.className = o.bubble ? "attach mine" : "attach";
+    attach.hidden = !o.attach;
     rows.replaceChildren(...o.rows.map(row));
     rows.hidden = o.rows.length === 0;
     rule.hidden = o.rows.length === 0;
@@ -528,6 +555,20 @@ const SCRIPT = String.raw`
 
 const HEADERS = pageHeaders(SCRIPT, STYLE);
 
-const GLYPHS = `<svg class="glyph needs" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="7"/><path d="M7 3.75v4"/><circle class="dot" cx="7" cy="10.25" r="0.85"/></svg><svg class="glyph good" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.25 7.25l2.5 2.5 5-5.5"/></svg><svg class="glyph bad" viewBox="0 0 14 14" aria-hidden="true"><path d="M4.25 4.25l5.5 5.5m0-5.5l-5.5 5.5"/></svg>`;
+// The needs-you disc carries the kind of step as a line drawing; "!" when
+// the request names none.
+const MARK_DRAWINGS: Record<Mark | "none", string> = {
+  none: `<path d="M7 3.75v4"/><circle class="dot" cx="7" cy="10.25" r="0.85"/>`,
+  secret: `<circle cx="4.75" cy="9.25" r="2.5"/><path d="M6.5 7.5l5-5M9.5 4.5l1.5 1.5M8 6l1 1"/>`,
+  login: `<circle cx="7" cy="4.75" r="2.25"/><path d="M2.75 12c.4-2.3 2.2-3.75 4.25-3.75s3.85 1.45 4.25 3.75"/>`,
+  card: `<rect x="1.75" y="3.25" width="10.5" height="7.5" rx="1.5"/><path d="M1.75 6h10.5M4 8.5h2"/>`,
+  message: `<path d="M7 2.5c2.9 0 5 1.7 5 3.9S9.9 10.3 7 10.3c-.6 0-1.2-.1-1.7-.2L2.6 11.5l.7-2.2C2.5 8.5 2 7.5 2 6.4 2 4.2 4.1 2.5 7 2.5z"/>`,
+  shortcut: `<path d="M7.75 1.75L3.5 7.75h3.25l-.5 4.5 4.25-6h-3.25z"/>`,
+  handoff: `<path d="M4.5 7V3.5a.9.9 0 0 1 1.8 0v3M6.3 6V2.75a.9.9 0 0 1 1.8 0V6M8.1 6V3.5a.9.9 0 0 1 1.8 0v4.25c0 2.4-1.5 4-3.6 4-1.6 0-2.5-.8-3.3-2.2L2.1 7.9a.85.85 0 0 1 1.4-.9l1 1.2"/>`,
+};
+const NEEDS = `<svg class="glyph needs" viewBox="0 0 24 24" aria-hidden="true"><circle class="disc" cx="12" cy="12" r="12"/>${Object.entries(MARK_DRAWINGS)
+  .map(([mark, drawing]) => `<g data-mark="${mark}" transform="translate(5 5)"${mark === "none" ? "" : ` display="none"`}>${drawing}</g>`)
+  .join("")}</svg>`;
+const GLYPHS = `${NEEDS}<svg class="glyph good" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.25 7.25l2.5 2.5 5-5.5"/></svg><svg class="glyph bad" viewBox="0 0 14 14" aria-hidden="true"><path d="M4.25 4.25l5.5 5.5m0-5.5l-5.5 5.5"/></svg>`;
 
-const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>Approval</title><style>${STYLE}</style></head><body><main><section class="card"><header class="head"><span class="state needs" id="state">${GLYPHS}<span id="word"></span></span></header><div id="shown" hidden><h1 id="title"></h1><p class="line" id="line" hidden></p><hr id="rule" hidden><dl class="rows" id="rows" hidden></dl><div id="act" class="controls"><button type="button" id="no"><span id="noText">Deny</span></button><button type="button" class="approve" id="go"><span id="goText">Approve</span></button></div></div><p class="note" id="note" role="status" aria-live="polite">Loading</p></section></main><script>${SCRIPT}</script></body></html>`;
+const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>Approval</title><style>${STYLE}</style></head><body><main><section class="card"><header class="head"><span class="state needs" id="state">${GLYPHS}<span id="word"></span></span></header><div id="shown" hidden><h1 id="title"></h1><p class="line" id="line" hidden></p><p class="attach" id="attach" hidden><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M11.5 6.5L7 11a2.8 2.8 0 0 1-4-4l4.8-4.8a1.9 1.9 0 0 1 2.7 2.7L5.8 9.6a.95.95 0 0 1-1.35-1.35L8.5 4.2"/></svg><span id="attachText"></span></p><hr id="rule" hidden><dl class="rows" id="rows" hidden></dl><div id="act" class="controls"><button type="button" id="no"><span id="noText">Deny</span></button><button type="button" class="approve" id="go"><svg class="fid" viewBox="0 0 18 18" aria-hidden="true"><path d="M1.5 5.5v-2a2 2 0 0 1 2-2h2M12.5 1.5h2a2 2 0 0 1 2 2v2M16.5 12.5v2a2 2 0 0 1-2 2h-2M5.5 16.5h-2a2 2 0 0 1-2-2v-2M6 6.5V8M12 6.5V8M9 6.5V10H8M6.5 12.5c1.5 1.2 3.5 1.2 5 0"/></svg><span id="goText">Approve</span></button></div></div><p class="note" id="note" role="status" aria-live="polite">Loading</p></section></main><script>${SCRIPT}</script></body></html>`;

@@ -39,6 +39,8 @@ export type Ask = {
   title: string;
   detail?: string;
   mono?: boolean;
+  // A text's attachments, by file name.
+  attach?: string;
   where?: string;
   // What one yes covers besides kind, item and where: the program a secret
   // goes to, a text's exact content.
@@ -183,14 +185,15 @@ async function safariAsk(tool: string, a: Record<string, unknown>, place: () => 
     const body = String(a.text ?? "");
     const to = String(a.to ?? "");
     const hash = createHash("sha256").update(JSON.stringify([a.to, body, files])).digest("hex");
-    const detail = [body, files.map((f) => basename(f)).join(", ")].filter(Boolean).join("\n") || undefined;
-    return { kind: "message", verb: "send a text", item: { name: to }, title: `Text to ${to}`, detail, scope: hash, reuseMs: 0, auth: true, approve: "Send" };
+    const attach = files.map((f) => basename(f)).join(", ") || undefined;
+    return { kind: "message", verb: "send a text", item: { name: to }, title: `Text to ${to}`, detail: body || undefined, attach, scope: hash, reuseMs: 0, auth: true, approve: "Send" };
   }
   if (tool === "handoff" && a.id === undefined) {
     const { host, where } = await place();
     const why = text(a.why);
     const title = why ?? "A step in Safari";
-    return { kind: "handoff", verb: "hand you a step", item: { name: host ?? "Safari" }, title, detail: why ? host ?? "Safari" : host, where, scope: why ?? "", reuseMs: host ? REUSE_MS : 0, auth: false, approve: "Show me", deny: "Not now" };
+    const detail = why === undefined ? host : host !== undefined && why.includes(host) ? undefined : host ?? "Safari";
+    return { kind: "handoff", verb: "hand you a step", item: { name: host ?? "Safari" }, title, detail, where, scope: why ?? "", reuseMs: host ? REUSE_MS : 0, auth: false, approve: "Show me", deny: "Not now" };
   }
   return undefined;
 }
@@ -290,7 +293,7 @@ function popup(ask: Ask): { answer: Promise<Answer>; shown: Promise<void>; send(
       resolve({ approved: false, reason: "closed", via: "mac" });
     }
   });
-  const request = { asker: "omp", title: ask.title, detail: ask.detail, mono: ask.mono, approve: ask.approve, deny: ask.deny, auth: ask.auth, reason: `let omp ${ask.verb}: ${ask.item.name}`, timeoutMs: LIFE_MS };
+  const request = { kind: ask.kind, asker: "omp", title: ask.title, detail: ask.detail, attach: ask.attach, mono: ask.mono, approve: ask.approve, deny: ask.deny, auth: ask.auth, reason: `let omp ${ask.verb}: ${ask.item.name}`, timeoutMs: LIFE_MS };
   child.stdin.write(`${JSON.stringify(request)}\n`);
   return {
     answer: promise,
@@ -307,7 +310,7 @@ function phone(ask: Ask, done: Promise<Answer>): Promise<Answer> {
   void (async () => {
     try {
       if (!(await isAway())) return;
-      const request = { verb: ask.verb, kind: ask.kind, item: { name: clip(ask.item.name, TITLE_MAX) }, where: ask.where, title: clip(ask.title, TITLE_MAX), line: ask.detail === undefined ? undefined : clip(ask.detail.replaceAll("\n", " · "), DETAIL_MAX), mono: ask.mono, rows: [], approve: ask.approve, deny: ask.deny };
+      const request = { verb: ask.verb, kind: ask.kind, item: { name: clip(ask.item.name, TITLE_MAX) }, where: ask.where, title: clip(ask.title, TITLE_MAX), line: ask.detail === undefined ? undefined : clip(ask.detail.replaceAll("\n", " · "), DETAIL_MAX), attach: ask.attach === undefined ? undefined : clip(ask.attach, DETAIL_MAX), mono: ask.mono, rows: [], approve: ask.approve, deny: ask.deny };
       const opened = (await rpc("approval_phone_open", { request })) as { id?: unknown };
       const id = opened.id;
       if (typeof id !== "string") return;
@@ -395,6 +398,7 @@ function prompt(ask: Ask, p: Pending, theme: Theme, keys: { matches(data: string
       const out = ["", pad(mark), ""];
       for (const l of wrap(ask.title, inner)) out.push(pad(theme.bold(l)));
       if (ask.detail) for (const l of wrap(ask.detail, inner).slice(0, 6)) out.push(pad(theme.fg("muted", l)));
+      if (ask.attach) out.push(pad(theme.fg("dim", ask.attach.length > inner ? `${ask.attach.slice(0, inner - 1)}…` : ask.attach)));
       out.push("");
       const deny = `${theme.fg("dim", "esc")} ${ask.deny ?? "Deny"}`;
       out.push(pad(checking || !p.isShown ? deny : `${theme.fg("dim", "enter")} ${ask.approve ?? "Approve"}   ${deny}`));
