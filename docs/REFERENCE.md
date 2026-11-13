@@ -700,23 +700,24 @@ check, no solving services.
   `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
   a `challenge:` line under its header. `kind` names the service
   (cloudflare, akamai, datadome, perimeterx, aws-waf, kasada, imperva,
-  amazon, apple, recaptcha, hcaptcha, arkose, geetest, or other for a short
-  page that asks the reader to prove they are human). `where` is `"page"` when
+  webshield, amazon, apple, recaptcha, hcaptcha, arkose, geetest, or other
+  for a short page that asks the reader to prove they are human). `where` is `"page"` when
   the check stands in for the whole page, `"box"` when it is a box inside a
   page that otherwise reads (often on a form, such as an unanswered
   Cloudflare Turnstile), and `"block"` when the site has turned the
   browser away: no one can clear that, so report it.
-- `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check,
-  which often lets Safari through by itself. If it persists, wait for the
-  page to change in the open tab, then use another source or report that the
-  page is unavailable.
+- `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check
+  and on a host firewall's WebShield splash ("Please wait while your request
+  is being verified..."), which often let Safari through by themselves. If
+  one persists, wait for the page to change in the open tab, then use
+  another source or report that the page is unavailable.
 - `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
   merely loads AWS's scripts. Its silent wall, which Safari passes by
   itself, counts only in a web read's HTML (omp).
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
 - A check that does not clear by itself (any but Cloudflare's "Just a
-  moment..." page, or a box in a page) is kept for every agent by host
+  moment..." page, the WebShield splash, or a box in a page) is kept for every agent by host
   for 10 minutes. Another agent's `open`, `goto`, or `map` of that host
   fails at once with `blocked` and an error naming the check, when it
   showed, and where to go instead (`web_search` for a search). `fresh:
@@ -1673,7 +1674,9 @@ that refuses `page: true` may allow eval without it, which sees the
 DOM, localStorage, and `fetch` with the page's cookies: the error says
 so. Outside `page: true`, `sh` has
 helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
-open shadow roots too, `sh.text(el)` reads an element's text as
+open shadow roots too, `sh.resolve(ref)` returns the element a
+snapshot ref names (refs are kept in the extension, never written on
+the page, so no selector finds them) and `sh.refOf(el)` its ref, `sh.text(el)` reads an element's text as
 `extract` does (the whole page without `el`), `sh.jsonld()` lists the
 page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
 script files and inline scripts for a string or regex (an API path, an
@@ -2553,7 +2556,13 @@ and cannot run against the user's front tab or a remote browser. Use
   the site that answered, fetches the file through it, and says so in a
   `note`; later files from that site come through that tab. A file still
   answered with a web page fails as above: pass the `tab` of a page signed
-  in to that site, or an `out` ending in `.html` to keep the page. A 404
+  in to that site, or an `out` ending in `.html` to keep the page. A file
+  the site refuses with a 401 or 403 (a bot check such as Cloudflare's,
+  which the extension's own fetch never passes) is fetched again from a
+  page of that site: another tab of yours there, or its front page in a
+  new background tab opened for it, which stays for later files; a `note`
+  says so. If that page is refused too, its tab closes and the error says
+  so. `pdf {do: "read"}` of a tab or url takes the same path. A 404
   says nothing is at that address: take it from the page or the site's API
   rather than building it. A 429 says to wait and fetch one file at a
   time. A Slack
@@ -2836,6 +2845,31 @@ plain sentence of at most 300 characters.
 - `learn {site, real: true}` (CLI `--real true`) marks the site for real
   input (`safari guide reference acting`), and `real: false` unmarks it unless the site's
   guide marks it; `learn {site}` shows the mark.
+- Bot checks are learned without being asked. When `open` or `goto` meets
+  a bot check that stands in for the page, or a later `snapshot` or
+  missed `wait` on that tab shows the site turning the browser away, the
+  harness keeps, in `<host>.checks.json` beside the notes: the check, the
+  signal that named it (a title, a marker, a frame's host), how long it
+  took to let Safari through by itself, how often waiting did not clear
+  it and how often a person did in a `handoff`, and, for a block, the gap
+  since the visit before. The next visit, any agent's, applies it:
+  - a site whose own gate turned away a visit that came too soon after
+    the last one has its next visit held until the gap that got through
+    has passed (twice the gap that did not, at least 20 s, at most 60 s),
+    and the result's `note` says how long it waited. Visits asked for at
+    once (a `map`, two agents) each take their own turn; one whose turn
+    is more than 30 s off fails at once, naming when it comes, and loads
+    nothing. A block a minute or more after the visit before, or one a
+    vendor's firewall served (Cloudflare, Akamai, DataDome, Imperva), is
+    no pacing: the site stays a wall that is not loaded again;
+  - a check that let Safari through by itself is waited on as long as it
+    took (up to 35 s); `handoff` calls the user without its 35 s wait on
+    one that stayed through that wait twice, while `open` still waits its
+    usual 8 s on it, so a check that clears again is learned again.
+  `learn {site}` shows what was learned, `learn {site, history: true}`
+  lists each change, and `learn {site, checks: false}` (CLI `--checks
+  false`) forgets it. The harness never answers a check; this only
+  chooses when to load and how long to wait.
 - Never a secret: a fact that looks like a password, a verification code,
   a card number, or a token is refused. Say where it comes from instead
   ("the code comes by text").

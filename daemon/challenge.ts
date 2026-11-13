@@ -51,6 +51,11 @@ const RULES: Rule[] = [
   },
   { kind: "akamai", where: "page", markers: ["iframe#sec-cpt-if", "#sec-if-cpt-container", "iframe[title='Challenge Content']"], frames: /\/_sec\/cp_challenge\// },
   { kind: "datadome", where: "page", frames: /^https:\/\/([\w-]+\.)*captcha-delivery\.com\// },
+  // The WebShield splash of host firewalls (Imunify360, BitNinja) checks the
+  // browser, posts its answer (wsidchk), and reloads to the page; it asks the
+  // user nothing. On 11-13 map read ville.rosemere.qc.ca as this splash, its
+  // 51 characters taken for the page.
+  { kind: "webshield", where: "page", text: /^please wait while your request is being verified\.\.\.$/i },
   {
     kind: "perimeterx",
     where: "page",
@@ -109,6 +114,10 @@ const RULES: Rule[] = [
   { kind: "aws-waf", where: "box", markers: [".amzn-captcha-modal"] },
   { kind: "arkose", where: "box", frames: /^https:\/\/([\w-]+\.)*(arkoselabs\.com|funcaptcha\.com)\// },
   { kind: "geetest", where: "box", markers: [".geetest_box", ".geetest_panel_box"] },
+  // A gate that names its verdict: reflex-gate (11-12) says so once its
+  // server turns the browser away, which it did to visits too close
+  // together from one address.
+  { kind: "other", where: "block", text: /\bblocked: automated browser detected\b/i },
   // A short page asking the reader to prove they are a person, from a vendor
   // no rule above knows.
   {
@@ -126,21 +135,26 @@ export const PROBE = {
   textMax: TEXT_MAX,
 };
 
-// The first rule the tab shows names its check. A box that holds its token
-// is passed, and so is the page around it, whose words may still ask for it.
-export function classify(frames: Facts[]): Challenge | undefined {
+// The first rule the tab shows names its check, and the signal it showed
+// it by: the address, title, words, source, a marker, or a frame's host. A
+// box that holds its token is passed, and so is the page around it, whose
+// words may still ask for it.
+export function named(frames: Facts[]): { challenge: Challenge; signal: string } | undefined {
   const top = frames[0];
   if (!top) return undefined;
   for (const rule of RULES) {
-    const seen = rule.url?.test(top.url) || rule.title?.test(top.title) || rule.text?.test(top.text) || top.markers.some((m) => rule.topMarkers?.includes(m))
-      || (top.source !== undefined && rule.source?.test(top.source))
-      || frames.some((f) => f.markers.some((m) => rule.markers?.includes(m)) || f.frames.some((u) => rule.frames?.test(u)));
-    if (!seen) continue;
+    const marker = frames.flatMap((f) => f.markers).find((m) => rule.markers?.includes(m)) ?? top.markers.find((m) => rule.topMarkers?.includes(m));
+    const frame = frames.flatMap((f) => f.frames).find((u) => rule.frames?.test(u));
+    const signal = rule.url?.test(top.url) ? "address" : rule.title?.test(top.title) ? "title" : rule.text?.test(top.text) ? "page words"
+      : top.source !== undefined && rule.source?.test(top.source) ? "page source" : marker !== undefined ? `marker ${marker}` : frame !== undefined ? `frame ${URL.parse(frame)?.host ?? "?"}` : undefined;
+    if (signal === undefined) continue;
     const answer = rule.answer;
-    return answer && frames.some((f) => f.answered.includes(answer)) ? undefined : { kind: rule.kind, where: rule.where };
+    return answer && frames.some((f) => f.answered.includes(answer)) ? undefined : { challenge: { kind: rule.kind, where: rule.where }, signal };
   }
   return undefined;
 }
+
+export const classify = (frames: Facts[]): Challenge | undefined => named(frames)?.challenge;
 
 function isFacts(f: unknown): f is Facts {
   return !!f && typeof f === "object" && "url" in f && typeof f.url === "string" && "title" in f && typeof f.title === "string"
@@ -165,6 +179,13 @@ export async function challengeOf(tab: number): Promise<Challenge | null | undef
   return frames && classify(frames);
 }
 
+// The check the tab shows and its signal (named), undefined for none, or
+// null when the top page did not answer.
+export async function challengeNamed(tab: number): Promise<{ challenge: Challenge; signal: string } | null | undefined> {
+  const frames = await framesOf(tab);
+  return frames && named(frames);
+}
+
 // Cloudflare's wall checks the browser by itself and lets one it trusts
 // through to the page: egov.uscis.gov's was the first open's answer on
 // 09-30 and gone when the agent opened the page again 34 s later. open and
@@ -174,19 +195,27 @@ export async function challengeOf(tab: number): Promise<Challenge | null | undef
 // Turnstile box is waited on too: in background tabs on 09-30, walls there
 // and on travel.state.gov drew theirs after 3.5 to 5.6 s, and egov's then
 // let the browser through by itself at about 40 s.
-const SETTLE_MS = 8000;
-// A check that waits on the browser rather than the user: Cloudflare's wall.
-export const passesByItself = (c: Challenge | null | undefined) => c?.kind === "cloudflare" && c.where === "page";
+export const SETTLE_MS = 8000;
+// A check that waits on the browser rather than the user: Cloudflare's wall
+// and the WebShield splash.
+export const passesByItself = (c: Challenge | null | undefined) => c?.where === "page" && (c.kind === "cloudflare" || c.kind === "webshield");
 // handoff waits this much longer on such a wall before it calls the user:
 // egov's let Safari through about 40 s after it showed, 8 of them in open.
 export const PASS_MS = 35_000;
-export async function settledChallenge(tab: number, ms = SETTLE_MS): Promise<{ challenge: Challenge | null | undefined; top?: Facts }> {
-  const until = Date.now() + ms;
+// signal names what showed the check the answer gives (named), and
+// waitedOn is how long a check that lets the browser through was waited
+// on before it did or the time ran out.
+export async function settledChallenge(tab: number, ms = SETTLE_MS): Promise<{ challenge: Challenge | null | undefined; top?: Facts; signal?: string; waitedOn?: number }> {
+  const start = Date.now();
+  const until = start + ms;
+  let checked = false;
   for (let waited = false; ; waited = true) {
     const frames = await framesOf(tab);
-    const challenge = frames && classify(frames);
+    const found = frames ? named(frames) : undefined;
+    const challenge = frames && found?.challenge;
     const checking = frames ? passesByItself(challenge) : waited;
-    if (!checking || Date.now() >= until) return { challenge, ...(waited && frames ? { top: frames[0] } : {}) };
+    checked ||= passesByItself(challenge);
+    if (!checking || Date.now() >= until) return { challenge, ...(waited && frames ? { top: frames[0] } : {}), ...(found ? { signal: found.signal } : {}), ...(checked ? { waitedOn: Date.now() - start } : {}) };
     await Bun.sleep(500);
   }
 }

@@ -36,7 +36,7 @@ const SLICE_MS = 15000;
 type Handed = { done: boolean; waitedMs: number; url?: string; title?: string; challenge?: Challenge; byItself?: true; joined?: true; alerted?: string; alert?: true; id?: number; why?: string; hint?: string };
 
 // Who checks the page, by the kind challenge.ts names, for the card's title.
-const VENDOR: Record<string, string> = { cloudflare: "Cloudflare", akamai: "Akamai", datadome: "DataDome", imperva: "Imperva", perimeterx: "HUMAN", "aws-waf": "AWS", kasada: "Kasada", apple: "Apple", recaptcha: "reCAPTCHA", hcaptcha: "hCaptcha", arkose: "Arkose", geetest: "GeeTest" };
+const VENDOR: Record<string, string> = { cloudflare: "Cloudflare", akamai: "Akamai", datadome: "DataDome", imperva: "Imperva", perimeterx: "HUMAN", "aws-waf": "AWS", kasada: "Kasada", apple: "Apple", recaptcha: "reCAPTCHA", hcaptcha: "hCaptcha", arkose: "Arkose", geetest: "GeeTest", webshield: "WebShield" };
 
 // The handoff as Akyl's app shows it (akyl in phone.ts). Sent again while
 // calls wait on it, it stays up as long as the daemon would watch it with no

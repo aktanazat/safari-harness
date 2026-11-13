@@ -6,20 +6,36 @@ import { bridge } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
 import { callTool, formatResult } from "./tools.ts";
 import { followPages, mapPages, type Listing, type Page } from "./map.ts";
+import { checkLearned, learnCheck } from "./notes.ts";
 import { runAs } from "./owner.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
+
+// The bot checks map meets are learned into site notes (checks.ts): kept
+// out of the user's.
+process.env.SAFARI_HARNESS_NOTES = mkdtempSync(join(tmpdir(), "map-notes-"));
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
 // a wait asks for (a page that is not there), it gives a wait no answer (a
-// Safari too loaded to). CLEARING's check lets the browser through on the
-// tab's fourth probe.
+// Safari too loaded to). CLEARING's check and SPLASH's host-firewall
+// splash let the browser through on the tab's fourth probe.
 const GONE = "https://gone.example/";
 const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
+const SPLASH = "https://splash.example/";
+// reflex-gate's rule (11-12): a visit to a gate's host within 15 s of the
+// one before is turned away; WAF's block is Cloudflare's. BANNED turns away
+// every visit.
+const GATE = "https://gate.example/";
+const BUSY = "https://busy.example/";
+const WAF = "https://waf.example/";
+const BANNED = "https://banned.example/";
+const GATE_MS = 15_000;
+const gateLast = new Map<string, number>();
+const gateBlocked = new Set<number>();
 // eBay's error page, as its guide names it (docs/sites/ebay.md); FLAKY's
 // goes when it loads again, as eBay's searches' did in the October hunts
 // (AkylHunts AH4).
@@ -53,6 +69,11 @@ const FILE = "https://files.example/prices.csv";
 const PRICES = "item,price\nlamp,40\n";
 const ARCHIVE = "https://files.example/scans.zip";
 const fetchedFiles: string[] = [];
+// A file whose site refuses the extension's own fetch with a 403 and
+// answers a fetch from one of its pages (Cloudflare on ft.dk, 11-13).
+const REFUSED = "https://refusing.example/paper.csv";
+// A file its site refuses to its pages too.
+const LOCKED = "https://locked.example/paper.csv";
 const UNLOADED = "https://unloaded.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
@@ -93,6 +114,7 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
   if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
+  if (url === SPLASH && (probes.get(tab) ?? 0) <= 3) return { value: { url, title: "One moment, please...", text: "Please wait while your request is being verified...", truncated: false } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
 }
 
@@ -116,6 +138,13 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
+    const gate = [GATE, BUSY, WAF].find((g) => url.startsWith(g));
+    if (gate) {
+      const last = gateLast.get(gate);
+      if (last !== undefined && performance.now() - last < GATE_MS) gateBlocked.add(tab.id);
+      gateLast.set(gate, performance.now());
+    }
+    if (url === BANNED) gateBlocked.add(tab.id);
     return { value: file ? { ...tab, url, ...file } : tab };
   }
   if (op === "tabs.navigate") {
@@ -130,6 +159,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "fetchFile") {
     fetchedFiles.push(String(args[0]));
+    if (String(args[0]) === REFUSED || String(args[0]) === LOCKED) return { error: "download failed: HTTP 403" };
     return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
   }
   if (op === "tabs.close") {
@@ -146,7 +176,9 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     probes.set(tab, seen);
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
     if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
-    return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
+    if (gateBlocked.has(tab)) return { value: [{ frame: 0, url, title: "", text: url.startsWith(WAF) ? "Sorry, you have been blocked" : "Blocked: automated browser detected.", markers: [], answered: [], frames: [] }] };
+    if (url === SPLASH && seen <= 3) return { value: [{ frame: 0, url, title: "One moment, please...", text: "Please wait while your request is being verified...", markers: [], answered: [], frames: [] }] };
+    return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING || url === SPLASH ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
   return { value: { ok: true } };
 }
@@ -168,6 +200,14 @@ connect({
       return reply({ value: { found: url !== LOST && want.text !== ABSENT } });
     }
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
+    if (args[1] === "fetchFile") {
+      const url = String((args[2] as unknown[])[0]);
+      const page = tabs.get(Number(args[0]))?.url ?? "";
+      // Safari's PDF viewer, the tab showing the file, runs no page script.
+      const onSite = URL.parse(page)?.origin === URL.parse(url)?.origin && page !== url && url !== LOCKED;
+      if (!onSite) return reply({ error: "Load failed" });
+      return reply({ value: { name: "", type: "text/csv", size: PRICES.length, disposition: null, url, status: 200, data: Buffer.from(PRICES).toString("base64") } });
+    }
     if (holding) held.push(() => reply(read(Number(args[0]), String(args[1]))));
     else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]), String(args[1]))), SLOW_MS);
     else reply(read(Number(args[0]), String(args[1])));
@@ -472,12 +512,89 @@ test("a bot check is reported on its page and its page is never read", async () 
   expect(readUrls).toEqual(["https://shop.example/a"]);
 });
 
-// egov.uscis.gov's wall let Safari through by itself (09-30).
-test("a bot check that lets the browser through is waited out, and its page is read", async () => {
+// egov.uscis.gov's wall let Safari through by itself (09-30), and so did
+// ville.rosemere.qc.ca's host-firewall splash (11-13).
+test.each([CLEARING, SPLASH])("a bot check that lets the browser through is waited out, and its page is read: %s", async (url) => {
   jest.useFakeTimers();
-  const [page] = await waited(map({ urls: [CLEARING] }));
-  expect(page).toMatchObject({ url: CLEARING, ok: true, value: { text: `text of ${CLEARING}` } });
+  const [page] = await waited(map({ urls: [url] }));
+  expect(page).toMatchObject({ url, ok: true, value: { text: `text of ${url}` } });
   expect(page).not.toHaveProperty("challenge");
+});
+
+// A site whose wall stayed up through two handoffs is not waited on by
+// handoff; open still waits on it, so a wall that now clears is learned
+// again and the site is not handed to the user for ever.
+test("a check once marked as one waiting never clears is still waited on, and its clearing is learned", async () => {
+  jest.useFakeTimers();
+  learnCheck(CLEARING, () => ({ kind: "cloudflare", where: "page", signal: "title", last: "2026-11-12", waitFailed: 2 }));
+  const [page] = await waited(map({ urls: [CLEARING] }));
+  expect(page).toMatchObject({ url: CLEARING, ok: true });
+  expect(checkLearned(CLEARING)?.clearedMs).toBeGreaterThan(0);
+});
+
+// The first visit too soon after the last is turned away and learned
+// (checks.ts): every visit after it, as soon after as it is asked for, is
+// held until the site lets it through.
+test("a site that turns away visits too close together has its next visits spaced out", async () => {
+  jest.useFakeTimers();
+  const visit = async () => {
+    const [page] = await waited(map({ urls: [GATE] }));
+    jest.advanceTimersByTime(2000);
+    return page.ok ? "page" : (page.challenge?.where ?? "failed");
+  };
+  const seen = [];
+  for (let i = 0; i < 5; i++) seen.push(await visit());
+  expect(seen).toEqual(["page", "block", "page", "page", "page"]);
+});
+
+// A visit whose turn is more than 30 s away fails at once, naming when its
+// turn comes, and takes no turn: before, six pages of a map asked for at
+// once held turns two minutes ahead, past the map's own time, and loaded
+// after it had answered.
+test("pages of a paced site asked for at once are spaced out, and one whose turn is too far off fails at once and never loads", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [BUSY] }));
+  jest.advanceTimersByTime(2000);
+  const [blocked] = await waited(map({ urls: [BUSY] }));
+  expect(blocked.ok).toBe(false);
+  const from = loaded.length;
+  const pages = await waited(map({ urls: [`${BUSY}a`, `${BUSY}b`], concurrency: 2 }));
+  expect(pages.map((p) => p.ok)).toEqual([true, false]);
+  expect(pages[1].error).toMatch(/next turn is in \d+ s/);
+  jest.advanceTimersByTime(120_000);
+  await settled();
+  expect(loaded.slice(from).map(([url]) => url)).toEqual([`${BUSY}a`]);
+});
+
+// One block a minute or more after the visit before is no pacing: the
+// site stays a wall that is not loaded again (reads.ts).
+test("a site that turns away visits however far apart they are is not loaded again", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [BANNED], fresh: true }));
+  jest.advanceTimersByTime(70_000);
+  await waited(map({ urls: [BANNED], fresh: true }));
+  // past the 10 minutes a wall is kept
+  jest.advanceTimersByTime(11 * 60_000);
+  await waited(map({ urls: [BANNED] }));
+  const before = loaded.length;
+  const [page] = await waited(map({ urls: [BANNED] }));
+  expect(page.error).toContain("not loaded again");
+  expect(loaded.length).toBe(before);
+});
+
+// One block a vendor's firewall served soon after a visit before is a ban,
+// not pacing: the site stays a wall, as before it learned anything.
+test("a Cloudflare block soon after the visit before is a wall, not a site to space out", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [WAF] }));
+  jest.advanceTimersByTime(2000);
+  const [blocked] = await waited(map({ urls: [WAF] }));
+  expect(blocked.challenge).toMatchObject({ kind: "cloudflare", where: "block" });
+  jest.advanceTimersByTime(2000);
+  const before = loaded.length;
+  const [page] = await waited(map({ urls: [WAF] }));
+  expect(page.error).toContain("not loaded again");
+  expect(loaded.length).toBe(before);
 });
 
 test("a tab that will not close is reported on its page, and every page still answers", async () => {
@@ -856,4 +973,34 @@ test("a map answer past a reply's length gives a page cut at its limit its whole
   const text = formatResult({ pages }, 30_000);
   expect(text).toContain("- https://shop.example/1: read, 237685 characters, saved in /saved/item-1.txt\n- https://shop.example/2: read, 237685 characters, saved in /saved/item-2.txt");
   expect(text.match(/\n…cut at \d+ of 237685 characters/g)).toHaveLength(2);
+});
+
+test("a file its site refuses the extension's own fetch of comes through a page of that site, and the next one through the same tab", async () => {
+  const out = mkdtempSync(join(tmpdir(), "refused-"));
+  const fetch = (name: string) => runAs(process.pid, () => callTool("download", { url: REFUSED, out: join(out, name) }, true), taskIn("s6", "Lead"));
+  const before = opened.length;
+  const first = (await fetch("a.csv")) as { path: string; note?: string };
+  expect(readFileSync(first.path, "utf8")).toBe(PRICES);
+  expect(first.note).toMatch(/^the site refused the extension's own fetch, so the file came through your tab \d+ on refusing\.example, opened for it/);
+  expect(opened.length).toBe(before + 1);
+  const second = (await fetch("b.csv")) as { path: string; note?: string };
+  expect(readFileSync(second.path, "utf8")).toBe(PRICES);
+  expect(opened.length).toBe(before + 1);
+});
+
+test("a file refused to the extension and to the tab showing it comes through a new tab on its site, leaving that tab as it was", async () => {
+  const out = mkdtempSync(join(tmpdir(), "refused-"));
+  const lead = taskIn("s7", "Lead");
+  const shown = (await runAs(process.pid, () => callTool("open", { url: REFUSED, background: true }, true), lead)) as { id: number };
+  const got = (await runAs(process.pid, () => callTool("download", { tab: shown.id, out: join(out, "a.csv") }, true), lead)) as { path: string; note?: string };
+  expect(readFileSync(got.path, "utf8")).toBe(PRICES);
+  expect(got.note).toMatch(/came through your tab \d+ on refusing\.example, opened for it/);
+  expect(got.note).not.toContain(`your tab ${shown.id} `);
+  expect(tabs.get(shown.id)?.url).toBe(REFUSED);
+});
+
+test("a file its site refuses to a page of the site too fails saying so, and the tab opened for it closes", async () => {
+  const fetching = runAs(process.pid, () => callTool("download", { url: LOCKED, out: join(mkdtempSync(join(tmpdir(), "refused-")), "a.csv") }, true), taskIn("s8", "Lead"));
+  await expect(fetching).rejects.toThrow("download failed: HTTP 403, and the site refused it to a page of locked.example opened for it too");
+  expect(closed).toContain(opened.at(-1));
 });

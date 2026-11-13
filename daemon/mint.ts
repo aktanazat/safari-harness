@@ -189,9 +189,9 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
         if (args.what === "html") {
           const ref = String(args.ref ?? "");
           if (!ref || /^f\d+:/.test(ref)) throw new Error("inspect one top-document ref or CSS selector");
-          const selector = /^\d+$/.test(ref) ? `[data-sh-ref="${ref}"]` : ref;
+          const find = /^\d+$/.test(ref) ? `[sh.resolve(${JSON.stringify(ref)})].filter(Boolean)` : `document.querySelectorAll(${JSON.stringify(ref)})`;
           const result = fields(await invoke("eval", { tab: state.tab, expression: `(() => {
-            const matches = document.querySelectorAll(${JSON.stringify(selector)});
+            const matches = ${find};
             let remaining = 200;
             const structure = (element, depth) => {
               if (depth > 5 || remaining-- <= 0 || ["script", "style", "noscript", "template"].includes(element.localName)) return null;

@@ -78,10 +78,11 @@ function notesText(host: string, notes: Note[]): string | null {
   return notes.length ? `# ${host}\n\n${notes.map((n) => `- ${n.date} [${n.agent}] ${n.fact}`).join("\n")}\n` : null;
 }
 
-// Hosts with notes, readers, or a mark for real input, for `safari guide`.
+// Hosts with notes, readers, a mark for real input, or a learned bot check,
+// for `safari guide`.
 export function notedHosts(): string[] {
   const hosts = notesFiles().flatMap((f) => {
-    const kind = [READERS, REAL_INPUT, ".md"].find((k) => f.endsWith(k));
+    const kind = [READERS, REAL_INPUT, CHECKS, ".md"].find((k) => f.endsWith(k));
     return kind ? [f.slice(0, -kind.length)] : [];
   });
   return [...new Set([...hosts, ...readdirSync(SHIPPED)])].sort();
@@ -97,16 +98,19 @@ function notesFiles(): string[] {
 }
 
 // A host's notes as `safari guide` prints them, numbered as forget takes
-// them, then its readers and its mark for real input; null when it has none.
+// them, then its readers, its mark for real input, and its learned bot
+// check; null when it has none.
 export function notesSection(host: string): string | null {
   const notes = readNotes(host);
   const readers = Object.entries(readersAt(host));
   const real = readReal(host);
+  const check = readCheck(host);
   const sources = readHistory(host).sources;
   const sections = [
     ...(notes.length ? [`## Learned notes for ${host}\n\n${notes.map((n, i) => `${i + 1}. ${n.fact} (${n.date}, ${n.agent}${sources[noteKey(n)] ? `; source: ${sources[noteKey(n)]}` : ""})`).join("\n")}`] : []),
     ...(readers.length ? [`## Readers saved for ${host}\n\nRun one with eval {tab, reader: "<name>"}; learn {site, reader: "<name>"} shows its code.\n\n${readers.map(([name, r]) => `- ${name}: ${r.expression.length} characters${r.page ? ", in the page's own world" : ""} (${origin(r)})`).join("\n")}`] : []),
     ...(real === null ? [] : [`## Real input on ${host}\n\nA model's click and type with a ref here and on its subdomains go as real input, never scripted first (${real}); ${markingGuide(host) ? "its guide marks it too, so it stays marked" : `learn {site: "${host}", real: false} undoes it`}.`]),
+    ...(check === undefined ? [] : [`## Bot check learned on ${host}\n\n${checkWords(check)} (last seen ${check.last}). open and goto apply it by themselves; learn {site: "${host}", checks: false} forgets it.`]),
   ];
   return sections.length ? sections.join("\n\n") : null;
 }
@@ -272,6 +276,74 @@ export function realInputSite(url: unknown, marked: Set<string>): string | undef
   return host === undefined ? undefined : sitesOf(host).find((site) => marked.has(site));
 }
 
+// ---------- bot checks ----------
+
+// What visits learned about a site's bot check (challenge.ts), written by
+// open and goto themselves (tools.ts) so the next visit, any agent's,
+// starts from it: the check and the signal that named it, how long it took
+// to let Safari through by itself, how often waiting did not clear it and
+// a person had to, and, for a site that turns the browser away when visits
+// come too close together (reflex-gate on 11-12 turned away visits 7 to
+// 30 s after the one before, none 40 s or more after), the longest gap between
+// visits still turned away and the shortest one past it that got through.
+const CHECKS = ".checks.json";
+const checksOf = (host: string) => join(notesDir(), `${host}${CHECKS}`);
+
+export type CheckLearned = {
+  kind: string;
+  where: "page" | "box" | "block";
+  signal: string;
+  last: string;
+  clearedMs?: number;
+  waitFailed?: number;
+  person?: number;
+  blockedGapMs?: number;
+  passedGapMs?: number;
+};
+
+function readCheck(host: string): CheckLearned | undefined {
+  const text = readText(checksOf(host));
+  // the daemon's own file, written only by learnCheck
+  return text === null ? undefined : JSON.parse(text) as CheckLearned;
+}
+
+// The check learned on the page's host; undefined for none.
+export function checkLearned(url: unknown): CheckLearned | undefined {
+  const host = pageHost(url);
+  return host === undefined ? undefined : readCheck(host);
+}
+
+const seconds = (ms: number) => `${Math.round(ms / 1000)} s`;
+const times = (n: number) => (n === 1 ? "once" : `${n} times`);
+
+export function checkWords(c: CheckLearned): string {
+  const what = c.where === "block" ? `${c.kind} turned the browser away` : `${c.kind} ${c.where === "box" ? "check box" : "wall"}`;
+  return [
+    `${what} (signal: ${c.signal})`,
+    ...(c.clearedMs === undefined ? [] : [`let Safari through by itself after ${seconds(c.clearedMs)}`]),
+    ...(c.waitFailed === undefined ? [] : [`waiting did not clear it ${times(c.waitFailed)}`]),
+    ...(c.person === undefined ? [] : [`a person cleared it ${times(c.person)}`]),
+    ...(c.blockedGapMs === undefined ? [] : [`turned away a visit ${seconds(c.blockedGapMs)} after the one before`]),
+    ...(c.passedGapMs === undefined ? [] : [`let a visit ${seconds(c.passedGapMs)} after the one before through`]),
+  ].join("; ");
+}
+
+// update answers what to keep from what was learned on the page's host; a
+// change is written under the history learn shows and undoes.
+export function learnCheck(url: unknown, update: (was: CheckLearned | undefined) => CheckLearned | undefined): void {
+  const host = pageHost(url);
+  if (host === undefined) return;
+  const was = readCheck(host);
+  const now = update(was);
+  if (now === undefined || JSON.stringify(now) === JSON.stringify(was)) return;
+  change(host, { kind: "checks", content: `${JSON.stringify(now, null, 2)}\n`, agent: "harness", summary: `learned bot check: ${checkWords(now)}`, message: "" });
+}
+
+function forgetCheck(host: string, agent: string, source?: string): string {
+  if (readCheck(host) === undefined) throw new Error(`no bot check learned for ${host}`);
+  return change(host, { kind: "checks", content: null, agent, source, summary: "forgot the learned bot check", message: `forgot the bot check learned for ${host}` });
+}
+
 // ---------- secrets ----------
 
 // The notes are plain files every agent reads, so a fact that looks like a
@@ -339,7 +411,7 @@ export function secretLook(text: string): string | undefined {
 
 // ---------- the learn tool ----------
 
-type LearningFile = "notes" | "readers" | "real";
+type LearningFile = "notes" | "readers" | "real" | "checks";
 type LearningSnapshot = { content: string | null; sources: Record<string, string> };
 type LearningEdit = {
   id: string;
@@ -369,7 +441,7 @@ const historyOf = (host: string) => join(notesDir(), `${host}.learning.json`);
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const noteKey = (note: Note) => `note:${digest(JSON.stringify(note))}`;
 const snapshotHash = (snapshot: LearningSnapshot) => digest(JSON.stringify(snapshot));
-const learningFile = (host: string, kind: LearningFile) => kind === "notes" ? fileOf(host) : kind === "readers" ? readersOf(host) : realOf(host);
+const learningFile = (host: string, kind: LearningFile) => kind === "notes" ? fileOf(host) : kind === "readers" ? readersOf(host) : kind === "real" ? realOf(host) : checksOf(host);
 
 function readText(path: string): string | null {
   try {
@@ -620,15 +692,16 @@ function forgetReader(host: string, name: string, agent: string, source?: string
 // expression} saves a reader (page: true runs it in the page's own world),
 // {site, reader} shows its code, and {site, forget: "<name>"} removes it.
 // {site, real: true} marks the site for real input, and real: false
-// unmarks it.
+// unmarks it. {site, checks: false} forgets the bot check open and goto
+// learned there.
 // What is saved names the agent that learned it by its process name.
 export async function learn(a: Record<string, unknown>): Promise<string> {
   if (typeof a.site !== "string") throw new Error("site must be a string: a host like cvs.com, or an address");
   const host = siteHost(a.site);
   if (a.history !== undefined && typeof a.history !== "boolean") throw new Error("history is true or false");
-  const given = ["fact", "reader", "forget", "real", "undo"].filter((key) => a[key] !== undefined);
+  const given = ["fact", "reader", "forget", "real", "checks", "undo"].filter((key) => a[key] !== undefined);
   if (a.history === true) given.push("history");
-  if (given.length > 1) throw new Error(`give one of fact, reader, forget, real, history, or undo, not ${given.join(" and ")}`);
+  if (given.length > 1) throw new Error(`give one of fact, reader, forget, real, checks, history, or undo, not ${given.join(" and ")}`);
   const source = sourceFor(host, a.source);
   if (a.history === true) return showHistory(host);
   if (a.undo !== undefined) {
@@ -637,6 +710,10 @@ export async function learn(a: Record<string, unknown>): Promise<string> {
   }
   if (typeof a.forget === "string" && !/^\s*\d+\s*$/.test(a.forget)) return forgetReader(host, a.forget, await agentName(), source);
   if (a.forget !== undefined) return forget(host, Number(a.forget), await agentName(), source);
+  if (a.checks !== undefined) {
+    if (String(a.checks).trim().toLowerCase() !== "false") throw new Error("checks takes false, to forget the bot check open and goto learned; they learn it themselves");
+    return forgetCheck(host, await agentName(), source);
+  }
   if (a.real !== undefined) {
     const on = String(a.real).trim().toLowerCase();
     if (on !== "true" && on !== "false") throw new Error("real is true or false");
@@ -704,10 +781,12 @@ export function firstNotes(url: unknown, again = false): { notes?: string; first
 function linesFor(site: string): string[] {
   const notes = readNotes(site);
   const readers = Object.keys(readersAt(site));
+  const check = readCheck(site);
   const chars = notes.reduce((sum, n) => sum + n.fact.length, 0);
   return [
     ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with learn {site: "${site}"}`]),
     ...(readers.length ? [`readers saved for ${site}: ${readers.join(", ")}; run one with eval {tab, reader: "<name>"}`] : []),
     ...(readReal(site) === null ? [] : [`real input for ${site}: a model's click and type with a ref here go as real input`]),
+    ...(check === undefined ? [] : [`bot check learned for ${site}: ${checkWords(check)}`]),
   ];
 }

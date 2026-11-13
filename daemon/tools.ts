@@ -3,7 +3,8 @@
 
 import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
+import { challengeNamed, challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
+import { handedOff, paced, seenLater, settledVisit, waitsInVain } from "./checks.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
@@ -1139,22 +1140,27 @@ async function ontoMainDisplay(tab: number, size: { width: number; height: numbe
 
 // snapshot says when the tab shows a bot check (challenge.ts), as open,
 // goto, and a missed wait do: the agent hands it to the user with handoff.
-// A result still coming has its probe sent beside it.
-async function withChallenge<T extends object>(result: T | Promise<T>, tab: number): Promise<T> {
-  const [r, challenge] = await Promise.all([result, challengeOf(tab)]);
-  return challenge ? { ...r, challenge } : r;
+// A result still coming has its probe sent beside it. A block it shows is
+// learned for the site (checks.ts).
+async function withChallenge<T extends { url?: string }>(result: T | Promise<T>, tab: number): Promise<T> {
+  const [r, found] = await Promise.all([result, challengeNamed(tab)]);
+  seenLater(tab, r.url, found);
+  return found ? { ...r, challenge: found.challenge } : r;
 }
 
 // open and goto wait out a Cloudflare check that lets the browser through
-// (settledChallenge), and then answer with the page behind it. The task
+// (settledChallenge), as long as the site's learned check says it takes
+// (checks.ts), and then answer with the page behind it. The task
 // remembers a check that stays, and forgets it once a page of its site
-// loads with none (reads.ts).
-async function afterWall(t: TabInfo, tab: number): Promise<object> {
-  const { challenge, top } = await settledChallenge(tab);
+// loads with none (reads.ts). visit is the visit's pacing (paced).
+async function afterWall(t: TabInfo, tab: number, visit: { gap?: number; note?: string } = {}): Promise<object> {
+  const { challenge, top, note } = await settledVisit(tab, t.url ?? "", visit.gap);
   const { title: _, ...rest } = t;
   const page = top ? { ...rest, url: top.url, ...(top.title ? { title: top.title } : {}) } : t;
   met(page.url ?? "", challenge ?? null);
-  return challenge ? { ...page, challenge } : page;
+  const result = challenge ? { ...page, challenge } : page;
+  const notes = [visit.note, note].filter((n) => n !== undefined);
+  return notes.length ? { ...result, note: notes.join("; ") } : result;
 }
 
 // A model's open or goto of a host that showed any agent a check that does
@@ -1906,7 +1912,9 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
     // what the tab shows, each read left out when it has no answer by the end
-    const [now, challenge, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeOf(tab), end), drew ? undefined : blankHint(tab, end)]);
+    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? undefined : blankHint(tab, end)]);
+    seenLater(tab, now?.url, shown);
+    const challenge = shown?.challenge;
     const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);
     // A miss is not ok: on 10-16 agents read a wait's ok: true beside
     // found: false, after 20 s, as the page they waited for (HuntsUsage).
@@ -1975,7 +1983,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     // Cloudflare's wall often lets Safari through by itself (challenge.ts),
     // so the user hears only of one still up PASS_MS later, or of the check
     // that takes its place.
-    if (until === undefined && passesByItself(initial)) {
+    const prewait = until === undefined && passesByItself(initial) && !waitsInVain(first.url);
+    if (prewait) {
       const { challenge } = await settledChallenge(tab, PASS_MS);
       tab = followTab(tab);
       if (challenge?.where === "block") throw new Error(blocked(challenge));
@@ -1986,8 +1995,10 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
         h.done = true;
         h.byItself = true;
         met(now.url ?? "", null);
+        handedOff(now.url ?? "", "itself", Date.now() - h.start);
         return;
       }
+      if (passesByItself(challenge)) handedOff(first.url ?? "", "stayed", PASS_MS);
       initial = challenge ?? initial;
     }
     h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
@@ -2009,6 +2020,8 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : shows) {
         h.done = true;
         if (challenge === undefined) met(now.url ?? "", null);
+        // after a skipped wait, a check could also have cleared by itself
+        if (challenge === undefined && seen && (prewait || !passesByItself(initial))) handedOff(now.url ?? "", "person", Date.now() - h.start);
         // gone elsewhere, they have taken back what they wanted themselves;
         // the tab sits in an agent window, which never holds the front tab
         if (now.shown) await giveBack();
@@ -2791,7 +2804,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     const url = str(opts.url, "url");
     const mine = await agentTabOn(url);
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
-    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const f = await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e));
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
     const signIn = signInOrigin(f, url, out);
     if (signIn === undefined) return saveFile(f, url, out, folder, opts.prefix);
     // The extension's own fetch carries no sign-in, and a tab opened on the
@@ -2810,7 +2824,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     const url = opts.url === undefined ? ((await listTabs()).find((t) => t.id === tab)?.url ?? "") : str(opts.url, "url");
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
-    const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const f = isFile(inPage) ? inPage : await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e, tab));
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
     return saveFile(f, url, out, folder, opts.prefix);
   }
   const ref = String(opts.ref);
@@ -2857,6 +2872,32 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// The extension's own fetch carries none of a site's cookies in Safari, so
+// a site behind a bot check refuses it: ft.dk's Cloudflare answered 403 to
+// 5 of 5 of a PDF Safari itself showed (11-13), and passed 5 of 5 fetched
+// from a page of ft.dk. The file comes from a page of its site in another
+// of the agent's tabs (not skip, which could not fetch it), or the site's
+// front page in a tab opened for it, which stays for the next file.
+async function fetchedOnSite(url: string, refused: unknown, skip?: number): Promise<{ via: number; file: FilePayload; note: string }> {
+  const origin = URL.parse(url)?.origin;
+  if (!(refused instanceof Error) || !/^download failed: HTTP 40[13]$/.test(refused.message) || !origin) throw refused;
+  const fetchIn = async (tab: number) => {
+    const f = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
+    return isFile(f) ? f : undefined;
+  };
+  for (const tab of await agentTabsOn(url)) {
+    const f = tab === skip ? undefined : await fetchIn(tab);
+    if (f) return { via: tab, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${tab} on ${pageHost(url)}` };
+  }
+  const opened = (await TOOLS.open.run({ url: `${origin}/`, background: true, new: true })) as { id: number; challenge?: unknown };
+  const f = await fetchIn(opened.id);
+  if (!f) {
+    await closeTab(opened.id, "as its site refused the file to it too");
+    throw new Error(`${refused.message}, and the site refused it to a page of ${pageHost(url)} opened for it too${opened.challenge ? ", which showed a bot check" : ""}`);
+  }
+  return { via: opened.id, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${opened.id} on ${pageHost(url)}, opened for it; later files from that site come through it too` };
 }
 
 // Several files by url into the folder out names (~/Downloads unless it
@@ -2921,16 +2962,17 @@ function downloadHint(e: unknown): never {
 // alone comes with the cookies that site's pages send: the extension's own
 // fetch lacks some. On 10-07 a Slack image fetched with no tab came back as
 // Slack's sign-in page while its agent had a tab signed in to Slack open.
-async function agentTabOn(url: string): Promise<number | undefined> {
+async function agentTabsOn(url: string): Promise<number[]> {
   const owner = currentOwner();
   const host = URL.parse(url)?.hostname;
-  if (owner === undefined || !host) return undefined;
+  if (owner === undefined || !host) return [];
   const onSite = (t: TabInfo) => {
     const held = harnessTabs.get(t.id);
     return held !== undefined && matchesTask(held, owner, currentTask()) && site(URL.parse(t.url ?? "")?.hostname ?? "") === site(host);
   };
-  return (await listTabs()).find(onSite)?.id;
+  return (await listTabs()).filter(onSite).map((t) => t.id);
 }
+const agentTabOn = async (url: string) => (await agentTabsOn(url))[0];
 
 // A click or key on a tab the harness opened reports the files Safari saved
 // to ~/Downloads while it ran (downloads.ts). The user's own tabs are never
@@ -2994,10 +3036,8 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; url?
     }
     const tab = await resolveTab(opts.tab);
     const url = ((await listTabs()).find((t) => t.id === tab)?.url) ?? "";
-    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    const file = await scratchFile("safari-pdf-", "page.pdf");
-    await writeFile(file, Buffer.from(f.data, "base64"));
-    return { url, ...(await pdfText(file, opts.maxBytes)) };
+    const saved = await download({ tab, out: await scratchFile("safari-pdf-", "page.pdf") });
+    return { url, ...(saved.note ? { note: saved.note } : {}), ...(await pdfText(saved.path, opts.maxBytes)) };
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
   const asked = absoluteOut(opts.out);
@@ -3469,6 +3509,7 @@ export const TOOLS: Record<string, Tool> = {
       pageRead(a.snapshot);
       const address = webAddress(a.url);
       unwalled(address, a.fresh);
+      const visit = await paced(address);
       const group = a.group === undefined ? undefined : str(a.group, "group");
       const space = daemonPage(address) ? heldSpace(group) : await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
@@ -3477,7 +3518,7 @@ export const TOOLS: Record<string, Tool> = {
         const { tab: t, was } = reused;
         try {
           if (t.file) return await fileOpened(t, false);
-          const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+          const result = await withPage(withNotes(flagged(await afterWall(t, t.id, visit))), t.id, a.snapshot);
           return beside(result, "note", `loaded in your tab ${t.id} on ${pageHost(address)}, in place of ${redactUrl(was)}; new: true opens a second tab`);
         } finally {
           loading.delete(t.id);
@@ -3495,7 +3536,7 @@ export const TOOLS: Record<string, Tool> = {
         if (a.site === true && held) held.site = true;
         save();
         if (t.file) return await fileOpened(t, !a.keep);
-        const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+        const result = await withPage(withNotes(flagged(await afterWall(t, t.id, visit))), t.id, a.snapshot);
         const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
         return had === undefined ? result : beside(result, "hint", had);
       } finally {
@@ -3547,8 +3588,9 @@ export const TOOLS: Record<string, Tool> = {
     required: ["tab", "url"],
     run: action(async (a) => {
       unwalled(str(a.url, "url"), a.fresh);
+      const visit = await paced(str(a.url, "url"));
       const t = await navigate(a.tab, str(a.url, "url"));
-      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab)));
+      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab, visit)));
     }),
   },
   activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
@@ -4105,7 +4147,7 @@ export const TOOLS: Record<string, Tool> = {
     },
     // true marks the site for real input, false unmarks it (notes.ts); the
     // CLI passes it as text, --real true.
-    unlisted: { real: { description: "true marks the site for real input; false unmarks it" } },
+    unlisted: { real: { description: "true marks the site for real input; false unmarks it" }, checks: { description: "false forgets the bot check open and goto learned" } },
     required: ["site"],
     run: learn,
   },
