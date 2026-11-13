@@ -29,16 +29,13 @@
   // This copy's life in the page: its page listeners end with it.
   const life = new AbortController();
 
-  const REF_ATTR = "data-sh-ref";
   let refSeq = handed?.refSeq ?? 0;
   const refMap = new Map(handed?.refMap); // ref -> element
-  // A page can write the attribute too: a number no count reaches
-  // (Infinity, 1e300) would stop the count and give each new ref the
-  // same number.
-  if (takeover) for (const el of deepQueryAll(`[${REF_ATTR}]`)) {
-    const n = Number(el.getAttribute(REF_ATTR));
-    if (Number.isInteger(n) && n < 1e9) refSeq = Math.max(refSeq, n);
-  }
+  // element -> its ref, kept here and never written into the page: a mark
+  // on the element is a change the page's own MutationObserver sees, and
+  // on 11-13 bu-detect refused every sign-in whose report listed the
+  // data-sh-ref attributes snapshot used to set.
+  const refOf = handed?.refOf ?? new WeakMap([...refMap].map(([ref, el]) => [el, ref]));
 
   // ---------- role / name computation (ARIA-lite) ----------
 
@@ -445,15 +442,14 @@
 
   // ---------- snapshot ----------
 
-  // An element keeps a ref only while this copy's map names it there: a
-  // page can write the attribute, and a number this copy had not reached
-  // yet would go to the next control too, both printed as one ref.
+  // A ref names an element only while refMap still maps it there: pruneRefs
+  // and heal move refs, and a stale one gets the next number.
   function ensureRef(el) {
-    let ref = el.getAttribute(REF_ATTR);
-    if (refMap.get(ref) !== el) {
+    let ref = refOf.get(el);
+    if (ref === undefined || refMap.get(ref) !== el) {
       refSeq += 1;
       ref = String(refSeq);
-      el.setAttribute(REF_ATTR, ref);
+      refOf.set(el, ref);
     }
     refMap.set(ref, el);
     remember(ref, fingerprintOf(el));
@@ -4788,7 +4784,7 @@
   const QUIET_SPAN = { min: 0, quiet: 500, max: Infinity };
   // Parts of a page that change by themselves (a clock, a progress bar, a
   // playing video) and tags that draw nothing: changes there are no sign of
-  // an action, and neither are the harness's own marks (data-sh-ref).
+  // an action.
   const RESTLESS = "[role=timer], [role=marquee], [role=progressbar], progress, video, audio, canvas";
   const UNDRAWN = /^(SCRIPT|STYLE|LINK|META|NOSCRIPT|TEMPLATE)$/;
   // what the page puts in that loads before it can draw what it brought
@@ -4864,8 +4860,7 @@
   function madeByPage(r) {
     const at = holder(r.target);
     if (!at || at.closest(RESTLESS)) return false;
-    if (r.type === "attributes") return !r.attributeName.startsWith("data-sh-");
-    return r.type === "characterData" || [...r.addedNodes, ...r.removedNodes].some(countable);
+    return r.type === "attributes" || r.type === "characterData" || [...r.addedNodes, ...r.removedNodes].some(countable);
   }
 
   // Watches the page, shadow roots included, and hands seen each batch of
@@ -5533,6 +5528,7 @@
     q: deepQuery,
     qa: deepQueryAll,
     resolve,
+    refOf: (el) => (refMap.get(refOf.get(el)) === el ? refOf.get(el) : null),
     text: (target = document.body) => {
       const root = typeof target === "string" ? deepQuery(target) : target;
       return root ? readText(root, visibleText).replace(/[ \t]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : null;
@@ -6050,7 +6046,7 @@
     life.abort();
     pendingWait?.done(false);
     pendingDownload?.(null);
-    return { refSeq, refMap, fingerprints, secretFields, secretTexts };
+    return { refSeq, refMap, refOf, fingerprints, secretFields, secretTexts };
   };
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;

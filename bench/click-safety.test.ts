@@ -934,7 +934,7 @@ describe.skipIf(!runner)("cross-origin frame checks", () => {
       expect(await request({ load: fixture })).toMatchObject({ url: fixture });
       await request({ op: "snapshot" });
       const marker = await request<{ value: { result: { token: string; ref: string } } }>({
-        op: "eval", args: ["({token:window.__safariHarnessFrame,ref:document.getElementById('descendant').getAttribute('data-sh-ref')})"],
+        op: "eval", args: ["({token:window.__safariHarnessFrame,ref:sh.refOf(document.getElementById('descendant'))})"],
       });
       const { token, ref } = marker.value.result;
       expect(ref).toMatch(/^\d+$/);
