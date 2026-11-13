@@ -1673,7 +1673,9 @@ that refuses `page: true` may allow eval without it, which sees the
 DOM, localStorage, and `fetch` with the page's cookies: the error says
 so. Outside `page: true`, `sh` has
 helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
-open shadow roots too, `sh.text(el)` reads an element's text as
+open shadow roots too, `sh.resolve(ref)` returns the element a
+snapshot ref names (refs are kept in the extension, never written on
+the page, so no selector finds them) and `sh.refOf(el)` its ref, `sh.text(el)` reads an element's text as
 `extract` does (the whole page without `el`), `sh.jsonld()` lists the
 page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
 script files and inline scripts for a string or regex (an API path, an
