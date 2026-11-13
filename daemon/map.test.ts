@@ -12,14 +12,15 @@ import { WAIT_NEEDS } from "./receipt.ts";
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what
 // a wait asks for (a page that is not there), it gives a wait no answer (a
-// Safari too loaded to). CLEARING's check lets the browser through on the
-// tab's fourth probe.
+// Safari too loaded to). CLEARING's check and SPLASH's host-firewall
+// splash let the browser through on the tab's fourth probe.
 const GONE = "https://gone.example/";
 const EMPTY = "https://empty.example/";
 const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
+const SPLASH = "https://splash.example/";
 // eBay's error page, as its guide names it (docs/sites/ebay.md); FLAKY's
 // goes when it loads again, as eBay's searches' did in the October hunts
 // (AkylHunts AH4).
@@ -93,6 +94,7 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
   if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
+  if (url === SPLASH && (probes.get(tab) ?? 0) <= 3) return { value: { url, title: "One moment, please...", text: "Please wait while your request is being verified...", truncated: false } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
 }
 
@@ -146,7 +148,8 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     probes.set(tab, seen);
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
     if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
-    return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
+    if (url === SPLASH && seen <= 3) return { value: [{ frame: 0, url, title: "One moment, please...", text: "Please wait while your request is being verified...", markers: [], answered: [], frames: [] }] };
+    return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING || url === SPLASH ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
   return { value: { ok: true } };
 }
@@ -472,11 +475,12 @@ test("a bot check is reported on its page and its page is never read", async () 
   expect(readUrls).toEqual(["https://shop.example/a"]);
 });
 
-// egov.uscis.gov's wall let Safari through by itself (09-30).
-test("a bot check that lets the browser through is waited out, and its page is read", async () => {
+// egov.uscis.gov's wall let Safari through by itself (09-30), and so did
+// ville.rosemere.qc.ca's host-firewall splash (11-13).
+test.each([CLEARING, SPLASH])("a bot check that lets the browser through is waited out, and its page is read: %s", async (url) => {
   jest.useFakeTimers();
-  const [page] = await waited(map({ urls: [CLEARING] }));
-  expect(page).toMatchObject({ url: CLEARING, ok: true, value: { text: `text of ${CLEARING}` } });
+  const [page] = await waited(map({ urls: [url] }));
+  expect(page).toMatchObject({ url, ok: true, value: { text: `text of ${url}` } });
   expect(page).not.toHaveProperty("challenge");
 });
 
