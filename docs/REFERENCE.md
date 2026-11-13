@@ -700,24 +700,23 @@ check, no solving services.
   `challenge: {kind, where}` when the tab shows one; `snapshot` prints it as
   a `challenge:` line under its header. `kind` names the service
   (cloudflare, akamai, datadome, perimeterx, aws-waf, kasada, imperva,
-  webshield, amazon, apple, recaptcha, hcaptcha, arkose, geetest, or other
-  for a short page that asks the reader to prove they are human). `where` is `"page"` when
+  amazon, apple, recaptcha, hcaptcha, arkose, geetest, or other for a short
+  page that asks the reader to prove they are human). `where` is `"page"` when
   the check stands in for the whole page, `"box"` when it is a box inside a
   page that otherwise reads (often on a form, such as an unanswered
   Cloudflare Turnstile), and `"block"` when the site has turned the
   browser away: no one can clear that, so report it.
-- `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check
-  and on a host firewall's WebShield splash ("Please wait while your request
-  is being verified..."), which often let Safari through by themselves. If
-  one persists, wait for the page to change in the open tab, then use
-  another source or report that the page is unavailable.
+- `open` and `goto` wait up to 8 s on Cloudflare's "Just a moment..." check,
+  which often lets Safari through by itself. If it persists, wait for the
+  page to change in the open tab, then use another source or report that the
+  page is unavailable.
 - `aws-waf` is reported only once AWS's puzzle is drawn, not for a page that
   merely loads AWS's scripts. Its silent wall, which Safari passes by
   itself, counts only in a web read's HTML (omp).
 - A check that draws a moment after the page loads can be missing from
   `open`; the next `snapshot` or missed `wait` reports it.
 - A check that does not clear by itself (any but Cloudflare's "Just a
-  moment..." page, the WebShield splash, or a box in a page) is kept for every agent by host
+  moment..." page, or a box in a page) is kept for every agent by host
   for 10 minutes. Another agent's `open`, `goto`, or `map` of that host
   fails at once with `blocked` and an error naming the check, when it
   showed, and where to go instead (`web_search` for a search). `fresh:
@@ -1674,9 +1673,7 @@ that refuses `page: true` may allow eval without it, which sees the
 DOM, localStorage, and `fetch` with the page's cookies: the error says
 so. Outside `page: true`, `sh` has
 helpers: `sh.q(selector)` and `sh.qa(selector)` find elements inside
-open shadow roots too, `sh.resolve(ref)` returns the element a
-snapshot ref names (refs are kept in the extension, never written on
-the page, so no selector finds them) and `sh.refOf(el)` its ref, `sh.text(el)` reads an element's text as
+open shadow roots too, `sh.text(el)` reads an element's text as
 `extract` does (the whole page without `el`), `sh.jsonld()` lists the
 page's JSON-LD, `sh.scripts(pattern, {around, max})` searches the page's
 script files and inline scripts for a string or regex (an API path, an

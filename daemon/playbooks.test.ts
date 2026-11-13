@@ -41,7 +41,7 @@ function fixture(options: { drift?: boolean; ambiguous?: boolean; secret?: boole
         if (options.rows && expression.includes("const output =")) return { ok: true, result: { rows: [{ subject: searched ? options.rows.after : options.rows.before }], origin: new URL(url).origin, hash: searched ? `#search/${typed}` : "" } };
         if (expression.includes("({origin: location.origin, hash: location.hash})")) return { ok: true, result: { origin: new URL(url).origin, hash: searched ? `#search/${typed}` : "" } };
         if (expression.includes("document.querySelectorAll(")) return { ok: true, result: { count: options.resultCount ?? 1, text: `Found ${typed}` } };
-        const input = expression.includes('sh.resolve("1")');
+        const input = expression.includes('ref=\\"1\\"') || expression.includes('ref="1"');
         const f = input ? { ...field, ...(options.secret ? { type: "password" } : {}) } : { type: options.submit ? "submit" : "button", autocomplete: "", name: "", id: "go", label: "Search" };
         return { ok: true, result: { ref: input ? "1" : "2", role: input ? "searchbox" : "button", name: expression.includes("getRootNode") ? "Search" : f.name, tag: input ? "input" : "button", field: f, type: f.type, autocomplete: f.autocomplete, submit: options.submit && !input, searchForm: options.searchForm ?? null, href: null } };
       }

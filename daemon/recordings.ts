@@ -85,7 +85,7 @@ export function outputOf(v: unknown): PlaybookOutput {
     || !o.fields || typeof o.fields !== "object" || Array.isArray(o.fields)) throw new Error("output needs only rows and fields selectors");
   const selector = (value: unknown): string => {
     const s = publicLabel(value);
-    if (/\[\s*value(?:\s|[~|^$*]?=|\])/i.test(s)) throw new Error("output selectors must use public structure, not input values");
+    if (/data-sh-ref|\[\s*value(?:\s|[~|^$*]?=|\])/i.test(s)) throw new Error("output selectors must use public structure, not input values or temporary refs");
     return s;
   };
   const entries = Object.entries(o.fields);

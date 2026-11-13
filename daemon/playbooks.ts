@@ -85,7 +85,7 @@ export function sweepPlaybookLearning(): void {
 // text, nearby rows, title, cookie, or URL query. Names use the extension's
 // accessible-name convention; unsupported controls fail closed.
 const CONTROL = String.raw`(() => {
-  const el = /^\d+$/.test(TARGET) ? sh.resolve(TARGET) : document.querySelector(TARGET);
+  const el = document.querySelector(SELECTOR);
   if (!el || el.getRootNode() !== document) return null;
   const text = n => {
     const copy = n.cloneNode(true);
@@ -118,7 +118,7 @@ const CONTROL = String.raw`(() => {
     action: el.hasAttribute('formaction') ? el.formAction : form.action,
     inputs: Array.from(form.elements).filter(input => input.localName === 'input' && ['text', 'search'].includes(input.type))
       .map(input => ({name: input.name, id: input.id, type: input.type}))} : null;
-  return {ref:sh.refOf(el), role, name, tag:el.localName, field, submit:el.type === 'submit', searchForm, href:el.tagName === 'A' ? el.href : null};
+  return {ref:el.getAttribute('data-sh-ref'), role, name, tag:el.localName, field, submit:el.type === 'submit', searchForm, href:el.tagName === 'A' ? el.href : null};
 })()`;
 
 async function captured(tool: string, a: Record<string, unknown>, session: Learning, call: Call): Promise<AgentStep> {
@@ -129,7 +129,8 @@ async function captured(tool: string, a: Record<string, unknown>, session: Learn
   }
   if (a.ref === undefined || /^f\d+:/.test(String(a.ref)) || a.append === true) throw new Error("learning requires a top-document target and replacement typing");
   const ref = String(a.ref);
-  const c = fields(fields(await call("eval", { tab: session.tab, expression: CONTROL.replaceAll("TARGET", () => JSON.stringify(ref)) })).result);
+  const selector = /^\d+$/.test(ref) ? `[data-sh-ref="${ref}"]` : ref;
+  const c = fields(fields(await call("eval", { tab: session.tab, expression: CONTROL.replace("SELECTOR", JSON.stringify(selector)) })).result);
   if (typeof c.ref !== "string" || typeof c.role !== "string" || typeof c.tag !== "string") throw new Error("the target is not a supported control");
   const name = publicLabel(c.name);
   const seen = await call("lookalikes", { tab: session.tab, target: { role: c.role, name, tag: c.tag } });

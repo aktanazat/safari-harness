@@ -51,11 +51,6 @@ const RULES: Rule[] = [
   },
   { kind: "akamai", where: "page", markers: ["iframe#sec-cpt-if", "#sec-if-cpt-container", "iframe[title='Challenge Content']"], frames: /\/_sec\/cp_challenge\// },
   { kind: "datadome", where: "page", frames: /^https:\/\/([\w-]+\.)*captcha-delivery\.com\// },
-  // The WebShield splash of host firewalls (Imunify360, BitNinja) checks the
-  // browser, posts its answer (wsidchk), and reloads to the page; it asks the
-  // user nothing. On 11-13 map read ville.rosemere.qc.ca as this splash, its
-  // 51 characters taken for the page.
-  { kind: "webshield", where: "page", text: /^please wait while your request is being verified\.\.\.$/i },
   {
     kind: "perimeterx",
     where: "page",
@@ -180,9 +175,8 @@ export async function challengeOf(tab: number): Promise<Challenge | null | undef
 // and on travel.state.gov drew theirs after 3.5 to 5.6 s, and egov's then
 // let the browser through by itself at about 40 s.
 const SETTLE_MS = 8000;
-// A check that waits on the browser rather than the user: Cloudflare's wall
-// and the WebShield splash.
-export const passesByItself = (c: Challenge | null | undefined) => c?.where === "page" && (c.kind === "cloudflare" || c.kind === "webshield");
+// A check that waits on the browser rather than the user: Cloudflare's wall.
+export const passesByItself = (c: Challenge | null | undefined) => c?.kind === "cloudflare" && c.where === "page";
 // handoff waits this much longer on such a wall before it calls the user:
 // egov's let Safari through about 40 s after it showed, 8 of them in open.
 export const PASS_MS = 35_000;
