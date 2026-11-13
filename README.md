@@ -65,6 +65,9 @@ daemon/
                     card set up for it is kept sealed under a key only its
                     passkey gives after Face ID; one approval covers that
                     card on that site for 30 minutes
+  phone-approvals.ts an omp agent's step he approves on his iPhone while
+                    away, on the same page with its own passkey; set up
+                    once with `safari passwords approvals-phone`
   telegram.ts       sends an alert, and its picture, to his Telegram through
                     ~/.local/bin/tell-aktan; says the alert is off when that
                     is missing (safari doctor and status check it)
@@ -215,7 +218,7 @@ carry a password.
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
 | 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `GET /calls`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
-| 37335 | HTTP on 127.0.0.1, from the first card approval: the page his iPhone opens to approve a card fill, through `tailscale serve` |
+| 37335 | HTTP on 127.0.0.1, from the first phone approval: the page his iPhone opens to approve a card fill or an agent's step, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
 without a page's `Origin` or cross-site fetch metadata. task pages use

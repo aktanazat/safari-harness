@@ -22,8 +22,8 @@ import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { waitCardsOut } from "../daemon/cards.ts";
-import { connectionRefused, daemonHttp, deployingFor } from "../daemon/rpc.ts";
-import { alertHealth } from "../daemon/phone.ts";
+import { connectionRefused, daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
+import { alertHealth, isAway } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
@@ -189,6 +189,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              your address, name, email, phone from your Contacts card
   safari fill login [--bitwarden] [--user name] --tab N
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
+  safari passwords approvals-phone           at the Mac: set up Face ID on your iPhone to
+                                             approve agents' steps while you are away
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
                                              (safari passwords logins --tab N: a first word is do)
@@ -756,6 +758,30 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
 // are not.
 const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, restarted: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
 
+// passwords approvals-phone: the approvals passkey on his iPhone, made at
+// the Mac (phone-approvals.ts), never through a tool a model calls. His
+// phone gets the link; this waits until he has set it up there, cancelled,
+// or the link ended.
+async function approvalsPhone(): Promise<void> {
+  if (await isAway()) fail("set up Face ID approvals at the Mac, with your iPhone at hand");
+  const opened = await rpc("approval_phone_setup");
+  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "string") fail("the daemon's answer named no setup request");
+  const id = opened.id;
+  if (!("alerted" in opened) || opened.alerted !== true) {
+    await rpc("approval_phone_close", { id });
+    fail(`the setup link did not reach your phone: ${"why" in opened ? String(opened.why) : "no reason given"}`);
+  }
+  console.log("a link went to your phone: open it in Safari on your iPhone, and tap Set up with Face ID");
+  for (;;) {
+    await Bun.sleep(2000);
+    const answer = await rpc("approval_phone_state", { id });
+    const state = answer && typeof answer === "object" && "state" in answer ? answer.state : undefined;
+    if (state === "approved") return console.log("set up: while you are away from the Mac, agents' approvals come to your iPhone");
+    if (state === "denied") return console.log("cancelled on your iPhone: nothing was set up");
+    if (state === "expired") fail("the link ended before Face ID was set up: run safari passwords approvals-phone again");
+  }
+}
+
 async function main() {
   // This process ends with its answer, and a card's Touch ID prompt with
   // it: a card fill waits until he answers. A pairing runs in a process of
@@ -967,6 +993,8 @@ async function main() {
   }
 
   if (cmd === "mint") return mintCommand(rest, host);
+
+  if (cmd === "passwords" && rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) === "approvals-phone") return approvalsPhone();
 
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");
