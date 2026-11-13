@@ -17,6 +17,9 @@
 //
 // A request lasts LIVE_MS; an answer waits as long for its asker, then is
 // wiped. A model's own call is refused: no agent holds a phone's answer.
+//
+// The same server shows his phone an agent's step to approve, under /a/
+// (phone-approvals.ts), and its answers go through the same checks.
 
 import { execFile } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "node:crypto";
@@ -32,7 +35,7 @@ const LIVE_MS = 10 * 60_000;
 // (ANSWER_MS in passwords.ts).
 const WAIT_MS = 30_000;
 
-type Credential = { id: string; key: string };
+export type Credential = { id: string; key: string };
 type Answer = { approved: { prf: Buffer; credential: Credential } } | { declined: true } | { expired: true };
 type Approval = {
   id: string;
@@ -53,12 +56,12 @@ const approvals = new Map<string, Approval>();
 const ENDED = "This link has ended.";
 
 // A check of the phone's answer that failed: the page shows why.
-class Refused extends Error {}
+export class Refused extends Error {}
 
-const b64 = (b: Buffer) => b.toString("base64url");
+export const b64 = (b: Buffer) => b.toString("base64url");
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest();
 
-function record(v: unknown): Record<string, unknown> {
+export function record(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : {};
 }
 
@@ -76,7 +79,7 @@ function port(): number {
 
 // The page's address on his tailnet: the HTTPS address tailscale serve
 // passes to this port, or SAFARI_HARNESS_PHONE_ORIGIN.
-async function pageOrigin(): Promise<string> {
+export async function pageOrigin(): Promise<string> {
   const given = process.env.SAFARI_HARNESS_PHONE_ORIGIN;
   if (given) return new URL(given).origin;
   const at = port();
@@ -99,9 +102,18 @@ async function pageOrigin(): Promise<string> {
   throw new Error(`tailscale serves no address for the approval page: run tailscale serve --bg --https=8447 http://127.0.0.1:${at} on the Mac once`);
 }
 
+// A page the server shows: the request its link names by id, and whether
+// the page asks for that request's options.
+export type Page = (r: Request, id: string, asked: boolean) => Promise<Response> | Response;
+
+// The pages by the first part of a link's path: c, a card fill's (here);
+// a, an agent's step (phone-approvals.ts).
+const pages = new Map<string, Page>();
 let listening = false;
 
-function listen(): void {
+// Shows page under /<prefix>/, and starts the server the first time.
+export function listen(prefix: string, page: Page): void {
+  pages.set(prefix, page);
   if (listening) return;
   const at = port();
   try {
@@ -144,7 +156,7 @@ async function ask(a: Record<string, unknown>): Promise<{ request: string; token
     if (typeof c.id !== "string" || typeof c.key !== "string" || typeof a.salt !== "string") throw new Error("approve needs the card's credential and salt");
     made = { kind: "approve", salt: a.salt, credential: { id: c.id, key: c.key }, site: text(a.site, "site", 253), ...(a.amount === undefined ? {} : { amount: text(a.amount, "amount", 40) }) };
   }
-  listen();
+  listen("c", cardPage);
   const id = b64(randomBytes(16));
   const token = randomBytes(32);
   const approval: Approval = { id, token, origin, rpId, card, challenge: b64(randomBytes(32)), answered: Promise.withResolvers<void>(), timer: setTimeout(() => settle(approval, { expired: true }), LIVE_MS), ...made };
@@ -212,17 +224,22 @@ export const CARD_PHONE: Tool = {
   },
 };
 
-function json(status: number, body: unknown): Response {
+export function json(status: number, body: unknown): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
 }
 
-const PATH = /^\/c\/([A-Za-z0-9_-]{22})(\/options)?\/?$/;
+const PATH = /^\/([a-z])\/([A-Za-z0-9_-]{22})(\/options)?\/?$/;
 
 async function route(r: Request): Promise<Response> {
   const m = PATH.exec(new URL(r.url).pathname);
-  if (!m) return json(404, { error: "Not found." });
-  const approval = approvals.get(m[1]);
-  if (m[2]) return r.method === "GET" ? options(approval) : json(405, { error: "Not allowed." });
+  const page = m ? pages.get(m[1]) : undefined;
+  if (!m || !page) return json(404, { error: "Not found." });
+  return page(r, m[2], m[3] !== undefined);
+}
+
+function cardPage(r: Request, id: string, asked: boolean): Promise<Response> | Response {
+  const approval = approvals.get(id);
+  if (asked) return r.method === "GET" ? options(approval) : json(405, { error: "Not allowed." });
   if (r.method === "GET") return new Response(PAGE, { headers: HEADERS });
   if (r.method === "POST") return answered(approval, r);
   return json(405, { error: "Not allowed." });
@@ -291,7 +308,7 @@ function authenticator(auth: Buffer, rpId: string, made: boolean): void {
 }
 
 // A new passkey's registration: it must be ES256, for this page.
-function registered(a: Approval, challenge: string, v: unknown): Credential {
+export function registered(a: Pick<Approval, "origin" | "rpId">, challenge: string, v: unknown): Credential {
   const reg = record(v);
   const id = bytes(reg.id, "passkey");
   client(bytes(reg.clientDataJSON, "client data"), "webauthn.create", challenge, a.origin);
@@ -311,8 +328,8 @@ function registered(a: Approval, challenge: string, v: unknown): Credential {
   return { id: b64(id), key: b64(key) };
 }
 
-// An assertion: this request's challenge, signed by the card's passkey.
-function asserted(a: Approval, credential: Credential, v: unknown): void {
+// An assertion: this request's challenge, signed by its passkey.
+export function asserted(a: Pick<Approval, "origin" | "rpId" | "challenge">, credential: Credential, v: unknown): void {
   const got = record(v);
   if (!bytes(got.id, "passkey").equals(Buffer.from(credential.id, "base64url"))) throw new Refused("Another passkey answered.");
   const data = bytes(got.clientDataJSON, "client data");
@@ -522,15 +539,19 @@ const SCRIPT = String.raw`
 }
 `;
 
-const hash = (s: string) => `'sha256-${createHash("sha256").update(s).digest("base64")}'`;
+// The page's headers: its CSP names its script and style by hash.
+export function pageHeaders(script: string, style: string): Record<string, string> {
+  const hash = (s: string) => `'sha256-${createHash("sha256").update(s).digest("base64")}'`;
+  return {
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy": `default-src 'none'; script-src ${hash(script)}; style-src ${hash(style)}; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "cache-control": "no-store",
+  };
+}
 
-const HEADERS = {
-  "content-type": "text/html; charset=utf-8",
-  "content-security-policy": `default-src 'none'; script-src ${hash(SCRIPT)}; style-src ${hash(STYLE)}; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
-  "x-content-type-options": "nosniff",
-  "x-frame-options": "DENY",
-  "referrer-policy": "no-referrer",
-  "cache-control": "no-store",
-};
+const HEADERS = pageHeaders(SCRIPT, STYLE);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>Card approval</title><style>${STYLE}</style></head><body><main><p class="kicker" id="kicker"></p><h1 id="title">Card approval</h1><p class="card" id="card"></p><p class="amount" id="amount" hidden></p><div class="controls"><button type="button" class="primary" id="go" hidden></button><button type="button" id="no" hidden></button></div><p class="note" id="note" role="status" aria-live="polite">Loading.</p></main><script>${SCRIPT}</script></body></html>`;

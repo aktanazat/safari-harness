@@ -107,8 +107,8 @@ test("a shell command runs as written, and the Safari CLI in it sends its own ag
 const hooks = {};
 safariTurnEnd({ on: (event, handler) => { hooks[event] = handler; } });
 const on = (session, agent) => ({ mode: "rpc", agent, sessionManager: { getSessionId: () => session } });
-hooks.tool_call({ toolName: "task", input: {} }, on("lead-a", { kind: "main", id: "main" }));
-const revised = ${JSON.stringify(helpers)}.map((h) => hooks.tool_call({ toolName: "bash", input: { command: h.command } }, on(h.session, { kind: "sub", id: h.id, parentId: "main" })));
+await hooks.tool_call({ toolName: "task", input: {} }, on("lead-a", { kind: "main", id: "main" }));
+const revised = await Promise.all(${JSON.stringify(helpers)}.map((h) => hooks.tool_call({ toolName: "bash", input: { command: h.command } }, on(h.session, { kind: "sub", id: h.id, parentId: "main" }))));
 process.stdout.write(JSON.stringify(revised.map((r) => r ?? "as written")));`, url, home);
     expect(JSON.parse(revised)).toEqual(["as written", "as written"]);
     await Promise.all(helpers.map(async ({ session, command }) => {

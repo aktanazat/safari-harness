@@ -65,6 +65,9 @@ daemon/
                     card set up for it is kept sealed under a key only its
                     passkey gives after Face ID; one approval covers that
                     card on that site for 30 minutes
+  phone-approvals.ts an omp agent's step he approves on his iPhone while
+                    away, on the same page with its own passkey; set up
+                    once with `safari passwords approvals-phone`
   telegram.ts       sends an alert, and its picture, to his Telegram through
                     ~/.local/bin/tell-aktan; says the alert is off when that
                     is missing (safari doctor and status check it)
@@ -165,6 +168,13 @@ omp/index.ts        omp extension: releases disposable pages only through
 omp/walls.ts        pages the web tools could not load: Safari's copy beside
                     a read, the map command beside a walled shell fetch, and
                     one nudge at a run's end for a page no Safari call tried
+omp/approvals.ts    the user's ok before an omp agent uses his secrets or
+                    acts in his name (a vault secret, a saved login, code or
+                    card, a text, a shortcut, a handoff): one popup on the
+                    Mac and the same card in the asking omp terminal,
+                    Touch ID to approve, reused 10 minutes by that
+                    session; on his phone too while he is away. A consent
+                    gate for agents that keep to their tools, not a wall
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -179,6 +189,8 @@ scripts/
                     Accessibility, Safari left in the background, and cancels
                     a print sheet a closed tab left; needs Accessibility
                     permission
+  approve.swift     helper: the approval popup omp/approvals.ts shows, one
+                    at a time across sessions; Approve asks for Touch ID
   bench.swift       test bench: content.js, start.js, and dialogs.js in a
                     WebKit view no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
@@ -206,7 +218,7 @@ carry a password.
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
 | 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `GET /calls`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
-| 37335 | HTTP on 127.0.0.1, from the first card approval: the page his iPhone opens to approve a card fill, through `tailscale serve` |
+| 37335 | HTTP on 127.0.0.1, from the first phone approval: the page his iPhone opens to approve a card fill or an agent's step, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
 without a page's `Origin` or cross-site fetch metadata. task pages use

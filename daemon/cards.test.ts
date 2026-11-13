@@ -7,7 +7,7 @@ import { bridge } from "./bridge.ts";
 import { invoke } from "./call.ts";
 import { endApproval } from "./cards.ts";
 import { connect } from "./fake-safari.ts";
-import { FakePhone } from "./fake-phone.ts";
+import { FakePhone, phonePage } from "./fake-phone.ts";
 import { recent } from "./journal.ts";
 import { watched } from "./mission.ts";
 import * as phone from "./phone.ts";
@@ -35,11 +35,7 @@ const previousEnv = {
 process.env.FAKE_CARDS_DIR = dir;
 process.env.SAFARI_HARNESS_CARDS = join(import.meta.dir, "fake-cards.ts");
 process.env.SAFARI_HARNESS_AWAY = "0";
-// The approval page listens on a free port, at that address.
-const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
-process.env.SAFARI_HARNESS_PHONE_PORT = String(probe.port);
-process.env.SAFARI_HARNESS_PHONE_ORIGIN = `http://127.0.0.1:${probe.port}`;
-await probe.stop(true);
+phonePage();
 
 const TAB = 7001;
 const NUMBER = "4242424242424242";

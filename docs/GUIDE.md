@@ -157,12 +157,14 @@ Before a site
 
 Signing in, in this order
 1. A session: most of his sites are signed in.
-2. `passwords` `fill`: no prompt, no code in chat. `safari guide passwords`.
+2. `passwords` `fill`: no code in chat. `safari guide passwords`.
 3. A passkey: click its button, then `handoff`.
 4. A code, texted or mailed: `type {text:"{{code}}"}` waits for it and
    types it unseen; `secret:"mail"` when it comes by mail.
 Never type a password from memory or chat. Never print a password, code,
 cookie, or token, in a reply or a log line. Never sign him out.
+In omp, fills, codes and cards go without his ok; a text waits for it
+first (a popup on his Mac, or his phone).
 
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and
