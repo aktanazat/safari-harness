@@ -791,25 +791,28 @@ things unless its saved task explicitly says to.
 ## The approval popup (omp)
 
 In an omp session the harness's omp extension asks the user before a step
-that uses his secrets or acts in his name runs: `passwords` with `do` fill,
-code, change, card-fill or card-save; `bitwarden` fill; `type` or
-`real_input` with `secret` or `{{code}}`; `imessage_send` with `approved`;
-the first `handoff` call; and outside this harness `mac_shortcut`,
-`mac_handoff`, and shell or eval code that runs `mem-secret run`, `edit` or
-`keychain-restore`, decrypts with `sops`, or calls the `safari` CLI to fill,
-type a code, or send a text. It reads each call and run step as the daemon
-will, with other names for its tool and parameters folded in. A popup on
-his Mac names the thing and one fact about it (the command, the amount,
-the text), and the omp session that asked shows the same card in place of
+that acts in his name or opens his vault runs: `imessage_send` with
+`approved`; the first `handoff` call; and outside this harness
+`mac_shortcut`, `mac_handoff`, and shell or eval code that runs
+`mem-secret run`, `edit` or `keychain-restore`, decrypts with `sops`, or
+calls the `safari` CLI to send a text it is told to approve. Fills never
+ask (his order, 2026-11-13): `passwords` and `bitwarden` fills, codes,
+password changes and cards, `type` or `real_input` with `secret` or
+`{{code}}`, the `safari` CLI doing the same, and
+`mem-secret run NAME -- safari type … --secret env --env NAME` when the
+command does nothing else. Apple Passwords and saved cards still take his
+Touch ID or Face ID on their own. It reads each call and run step as the
+daemon will, with other names for its tool and parameters folded in. A
+popup on his Mac names the thing and one fact about it (the command, the
+text), and the omp session that asked shows the same card in place of
 its prompt: Enter there approves through the popup, so it still takes
 Touch ID (a handoff's "Show me" does not), and Esc denies. While he is away
 from the Mac the same request reaches his phone for Face ID once he has set
 it up (`safari passwords approvals-phone`).
 
 - A yes covers the same step for that session 10 minutes: the same exact
-  shell command, or the same fill on the same site. A text, a password
-  change, a command that opens the whole vault, and a fill whose site
-  cannot be known before it runs ask every time.
+  shell command, or the same handoff on the same site. A text and a
+  command that opens the whole vault ask every time.
 - Popups show one at a time. One waiting behind another shows "After the
   one on your Mac" in the terminal, where Enter does nothing until it is on
   screen; Esc still denies it.

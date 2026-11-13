@@ -26,7 +26,7 @@ import { checkCall, checkStep } from "../daemon/guard.ts";
 import { isAway } from "../daemon/phone.ts";
 import { rpc } from "../daemon/rpc.ts";
 
-type Kind = "secret" | "login" | "message" | "shortcut" | "handoff";
+type Kind = "secret" | "message" | "shortcut" | "handoff";
 
 export type Ask = {
   kind: Kind;
@@ -88,9 +88,14 @@ const VAR = /^[A-Z_][A-Z0-9_]*$/;
 const SECRET_RUN = /\bmem-secret\s+run\s+((?:\S+\s+)*?)--\s+([^\n]*)/g;
 const VAULT_SHELL = /\bmem-secret\s+(?:edit|keychain-restore)\b|\bsops\s+(?:-d\b|--decrypt\b|decrypt\b|exec-env\b|exec-file\b)|engram-age-identity/;
 // The safari CLI calls the daemon itself, so its texts never reach the
-// Safari tools this gate reads. Fills, codes and saved cards go without
-// asking (owner order 2026-11-13), from a tool or the CLI alike.
-const SAFARI_SHELL = /\bsafari\s+imessage\s+send\b|\bsafari\s[^\n]*\bimessage_send\b/i;
+// Safari tools this gate reads; it folds a tool's name as loosely as
+// iMessageSend or imessage-send, and only one it is told to approve sends.
+const SAFARI_SHELL = /\bsafari\s[^\n]*\bimessage[\s_-]*send/i;
+const SENDS = /--approve\b|\bapproved\b/;
+// Fills, codes and saved cards go without asking (owner order 2026-11-13),
+// from a tool or the CLI alike, and so does a vault password the CLI types
+// unseen (--secret env) when the command does nothing else with it.
+const VAULT_FILL = /^mem-secret\s+run\s+(?:[A-Z_][A-Z0-9_]*\s+)+--\s+safari\s+(?:type|real[-_]?input)\s[^\n;&|`$<>()]*--secret\s+env\b[^\n;&|`$<>()]*$/;
 
 function text(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -104,11 +109,12 @@ function clip(s: string, max: number): string {
 // secret it names, and the whole command, which one yes covers exactly.
 function shellAsk(code: string): Ask | undefined {
   const all = code.trim();
+  if (VAULT_FILL.test(all)) return undefined;
   const runs = [...all.matchAll(SECRET_RUN)];
   const vault = VAULT_SHELL.test(all) || (all.match(/\bmem-secret\s+run\b/g)?.length ?? 0) > runs.length;
   if (runs.length === 0 && !vault) {
-    if (!SAFARI_SHELL.test(all)) return undefined;
-    return { kind: "login", verb: "use Safari in your name", item: { name: "Safari" }, title: "Safari", detail: all, mono: true, scope: all, reuseMs: REUSE_MS, auth: true };
+    if (!SAFARI_SHELL.test(all) || !SENDS.test(all)) return undefined;
+    return { kind: "message", verb: "send a text", item: { name: "Safari" }, title: "Text from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Send" };
   }
   const names = [...new Set(runs.flatMap((r) => (r[1] ?? "").trim().split(/\s+/).filter((w) => VAR.test(w) || w === "--all")))];
   const every = vault || names.length === 0 || names.includes("--all");

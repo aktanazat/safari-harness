@@ -163,8 +163,8 @@ Signing in, in this order
    types it unseen; `secret:"mail"` when it comes by mail.
 Never type a password from memory or chat. Never print a password, code,
 cookie, or token, in a reply or a log line. Never sign him out.
-In omp, a fill, a code, a card, or a text waits for his ok first (a popup
-on his Mac, or his phone).
+In omp, fills, codes and cards go without his ok; a text waits for it
+first (a popup on his Mac, or his phone).
 
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and
