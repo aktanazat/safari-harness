@@ -2556,7 +2556,12 @@ and cannot run against the user's front tab or a remote browser. Use
   the site that answered, fetches the file through it, and says so in a
   `note`; later files from that site come through that tab. A file still
   answered with a web page fails as above: pass the `tab` of a page signed
-  in to that site, or an `out` ending in `.html` to keep the page. A 404
+  in to that site, or an `out` ending in `.html` to keep the page. A file
+  the site refuses with a 401 or 403 (a bot check such as Cloudflare's,
+  which the extension's own fetch never passes) is fetched again from a
+  page of that site: another tab of yours there, or its front page in a
+  background tab opened for it, which stays for later files; a `note` says
+  so. `pdf {do: "read"}` of a tab or url takes the same path. A 404
   says nothing is at that address: take it from the page or the site's API
   rather than building it. A 429 says to wait and fetch one file at a
   time. A Slack

@@ -2804,7 +2804,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     const url = str(opts.url, "url");
     const mine = await agentTabOn(url);
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
-    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const f = await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e));
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
     const signIn = signInOrigin(f, url, out);
     if (signIn === undefined) return saveFile(f, url, out, folder, opts.prefix);
     // The extension's own fetch carries no sign-in, and a tab opened on the
@@ -2823,7 +2824,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     const url = opts.url === undefined ? ((await listTabs()).find((t) => t.id === tab)?.url ?? "") : str(opts.url, "url");
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
-    const f = isFile(inPage) ? inPage : (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
+    const f = isFile(inPage) ? inPage : await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e, tab));
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
     return saveFile(f, url, out, folder, opts.prefix);
   }
   const ref = String(opts.ref);
@@ -2870,6 +2872,29 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   } finally {
     clearTimeout(stop);
   }
+}
+
+// The extension's own fetch carries none of a site's cookies in Safari, so
+// a site behind a bot check refuses it: ft.dk's Cloudflare answered 403 to
+// 5 of 5 of a PDF Safari itself showed (11-13), and passed 5 of 5 fetched
+// from a page of ft.dk. The file comes from a page of its site in another
+// of the agent's tabs (not skip, which could not fetch it), or the site's
+// front page in a tab opened for it, which stays for the next file.
+async function fetchedOnSite(url: string, refused: unknown, skip?: number): Promise<{ via: number; file: FilePayload; note: string }> {
+  const origin = URL.parse(url)?.origin;
+  if (!(refused instanceof Error) || !/^download failed: HTTP 40[13]$/.test(refused.message) || !origin) throw refused;
+  const fetchIn = async (tab: number) => {
+    const f = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
+    return isFile(f) ? f : undefined;
+  };
+  for (const tab of await agentTabsOn(url)) {
+    const f = tab === skip ? undefined : await fetchIn(tab);
+    if (f) return { via: tab, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${tab} on ${pageHost(url)}` };
+  }
+  const opened = (await TOOLS.open.run({ url: `${origin}/`, background: true })) as { id: number };
+  const f = await fetchIn(opened.id);
+  if (!f) throw refused;
+  return { via: opened.id, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${opened.id} on ${pageHost(url)}, opened for it; later files from that site come through it too` };
 }
 
 // Several files by url into the folder out names (~/Downloads unless it
@@ -2934,16 +2959,17 @@ function downloadHint(e: unknown): never {
 // alone comes with the cookies that site's pages send: the extension's own
 // fetch lacks some. On 10-07 a Slack image fetched with no tab came back as
 // Slack's sign-in page while its agent had a tab signed in to Slack open.
-async function agentTabOn(url: string): Promise<number | undefined> {
+async function agentTabsOn(url: string): Promise<number[]> {
   const owner = currentOwner();
   const host = URL.parse(url)?.hostname;
-  if (owner === undefined || !host) return undefined;
+  if (owner === undefined || !host) return [];
   const onSite = (t: TabInfo) => {
     const held = harnessTabs.get(t.id);
     return held !== undefined && matchesTask(held, owner, currentTask()) && site(URL.parse(t.url ?? "")?.hostname ?? "") === site(host);
   };
-  return (await listTabs()).find(onSite)?.id;
+  return (await listTabs()).filter(onSite).map((t) => t.id);
 }
+const agentTabOn = async (url: string) => (await agentTabsOn(url))[0];
 
 // A click or key on a tab the harness opened reports the files Safari saved
 // to ~/Downloads while it ran (downloads.ts). The user's own tabs are never
@@ -3007,10 +3033,8 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; url?
     }
     const tab = await resolveTab(opts.tab);
     const url = ((await listTabs()).find((t) => t.id === tab)?.url) ?? "";
-    const f = (await bridge.request("fetchFile", [url], 120000)) as FilePayload;
-    const file = await scratchFile("safari-pdf-", "page.pdf");
-    await writeFile(file, Buffer.from(f.data, "base64"));
-    return { url, ...(await pdfText(file, opts.maxBytes)) };
+    const saved = await download({ tab, out: await scratchFile("safari-pdf-", "page.pdf") });
+    return { url, ...(saved.note ? { note: saved.note } : {}), ...(await pdfText(saved.path, opts.maxBytes)) };
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
   const asked = absoluteOut(opts.out);

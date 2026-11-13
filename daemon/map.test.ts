@@ -66,6 +66,9 @@ const FILE = "https://files.example/prices.csv";
 const PRICES = "item,price\nlamp,40\n";
 const ARCHIVE = "https://files.example/scans.zip";
 const fetchedFiles: string[] = [];
+// A file whose site refuses the extension's own fetch with a 403 and
+// answers a fetch from one of its pages (Cloudflare on ft.dk, 11-13).
+const REFUSED = "https://refusing.example/paper.csv";
 const UNLOADED = "https://unloaded.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
@@ -151,6 +154,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "fetchFile") {
     fetchedFiles.push(String(args[0]));
+    if (String(args[0]) === REFUSED) return { error: "download failed: HTTP 403" };
     return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
   }
   if (op === "tabs.close") {
@@ -191,6 +195,12 @@ connect({
       return reply({ value: { found: url !== LOST && want.text !== ABSENT } });
     }
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
+    if (args[1] === "fetchFile") {
+      const url = String((args[2] as unknown[])[0]);
+      const onSite = URL.parse(tabs.get(Number(args[0]))?.url ?? "")?.origin === URL.parse(url)?.origin;
+      if (!onSite) return reply({ error: "Load failed" });
+      return reply({ value: { name: "", type: "text/csv", size: PRICES.length, disposition: null, url, status: 200, data: Buffer.from(PRICES).toString("base64") } });
+    }
     if (holding) held.push(() => reply(read(Number(args[0]), String(args[1]))));
     else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]), String(args[1]))), SLOW_MS);
     else reply(read(Number(args[0]), String(args[1])));
@@ -921,4 +931,17 @@ test("a map answer past a reply's length gives a page cut at its limit its whole
   const text = formatResult({ pages }, 30_000);
   expect(text).toContain("- https://shop.example/1: read, 237685 characters, saved in /saved/item-1.txt\n- https://shop.example/2: read, 237685 characters, saved in /saved/item-2.txt");
   expect(text.match(/\n…cut at \d+ of 237685 characters/g)).toHaveLength(2);
+});
+
+test("a file its site refuses the extension's own fetch of comes through a page of that site, and the next one through the same tab", async () => {
+  const out = mkdtempSync(join(tmpdir(), "refused-"));
+  const fetch = (name: string) => runAs(process.pid, () => callTool("download", { url: REFUSED, out: join(out, name) }, true), taskIn("s6", "Lead"));
+  const before = opened.length;
+  const first = (await fetch("a.csv")) as { path: string; note?: string };
+  expect(readFileSync(first.path, "utf8")).toBe(PRICES);
+  expect(first.note).toMatch(/^the site refused the extension's own fetch, so the file came through your tab \d+ on refusing\.example, opened for it/);
+  expect(opened.length).toBe(before + 1);
+  const second = (await fetch("b.csv")) as { path: string; note?: string };
+  expect(readFileSync(second.path, "utf8")).toBe(PRICES);
+  expect(opened.length).toBe(before + 1);
 });
