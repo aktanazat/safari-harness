@@ -165,6 +165,13 @@ omp/index.ts        omp extension: releases disposable pages only through
 omp/walls.ts        pages the web tools could not load: Safari's copy beside
                     a read, the map command beside a walled shell fetch, and
                     one nudge at a run's end for a page no Safari call tried
+omp/approvals.ts    the user's ok before an omp agent uses his secrets or
+                    acts in his name (a vault secret, a saved login, code or
+                    card, a text, a shortcut, a handoff): one popup on the
+                    Mac and the same card in the asking omp terminal,
+                    Touch ID to approve, reused 10 minutes by that
+                    session; on his phone too while he is away. A consent
+                    gate for agents that keep to their tools, not a wall
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -179,6 +186,8 @@ scripts/
                     Accessibility, Safari left in the background, and cancels
                     a print sheet a closed tab left; needs Accessibility
                     permission
+  approve.swift     helper: the approval popup omp/approvals.ts shows, one
+                    at a time across sessions; Approve asks for Touch ID
   bench.swift       test bench: content.js, start.js, and dialogs.js in a
                     WebKit view no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and

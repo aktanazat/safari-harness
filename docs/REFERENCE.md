@@ -788,6 +788,32 @@ something, or deleting anything, show the user what will happen (a snapshot or
 screenshot of the filled form) and get a yes. A routine never does these
 things unless its saved task explicitly says to.
 
+## The approval popup (omp)
+
+In an omp session the harness's omp extension asks the user before a step
+that uses his secrets or acts in his name runs: `passwords` with `do` fill,
+code, change, card-fill or card-save; `type` with `secret`; `imessage_send`
+with `approved`; the first `handoff` call; and outside this harness
+`mac_shortcut`, `mac_handoff`, and shell or eval code that runs
+`mem-secret run`, `edit` or `keychain-restore`, or decrypts with `sops`. A
+popup on his Mac names what, where, and his latest request, and the omp
+session that asked shows the same card in place of its prompt: Enter there
+approves through the popup, so it still takes Touch ID (a handoff's "Show
+me" does not), and Esc denies. While he is away from the Mac the same
+request reaches his phone for Face ID once he has set it up
+(`safari passwords approvals-phone`).
+
+- A yes covers the same step for that session 10 minutes; a text and a
+  password change ask every time, and so does a secret command with no
+  named variables.
+- A lead with a terminal waits for the answer as long as the popup lives.
+  Any other call that waits 25 s comes back "waiting for the user's ok":
+  make the same call again; it joins the popup already showing.
+- A no comes back as a blocked call. Do not retry it; ask him in chat.
+- Headless (print-mode) sessions and their helpers are not asked.
+- The popup is a consent gate for agents that use these tools, not a wall:
+  a shell can still reach the vault key. Do not go around it.
+
 ## Limits compared to Chrome
 
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,

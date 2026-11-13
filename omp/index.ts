@@ -5,10 +5,14 @@ import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemo
 import { setSessionTask } from "../daemon/session-task.ts";
 import { cancelLeftSheets } from "../daemon/sheets.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
+import { asksOf, decide, type TerminalUi } from "./approvals.ts";
 
 type AgentEnd = { willContinue?: boolean };
 type Context = {
   mode: string;
+  cwd?: string;
+  hasUI?: boolean;
+  ui?: TerminalUi;
   agent?: { kind: "main" | "sub"; id: string; parentId?: string };
   sessionManager?: { getSessionId(): string };
 };
@@ -16,7 +20,7 @@ type ToolCall = { toolName: string; toolCallId?: string; input: Record<string, u
 type ToolCallResult = { input: Record<string, unknown> } | { block: true; reason: string };
 type ExtensionApi = {
   on(event: "agent_end", handler: (event: AgentEnd, ctx: Context) => void | Promise<void>): void;
-  on(event: "tool_call", handler: (event: ToolCall, ctx: Context) => ToolCallResult | undefined): void;
+  on(event: "tool_call", handler: (event: ToolCall, ctx: Context) => Promise<ToolCallResult | undefined>): void;
   on(event: "tool_result", handler: (event: ToolResult, ctx: Context) => Promise<{ content: Block[] } | undefined>): void;
   on(event: "session_stop", handler: (event: unknown, ctx: Context) => { continue: true; additionalContext: string } | undefined): void;
   on(event: "before_agent_start", handler: (event: unknown, ctx: Context) => void): void;
@@ -29,6 +33,13 @@ type ExtensionApi = {
 // lead's session of that agent's latest call; by helper session, its lead's.
 const leadOfAgent = new Map<string, string>();
 const leadOfHelper = new Map<string, string>();
+// By lead session, the mode its own agent last ran in: a print-mode lead
+// is a headless run (a scheduled routine) with nobody at the Mac, so
+// neither it nor its helpers wait for the approval popup. asked: the
+// user's latest request to that lead, the why an approval popup quotes;
+// omp hands a tool_call handler no reason of the agent's own.
+const leadMode = new Map<string, string>();
+const asked = new Map<string, string>();
 
 function taskOf(ctx: Context): string | undefined {
   const session = ctx.sessionManager?.getSessionId();
@@ -52,7 +63,7 @@ const RELEASE_DELAY_MS = 15_000;
 const releasing = new Map<string, Timer>();
 
 export default function safariTurnEnd(pi: ExtensionApi) {
-  pi.on("tool_call", (event, ctx) => {
+  pi.on("tool_call", async (event, ctx) => {
     // A helper ends its run by calling yield; one whose run met a page
     // that did not load, with no Safari attempt at it, is sent back once.
     if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
@@ -62,6 +73,14 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     }
     const task = taskOf(ctx);
     if (task === undefined) return;
+    const [own, , helping] = JSON.parse(task) as [string, string, string?];
+    const lead = helping ?? own;
+    if (ctx.agent?.kind === "main") leadMode.set(lead, ctx.mode);
+    if (leadMode.get(lead) !== "print") {
+      const asks = await asksOf(event.toolName, event.input, ctx.cwd ?? process.cwd(), asked.get(lead));
+      const reason = asks.length ? await decide(asks, lead, ctx.agent?.kind === "main" && ctx.hasUI ? ctx.ui : undefined) : undefined;
+      if (reason !== undefined) return { block: true, reason };
+    }
     if (event.toolName.startsWith("mcp__safari_")) {
       // Nested write xd:// dispatches emit this same canonical tool event.
       // omp's eval bridge names its calls js-<tool>-<uuid>, and their answers
@@ -114,9 +133,10 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     const reason = session === undefined ? undefined : unanswered(session);
     return reason === undefined ? undefined : { continue: true, additionalContext: reason };
   });
-  pi.on("before_agent_start", (_event, ctx) => {
+  pi.on("before_agent_start", (event, ctx) => {
     const session = ctx.sessionManager?.getSessionId();
     if (ctx.agent?.kind === "sub") return;
+    if (session !== undefined && event && typeof event === "object" && "prompt" in event && typeof event.prompt === "string") asked.set(session, event.prompt);
     clearTimeout(releasing.get(session ?? ""));
     releasing.delete(session ?? "");
     if (session !== undefined) newRun(session);
