@@ -69,6 +69,8 @@ const fetchedFiles: string[] = [];
 // A file whose site refuses the extension's own fetch with a 403 and
 // answers a fetch from one of its pages (Cloudflare on ft.dk, 11-13).
 const REFUSED = "https://refusing.example/paper.csv";
+// A file its site refuses to its pages too.
+const LOCKED = "https://locked.example/paper.csv";
 const UNLOADED = "https://unloaded.example/";
 
 // A stand-in extension. Each open makes a tab in the window it names; the
@@ -154,7 +156,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "fetchFile") {
     fetchedFiles.push(String(args[0]));
-    if (String(args[0]) === REFUSED) return { error: "download failed: HTTP 403" };
+    if (String(args[0]) === REFUSED || String(args[0]) === LOCKED) return { error: "download failed: HTTP 403" };
     return { value: { name: "", type: "text/csv", size: PRICES.length, disposition: "attachment; filename=prices.csv", url: String(args[0]), status: 200, data: Buffer.from(PRICES).toString("base64") } };
   }
   if (op === "tabs.close") {
@@ -197,7 +199,9 @@ connect({
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
     if (args[1] === "fetchFile") {
       const url = String((args[2] as unknown[])[0]);
-      const onSite = URL.parse(tabs.get(Number(args[0]))?.url ?? "")?.origin === URL.parse(url)?.origin;
+      const page = tabs.get(Number(args[0]))?.url ?? "";
+      // Safari's PDF viewer, the tab showing the file, runs no page script.
+      const onSite = URL.parse(page)?.origin === URL.parse(url)?.origin && page !== url && url !== LOCKED;
       if (!onSite) return reply({ error: "Load failed" });
       return reply({ value: { name: "", type: "text/csv", size: PRICES.length, disposition: null, url, status: 200, data: Buffer.from(PRICES).toString("base64") } });
     }
@@ -944,4 +948,21 @@ test("a file its site refuses the extension's own fetch of comes through a page 
   const second = (await fetch("b.csv")) as { path: string; note?: string };
   expect(readFileSync(second.path, "utf8")).toBe(PRICES);
   expect(opened.length).toBe(before + 1);
+});
+
+test("a file refused to the extension and to the tab showing it comes through a new tab on its site, leaving that tab as it was", async () => {
+  const out = mkdtempSync(join(tmpdir(), "refused-"));
+  const lead = taskIn("s7", "Lead");
+  const shown = (await runAs(process.pid, () => callTool("open", { url: REFUSED, background: true }, true), lead)) as { id: number };
+  const got = (await runAs(process.pid, () => callTool("download", { tab: shown.id, out: join(out, "a.csv") }, true), lead)) as { path: string; note?: string };
+  expect(readFileSync(got.path, "utf8")).toBe(PRICES);
+  expect(got.note).toMatch(/came through your tab \d+ on refusing\.example, opened for it/);
+  expect(got.note).not.toContain(`your tab ${shown.id} `);
+  expect(tabs.get(shown.id)?.url).toBe(REFUSED);
+});
+
+test("a file its site refuses to a page of the site too fails saying so, and the tab opened for it closes", async () => {
+  const fetching = runAs(process.pid, () => callTool("download", { url: LOCKED, out: join(mkdtempSync(join(tmpdir(), "refused-")), "a.csv") }, true), taskIn("s8", "Lead"));
+  await expect(fetching).rejects.toThrow("download failed: HTTP 403, and the site refused it to a page of locked.example opened for it too");
+  expect(closed).toContain(opened.at(-1));
 });

@@ -2891,9 +2891,12 @@ async function fetchedOnSite(url: string, refused: unknown, skip?: number): Prom
     const f = tab === skip ? undefined : await fetchIn(tab);
     if (f) return { via: tab, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${tab} on ${pageHost(url)}` };
   }
-  const opened = (await TOOLS.open.run({ url: `${origin}/`, background: true })) as { id: number };
+  const opened = (await TOOLS.open.run({ url: `${origin}/`, background: true, new: true })) as { id: number; challenge?: unknown };
   const f = await fetchIn(opened.id);
-  if (!f) throw refused;
+  if (!f) {
+    await closeTab(opened.id, "as its site refused the file to it too");
+    throw new Error(`${refused.message}, and the site refused it to a page of ${pageHost(url)} opened for it too${opened.challenge ? ", which showed a bot check" : ""}`);
+  }
   return { via: opened.id, file: f, note: `the site refused the extension's own fetch, so the file came through your tab ${opened.id} on ${pageHost(url)}, opened for it; later files from that site come through it too` };
 }
 
