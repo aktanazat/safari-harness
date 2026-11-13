@@ -6,6 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
 import { callTool, formatResult } from "./tools.ts";
 import { followPages, mapPages, type Listing, type Page } from "./map.ts";
+import { checkLearned, learnCheck } from "./notes.ts";
 import { runAs } from "./owner.ts";
 import { WAIT_NEEDS } from "./receipt.ts";
 
@@ -26,9 +27,11 @@ const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
 const SPLASH = "https://splash.example/";
 // reflex-gate's rule (11-12): a visit to a gate's host within 15 s of the
-// one before is turned away. BANNED turns away every visit.
+// one before is turned away; WAF's block is Cloudflare's. BANNED turns away
+// every visit.
 const GATE = "https://gate.example/";
 const BUSY = "https://busy.example/";
+const WAF = "https://waf.example/";
 const BANNED = "https://banned.example/";
 const GATE_MS = 15_000;
 const gateLast = new Map<string, number>();
@@ -135,7 +138,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
-    const gate = [GATE, BUSY].find((g) => url.startsWith(g));
+    const gate = [GATE, BUSY, WAF].find((g) => url.startsWith(g));
     if (gate) {
       const last = gateLast.get(gate);
       if (last !== undefined && performance.now() - last < GATE_MS) gateBlocked.add(tab.id);
@@ -173,7 +176,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     probes.set(tab, seen);
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
     if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
-    if (gateBlocked.has(tab)) return { value: [{ frame: 0, url, title: "", text: "Blocked: automated browser detected.", markers: [], answered: [], frames: [] }] };
+    if (gateBlocked.has(tab)) return { value: [{ frame: 0, url, title: "", text: url.startsWith(WAF) ? "Sorry, you have been blocked" : "Blocked: automated browser detected.", markers: [], answered: [], frames: [] }] };
     if (url === SPLASH && seen <= 3) return { value: [{ frame: 0, url, title: "One moment, please...", text: "Please wait while your request is being verified...", markers: [], answered: [], frames: [] }] };
     return { value: walled ? [{ frame: 0, url, title: "Just a moment...", text: "", markers: [], answered: [], frames: [] }] : url === CLEARING || url === SPLASH ? [{ frame: 0, url, title: "Page", text: "", markers: [], answered: [], frames: [] }] : [] };
   }
@@ -518,6 +521,17 @@ test.each([CLEARING, SPLASH])("a bot check that lets the browser through is wait
   expect(page).not.toHaveProperty("challenge");
 });
 
+// A site whose wall stayed up through two handoffs is not waited on by
+// handoff; open still waits on it, so a wall that now clears is learned
+// again and the site is not handed to the user for ever.
+test("a check once marked as one waiting never clears is still waited on, and its clearing is learned", async () => {
+  jest.useFakeTimers();
+  learnCheck(CLEARING, () => ({ kind: "cloudflare", where: "page", signal: "title", last: "2026-11-12", waitFailed: 2 }));
+  const [page] = await waited(map({ urls: [CLEARING] }));
+  expect(page).toMatchObject({ url: CLEARING, ok: true });
+  expect(checkLearned(CLEARING)?.clearedMs).toBeGreaterThan(0);
+});
+
 // The first visit too soon after the last is turned away and learned
 // (checks.ts): every visit after it, as soon after as it is asked for, is
 // held until the site lets it through.
@@ -533,14 +547,23 @@ test("a site that turns away visits too close together has its next visits space
   expect(seen).toEqual(["page", "block", "page", "page", "page"]);
 });
 
-test("pages of a paced site asked for at once are spaced out too", async () => {
+// A visit whose turn is more than 30 s away fails at once, naming when its
+// turn comes, and takes no turn: before, six pages of a map asked for at
+// once held turns two minutes ahead, past the map's own time, and loaded
+// after it had answered.
+test("pages of a paced site asked for at once are spaced out, and one whose turn is too far off fails at once and never loads", async () => {
   jest.useFakeTimers();
   await waited(map({ urls: [BUSY] }));
   jest.advanceTimersByTime(2000);
   const [blocked] = await waited(map({ urls: [BUSY] }));
   expect(blocked.ok).toBe(false);
+  const from = loaded.length;
   const pages = await waited(map({ urls: [`${BUSY}a`, `${BUSY}b`], concurrency: 2 }));
-  expect(pages.map((p) => p.ok)).toEqual([true, true]);
+  expect(pages.map((p) => p.ok)).toEqual([true, false]);
+  expect(pages[1].error).toMatch(/next turn is in \d+ s/);
+  jest.advanceTimersByTime(120_000);
+  await settled();
+  expect(loaded.slice(from).map(([url]) => url)).toEqual([`${BUSY}a`]);
 });
 
 // One block a minute or more after the visit before is no pacing: the
@@ -555,6 +578,21 @@ test("a site that turns away visits however far apart they are is not loaded aga
   await waited(map({ urls: [BANNED] }));
   const before = loaded.length;
   const [page] = await waited(map({ urls: [BANNED] }));
+  expect(page.error).toContain("not loaded again");
+  expect(loaded.length).toBe(before);
+});
+
+// One block a vendor's firewall served soon after a visit before is a ban,
+// not pacing: the site stays a wall, as before it learned anything.
+test("a Cloudflare block soon after the visit before is a wall, not a site to space out", async () => {
+  jest.useFakeTimers();
+  await waited(map({ urls: [WAF] }));
+  jest.advanceTimersByTime(2000);
+  const [blocked] = await waited(map({ urls: [WAF] }));
+  expect(blocked.challenge).toMatchObject({ kind: "cloudflare", where: "block" });
+  jest.advanceTimersByTime(2000);
+  const before = loaded.length;
+  const [page] = await waited(map({ urls: [WAF] }));
   expect(page.error).toContain("not loaded again");
   expect(loaded.length).toBe(before);
 });

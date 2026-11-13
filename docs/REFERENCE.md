@@ -2853,17 +2853,19 @@ plain sentence of at most 300 characters.
   took to let Safari through by itself, how often waiting did not clear
   it and how often a person did in a `handoff`, and, for a block, the gap
   since the visit before. The next visit, any agent's, applies it:
-  - a site that turned away a visit that came too soon after the last one
-    has its next visit held until the gap that got through has passed
-    (twice the gap that did not, at least 20 s, at most 60 s), and the
-    result's `note` says how long it waited. Visits asked for at once (a
-    `map`, two agents) each take their own turn. A block a minute or more
-    after the visit before is no pacing: the site stays a wall that is not
-    loaded again;
+  - a site whose own gate turned away a visit that came too soon after
+    the last one has its next visit held until the gap that got through
+    has passed (twice the gap that did not, at least 20 s, at most 60 s),
+    and the result's `note` says how long it waited. Visits asked for at
+    once (a `map`, two agents) each take their own turn; one whose turn
+    is more than 30 s off fails at once, naming when it comes, and loads
+    nothing. A block a minute or more after the visit before, or one a
+    vendor's firewall served (Cloudflare, Akamai, DataDome, Imperva), is
+    no pacing: the site stays a wall that is not loaded again;
   - a check that let Safari through by itself is waited on as long as it
-    took (up to 35 s), and one that stayed through `handoff`'s 35 s wait
-    twice is not waited on: `open` answers at once and `handoff` calls
-    the user without its 35 s wait.
+    took (up to 35 s); `handoff` calls the user without its 35 s wait on
+    one that stayed through that wait twice, while `open` still waits its
+    usual 8 s on it, so a check that clears again is learned again.
   `learn {site}` shows what was learned, `learn {site, history: true}`
   lists each change, and `learn {site, checks: false}` (CLI `--checks
   false`) forgets it. The harness never answers a check; this only

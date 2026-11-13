@@ -9,7 +9,7 @@ import type { Tool } from "./tools.ts";
 // A hold that ends sooner is waited out; a later one fails at once with its
 // reset time. A REPL run gets 120 s (repl.ts), and some MCP clients end a
 // call at 60 s.
-const WAIT_MS = 30_000;
+export const WAIT_MS = 30_000;
 // The first back-off after a 429 that names no reset; each 429 in a row
 // doubles it, up to MAX_BACKOFF_MS.
 const BACKOFF_MS = 60_000;
