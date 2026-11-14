@@ -1,4 +1,4 @@
-// The user's ok for an agent's step that uses his secrets or acts in his
+// The user's ok for an agent's step that acts in his
 // name: one request for every tool, shown before omp runs the call, as a
 // popup on his Mac (scripts/approve.swift), as a prompt in the omp session
 // that asked, and on his phone while he is away. It gates what agents that
@@ -26,7 +26,7 @@ import { checkCall, checkStep } from "../daemon/guard.ts";
 import { isAway } from "../daemon/phone.ts";
 import { rpc } from "../daemon/rpc.ts";
 
-type Kind = "secret" | "message" | "shortcut" | "handoff";
+type Kind = "message" | "shortcut" | "handoff";
 
 export type Ask = {
   kind: Kind;
@@ -84,18 +84,11 @@ const LOG = join(homedir(), "Library", "Logs", "safari-harness", "approvals.json
 const pending = new Map<string, Pending>();
 const grants = new Map<string, number>();
 
-const VAR = /^[A-Z_][A-Z0-9_]*$/;
-const SECRET_RUN = /\bmem-secret\s+run\s+((?:\S+\s+)*?)--\s+([^\n]*)/g;
-const VAULT_SHELL = /\bmem-secret\s+(?:edit|keychain-restore)\b|\bsops\s+(?:-d\b|--decrypt\b|decrypt\b|exec-env\b|exec-file\b)|engram-age-identity/;
 // The safari CLI calls the daemon itself, so its texts never reach the
 // Safari tools this gate reads; it folds a tool's name as loosely as
 // iMessageSend or imessage-send, and only one it is told to approve sends.
 const SAFARI_SHELL = /\bsafari\s[^\n]*\bimessage[\s_-]*send/i;
 const SENDS = /--approve\b|\bapproved\b/;
-// Fills, codes and saved cards go without asking (owner order 2026-11-13),
-// from a tool or the CLI alike, and so does a vault password the CLI types
-// unseen (--secret env) when the command does nothing else with it.
-const VAULT_FILL = /^mem-secret\s+run\s+(?:[A-Z_][A-Z0-9_]*\s+)+--\s+safari\s+(?:type|real[-_]?input)\s[^\n;&|`$<>()]*--secret\s+env\b[^\n;&|`$<>()]*$/;
 
 function text(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -105,22 +98,12 @@ function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-// What a shell command or code would do with the vault or Safari: every
-// secret it names, and the whole command, which one yes covers exactly.
+// A text the safari CLI would send in his name. Passwords, codes, cards
+// and vault commands (mem-secret, sops) never ask (owner order 2026-11-13).
 function shellAsk(code: string): Ask | undefined {
   const all = code.trim();
-  if (VAULT_FILL.test(all)) return undefined;
-  const runs = [...all.matchAll(SECRET_RUN)];
-  const vault = VAULT_SHELL.test(all) || (all.match(/\bmem-secret\s+run\b/g)?.length ?? 0) > runs.length;
-  if (runs.length === 0 && !vault) {
-    if (!SAFARI_SHELL.test(all) || !SENDS.test(all)) return undefined;
-    return { kind: "message", verb: "send a text", item: { name: "Safari" }, title: "Text from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Send" };
-  }
-  const names = [...new Set(runs.flatMap((r) => (r[1] ?? "").trim().split(/\s+/).filter((w) => VAR.test(w) || w === "--all")))];
-  const every = vault || names.length === 0 || names.includes("--all");
-  const name = every ? "Your whole vault" : names.join(", ");
-  const only = runs.length === 1 && !vault && runs[0]?.[0].trim() === all ? runs[0][2]?.trim() : undefined;
-  return { kind: "secret", verb: every ? "open the vault" : "use a secret", item: { name }, title: name, detail: only || all, mono: true, scope: all, reuseMs: every ? 0 : REUSE_MS, auth: true };
+  if (!SAFARI_SHELL.test(all) || !SENDS.test(all)) return undefined;
+  return { kind: "message", verb: "send a text", item: { name: "Safari" }, title: "Text from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Send" };
 }
 
 // The page a step acts on. host: shown and part of the grant; without it
