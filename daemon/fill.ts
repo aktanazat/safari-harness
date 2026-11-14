@@ -14,7 +14,7 @@ import { rpc } from "./rpc.ts";
 import { navigatedOf } from "./navigated.ts";
 import { confirmSave, pairPasswords } from "./pair.ts";
 import { LOCKED } from "./passwords.ts";
-import { cards, endApproval } from "./cards.ts";
+import { cards } from "./cards.ts";
 
 type Labeled = { label: string; primary: boolean };
 type Postal = Labeled & { street: string; city: string; state: string; zip: string; country: string; countryCode: string };
@@ -134,12 +134,9 @@ async function bitwarden(a: Record<string, unknown>): Promise<unknown> {
 // window, or typed by the user into a prompt there. A call that fails for
 // any other reason (no sign-in form, a tab that moved) pairs nothing: that
 // prompt would be his for nothing. The agent learns only whether it
-// paired, and the call goes on. The card steps run here, where the
-// keychain's card helper is (cards.ts); done also ends their Touch ID
-// approval.
+// paired, and the call goes on. The card steps run here too (cards.ts).
 async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
   if (typeof a.do === "string" && a.do.startsWith("card")) return cards(a);
-  if (a.do === "done") endApproval();
   const unlocked = async () => {
     const status = await rpc("passwords", { do: "status" });
     return !!status && typeof status === "object" && "unlocked" in status && status.unlocked === true;

@@ -34,7 +34,6 @@ import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { afterStep, checkpoint, refill } from "./drafts.ts";
-import { CARD_PHONE } from "./passkey.ts";
 import { APPROVAL_PHONE } from "./phone-approvals.ts";
 import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, type ConditionalCaptureResult } from "./evidence.ts";
 import { createResearchReport } from "./research.ts";
@@ -4105,7 +4104,7 @@ export const TOOLS: Record<string, Tool> = {
       return Array.isArray(frames) ? frames : [];
     },
   },
-  // A card the caller read from the user's keychain (cards.ts), filled
+  // A card the caller read from the card vault (cards.ts), filled
   // into one frame card_form named, only while that frame is on site. Its
   // number and security code are cut from the tab's answers from then on.
   // It answers which fields took it, and the refs of those that did not.
@@ -4122,14 +4121,13 @@ export const TOOLS: Record<string, Tool> = {
       return bridge.tab(tab, "fillCard", [str(a.site, "site"), card, secrets], 30000, a.frame === undefined ? 0 : num(a.frame, "frame"));
     },
   },
-  card_phone: CARD_PHONE,
   approval_phone_open: APPROVAL_PHONE.open,
   approval_phone_state: APPROVAL_PHONE.state,
   approval_phone_close: APPROVAL_PHONE.close,
   approval_phone_setup: APPROVAL_PHONE.setup,
   passwords: {
-    desc: "Never reveal/ask secrets. fill and code come from the vault, no Touch ID; setup-code confirms a setup-code QR; logins lists users; change saves/fills strong password (set passwordrules; caller submits). Locked calls pair on Mac. cards lists, card-fill fills, card-save asks on Mac; start card-phone at Mac for iPhone Face ID away (amount is total). done releases access; status explains locks.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
+    desc: "Never reveal/ask secrets. fill and code come from the vault, no Touch ID; setup-code confirms a setup-code QR; logins lists users; change saves/fills strong password (set passwordrules; caller submits). Locked calls pair on Mac. cards lists, card-fill fills (no Touch ID), card-save keeps one he gave. done releases access; status explains locks.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, card: { type: "string", description: "label or last 4" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],
