@@ -21,7 +21,6 @@ import { rowsOf } from "../daemon/tabs-view.ts";
 import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
-import { waitCardsOut } from "../daemon/cards.ts";
 import { connectionRefused, daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
 import { alertHealth, isAway } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
@@ -783,10 +782,6 @@ async function approvalsPhone(): Promise<void> {
 }
 
 async function main() {
-  // This process ends with its answer, and a card's Touch ID prompt with
-  // it: a card fill waits until he answers. A pairing runs in a process of
-  // its own and answers within 25 s, as through MCP (pair.ts).
-  waitCardsOut();
   const [cmd, ...rest] = process.argv.slice(2).filter((a) => a !== "-q");
   if (!cmd || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
   // help <command> prints that command alone, as <command> --help does,

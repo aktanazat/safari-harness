@@ -796,9 +796,9 @@ and shell or eval code that calls the `safari` CLI to send a text it is
 told to approve. Passwords and secrets never ask (his order, 2026-11-13):
 `passwords` and `bitwarden` fills, codes, password changes and cards,
 `type` or `real_input` with `secret` or `{{code}}`, the `safari` CLI doing
-the same, and vault commands (`mem-secret`, `sops`). Apple Passwords and
-saved cards still take his Touch ID or Face ID on their own. It reads each
-call and run step as the daemon will, with other names for its tool and
+the same, and vault commands (`mem-secret`, `sops`). Fills, codes and
+saved cards come from the vault and take no Touch ID either. It reads
+each call and run step as the daemon will, with other names for its tool and
 parameters folded in. A
 popup on his Mac names the thing and one fact about it (the command, the
 text), and the omp session that asked shows the same card in place of
@@ -2771,17 +2771,21 @@ calls `passwords {do: "done"}` or exits; eight hours after the last
 hold ends, the pairing ends and the hidden Helium quits. `done` lets go
 of the caller's own hold only; there is no lock.
 
-Payment cards use the same `passwords` tool, but live in this Mac's
-keychain, not Apple Passwords:
+Payment cards use the same `passwords` tool, but live in the card vault,
+a mem-secret store of their own (`~/.config/engram-cards`) sealed to this
+Mac's key alone and never synced. No card step asks the user anything: no
+Touch ID, no Face ID, no window, at the Mac or away from it (his order,
+2026-11-13).
 
 - `passwords {do: "cards"}` lists each card's label, brand, last four,
-  expiry, and name without asking for Touch ID. Fill a saved card by its
-  label; never ask the user to paste its digits into chat.
-- `passwords {do: "card-save", card: "Work"}` opens a window on the Mac
-  where he types the card. The number and CVC are hidden as he types.
-  If he already gave a card, `number`, `exp` (MM/YY), `cvc`, `name`, and
-  `zip` save it directly. `card` names it; saving under an existing label
-  replaces that card. The CVC is stored too.
+  expiry, and name. Fill a saved card by its label; never ask the user to
+  paste its digits into chat.
+- `passwords {do: "card-save", card: "Work"}` keeps a card he gave in
+  chat: `number`, `exp` (MM/YY), and `cvc`, and `name` and `zip` if he
+  gave them. A number that fails the check every card number passes, an
+  expiry already past, or a code that is not 3 or 4 digits is refused.
+  `card` names it (its brand and last four when left out); saving under
+  an existing label replaces that card. The CVC is stored too.
 - `passwords {do: "card-fill", tab, card: "Work"}` fills the number,
   expiry (a single field or separate month/year lists), CVC, name, and
   billing ZIP. `card` also accepts the last four or the listed id; leave
@@ -2790,29 +2794,6 @@ keychain, not Apple Passwords:
   Stripe, Braintree, Adyen, and Cybersource payment frames, may receive card data.
   Other frames are skipped and named. Each frame receives only the
   fields it asks for, and a frame that has moved to another host is refused.
-- The first fill asks Touch ID. One approval covers fills in that MCP
-  session until the Mac locks, for at most 12 hours; the next fill after
-  that asks again. `done` or ending the session ends the approval. Each
-  CLI call is a separate process, so it cannot reuse the previous call's
-  approval. No Mac login password substitutes for Touch ID.
-- A call waiting on Touch ID answers after 25 seconds with `waiting`;
-  ask him to approve, then call `card-fill` again. The CLI waits for his
-  answer. When he is away and no approval is open, a card set up with
-  `card-phone` is approved on his iPhone instead; any other card is
-  refused.
-- `passwords {do: "card-phone", card: "Work"}`, with him at the Mac and
-  his iPhone (iOS 18 or later) at hand, sets that card up for Face ID:
-  Touch ID on the Mac, then a link on his phone where Face ID makes the
-  card's passkey. The Mac keeps only a copy sealed under a key that the
-  passkey gives after Face ID. Away from the Mac, `card-fill` sends his
-  phone a link to a page that shows the site, the card, and `amount`, the
-  total, when you pass it. His Face ID there fills the card as Touch ID
-  would and covers fills of that card on that site for 30 minutes; another
-  site needs its own approval. While the link waits, the call answers
-  `waiting` as for Touch ID. A declined link, or one left 10 minutes, is
-  an error. `cards` marks set-up cards `phone: true`; removing or saving
-  a card again ends its setup. The page needs `tailscale serve` (README,
-  Setup).
 - The result names fields, never their values. A text field the page
   rejects gets real keystrokes; `typed` says those keys were sent, not
   that the page kept them. Check the page before continuing. Missing
@@ -2820,13 +2801,15 @@ keychain, not Apple Passwords:
 - The number and CVC are cut from the tab's later text answers too.
   This needs copies in the tab's secret scrubber until the tab closes;
   no card is cached for another fill. Screenshots are not scrubbed.
-  Until the approval ends (the Mac locks, 12 hours pass, or `done`),
-  anything driving that MCP session can fill saved cards without another
-  Touch ID; a Face ID approval likewise covers its card and site for 30
-  minutes.
-- `passwords {do: "card-rm", card: "Work"}` removes the saved card after
-  Touch ID. The card helper ships inside Safari Harness.app and needs
-  its signed keychain entitlement; there is no file-storage fallback.
+  Any agent on the Mac can fill a saved card without asking him, so his
+  yes before the final payment click is what guards a payment. The vault,
+  like the logins' copy, opens to anything running as him on this Mac;
+  never read a card from it yourself.
+- `passwords {do: "card-rm", card: "Work"}` removes the saved card.
+- `bun scripts/import-cards.ts` moved the cards the keychain helper
+  (Safari Harness Cards) kept into the card vault. Its one Touch ID, at
+  the first card, was the last a card asks; a second run replaces rather
+  than doubles.
 
 ## fill
 

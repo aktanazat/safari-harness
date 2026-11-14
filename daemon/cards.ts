@@ -1,51 +1,17 @@
-// Payment cards the user keeps in this Mac's keychain behind his Touch ID,
-// filled into a checkout without the agent seeing a digit. The keychain
-// items belong to Safari Harness Cards, a helper app inside the Safari
-// Harness app (its Xcode project): only an app signed into the team's
-// keychain group can keep a card there. An agent names a card by its label
-// or last 4 (cards lists them); the helper hands its digits to this
-// process, which sends each frame of the checkout only what that frame's
-// fields take, and only to frames on the page's own site or a card
-// processor's. No answer carries a digit, and the tab's answers have the
-// number and security code cut from then on (card_fill in tools.ts). While
-// the user is away from the Mac, a card he set up for his iPhone there
-// (card-phone) is approved on the phone with Face ID instead
-// (phone-cards.ts).
+// Payment cards kept in this Mac's card vault (card-vault.ts), filled into
+// a checkout without the agent seeing a digit and without asking the user
+// anything: no Touch ID, no Face ID on his phone, no window (the owner's
+// order of 11-13). An agent names a card by its label or last 4 (cards
+// lists them); this process reads that card's digits from the vault and
+// sends each frame of the checkout only what that frame's fields take, and
+// only to frames on the page's own site or a card processor's. No answer
+// carries a digit, and the tab's answers have the number and security code
+// cut from then on (card_fill in tools.ts).
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
+import { type Card, cardOf, type Listed, memSecretCards } from "./card-vault.ts";
 import { INPUT_TOOLS } from "./input.ts";
 import { navigatedOf } from "./navigated.ts";
-import { ANSWER_MS, localTime, within } from "./passwords.ts";
-import { isAway } from "./phone.ts";
-import { approveOnPhone, endPhoneApprovals, enrollOnPhone, forgetPhoneCards, openedOnPhone, phoneCardIds } from "./phone-cards.ts";
 import { rpc } from "./rpc.ts";
-
-const HELPER = "/Applications/Safari Harness.app/Contents/Helpers/Safari Harness Cards.app/Contents/MacOS/Safari Harness Cards";
-
-// One Touch ID opens card fills until the Mac locks, for at most 12 hours
-// (the owner's choice, 10-13, trading the 5 minutes of 10-01 for fewer
-// prompts): a checkout that takes the card twice, after a decline or on its
-// next page, asks him once, and so do the checkouts after it. The approval
-// lives in one helper process (serve), which exits when the Mac locks; the
-// first fill past those 12 hours ends it, as do done and this process's
-// end; the helper keeps it no longer either. Each fill reads its card
-// again, rather than caching one for the next fill. The tab's secret
-// scrubber still holds the number and code until the tab closes. Until the
-// approval ends, anything driving this process can fill a saved card
-// without another prompt. A CLI process ends after its call, so it cannot
-// reuse an earlier CLI call's approval.
-const APPROVAL_MS = 12 * 60 * 60_000;
-
-// The CLI's process ends with its answer, and the helper holding his
-// Touch ID prompt ends with it, so a CLI call waits the prompt out
-// (waitCardsOut). The MCP server outlives each answer and keeps the
-// ANSWER_MS bound.
-let waitOut = false;
-
-export function waitCardsOut(on = true): void {
-  waitOut = on;
-}
 
 // Embedded card fields served by Stripe, Braintree, Adyen, or Cybersource
 // Unified Checkout (AAA's renewal, 10-19). Do not trust arbitrary pages on
@@ -53,164 +19,15 @@ export function waitCardsOut(on = true): void {
 const PROCESSOR_FRAME = /^(?:[a-z0-9-]+\.)*js\.stripe\.com$|^(?:[a-z0-9-]+\.)+braintreegateway\.com$|^checkoutshopper-[a-z0-9-]+\.adyen\.com$|^(?:[a-z0-9-]+\.)*cdn\.adyen\.com$|^up\.cybersource\.com$/;
 
 type Reply = Record<string, unknown>;
-// What names a saved card: all an agent sees of one.
-type Listed = { id: string; label: string; brand: string; last4: string; exp: string; name: string };
-// What fills one in, held only by the fill it was read for.
-type Card = { number: string; month: number; year: number; csc: string; name: string; zip: string };
 // A frame of the checkout holding card fields (cardForm in content.js).
 type Frame = { frame: number; host: string; https: boolean; fields: string[] };
 // A field of a frame the page did not take the card into (fillCard).
 type Miss = { field: string; token: string; ref?: string };
 
-// The helper's answer: one JSON object, never quoted back, as it may hold
-// a card.
-function replyOf(text: string): Reply {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    value = undefined;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("the card helper gave an answer this release cannot read");
-  return Object.fromEntries(Object.entries(value));
-}
-
-function spawnError(e: Error): Error {
-  if ("code" in e && e.code === "ENOENT") return new Error("this Mac's Safari Harness app has no card helper yet; tell the user its next install brings one");
-  return new Error(`the card helper did not start: ${e.message}`);
-}
-
-// One command of the helper: its answer, or the error it gave. A card to
-// save goes in on its input, never its arguments, which any process sees.
-function helper(args: string[], input = ""): Promise<Reply> {
-  const { promise, resolve, reject } = Promise.withResolvers<Reply>();
-  const child = spawn(process.env.SAFARI_HARNESS_CARDS ?? HELPER, args);
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (d: Buffer) => {
-    out += d.toString();
-  });
-  child.stderr.on("data", (d: Buffer) => {
-    err += d.toString();
-  });
-  child.stdin.on("error", () => {});
-  child.stdin.end(input);
-  child.on("error", (e) => reject(spawnError(e)));
-  child.on("close", (code) => {
-    if (code !== 0) return reject(new Error(err.trim() || "the card helper stopped without an answer"));
-    try {
-      resolve(replyOf(out));
-    } catch (e) {
-      reject(e);
-    }
-  });
-  return promise;
-}
-
-// The helper process holding the user's approval, the replies it owes in
-// order, when its first card came (the approval's start), and when it
-// first asked for Touch ID.
-type Session = { child: ChildProcessWithoutNullStreams; owed: PromiseWithResolvers<Reply>[]; approvedAt?: number; askedAt?: string };
-let session: Session | undefined;
-
-function serve(): Session {
-  const child = spawn(process.env.SAFARI_HARNESS_CARDS ?? HELPER, ["serve"]);
-  const s: Session = { child, owed: [] };
-  const stop = () => child.kill();
-  process.once("exit", stop);
-  let expiry: Timer | undefined;
-  const ended = (why: Error) => {
-    process.off("exit", stop);
-    clearTimeout(expiry);
-    if (session === s) session = undefined;
-    for (const owed of s.owed.splice(0)) owed.reject(why);
-  };
-  child.on("error", (e) => ended(spawnError(e)));
-  child.on("close", () => ended(new Error("the card helper stopped before it answered")));
-  child.stdin.on("error", () => {});
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const owed = s.owed.shift();
-    try {
-      const reply = replyOf(line);
-      if ("card" in reply && s.approvedAt === undefined) {
-        s.approvedAt = Date.now();
-        expiry = setTimeout(() => {
-          if (session === s) closeSession();
-        }, APPROVAL_MS);
-        expiry.unref();
-      }
-      owed?.resolve(reply);
-    } catch (e) {
-      owed?.reject(e);
-    }
-  });
-  return s;
-}
-
-function closeSession(): void {
-  session?.child.kill();
-  session = undefined;
-}
-
-// Ends the approvals, the Mac's Touch ID one and those his phone gave: the
-// next fill asks again. done calls it.
-export function endApproval(): void {
-  closeSession();
-  endPhoneApprovals();
-}
-
-function cardOf(value: unknown): Card {
-  const c = value && typeof value === "object" ? Object.fromEntries(Object.entries(value)) : {};
-  if (typeof c.number !== "string" || typeof c.month !== "number" || typeof c.year !== "number" || typeof c.csc !== "string") throw new Error("the card helper gave no card");
-  return { number: c.number, month: c.month, year: c.year, csc: c.csc, name: typeof c.name === "string" ? c.name : "", zip: typeof c.zip === "string" ? c.zip : "" };
-}
-
-// The card's digits, through the approval that is open or a new one. A
-// Touch ID he has not answered within ANSWER_MS stays up, and the call
-// says so; the next call's read queues behind it and asks nothing more.
-// Away from the Mac, a card set up for his phone is approved there, and
-// the window that approval opens serves the fills on that site after it.
-async function read(card: Listed, host: string, again: string, amount?: string): Promise<Card | { waiting: string }> {
-  if (session?.approvedAt !== undefined && Date.now() - session.approvedAt >= APPROVAL_MS) closeSession();
-  if (session?.approvedAt === undefined) {
-    const opened = openedOnPhone(card, host);
-    if (opened) return cardOf(opened.card);
-    if (await isAway().catch(() => false)) {
-      const got = await approveOnPhone(card, host, amount, waitOut);
-      if (!got) throw new Error("the user is away from the Mac, and a card fill needs his Touch ID there: he must come to the Mac (there, card-phone sets up his iPhone's Face ID for fills while he is away)");
-      return "waiting" in got ? got : cardOf(got.card);
-    }
-  }
-  const s = (session ??= serve());
-  if (s.approvedAt === undefined) s.askedAt ??= localTime();
-  const owed = Promise.withResolvers<Reply>();
-  s.owed.push(owed);
-  s.child.stdin.write(`${JSON.stringify({ read: card.id, site: host })}\n`);
-  if (!waitOut && !(await within(owed.promise, ANSWER_MS))) {
-    owed.promise.catch(() => {});
-    return { waiting: `the Mac is asking the user to approve card fills with Touch ID (since ${s.askedAt}); ask him to approve, then call ${again} again` };
-  }
-  const reply = await owed.promise;
-  if (typeof reply.error === "string") throw new Error(reply.error);
-  return cardOf(reply.card);
-}
-
-async function listed(): Promise<Listed[]> {
-  const { cards } = await helper(["list"]);
-  if (!Array.isArray(cards)) throw new Error("the card helper gave no list of cards");
-  const saved = cards.map((v: unknown) => {
-    const c = v && typeof v === "object" ? Object.fromEntries(Object.entries(v)) : {};
-    return { id: String(c.id ?? ""), label: String(c.label ?? ""), brand: String(c.brand ?? ""), last4: String(c.last4 ?? ""), exp: String(c.exp ?? ""), name: String(c.name ?? "") };
-  });
-  // A card removed, or saved again (a new id), takes its phone setup along.
-  forgetPhoneCards(new Set(saved.map((c) => c.id)));
-  return saved;
-}
-
 // What to do when no card is saved. On 10-05 an agent told only to have
 // him save one stopped at a checkout that offered Apple Pay, which paid
 // with his card once he asked for it (01a10eb8).
-const NONE_SAVED = "card-save has the user type one at the Mac; or, where the checkout offers Apple Pay, choose it, press its pay button with real_input, and handoff so he confirms with Touch ID";
+const NONE_SAVED = "card-save keeps a card the user gives in the chat; or, where the checkout offers Apple Pay, choose it, press its pay button with real_input, and handoff so he confirms with Touch ID";
 
 // The saved card an agent named, by its label or its last 4; the only
 // card, when it named none.
@@ -227,37 +44,19 @@ function pick(saved: Listed[], which: unknown): Listed {
   throw new Error(found.length ? `${found.length} saved cards match ${String(which)}; name one by its label: ${all}` : `no saved card is ${String(which)}; saved: ${all}`);
 }
 
-// A helper command that waits on the user at the Mac (Touch ID, the add
-// window): up to ANSWER_MS, then what he is asked, as read does.
-async function onHim(asking: Promise<Reply>, waiting: string): Promise<unknown> {
-  if (waitOut || (await within(asking, ANSWER_MS))) return asking;
-  asking.catch(() => {});
-  return { waiting: `${waiting} (since ${localTime()})` };
-}
-
-// card-save: the card the user gave in the chat, or with none a window at
-// the Mac where he types it, whose digits reach no agent.
+// card-save: the card the user gave in the chat.
 async function save(a: Reply): Promise<unknown> {
-  if (a.number !== undefined) return helper(["save"], JSON.stringify({ number: a.number, exp: a.exp, csc: a.cvc, name: a.name, zip: a.zip, label: a.card }));
-  if (await isAway().catch(() => false)) throw new Error("the user is away from the Mac, where he types the card: he must come to the Mac");
-  return onHim(helper(["add", ...(a.card === undefined ? [] : ["--label", String(a.card)])]), "a window on the Mac asks the user to type the card; ask him to fill it in there, never in the chat, then call cards");
+  if (a.number === undefined) throw new Error("card-save keeps the card the user gave: its number, exp (MM/YY), and cvc, and its name and zip if he gave them");
+  const [saved] = await memSecretCards().keep([cardOf({ number: a.number, exp: a.exp, csc: a.cvc, name: a.name, zip: a.zip, label: a.card })]);
+  return { saved };
 }
 
 async function remove(a: Reply): Promise<unknown> {
   if (a.card === undefined) throw new Error("card-rm needs card: the card's label or last 4");
-  const card = pick(await listed(), a.card);
-  if (await isAway().catch(() => false)) throw new Error("the user is away from the Mac, where he approves removing a card with Touch ID: he must come to the Mac");
-  return onHim(helper(["rm", card.id]), `the Mac is asking the user to approve removing ${card.label} with Touch ID; ask him to approve, then call cards`);
-}
-
-// card-phone: at the Mac, his Touch ID gives the card, and his iPhone's
-// Face ID then keeps a sealed copy only it opens (phone-cards.ts).
-async function phone(a: Reply): Promise<unknown> {
-  const card = pick(await listed(), a.card);
-  if (await isAway().catch(() => false)) throw new Error("setting up Face ID for a card needs the user at the Mac, for its Touch ID, with his iPhone: he must come to the Mac");
-  const got = await read(card, "iphone", "card-phone");
-  if ("waiting" in got) return got;
-  return enrollOnPhone(card, got, waitOut);
+  const vault = memSecretCards();
+  const card = pick(await vault.list(), a.card);
+  await vault.remove(card.id);
+  return { removed: card };
 }
 
 function framesOf(value: unknown): Frame[] {
@@ -319,15 +118,14 @@ function missesOf(res: unknown): Miss[] {
 // https, and a frame gets the card only while it is on the page's own site
 // or a card processor's. A text field the page did not take the card into
 // from a script gets it by real keys (real_input), as GEICO's card frame
-// needs (docs/sites/geico.md). No Touch ID is asked of a page with no card
-// fields to take it.
+// needs (docs/sites/geico.md). The card's digits are read from the vault
+// only for a page with card fields to take them.
 async function fill(a: Reply): Promise<unknown> {
-  const amount = a.amount === undefined ? undefined : String(a.amount).trim();
-  if (amount !== undefined && (!amount || amount.length > 40 || /\p{Cc}/u.test(amount))) throw new Error("amount is the order's total as the page shows it, one line of at most 40 characters");
   const resolved = await rpc("resolve_tab", { tab: a.tab });
   const tab = resolved && typeof resolved === "object" && "tab" in resolved && typeof resolved.tab === "number" ? resolved.tab : undefined;
   if (tab === undefined) throw new Error("the tab did not resolve; name it by the id open returned");
-  const card = pick(await listed(), a.card);
+  const vault = memSecretCards();
+  const card = pick(await vault.list(), a.card);
   const frames = framesOf(await rpc("card_form", { tab }));
   const top = frames.find((f) => f.frame === 0);
   if (!top) throw new Error("the page did not answer; reload it with goto and try again");
@@ -338,8 +136,7 @@ async function fill(a: Reply): Promise<unknown> {
   if (trusted.length === 0) {
     throw new Error(skipped.length ? `the card fields here sit in frames from ${skipped.join(", ")}, neither ${top.host} nor a card processor the harness knows; nothing was filled` : "the page shows no card fields: open the step that asks for the card, then call card-fill again");
   }
-  const got = await read(card, top.host, "card-fill", amount);
-  if ("waiting" in got) return got;
+  const got = await vault.read(card.id);
   const filled: string[] = [];
   const typed: string[] = [];
   const unfilled: string[] = [];
@@ -398,9 +195,8 @@ async function fill(a: Reply): Promise<unknown> {
 export async function cards(a: Reply): Promise<unknown> {
   switch (a.do) {
     case "cards": {
-      const saved = await listed();
-      const onPhone = phoneCardIds();
-      return saved.length ? { cards: saved.map((c) => (onPhone.has(c.id) ? { ...c, phone: true } : c)), next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: `none is saved: ${NONE_SAVED}` };
+      const saved = await memSecretCards().list();
+      return saved.length ? { cards: saved, next: "fill one with card-fill and its label; never ask the user for its digits" } : { cards: [], next: `none is saved: ${NONE_SAVED}` };
     }
     case "card-save":
       return save(a);
@@ -408,8 +204,6 @@ export async function cards(a: Reply): Promise<unknown> {
       return fill(a);
     case "card-rm":
       return remove(a);
-    case "card-phone":
-      return phone(a);
   }
-  throw new Error("do must be cards, card-save, card-fill, card-phone, or card-rm");
+  throw new Error("do must be cards, card-save, card-fill, or card-rm");
 }

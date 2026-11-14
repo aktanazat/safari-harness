@@ -58,13 +58,9 @@ daemon/
   ask.ts            ask: an agent's question put on the user's phone when he
                     is away, for him to answer back at the Mac
   phone.ts          every alert to the user's phone: at most 6 an hour
-  passkey.ts        the card approval page the user's iPhone opens over
+  passkey.ts        the approval page the user's iPhone opens over
                     tailscale serve, and the daemon's check of each Face ID
                     answer: a passkey's signature on a single-use challenge
-  phone-cards.ts    card fills he approves on his iPhone while away: each
-                    card set up for it is kept sealed under a key only its
-                    passkey gives after Face ID; one approval covers that
-                    card on that site for 30 minutes
   phone-approvals.ts an omp agent's step he approves on his iPhone while
                     away, on the same page with its own passkey; set up
                     once with `safari passwords approvals-phone`
@@ -219,7 +215,7 @@ carry a password.
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
 | 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `GET /calls`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
-| 37335 | HTTP on 127.0.0.1, from the first phone approval: the page his iPhone opens to approve a card fill or an agent's step, through `tailscale serve` |
+| 37335 | HTTP on 127.0.0.1, from the first phone approval: the page his iPhone opens to approve an agent's step, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
 without a page's `Origin` or cross-site fetch metadata. task pages use
@@ -227,7 +223,7 @@ their own origin under the same loopback check. only the extension's
 `safari-web-extension://` origin may take the `/` extension socket, and only
 the bridge's extension origin may take `/passwords`. 37335 serves only the
 approval page: an answer must come from that page's own origin and carry
-the card's passkey signature over that request's challenge.
+the passkey's signature over that request's challenge.
 
 `GET /calls` sums the last 24 hours of the call log,
 `~/Library/Logs/safari-harness/calls-37334.jsonl`, and `safari status`
@@ -338,15 +334,14 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 4. Run `safari doctor`. It checks every part, the extension connection
    and Accessibility and Full Disk Access for your terminal included, and
    prints the fix for each that fails.
-5. For card fills the user approves with Face ID on his iPhone (iOS 18 or
-   later, on the same tailnet) while away from the Mac, give the approval
-   page an HTTPS address on the tailnet once:
+5. For an agent's steps the user approves with Face ID on his iPhone (iOS
+   18 or later, on the same tailnet) while away from the Mac, give the
+   approval page an HTTPS address on the tailnet once:
    `tailscale serve --bg --https=8447 http://127.0.0.1:37335`. Never a
    Funnel: the daemon refuses a page open to the internet. Then, at the
-   Mac with the phone, `safari passwords card-phone --card <label>` sets
-   up one card: Touch ID on the Mac, then the link that reaches Telegram,
-   opened in Safari on the phone, "Set up with Face ID", and "Confirm
-   with Face ID".
+   Mac with the phone, `safari passwords approvals-phone` sends the link
+   that reaches Telegram; opened in Safari on the phone, "Set up" makes
+   the passkey with Face ID.
 
 ## Deploys
 
