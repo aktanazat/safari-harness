@@ -658,8 +658,7 @@ Signing in, in this order:
    sites the user uses are already signed in.
 2. Saved logins come through the `passwords` tool (`safari guide
    passwords`), which never shows the password: the copy kept on this
-   Mac, with no Touch ID, else his Apple Passwords. A locked Apple
-   Passwords pairs by itself; never ask for the pairing code in chat.
+   Mac, with no Touch ID. Apple Passwords is never asked for one.
 3. A site that offers a passkey or Touch ID sign-in: click its passkey
    button, then `handoff` (`safari guide handoff`) so the user can touch the sensor.
 4. A code the site sends, by text or by mail: ask the site to send it, then
@@ -2666,64 +2665,45 @@ and cannot run against the user's front tab or a remote browser. Use
 `passwords` fills saved logins, codes, and cards without showing a secret
 (sign-in order: `safari guide reference logged-in`).
 
-Saved logins come through the `passwords` tool, which never shows the
-password: first the copy of Apple Passwords kept on this Mac only (sealed
-to its key, never synced), with no pairing and no Touch ID (the result
-says `from: "vault"`), else his Apple Passwords, whose login the copy
-then keeps (`vault` says why one could not be kept). Where several logins
-are kept for the site, `fill` names them until `username` picks one. If
-the copy's password no longer signs in, `fill` again with `source:
-"apple"`: it fills Apple Passwords' login and replaces the copy's. Apple
-Passwords stays the source: `bun scripts/import-apple-passwords.ts
-<file>` rebuilds the whole copy from its File > Export All Passwords to
-File, leaving out verification-code keys, and deletes the file.
-- `passwords {do: "status"}` returns `{unlocked, sessions, ends}`, with
-  `waiting` while the Mac waits on Touch ID, or `{unlocked: false,
-  reason}`.
-- `passwords {do: "logins", tab}` lists the usernames saved for the
-  sign-in form's site, and `{do: "logins", site: "accounts.google.com"}`
-  those saved for a host before its page is open. `passwords {do:
-  "fill", tab}` fills the form (pass `username` when several are
-  saved). The result names the fields filled, never the password. A
-  form that submits itself once filled also returns `navigated`, the
-  page it went to. A Flutter sign-in
-  (GEICO's) gets each field once the page has taken it, as `type` does,
-  so the page's own model sees the login.
-- The Mac may ask the user to approve the password with Touch ID. The
-  call waits 25 s for him, then says the Mac is asking while the request
-  goes on: ask him to approve, then call `fill` again. That call gets the
-  password he approved (kept 5 minutes) with no second prompt. When he is
-  away from the Mac (locked, asleep, or idle 3 minutes), the call asks
-  for nothing and says so at once: `handoff` the tab, which alerts his
-  phone (or, with the alert off, says to tell him in your chat), or call
-  again once he is back. Both answers fail with `waiting_for_human` and
-  `effect: "none"`: nothing was filled. Until he
-  acts, Apple's helper answers nothing else, so every other `passwords`
-  call, from any agent, waits for him and runs once he has; one still
-  waiting 25 s after it began says what it waits on, and whether the
-  request is another agent's. `status` answers at once.
-  If the window closes without an answer, the next call checks that
-  it is gone and gives a just-approved reply 1 s to arrive. Otherwise
-  it ends that helper and clears the stuck request; a retry pairs
-  again. A visible or unreadable prompt is left
-  alone. A dismissed prompt is never reported as still waiting forever.
-- `passwords {do: "code", tab}` does the same for a verification code
-  the user keeps in Apple Passwords (an authenticator setup): it types
-  the current code into the page's code field, one digit per box when
-  the page splits it, and never returns it. A page with no code field
-  fails `not_content`; one that asks how to send the code lists the
-  choices it shows: click the authentication app's, then `code` again.
+Saved logins and verification codes come only from the copy of Apple
+Passwords kept on this Mac (sealed to its key, never synced), with no
+pairing and no Touch ID: the user's order of 11-13, since all his Apple
+Passwords were imported there. Nothing asks Apple Passwords for a password
+or a code. Where several logins are kept for the site, `fill` names them
+until `username` picks one; a login the copy lacks fails `not_content`
+and fills nothing. `bun scripts/import-apple-passwords.ts <file>` rebuilds
+the whole copy, verification-code keys included, from Apple Passwords'
+File > Export All Passwords to File, and deletes the file.
+- `passwords {do: "status"}` returns `{unlocked, sessions, ends}` for the
+  pairing that `logins`, `change` and `setup-code` use, or `{unlocked:
+  false, reason}`.
+- `passwords {do: "logins", tab}` lists the usernames Apple Passwords
+  saves for the sign-in form's site, and `{do: "logins", site:
+  "accounts.google.com"}` those saved for a host before its page is open.
+  `passwords {do: "fill", tab}` fills the form (pass `username` when
+  several are kept). The result names the fields filled, never the
+  password. A form that submits itself once filled also returns
+  `navigated`, the page it went to. A Flutter sign-in (GEICO's) gets each
+  field once the page has taken it, as `type` does, so the page's own
+  model sees the login.
+- `passwords {do: "code", tab}` types the current code of the
+  verification-code key the copy keeps for the site into the page's code
+  field, one digit per box when the page splits it, and never returns it.
+  A page with no code field fails `not_content`; one that asks how to
+  send the code lists the choices it shows: click the authentication
+  app's, then `code` again. A site whose key the copy lacks fails
+  `not_content`: use the code it emails or texts.
 - `passwords {do: "change", tab}` changes the password on a
   change-password, reset, or sign-up form: it makes a strong password in
   Safari's shape (shorter, without hyphens, when the fields allow fewer
   than 20 characters), saves it to Apple Passwords as the password of
   the one login saved on the page's site (and keeps it in the vault, so
-  the next `fill` needs no Touch ID; this is how a new account's
+  the next `fill` has it; this is how a new account's
   password is made), for the page's host or for
   another of the site's hosts (FHDA and ETS reset on a host of their
   own), and types it into every new-password field. An empty
-  current-password field gets the saved password (which may need Touch
-  ID, as `fill` does). With several such logins, or none, it names the
+  current-password field gets the password the vault keeps. With several
+  such logins, or none, it names the
   logins Apple Passwords lists and saves nothing: pass `username`, and
   `site`, the host the login is saved for (Paradox resets on another
   site), or the page's own host for a new login. Given another host as
@@ -2754,16 +2734,18 @@ File, leaving out verification-code keys, and deletes the file.
   once the page has taken it, as `fill` does.
 - `passwords {do: "setup-code", tab}` turns on an authenticator-app
   code: with the site's QR code in view, it reads the code's key off a
-  screenshot inside the daemon and hands it to Apple Passwords, as
-  Safari's Set Up Verification Code menu does. The Passwords app opens
-  and asks which saved login the code is for; pick it there (macos-harness).
-  Then `code` types the first 6-digit code into the site's confirm field.
-  The result names the code's issuer and account, never its key.
+  screenshot inside the daemon, keeps it in the vault with the login kept
+  for the site (the QR's account, else the only one; `vault` says why it
+  could not), and hands it to Apple Passwords, as Safari's Set Up
+  Verification Code menu does. The Passwords app opens and asks which
+  saved login the code is for; pick it there (macos-harness). Then `code`
+  types the first 6-digit code into the site's confirm field. The result
+  names the code's issuer and account, never its key.
 - The form may sit in an embedded frame; the tools find it in any frame
   of the tab, and the login's site is that frame's own address.
-When Apple Passwords is locked, `logins`, `fill` (past the vault),
-`code`, `change`, `setup-code`, and `pair` first pair, read the 6-digit
-code off the Mac's window, and go on, with no Touch ID. The reader
+When Apple Passwords is locked, `logins`, `change`, `setup-code`, and
+`pair` first pair, read the 6-digit code off the Mac's window, and go on,
+with no Touch ID; `fill` and `code` never pair. The reader
 accepts the no-break space between the two halves of the code on
 macOS 27. Reading it needs the calling terminal's Accessibility
 permission. A call that fails for any other reason, such as no sign-in

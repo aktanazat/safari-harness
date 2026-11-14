@@ -1,8 +1,8 @@
 // Rebuilds the logins this Mac keeps (daemon/vault.ts) from the file Apple
 // Passwords writes with File > Export All Passwords to File, then deletes
 // that file, which holds every password in plain text. Verification-code
-// keys (its OTPAuth column) are left out, so the copy alone passes no
-// two-step sign-in. Prints counts and hosts, never a username or password.
+// keys (its OTPAuth column) are kept with their logins, so code fills need
+// no Touch ID either. Prints counts and hosts, never a username or password.
 //
 //   bun scripts/import-apple-passwords.ts /path/to/Passwords.csv
 
@@ -66,19 +66,21 @@ try {
     return i;
   };
   const [url, username, password] = [column("URL"), column("Username"), column("Password")];
+  const otp = header.indexOf("OTPAuth");
   const logins = new Map<string, Login>();
   const skipped = new Map<string, string[]>();
   for (const r of records) {
     const site = URL.parse(r[url] ?? "");
     const host = site && /^https?:$/.test(site.protocol) ? site.hostname.replace(/^www\./, "") : "";
-    const login = { host, username: r[username] ?? "", password: r[password] ?? "" };
+    const key = r[otp] ?? "";
+    const login = { host, username: r[username] ?? "", password: r[password] ?? "", ...(/^otpauth:\/\/totp\/\S+$/.test(key) ? { otpauth: key } : {}) };
     const why = host ? refusal(login) : "no website";
     if (why) skipped.set(why, [...(skipped.get(why) ?? []), host]);
     else logins.set(`${host}\n${login.username}`, login);
   }
   sealToThisMac();
   await memSecretVault().rebuild([...logins.values()]);
-  console.log(`kept ${logins.size} logins for ${new Set([...logins.values()].map((l) => l.host)).size} sites`);
+  console.log(`kept ${logins.size} logins for ${new Set([...logins.values()].map((l) => l.host)).size} sites, ${[...logins.values()].filter((l) => l.otpauth).length} with a verification-code key`);
   for (const [why, hosts] of skipped) {
     const named = [...new Set(hosts.filter(Boolean))];
     console.log(`skipped ${hosts.length} (${why})${named.length ? `: ${named.join(", ")}` : ""}`);

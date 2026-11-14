@@ -22,14 +22,14 @@
 // Helium quits. Each time the pairing ends, the reason is kept for status
 // and for the error a locked call gets.
 //
-// A fill tries the login engram's vault keeps for the site first
-// (vault.ts), which needs neither the pairing nor Touch ID, and a login
-// Apple Passwords fills or a change saves is kept there too.
+// Fills and codes come only from the logins engram's vault keeps
+// (vault.ts), which need neither the pairing nor Touch ID: the user's order
+// of 11-13, after his Apple Passwords were imported there. Apple Passwords
+// still lists logins and saves a changed password, and the vault keeps it.
 //
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -39,11 +39,9 @@ import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { HarnessError } from "./failures.ts";
 import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
-import { isAway } from "./phone.ts";
-import { alertsOff } from "./telegram.ts";
 import { site as siteOf } from "./receipt.ts";
 import { keepSecret } from "./redact.ts";
-import { memSecretVault, type Vault } from "./vault.ts";
+import { memSecretVault, totp, type Vault } from "./vault.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
@@ -59,27 +57,14 @@ const GRACE_H = 8;
 // one starting; a new Helium's bridge says hello within a second or two.
 const ADOPT_MS = 3000;
 const LINK_MS = 20000;
-// macOS asks the user for Touch ID before the helper hands out a password
-// or a code, and the helper answers nothing else until he acts: on 09-28 a
-// fill outlasted the agent's 60 s call, and every call for four minutes
-// after read "did not answer". So a call answers within ANSWER_MS, the
-// request goes on, and its answer waits for the call that asks again.
-// A first call that pairs keeps the same bound (pair.ts). It is under 30 s,
-// where omp moves a shell command to the background: at 40 s each fill
-// that waited on him cost the agent an extra turn (09-29).
+// A first call that pairs answers within ANSWER_MS (pair.ts), and so do
+// card fills (cards.ts). It is under 30 s, where omp moves a shell command
+// to the background: at 40 s each call that waited on him cost the agent
+// an extra turn (09-29).
 export const ANSWER_MS = 25000;
 // How every call that needs the pairing and finds none fails; the
 // passwords tool pairs on this failure alone (fill.ts).
 export const LOCKED = "Apple Passwords is locked";
-// When the passwords call under way must answer: ANSWER_MS after the
-// daemon took it, however many helper steps it takes. A fill lists the
-// logins, then asks for the password, and either may wait its turn behind
-// another call's Touch ID.
-const answerBy = new AsyncLocalStorage<number>();
-// A password kept for that call lasts while the agent asks him and he
-// answers; a code changes every 30 s.
-const KEEP_PASSWORD_MS = 5 * 60_000;
-const KEEP_CODE_MS = 20000;
 // How long a changed password waits for its save to be confirmed.
 const CHANGE_MS = 60_000;
 // A handed-back session is proved by any query the helper answers under it.
@@ -174,7 +159,7 @@ function open(key: Buffer, data: Buffer): unknown {
 
 // ---------- helper link ----------
 
-const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, PASSWORD: 5, SAVE: 6, DISABLED: 9, RELOGIN: 10, SET_UP_CODE: 13, CAPABILITIES: 14, ONE_TIME_CODE: 17 } as const;
+const Cmd = { HANDSHAKE: 2, LOGIN_NAMES: 4, SAVE: 6, DISABLED: 9, RELOGIN: 10, SET_UP_CODE: 13, CAPABILITIES: 14 } as const;
 const STATUS_OK = 0;
 const STATUS_NONE = 3;
 
@@ -184,14 +169,7 @@ type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error)
 // What the bridge says as it connects: whether its helper, and so any
 // pairing, still runs, and the sealed session it keeps.
 type Hello = { helper?: unknown; stash?: unknown };
-type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; waiting?: string; helper?: number };
-// A request the Mac holds until the user approves it with Touch ID: what it
-// is for, the call that gets its answer, and how long an answer that lands
-// after that call gave up is kept for the next.
-type Ask = { key: string; what: string; again: string; keepMs: number };
-// owner: the agent whose call asked (owner.ts), so another agent's call it
-// holds up hears that the wait is not its own.
-type Approval = Ask & { since: number; owner: number | undefined; reply: Promise<Record<string, unknown>>; gaveUp: boolean; drop?: () => void };
+type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; helper?: number };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -225,19 +203,6 @@ const REAL_TIMERS: Timers = {
   },
   now: () => Date.now(),
 };
-
-// A missing or unreadable window list is unknown, not a dismissal.
-async function approvalShown(): Promise<boolean | undefined> {
-  try {
-    const child = Bun.spawn([PAIRING, "approval"], { stdout: "pipe", stderr: "ignore" });
-    const [status, text] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-    if (status !== 0) return undefined;
-    const result: unknown = JSON.parse(text);
-    return result && typeof result === "object" && "showing" in result && typeof result.showing === "boolean" ? result.showing : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 // ---------- the session the bridge keeps ----------
 
@@ -340,7 +305,6 @@ export class ApplePasswords {
   private readonly profile: string;
   private readonly keyFile: string;
   private readonly timers: Timers;
-  private readonly approvalShown: () => Promise<boolean | undefined>;
   private readonly vault: Vault;
   private link: HelperLink | null = null;
   // A link carries calls once its bridge has said hello and any session it
@@ -353,13 +317,6 @@ export class ApplePasswords {
   private why = `it has not been paired since the harness started at ${localTime()}`;
   private helperSeen = false;
   private waiter: Waiter | null = null;
-  // The request the helper holds until the user answers it with Touch ID;
-  // it answers nothing else meanwhile.
-  private pending: Approval | null = null;
-  // Answers that landed after their call gave up, by what they answer, each
-  // kept for the call that asks again, so the call that runs as soon as one
-  // lands cannot drop it.
-  private kept = new Map<string, Approval>();
   // Changed passwords saved but not yet typed, by tab, until typeChange or
   // CHANGE_MS: agents changing several sites at once each keep their own.
   private pendingChanges = new Map<number, { frame: number; fresh: number; host: string; site: string; sharedWith: string[]; login: string; current: string | null; secret: string; drop: () => void }>();
@@ -372,12 +329,11 @@ export class ApplePasswords {
   // Seals the session the bridge keeps; the key file holds the same key.
   private stashKey: Buffer | null = null;
 
-  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, approvalShown: shown = approvalShown, vault = memSecretVault() }: { port?: number; profile?: string; timers?: Timers; approvalShown?: () => Promise<boolean | undefined>; vault?: Vault } = {}) {
+  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, vault = memSecretVault() }: { port?: number; profile?: string; timers?: Timers; vault?: Vault } = {}) {
     this.port = port;
     this.profile = profile;
     this.keyFile = join(profile, KEY_FILE);
     this.timers = timers;
-    this.approvalShown = shown;
     this.vault = vault;
   }
 
@@ -476,9 +432,6 @@ export class ApplePasswords {
     this.state = { kind: "idle" };
     this.why = why;
     this.stashKey = null;
-    for (const a of this.kept.values()) a.drop?.();
-    this.kept.clear();
-    this.pending = null;
     rmSync(this.keyFile, { force: true });
     this.link?.send(JSON.stringify({ stash: null }));
   }
@@ -504,16 +457,14 @@ export class ApplePasswords {
     return this.serial(async () => {
       await this.settle().catch(() => false);
       if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
-      const a = this.pending;
       const helper = runningHelper(this.profile);
       return {
         unlocked: true,
         sessions: this.holders.size,
         ends: this.grace ? `at ${localTime(new Date(this.grace.ends))}` : `${GRACE_H} hours after the last session holding it is done`,
-        ...(a ? { waiting: `${a.what}, since ${localTime(new Date(a.since))}` } : {}),
         ...(helper ? { helper } : {}),
       };
-    }, { reportWaiting: true });
+    });
   }
 
   private fail(e: Error) {
@@ -522,61 +473,11 @@ export class ApplePasswords {
     w?.reject(e);
   }
 
-  // On 09-30 a closed Touch ID prompt left its request unanswered forever.
-  // After the original call gives up, a retry checks the actual prompt.
-  // Allow an approval's reply to land after its window closes; otherwise
-  // end that helper so a late reply cannot be mistaken for the next fill.
-  private async recoverDismissedApproval() {
-    const a = this.pending;
-    if (!a || !a.gaveUp) return;
-    if (await this.approvalShown() !== false || this.pending !== a) return;
-    if (await within(a.reply, 1000, this.timers).catch(() => true)) return;
-    if (await this.approvalShown() !== false || this.pending !== a) return;
-    this.end(`the approval window for ${a.what} closed without an answer at ${localTime()}`);
-    await this.quitting;
-  }
-
-  // Replies carry no request id, so one request at a time, and none while
-  // the helper waits on Touch ID. A call the held request keeps out waits
-  // for his answer outside the line, so status still answers at once, then
-  // takes its turn; it gives up only when it must answer. On 10-05 an
-  // agent's call held up by another's Touch ID was turned away at once,
-  // and the agent made its password some other way. joins: what the call's
-  // own request asks, so a call asking what the held request asks waits on
-  // that one.
-  private async serial<T>(fn: () => Promise<T>, { reportWaiting = false, joins }: { reportWaiting?: boolean; joins?: string } = {}): Promise<T> {
-    for (;;) {
-      const go = async (): Promise<{ ran: T } | { held: Approval }> => {
-        await this.recoverDismissedApproval();
-        const a = this.pending;
-        return a && !reportWaiting && a.key !== joins ? { held: a } : { ran: await fn() };
-      };
-      const run = this.queue.then(go, go);
-      this.queue = run.catch(() => {});
-      const turn = await run;
-      if ("ran" in turn) return turn.ran;
-      if (!(await within(turn.held.reply.catch(() => {}), this.left(), this.timers))) throw this.heldUp(turn.held);
-    }
-  }
-
-  // Why a call the held request kept out did not run. On 09-29 agents
-  // resetting passwords were told to ask him to approve sites other agents
-  // had asked for.
-  private heldUp(a: Approval): Error {
-    const since = localTime(new Date(a.since));
-    if (a.owner !== currentOwner()) return new HarnessError("waiting_for_human", `another agent's request (${a.what}) is waiting for the user to approve it with Touch ID (since ${since}), and Apple's password helper answers nothing else until he does, so your call waited for him and did not run; call again to wait more, or sign in another way (the site's emailed code or reset link)`, { next: "call again to wait more, or sign in another way" });
-    return new HarnessError("waiting_for_human", `Apple's password helper is waiting for the user to approve ${a.what} with Touch ID (since ${since}) and answers nothing else until he does; ask him to approve, then call ${a.again} again`, { next: `ask him to approve, then call ${a.again} again` });
-  }
-
-  // How long the call under way has left before it must answer.
-  private left(): number {
-    const now = this.timers.now();
-    return Math.max(0, (answerBy.getStore() ?? now + ANSWER_MS) - now);
-  }
-
-  // Runs one passwords call (the tool's), which answers within ANSWER_MS.
-  answering<T>(fn: () => Promise<T>): Promise<T> {
-    return answerBy.run(this.timers.now() + ANSWER_MS, fn);
+  // Replies carry no request id, so one request at a time.
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   // ---------- who holds the pairing ----------
@@ -811,61 +712,11 @@ export class ApplePasswords {
     });
   }
 
-  // A request the Mac may hold for Touch ID. The call answers within
-  // ANSWER_MS; one that gives up leaves the request waiting, and the next
-  // call that asks the same gets the answer once it lands.
-  private async approved(ask: Ask, request: (link: HelperLink, s: Session) => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
-    const a = await this.serial(async () => {
-      const known = this.kept.get(ask.key) ?? (this.pending?.key === ask.key ? this.pending : undefined);
-      if (known) return known;
-      const s = await this.session();
-      // A prompt nobody answers holds the helper for every agent: in the
-      // two weeks of logs before 10-19, 9 passwords calls failed on one,
-      // and the call that shows one waits out its 25 s first. So with the
-      // user away, nothing is asked; a probe that fails reads as at the Mac.
-      if (await isAway().catch(() => false)) {
-        const off = alertsOff();
-        throw new HarnessError("waiting_for_human", `the user is away from the Mac, where Apple Passwords asks for his Touch ID before it gives ${ask.what}, so nothing was asked: a prompt no one answers holds the helper for every agent. Call handoff on this tab, which ${off === undefined ? "alerts his phone and " : ""}ends once he has done the step himself${off === undefined ? "" : ` (${off}: tell the user in your chat)`}, or call ${ask.again} again once he is back`, { next: `call handoff on this tab, or call ${ask.again} again once he is back` });
-      }
-      const next: Approval = { ...ask, since: this.timers.now(), owner: currentOwner(), reply: request(await this.ensureLink(), s), gaveUp: false };
-      this.pending = next;
-      next.reply.then(() => {
-        if (this.pending === next) this.pending = null;
-        if (next.gaveUp) this.keep(next);
-      }, () => {
-        if (this.pending === next) this.pending = null;
-      });
-      return next;
-    }, { joins: ask.key });
-    if (!(await within(a.reply, this.left(), this.timers))) {
-      a.gaveUp = true;
-      throw new HarnessError("waiting_for_human", `the Mac is asking the user to approve ${a.what} with Touch ID (since ${localTime(new Date(a.since))}); ask him to approve, then call ${a.again} again`, { next: `ask him to approve, then call ${a.again} again` });
-    }
-    if (this.kept.get(a.key) === a) {
-      a.drop?.();
-      this.kept.delete(a.key);
-    }
-    return a.reply;
-  }
-
-  // An answer that landed after its call gave up, kept for keepMs.
-  private keep(a: Approval) {
-    this.kept.get(a.key)?.drop?.();
-    this.kept.set(a.key, a);
-    a.drop = this.timers.after(a.keepMs, () => {
-      if (this.kept.get(a.key) === a) this.kept.delete(a.key);
-    });
-  }
-
-  private async password(host: string, username: string, again = "fill"): Promise<string> {
-    const res = await this.approved({ key: `password ${host} ${username}`, what: `a sign-in for ${host}`, again, keepMs: KEEP_PASSWORD_MS }, (link, s) =>
-      this.query(link, s, Cmd.PASSWORD, "CmdGetPassword4LoginName", host, { ACT: 2, URL: host, USR: username }));
-    const entries: unknown[] = res.STATUS === STATUS_OK && Array.isArray(res.Entries) ? res.Entries : [];
-    const entry = entries[0];
-    if (!entry || typeof entry !== "object" || !("PWD" in entry) || typeof entry.PWD !== "string") {
-      throw new Error(`no saved password for ${username} on ${host}`);
-    }
-    return entry.PWD;
+  // The password the vault keeps for username on host.
+  private async password(host: string, username: string): Promise<string> {
+    const kept = (await this.vault.logins(host)).find((l) => l.username === username);
+    if (!kept) throw new HarnessError("not_content", `the vault keeps no password for ${username} on ${host}`, { next: "import his Apple Passwords export again (bun scripts/import-apple-passwords.ts <file>), or sign in another way" });
+    return kept.password;
   }
 
   // Asks Apple Passwords to save secret as username's password for host:
@@ -879,22 +730,6 @@ export class ApplePasswords {
       const s = await this.session();
       (await this.ensureLink()).send(JSON.stringify({ helper: { cmd: Cmd.SAVE, ...this.sealed(s, "CmdSetPassword4LoginName_URL", host, { ACT: 4, URL: "", USR: "", PWD: "", NURL: host, NUSR: username, NPWD: secret }) } }));
     });
-  }
-
-  // The current code from a verification-code setup saved for the site, for
-  // username when given.
-  private async oneTimeCode(host: string, username?: string): Promise<{ code: string; username: string }> {
-    const res = await this.approved({ key: `code ${host}`, what: `a verification code for ${host}`, again: "code", keepMs: KEEP_CODE_MS }, (link, s) =>
-      this.query(link, s, Cmd.ONE_TIME_CODE, "CmdDidFillOneTimeCode", host, { ACT: 2, TYPE: "oneTimeCodes", frameURLs: [`https://${host}`] }));
-    if (res.STATUS === STATUS_NONE) throw new Error(`no verification code saved for ${host}`);
-    if (res.STATUS !== STATUS_OK) throw new Error(`Apple Passwords query failed (status ${String(res.STATUS)})`);
-    // Entries come as a list, or as Entry_0, Entry_1, ... keys.
-    const listed: unknown[] = Array.isArray(res.Entries) ? res.Entries : Object.keys(res).filter((k) => k.startsWith("Entry_")).map((k) => res[k]);
-    const codes = listed.flatMap((e) => e && typeof e === "object" && "code" in e && typeof e.code === "string"
-      ? [{ code: e.code, username: "username" in e && typeof e.username === "string" ? e.username : "" }] : []);
-    const pick = username === undefined ? codes[0] : codes.find((c) => c.username === username);
-    if (!pick) throw new Error(codes.length ? `no verification code for ${username} on ${host}; saved for: ${codes.map((c) => c.username).join(", ")}` : `no verification code saved for ${host}`);
-    return pick;
   }
 
   // ---------- a Safari tab's sign-in form ----------
@@ -960,48 +795,39 @@ export class ApplePasswords {
     return { ...chosen, sharedWith };
   }
 
-  // Fills the saved login into the tab's sign-in form: the one the vault
-  // keeps for its site (the one named, else the only one), with no pairing
-  // and no Touch ID, else Apple Passwords' (source "apple" skips the vault,
-  // as when the vault's password is out of date), which the vault then
-  // keeps. The result names the fields filled, never the password, where
-  // the page went when the form submitted itself, and why the vault could
-  // not keep the login.
-  async fill(tab: number, username?: string, source: "vault" | "apple" = "vault"): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; from?: "vault"; vault?: string }> {
+  // Fills the login the vault keeps for the tab's sign-in form's site (the
+  // one named, else the only one), with no pairing and no Touch ID. The
+  // result names the fields filled, never the password, and where the page
+  // went when the form submitted itself.
+  async fill(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string }> {
     const form = await loginForm(tab);
     if (!form.password && !form.username) throw new HarnessError("not_content", "no sign-in form on this page", { next: "open the page with the sign-in form, then call fill again" });
     const { site } = form;
-    const type = async (login: string, secret: string | null) => {
-      keepSecret(tab, secret);
-      const res = await bridge.tab(tab, "fillLogin", [site, login, secret], 30000, form.frame);
-      const sent = [...(form.username && login ? ["username"] : []), ...(secret ? ["password"] : [])];
-      return { ...filledOf(res, sent, "login"), username: login, site };
-    };
-    const vault = await this.vault.logins(site).then((kept) => ({ kept }), (e: Error) => ({ why: e.message }));
-    if (source === "vault" && "kept" in vault) {
-      if (username === undefined && vault.kept.length > 1) throw new HarnessError("invalid_argument", `several saved logins for ${site}; pass username: ${vault.kept.map((l) => l.username).join(", ")}`);
-      const kept = vault.kept.find((l) => username === undefined || l.username === username);
-      if (kept) return { ...(await type(kept.username, form.password ? kept.password : null)), from: "vault" };
-    }
-    await this.session();
-    const { login, saved } = await this.chosenLogin(site, username);
-    if (!saved.includes(login)) throw new HarnessError("not_content", `no saved login ${login} for ${site}; saved: ${saved.join(", ") || "none"}`);
-    const secret = form.password ? await this.password(site, login) : null;
-    const filled = await type(login, secret);
-    if (secret === null) return filled;
-    if ("why" in vault) return { ...filled, vault: `not kept in the vault: ${vault.why}` };
-    return { ...filled, ...(await keeping(this.vault.keep([{ host: site, username: login, password: secret }]))) };
+    const kept = await this.vault.logins(site);
+    if (username === undefined && kept.length > 1) throw new HarnessError("invalid_argument", `several saved logins for ${site}; pass username: ${kept.map((l) => l.username).join(", ")}`);
+    const login = kept.find((l) => username === undefined || l.username === username);
+    if (!login) throw new HarnessError("not_content", `no saved login${username === undefined ? "" : ` ${username}`} for ${site} in the vault${kept.length ? `; kept: ${kept.map((l) => l.username).join(", ")}` : ""}`, { next: "sign in another way, or import his Apple Passwords export again (bun scripts/import-apple-passwords.ts <file>)" });
+    const secret = form.password ? login.password : null;
+    keepSecret(tab, secret);
+    const res = await bridge.tab(tab, "fillLogin", [site, login.username, secret], 30000, form.frame);
+    const sent = [...(form.username && login.username ? ["username"] : []), ...(secret ? ["password"] : [])];
+    return { ...filledOf(res, sent, "login"), username: login.username, site };
   }
 
-  // Types the site's current verification code into the tab's code field,
-  // in whichever frame holds it. The result never carries the code.
+  // Types the current code of the verification-code key the vault keeps
+  // for the site into the tab's code field, in whichever frame holds it.
+  // The result never carries the code.
   async fillCode(tab: number, username?: string): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string }> {
-    await this.session();
     const frames = await probe(tab, "code");
     const field = frames.find((f) => f.found);
     if (!field) throw noCodeField(frames.flatMap((f) => f.methods ?? []));
     const site = httpsHost(field.origin);
-    const { code, username: login } = await this.oneTimeCode(site, username);
+    const keys = (await this.vault.logins(site)).filter((l) => l.otpauth !== undefined && (username === undefined || l.username === username));
+    if (keys.length > 1) throw new HarnessError("invalid_argument", `several logins on ${site} have verification-code keys; pass username: ${keys.map((l) => l.username).join(", ")}`);
+    const key = keys[0];
+    if (key?.otpauth === undefined) throw new HarnessError("not_content", `the vault keeps no verification-code key for ${username ?? "any login"} on ${site}`, { next: "use the code the site emails or texts, or import his Apple Passwords export again" });
+    const code = totp(key.otpauth);
+    const login = key.username;
     keepSecret(tab, code);
     const res = await bridge.tab(tab, "fillCode", [site, code], 30000, field.frame);
     return { ...filledOf(res, ["code"], "code"), username: login, site };
@@ -1010,9 +836,12 @@ export class ApplePasswords {
   // Hands the authenticator key in the QR code png shows to Apple
   // Passwords, as Safari's Set Up Verification Code menu does (cmd 13,
   // which the helper does not answer): the Passwords app opens a sheet to
-  // pick the login it goes with. The key never leaves the daemon; the
-  // result names only the issuer and account, which the code shows as text.
-  async setUpCode(site: string, png: Buffer): Promise<{ sent: true; site: string; issuer: string; account: string }> {
+  // pick the login it goes with. The vault keeps the key with the login it
+  // keeps for the site (the QR's account, else the only one), so code
+  // needs no Touch ID. The key never leaves the daemon; the result names
+  // only the issuer and account, which the code shows as text, and why the
+  // vault could not keep it.
+  async setUpCode(site: string, png: Buffer): Promise<{ sent: true; site: string; issuer: string; account: string; vault?: string }> {
     await this.session();
     const read = Bun.spawnSync([PAIRING, "qr"], { stdin: png });
     if (!read.success) throw new Error(`reading the page's QR codes failed: ${read.stderr.toString().trim()}`);
@@ -1025,7 +854,13 @@ export class ApplePasswords {
       await this.session();
       (await this.ensureLink()).send(JSON.stringify({ helper: { cmd: Cmd.SET_UP_CODE, setUpTOTPPageURL: site, setUpTOTPURI: uri } }));
     });
-    return { sent: true, site, issuer: parsed.searchParams.get("issuer") ?? labelIssuer, account: account || labelIssuer };
+    const vault = await this.vault.logins(site).then(async (kept) => {
+      const only = kept.length === 1 && (!account || kept[0].otpauth === undefined) ? kept[0] : undefined;
+      const login = kept.find((l) => l.username === account) ?? only;
+      if (!login) return `not kept in the vault: none of the ${kept.length} logins it keeps for ${site} is ${account || labelIssuer}`;
+      return (await keeping(this.vault.keep([{ ...login, otpauth: uri }]))).vault;
+    }, (e: Error) => `not kept in the vault: ${e.message}`);
+    return { sent: true, site, issuer: parsed.searchParams.get("issuer") ?? labelIssuer, account: account || labelIssuer, ...(vault ? { vault } : {}) };
   }
 
   // Changing a password, first half: makes a strong password, asks Apple
@@ -1036,8 +871,8 @@ export class ApplePasswords {
   // save took, then calls typeChange. It is saved before it
   // is typed, as Safari saves the one it suggests, so no password the site
   // takes lives only in the page; the current password is read first,
-  // while the saved one is still it, and only as the helper gives it to the
-  // form's own host, as fill does: never for a site the caller names.
+  // while the saved one is still it, as the vault keeps it for the host the
+  // login is saved for: never for a site the caller names.
   async change(tab: number, username?: string, entry?: string, shared = false): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
@@ -1048,7 +883,7 @@ export class ApplePasswords {
     if (form.current === "empty") {
       if (entry !== undefined && site !== own) throw new Error("the form asks for the current password, which is filled only on the site it is saved for; call change without site");
       if (!saved) throw new Error(`the form asks for the current password, and no login ${login} is saved for ${site}; type it in first`);
-      current = await this.password(own, login, "change");
+      current = await this.password(site, login);
     }
     const secret = strongPassword(form.maxLength, form.rules);
     this.dropChange(tab);
