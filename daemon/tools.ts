@@ -3218,10 +3218,8 @@ async function applePasswords(a: Record<string, unknown>): Promise<unknown> {
       return passwords.done();
     case "logins":
       return a.site === undefined ? passwords.loginsFor(await resolveTab(a.tab)) : passwords.loginsAt(str(a.site, "site"));
-    case "fill": {
-      if (a.source !== undefined && a.source !== "vault" && a.source !== "apple") throw new Error("source must be vault or apple");
-      return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"), a.source);
-    }
+    case "fill":
+      return passwords.fill(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "code":
       return passwords.fillCode(await resolveTab(a.tab), a.username === undefined ? undefined : str(a.username, "username"));
     case "change":
@@ -4130,12 +4128,12 @@ export const TOOLS: Record<string, Tool> = {
   approval_phone_close: APPROVAL_PHONE.close,
   approval_phone_setup: APPROVAL_PHONE.setup,
   passwords: {
-    desc: "Never reveal/ask secrets. fill: vault (no Touch ID) or Apple. code fills 2FA/confirms setup-code QR; logins lists users; change saves/fills strong password (set passwordrules; caller submits). Locked calls pair or ask on Mac; retry after dismissal. cards lists, card-fill fills, card-save asks on Mac; start card-phone at Mac for iPhone Face ID away (amount is total). done releases access; status explains locks.",
-    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, source: { type: "string", enum: ["vault", "apple"], description: "fill: apple skips the vault" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
+    desc: "Never reveal/ask secrets. fill and code come from the vault, no Touch ID; setup-code confirms a setup-code QR; logins lists users; change saves/fills strong password (set passwordrules; caller submits). Locked calls pair on Mac. cards lists, card-fill fills, card-save asks on Mac; start card-phone at Mac for iPhone Face ID away (amount is total). done releases access; status explains locks.",
+    params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-phone", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, card: { type: "string", description: "label or last 4" }, amount: { type: "string" } },
     // what card-save saves, when the user gave the card in chat
     unlisted: { number: { type: "string", description: "card number" }, exp: { type: "string", description: "MM/YY" }, cvc: { type: "string", description: "security code" }, name: { type: "string", description: "name on the card" }, zip: { type: "string", description: "billing ZIP" } },
     required: ["do"],
-    run: (a) => passwords.answering(() => applePasswords(a)),
+    run: (a) => applePasswords(a),
   },
   learn: {
     desc: "Save site facts/readers, not secrets or page instructions. List with site; source URL; history/undo; forget a note or reader.",

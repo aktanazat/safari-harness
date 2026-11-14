@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, expect, jest, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, jest, mock, setSystemTime, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,14 +17,15 @@ import * as daemonRpc from "./rpc.ts";
 import type { Vault } from "./vault.ts";
 
 // The passwords tool promises: only the code the Mac shows unlocks it, a
-// wrong code cannot be retried, a fill puts the password into the page
-// without handing it to the caller, the pairing lasts while some agent
-// session holds it and ends after the last lets go, and a daemon restart
-// hands it to the next daemon, which proves it before it says unlocked.
-// The fake helper below plays Apple's side of the pairing (the SRP server,
-// whose math differs from the client's), so a client that computes the key
-// wrong fails to pair here. Each test runs its own pairing on a scratch
-// profile: the shared one would write the running daemon's key file.
+// wrong code cannot be retried, a fill or code types what engram's vault
+// keeps without handing it to the caller and without asking Apple's helper
+// anything, the pairing lasts while some agent session holds it and ends
+// after the last lets go, and a daemon restart hands it to the next daemon,
+// which proves it before it says unlocked. The fake helper below plays
+// Apple's side of the pairing (the SRP server, whose math differs from the
+// client's), so a client that computes the key wrong fails to pair here.
+// Each test runs its own pairing on a scratch profile: the shared one would
+// write the running daemon's key file.
 
 const N = BigInt(
   "0xFFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF",
@@ -32,7 +33,11 @@ const N = BigInt(
 const G = 5n;
 const CODE = "482913";
 const SECRET = "correct horse battery staple";
-const OTP = "731904";
+// RFC 6238's SHA-1 key ("12345678901234567890") and its 8-digit code at
+// 59 s, the time the code tests set.
+const OTPAUTH = "otpauth://totp/Example:aktan@example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8&issuer=Example";
+const OTP = "94287082";
+const T59 = new Date(59_000);
 const SITE = "login.example.com";
 const USER = "aktan@example.com";
 // Two agent sessions that stay up for the whole run.
@@ -52,19 +57,20 @@ function pow(b: bigint, e: bigint): bigint {
 }
 
 type Sent = Record<string, unknown> & { cmd: number };
-type Helper = { queries: string[]; answer: (m: Sent) => Record<string, unknown> };
+type Helper = { cmds: number[]; queries: string[]; answer: (m: Sent) => Record<string, unknown> | undefined };
 
 // Apple's helper process: shows CODE, verifies the client's proof, and
-// answers encrypted queries under the session it paired: it lists logins,
-// and USER's on SITE has a password. A save (command 6) replaces that
-// password and, as the helper does, gets no answer.
+// answers encrypted queries under the session it paired by listing logins.
+// A save (command 6) gets no answer, as the helper gives none. cmds is
+// every command it was sent.
 function appleHelper(logins = [{ USR: USER, sites: [SITE] }]): Helper {
+  const cmds: number[] = [];
   const queries: string[] = [];
   let srp: { user: string; A: Buffer; B: Buffer; b: bigint; v: bigint; salt: Buffer } | null = null;
   let key: Buffer | null = null;
-  let saved = SECRET;
 
   const answer = (m: Sent): Record<string, unknown> | undefined => {
+    cmds.push(m.cmd);
     const msg = m.msg && typeof m.msg === "object" && "PAKE" in m.msg ? m.msg : null;
     if (m.cmd === 14) return { cmd: 14, capabilities: { shouldUseBase64: true } };
     if (m.cmd === 2 && msg) {
@@ -98,14 +104,8 @@ function appleHelper(logins = [{ USR: USER, sites: [SITE] }]): Helper {
       d.setAuthTag(data.subarray(data.length - 32, data.length - 16));
       const q = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 32)), d.final()]).toString());
       queries.push(`${m.cmd} ${q.URL ?? new URL(q.frameURLs[0]).hostname}`);
-      if (m.cmd === 6) {
-        if (q.NUSR === USER && q.NURL === SITE) saved = q.NPWD;
-        return undefined;
-      }
-      // A code query answers with Entry_N keys, as the helper does for codes.
-      const out = m.cmd === 4 ? { STATUS: 0, Entries: logins }
-        : m.cmd === 17 ? { STATUS: 0, Entry_0: { code: OTP, username: USER, domain: SITE } }
-        : { STATUS: 0, Entries: [{ USR: q.USR, PWD: saved }] };
+      if (m.cmd === 6) return undefined;
+      const out = { STATUS: 0, Entries: logins };
       const iv = randomBytes(16);
       const c = createCipheriv("aes-128-gcm", key, iv);
       const sealed = Buffer.concat([iv, c.update(JSON.stringify(out)), c.final(), c.getAuthTag()]);
@@ -113,14 +113,13 @@ function appleHelper(logins = [{ USR: USER, sites: [SITE] }]): Helper {
     }
     return { cmd: m.cmd };
   };
-  return { queries, answer };
+  return { cmds, queries, answer };
 }
 
 // The bridge in Helium, dialing daemon p: it says hello (whether its helper
 // already runs, and the session it keeps), relays to the helper, and keeps
-// whatever session p hands it for the next daemon. With hold, the helper's
-// answers to one command wait for hold's approve.
-function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = null as string | null, hold = undefined as TouchId | undefined } = {}) {
+// whatever session p hands it for the next daemon.
+function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = null as string | null } = {}) {
   const kept = { stash, closed: false };
   p.attach({
     send(data: string) {
@@ -128,10 +127,7 @@ function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = 
       if ("stash" in msg) kept.stash = msg.stash;
       if (msg.helper) {
         const reply = helper.answer(msg.helper);
-        if (!reply) return;
-        const deliver = () => p.handleMessage(JSON.stringify({ helper: reply }));
-        if (msg.helper.cmd === hold?.cmd) hold.ask(deliver);
-        else queueMicrotask(deliver);
+        if (reply) queueMicrotask(() => p.handleMessage(JSON.stringify({ helper: reply })));
       }
     },
     close() {
@@ -140,24 +136,6 @@ function bridgeTo(p: ApplePasswords, helper: Helper, { running = false, stash = 
   });
   p.handleMessage(JSON.stringify({ hello: { helper: running, stash } }));
   return kept;
-}
-
-// The helper answers a password (command 5) only once the user approves
-// with Touch ID: approve is his approval. asked settles when such a
-// request comes.
-type TouchId = { cmd: number; asked: Promise<void>; ask: (deliver: () => void) => void; approve: () => void };
-function touchId(): TouchId {
-  const asked = Promise.withResolvers<void>();
-  const held: (() => void)[] = [];
-  return {
-    cmd: 5,
-    asked: asked.promise,
-    ask(deliver) {
-      held.push(deliver);
-      asked.resolve();
-    },
-    approve: () => held.shift()?.(),
-  };
 }
 
 // The grace period's clock, run by hand.
@@ -195,26 +173,31 @@ afterAll(() => {
   for (const dir of profiles) rmSync(dir, { recursive: true, force: true });
 });
 
-// The vault keeps nothing here, unless a test hands in one that does
-// (memoryVault): the tests of Apple Passwords' own path fill from it.
-const NO_VAULT: Vault = { logins: async () => [], keep: async () => {} };
+type Kept = { username: string; password: string; otpauth?: string };
 
-function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), approvalShown: () => Promise<boolean | undefined> = async () => true, vault = NO_VAULT) {
-  profiles.push(profile);
-  const clock = handClock();
-  return { p: new ApplePasswords({ profile, timers: clock.timers, approvalShown, vault }), profile, clock };
-}
-
-// The vault (vault.ts) as a map from host to the logins kept there.
-function memoryVault(logins: Record<string, { username: string; password: string }[]> = {}) {
+// The vault (vault.ts) as a map from host to the logins kept there. As
+// there, keeping a login again replaces what it names and leaves its
+// verification-code key be. It keeps USER's login on SITE, with its code
+// key, unless a test hands in others.
+function memoryVault(logins: Record<string, Kept[]> = { [SITE]: [{ username: USER, password: SECRET, otpauth: OTPAUTH }] }) {
   const kept = new Map(Object.entries(logins));
   const vault: Vault = {
     logins: async (host) => (kept.get(host) ?? []).map((l) => ({ ...l, host })),
     keep: async (logins) => {
-      for (const { host, username, password } of logins) kept.set(host, [...(kept.get(host) ?? []).filter((l) => l.username !== username), { username, password }]);
+      for (const { host, ...login } of logins) {
+        const was = kept.get(host) ?? [];
+        const old = was.find((l) => l.username === login.username);
+        kept.set(host, [...was.filter((l) => l !== old), { ...old, ...login }]);
+      }
     },
   };
   return { kept, vault };
+}
+
+function scratch(profile = mkdtempSync("/private/var/tmp/passwords-test-"), vault = memoryVault().vault) {
+  profiles.push(profile);
+  const clock = handClock();
+  return { p: new ApplePasswords({ profile, timers: clock.timers, vault }), profile, clock };
 }
 
 async function paired(p: ApplePasswords, helper = appleHelper()) {
@@ -265,17 +248,25 @@ function fakeTab(url: string, form: { frame: number; url: string; maxLength?: nu
 
 const locked = (call: Promise<unknown>) => call.then(() => "no error", (e: Error) => e.message);
 
-test("the code on the Mac unlocks, and fill types the password into the page but never returns it", async () => {
+test("fill types the login the vault keeps into the page but never returns it, with Apple Passwords never paired", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/signin`);
-  bridgeTo(p, appleHelper());
-  await p.pair();
-  expect(await p.unlock(CODE)).toEqual({ unlocked: true });
-  const result = await p.fill(7);
+  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
   expect(page).toEqual({ username: USER, password: SECRET });
-  expect(result).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect(JSON.stringify(await p.loginsFor(7))).not.toContain(SECRET);
   expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
+});
+
+// 11-13: the user asked that no login or code ever again wait on Touch ID,
+// which Apple's helper asks for each password and code it gives.
+test("with Apple Passwords paired, fill and code send its helper nothing, so neither can ask Touch ID", async () => {
+  setSystemTime(T59);
+  const { p } = scratch();
+  const page = fakeTab(`https://${SITE}/signin`);
+  const { helper } = await paired(p);
+  const before = helper.cmds.length;
+  await p.fill(7);
+  await p.fillCode(7);
+  expect([helper.cmds.slice(before), page]).toEqual([[], { username: USER, password: SECRET, code: OTP }]);
 });
 
 // On 10-05 an agent asked which logins were saved for accounts.google.com
@@ -286,265 +277,6 @@ test("logins lists the usernames saved for a host named with no page open, askin
   await paired(p, helper);
   expect(await p.loginsAt(SITE)).toEqual({ site: SITE, usernames: [USER] });
   expect(helper.queries).toEqual([`4 ${SITE}`]);
-});
-
-// On 09-28 a fill waited on Touch ID past the agent's 60 s call, so the
-// agent never read why, and every call after it read "did not answer".
-test("a fill waiting on Touch ID answers before the agent's call ends, and the same call once he approves returns the filled form", async () => {
-  const { p, clock } = scratch();
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  const answering = clock.armed();
-  const first = runAs(AGENT, () => p.fill(7));
-  await answering;
-  clock.runOut();
-  await expect(first).rejects.toMatchObject({ code: "waiting_for_human", effect: "none", message: expect.stringContaining(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`) });
-  expect(page).toEqual({});
-  hold.approve();
-  expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect(page).toEqual({ username: USER, password: SECRET });
-});
-
-// In the two weeks of logs before 10-19, 9 passwords calls failed on a
-// Touch ID prompt nobody was at the Mac to answer: the call that showed it
-// waited out its 25 s, and the prompt then held Apple's helper for every
-// agent, once for 44 minutes.
-test("away from the Mac, a fill the vault cannot do asks for no Touch ID and answers at once, naming handoff; an away probe that fails reads as at the Mac", async () => {
-  const { p } = scratch();
-  const page = fakeTab(`https://${SITE}/signin`);
-  const { helper } = await paired(p);
-  process.env.SAFARI_HARNESS_AWAY = "1";
-  await expect(p.fill(7)).rejects.toMatchObject({ code: "waiting_for_human", effect: "none", message: expect.stringContaining("away from the Mac") });
-  expect([helper.queries, page]).toEqual([[`4 ${SITE}`], {}]);
-  spyOn(phone, "isAway").mockRejectedValue(new Error("the away probe timed out"));
-  expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-});
-
-test("a sign-in the user approved before he walked away still fills, asking nothing more", async () => {
-  const { p, clock } = scratch();
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  const helper = appleHelper();
-  bridgeTo(p, helper, { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  const answering = clock.armed();
-  const first = locked(runAs(AGENT, () => p.fill(7)));
-  await answering;
-  clock.runOut();
-  await first;
-  hold.approve();
-  process.env.SAFARI_HARNESS_AWAY = "1";
-  expect(await runAs(AGENT, () => p.fill(7))).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect([page, helper.queries.filter((q) => q.startsWith("5 "))]).toEqual([{ username: USER, password: SECRET }, [`5 ${SITE}`]]);
-});
-
-test.each(["status", "fill"] as const)("after a dismissed Touch ID prompt, %s releases the abandoned request so a new pairing can fill", async (action) => {
-  const { p, clock } = scratch(undefined, async () => false);
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  try {
-    await runAs(AGENT, async () => {
-      await p.pair();
-      await p.unlock(CODE);
-    });
-    const answering = clock.armed();
-    const first = locked(runAs(AGENT, () => p.fill(7)));
-    await answering;
-    clock.runOut();
-    await first;
-    const next = runAs(AGENT, () => action === "status" ? p.status() : locked(p.fill(7)));
-    await settled();
-    clock.runOut();
-    const result = await next;
-    if (action === "status") expect(result).toMatchObject({ unlocked: false });
-    else expect(result).toContain("Apple Passwords is locked:");
-    expect(page).toEqual({});
-    await runAs(AGENT, () => paired(p));
-    await runAs(AGENT, () => p.fill(7));
-    expect(page).toEqual({ username: USER, password: SECRET });
-  } finally {
-    p.shutdown();
-  }
-});
-
-test.each([true, undefined])("an unanswered fill keeps its pairing when approval visibility is %s", async (shown) => {
-  const { p, clock } = scratch(undefined, async () => shown);
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  try {
-    await runAs(AGENT, async () => {
-      await p.pair();
-      await p.unlock(CODE);
-    });
-    const answering = clock.armed();
-    const first = locked(runAs(AGENT, () => p.fill(7)));
-    await answering;
-    clock.runOut();
-    await first;
-    expect(await p.status()).toMatchObject({ unlocked: true, waiting: expect.stringContaining(SITE) });
-    hold.approve();
-    await runAs(AGENT, () => p.fill(7));
-    expect(page).toEqual({ username: USER, password: SECRET });
-  } finally {
-    p.shutdown();
-  }
-});
-
-test("an approval arriving as its window closes fills without another pairing", async () => {
-  const { p, clock } = scratch(undefined, async () => false);
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  try {
-    await runAs(AGENT, async () => {
-      await p.pair();
-      await p.unlock(CODE);
-    });
-    const answering = clock.armed();
-    const first = locked(runAs(AGENT, () => p.fill(7)));
-    await answering;
-    clock.runOut();
-    await first;
-    const status = p.status();
-    await settled();
-    hold.approve();
-    expect(await status).toMatchObject({ unlocked: true });
-    await runAs(AGENT, () => p.fill(7));
-    expect(page).toEqual({ username: USER, password: SECRET });
-  } finally {
-    p.shutdown();
-  }
-});
-
-test("while the Mac waits on Touch ID, status says what it waits on at once, and every other password call says so when its own call runs out", async () => {
-  const { p, clock } = scratch();
-  fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  void locked(runAs(AGENT, () => p.fill(7)));
-  await hold.asked;
-  const { waiting = "nothing" } = (await runAs(AGENT, () => p.status())) as { waiting?: string };
-  expect(waiting).toStartWith(`a sign-in for ${SITE}, since `);
-  const held = [locked(runAs(AGENT, () => p.loginsFor(7))), locked(runAs(AGENT, () => p.fillCode(7))), locked(runAs(AGENT, () => p.pair()))];
-  await settled();
-  clock.runOut();
-  const waits = `Apple's password helper is waiting for the user to approve a sign-in for ${SITE} with Touch ID`;
-  for (const answer of await Promise.all(held)) expect(answer).toStartWith(waits);
-});
-
-// On 09-29 five password-reset agents shared one Mac, and each call held
-// up by another's Touch ID told its agent to ask him to approve a site it
-// was not working on.
-test("another agent's call held up by a Touch ID wait hears that the wait is not its own", async () => {
-  const { p, clock } = scratch();
-  fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  void locked(runAs(AGENT, () => p.fill(7)));
-  await hold.asked;
-  const other = locked(runAs(OTHER, () => p.fill(7)));
-  await settled();
-  clock.runOut();
-  expect(await other).toStartWith(`another agent's request (a sign-in for ${SITE}) is waiting for the user to approve it with Touch ID`);
-});
-
-// On 10-05 an agent's password call came while another agent's code
-// request waited on Touch ID, was turned away at once, and the agent made
-// its password some other way.
-test("another agent's call held up by a Touch ID wait runs once he approves, and fills its own form", async () => {
-  const { p } = scratch();
-  const page = fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  const mine = runAs(AGENT, () => p.fill(7));
-  await hold.asked;
-  const other = runAs(OTHER, () => p.fill(7));
-  await settled();
-  hold.approve();
-  await mine;
-  await settled();
-  hold.approve();
-  expect(await other).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect(page).toEqual({ username: USER, password: SECRET });
-});
-
-// A clock run by hand that keeps time: tick moves it on and fires each
-// timer that comes due.
-function steppedClock() {
-  let now = 0;
-  const set: { at: number; fn: () => void; live: boolean }[] = [];
-  const timers: Timers = {
-    after(ms, fn) {
-      const t = { at: now + ms, fn, live: true };
-      set.push(t);
-      return () => {
-        t.live = false;
-      };
-    },
-    now: () => now,
-  };
-  return {
-    timers,
-    tick(ms: number) {
-      now += ms;
-      for (const t of set.filter((t) => t.live && t.at <= now)) {
-        t.live = false;
-        t.fn();
-      }
-    },
-  };
-}
-
-// A call that waits its turn behind another's Touch ID, then asks Touch ID
-// itself, still answers within the 25 s its caller waits.
-test("a call that waited its turn behind another agent's Touch ID answers 25 s after it began, though its own request then waits on him too", async () => {
-  const clock = steppedClock();
-  const profile = mkdtempSync("/private/var/tmp/passwords-test-");
-  profiles.push(profile);
-  const p = new ApplePasswords({ profile, timers: clock.timers, approvalShown: async () => true, vault: NO_VAULT });
-  fakeTab(`https://${SITE}/signin`);
-  const hold = touchId();
-  bridgeTo(p, appleHelper(), { hold });
-  await runAs(AGENT, async () => {
-    await p.pair();
-    await p.unlock(CODE);
-  });
-  const mine = runAs(AGENT, () => p.answering(() => p.fill(7)));
-  await hold.asked;
-  let answer = "none yet";
-  void locked(runAs(OTHER, () => p.answering(() => p.fill(7)))).then((a) => {
-    answer = a;
-  });
-  await settled();
-  clock.tick(20_000);
-  hold.approve();
-  await mine;
-  await settled();
-  clock.tick(5_000);
-  await settled();
-  expect(answer).toStartWith(`the Mac is asking the user to approve a sign-in for ${SITE} with Touch ID`);
 });
 
 // setImmediate runs once every promise job has, and the fake clock leaves it be.
@@ -591,6 +323,7 @@ beforeEach(() => {
 afterEach(() => {
   mock.restore();
   jest.useRealTimers();
+  setSystemTime();
   if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
   else process.env.SAFARI_HARNESS_AWAY = away;
   tabSecrets.clear();
@@ -620,24 +353,32 @@ test("a first call on the locked vault answers within 40 s with what the Mac wai
   expect(vault.prompts).toHaveBeenCalledTimes(1);
 });
 
-test("code types the site's verification code into the page but never returns it", async () => {
+test("code types the current code of the key the vault keeps into the page but never returns it, with Apple Passwords never paired", async () => {
+  setSystemTime(T59);
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/verify`);
-  await paired(p);
-  const result = await p.fillCode(7);
+  expect(await p.fillCode(7)).toEqual({ filled: ["code"], username: USER, site: SITE });
   expect(page).toEqual({ code: OTP });
-  expect(result).toEqual({ filled: ["code"], username: USER, site: SITE });
   expect(await bridge.tab(7, "extract")).toEqual({ text: "..." });
+});
+
+test("code where the vault keeps no code key for the site types nothing and says nothing happened", async () => {
+  const { p } = scratch(undefined, memoryVault({ [SITE]: [{ username: USER, password: SECRET }] }).vault);
+  const page = fakeTab(`https://${SITE}/verify`);
+  const error = await p.fillCode(7).catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toStartWith(`the vault keeps no verification-code key for any login on ${SITE}`);
+  expect(failureOf(error, { effectful: true })).toMatchObject({ effect: "none" });
+  expect(page).toEqual({});
 });
 
 // Instagram asked how to send its code before it showed a field, and code
 // answered only that no field was there.
-test("code on a page that asks how to send the code names the choices it shows and asks Apple Passwords for nothing", async () => {
+test("code on a page that asks how to send the code names the choices it shows and types nothing", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/challenge`, { frame: 0, url: `https://${SITE}/challenge`, methods: ["Authentication app", "Text message"] });
-  const { helper } = await paired(p);
   await expect(p.fillCode(7)).rejects.toMatchObject({ code: "not_content", effect: "none", message: expect.stringContaining('"Authentication app", "Text message"') });
-  expect([helper.queries, page]).toEqual([[], {}]);
+  expect(page).toEqual({});
 });
 
 // The new password must be the one Apple Passwords keeps: a page given one
@@ -659,42 +400,14 @@ test("change saves a new password and types nothing; typeChange then types the s
   expect(page.password).toBe(page.fresh);
 });
 
-// 10-13: the user chose fewer Touch ID prompts over Apple Passwords asking
-// on every fill. A daemon never paired stands for one with nobody to
-// approve: a fill reaching Apple Passwords there fails as locked.
-test("a login Apple Passwords fills is kept in the vault, and the next fill types it with no pairing, and the tab's answers do not show it", async () => {
-  const { vault } = memoryVault();
-  const { p } = scratch(undefined, undefined, vault);
-  const page = fakeTab(`https://${SITE}/signin`);
-  await paired(p);
-  await p.fill(7);
-  delete page.password;
-  const never = scratch(undefined, undefined, vault).p;
-  expect(await never.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: SITE, from: "vault" });
-  expect(page).toEqual({ username: USER, password: SECRET });
-  expect(await bridge.tab(7, "extract")).toEqual({ text: `${USER} ...` });
-});
-
-test("a fill naming a login the vault does not keep fills Apple Passwords' one, and the vault keeps it beside the other", async () => {
-  const other = { username: "other@example.com", password: "other password" };
-  const { kept, vault } = memoryVault({ [SITE]: [other] });
-  const { p } = scratch(undefined, undefined, vault);
-  const page = fakeTab(`https://${SITE}/signin`);
-  await paired(p);
-  expect(await p.fill(7, USER)).toEqual({ filled: ["username", "password"], username: USER, site: SITE });
-  expect(page).toEqual({ username: USER, password: SECRET });
-  expect(kept.get(SITE)).toEqual([other, { username: USER, password: SECRET }]);
-});
-
 // Apple Passwords keeps ten Google accounts for accounts.google.com
 // (10-23); a fill there that names none must not pick one.
-test("a fill where the vault keeps several logins fills none until a username is named, then that one with no pairing", async () => {
+test("a fill where the vault keeps several logins fills none until a username is named, then that one", async () => {
   const other = { username: "other@example.com", password: "other password" };
-  const { vault } = memoryVault({ [SITE]: [other, { username: USER, password: SECRET }] });
-  const { p } = scratch(undefined, undefined, vault);
+  const { p } = scratch(undefined, memoryVault({ [SITE]: [other, { username: USER, password: SECRET }] }).vault);
   const page = fakeTab(`https://${SITE}/signin`);
   await expect(p.fill(7)).rejects.toThrow(`several saved logins for ${SITE}; pass username: ${other.username}, ${USER}`);
-  expect(await p.fill(7, other.username)).toMatchObject({ username: other.username, from: "vault" });
+  expect(await p.fill(7, other.username)).toMatchObject({ username: other.username, site: SITE });
   expect(page).toEqual(other);
 });
 
@@ -704,7 +417,6 @@ test("a fill where the vault keeps several logins fills none until a username is
 test("a fill naming a login nobody saved types nothing and says nothing happened", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/signin`);
-  await paired(p);
   const error = await p.fill(7, "nobody@example.com").catch((e: unknown) => e);
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).toStartWith("no saved login nobody@example.com");
@@ -712,32 +424,25 @@ test("a fill naming a login nobody saved types nothing and says nothing happened
   expect(page).toEqual({});
 });
 
-test("fill with source apple types Apple Passwords' password over an old one the vault keeps, and the vault then keeps the new one", async () => {
-  const { kept, vault } = memoryVault({ [SITE]: [{ username: USER, password: "old password" }] });
-  const { p } = scratch(undefined, undefined, vault);
-  const page = fakeTab(`https://${SITE}/signin`);
+// Apple Passwords has saved the new password by the time it is typed, so
+// a vault that cannot keep it must not keep it out of the page.
+test("a changed password the vault cannot keep is still typed, and the result says why", async () => {
+  const { p } = scratch(undefined, { logins: async (host) => [{ username: USER, password: SECRET, host }], keep: async () => Promise.reject(new Error("the vault refused: locked")) });
+  const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
-  await p.fill(7, undefined, "apple");
-  expect(page.password).toBe(SECRET);
-  expect(kept.get(SITE)).toEqual([{ username: USER, password: SECRET }]);
-});
-
-test("a fill whose login the vault cannot keep still fills, and says why", async () => {
-  const { p } = scratch(undefined, undefined, { logins: async () => [], keep: async () => Promise.reject(new Error("the vault refused: locked")) });
-  const page = fakeTab(`https://${SITE}/signin`);
-  await paired(p);
-  expect(await p.fill(7)).toMatchObject({ filled: ["username", "password"] });
-  expect(page).toEqual({ username: USER, password: SECRET });
+  await p.change(7);
+  expect(await p.typeChange(7)).toMatchObject({ filled: ["current password", "new password", "confirm password"], vault: "not kept in the vault: the vault refused: locked" });
+  expect(page.fresh).toBeString();
 });
 
 test("a changed password is kept in the vault, so the next fill types the new one with no pairing", async () => {
   const { vault } = memoryVault();
-  const { p } = scratch(undefined, undefined, vault);
+  const { p } = scratch(undefined, vault);
   const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
   await p.change(7);
   await p.typeChange(7);
-  await scratch(undefined, undefined, vault).p.fill(7);
+  await scratch(undefined, vault).p.fill(7);
   expect(page.fresh).toBeString();
   expect(page.password).toBe(page.fresh);
 });
@@ -832,14 +537,14 @@ test.each([
 test("change with shared changes a login saved for several websites, and keeps the new password in the vault for each, so a fill on another types it", async () => {
   const other = "sso.example.com";
   const { vault } = memoryVault();
-  const { p } = scratch(undefined, undefined, vault);
+  const { p } = scratch(undefined, vault);
   const url = `https://${SITE}/reset`;
   const page = fakeTab(url, { frame: 0, url, current: "none" });
   await paired(p, appleHelper([{ USR: USER, sites: [SITE, other] }]));
   expect(await p.change(7, USER, undefined, true)).toMatchObject({ username: USER, site: SITE });
   expect(await p.typeChange(7)).toMatchObject({ site: SITE, sharedWith: [other] });
   const signIn = fakeTab(`https://${other}/signin`);
-  await scratch(undefined, undefined, vault).p.fill(7, USER);
+  await scratch(undefined, vault).p.fill(7, USER);
   expect(page.fresh).toBeString();
   expect(signIn.password).toBe(page.fresh);
 });
@@ -895,15 +600,14 @@ const HOME = { url: `https://${SITE}/home`, title: "Home" };
 test("a login form that submits itself as it is filled reports the fields filled and where the page went", async () => {
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/signin`, undefined, HOME);
-  await paired(p);
   expect(await p.fill(7)).toEqual({ filled: ["username", "password"], navigated: HOME, username: USER, site: SITE });
   expect(page).toEqual({ username: USER, password: SECRET });
 });
 
 test("a code field that submits itself as it is filled reports the code filled and where the page went", async () => {
+  setSystemTime(T59);
   const { p } = scratch();
   const page = fakeTab(`https://${SITE}/verify`, undefined, HOME);
-  await paired(p);
   expect(await p.fillCode(7)).toEqual({ filled: ["code"], navigated: HOME, username: USER, site: SITE });
   expect(page).toEqual({ code: OTP });
 });
@@ -915,28 +619,25 @@ test("a wrong code is refused and cannot be retried with the right one", async (
   await p.pair();
   await expect(p.unlock("000000")).rejects.toThrow("wrong code");
   await expect(p.unlock(CODE)).rejects.toThrow("no code is waiting");
-  await expect(p.fill(7)).rejects.toThrow("locked");
+  await expect(p.loginsFor(7)).rejects.toThrow("locked");
 });
 
-test("fill on a page that is not https asks the helper for nothing", async () => {
+test("fill on a page that is not https types nothing", async () => {
   const { p } = scratch();
   const page = fakeTab(`http://${SITE}/signin`);
-  const { helper } = await paired(p);
   await expect(p.fill(7)).rejects.toThrow("https");
-  expect(helper.queries).toEqual([]);
   expect(page).toEqual({});
 });
 
 // Apple's sign-in form on appstoreconnect.apple.com is a frame from
 // idmsa.apple.com: what is saved for the frame's site goes into that frame.
-test("a sign-in form in an embedded frame gets the login and code saved for the frame's own site", async () => {
-  const { p } = scratch();
+test("a sign-in form in an embedded frame gets the login and code kept for the frame's own site", async () => {
+  setSystemTime(T59);
+  const { p } = scratch(undefined, memoryVault({ "idmsa.apple.com": [{ username: USER, password: SECRET, otpauth: OTPAUTH }] }).vault);
   const page = fakeTab("https://appstoreconnect.apple.com/login", { frame: 5031, url: "https://idmsa.apple.com/appleauth/auth/signin" });
-  const { helper } = await paired(p);
   expect(await p.fill(7)).toEqual({ filled: ["username", "password"], username: USER, site: "idmsa.apple.com" });
   expect(await p.fillCode(7)).toEqual({ filled: ["code"], username: USER, site: "idmsa.apple.com" });
   expect(page).toEqual({ username: USER, password: SECRET, code: OTP });
-  expect(helper.queries.map((q) => q.split(" ")[1])).toEqual(["idmsa.apple.com", "idmsa.apple.com", "idmsa.apple.com"]);
 });
 
 test("a helper restart ends the pairing, and the locked call says why and to pair now", async () => {
@@ -947,7 +648,7 @@ test("a helper restart ends the pairing, and the locked call says why and to pai
   const { unlocked, reason = "no reason" } = await p.status();
   expect(unlocked).toBe(false);
   expect(reason).toContain("restarted at");
-  const error = await locked(p.fill(7));
+  const error = await locked(p.loginsFor(7));
   expect(error).toContain(reason);
   expect(error).toContain('{do: "pair"}');
 });
@@ -1013,15 +714,14 @@ test("a session that exits lets go of the pairing", async () => {
 
 test("a restart hands the pairing and its sessions to the next daemon, which proves it before it says unlocked", async () => {
   const first = scratch();
-  const page = fakeTab(`https://${SITE}/signin`);
+  fakeTab(`https://${SITE}/signin`);
   const helper = appleHelper();
   const { kept } = await runAs(AGENT, () => paired(first.p, helper));
   first.p.shutdown();
   const next = scratch(first.profile);
   bridgeTo(next.p, helper, { running: true, stash: kept.stash });
   expect(await next.p.status()).toMatchObject({ unlocked: true, sessions: 1 });
-  expect(await runAs(OTHER, () => next.p.fill(7))).toMatchObject({ username: USER, site: SITE });
-  expect(page).toEqual({ username: USER, password: SECRET });
+  expect(await runAs(OTHER, () => next.p.loginsFor(7))).toEqual({ site: SITE, usernames: [USER] });
   expect(await runAs(AGENT, () => next.p.done())).toMatchObject({ released: true, sessions: 1 });
 });
 
@@ -1170,4 +870,27 @@ test.skipIf(!trusted).each([
 // Digits in a sentence, or too few, are not the code.
 test.skipIf(!trusted)("a window without a six-digit code gives no code", async () => {
   expect(await readCode("Too many tries. Try again in 300000 seconds.", "4 8 2   9 1")).toEqual({ error: expect.stringContaining("no pairing code showed") });
+}, 10000);
+
+// A QR code showing text, as a site's authenticator-app step does.
+const QR = `ObjC.import("CoreImage"); ObjC.import("AppKit");
+function run(argv) {
+  const f = $.CIFilter.filterWithName("CIQRCodeGenerator");
+  f.setValueForKey($(argv[0]).dataUsingEncoding($.NSUTF8StringEncoding), "inputMessage");
+  const rep = $.NSBitmapImageRep.alloc.initWithCIImage(f.outputImage.imageByApplyingTransform({ a: 8, b: 0, c: 0, d: 8, tx: 0, ty: 0 }));
+  return rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({})).base64EncodedStringWithOptions(0).js;
+}`;
+
+// 11-13: codes come from the vault alone, so a key set up in Apple
+// Passwords that the vault did not keep would leave code with nothing to type.
+test.skipIf(!existsSync(PAIRING))("a verification code set up from the page's QR code is kept with the vault's login, and code then types it without asking Apple's helper", async () => {
+  setSystemTime(T59);
+  const { p } = scratch(undefined, memoryVault({ [SITE]: [{ username: USER, password: SECRET }] }).vault);
+  const page = fakeTab(`https://${SITE}/security/2fa`);
+  const { helper } = await paired(p);
+  const png = Buffer.from(Bun.spawnSync(["osascript", "-l", "JavaScript", "-e", QR, OTPAUTH]).stdout.toString().trim(), "base64");
+  expect(await p.setUpCode(SITE, png)).toEqual({ sent: true, site: SITE, issuer: "Example", account: USER });
+  const before = helper.cmds.length;
+  await p.fillCode(7);
+  expect([helper.cmds.slice(before), page]).toEqual([[], { code: OTP }]);
 }, 10000);

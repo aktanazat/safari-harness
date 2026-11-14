@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { memSecretVault } from "./vault.ts";
+import { memSecretVault, totp } from "./vault.ts";
 
 // The vault as the daemon reaches it: the real mem-secret, on scratch
 // stores sealed to a scratch age key, so the user's own vault is never read
@@ -65,3 +65,37 @@ test.skipIf(!ready)("rebuild keeps exactly the logins it is given", async () => 
   expect(await vault.logins("old.example.org")).toEqual([]);
   expect(await vault.logins("new.example.org")).toEqual([{ username: "me@example.org", password: "fresh", host: "new.example.org" }]);
 }, 30_000);
+
+// A code key kept with a login must outlive a password change, or the
+// next code after a reset has nothing to type.
+test.skipIf(!ready)("a login's verification-code key is kept and found with it, and keeping a new password leaves the key", async () => {
+  const vault = scratchVault();
+  const host = "accounts.example.org";
+  const otpauth = "otpauth://totp/Example:me@example.org?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Example";
+  await vault.keep([{ host, username: "me@example.org", password: "old", otpauth }]);
+  await vault.keep([{ host, username: "me@example.org", password: "new" }]);
+  expect(await vault.logins(host)).toEqual([{ username: "me@example.org", password: "new", host, otpauth }]);
+}, 30_000);
+
+// RFC 6238 appendix B: its SHA-1, SHA-256, and SHA-512 keys are the ASCII
+// digits 1234567890 repeated to 20, 32, and 64 bytes, with 8-digit codes.
+const KEYS = {
+  SHA1: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+  SHA256: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA====",
+  SHA512: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA=",
+};
+test.each([
+  ["SHA1", 59, "94287082"],
+  ["SHA1", 1111111109, "07081804"],
+  ["SHA1", 20000000000, "65353130"],
+  ["SHA256", 59, "46119246"],
+  ["SHA256", 1111111109, "68084774"],
+  ["SHA512", 59, "90693936"],
+  ["SHA512", 1111111109, "25091201"],
+] as const)("the code of RFC 6238's %s key at %i s is %s", (algorithm, seconds, code) => {
+  expect(totp(`otpauth://totp/RFC?secret=${KEYS[algorithm]}&algorithm=${algorithm}&digits=8`, seconds * 1000)).toBe(code);
+});
+
+test("a key with no digits or period gives the 6-digit code of a 30-second step, as authenticator apps do", () => {
+  expect(totp(`otpauth://totp/RFC?secret=${KEYS.SHA1}`, 59_000)).toBe("287082");
+});

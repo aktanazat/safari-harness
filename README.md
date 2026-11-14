@@ -119,13 +119,14 @@ daemon/
                     go through Safari's accessibility tree, and nothing
                     comes forward; one call types, sends, and waits for a
                     chat's reply
-  passwords.ts      Apple Passwords: pairs with Apple's helper by the code the
-                    Mac shows (SRP), then asks it for logins and verification
-                    codes over AES-GCM. The helper runs only under a real
-                    browser, so a hidden Helium with passwords-bridge/ relays
-                    the encrypted messages. Helium and the pairing outlive a
-                    daemon restart. The caller pairs with one Touch ID and
-                    reads the code off the Mac's window (fill.ts)
+  passwords.ts      Fills logins and verification codes from the vault
+                    (vault.ts), never asking Apple Passwords. It pairs with
+                    Apple's helper by the code the Mac shows (SRP) to list
+                    logins and save changed passwords over AES-GCM. The
+                    helper runs only under a real browser, so a hidden Helium
+                    with passwords-bridge/ relays the encrypted messages.
+                    Helium and the pairing outlive a daemon restart; the
+                    caller reads the code off the Mac's window (fill.ts)
   cdp.ts            Chrome DevTools Protocol shim (Target/Page/Runtime/Input/
                     Network/Log; unsupported methods return explicit errors)
   mcp.ts            MCP stdio server (thin client over /rpc; runs the Messages
