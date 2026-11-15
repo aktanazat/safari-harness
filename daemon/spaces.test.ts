@@ -766,6 +766,33 @@ test("an ended group holding only the blank tab Safari leaves releases as empty,
   await spaceTool({ op: "gone", name });
 });
 
+// Review of 11-15: the keeper deletes an ended group with its pages once
+// its window has gone unused 8 hours, and the user's own browsing there
+// moved no agent's call.
+test("an ended group's release reports its window used again when the pages in it change, and not when they stand", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => openTab("https://kept.example/", true, "kept"));
+  const { name } = t.space;
+  await spaceTool({ op: "grouped", name });
+  g.kill();
+  await g.exited;
+  await callTool("close", { tab: t.id });
+  await turnEnded(g.pid);
+  s.tabs.set(990003, { id: 990003, url: "https://his.example/a", windowId: t.windowId, active: false });
+  const start = Date.now();
+  try {
+    const first = (await spaceTool({ op: "release", name })) as { used: number };
+    setSystemTime(new Date(start + 60 * 60_000));
+    expect(await spaceTool({ op: "release", name })).toMatchObject({ left: 1, used: first.used });
+    s.tabs.get(990003)!.url = "https://his.example/b";
+    expect(await spaceTool({ op: "release", name })).toMatchObject({ left: 1, used: start + 60 * 60_000 });
+  } finally {
+    setSystemTime();
+  }
+  await spaceTool({ op: "gone", name });
+});
+
 // An agent that finishes in a second exits while the keeper makes its
 // window's group: before, the daemon closed the window under the steps, and
 // a group named for the task, or Untitled, stayed in the sidebar.

@@ -18,8 +18,10 @@ Tabs
   pages, filled fields, site-global tabs and an agent page in front. A
   task's last call is never `close`. Pages explicitly kept for him and
   pending handoffs stay protected; a handoff tab whose agent exits before
-  he finishes is his, never closed. `keep` only a page he still needs; do
-  not keep a finished result unless he asked to leave it open.
+  he finishes is his. In a tab group, that protection ends once the window
+  has gone unused for 8 hours, and the group goes with its pages. `keep`
+  only a page he still needs; do not keep a finished result unless he
+  asked to leave it open.
 - Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
   even if you clicked them. Unsent forms and his front tab stay during idle
   cleanup. At completion or owner exit, only pages explicitly kept for him

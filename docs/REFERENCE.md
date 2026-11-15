@@ -106,9 +106,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   each step waits until he is idle, the screen unlocked and Safari behind,
   and stops if his front app changes. A menu that will not
   close turns groups off for a day; a make that fails and leaves its group
-  turns off only new groups, and ended agents' groups still go. An exited
-  agent's group whose window is gone and that three deletes could not
-  remove stays in his sidebar for him to delete.
+  turns off only new groups, and ended agents' groups still go. An ended
+  group that still holds pages (kept for him, a handoff, a tab the harness
+  never saw) stays until its window has gone unused for 8 hours (a change
+  to those pages counts as use), then goes with them. An exited agent's
+  group whose window is gone and that three deletes could not remove stays
+  in his sidebar for him to delete.
   `~/.local/share/safari-harness/groups-off.json` says why, and removing it
   turns them on sooner. `safari doctor` warns while it is there, and each
   agent is told why once, not on every open.
@@ -160,12 +163,14 @@ Safari is the user's everyday browser, so treat his tabs as his.
   URLs in different helpers cannot exchange ownership.
 - Pages explicitly kept for the user and pending handoffs stay protected.
   A protected or foreign tab keeps its window intact; cleanup does not
-  move it to make a group deletable. Use `keep` for a page he still needs,
-  not to preserve an agent's finished work.
+  move it to make a group deletable. In a tab group that protection ends
+  once the window has gone unused for 8 hours: the group goes with its
+  pages. Use `keep` for a page he still needs, not to preserve an agent's
+  finished work.
   Background handoff polling continues without holding a finished call's
   cleanup open. A handoff tab whose agent exits before he finishes is his:
   the harness lets go of it (`tab released` in the journal) and never
-  closes it.
+  closes it, except with its tab group as above.
 - Ordinary idle cleanup is unchanged: eligible unused pages close after
   20 minutes. Existing protections for changed pages, unsent forms,
   site-global tabs, kept pages, pending handoffs and the front tab still
