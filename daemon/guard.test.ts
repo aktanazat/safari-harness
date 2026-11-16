@@ -143,6 +143,11 @@ test("map given max says what keeps each page short instead", () => {
   expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
 });
 
+// On 11-12 shot {tab: "new", url} meant to capture an address (LOCK#1099).
+test("shot given an address names shots", () => {
+  expect(() => checkCall(TOOLS, "shot", { tab: "new", url: "http://127.0.0.1:8790/index.html" }, true)).toThrow("shots {urls, widths, out}");
+});
+
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
 // times, each telling the agent to reload the extension, and agents ran
 // safari extension reload 27 times.

@@ -156,7 +156,13 @@ import { TOOLS } from "./tools.ts";
 // refill (328) brought it to 28,412: a form that an error, its own check,
 // or a sign-in emptied was typed again field by field (form-steps.html:
 // seven type, select, and click calls); refill puts it back in one (11-11).
-const TOOL_LIST_MAX_BYTES = 28_412;
+// The 11-16 audit's fixes (505 over the 28,209 then listed) brought it to
+// 28,714: eval's and map's read, map's file, goto's fresh, window's
+// cssWidth, and run's and wait's descriptions made true. Agents could not
+// pass what the list hid: two maps of measuring scripts failed every page
+// after one threw, for want of read (LOCK#1331, BERK#65), and window's
+// width, the window's points, gave pages 455 and 1038 CSS px for 390.
+const TOOL_LIST_MAX_BYTES = 28_714;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

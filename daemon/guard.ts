@@ -53,12 +53,14 @@ const ALIASES: [string, string, string[]?][] = [
 
 // Parameters that ask a tool for what it cannot do, with what to do
 // instead: snapshot {url} and extract {url} each read no page on 09-29,
-// and on 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut
-// each page's text.
+// on 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut each
+// page's text, and on 11-12 shot {url} meant to capture an address
+// (LOCK#1099).
 const MISSES: [string, string, string][] = [
   ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
   ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
   ["map", "max", "map takes no max: to keep each page's text short pass query (only lines with it) or selector, or save for a file per page; urls holds at most 20 addresses, and follow has its own max"],
+  ["shot", "url", "shot captures a tab you opened; shots {urls, widths, out} loads addresses in a tab of its own and saves a PNG of each at each width"],
 ];
 
 // What to do instead of a parameter that asks tool for what it cannot do.
