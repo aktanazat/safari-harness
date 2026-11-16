@@ -424,6 +424,7 @@ function client(kit: SiteKit, workspace: Workspace) {
         return { ...out, was };
       }
       if (!Array.isArray(opts.files) || !opts.files.length) throw new Error("files takes a list of local file paths");
+      if (!workspace.userId || raw.user !== workspace.userId) throw new Error(`message ${ts} in ${channel} is not the owner's (its author is ${raw.user ?? "unknown"}); files go only on his own messages`);
       const added = await Promise.all(opts.files.map((path) => localFile(kit, path)));
       const old = raw.files ?? [];
       const replaced = opts.keepFiles ? [] : old.filter((f) => f.user === workspace.userId);
@@ -443,20 +444,34 @@ function client(kit: SiteKit, workspace: Workspace) {
         approved: opts.approved,
         send: async () => {
           const ids: string[] = [];
-          for (const f of added) ids.push(await sendBytes(f));
-          await api("files.completeUploadExternal", { files: ids.map((id, i) => ({ id, title: added[i].name })) });
-          const fileIds = [...(opts.keepFiles ? old.map((f) => f.id) : []), ...ids];
-          await api("chat.update", { channel, ts, text: keep ? was : text, ...(keep && raw.blocks ? { blocks: raw.blocks } : {}), file_ids: fileIds });
-          const on = ((await rawAt(channel, ts, opts)).files ?? []).map((f) => f.id);
-          const missing = fileIds.filter((id) => !on.includes(id));
-          if (missing.length) throw new Error(`chat.update answered ok, but message ${ts} carries ${on.join(", ") || "no files"}, without ${missing.join(", ")}; nothing was deleted. Read the message before drafting again`);
           const deleted: string[] = [];
-          for (const f of replaced) {
-            if (on.includes(f.id)) continue;
-            await api("files.delete", { file: f.id });
-            deleted.push(f.id);
+          let updated = false;
+          try {
+            for (const f of added) ids.push(await sendBytes(f));
+            await api("files.completeUploadExternal", { files: ids.map((id, i) => ({ id, title: added[i].name })) });
+            const fileIds = [...(opts.keepFiles ? old.map((f) => f.id) : []), ...ids];
+            await api("chat.update", { channel, ts, text: keep ? was : text, ...(keep && raw.blocks ? { blocks: raw.blocks } : {}), file_ids: fileIds });
+            updated = true;
+            const on = ((await rawAt(channel, ts, opts)).files ?? []).map((f) => f.id);
+            const missing = fileIds.filter((id) => !on.includes(id));
+            if (missing.length) throw new Error(`message ${ts} carries ${on.join(", ") || "no files"}, without ${missing.join(", ")}`);
+            for (const f of replaced) {
+              if (on.includes(f.id)) continue;
+              await api("files.delete", { file: f.id });
+              deleted.push(f.id);
+            }
+            return { ts, channel, files: on, ...(deleted.length ? { deleted } : {}) };
+          } catch (e) {
+            // A new draft of the same update would upload again and delete
+            // the new files: the error names what is where instead.
+            if (e instanceof Error && ids.length) {
+              const left = replaced.map((f) => f.id).filter((id) => !deleted.includes(id));
+              e.message += updated
+                ? `; chat.update had answered ok for ${ids.join(", ")}; ${deleted.length ? `${deleted.join(", ")} deleted` : "nothing deleted"}${left.length ? `, ${left.join(", ")} not` : ""}. Do not draft this update again: read message ${ts}, then deleteFile what should go`
+                : `; ${ids.join(", ")} uploaded private to the owner's files and may not be on message ${ts}: read it, then deleteFile any that is not`;
+            }
+            throw e;
           }
-          return { ts, channel, files: on, ...(deleted.length ? { deleted } : {}) };
         },
       });
       return { ...out, was };

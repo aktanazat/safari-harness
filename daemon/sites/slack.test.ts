@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, jest, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Invoke } from "../call.ts";
 import { PACE_TOOL } from "../pace.ts";
@@ -159,6 +159,34 @@ test("delete refuses a message someone else wrote, even approved, and deletes no
   const s = safari({ "conversations.history": { messages: [{ ts: "7.0", user: "U2", text: "lgtm" }] } }, []);
   await expect(waited((await s.client()).delete("D1", "7.0", { approved: true }))).rejects.toThrow("message 7.0 in D1 is not the owner's");
   expect(s.asked).toEqual(["conversations.history"]);
+});
+
+// A file replace deletes files from Slack for good. Only the owner's file
+// it took off the message goes, never a file someone else put there, and
+// only once the message read back carries the new file.
+const upload = Bun.serve({ port: 0, fetch: () => new Response("OK") });
+afterAll(() => upload.stop(true));
+const withFiles = (files: object[]) => ({ messages: [{ ts: "7.0", user: "U1", text: "the report", files }] });
+const POSTED = withFiles([{ id: "F_OLD", name: "report.html", user: "U1" }, { id: "F_THEIRS", name: "chart.png", user: "U2" }]);
+
+function replacing(readBack: object) {
+  writeFileSync(join(dir, "report.html"), "<p>new</p>");
+  return safari({ "conversations.history": [POSTED, POSTED, readBack], "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" } }, []);
+}
+
+test("an approved file replace deletes the owner's file it replaced and not another's", async () => {
+  const s = replacing(withFiles([{ id: "F_NEW", name: "report.html", user: "U1" }]));
+  const c = await s.client();
+  const sent = await approved(s.kit, (ok) => c.update("C1", "7.0", null, { files: ["report.html"], approved: ok }));
+  expect(sent).toMatchObject({ status: "sent", result: { files: ["F_NEW"], deleted: ["F_OLD"] } });
+  expect(s.calls.filter((x) => x.method === "files.delete").map((x) => x.params.file)).toEqual(["F_OLD"]);
+});
+
+test("a file replace whose message does not show the new file deletes nothing", async () => {
+  const s = replacing(withFiles([]));
+  const c = await s.client();
+  await expect(approved(s.kit, (ok) => c.update("C1", "7.0", null, { files: ["report.html"], approved: ok }))).rejects.toThrow("message 7.0 carries no files, without F_NEW");
+  expect(s.calls.filter((x) => x.method === "files.delete")).toEqual([]);
 });
 
 // A retried postThread would post the top message and earlier replies again.
