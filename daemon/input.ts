@@ -15,6 +15,7 @@ import { HarnessError } from "./failures.ts";
 import type { InputState } from "./input-state.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
+import { refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { CODE_ACCOUNT, CODE_SENDER, REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
 import { rowsOf } from "./tabs-view.ts";
 
@@ -25,6 +26,24 @@ type Point = { x: number; y: number };
 // back his own front tab, so it lists his tabs too (tabs-view.ts).
 const VIA_RPC: TabOps = { tabs: async () => rowsOf(await rpc("tabs", { all: true })), activate: (tab) => rpc("activate", { tab }) };
 const deliveryState = new AsyncLocalStorage<{ sent: boolean }>();
+
+// Refuses real input that would send a Slack message from Slack's own
+// page (slack-send.ts): a click on its send button, Return in its message
+// box, or text ending in a line break or with send there.
+async function slackSend(tab: number, a: Record<string, unknown>): Promise<void> {
+  const act: SlackAct | undefined = a.do === "click" ? { tool: "click" }
+    : a.do === "key" && typeof a.key === "string" ? { tool: "press", key: a.key }
+    : a.do === "type" && typeof a.text === "string" ? { tool: "type", text: a.send === undefined ? a.text : `${a.text}\n` }
+    : undefined;
+  if (act === undefined) return;
+  const url = (await VIA_RPC.tabs()).find((t) => t.id === tab)?.url;
+  await refuseSlackSend(url, act, async () => {
+    if (a.ref !== undefined && a.do !== "key") return (await rpc("element", { tab, ref: a.ref, what: "attr", name: "data-qa" })) as string | null;
+    const at = a.do === "click" ? `document.elementFromPoint(${Number(a.x)}, ${Number(a.y)})` : "document.activeElement";
+    const r = (await rpc("eval", { tab, expression: `${at}?.getAttribute("data-qa") ?? null`, read: true })) as { result?: unknown };
+    return typeof r.result === "string" ? r.result : null;
+  });
+}
 
 
 // Waits in the page, up to ms, until it has seen more than `after` marks and,
@@ -523,6 +542,7 @@ export const INPUT_TOOLS: Record<string, Tool> = {
       // The daemon names the tab: it alone hears the new id a deploy gave a
       // tab the agent calls by its old one, and says so in replaced.
       const { tab, ...news } = (await rpc("resolve_tab", { tab: a.tab })) as { tab: number };
+      await slackSend(tab, a);
       return deliveryState.run({ sent: false }, async () => {
         try {
           return { ...(await act(tab, a)), ...news };

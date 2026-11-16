@@ -39,6 +39,7 @@ import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, typ
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
+import { refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
@@ -3296,6 +3297,22 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
   };
 }
 
+// Refuses an action that would send a Slack message from Slack's own page
+// (slack-send.ts): the element's data-qa is read only on a Slack tab, for a
+// click, Return, or text with a line break.
+async function slackSend(tab: number, act: SlackAct, a: Record<string, unknown>): Promise<void> {
+  const url = (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  await refuseSlackSend(url, act, async () => {
+    if (a.ref !== undefined && a.ref !== null) {
+      const fact = await relay(tab, "element", [String(a.ref), "attr", "data-qa"]);
+      return fact && typeof fact === "object" && "value" in fact && typeof fact.value === "string" ? fact.value : null;
+    }
+    const at = act.tool === "click" ? `document.elementFromPoint(${Number(a.x)}, ${Number(a.y)})` : "document.activeElement";
+    const r = await evaluate({ tab, expression: `${at}?.getAttribute("data-qa") ?? null`, timeoutMs: 5000 });
+    return r && typeof r === "object" && "result" in r && typeof r.result === "string" ? r.result : null;
+  });
+}
+
 // save on a read writes its whole output to a file and answers with the
 // file's path, the page's address, and the output's size and first 500
 // characters (save.ts). The target is checked first, so a bad one sends the
@@ -3747,7 +3764,10 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
     unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" } },
     required: ["tab"],
-    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
+    run: action(watched(async (a) => {
+      await slackSend(a.tab, { tool: "click" }, a);
+      return click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean });
+    })),
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",
@@ -3756,14 +3776,20 @@ export const TOOLS: Record<string, Tool> = {
     // MCP client is never offered it: safari type --secret env --env VAR
     unlisted: { env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
-    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
+    run: action(async (a) => {
+      if (typeof a.text === "string") await slackSend(a.tab, { tool: "type", text: a.text }, a);
+      return type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean });
+    }),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a one-line field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],
-    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean }))),
+    run: action(watched(async (a) => {
+      if (typeof a.key === "string") await slackSend(a.tab, { tool: "press", key: a.key }, a);
+      return press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean });
+    })),
   },
   refill: {
     desc: "Put back form fields saved before a click or Enter sent the form on, after the page emptied them.",

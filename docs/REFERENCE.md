@@ -1294,12 +1294,16 @@ answers. A load that never began opens the page in a new tab, so a page
 is never read as the one before it. It returns `pages` in the order of
 `urls`, each `{url, ok, value or error, ms}`, with the `title` it opened
 with, and `finalUrl` when it opened at another address. The answer's
-first line counts the pages read and failed.
+first line counts the pages read, those that loaded but hold no content
+(a sign-in, loading or other wall, by kind), and those that failed:
+`3 pages: 1 read, 2 not content (sign-in 1, loading 1), 0 failed`.
 
 - `maxBytes` sets how much of each page's text comes back (20,000
   characters unless set); a longer page's whole text goes to a file,
-  which its `value.saved` names. When the answer outgrows a reply, its
-  list of pages gives each page's whole size and file.
+  which its `value.saved` names. With `save`, each page's file holds its
+  whole read and `maxBytes` limits only the reply; `query` still keeps
+  only its lines. When the answer outgrows a reply, its list of pages
+  gives each page's whole size and file.
 - `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":
   ".listing"}`, `{"quiet": true}`), holds each read until its page shows
   that. Pass it for pages whose script draws what you read after they
@@ -1350,7 +1354,9 @@ first line counts the pages read and failed.
   with the pages read so far. A page not read by then is reported in its
   place as unfinished, and its address comes back in `urls`: map those
   again, in a call with fewer pages. One still being read goes on, and
-  its tab closes when it ends; with `save`, it writes no file.
+  its tab closes when it ends; with `save`, it writes no file. With a
+  `wait`, about 6 slow pages fit in the 50 s: on 11-14 a map of 20 X
+  profiles with a wait read 6 and left 14.
 - Each search engine's results pages (Google's, Bing's) load one at a
   time, 3 s apart, across every map and the `googleSearch` global: a
   burst of searches meets a reCAPTCHA.
@@ -1361,7 +1367,7 @@ first line counts the pages read and failed.
   changes something, is never kept.
 - A bot check that stands in for a page is waited on as `open` waits on
   one, then reported with `challenge` if it is still up; its page is not
-  read. Open that page in a tab and `wait` a few seconds for its text:
+  read. Open that page in a tab and `wait {gone: "<the check's words>"}`:
   many checks clear by themselves in a real Safari tab (the Lancet's,
   still up after map's 9 s on 10-23, let a tab opened later through).
   If it remains, use another permitted source or report the unavailable page. A
