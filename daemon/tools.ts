@@ -2546,13 +2546,7 @@ export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capt
       return await shotLoaded(tab, opts);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== UNPAINTED) throw error;
-      const tabs = await listTabs().catch((): TabInfo[] => []);
-      const window = tabs.find((t) => t.id === tab)?.windowId;
-      if (window === undefined) throw error;
-      const owners = windowOwners();
-      const owner = currentOwner();
-      const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
-      if (!mine) throw error;
+      if (!(await ownWindow(tab))) throw error;
       const restore = await uncover(tab).catch(() => undefined);
       if (restore === "covered" || restore === "hidden") throw new HarnessError("unavailable", UNSEEN[restore], { effect: "none", next: "activate brings your window in front, where it paints (the user sees it), then shot again; or read the page with snapshot or extract" });
       if (typeof restore !== "function") throw error;
@@ -3153,31 +3147,58 @@ export async function viewport(opts: { tab: number; width: number; height: numbe
   return sized;
 }
 
+// Whether tab's window is the calling agent's own, which only it may move
+// (place.ts uncover): a registered agent window it owns, or one holding
+// only its tabs.
+async function ownWindow(tab: number): Promise<boolean> {
+  const tabs = await listTabs().catch((): TabInfo[] => []);
+  const window = tabs.find((t) => t.id === tab)?.windowId;
+  if (window === undefined) return false;
+  const owners = windowOwners();
+  const owner = currentOwner();
+  return owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
+}
+
 // window's width and height are the window's points, not the page's CSS
 // px, which differ by Safari's page zoom and the window's edges: on 11-11
-// width 390 gave a page 455 px wide at zoom 0.85 (LOCK#595), and on 11-16
-// 390, 1200, and 1440 each gave 1038 (BERK#121 to #155). cssWidth reads the
-// page's innerWidth after each resize (tabInfo, which runs no eval) and moves
-// the window by what it missed, CSS_ROUNDS resizes at most. A page still
-// off by more than 1 px answers ok, since the window did change, with the
-// width it reached in missed.
+// width 390 gave a page 455 px wide at zoom 0.85 (LOCK#595). cssWidth reads
+// the page's innerWidth after each resize (tabInfo, which runs no eval) and
+// moves the window by what it missed, CSS_ROUNDS resizes at most. A page
+// still off by more than 1 px answers ok, since the window did change, with
+// the width it reached in missed.
+//
+// Safari lays out no page in a window others cover whole, as it paints
+// none (place.ts): on 11-16 390, 1200 and 1440 each gave 1038 (BERK#121 to
+// #155), and a live check of this code kept 948 while the window went from
+// 160 to 2187 points, as it took each unchanged width for a page that
+// needed more. An own window is moved where it shows while it is sized,
+// as shot moves it, and put back; a page whose width does not change after
+// the first resize is not resized again.
 const CSS_ROUNDS = 3;
 async function cssViewport(tab: number, cssWidth: number, height: number, start = cssWidth) {
-  let width = start;
-  let before: { window: number; page: number } | undefined;
-  for (let round = 1; ; round++) {
-    const sized = await viewport({ tab, width, height });
-    const page = pageSize(await relay(followTab(tab), "tabInfo"));
-    if (page === undefined) return { ...sized, missed: "the page did not say its width; call window again once it has loaded" };
-    const off = page.width - cssWidth;
-    if (Math.abs(off) <= 1) return { ...sized, viewport: page };
-    const stuck = before !== undefined && before.page === page.width;
-    if (stuck || round === CSS_ROUNDS) return { ...sized, viewport: page, missed: `the page is ${page.width} CSS px wide, not ${cssWidth}, ${stuck ? "and its width did not follow the window's" : `after ${round} resizes`}; the window is ${sized.size.width} points wide` };
-    // window points per CSS px: between the last two resizes, else the
-    // window's width over the page's
-    const rate = before === undefined || before.window === sized.size.width ? sized.size.width / page.width : (sized.size.width - before.window) / (page.width - before.page);
-    before = { window: sized.size.width, page: page.width };
-    width = Math.round(sized.size.width - off * rate);
+  const id = followTab(tab);
+  const was = pageSize(await relay(id, "tabInfo"));
+  const restore = (await ownWindow(id)) ? await uncover(id).catch(() => undefined) : undefined;
+  try {
+    let width = start;
+    let before = was === undefined ? undefined : { window: Number.NaN, page: was.width };
+    for (let round = 1; ; round++) {
+      const sized = await viewport({ tab, width, height });
+      const page = pageSize(await relay(id, "tabInfo"));
+      if (page === undefined) return { ...sized, missed: "the page did not say its width; call window again once it has loaded" };
+      const off = page.width - cssWidth;
+      if (Math.abs(off) <= 1) return { ...sized, viewport: page };
+      const stuck = before !== undefined && before.page === page.width;
+      const unseen = restore === "covered" || restore === "hidden" ? `; other windows ${restore === "covered" ? "cover your window and no display has room to show it" : "hide it (minimized or on another desktop)"}, and Safari lays out no page it does not draw` : "";
+      if (stuck || round === CSS_ROUNDS) return { ...sized, viewport: page, missed: `the page is ${page.width} CSS px wide, not ${cssWidth}, ${stuck ? "and its width did not follow the window's" : `after ${round} resizes`}; the window is ${sized.size.width} points wide${unseen}` };
+      // window points per CSS px: between the last two resizes, else the
+      // window's width over the page's
+      const rate = before === undefined || !Number.isFinite(before.window) || before.window === sized.size.width ? sized.size.width / page.width : (sized.size.width - before.window) / (page.width - before.page);
+      before = { window: sized.size.width, page: page.width };
+      width = Math.round(sized.size.width - off * rate);
+    }
+  } finally {
+    if (typeof restore === "function") await restore().catch((e: unknown) => note("window not restored after cssWidth", { tab, error: e instanceof Error ? e.message : String(e) }));
   }
 }
 
