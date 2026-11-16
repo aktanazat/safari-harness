@@ -199,7 +199,8 @@ Privacy and care
   what will happen and get a yes. Pay only through `passwords`
   `card-fill` or Apple Pay (`safari guide passwords`). Slack messages go
   only through the slack global's drafts (`safari guide slack`); a click
-  on Slack's Send button, or Return in its message box, is refused.
+  on Slack's Send button, Return in its message box, or a script that
+  clicks or presses them is refused.
 - Report what the page shows, not what you expected.
 - Browser memory has separate permissions for personal browsing and agent
   research at `http://127.0.0.1:37334/memory`. Do not enable either yourself.
