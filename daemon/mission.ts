@@ -19,6 +19,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { bridge } from "./bridge.ts";
 import { followTab } from "./continuity.ts";
@@ -561,9 +562,19 @@ function syncViews(agent: Agent): void {
   }
 }
 
-function fingerprint(tool: string, args: Record<string, unknown>): string {
+// The code an eval {file} runs is the file's contents (tools.ts codeFrom), so
+// an edited script is a new call. Agents renamed scripts to get past the
+// hold (BERK#46-50, LOCK#1500-1506). A file that cannot be read keeps its
+// path here, and the call fails where codeFrom does.
+async function sourceOf(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
+  if (tool !== "eval" || typeof args.file !== "string") return undefined;
+  return readFile(args.file, "utf8").catch(() => undefined);
+}
+
+function fingerprint(tool: string, args: Record<string, unknown>, source?: string): string {
   const definition = TOOLS[tool];
   const effect = Object.fromEntries(Object.entries(args).filter(([key]) => !Object.hasOwn(OUTPUT_OPTIONS, key) && (!definition || Object.hasOwn(definition.params, key) || definition.unlisted && Object.hasOwn(definition.unlisted, key))));
+  if (tool === "eval" && source !== undefined) { delete effect.file; effect.source = source; }
   if (tool === "press" && effect.ref === null) delete effect.ref;
   if (effect.ref !== undefined) effect.ref = String(effect.ref);
   if (tool === "click" && effect.ref !== undefined) { delete effect.x; delete effect.y; }
@@ -633,8 +644,8 @@ async function siteOf(tool: string, args: Record<string, unknown>, tab: number |
   return url && URL.canParse(url) ? new URL(url).origin : undefined;
 }
 
-function siteKey(tool: string, args: Record<string, unknown>, origin: string): string {
-  return createHmac("sha256", KEY).update(origin).update(fingerprint(tool, { ...args, tab: undefined })).digest("hex");
+function siteKey(tool: string, args: Record<string, unknown>, origin: string, source?: string): string {
+  return createHmac("sha256", KEY).update(origin).update(fingerprint(tool, { ...args, tab: undefined }, source)).digest("hex");
 }
 
 // A refusal sends nothing, but names an earlier identical action whose
@@ -643,25 +654,25 @@ function siteKey(tool: string, args: Record<string, unknown>, origin: string): s
 // beside "may already have happened" (MineSessionD-7).
 const ALREADY = "that action may already have happened; this call was not sent";
 
-function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string) {
+function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string, source?: string) {
   if (agent.inspectionOnly && !inspectionAllowed(tool, args)) throw new HarnessError("blocked", "this task may only inspect its current pages; the user must allow actions from its task controls", { next: "continue reading current pages, or wait for the user to allow actions" });
   syncViews(agent);
   const rawTab = tabOf(args.tab).tab;
   const tab = rawTab === undefined ? undefined : followTab(rawTab);
   const effectful = affectsPage(tool, args);
   const guarded = effectful && tool !== "run" && tool !== "replay";
-  const key = guarded ? fingerprint(tool, args) : undefined;
-  const site = guarded && origin !== undefined && Object.hasOwn(SITE_WIDE, tool) ? siteKey(tool, args, origin) : undefined;
+  const key = guarded ? fingerprint(tool, args, source) : undefined;
+  const site = guarded && origin !== undefined && Object.hasOwn(SITE_WIDE, tool) ? siteKey(tool, args, origin, source) : undefined;
   const view = tab === undefined ? undefined : agent.views.get(tab);
   if (guarded && view?.stale) throw new HarnessError("stale_view", "the user changed this tab; snapshot or read it before acting", { next: "snapshot or extract this tab, then decide what to do" });
   if (effectful && view?.native?.size) {
     throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
   }
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
-    throw new HarnessError("effect_unknown", `${ALREADY}; snapshot or read this tab before repeating it`, { next: "snapshot or extract this tab and check whether the action already happened" });
+    throw new HarnessError("effect_unknown", `${ALREADY}; only a snapshot or extract of this tab releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: "snapshot or extract this tab with no query, root, selector or ref, not cut short, and check whether the action already happened" });
   }
   if (site !== undefined && agent.sites.has(site)) {
-    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; read a tab there whole (snapshot or extract) before repeating it`, { next: `snapshot or extract a tab on ${origin} (tabs lists them) and check whether the action already happened` });
+    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; only a snapshot or extract of any tab on ${origin} releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `snapshot or extract a tab on ${origin} with no query, root, selector or ref, not cut short, and check whether the action already happened (tabs lists them)` });
   }
   return { tab, effectful, key, site };
 }
@@ -677,7 +688,8 @@ function holdUncertain(agent: Agent, tab: number, key: string, site: string | un
 async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
   const rawTab = tabOf(args.tab).tab;
   const origin = Object.hasOwn(SITE_WIDE, tool) && affectsPage(tool, args) ? await siteOf(tool, args, rawTab === undefined ? undefined : followTab(rawTab)) : undefined;
-  const { tab, effectful, key, site } = checkAction(agent, tool, args, origin);
+  const source = await sourceOf(tool, args);
+  const { tab, effectful, key, site } = checkAction(agent, tool, args, origin, source);
   const revision = agent.revision;
   try {
     const value = await run();

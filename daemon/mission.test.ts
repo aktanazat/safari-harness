@@ -519,6 +519,25 @@ test("a refused repeat of an uncertain action reports the earlier action's unkno
   await expect(observedCall(a.pid, "click", { tab, ref: 4 }, async () => ({ ok: true }))).rejects.toMatchObject({ code: "effect_unknown", effect: "possibly_effected", retryable: false });
 });
 
+// An eval {file} runs the file's code, so an edited script is a new call, not
+// the one that was refused (BERK#46-50, LOCK#1500-1506).
+test("an uncertain eval {file} is refused again only while its file's contents are unchanged", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://scripts.example/");
+  const directory = mkdtempSync("/private/var/tmp/safari-mission-eval-file-");
+  const file = `${directory}/geom.js`;
+  writeFileSync(file, "document.title");
+  let sent = 0;
+  const run = (fail: boolean) => observedCall(a.pid, "eval", { tab, file }, async () => { sent++; if (fail) throw new HarnessError("timeout", "reply lost after dispatch"); return { ok: true }; });
+  await expect(run(true)).rejects.toMatchObject({ code: "timeout", effect: "possibly_effected" });
+  await expect(run(false)).rejects.toMatchObject({ code: "effect_unknown" });
+  expect(sent).toBe(1);
+  writeFileSync(file, "document.title = 'edited'");
+  await run(false);
+  expect(sent).toBe(2);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 // A site kit's read (Slack's conversations.history goes out as a POST from
 // the page) says read: it can run twice, so losing its answer holds nothing
 // (MineSessionD-7, MineSessionE-4).
