@@ -74,6 +74,14 @@ test("an unsupported flag is rejected before any call", async () => {
   expect(calls).toEqual([]);
 });
 
+// From 11-11 to 11-12 `safari repl --close-all >/dev/null 2>&1` ran 7 times,
+// and repl dropped the flag it did not know.
+test("repl refuses a flag it does not know, naming the near one and its flags", async () => {
+  calls.length = 0;
+  expect(await safari(["repl", "--close-all"])).toEqual({ err: "error: repl takes no --close-all; did you mean --close? (flags: --session --list --close --file --host --json --quiet; safari repl --list lists the sessions running, safari repl --close <name> ends one)", code: 2 });
+  expect(calls).toEqual([]);
+});
+
 test("a flag a model's call may use for a parameter is taken as that parameter, with a note", async () => {
   calls.length = 0;
   const result = await safari(["learn", "geico.com", "--note", "The quote asks for the address twice"]);

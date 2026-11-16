@@ -30,7 +30,10 @@ const WEBDRIVER = join(homedir(), "Library", "WebDriver");
 const LOW_DISK_BYTES = 2 * 1024 ** 3;
 const HIGH_SWAP_MB = 2048;
 const EXTENSIONS = "in Safari > Settings > Extensions, turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
-const RELOAD = "safari extension reload, then run safari doctor again";
+// The card forbids safari extension reload: since 10-19 a call that meets a
+// stuck extension reloads it by itself (bridge.ts), yet on 11-11 an agent
+// ran it 12 s after status told it to.
+const RELOAD = "make the call again: a safari call that meets a stuck extension reloads it by itself. If that call fails too, quit Safari and open it again (History > Reopen All Windows brings its windows back)";
 const TERMINAL = "turn on the terminal you run safari from";
 // On 10-13 and 10-16 doctor took 30 s while the extension was stuck: its
 // round trip waited out windows.open's limit, and host-headroom alone may

@@ -671,7 +671,17 @@ async function hostCommand(argv: string[]) {
   fail("usage: safari host [list] | use <ssh-host|local> | status [host]", 2);
 }
 
+// The flags repl reads. From 11-11 to 11-12 `safari repl --close-all` ran 7
+// times and did nothing it said: repl dropped a flag it did not know.
+const REPL_FLAGS = ["session", "list", "close", "file", "host", "json", "quiet"];
+
 async function replCommand(argv: string[]) {
+  for (const [i, arg] of argv.entries()) {
+    const given = arg.slice(2).split("=")[0];
+    if (!arg.startsWith("--") || isFlagValue(i, argv) || REPL_FLAGS.includes(given)) continue;
+    const near = closestParam(given, REPL_FLAGS);
+    fail(`repl takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")}; safari repl --list lists the sessions running, safari repl --close <name> ends one)`, 2);
+  }
   const { closeSession, listSessions, runInSession } = await import("../daemon/repl-host.ts");
   const { ReplSession } = await import("../daemon/repl.ts");
   const session = flag("session", argv);
@@ -938,7 +948,7 @@ async function main() {
     const missed = Object.entries(e?.timeouts ?? {}).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n} in a row`).join(", ");
     const answered = typeof e?.sinceAnswerMs === "number" ? `, last answered ${Math.round(e.sinceAnswerMs / 1000)} s ago` : "";
     console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
-      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "run: safari extension reload"}`
+      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "the next call that needs it reloads it by itself; if that call fails too, quit Safari and open it again"}`
       : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
     console.log(!alerts.on ? `${alerts.why}: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat`
       : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`
