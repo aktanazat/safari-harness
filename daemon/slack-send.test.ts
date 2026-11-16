@@ -15,7 +15,9 @@ test.each([
   ["Enter in the message box", { tool: "press", key: "Enter" }, BOX],
   ["Cmd+Enter in the message box", { tool: "press", key: "Cmd+Enter" }, BOX],
   ["text with a line break typed in the message box", { tool: "type", text: "done\n" }, BOX],
-] as [string, SlackAct, string][])("%s on Slack is refused", async (_, act, qa) => {
+  ["a script that clicks the send button", { tool: "eval", code: `document.querySelector('[data-qa="texty_send_button"]').click()` }, null],
+  ["a script that presses Enter in the message box", { tool: "eval", code: `document.querySelector('[data-qa=texty_input]').dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))` }, null],
+] as [string, SlackAct, string | null][])("%s on Slack is refused", async (_, act, qa) => {
   expect(await refused(CHANNEL, act, qa)).toBe(true);
 });
 
@@ -23,6 +25,7 @@ test.each([
   ["Shift+Enter in the message box", CHANNEL, { tool: "press", key: "Shift+Enter" }, BOX],
   ["text without a line break in the message box", CHANNEL, { tool: "type", text: "a draft for him to send" }, BOX],
   ["Enter in Slack's search", CHANNEL, { tool: "press", key: "Enter" }, null],
+  ["a script that reads the message box", CHANNEL, { tool: "eval", code: `document.querySelector('[data-qa=texty_input]').innerText` }, null],
   ["a click on the same button on another site", "https://example.com/chat", { tool: "click" }, SEND],
 ] as [string, string, SlackAct, string | null][])("%s goes ahead", async (_, url, act, qa) => {
   expect(await refused(url, act, qa)).toBe(false);

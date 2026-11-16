@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { HarnessError, rateLimited } from "../failures.ts";
-import { NotSignedIn, draftOrSend, type SiteKit } from "./kit.ts";
+import { NotSignedIn, draftOrSend, wroteOutside, type SiteKit } from "./kit.ts";
 
 const SITE = "Slack";
 const ORIGIN = "https://app.slack.com";
@@ -298,11 +298,12 @@ function client(kit: SiteKit, workspace: Workspace) {
       // only text. On 11-11 this Mac's connection to the host was refused
       // three times and the error named neither the host nor the outcome.
       const res = await fetch(slot.upload_url, { method: "POST", body: f.bytes }).catch((e: unknown) => {
-        throw new HarnessError("command_failed", `this Mac could not reach ${host}, Slack's upload address (${e instanceof Error ? e.message : String(e)}); nothing was shared`, { effect: "none", next: "try again in a minute; the same draft can be approved again" });
+        throw new HarnessError("command_failed", `this Mac could not reach ${host}, Slack's upload address (${e instanceof Error ? e.message : String(e)}); nothing was shared`, { effect: "none", next: "try again in a minute" });
       });
       return { status: res.status, retryAfter: res.headers.get("retry-after") };
     });
     if (sent.status !== 200) throw new HarnessError("command_failed", `Slack's upload address ${host} answered HTTP ${sent.status}; nothing was shared`, { effect: "none" });
+    wroteOutside();
     return slot.file_id;
   };
   return {

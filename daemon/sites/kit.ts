@@ -62,6 +62,14 @@ export const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so i
 // twice so (audit SH-24).
 const sending = new AsyncLocalStorage<{ action: string; wrote: boolean }>();
 
+// A request of the send running now that changes the site but goes from
+// this process rather than a kit tab (Slack's file bytes): it keeps the
+// draft spent as a tab's request would.
+export function wroteOutside(): void {
+  const out = sending.getStore();
+  if (out !== undefined) out.wrote = true;
+}
+
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
   // Where each origin's tab opens: the address its site last asked for.
@@ -269,7 +277,10 @@ export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action:
   try {
     return { status: "sent", draftId: id, ...shown, result: await sending.run(out, opts.send) };
   } catch (e) {
-    if (!out.wrote && e instanceof HarnessError && e.effect === "none") delete d.used;
+    if (!out.wrote && e instanceof HarnessError && e.effect === "none") {
+      delete d.used;
+      e.message += `; nothing of it reached ${site}, so draft ${id} can be approved again in a later call`;
+    }
     throw e;
   }
 }

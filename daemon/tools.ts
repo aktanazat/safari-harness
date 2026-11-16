@@ -39,7 +39,7 @@ import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, typ
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
-import { refuseSlackSend, type SlackAct } from "./slack-send.ts";
+import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
@@ -3308,7 +3308,7 @@ async function slackSend(tab: number, act: SlackAct, a: Record<string, unknown>)
       return fact && typeof fact === "object" && "value" in fact && typeof fact.value === "string" ? fact.value : null;
     }
     const at = act.tool === "click" ? `document.elementFromPoint(${Number(a.x)}, ${Number(a.y)})` : "document.activeElement";
-    const r = await evaluate({ tab, expression: `${at}?.getAttribute("data-qa") ?? null`, timeoutMs: 5000 });
+    const r = await evaluate({ tab, expression: qaAround(at), timeoutMs: 5000 });
     return r && typeof r === "object" && "result" in r && typeof r.result === "string" ? r.result : null;
   });
 }
@@ -3840,6 +3840,7 @@ export const TOOLS: Record<string, Tool> = {
       if (given > 1) throw new Error("give one of expression, file, or reader");
       if (a.reader !== undefined) return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
       const expression = a.file === undefined ? str(a.expression, "expression") : await codeFrom(a.file);
+      await slackSend(await resolveTab(a.tab), { tool: "eval", code: expression }, a);
       return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
     }),
   },

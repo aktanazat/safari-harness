@@ -257,29 +257,43 @@ test("a draft's id approves only that draft's text, channel and sender, once, an
   expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" }, read: false }]);
 });
 
-// On 11-16 an upload whose first request got no answer spent its draft;
-// the agent then posted through Slack's composer, which no draft guards.
+// On 11-16 an upload's first request, a read, got no answer and the daemon
+// said nothing was sent (effect none), yet the draft was spent; the agent
+// then posted through Slack's composer, which no draft guards.
 const UNANSWERED = () => new HarnessError("command_failed", "Load failed: a request got no answer", { effect: "none" });
 
-test("an approved send that failed before anything reached Slack can be approved again", async () => {
-  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, [], { failOnce: { method: "chat.postMessage", error: UNANSWERED() } });
+test("an approved upload whose first request got no answer can be approved again", async () => {
+  writeFileSync(join(dir, "report.html"), "<p>new</p>");
+  const s = safari({ "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" }, "files.completeUploadExternal": { files: [{ id: "F_NEW" }] } }, [], { failOnce: { method: "files.getUploadURLExternal", error: UNANSWERED() } });
+  const c = await s.client();
+  const draft = await waited(c.upload("C1", "report.html"));
+  s.kit.run++;
+  await expect(waited(c.upload("C1", "report.html", { approved: draft.draftId }))).rejects.toThrow("can be approved again");
+  s.kit.run++;
+  expect(await waited(c.upload("C1", "report.html", { approved: draft.draftId }))).toMatchObject({ status: "sent", result: { file: "F_NEW" } });
+});
+
+// A write whose answer was lost may have gone through: the daemon calls it
+// possibly effected (failures.ts), and its draft stays spent.
+test("an approved post whose answer was lost is not approved again", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, [], { failOnce: { method: "chat.postMessage", error: new HarnessError("effect_unknown", "Load failed") } });
   const c = await s.client();
   const draft = await waited(c.postMessage("C1", "hello"));
   s.kit.run++;
   await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("Load failed");
   s.kit.run++;
-  expect(await waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).toMatchObject({ status: "sent", result: { ts: "1.0" } });
+  await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("approved once already");
 });
 
-test("an approved send that failed after one of its writes reached Slack is not approved again", async () => {
-  writeFileSync(join(dir, "report.html"), "<p>new</p>");
-  const s = safari({ "conversations.history": POSTED, "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" } }, [], { failOnce: { method: "chat.update", error: UNANSWERED() } });
+test("a file replace whose second file failed after the first one's bytes went up is not approved again", async () => {
+  writeFileSync(join(dir, "a.html"), "<p>a</p>");
+  writeFileSync(join(dir, "b.html"), "<p>b</p>");
+  const s = safari({ "conversations.history": POSTED, "files.getUploadURLExternal": [{ upload_url: `${upload.url}upload`, file_id: "F_A" }, { upload_url: "http://127.0.0.1:1/upload", file_id: "F_B" }] }, []);
   const c = await s.client();
-  const update = (ok?: string) => c.update("C1", "7.0", null, { files: ["report.html"], approved: ok });
-  await expect(approved(s.kit, update)).rejects.toThrow("Load failed");
+  const update = (ok?: string) => c.update("C1", "7.0", null, { files: ["a.html", "b.html"], approved: ok });
+  await expect(approved(s.kit, update)).rejects.toThrow("could not reach 127.0.0.1:1");
   s.kit.run++;
-  const draftId = s.kit.drafts.keys().next().value;
-  await expect(waited(update(draftId))).rejects.toThrow("approved once already");
+  await expect(waited(update(s.kit.drafts.keys().next().value))).rejects.toThrow("approved once already");
 });
 
 // Audit SH-24: the extension says a tab is gone after the request left it

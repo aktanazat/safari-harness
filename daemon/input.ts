@@ -15,7 +15,7 @@ import { HarnessError } from "./failures.ts";
 import type { InputState } from "./input-state.ts";
 import { pageErrorsOf } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
-import { refuseSlackSend, type SlackAct } from "./slack-send.ts";
+import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { CODE_ACCOUNT, CODE_SENDER, REF, SECRET_ENV, TAB, TOOLS, type TabInfo, type Tool, WAIT_MAX_MS, X, Y } from "./tools.ts";
 import { rowsOf } from "./tabs-view.ts";
 
@@ -40,7 +40,7 @@ async function slackSend(tab: number, a: Record<string, unknown>): Promise<void>
   await refuseSlackSend(url, act, async () => {
     if (a.ref !== undefined && a.do !== "key") return (await rpc("element", { tab, ref: a.ref, what: "attr", name: "data-qa" })) as string | null;
     const at = a.do === "click" ? `document.elementFromPoint(${Number(a.x)}, ${Number(a.y)})` : "document.activeElement";
-    const r = (await rpc("eval", { tab, expression: `${at}?.getAttribute("data-qa") ?? null`, read: true })) as { result?: unknown };
+    const r = (await rpc("eval", { tab, expression: qaAround(at), read: true })) as { result?: unknown };
     return typeof r.result === "string" ? r.result : null;
   });
 }
