@@ -61,15 +61,22 @@ const NOT_FOUND = /^(?:(?:error )?404(?: error)?|(?:404 )?(?:page |file )?not fo
 // A page still on its way. On 11-13 ServiceNow's docs read "Loading
 // application..." (LOCK#1312), and on 11-11 a Slack link "Launching
 // <workspace> / You will be redirected in a few moments." (LOCK#563); both
-// were judged content and counted as read.
-const LOADING = /^(?:loading(?: [\w-]+){0,2}|please wait|signing in|redirecting(?: to .+)?|launching [\w.-]+(?: [\w.-]+)?|you will be redirected\b.*)\s*[.!…]*$/i;
-// The address of a sign-in page: its host, or a step of its path. On 11-13
-// SAP's accounts.sap.com/oauth2/authorize asked for "Email, User ID or
-// Login Name", a field no rule knew, and was read as content (LOCK#1284);
-// on 11-15 and 11-16 billing pages led to sign-in pages whose only
-// actions were "Continue with Google" and the like (LOCK#1865, #1875-1880).
+// were judged content and counted as read. "Loading" with words of its own
+// counts only with its trailing dots, and a redirect only when it says how
+// soon: "Loading Docker images faster" and "You will be redirected to a
+// third-party website" are a page's words.
+const LOADING = /^(?:loading(?: (?:content|page|results))?|loading(?: [\w-]+){1,2}(?=\s*(?:\.{3}|…)\s*$)|please wait|signing in|redirecting(?: to .+)?|you will be redirected in .+)\s*[.!…]*$/i;
+// The address of a sign-in page: its host, or the first step of its path,
+// as a docs page on signing in sits under its section (/guides/auth,
+// /reference/login). On 11-13 SAP's accounts.sap.com/oauth2/authorize
+// asked for "Email, User ID or Login Name", a field no rule knew, and was
+// read as content (LOCK#1284); on 11-15 and 11-16 billing pages led to
+// sign-in pages whose only actions were "Continue with Google" and the
+// like (LOCK#1865, #1875-1880).
 const SIGN_IN_HOST = /^(?:accounts|auth|login|signin|sso)\./i;
-const SIGN_IN_PATH = /\/(?:signin|sign-in|login|log-in|auth|sso|authorize|oauth2)(?:\/|$)/i;
+const SIGN_IN_PATH = /^\/(?:signin|sign-in|login|log-in|auth|sso|authorize|oauth2)(?:\/|$)/i;
+// A sign-in page's own button: one through another account.
+const SIGN_IN_WITH = /^(?:(?:sign[ -]?in|log[ -]?in|continue) with .+|single sign-on\b.*)$/i;
 // A title part that names a sign-in page: "Exa Login", "Login · Nimble",
 // "SAP Business Accelerator Hub: Sign In", "Sign in to GitHub".
 const SIGN_IN_TITLE = /^(?:(?:[\w.&'-]+ ){0,3}(?:sign[ -]?in|log[ -]?in)|(?:sign[ -]?in|log[ -]?in) to [\w.&'-]+(?: [\w.&'-]+)?)$/i;
@@ -123,14 +130,15 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
   if ((heading(PAY) && action(PAY_ACTION)) || new Set(labels.filter((label) => ACCESS.test(label)).map((label) => label.toLowerCase())).size >= 2) return "paywall";
   const field = lines.some((line) => /^(?:email(?: address)?(?: or (?:phone(?: number)?|username))?|password|username|phone(?: number)?)(?:\s*[:*])?$/i.test(line.label)
     && (line.role === "" || line.role === "textbox" || line.role === "label"));
-  const address = URL.parse(url);
-  const signInRoute = address !== null && (SIGN_IN_HOST.test(address.hostname) || SIGN_IN_PATH.test(address.pathname));
-  if (heading(LOGIN) && ((field && (action(LOGIN_ACTION) || signInRoute || LOGIN.test(titleHead)))
+  const loginRoute = /\/(?:signin|sign-in|login|log-in|auth|sso)(?:\/|$)/i.test(URL.parse(url)?.pathname ?? "");
+  if (heading(LOGIN) && ((field && (action(LOGIN_ACTION) || loginRoute || LOGIN.test(titleHead)))
     || (heading(LOGIN_REQUIRED) && action(LOGIN_ACTION)))) return "login_wall";
   // A sign-in page whose field no rule knows, or that has only buttons
   // ("Continue with Google"): its address and its title or buttons say so.
-  if (signInRoute && (titleParts(title).some((part) => SIGN_IN_TITLE.test(part))
-    || (action(LOGIN_ACTION) && labels.some((label) => /\b(?:sign[ -]?in|log[ -]?in)\b/i.test(label))))) return "login_wall";
+  const address = URL.parse(url);
+  if (address !== null && (SIGN_IN_HOST.test(address.hostname) || SIGN_IN_PATH.test(address.pathname))
+    && (titleParts(title).some((part) => SIGN_IN_TITLE.test(part))
+      || (action(SIGN_IN_WITH) && labels.some((label) => /\b(?:sign[ -]?in|log[ -]?in)\b/i.test(label))))) return "login_wall";
   // A heading that gives a status code and its name is the server's own
   // page whatever its title: on 11-14 a robots.txt answered "503 Service
   // Unavailable" under the title "Site not available" (LOCK#1717).

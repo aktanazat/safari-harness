@@ -79,16 +79,19 @@ const UNLOADED = "https://unloaded.example/";
 // Pages that are no content, as agents' maps met them (audit of 11-16): a
 // sign-in page (SAP's, LOCK#1284), Slack's interstitial on its way to the
 // app (LOCK#563), and a firewall's rate limit (UKG's, LOCK#1363), each
-// under its title and with its words.
+// under its title and with its words; and a page of content whose title
+// names logging in, as an API reference's does.
 const SIGNIN = "https://accounts.example/oauth2/authorize?client_id=x";
 const LAUNCHING = "https://launching.example/";
 const RATED = "https://rated.example/";
+const REFERENCE = "https://docs.example/reference/login";
 // A page whose text has not come in when it is read.
 const QUIET = "https://quiet.example/";
 const AUDITED: Record<string, { title: string; text: string }> = {
   [SIGNIN]: { title: "SAP Business Accelerator Hub: Sign In", text: "Sign In\nSAP Business Accelerator Hub\nEmail, User ID or Login Name\n\nDon't have a SAP ID?\nRegister\n\nContinue" },
   [LAUNCHING]: { title: "Redirecting… | Slack", text: "Launching Acme\n\nYou will be redirected in a few moments.\nYou can also open this link in your browser." },
   [RATED]: { title: "You’ve been rate limited", text: "You’ve been rate limited\n\nYour requests have been rate limited by our firewall! This should almost never happen, so email our support and we can help out.\n\nYour IP: 2001:db8::1\nRay ID: a59b46288e1c7c8f" },
+  [REFERENCE]: { title: "Login - API Reference", text: "Login\nPOST /v1/login\nReturns a session token." },
 };
 
 // A stand-in extension. Each open makes a tab in the window it names; the
@@ -1034,7 +1037,7 @@ test("a map counts the pages that read as no content apart from those it read", 
 // On 11-13 UKG's firewall answered five evals of a map with "You’ve been
 // rate limited", each counted as read (LOCK#1363, #1401).
 test("an eval's page is judged by its title and address: a rate limit fails, a sign-in page is not counted as read", async () => {
-  const answer = await mapPages({ urls: [RATED, SIGNIN, "https://shop.example/evaluated"], what: "eval", expression: "cards()" }, callTool);
+  const answer = await mapPages({ urls: [RATED, SIGNIN, REFERENCE], what: "eval", expression: "cards()" }, callTool);
   const text = formatResult(answer);
   expect(text).toStartWith("3 pages: 1 read, 1 not content (sign-in 1), 1 failed\n");
   expect(text).toContain(" ms; sign-in page: use the authorized sign-in flow");
@@ -1043,6 +1046,7 @@ test("an eval's page is judged by its title and address: a rate limit fails, a s
     { ok: true, pageState: { kind: "login_wall" }, value: { result: { cards: 2 } } },
     { ok: true, value: { result: { cards: 2 } } },
   ]);
+  // an API reference's page on its login call is content, whatever its title says
   expect(answer.pages[2]).not.toHaveProperty("pageState");
 });
 

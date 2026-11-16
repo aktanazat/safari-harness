@@ -332,6 +332,32 @@ const audited: { name: string; facts: PageFacts; kind: PageKind }[] = [
     facts: { url: "https://docs.example/auth/login", title: "Login | Example Docs", text: `h1 "Login"\n${articleText}\n[1] button "Continue"` },
     kind: "content",
   },
+  // False positives the pre-ship review of these rules reproduced.
+  {
+    name: "a coming-soon page that says it is launching",
+    facts: { url: "https://acme.example/", title: "Acme", text: "Acme\nLaunching soon\nThe calendar that plans itself.\nJoin the waitlist" },
+    kind: "content",
+  },
+  {
+    name: "a page that names the year it launches",
+    facts: { url: "https://acme.example/", title: "Acme", text: "Acme\nLaunching 2027\nContact" },
+    kind: "content",
+  },
+  {
+    name: "a leaving-our-site page that asks before it redirects",
+    facts: { url: "https://bank.example/leaving?to=https%3A%2F%2Fpartner.example%2F", title: "Leaving our site", text: "You will be redirected to a third-party website…\nContinue\nCancel" },
+    kind: "content",
+  },
+  {
+    name: "a short docs page on signing in, with a nav sign-in link and a Continue button",
+    facts: { url: "https://docs.example.com/guides/auth", title: "Authentication | Acme Docs", text: 'navigation\n  [1] link "Docs"\n  [2] link "Sign in"\nh1 "Authentication"\nUse an API key or OAuth.\nSee the token guide.\n[3] button "Continue"' },
+    kind: "content",
+  },
+  {
+    name: "an API reference page on its login call, judged by its title alone as map judges an eval's page",
+    facts: { url: "https://docs.example.com/reference/login", title: "Login - API Reference", text: "Login - API Reference" },
+    kind: "content",
+  },
 ];
 
 test.each(audited.map(({ name, ...fixture }) => [name, fixture] as const))("%s has the state it should have had", (_name, { facts, kind }) => {
