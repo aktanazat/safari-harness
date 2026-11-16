@@ -76,6 +76,21 @@ const REFUSED = "https://refusing.example/paper.csv";
 const LOCKED = "https://locked.example/paper.csv";
 const UNLOADED = "https://unloaded.example/";
 
+// Pages that are no content, as agents' maps met them (audit of 11-16): a
+// sign-in page (SAP's, LOCK#1284), Slack's interstitial on its way to the
+// app (LOCK#563), and a firewall's rate limit (UKG's, LOCK#1363), each
+// under its title and with its words.
+const SIGNIN = "https://accounts.example/oauth2/authorize?client_id=x";
+const LAUNCHING = "https://launching.example/";
+const RATED = "https://rated.example/";
+// A page whose text has not come in when it is read.
+const QUIET = "https://quiet.example/";
+const AUDITED: Record<string, { title: string; text: string }> = {
+  [SIGNIN]: { title: "SAP Business Accelerator Hub: Sign In", text: "Sign In\nSAP Business Accelerator Hub\nEmail, User ID or Login Name\n\nDon't have a SAP ID?\nRegister\n\nContinue" },
+  [LAUNCHING]: { title: "Redirecting… | Slack", text: "Launching Acme\n\nYou will be redirected in a few moments.\nYou can also open this link in your browser." },
+  [RATED]: { title: "You’ve been rate limited", text: "You’ve been rate limited\n\nYour requests have been rate limited by our firewall! This should almost never happen, so email our support and we can help out.\n\nYour IP: 2001:db8::1\nRay ID: a59b46288e1c7c8f" },
+};
+
 // A stand-in extension. Each open makes a tab in the window it names; the
 // first open's window is made with its own page (tab 900). Reads answer at
 // once, a SLOW page's after SLOW_MS, or, while holding, when the test lets
@@ -115,6 +130,8 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
   if (url === SPLASH && (probes.get(tab) ?? 0) <= 3) return { value: { url, title: "One moment, please...", text: "Please wait while your request is being verified...", truncated: false } };
+  if (Object.hasOwn(AUDITED, url)) return { value: { url, ...AUDITED[url], truncated: false } };
+  if (url === QUIET) return { value: { url, title: "Page", text: "", truncated: false } };
   return { value: { url, title: "Page", text: `text of ${url}`, truncated: false } };
 }
 
@@ -122,7 +139,7 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
 function load(url: string): string {
   const first = !loaded.some(([u]) => u === url);
   loaded.push([url, performance.now()]);
-  return url === LOST || url === MISSING ? "Page Not Found" : url === ERRORED || (url === FLAKY && first) ? "Error Page | eBay" : "Page";
+  return url === LOST || url === MISSING ? "Page Not Found" : url === ERRORED || (url === FLAKY && first) ? "Error Page | eBay" : Object.hasOwn(AUDITED, url) ? AUDITED[url].title : "Page";
 }
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
@@ -1003,4 +1020,60 @@ test("a file its site refuses to a page of the site too fails saying so, and the
   const fetching = runAs(process.pid, () => callTool("download", { url: LOCKED, out: join(mkdtempSync(join(tmpdir(), "refused-")), "a.csv") }, true), taskIn("s8", "Lead"));
   await expect(fetching).rejects.toThrow("download failed: HTTP 403, and the site refused it to a page of locked.example opened for it too");
   expect(closed).toContain(opened.at(-1));
+});
+
+// On 11-15 a map answered "3 read" for a sign-in page among its three
+// (LOCK#1865), and on 11-11 one counted Slack's interstitial as read
+// (LOCK#563).
+test("a map counts the pages that read as no content apart from those it read", async () => {
+  const answer = await mapPages({ urls: [SIGNIN, LAUNCHING, "https://shop.example/counted"] }, callTool);
+  expect(formatResult(answer)).toStartWith("3 pages: 1 read, 2 not content (sign-in 1, loading 1), 0 failed\n");
+  expect(formatResult(answer, 400)).toContain(`- ${SIGNIN}: sign-in page, `);
+});
+
+// On 11-13 UKG's firewall answered five evals of a map with "You’ve been
+// rate limited", each counted as read (LOCK#1363, #1401).
+test("an eval's page is judged by its title and address: a rate limit fails, a sign-in page is not counted as read", async () => {
+  const answer = await mapPages({ urls: [RATED, SIGNIN, "https://shop.example/evaluated"], what: "eval", expression: "cards()" }, callTool);
+  const text = formatResult(answer);
+  expect(text).toStartWith("3 pages: 1 read, 1 not content (sign-in 1), 1 failed\n");
+  expect(text).toContain(" ms; sign-in page: use the authorized sign-in flow");
+  expect(answer.pages).toMatchObject([
+    { ok: false, error: expect.stringContaining("the site rate-limited this browser"), value: { result: { cards: 2 } } },
+    { ok: true, pageState: { kind: "login_wall" }, value: { result: { cards: 2 } } },
+    { ok: true, value: { result: { cards: 2 } } },
+  ]);
+  expect(answer.pages[2]).not.toHaveProperty("pageState");
+});
+
+// On 11-13 ServiceNow's "Loading application..." answered a later map from
+// a kept read (LOCK#1312).
+test("a page that read as no content, or as no text, is read again for this task; a page of content is answered from its read", async () => {
+  jest.useFakeTimers();
+  const page = "https://shop.example/kept-again";
+  readUrls.length = 0;
+  await as("Lead", { urls: [LAUNCHING, page] }, process.pid, "s9");
+  await as("Lead", { urls: [QUIET], query: "price" }, process.pid, "s9");
+  await as("Helper", { urls: [LAUNCHING, page] }, process.pid, "s9");
+  await as("Helper", { urls: [QUIET], query: "price" }, process.pid, "s9");
+  expect(readUrls.filter((u) => u === LAUNCHING)).toHaveLength(2);
+  expect(readUrls.filter((u) => u === QUIET)).toHaveLength(2);
+  expect(readUrls.filter((u) => u === page)).toHaveLength(1);
+});
+
+// On 11-13 a map with maxBytes 2000 saved two ServiceNow pages cut at
+// 2,022 bytes (LOCK#1560).
+test("with save, maxBytes limits only the answer: each page's file holds its whole read", async () => {
+  const page = "https://shop.example/whole";
+  const [saved] = await map({ urls: [page], save: mkdtempSync(join(tmpdir(), "map-")), maxBytes: 10 });
+  expect(readFileSync(savedPath(saved), "utf8")).toBe(`text of ${page}`);
+});
+
+test("an eval that only reads is run again each time, never answered from this task's earlier run", async () => {
+  jest.useFakeTimers();
+  const page = "https://shop.example/measured";
+  readUrls.length = 0;
+  await as("Lead", { urls: [page], what: "eval", expression: "cards()", read: true }, process.pid, "s10");
+  await as("Helper", { urls: [page], what: "eval", expression: "cards()", read: true }, process.pid, "s10");
+  expect(readUrls).toEqual([page, page]);
 });
