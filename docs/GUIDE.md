@@ -60,8 +60,9 @@ Turns
   a file's address (a PDF, a CSV) answers with its text or saved path.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
-  or `wait` answers with the page after it, and `snapshot: "words"` with
-  only its lines that have them.
+  or `wait` answers with the page after it, and `snapshot: "<words to
+  match>"` (`"Pricing|Plans"`, not the placeholder) with only the lines
+  that hold them; words no line holds say so.
 - Through the MCP server, a snapshot of a tab you read in the last 2
   minutes answers with only its changed lines (`- ` gone, `+ ` new), or
   none when nothing changed; `full: true` reads the whole page. The CLI
@@ -81,6 +82,10 @@ Turns
 - A read past its limit (`extract` and each `map` page: 20,000
   characters) shows its start, the whole length, and the file that holds
   all of it: grep or read that file, or pass `maxBytes`.
+- Code for `eval` or `map {what: "eval"}` goes in a file: `file:
+  "/abs/path.js"`. A script that only measures or reads takes `read:
+  true`, so its failure holds nothing; never on code that clicks, types,
+  or submits.
 - A link reading `=[15]` goes where line `[15]` goes; it is its own
   element: click its own ref.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
@@ -105,6 +110,11 @@ Turns
 - Screenshots of pages at several widths: one `shots` call
   (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of
   `window` and `shot`.
+- One page at a CSS width: `window {tab, cssWidth: 390, height: 844}`
+  resizes until the page is that wide, or names the width it reached in
+  `missed`; `width` alone is the window's points. After editing a local
+  page, `history {do: "reload"}`: a `goto` that changes only its `#part`
+  does not load it again.
 - `shot --tiles` keeps the original and overlapping readable pieces.
   Captures include a private evidence receipt. `safari guide report`
   explains reports with cited images, numeric differences and unread pages.

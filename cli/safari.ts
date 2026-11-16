@@ -172,8 +172,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
-                                             (--expression js, --as table, --concurrency 4,
-                                             --max-bytes N characters of each page,
+                                             (--expression js or --file path, --read for a
+                                             script that only measures, --as table,
+                                             --concurrency 4, --max-bytes N characters of
+                                             each page shown (--save keeps all),
                                              --wait '{"text":"Price"}' before each read,
                                              --follow '{"match":"a.item"}' to read the
                                              pages a listing links to, --fresh to read
@@ -1185,6 +1187,14 @@ async function main() {
       break;
     }
     case "window": {
+      // --css-width N --height N: the page's CSS width (window's cssWidth)
+      const css = flag("css-width", rest);
+      if (css !== undefined) {
+        const height = flag("height", rest) ?? /^\d+x(\d+)$/i.exec(flag("size", rest) ?? "")?.[1];
+        if (!/^\d+$/.test(css) || height === undefined) fail("--css-width takes CSS px with --height N in points, as --css-width 390 --height 844", 2);
+        args = { tab: args.tab, cssWidth: Number(css), height: Number(height) };
+        break;
+      }
       // --size WIDTHxHEIGHT too, as agents wrote it (S99PartC)
       const size = flag("size", rest);
       const wh = size === undefined ? positional : /^(\d+)x(\d+)$/i.exec(size)?.slice(1);

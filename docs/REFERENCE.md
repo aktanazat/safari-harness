@@ -1141,7 +1141,10 @@ page has one, and up to 5 s more while the page says it is loading. It can
 use an original agent tab id while its safe-address recovery record is
 still within the five-minute limit ([cleanup and recovery](#cleanup-authority)).
 A page that fills in after loading still needs a `wait` for the text you
-expect.
+expect. A `goto` that changes only the address's `#part` moves within the
+same page and loads nothing again, which the answer notes: after editing a
+local file, `history {do: "reload"}` loads it again. `fresh: true` reads a
+page your task read in the last 10 minutes again.
 
 ## tabs
 
@@ -1206,7 +1209,8 @@ is done with it. `close` on a tab already closed does not fail: it answers
   leaves it open past your turn and your exit; close it yourself once he
   is done with it. Its popups are his as well, and still come in your
   next result (`safari guide reference lifecycle`). Tabs on another Mac (`--host`) close only once
-  nobody has used them for 20 minutes.
+  nobody has used them for 20 minutes. `keep` on a tab Safari no longer
+  has fails as `activate` does, with nothing kept.
 
 ## activate
 
@@ -1238,6 +1242,14 @@ It answers once the page has laid out again at the new size (it reads
 again for up to 1 s), with the page's viewport, so the next `shot` or read
 sees the layout at that width. For screenshots at several widths, use
 `shots` instead of a `window` and `shot` per width.
+
+`width` and `height` are the window's points, and the page's CSS width
+differs by Safari's page zoom and the window's edges: on 11-11 width 390
+gave a page 455 px wide. `cssWidth` (with `height`) resizes until the
+page's `innerWidth` is that many CSS px, at most 3 times, and answers with
+the `viewport` reached; still off by more than 1 px, it answers with
+`missed` naming the width the page reached, since the window did change.
+CLI: `safari window --tab N --css-width 390 --height 844`.
 
 ## run
 
@@ -1285,8 +1297,10 @@ or one after a read, can still match text already shown.
 ## map
 
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
-each with: `extract` (the default), `snapshot`, `eval` with `expression`,
-or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
+each with: `extract` (the default), `snapshot`, `eval` with `expression`
+or `file` (a script's absolute path; `read: true` for one that only
+measures, as for `eval`), or `fetch`, plus that read's own options
+(`selector`, `query`, `as`). An `eval` read is never reused. Each
 page is read in a background tab in your window, 6 at a time
 (`concurrency`, fewer if you ask): one tab for each page read at once,
 which loads the next page once its page is read, and closes when map
@@ -1743,6 +1757,14 @@ in seconds) gives a slow read up to 300 s. Keep sleeps and long loops out of
 `eval`: a loop across steps goes in `repl`, and `wait {text}` waits for
 words the page will show.
 
+- An eval that fails may have acted, so the same code is refused on that
+  site until a whole read of a tab there (When a call fails, in the card).
+  `read: true` says your code only reads or measures the page: its failure
+  then holds nothing, and it takes no turn among the tab's actions. Never
+  pass it for code that clicks, types, submits, or calls a site's API that
+  changes anything. `map {what: "eval", read: true}` passes it to each
+  page. The same `file` with new contents is new code, not a repeat.
+
 - `--raw` (CLI) prints only the value: a string as it is, unquoted,
   anything else as JSON on one line, nothing for `undefined`; a `note` or
   `hint` goes to stderr. For a shell that reads the answer:
@@ -1784,7 +1806,9 @@ or page stability cannot be confirmed, no image is returned. `live`
 does not disable protection. The masking count is applied rectangles,
 not a count of unique secrets. Unknown sensitive text baked into arbitrary
 images, video, canvas or closed rendering is not a universal detection
-guarantee.
+guarantee. A page that loads again during the capture (a reload, a
+navigation) ends its gate; `shot` waits for the new page to go quiet and
+captures once more, and a second reload fails `unavailable`, retryable.
 
 Safari draws nothing in a window other windows cover whole, so its page
 never passes the privacy gate's paint check. When that window is yours,
@@ -2001,6 +2025,8 @@ Wait for the page, not the clock.
   site still out (one out past 2 s, such as a long poll, does not count).
   Given together, all must hold. `url` and `quiet` read the top page, not
   its frames; `gone` holds once neither the page nor any frame shows it.
+  `ms` alone, with nothing named, waits for quiet up to `ms`; a wait with
+  neither fails.
 - `snapshot: true`, words, or `{query, root, diff, full}` (CLI `--snapshot`,
   `--snapshot=words`) answers with the page as the wait ends, as an
   action's does; a wait the page gave no answer comes without it.
@@ -2584,7 +2610,8 @@ and cannot run against the user's front tab or a remote browser. Use
   tab needed), or only a `tab` to save the file it shows (a PDF in
   Safari's viewer). Put a file you only read under /tmp with `out`, an
   absolute path (`download` and `pdf` refuse a relative one; CLI
-  `safari download --tab N --ref R [file]`, or `--out`/`--path`). A ref
+  `safari download --tab N --ref R [file]`, or `--out`/`--path`). An `out`
+  that is a folder, or ends in `/`, takes the file under its own name. A ref
   whose fetch fails says why (no such host, a cross-site refusal) and
   gives the link's address. It
   fetches with the page's cookies, so a signed-in file works. A link to
@@ -2644,6 +2671,10 @@ and cannot run against the user's front tab or a remote browser. Use
   cookies, for a PDF Safari downloads rather than shows), or the PDF the
   tab shows. A path or a url needs no tab: `safari pdf read file.pdf`,
   `safari pdf read https://…/paper.pdf`, or `safari pdf --do read --url …`.
+  A PDF whose pages are pictures (a scan) has no text layer: its read
+  answers `text: ""` and a note saying so, with the saved file's path. A
+  bot check in place of the file is named as one, before a sign-in page is
+  blamed.
 
 ## cookies
 
