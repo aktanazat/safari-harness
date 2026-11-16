@@ -25,8 +25,11 @@ const LOADING_MS = 10_000;
 // Below these, a page that names a wall is the wall, not an article about one.
 const SHELL_CHARS = 1500;
 const JS_SHELL_CHARS = 500;
-// A copy with less text than this did not show the page either: the
-// Chromium tracker's read only "Sign in" before the app drew.
+// A read Safari did not judge (no pageState, or unjudged) with less text
+// than this did not show the page either: the Chromium tracker's read only
+// "Sign in" before the app drew. A judged read goes by its judgment: on
+// 11-14 dokumen.tips's robots.txt, 198 characters judged content, failed
+// this floor, and the agent was told to open it in a tab.
 const COPY_CHARS = 200;
 const SHELL_OUTPUT_CHARS = 5000;
 
@@ -65,14 +68,32 @@ const SHELL_WALLS: [RegExp, string, boolean][] = [
 const ATTEMPTS: Record<string, true> = { open: true, goto: true, wait: true, handoff: true, repl: true, real_input: true };
 
 const NEXT_CHECK = "open it in a tab (safari open URL) and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters";
-const NEXT_THIN = "open it in a tab (safari open URL), wait for its text (safari wait), then read it (safari extract)";
+// A bare `safari wait` throws (it needs what to wait for): on 11-11 the
+// next this gave ran `safari open URL && safari wait && safari extract`.
+const NEXT_THIN = 'open it in a tab with safari open URL --snapshot, which prints its tab id N and the page; if its text has not drawn yet, safari wait --tab N --text "<words the page should show>" --snapshot';
 const NEXT_MAP = "read it in the Safari helper (safari map URL)";
+// Safari's own next, where its answer gave one that a tab and a wait would
+// not change. On 11-14 each of these was told to open the page in a tab
+// and wait: ejcl.org's Cloudflare block, researchgate's DataDome check
+// that Safari met minutes before (reads.ts), an ecfr.gov XML file, and a
+// PDF address that downloaded.
+const NEXT_BLOCK = "use another permitted source, or report that the page is unavailable: the site turns this browser away, and the user cannot clear that either";
+const NEXT_REMEMBERED = "use another permitted source, or report that the page is unavailable: Safari met a check there minutes ago that does not clear by waiting (safari map URL --fresh loads it anyway)";
+const NEXT_DOWNLOAD = "save the file the address downloads (safari download URL)";
+const NEXT_SOURCE = "read its source (safari map URL --what fetch)";
+const REMEMBERED = /^\S+ showed this browser .*\bthat check does not clear by waiting\b/;
+// Page states whose next is Safari's word on what to do: a tab and a wait
+// would show the same sign-in, paywall, or error page. A consent page's
+// next may name its reject choice's label, which is the page's word and
+// may not reach the run's end (unanswered); an empty or loading page may
+// draw in a tab.
+const STATE_NEXT: Record<string, true> = { login_wall: true, paywall: true, region_block: true, error: true };
 // The run's end names a wall's site alone, with these reasons of the
 // harness's own: it reaches the model as the harness's word, and a page's
 // title, the address it sent a read on to, or a URL in its text can carry
 // instructions (review of 10-24).
-const READ_CHECKED: Hold = { reason: "a read did not load a page there, and Safari's quick read met a bot check", next: NEXT_CHECK };
-const READ_THIN: Hold = { reason: "a read did not load a page there, and Safari's quick read did not load it either", next: NEXT_THIN };
+const CHECKED_REASON = "a read did not load a page there, and Safari's quick read met a bot check";
+const THIN_REASON = "a read did not load a page there, and Safari's quick read did not load it either";
 const SAFARI_CHECKED: Hold = { reason: "Safari showed a bot check", next: NEXT_CHECK };
 
 function appended(content: Block[], addition: string): Block[] {
@@ -226,23 +247,44 @@ function shellWall(command: string, output: string): { url: string; why: string 
   return undefined;
 }
 
-type Copy = { loaded: boolean; check: boolean; text: string };
+// Safari's copy as map printed it, and, when it did not load the page
+// either, what the run's end says of the wall.
+type Copy = { text: string; hold?: Hold };
 type MapPage = MapAnswer["pages"][number];
+const THIN: Hold = { reason: THIN_REASON, next: NEXT_THIN };
 
 // The text and page state of map's read of a page.
-function readOfPage(page: MapPage | undefined): { text: string; kind?: string } {
+function readOfPage(page: MapPage | undefined): { text: string; state?: { kind: string; next: string } } {
   const value = page && "value" in page ? page.value : undefined;
   if (!value || typeof value !== "object") return { text: "" };
   const state = "pageState" in value ? value.pageState : undefined;
   return {
     text: "text" in value && typeof value.text === "string" ? value.text : "",
-    kind: state && typeof state === "object" && "kind" in state && typeof state.kind === "string" ? state.kind : undefined,
+    ...(state && typeof state === "object" && "kind" in state && typeof state.kind === "string" ? { state: { kind: state.kind, next: "next" in state && typeof state.next === "string" ? state.next : "" } } : {}),
   };
+}
+
+// What the run's end says of a page map's copy did not load: Safari's own
+// next where its answer gave one, else a tab and a wait. Its error is
+// matched only from its start, where the harness's words are: an error
+// page's error names the page's title after them.
+function holdOf(page: MapPage | undefined, state: { kind: string; next: string } | undefined): Hold {
+  const error = page && "error" in page && typeof page.error === "string" ? page.error : "";
+  const where = page && "challenge" in page ? page.challenge?.where : undefined;
+  const next = (to: string): Hold => ({ reason: where === "page" ? CHECKED_REASON : THIN_REASON, next: to });
+  if (where === "block") return next(NEXT_BLOCK);
+  if (REMEMBERED.test(error)) return next(NEXT_REMEMBERED);
+  if (error.startsWith("this tab is blank (")) return next(NEXT_DOWNLOAD);
+  if (error.startsWith("this is not a web page but an XML or SVG file")) return next(NEXT_SOURCE);
+  if (where === "page") return next(NEXT_CHECK);
+  if (state !== undefined && Object.hasOwn(STATE_NEXT, state.kind) && state.next !== "") return next(state.next.replace(/\.$/, ""));
+  return THIN;
 }
 
 // Safari's copy of url, as `safari map url` prints it, loaded for task by
 // this omp process. It waits as wait says (an app's loading line to go); an
-// X post waits for the post itself (docs/sites/x.md).
+// X post waits for the post itself (docs/sites/x.md). A page loaded when
+// map read it and judged it content, or, with no judgment, read enough.
 async function safariCopy(url: string, task: string | undefined, wait: Record<string, unknown> | undefined): Promise<Copy> {
   const waits = wait ?? (X_POST.test(url) ? { selector: "article" } : undefined);
   const args = { urls: [url], ...(waits ? { wait: waits } : {}) };
@@ -253,33 +295,33 @@ async function safariCopy(url: string, task: string | undefined, wait: Record<st
       signal: AbortSignal.timeout(COPY_MS),
     });
     const answer = (await res.json()) as { ok?: boolean; value?: MapAnswer; error?: string };
-    if (!answer.ok || !answer.value) return { loaded: false, check: false, text: `error: ${answer.error ?? `HTTP ${res.status}`}` };
+    if (!answer.ok || !answer.value) return { text: `error: ${answer.error ?? `HTTP ${res.status}`}`, hold: THIN };
     const page = answer.value.pages[0];
-    const check = !!page && "challenge" in page && page.challenge?.where === "page";
-    const { text, kind } = readOfPage(page);
-    const loaded = !!page?.ok && !check && (kind === undefined || kind === "content" || kind === "unjudged") && text.trim().length >= COPY_CHARS;
+    const { text, state } = readOfPage(page);
+    const judged = state !== undefined && state.kind !== "unjudged";
+    const loaded = !!page?.ok && !("challenge" in page && page.challenge?.where === "page") && (judged ? state.kind === "content" : text.trim().length >= COPY_CHARS);
+    const hold = loaded ? undefined : holdOf(page, state);
     // Loaded here, not at the top: tools.ts brings the daemon's whole tool
     // graph, 36-57 ms and 33 MB more in every omp process at its start
     // (measured 10-23), for a path few runs take.
     const { formatResult, REPLY_CHARS } = await import("../daemon/tools.ts");
     const whole = formatResult(answer.value);
-    if (whole.length <= REPLY_CHARS) return { loaded, check, text: whole };
+    if (whole.length <= REPLY_CHARS) return { text: whole, hold };
     const { saveAnswer } = await import("../daemon/save.ts");
     const path = await saveAnswer(whole);
     const kept = cutFenced(formatResult(answer.value, REPLY_CHARS), REPLY_CHARS);
-    return { loaded, check, text: `${kept}\n…cut at ${kept.length} of ${whole.length} characters; the whole copy is in ${path}` };
+    return { text: `${kept}\n…cut at ${kept.length} of ${whole.length} characters; the whole copy is in ${path}`, hold };
   } catch (e: unknown) {
-    if (e instanceof Error && e.name === "TimeoutError") return { loaded: false, check: false, text: `error: Safari gave no answer in ${COPY_MS / 1000} s; it may still be loading the page, and safari map ${url} answers from that read once it is done` };
-    return { loaded: false, check: false, text: `error: the Safari helper did not answer (${e instanceof Error ? e.message : String(e)})` };
+    if (e instanceof Error && e.name === "TimeoutError") return { text: `error: Safari gave no answer in ${COPY_MS / 1000} s; it may still be loading the page, and safari map ${url} answers from that read once it is done`, hold: THIN };
+    return { text: `error: the Safari helper did not answer (${e instanceof Error ? e.message : String(e)})`, hold: THIN };
   }
 }
 
 // The lines a read that did not load gets: why, then Safari's copy, then
 // the next step when Safari did not load the page either.
 function copyLines(url: string, why: string, copy: Copy): string {
-  if (copy.loaded) return `safari: read could not load this page (${why}); the Safari helper loaded it:\n${copy.text}`;
-  const next = (copy.check ? NEXT_CHECK : NEXT_THIN).replace("URL", url);
-  return `safari: read could not load this page (${why}), and the Safari helper did not load it either. Safari answered:\n${copy.text}\nsafari: next, ${next}. If it still fails, quote what Safari answered when you report it.`;
+  if (copy.hold === undefined) return `safari: read could not load this page (${why}); the Safari helper loaded it:\n${copy.text}`;
+  return `safari: read could not load this page (${why}), and the Safari helper did not load it either. Safari answered:\n${copy.text}\nsafari: next, ${copy.hold.next.replaceAll("URL", url)}. If it still fails, quote what Safari answered when you report it.`;
 }
 
 // ---------- walls a run met ----------
@@ -389,7 +431,7 @@ export async function webResult(event: ToolResult, session: string | undefined, 
     if (copied.size > 1000) copied.clear();
     copied.add(event.toolCallId);
     const copy = await safariCopy(url, task(), missed.wait);
-    if (session !== undefined) metWall(session, url, copy.loaded ? undefined : copy.check ? READ_CHECKED : READ_THIN);
+    if (session !== undefined) metWall(session, url, copy.hold);
     return { content: appended(event.content, copyLines(url, missed.why, copy)) };
   }
   const call = safariCall(event.toolName, event.input, text);
