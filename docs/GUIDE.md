@@ -128,6 +128,9 @@ When a call fails
   Do not repeat it blindly. Read a fresh whole-page snapshot or extract,
   check the result, then decide. Follow the failure's `next` field.
   `effect: "none"`: nothing happened; a refused link names its address.
+  "That action may already have happened; this call was not sent" holds
+  until a snapshot or extract of that tab with no query, root, selector or
+  ref, not cut short; renaming the script does not help, editing it does.
 - `pageState` distinguishes content from sign-in, subscriber, consent and
   region walls, loading, errors and unread pages. A successful read of a
   wall is not a successful read of the requested content.
@@ -156,6 +159,9 @@ Before a site
   untried is sent back once. Put files you only read under /tmp with `out`.
 - Public GitHub code and trees: `gh api`, `gh`, or a shallow clone and raw
   files, not Safari; Safari is for rendered docs, search, and sign-ins.
+- Safari opens no `file://` page for the harness: serve the folder
+  (`python3 -m http.server -d <folder> <port>`) and open its
+  `http://127.0.0.1:<port>/` address.
 
 Signing in, in this order
 1. A session: most of his sites are signed in.
@@ -171,16 +177,19 @@ first (a popup on his Mac, or his phone).
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and
   never read its answer from a screenshot. A `challenge` from `map`:
-  `open` the page in a tab and `wait` a few seconds for its text, since
-  many checks clear by themselves there. If one persists, use another
-  permitted source; if the exact page is essential, report the limitation
-  without asking the user to clear it. `where: "block"` cannot be cleared.
+  `open` the page in a tab and `wait {gone: "<the check's words>", ms:
+  15000}`, since many checks clear by themselves there. If one persists,
+  use another permitted source; if the exact page is essential, report the
+  limitation without asking the user to clear it. `where: "block"`, and a
+  check the answer says does not clear by waiting, cannot be cleared.
 
 Privacy and care
 - List his tabs only when the task is about a page he has open.
 - Before sending, posting, buying, submitting, or deleting, show him
   what will happen and get a yes. Pay only through `passwords`
-  `card-fill` or Apple Pay (`safari guide passwords`).
+  `card-fill` or Apple Pay (`safari guide passwords`). Slack messages go
+  only through the slack global's drafts (`safari guide slack`); a click
+  on Slack's Send button, or Return in its message box, is refused.
 - Report what the page shows, not what you expected.
 - Browser memory has separate permissions for personal browsing and agent
   research at `http://127.0.0.1:37334/memory`. Do not enable either yourself.
