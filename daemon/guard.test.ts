@@ -119,6 +119,9 @@ test.each([
   ["passwords", "account", "username"],
   ["map", "script", "expression"],
   ["download", "out_dir", "out"],
+  ["map", "do", "what"],
+  ["click", "query", "snapshot"],
+  ["type", "query", "snapshot"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });
@@ -141,6 +144,10 @@ test("snapshot given an address says to open it first", () => {
 // page's text.
 test("map given max says what keeps each page short instead", () => {
   expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
+});
+
+test("passwords given a selector says code finds the field itself", () => {
+  expect(() => checkCall(TOOLS, "passwords", { do: "code", tab: 7, selector: "input" }, true)).toThrow("passwords takes no selector: code finds the field itself");
 });
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
