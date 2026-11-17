@@ -536,3 +536,10 @@ test("an agent's tab called every 30 s keeps its last use in the daemon's file o
   await closedAs([tab]);
   expect(Math.max(...behind)).toBeLessThanOrEqual(60_000);
 });
+
+// On 11-17 keep answered ok for a tab its agent's exit had closed, and the
+// agent told the user the page was left open for him.
+test("keep of a tab Safari no longer shows fails and keeps nothing", async () => {
+  showing = [];
+  await expect(callTool("keep", { tab: 98765 })).rejects.toThrow(/^that tab is gone: .*; nothing was kept/);
+});

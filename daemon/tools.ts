@@ -3708,7 +3708,14 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Leave a tab you opened open for the user when your turn ends: a page he asked to see, or a form waiting on his answer. Your other tabs close then.",
     params: { tab: OWN_TAB },
     required: ["tab"],
-    run: async (a) => keepTab(num(a.tab, "tab")),
+    // On 11-17 keep answered ok for a tab its agent's exit had closed, and
+    // the agent told the user the page was left open for him.
+    run: async (a) => {
+      const tab = num(a.tab, "tab");
+      const id = followTab(tab);
+      if (!(await listTabs()).some((t) => t.id === id)) throw new HarnessError("stale_view", `that tab is gone: ${goneCause(id, tab)}; nothing was kept: open it again, then keep it`);
+      return keepTab(tab);
+    },
   },
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
