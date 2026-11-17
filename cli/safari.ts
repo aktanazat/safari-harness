@@ -1031,7 +1031,9 @@ async function main() {
     }
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
-    case "close": case "focus": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
+    // activate too, as focus: on 11-17 `safari activate 12842` failed "tab
+    // must be a number"
+    case "close": case "focus": case "activate": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);
       if (root) args.root = root;

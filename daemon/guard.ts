@@ -53,6 +53,8 @@ const ALIASES: [string, string, string[]?][] = [
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
   ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
   ["path", "out", ["shot", "shots", "download"]], ["outDir", "out", ["download"]], ["account", "username", ["passwords"]],
+  // 11-17: contacts {query} and imessage_send {approve} each failed a call
+  ["query", "name", ["contacts"]], ["approve", "approved", ["imessage_send"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do

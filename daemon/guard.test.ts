@@ -126,6 +126,13 @@ test.each([
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
 });
 
+test.each([
+  ["contacts", "query", "name"],
+  ["imessage_send", "approve", "approved"],
+])("%s, a Messages tool, takes %s for %s", (tool, alias, real) => {
+  expect(checkCall(CALLER_TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
+});
+
 // press's text is the key it presses, if anything, never the element.
 test("text names the ref only on the tools that take it so", () => {
   expect(() => checkCall(TOOLS, "press", { tab: 7, text: "Enter" }, true)).toThrow("unknown parameter text for press");
