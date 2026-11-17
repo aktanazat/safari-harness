@@ -28,13 +28,15 @@ const ABOVE = { frame: { x: -538, y: -1440, width: 2560, height: 1440 }, visible
 // opens every agent window.
 const HIS = { id: 1, safari: true, ...MAIN.visible };
 const SAFARI_PUT = { x: -538, y: -1440 };
+// The virtual display agent-display adds right of the main one, for agents.
+const AGENTS = { name: "Agents", frame: { x: 1512, y: 0, width: 2560, height: 1440 }, visible: { x: 1512, y: 0, width: 2560, height: 1440 } };
 const UNPAINTED = "screenshot privacy: the protected page did not paint";
 
 const shared = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
 
 // Windows front to back; tabs, each in a window; owners, each window's agent.
-function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0) {
+function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE]) {
   const urlOf = (tab: number) => `https://page.example/${tab}`;
   const windowOf = (tab: number) => windows.find((w) => w.id === tabs[tab])!;
   connect({
@@ -55,7 +57,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
         const bounds = args[1] as { left: number; top: number } | undefined;
         if (bounds) {
           moves?.push({ ...w });
-          const on = [MAIN, ABOVE].reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
+          const on = screens.reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
           Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top + (moves?.length === 1 ? moveOffset : 0) });
         }
         return reply({ value: { width: w.width, height: w.height, state: "normal" } });
@@ -71,7 +73,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
   });
   spyOn(front, "input").mockImplementation(async (args) => {
     if (args[0] !== "windows") throw new Error(`no input ${args[0]} here`);
-    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens: [MAIN, ABOVE] };
+    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens };
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map(Object.entries(owners).map(([w, owner]) => [Number(w), owner])));
   return windows;
@@ -135,4 +137,16 @@ test("opening an agent window leaves it behind the user's windows where Safari p
   expect(opened).toEqual({ id: space.window, safari: true, ...SAFARI_PUT, width: space.size.width, height: space.size.height });
   expect(moves).toEqual([]);
   expect(byId(windows, 2)).toEqual(older);
+});
+
+test("on a Mac with an Agents display, a new agent window opens there, clear of the agent window already there", async () => {
+  const there = { id: 2, safari: true, x: AGENTS.visible.x, y: AGENTS.visible.y, width: 1000, height: 780 };
+  const windows = mac([{ ...HIS }, { ...there }], { 11: 1, 21: 2 }, { 2: 8 }, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?agents`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("agents"));
+  const opened = byId(windows, space.window);
+  expect(shared(opened, AGENTS.frame)).toBe(opened.width * opened.height);
+  expect(shared(opened, there)).toBe(0);
+  expect([byId(windows, 1), byId(windows, 2)]).toEqual([HIS, there]);
 });

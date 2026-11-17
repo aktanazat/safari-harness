@@ -1,12 +1,13 @@
 // WebKit stops painting a page when another window covers its whole window.
 // Only an owned screenshot may briefly move that window to make it paint.
+// An agent window lives on the agents' display, when the Mac has one.
 
 import { bridge } from "./bridge.ts";
 import { input } from "./front.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
-// A display, and the part of it the menu bar and Dock leave free.
-type Screen = { frame: Rect; visible: Rect };
+// A display, its name, and the part of it the menu bar and Dock leave free.
+type Screen = { name?: string; frame: Rect; visible: Rect };
 type Here = { at: Rect; front: Rect[]; behind: Rect[]; screen: Rect; screens: Screen[] };
 
 const FRAME_MS = 5000;
@@ -115,4 +116,26 @@ export async function uncover(tab: number): Promise<(() => Promise<void>) | "sho
     if (now === undefined || now === "hidden" || now.at.x !== placed.at.x || now.at.y !== placed.at.y) return;
     await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - now.screen.x), top: Math.round(here.at.y - now.screen.y) }], FRAME_MS);
   };
+}
+
+// The virtual display agent-display (github.com/mikedelgaudio/agent-display)
+// adds under this name, which no one looks at: agent windows go there so
+// they stay off the user's screen while he works (his ask of 11-17). A Mac
+// without it keeps them where Safari puts them.
+const AGENTS = "Agents";
+
+// Moves tab's window onto the agents' display, to the place there that
+// covers least of the windows already on it, since one fully covered stops
+// painting. Answers whether the window is there.
+export async function toAgentScreen(tab: number): Promise<boolean> {
+  const here = await onScreen(tab);
+  if (here === undefined || here === "hidden") return false;
+  const agents = here.screens.find((s) => s.name === AGENTS);
+  if (!agents) return false;
+  if (holding(here.at, here.screens) === agents) return true;
+  const there = [...here.front, ...here.behind].filter((w) => shared(w, agents.frame) > 0);
+  const covered = (r: Rect) => there.reduce((sum, w) => sum + shared(r, w), 0);
+  const to = places(here.at, agents.visible, there).reduce((best, r) => (covered(r) < covered(best) ? r : best));
+  await bridge.request("windows.frame", [tab, { left: Math.round(to.x - here.screen.x), top: Math.round(to.y - here.screen.y) }], FRAME_MS);
+  return true;
 }
