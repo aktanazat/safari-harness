@@ -15,7 +15,7 @@ import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
-import { uncover } from "./place.ts";
+import { toAgentScreen, uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -2044,6 +2044,7 @@ const blocked = (c: Challenge) => `${c.kind} turned this browser away: the page 
 
 async function watchHandoff(tab: number, why: string, h: Handoff, until?: string) {
   const gone = () => new Error(`that tab is gone: ${goneCause(tab, tab)}; open it again`);
+  let raised = false;
   try {
     // A look for until's text takes up to a second; a page that cannot
     // answer (it is loading) does not show it yet.
@@ -2075,7 +2076,17 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       initial = challenge ?? initial;
     }
     h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
-    const giveBack = await show(tab, { tabs: listTabs, activate: activateTab });
+    // He must see the tab, so an agent window comes onto the main display,
+    // off the agents' display (place.ts) too.
+    raised = true;
+    const giveBack = await show(tab, {
+      tabs: listTabs,
+      activate: async (t) => {
+        const shown = (await activateTab(t)) as { windowId: number; width: number; height: number };
+        if (windowOwners().has(shown.windowId)) await ontoMainDisplay(t, shown);
+        return shown;
+      },
+    });
     notify(why);
     h.begun.resolve();
     // the first check the page answered with; null until it answers
@@ -2104,6 +2115,16 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
   } catch (e) {
     h.error = e instanceof Error ? e.message : String(e);
   } finally {
+    // Its window goes back to the agents' display however the handoff
+    // ended, unless another handoff in it still waits on him. Best effort,
+    // as giving back is.
+    if (raised) {
+      const tabs = await listTabs().catch((): TabInfo[] => []);
+      const windowOf = (id: number) => tabs.find((t) => t.id === id)?.windowId;
+      const windowId = windowOf(tab);
+      const waiting = [...handoffs].some(([other, o]) => o !== h && !o.done && o.error === undefined && windowOf(other) === windowId);
+      if (windowId !== undefined && windowOwners().has(windowId) && !waiting) await toAgentScreen(tab).catch(() => false);
+    }
     if (h.done) {
       const mine = harnessTabs.get(tab);
       if (mine) delete mine.handoff;

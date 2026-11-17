@@ -43,7 +43,8 @@ daemon/
   spaces.ts         each task's own Safari window, opened behind the user's;
                     named and default opens of one task share it
   place.ts          briefly moves a covered owned window for a screenshot,
-                    then restores its place
+                    then restores its place; puts agent windows on the
+                    "Agents" display when the Mac has one
   groups.ts         makes a window its task's Safari tab group, and deletes
                     the group after, only while the user is away from the keys
   keeper.ts         runs groups.ts from the agent's terminal, which has the

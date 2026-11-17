@@ -80,7 +80,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the user's windows or tab groups. The main task and its direct parallel
   helpers share that window, even when they use different group names.
   Each helper still owns its own tabs; finishing one does not close the
-  others. It opens behind the user's window without taking focus.
+  others. It opens behind the user's window without taking focus. On a
+  Mac with a display named "Agents" (the virtual one `agent-display start
+  --name Agents --width 2560 --height 1440` makes), the window moves there,
+  off his screen; a `handoff` brings it onto his main display and, once it
+  ends, back. A window opened while that display is missing stays where
+  Safari put it.
   For calls without a task identity, each `group` gets its own window and
   ungrouped tabs share one. The window opens on a page titled with its first
   group's name (or "agent") and your process id; ", window 2" and up
@@ -1187,9 +1192,9 @@ is done with it. `close` on a tab already closed does not fail: it answers
 
 - `activate` brings Safari and the tab's window to the front. A window of
   yours also comes onto the main display, inside the part the menu bar and
-  Dock leave free, at its own size, and stays there; the answer's `window`
-  is where it is now, in screen points. The user's own windows stay where
-  he put them.
+  Dock leave free, at its own size, and stays there, off the Agents
+  display too, until it closes; the answer's `window` is where it is now,
+  in screen points. The user's own windows stay where he put them.
 - Never `activate` a tab to wake it: a tab the harness opened runs while
   hidden (`safari guide wait`). Bring it to the front only for a step that
   needs the screen.
