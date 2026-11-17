@@ -2060,7 +2060,10 @@ Wait for the page, not the clock.
   for the page to draw: it answers once the page shows something, or after
   2 s with what it has. A `query` or `root` read of such a page waits the
   same way, until a line matches or the root shows something; on a page a
-  person already sees, one that finds nothing answers at once.
+  person already sees, one that finds nothing answers at once. Its hint,
+  and that of a `wait` that misses on a blank page, say a Safari prompt
+  over the tab (camera, microphone, location) may hold it: no read of the
+  page sees one, and only the user can answer it (`handoff`).
 - Wait for the page's exact words. A site's email and its page often word
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.

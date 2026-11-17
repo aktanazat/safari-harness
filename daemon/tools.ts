@@ -1905,7 +1905,14 @@ export const WAIT_MAX_MS = 110000;
 // after it read "(0 nodes)" (S99PartC). Such a wait goes on until the page
 // shows text, a picture, a canvas, a video, or a frame, ms at most; a page
 // blank still is a miss. A page whose policy refuses eval counts as drawn.
-const BLANK = "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show";
+// A Safari prompt over the tab (camera, microphone, location) keeps a page
+// that waits on its answer blank, and no read of the page can see it: on
+// 11-16 a Meet tab under a camera and microphone prompt read empty and 8
+// text waits ran out, 3.5 minutes, before the agent found the prompt. A
+// miss on a blank page names that cause too.
+const PROMPT = "if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff";
+const BLANK = `the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show; ${PROMPT}`;
+const SHOWS_NOTHING = `the page shows nothing: no text, picture, or frame; ${PROMPT}`;
 const DRAWN = "(() => { const b = document.body; return !b || b.innerText.trim() !== '' || !!b.querySelector('img, canvas, video, svg, iframe, embed, object') || [...b.querySelectorAll('*')].some((e) => e.shadowRoot); })()";
 const DRAW_POLL_MS = 250;
 
@@ -2030,7 +2037,7 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
     // what the tab shows, each read left out when it has no answer by the end
-    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? undefined : blankHint(tab, end)]);
+    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? by(relay(tab, "eval", [DRAWN]), end).then((a) => (a && typeof a === "object" && "result" in a && a.result === false ? SHOWS_NOTHING : undefined)) : blankHint(tab, end)]);
     seenLater(tab, now?.url, shown);
     const challenge = shown?.challenge;
     const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);

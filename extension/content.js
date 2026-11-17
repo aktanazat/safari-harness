@@ -1238,7 +1238,8 @@
   // it, and the read says so.
   const DRAW_WAIT_MS = 2000;
   const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
-  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
+  // a Safari prompt over the tab keeps a page blank too (PROMPT in tools.ts)
+  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again; if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff";
   // A page that hit an error may draw nothing however long a wait looks for
   // its text: on 10-09 an agent waited 25 s on one whose script had thrown,
   // then read an empty console (S99PartB). A blank read names the errors

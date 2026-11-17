@@ -200,6 +200,9 @@ connect({
       return reply({ value: { found: url !== LOST && want.text !== ABSENT } });
     }
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
+    // a missed wait's look at whether the page drew anything (tools.ts
+    // DRAWN) is the wait's, not a read
+    if (args[1] === "eval" && String((args[2] as unknown[])[0]).includes("innerText.trim()")) return reply({ value: { ok: true, result: true } });
     if (args[1] === "fetchFile") {
       const url = String((args[2] as unknown[])[0]);
       const page = tabs.get(Number(args[0]))?.url ?? "";
