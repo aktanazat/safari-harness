@@ -1029,6 +1029,16 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Billing\s+Max plan, renews Oct 1\.\s+Close$/), note: expect.any(String) } } }],
   },
   {
+    name: "extract reads the page behind a consent dialog open over it, and names the dialog in its note",
+    page: "consent-modal.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Your accounts\s+Cash account: interest paid monthly\.$/), note: expect.stringContaining('dialog "Web tracking consent preferences" is open over the page; this is the page behind it') } } }],
+  },
+  {
+    name: "extract reads a dialog of cookie switches the agent opened, like any other dialog over the page",
+    page: "privacy-settings.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringContaining("Analytics cookies"), note: expect.stringContaining('selector "body" reads the page behind it') } } }],
+  },
+  {
     name: "a root or selector of dialog reads the dialog open over the page, a div, and neither a closed dialog element nor the page behind it",
     page: "slate-dialog.html",
     steps: [

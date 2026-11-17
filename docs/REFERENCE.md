@@ -1513,6 +1513,8 @@ the part you need.
 `extract` reads a dialog open over the page first (its `note` says
 `selector: "body"` reads the page behind it), else the page's `main` or
 only article, else the whole page when `main` holds little of its text.
+A cookie or consent prompt with no field to fill is read past: the answer
+is the page behind it, and its `note` names the prompt.
 An embedded frame of another site shown in what it read (a verification
 form in a dialog) is read too: its text follows the page's, under the
 frame's name.
