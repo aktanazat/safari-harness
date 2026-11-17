@@ -14,8 +14,8 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, resized, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, windowOwners, type Space, type SpaceNote } from "./spaces.ts";
-import { toAgentScreen, uncover } from "./place.ts";
+import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, release, resized, showing, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, unshow, windowOwners, type Shown, type Space, type SpaceNote } from "./spaces.ts";
+import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -710,6 +710,7 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
+    unshow(owner, task);
     await turnEnded(owner, task ?? undefined);
     const retained = turnTabs(owner, task);
     const failed = [...harnessTabs.values()].filter((t) => inTurn(t, owner, task) && t.failed).length;
@@ -1156,14 +1157,16 @@ export async function activateTab(tab: number): Promise<unknown> {
 
 // The tab shows in its window, and the window and Safari come to the front:
 // the user sees the tab. An agent window comes onto the main display too,
-// and stays there: Safari puts agent windows where it likes (on 09-30 all
-// of them at -1410, on a display above the main one), and on 09-28
-// GitHub's Authorize stayed disabled in one off the main display until
-// `window`, then `activate`. His own windows stay where he put them.
+// and stays there until its agent's turn ends: Safari puts agent windows
+// where it likes (on 09-30 all of them at -1410, on a display above the
+// main one), and on 09-28 GitHub's Authorize stayed disabled in one off the
+// main display until `window`, then `activate`. His own windows stay where
+// he put them.
 async function showTab(tab: number): Promise<unknown> {
   const shown = (await activateTab(tab)) as { windowId: number; width: number; height: number };
   await raiseSafari();
   if (!windowOwners().has(shown.windowId)) return { ok: true };
+  showing(shown.windowId);
   return { ok: true, window: await ontoMainDisplay(tab, shown) };
 }
 
@@ -2020,7 +2023,8 @@ const blocked = (c: Challenge) => `${c.kind} turned this browser away: the page 
 
 async function watchHandoff(tab: number, why: string, h: Handoff, until?: string) {
   const gone = () => new Error(`that tab is gone: ${goneCause(tab, tab)}; open it again`);
-  let raised = false;
+  // the showing of the agent window the handoff brought to him, at most one
+  const held: { window: number; shown: Shown }[] = [];
   try {
     // A look for until's text takes up to a second; a page that cannot
     // answer (it is loading) does not show it yet.
@@ -2054,12 +2058,14 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     h.now = { url: first.url, title: first.title, ...(initial ? { challenge: initial } : {}) };
     // He must see the tab, so an agent window comes onto the main display,
     // off the agents' display (place.ts) too.
-    raised = true;
     const giveBack = await show(tab, {
       tabs: listTabs,
       activate: async (t) => {
         const shown = (await activateTab(t)) as { windowId: number; width: number; height: number };
-        if (windowOwners().has(shown.windowId)) await ontoMainDisplay(t, shown);
+        if (t === tab && windowOwners().has(shown.windowId)) {
+          if (held.length === 0) held.push({ window: shown.windowId, shown: showing(shown.windowId, true) });
+          await ontoMainDisplay(t, shown);
+        }
         return shown;
       },
     });
@@ -2092,14 +2098,11 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
     h.error = e instanceof Error ? e.message : String(e);
   } finally {
     // Its window goes back to the agents' display however the handoff
-    // ended, unless another handoff in it still waits on him. Best effort,
-    // as giving back is.
-    if (raised) {
-      const tabs = await listTabs().catch((): TabInfo[] => []);
-      const windowOf = (id: number) => tabs.find((t) => t.id === id)?.windowId;
-      const windowId = windowOf(tab);
-      const waiting = [...handoffs].some(([other, o]) => o !== h && !o.done && o.error === undefined && windowOf(other) === windowId);
-      if (windowId !== undefined && windowOwners().has(windowId) && !waiting) await toAgentScreen(tab).catch(() => false);
+    // ended, unless something else still shows it to him. Best effort, as
+    // giving back is.
+    for (const { window, shown } of held) {
+      const now = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.windowId ?? window;
+      await release(now, tab, shown).catch(() => {});
     }
     if (h.done) {
       const mine = harnessTabs.get(tab);

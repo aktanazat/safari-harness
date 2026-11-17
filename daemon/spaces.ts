@@ -35,8 +35,8 @@ import { bridge, TimedOut, type RequestOptions } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { toAgentScreen } from "./place.ts";
+import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
+import { agentWindows, toAgentScreen } from "./place.ts";
 import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -48,7 +48,12 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string };
+// shownFor: the calls that brought it onto the user's screen for him (an
+// activate, a handoff), each until its turn or the handoff ends
+// moved: he moved it off the Agents display himself; it stays where he put it
+// home: the id of the Agents display it was last seen on (place.ts)
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; shownFor?: Shown[]; moved?: true; home?: number };
+export type Shown = { owner?: number; task?: string; handoff?: true };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -247,7 +252,10 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       save();
       await identify(space, w.tabId);
       // A window left where Safari put it still works, only on his screen.
-      await toAgentScreen(w.tabId).catch((e: unknown) => note("window not moved to the agents' display", { name, error: e instanceof Error ? e.message : String(e) }));
+      space.home = await toAgentScreen(w.tabId).catch((e: unknown) => {
+        note("window not moved to the agents' display", { name, error: e instanceof Error ? e.message : String(e) });
+        return undefined;
+      });
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();
@@ -298,13 +306,14 @@ function watchExit(owner: number | undefined) {
   exitWatched.add(owner);
   watchOwner(owner, () => {
     exitWatched.delete(owner);
+    unshow(owner, undefined);
     void turnEnded(owner).catch(() => {});
   });
 }
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -679,6 +688,87 @@ async function sweepOnce() {
     const inWindow = await located(s, tabs);
     if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && pagesIn(inWindow, s).length === 0)) await end(s);
   }
+  await homeWindows(tabs).catch((e: unknown) => note("agent windows not checked for the agents' display", { error: e instanceof Error ? e.message : String(e) }));
+}
+
+// An agent window neither shown to the user nor moved by him goes back to
+// the Agents display when it is found off it: one opened while the display
+// was down, one left on his screen by a display that went away and came
+// back under a new id, or one whose showing has ended. One that was on the
+// display, which is the same, has been moved off by him.
+async function homeWindows(tabs: TabInfo[]) {
+  const away = [...spaces.values()].filter((s) => !s.moved && !s.shownFor?.length);
+  if (away.length === 0) return;
+  const { agents, at } = await agentWindows(away.map((s) => s.size));
+  if (agents === undefined) return;
+  let changed = false;
+  for (const [i, s] of away.entries()) {
+    if (at[i] === "agents") {
+      if (s.home !== agents) {
+        s.home = agents;
+        changed = true;
+      }
+      continue;
+    }
+    if (at[i] === undefined) continue;
+    if (s.home === agents) {
+      s.moved = true;
+      changed = true;
+      continue;
+    }
+    const tab = tabs.find((t) => t.windowId === s.window);
+    const home = tab ? await toAgentScreen(tab.id) : undefined;
+    if (home !== undefined) {
+      s.home = home;
+      changed = true;
+    }
+  }
+  if (changed) save();
+}
+
+// The calling agent brings the window onto the user's screen: sweeps leave
+// it there until release, or its turn's end (unshow) for one not a handoff.
+// Answers what release takes.
+export function showing(window: number, handoff = false): Shown {
+  const shown: Shown = { owner: currentOwner(), task: currentTask(), ...(handoff ? { handoff: true } : {}) };
+  const s = [...spaces.values()].find((x) => x.window === window);
+  if (!s) return shown;
+  const had = s.shownFor?.find((x) => x.owner === shown.owner && x.task === shown.task && x.handoff === shown.handoff);
+  if (had && !handoff) return had;
+  s.shownFor = [...(s.shownFor ?? []), shown];
+  save();
+  return shown;
+}
+
+// A showing is over: once nothing else shows the window and he has not
+// moved it, it goes back to the Agents display, through tab. When the
+// display is missing, the next sweep that finds it does.
+export async function release(window: number, tab: number, shown: Shown): Promise<void> {
+  const s = [...spaces.values()].find((x) => x.window === window);
+  if (s) {
+    s.shownFor = s.shownFor?.filter((x) => x !== shown);
+    save();
+    if (s.moved || s.shownFor?.length) return;
+  }
+  const home = await toAgentScreen(tab).catch(() => undefined);
+  if (!s) return;
+  s.home = home;
+  save();
+}
+
+// At a turn's end its showings, but handoffs, are over; task as endTurn
+// reaches tabs (inTurn), undefined for the agent's exit. A window nothing
+// shows any more then goes back at the next sweep.
+export function unshow(owner: number | undefined, task: string | null | undefined): void {
+  let changed = false;
+  for (const s of spaces.values()) {
+    const left = s.shownFor?.filter((x) => x.handoff || !inTurn(x, owner, task));
+    if (!s.shownFor || left?.length === s.shownFor.length) continue;
+    s.shownFor = left;
+    if (!left?.length && !s.moved) delete s.home;
+    changed = true;
+  }
+  if (changed) save();
 }
 
 // When each window's task was first seen ended, for the journal's note of
