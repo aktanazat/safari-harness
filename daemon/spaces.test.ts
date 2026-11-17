@@ -9,7 +9,7 @@ import { changeQueue, files, readQueue } from "./groups.ts";
 import { recent } from "./journal.ts";
 import { tracksOwner } from "./mission.ts";
 import { alive, runAs } from "./owner.ts";
-import { closeManagedWindow, loadSpaces, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { closeManagedWindow, loadSpaces, managedWindows, spaceEnded, spaceNote, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -1618,3 +1618,18 @@ test("a sweep whose Safari quit after it looked never starts Safari again", asyn
   await endTurn(a.pid);
   expect(s.tabs.has(t.id)).toBe(false);
 }, 20_000);
+
+// On 11-16 and 11-17, 31 CLI opens, each an agent of its own, repeated one
+// day-old reason for windows staying plain.
+test("a window's reason for staying plain goes to one agent an hour, not to every agent", () => {
+  const window = (owner: number) => ({ key: "k", id: "w", window: 1, size: { width: 1, height: 1 }, name: `agent ${owner}`, group: "plain", why: "tab groups are off: fixture reason", owner }) as Spaces.Space;
+  const start = Date.now();
+  try {
+    expect(spaceNote(window(990001)).why).toBe("tab groups are off: fixture reason");
+    expect(spaceNote(window(990002)).why).toBeUndefined();
+    setSystemTime(new Date(start + 61 * 60_000));
+    expect(spaceNote(window(990003)).why).toBe("tab groups are off: fixture reason");
+  } finally {
+    setSystemTime();
+  }
+});

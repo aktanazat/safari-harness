@@ -546,11 +546,13 @@ export function slack(kit: SiteKit) {
       return (await readStore(kit)).teams;
     },
 
-    // teamId may also be the workspace's domain; without it, the workspace
-    // the owner used last, or the first stored one.
+    // teamId may also be the workspace's domain or its name, case aside
+    // (getClient("openfunnel") missed the "OpenFunnel" workspace, 11-17);
+    // without it, the workspace the owner used last, or the first stored one.
     async getClient(teamId?: string) {
       const { teams } = await readStore(kit);
-      const team = teamId ? teams.find((t) => t.teamId === teamId || t.domain === teamId) : (teams.find((t) => t.lastActive) ?? teams[0]);
+      const want = teamId?.toLowerCase();
+      const team = teamId ? teams.find((t) => t.teamId === teamId || t.domain.toLowerCase() === want) ?? teams.find((t) => t.name.toLowerCase() === want) : (teams.find((t) => t.lastActive) ?? teams[0]);
       if (!team) throw new Error(`no workspace "${teamId}" in Safari; listWorkspaces() has ${teams.map((t) => `${t.name} (${t.teamId})`).join(", ")}`);
       if (!team.signedIn) throw new NotSignedIn(SITE, `workspace ${team.name} needs a fresh sign-in`);
       return client(kit, team);
