@@ -166,8 +166,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   cleanup open. A handoff tab whose agent exits before he finishes is his:
   the harness lets go of it (`tab released` in the journal) and never
   closes it.
-- Ordinary idle cleanup is unchanged: eligible unused pages close after
-  20 minutes. Existing protections for changed pages, unsent forms,
+- Idle cleanup is strict: eligible unused pages close after 2 minutes, and
+  each agent session keeps at most 4 tabs, a fifth closing its least
+  recently used eligible one. Existing protections for changed pages, unsent forms,
   site-global tabs, kept pages, pending handoffs and the front tab still
   apply to idle cleanup. A change, filled field, site-global tab or front
   position alone does not protect a disposable agent tab at completion
@@ -843,8 +844,8 @@ things unless its saved task explicitly says to.
   page the user still needs left open.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
-  - "the harness closed it <t> ago, as its agent's turn or task ended or
-    after 2 minutes unused".
+  - "the harness closed it <t> ago, as its agent's turn or task ended,
+    after it sat unused, or past its agent's limit of open tabs".
   - "it closed with its window <t> ago".
   - "the user or its own page closed it <t> ago".
   - "Safari has had no tab N in the <t> since the extension started": it
@@ -1248,7 +1249,7 @@ or one after a read, can still match text already shown.
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
 each with: `extract` (the default), `snapshot`, `eval` with `expression`,
 or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
-page is read in a background tab in your window, 6 at a time
+page is read in a background tab in your window, 4 at a time
 (`concurrency`, fewer if you ask): one tab for each page read at once,
 which loads the next page once its page is read, and closes when map
 answers. A load that never began opens the page in a new tab, so a page

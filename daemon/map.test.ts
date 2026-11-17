@@ -262,15 +262,15 @@ async function batches(args: Record<string, unknown>): Promise<number[]> {
   }
 }
 
-test("map reads as many pages at once as asked, six when not asked", async () => {
-  expect(await batches({ urls: urls(10) })).toEqual([6, 4]);
+test("map reads as many pages at once as asked, four when not asked", async () => {
+  expect(await batches({ urls: urls(10) })).toEqual([4, 4, 2]);
   expect(await batches({ urls: urls(5), concurrency: 2 })).toEqual([2, 2, 1]);
 });
 
 // Each page at once is a tab in the user's Safari and a page's load on his
 // machine; asking for more does not get more.
-test("map never reads more than six pages at once", async () => {
-  expect(await batches({ urls: urls(10), concurrency: 9 })).toEqual([6, 4]);
+test("map never reads more than four pages at once, its agent's tab limit", async () => {
+  expect(await batches({ urls: urls(10), concurrency: 9 })).toEqual([4, 4, 2]);
 });
 
 test("a page that fails is reported in its place, and the others are still read", async () => {

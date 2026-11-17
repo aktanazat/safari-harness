@@ -40,7 +40,7 @@ function resetOf(header: (name: string) => string | null | undefined): number | 
 }
 
 // The extension's answer for a tab that no longer exists (background.js):
-// the owner closed it, or it sat unused for 20 minutes (tools.ts).
+// the owner closed it, or it sat unused (IDLE_MS in tools.ts).
 const GONE = /that tab is gone/;
 // Its answer for a page that answered nothing for 5 s: a dialog or a stuck
 // load holds it, or Safari, short of memory, passed nothing on for that long

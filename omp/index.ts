@@ -131,7 +131,7 @@ const RELEASE_MS = 30_000;
 
 // A release the daemon missed as it restarted (a deploy) goes again once
 // it answers: before 11-06 it was dropped, and the turn's pages stayed
-// until the 20-minute idle close (AuditSafariHarness-10). Once the daemon
+// until the idle close (AuditSafariHarness-10). Once the daemon
 // has answered, a print sheet a page left on a window the turn closed
 // (sheets.ts) is cancelled from here, where the terminal's Accessibility
 // permission is; a tab that would not close may be one that sheet held.

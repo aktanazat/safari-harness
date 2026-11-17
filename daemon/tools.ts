@@ -165,8 +165,8 @@ export async function openTab(url: string, background = false, group?: string, o
 const SEARCH_GROUP = "web search";
 
 // A tab the daemon holds for a web search engine (search-tabs.ts), opened
-// at url in its own window: no agent's turn end or exit closes it, only 20
-// minutes unused (sweepOnce).
+// at url in its own window: no agent's turn end or exit closes it, only
+// idle cleanup (IDLE_MS, sweepOnce).
 export async function openSearchTab(url: string): Promise<number> {
   return runAs(undefined, async () => {
     const t = await openTab(url, true, SEARCH_GROUP);
@@ -543,15 +543,21 @@ function own(tab: number, owner: number | undefined, task = currentTask()) {
 }
 
 async function capTabs(owner: number, task: string | undefined, opened: number): Promise<void> {
-  const mine = [...harnessTabs].filter(([tab, t]) => tab !== opened && matchesTask(t, owner, task));
+  const mine = [...harnessTabs].filter(([tab, t]) => tab !== opened && t.owner === owner && t.task === task);
   const extra = mine.length + 1 - AGENT_TAB_CAP;
   if (extra <= 0) return;
-  const closable = mine.filter(([tab, t]) => {
-    const handoff = handoffs.get(tab);
-    return !t.closing && !t.calls?.size && !t.handoff && !(handoff && !handoff.done && handoff.error === undefined);
-  }).sort(([, a], [, b]) => a.used - b.used).slice(0, extra);
-  await Promise.all(closable.map(([tab, t]) => closeTrackedTab(tab, t)));
+  const now = Date.now();
+  const closable = mine.filter(([tab, t]) => idleClosable(tab, t, now) && !loading.has(tab) && !reconnectedSince(t))
+    .sort(([, a], [, b]) => a.used - b.used).slice(0, extra);
+  await Promise.all(closable.map(([tab, t]) => {
+    const closing = closeTrackedTab(tab, t, undefined, "past its agent's limit of open tabs");
+    capClosing.set(tab, closing);
+    return closing.finally(() => capClosing.delete(tab));
+  }));
 }
+
+// A tab capTabs is closing, which a call naming it waits out (callTool).
+const capClosing = new Map<number, Promise<void>>();
 
 
 function remember(tab: number, owner: number | undefined, used = Date.now(), task?: string) {
@@ -789,12 +795,10 @@ async function sweepOnce() {
   const now = Date.now();
   const shown = new Map(listed.map((t) => [t.id, t]));
   const due = known.filter(([tab, t]) => {
-    if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at) || (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task ?? null))?.pending.size)) return false;
-    const handoff = handoffs.get(tab);
-    if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
+    if (t.owner !== undefined && activeCalls.get(taskKey(t.owner, t.task ?? null))?.pending.size) return false;
     const exited = t.orphan && t.owner !== undefined && !alive(t.owner);
-    const disposable = t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined));
-    return t.done || exited || (disposable && now - t.used >= IDLE_MS);
+    if (t.done || exited) return busyFree(tab, t, now);
+    return idleClosable(tab, t, now) && now - t.used >= IDLE_MS;
   });
   if (due.length === 0) return;
   await Promise.all(due.map(async ([tab, t]) => {
@@ -809,7 +813,22 @@ async function sweepOnce() {
   await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
 }
 
-async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Promise<void> {
+// Whether a close may take tab now: no call or close on it, its retry not
+// due, no handoff open on it.
+function busyFree(tab: number, t: HarnessTab, now: number): boolean {
+  if (t.closing || t.calls?.size || (t.retry !== undefined && now < t.retry.at)) return false;
+  const handoff = handoffs.get(tab);
+  return !(t.handoff || (handoff && !handoff.done && handoff.error === undefined));
+}
+
+// Whether an idle close or the tab limit may take tab: as busyFree, and its
+// page is one a later call can open again (no site-global tab, no address
+// that cannot be kept).
+function idleClosable(tab: number, t: HarnessTab, now: number): boolean {
+  return busyFree(tab, t, now) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
+}
+
+async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reason?: string): Promise<void> {
   if (harnessTabs.get(tab) !== t || t.closing || reconnectedSince(t)) return;
   t.closing = true;
   const link = bridge.extensionInfo?.connectedAt;
@@ -829,7 +848,7 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Pro
       if (res?.protected === "form") t.acted = true;
       closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
     } else {
-      const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : t.used > Date.now() - IDLE_MS ? "past its agent's limit of open tabs" : "after 2 minutes unused";
+      const why = reason ?? (t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 2 minutes unused");
       recordClosed(tab, why, resumeAddress(shown?.url ?? t.url), t.owner, undefined, shown?.title);
       forget(tab);
       note("tab closed", { tab, owner: t.owner ?? null, why });
@@ -3793,7 +3812,7 @@ export const TOOLS: Record<string, Tool> = {
       query: { type: "string", description: "only lines containing this" },
       maxBytes: { type: "number" },
       as: { type: "string", enum: ["text", "table", "images"] },
-      concurrency: { type: "number", description: "default 6 (max)" },
+      concurrency: { type: "number", description: "default 4 (max), the agent's tab limit" },
       save: { description: "true or an absolute folder: a file per page" },
       follow: { type: "object", description: `links matching CSS or /regex/, max ${MAP_MAX_URLS}` },
       fresh: { type: "boolean", description: "ignore this task's reads of the last 10 min" },
@@ -4383,6 +4402,11 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   }
   if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) {
     await sweepingTabs;
+    ended = Date.now() - arrived;
+  }
+  const capped = capClosing.get(followTab(Number(args.tab)));
+  if (capped) {
+    await capped.catch(() => {});
     ended = Date.now() - arrived;
   }
   const settled = Promise.withResolvers<void>();

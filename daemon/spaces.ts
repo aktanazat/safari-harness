@@ -453,7 +453,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const s = await runAs(undefined, () => spaceWindow("tab group cleanup", undefined, false, quiet));
       s.group = "plain";
       s.why = "a window to delete tab groups from";
-      // In use while the keeper deletes from it: unused 20 min, it ends.
+      // In use while the keeper deletes from it: unused IDLE_MS, it ends.
       s.used = Date.now();
       save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };

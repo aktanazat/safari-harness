@@ -2097,7 +2097,7 @@ async function goneText(tabId) {
     return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   };
   const why = !Number.isSafeInteger(tabId) ? ""
-    : closed?.how === "harness" ? `: the harness closed it ${ago(closed.at)} ago, as its agent's turn or task ended or after 20 minutes unused; to hold a tab of yours past your turn, open it with keep`
+    : closed?.how === "harness" ? `: the harness closed it ${ago(closed.at)} ago, as its agent's turn or task ended, after it sat unused, or past its agent's limit of open tabs; to hold a tab of yours past your turn, open it with keep`
     : closed?.how === "window" ? `: it closed with its window ${ago(closed.at)} ago`
     : closed ? `: the user or its own page closed it ${ago(closed.at)} ago`
     : `: Safari has had no tab ${tabId} in the ${ago(since)} since the extension started, so it closed before then (Safari quit or crashed, or the extension reloaded), or that id was never a tab's`;

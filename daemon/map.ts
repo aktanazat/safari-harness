@@ -21,8 +21,10 @@ import { checked, keep, recall } from "./reads.ts";
 import { cutFenced, defused } from "./injection.ts";
 
 export const MAP_MAX_URLS = 20;
-const AT_ONCE = 6;
-const MAX_AT_ONCE = 6;
+// No more at once than an agent's tab limit (AGENT_TAB_CAP in tools.ts),
+// which would close map's own tabs mid-read.
+const AT_ONCE = 4;
+const MAX_AT_ONCE = 4;
 // omp's MCP client ends a call at 60 s, and on 09-30 a map of six pages
 // whose eval ran 31.5 s each, three at once, lost all six there
 // (01a0f031). One read alone may take 32 s (eval's 30, and the 2 more the

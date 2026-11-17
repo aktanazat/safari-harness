@@ -5,7 +5,7 @@
 // finds the agent), which also ends when that agent exits. Each call
 // names the process that made it (callFor in rpc.ts), so the tabs its
 // code opens are the agent's above that process: they open in that
-// agent's window and close as its turn ends, or after 20 minutes unused.
+// agent's window and close as its turn ends, or once unused (IDLE_MS).
 // It answers on a unix socket only its user can open, and ends after half
 // an hour unused, closing the tabs it still has but one kept for the
 // user. It is started from the caller, so it has the caller's permissions
