@@ -103,14 +103,15 @@ class Clock {
 // see as window there; a world made before this load of the extension keeps
 // messaging that reaches no one (live false). ran lists the requests its
 // copy of content.js ran, and does answers each; a held document (a dialog
-// open on it) answers nothing, and a stuck one (a frame stuck loading) runs
-// no script.
+// open on it) answers nothing, a stuck one (a frame stuck loading) runs
+// no script, and a slow one (a Safari in a storm) runs each slowMs late.
 class Doc {
   readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] }, __safariHarnessFrame: crypto.randomUUID().replaceAll("-", ""), innerWidth: 800, innerHeight: 600 };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
   stuck = false;
+  slowMs = 0;
   // Safari lets the extension put no script in a blank tab, and says so.
   shut = false;
   // What Safari gives as the tab's title while it shows this document.
@@ -330,6 +331,11 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
           if (!doc || (doc.shut && target.allFrames)) continue;
           if (doc.shut) throw new Error(refused);
           if (doc.stuck) return never();
+          if (doc.slowMs > 0) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            clock.setTimeout(resolve, doc.slowMs);
+            await promise;
+          }
           if (files) {
             copyIn(tab, doc, true, frameId);
             results.push({ frameId, result: null });
@@ -1494,6 +1500,26 @@ test("a reloaded extension tells the daemon each tab's new id while Safari refus
   await b.reloaded();
   await b.clock.advance(0);
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: tab.id } }]);
+});
+
+// 11-16 20:06: a reload while Safari answered slowly mapped 21 owned tabs;
+// adopt gave up on the rest, whose marks its own late script then wrote
+// over, and 33 s on the daemon let 45 of its agents' tabs go for good.
+test("a page that answers the reload's id read late still gets its new id to the daemon", async () => {
+  const b = await start();
+  const quick = b.openFromBefore("https://example.com/", 3);
+  const slow = b.openFromBefore("https://example.org/", 4);
+  slow.doc.slowMs = 5000;
+  await b.reloaded();
+  await b.clock.advance(3000);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: quick.id } }]);
+  await b.clock.advance(3000);
+  expect(b.told.filter((m) => m.kind === "renumbered").at(-1)).toEqual({ op: "tab", kind: "renumbered", tabs: { 4: slow.id } });
+  b.told.length = 0;
+  b.drop();
+  b.reconnect();
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: quick.id, 4: slow.id } }]);
 });
 
 // 09-29: a closing socket's close event came after the extension had

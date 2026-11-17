@@ -159,6 +159,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   Restart recovery also matches the registered window's task, so identical
   URLs in different helpers cannot exchange ownership.
 - Pages explicitly kept for the user and pending handoffs stay protected.
+  For 5 minutes after the extension's page starts again (a reload, or
+  Safari starting again), an agent's tab Safari does not list is held, not
+  let go: a late page's new id, or a window Safari restores, can still be
+  matched to it, and it closes with its agent as before.
   A protected or foreign tab keeps its window intact; cleanup does not
   move it to make a group deletable. Use `keep` for a page he still needs,
   not to preserve an agent's finished work.
@@ -3446,18 +3450,25 @@ s`. Calls that meet it meanwhile share that reload. Timeouts in the first
 stuck: it is still finding Safari's tabs then.
 
 An error starting `extension stuck:` means the extension was already
-reloaded twice in ten minutes, or did not come back within 30 s: try once
-more a minute later, then tell the user Safari is not answering. Do not
-run `doctor`, `guide`, or `status` first, and never loop on them.
+reloaded twice in ten minutes, or did not come back within 30 s, or
+Safari itself is slow: try once more a minute later, then tell the user
+Safari is not answering. Do not run `doctor`, `guide`, or `status`
+first, and never loop on them.
 
-The daemon also has the extension reload itself once it has answered
-nothing for a minute while two requests in a row timed out (`reload` in
-`safari status`, with why); those reloads count toward the same two in
-ten minutes. `safari extension reload` does it by hand: it takes a second
-or two and asks for no password. Calls in flight fail and can be tried
-again; tab ids agents hold keep working. Turn the extension off and on in
-Safari Settings only when `safari doctor` still fails its round trip
-after a reload; that asks for the password.
+The daemon also has the extension reload itself once one kind of request
+has gone a minute unanswered, two in a row (`reload` in `safari status`,
+with why); those reloads count toward the same two in ten minutes. No
+reload is asked while the extension answers Safari's other tab and window
+calls since that kind got stuck (`safari slow` in the journal): Safari,
+not the extension, is slow then (a page or a sheet holds it, or too many
+tabs are open), and on 11-16 such reloads took the link away for 7 to 10
+minutes. One reload is asked per connection at most. `safari extension
+reload` does it by hand: it takes a second or two and asks for no
+password. Calls in flight fail and can be tried again; tab ids agents
+hold keep working, and a tab whose page answers late keeps its agent.
+Turn the extension off and on in Safari Settings only when `safari
+doctor` still fails its round trip after a reload; that asks for the
+password.
 
 Safari can stop doing what the extension asks while the extension's page
 stays connected (11-06): a reload then goes unheard too, and its socket
