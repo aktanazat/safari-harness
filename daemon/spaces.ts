@@ -37,7 +37,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, linkDropped, windowPageClosed, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -63,7 +63,7 @@ const closing = new Map<string, Space>();
 // and the extension's connect in tools.ts). Every 5 s, it was 12 lists a
 // minute while an agent ran (10-21 audit).
 const SWEEP_MS = 60_000;
-const IDLE_MS = 20 * 60_000;
+const IDLE_MS = 2 * 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -470,7 +470,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const s = await runAs(undefined, () => spaceWindow("tab group cleanup", undefined, false, quiet));
       s.group = "plain";
       s.why = "a window to delete tab groups from";
-      // In use while the keeper deletes from it: unused 20 min, it ends.
+      // In use while the keeper deletes from it: unused IDLE_MS, it ends.
       s.used = Date.now();
       save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };
@@ -490,8 +490,12 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (a.cancelled === true && unclosed.delete(s)) void sweep().catch(() => {});
       return { ok: true };
     }
+    // The size of each agent window, for a caller cancelling a client
+    // certificate prompt on agent windows alone (sheets.ts).
+    case "windows":
+      return { windows: [...spaces.values(), ...closing.values()].map((s) => s.size) };
   }
-  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, or looked");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, looked, or windows");
 }
 
 // A print sheet a frame of a page raised stays on its window once the
@@ -556,6 +560,8 @@ async function end(space: Space) {
   const failed = unclosed.get(space);
   if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
+  // a Safari that started again may not have restored a window from before
+  if (inWindow.length === 0 && stillFinding() && (space.used ?? 0) < (bridge.extensionInfo?.connectedAt ?? 0)) return;
   if (!space.done || (taskTracked?.(space.owner) !== false && pagesIn(inWindow, space).length > 0)) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
@@ -568,7 +574,7 @@ async function end(space: Space) {
       const tracked = taskTracked?.(space.owner);
       let why = "as its agent's turn ended";
       if (tracked === false) why = "as its agent's task ended";
-      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 20 minutes unused";
+      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 2 minutes unused";
       else if (taskTracked && tracked === undefined) why = "as no task record names its agent";
       windowPageClosed(page.id, `with its window, ${why}`, space.owner);
     } catch (e) {
@@ -753,9 +759,10 @@ export function spaceEnded(id: string): boolean {
 
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
+// A window that ended still holds its agent's tabs until they close.
 export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task"> & { family?: true }> {
   const owners = new Map<number, Pick<Space, "owner" | "task"> & { family?: true }>();
-  const byId = new Map([...spaces.values()].map((space) => [space.id, space]));
+  const byId = new Map([...ended, ...closing.values(), ...spaces.values()].map((space) => [space.id, space]));
   for (const t of tabs) {
     const p = pageAt(t);
     const space = p === undefined ? undefined : byId.get(p.id);

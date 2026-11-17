@@ -33,3 +33,24 @@ export function cancelLeftSheets(): Promise<void> {
   if (process.env.SAFARI_HARNESS_REMOTE) return Promise.resolve();
   return cancelSheets((op, args) => quietly(() => rpc("space", { ...args, op })), startHelper);
 }
+
+// A client certificate prompt ("The website … requires a client
+// certificate") holds all of Safari: on 11-16 one from an agent's tab on
+// www.press.bmwgroup.com left tabs.open unanswered, the extension's reload
+// never connected again, and every agent's call failed for ten minutes,
+// until the prompt was cancelled and the extension connected at once. No
+// agent's page may present his certificate, so a caller whose call met a
+// stuck or missing extension cancels such a prompt on the agents' windows
+// (call.ts); one on a window of his stays his to answer.
+export async function cancelCertificatePrompts(): Promise<string[]> {
+  if (process.env.SAFARI_HARNESS_REMOTE) return [];
+  const { windows } = (await quietly(() => rpc("space", { op: "windows" }))) as { windows: { width: number; height: number }[] };
+  if (windows.length === 0) return [];
+  const { helper, stop } = startHelper();
+  try {
+    const a = await helper("cancelCertificate", { windows });
+    return a.ok && Array.isArray(a.cancelled) ? a.cancelled.map(String) : [];
+  } finally {
+    stop();
+  }
+}

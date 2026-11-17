@@ -941,7 +941,7 @@
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
-        if (style.display === "none" || transparent(el, style)) return;
+        if (style.display === "none" || (transparent(el, style) && !standIn(el))) return;
         if (style.position === "fixed" && (el.getClientRects().length === 0 || putAway(el.getBoundingClientRect(), el.ownerDocument.defaultView || window))) return;
       }
       // A child of a hidden element can show itself with visibility: visible
@@ -1160,7 +1160,7 @@
         i++;
         if (c.group) { render(c, depth + 1); continue; }
         if (!c.actionable && !c.name && (c.role === "form" || c.role === "region")) { render(c, depth); continue; }
-        if (sameAsField(c)) { render(c, depth); continue; }
+        if (sameAsField(c) || (c.role === "label" && !c.name && !hittable(c.el))) { render(c, depth); continue; }
         if (!c.actionable && c.role === "img" && node.actionable) continue;
         if (c.actionable && c.fromPic && hrefOf(c) && textHrefs.has(hrefOf(c))) continue;
         const ek = elementKids(c);
@@ -1367,6 +1367,32 @@
     return el.getClientRects().length > 0 && isVisible(el);
   }
 
+  // A box on the page a person can hit: a 0-by-0 label still has a client
+  // rect, so shown alone passes it.
+  function hittable(el) {
+    return shown(el) && [...el.getClientRects()].some((r) => r.width >= 1 && r.height >= 1);
+  }
+
+  // The box that draws a checkbox or radio no one sees and takes its click:
+  // LinkedIn's notification settings keep each switch's input transparent
+  // and 0 by 0, its label empty, and toggle it from the 52-by-32 box that
+  // holds them. On 11-16 its snapshots printed 25 empty labels and no
+  // switch, and a click on a label found no box. The first ancestor with a
+  // box counts when the hand starts there (not a row's hand it inherits),
+  // it holds no words (a row's title), and it holds no other control. An
+  // input refused for any reason but being unseen (disabled, inert) has
+  // none, so its refusal stands.
+  const STAND_IN_CONTROLS = "input, select, textarea, button, a[href], [role=button], [role=link], [role=switch], [role=checkbox], [role=radio]";
+  function standIn(el) {
+    if (!el.matches("input[type=checkbox], input[type=radio]") || hittable(el) || [...el.labels].some(hittable) || clickBlocked(el)?.reason !== "hidden") return null;
+    for (let box = parentOf(el), up = 0; box && up < 3; box = parentOf(box), up++) {
+      if (!hittable(box)) continue;
+      if (!handStarts(box, (box.ownerDocument.defaultView || window).getComputedStyle(box), false)) return null;
+      return !box.textContent.trim() && [...box.querySelectorAll(STAND_IN_CONTROLS)].every((c) => c === el) ? box : null;
+    }
+    return null;
+  }
+
   // The dialog open over the page: the last shown, when several are.
   function openDialog() {
     return deepQueryAll(DIALOG_BOXES).filter(shown).at(-1) ?? null;
@@ -1569,7 +1595,7 @@
 
   function click(ref, el = resolve(ref, true)) {
     if (!el) return { ...missing(ref), failure: UNSENT };
-    return clickElement(el);
+    return clickElement(standIn(el) ?? el);
   }
 
   // Only a refusal before the first event may be tried again. Scroll-driven
@@ -1597,7 +1623,7 @@
   function hiddenClick(el, cause, node = el) {
     // A styled checkbox's hidden input is not its pointer target. Name the
     // associated label, but leave its hit-test to a separate, explicit click.
-    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => shown(label) && !clickBlocked(label)) : [];
+    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => hittable(label) && !clickBlocked(label)) : [];
     if (labels.length === 1) return { error: `that control is not visible (${cause}); click its label [${ensureRef(labels[0])}] instead`, reason: "label", next: "click the visible label instead" };
     // A snapshot keeps a transparent control that is fading in. Clicking it
     // must still wait for ink; Safari can freeze that fade in a hidden tab.
@@ -1776,7 +1802,8 @@
         const hit = deepPoint(x, y, el.ownerDocument);
         const on = hit && (insideTarget(el, hit) ? hit : ownControl(el, hit) ? el : null);
         if (on) {
-          const stopped = clickBlocked(on);
+          // the box's own transparent input laid over it takes the click
+          const stopped = clickBlocked(standIn(on) === el ? el : on);
           if (!stopped) {
             const coveredFrame = frameCover(el.ownerDocument, x, y, scroll);
             if (coveredFrame) return coveredFrame;
@@ -1800,7 +1827,7 @@
     let checks = 0;
     const clicked = fireClick(point.hit, point.x, point.y, () => {
       checks += 1;
-      const blocked = clickBlocked(el) || clickBlocked(point.hit);
+      const blocked = clickBlocked(el) || (standIn(point.hit) === el ? null : clickBlocked(point.hit));
       if (blocked) return blocked;
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
       if (!hit || !(insideTarget(el, hit) || ownControl(el, hit))) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
@@ -1815,7 +1842,7 @@
     const target = resolve(ref, kind === "click");
     const guard = kind === "click" ? expectedClick(target, opts, prior) : null;
     if (guard) return guard;
-    const el = kind === "select" ? fieldOf(target) : target;
+    const el = kind === "select" ? fieldOf(target) : kind === "click" && target ? standIn(target) ?? target : target;
     if (!el) return missing(ref);
     const point = clickPoint(el);
     if (point.error) return point.recovery === "present" ? refused(el, point) : point;

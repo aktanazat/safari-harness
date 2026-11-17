@@ -81,9 +81,19 @@ export async function readPlaybookResult(call: Call, tab: unknown, selector: str
   return text.replace(/\s+/g, " ").trim();
 }
 
-function inputApplied(hash: unknown, applied: AppliedInput, vars: Record<string, string>): boolean {
+// The page shows the run's input where the learned run showed it: the
+// decoded fragment equals the prefix plus the value, or the query key holds
+// exactly that one value.
+function inputApplied(state: { hash?: unknown; search?: unknown }, applied: AppliedInput, vars: Record<string, string>): boolean {
   const value = vars[applied.param];
-  if (typeof value !== "string" || typeof hash !== "string" || (hash !== "" && !hash.startsWith("#"))) throw new Error("the applied-input check could not read the current input state");
+  const { hash, search } = state;
+  if (typeof value !== "string") throw new Error("the applied-input check could not read the current input state");
+  if (applied.in === "query") {
+    if (typeof search !== "string" || (search !== "" && !search.startsWith("?"))) throw new Error("the applied-input check could not read the current input state");
+    const values = new URLSearchParams(search).getAll(applied.key);
+    return values.length === 1 && values[0] === value;
+  }
+  if (typeof hash !== "string" || (hash !== "" && !hash.startsWith("#"))) throw new Error("the applied-input check could not read the current input state");
   let decoded: string;
   try { decoded = decodeURIComponent(hash.slice(1)); }
   catch { throw new Error("the applied-input state is not a valid encoded fragment"); }
@@ -95,11 +105,11 @@ function inputApplied(hash: unknown, applied: AppliedInput, vars: Record<string,
 export async function waitForAppliedInput(call: Call, tab: unknown, applied: AppliedInput, vars: Record<string, string>, origin: string, clock: Clock = REAL): Promise<void> {
   const deadline = clock.now() + FIND_MS;
   for (;;) {
-    const answer = await call("eval", { tab, expression: "({origin: location.origin, hash: location.hash})" });
+    const answer = await call("eval", { tab, expression: `({origin: location.origin, ${applied.in === "query" ? "search: location.search" : "hash: location.hash"}})` });
     wallOf(answer, tab);
     const result = fields(fields(answer).result);
     if (result.origin !== origin) throw new Error("the page left the learned origin before the input was verified");
-    if (inputApplied(result.hash, applied, vars)) return;
+    if (inputApplied(result, applied, vars)) return;
     if (clock.now() >= deadline) throw new Error("the new input was not applied; no result was returned and no action was retried");
     await clock.sleep(POLL_MS);
   }
@@ -140,7 +150,7 @@ export async function readPlaybookOutput(call: Call, tab: unknown, output: Playb
         if (values.every(([, text]) => !text)) return {error: "an output row has no visible text"};
         rows.push(Object.fromEntries(values));
       }
-      return {rows, origin: location.origin, hash: ${context.applied ? "location.hash" : "null"}};
+      return {rows, origin: location.origin, hash: ${context.applied ? "location.hash" : "null"}, search: ${context.applied ? "location.search" : "null"}};
     } catch {
       return {error: "the output contains an invalid or unusable CSS selector"};
     }
@@ -149,7 +159,7 @@ export async function readPlaybookOutput(call: Call, tab: unknown, output: Playb
   const result = fields(fields(answer).result);
   if (typeof result.error === "string") throw new Error(result.error);
   if (context.origin !== undefined && result.origin !== context.origin) throw new Error("the output page left the learned origin");
-  if (context.applied && !inputApplied(result.hash, context.applied, context.vars ?? {})) throw new Error("the page no longer shows the supplied input; no result was returned");
+  if (context.applied && !inputApplied(result, context.applied, context.vars ?? {})) throw new Error("the page no longer shows the supplied input; no result was returned");
   if (!Array.isArray(result.rows) || (!result.rows.length && !context.allowEmpty) || result.rows.length > 200) throw new Error("the output did not return between 1 and 200 typed rows");
   const names = Object.keys(contract.fields);
   let size = 0;

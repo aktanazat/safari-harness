@@ -5,13 +5,10 @@ import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemo
 import { setSessionTask } from "../daemon/session-task.ts";
 import { cancelLeftSheets } from "../daemon/sheets.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
-import { asksOf, decide, type TerminalUi } from "./approvals.ts";
 
 type AgentEnd = { willContinue?: boolean };
 type Context = {
   mode: string;
-  hasUI?: boolean;
-  ui?: TerminalUi;
   agent?: { kind: "main" | "sub"; id: string; parentId?: string };
   sessionManager?: { getSessionId(): string };
 };
@@ -32,10 +29,6 @@ type ExtensionApi = {
 // lead's session of that agent's latest call; by helper session, its lead's.
 const leadOfAgent = new Map<string, string>();
 const leadOfHelper = new Map<string, string>();
-// By lead session, the mode its own agent last ran in: a print-mode lead
-// is a headless run (a scheduled routine) with nobody at the Mac, so
-// neither it nor its helpers wait for the approval popup.
-const leadMode = new Map<string, string>();
 
 function taskOf(ctx: Context): string | undefined {
   const session = ctx.sessionManager?.getSessionId();
@@ -71,14 +64,6 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     if (refused !== undefined) return { block: true, reason: refused };
     const task = taskOf(ctx);
     if (task === undefined) return;
-    const [own, , helping] = JSON.parse(task) as [string, string, string?];
-    const lead = helping ?? own;
-    if (ctx.agent?.kind === "main") leadMode.set(lead, ctx.mode);
-    if (leadMode.get(lead) !== "print") {
-      const asks = await asksOf(event.toolName, event.input);
-      const reason = asks.length ? await decide(asks, lead, ctx.agent?.kind === "main" && ctx.hasUI ? ctx.ui : undefined) : undefined;
-      if (reason !== undefined) return { block: true, reason };
-    }
     if (event.toolName.startsWith("mcp__safari_")) {
       // Nested write xd:// dispatches emit this same canonical tool event.
       // omp's eval bridge names its calls js-<tool>-<uuid>, and their answers
@@ -314,7 +299,7 @@ const RELEASE_MS = 30_000;
 
 // A release the daemon missed as it restarted (a deploy) goes again once
 // it answers: before 11-06 it was dropped, and the turn's pages stayed
-// until the 20-minute idle close (AuditSafariHarness-10). Once the daemon
+// until the idle close (AuditSafariHarness-10). Once the daemon
 // has answered, a print sheet a page left on a window the turn closed
 // (sheets.ts) is cancelled from here, where the terminal's Accessibility
 // permission is; a tab that would not close may be one that sheet held.
@@ -323,7 +308,7 @@ async function release(pi: ExtensionApi, task?: string): Promise<void> {
   const base = daemonHttp();
   const warn = (e: unknown) => {
     const timedOut = e instanceof Error && e.name === "TimeoutError";
-    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 20 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
+    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 2 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
   };
   try {
     let answer = await releaseOnce(base, admission);

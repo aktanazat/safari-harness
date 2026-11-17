@@ -165,6 +165,14 @@ test("window --size sets both sides, open --id prints the id alone, and open --t
   expect(calls).toEqual([]);
 });
 
+// On 11-16 two opens in a script returned one tab's id twice, the second
+// open having reused the first's tab, and --id kept the note that said so.
+test("open --id prints the id alone on stdout and a reused tab's note on stderr", async () => {
+  const note = "loaded in your tab 13608 on shop.example, in place of https://shop.example/a; new: true opens a second tab";
+  answers = { open: { ok: true, value: { id: 13608, url: "https://shop.example/b", note } } };
+  expect(await safari(["open", "https://shop.example/b", "--id"])).toEqual({ out: "13608", err: `note: ${note}`, code: 0 });
+});
+
 test("upload sends files named relative to where it runs as whole paths, given bare or with --paths", async () => {
   calls.length = 0;
   answers = {};

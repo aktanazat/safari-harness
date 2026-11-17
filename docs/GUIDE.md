@@ -22,8 +22,9 @@ Tabs
   has gone unused for 8 hours, and the group goes with its pages. `keep`
   only a page he still needs; do not keep a finished result unless he
   asked to leave it open.
-- Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
-  even if you clicked them. Unsent forms and his front tab stay during idle
+- Idle cleanup is strict: unused pages close after 2 minutes, even if you
+  clicked them, and each agent session keeps at most 4 tabs: a fifth closes
+  its least recently used one. Unsent forms and his front tab stay during idle
   cleanup. At completion or owner exit, only pages explicitly kept for him
   and pending handoffs keep those agent tabs protected.
 - For five minutes after a recoverable tab closes, its safe address is
@@ -56,8 +57,9 @@ Turns
   while `max` wants more. Never a loop of `goto`, nor a bash loop of `map`
   or `eval`. A page your task read in the last 10 min comes from that
   read; `fresh: true` loads it again. Map the `urls` an answer gives back
-  next. Files by address: one `download {urls, out: folder}`; `open` of
-  a file's address (a PDF, a CSV) answers with its text or saved path.
+  next. Files by address: one `download {urls, out: folder}`; `open` of a
+  file Safari downloads (a CSV) answers with its text or saved path. A PDF
+  Safari shows opens as a page with no text: `safari pdf read URL` reads it.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "<words to
@@ -76,9 +78,13 @@ Turns
   `safari guide wait`.
 - Read the whole output. Narrow a read with `query` (plain text; `a|b` is
   either) or `root`, never `| head`, `| grep`, or `sed`, which can hide a
-  failed call. The tab id alone: `safari open --id URL`. A CLI step whose
-  answer you do not need takes `-q`: silent when it works, one line and
-  exit 1 when it misses. Never `>/dev/null`, which hides the miss too.
+  failed call. `query` keeps only the lines that hold its text, so a table
+  row's value on a line of its own drops out: read a table with `as:
+  "table"` (CLI `--as table`, with `--selector` to pick it), whose rows
+  keep label and value together. The tab id alone: `safari open --id
+  URL`. A CLI step whose answer you do not need takes `-q`: silent when it
+  works, one line and exit 1 when it misses. Never `>/dev/null`, which
+  hides the miss too.
 - A read past its limit (`extract` and each `map` page: 20,000
   characters) shows its start, the whole length, and the file that holds
   all of it: grep or read that file, or pass `maxBytes`.
@@ -88,6 +94,8 @@ Turns
   or submits.
 - A link reading `=[15]` goes where line `[15]` goes; it is its own
   element: click its own ref.
+- A ref is the number alone: `safari click 15 --tab N`. In zsh an
+  unquoted `[15]` is a file pattern and the command never runs.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
 - A signed-in page by URL: `safari read URL --expect "known text"` reuses
@@ -146,9 +154,10 @@ When a call fails
   wall is not a successful read of the requested content.
 - A stuck extension (two `timed out` errors in a row) is reloaded inside
   the next call that needs it, and that call's answer says so. An error
-  starting `extension stuck:` means reloading did not help: try once more
-  a minute later, then tell the user. Never run `safari extension
-  reload`; never loop on `status`, `doctor`, or `guide`.
+  starting `extension stuck:` means reloading did not help or Safari
+  itself is slow: try once more a minute later, then tell the user. Never
+  run `safari extension reload`; never loop on `status`, `doctor`, or
+  `guide`.
 - A call failing with no reason: `safari doctor` once. It is not a ritual:
   never before a task or after a call that worked.
 
@@ -181,8 +190,6 @@ Signing in, in this order
    types it unseen; `secret:"mail"` when it comes by mail.
 Never type a password from memory or chat. Never print a password, code,
 cookie, or token, in a reply or a log line. Never sign him out.
-In omp, fills, codes and cards go without his ok; a text waits for it
-first (a popup on his Mac, or his phone).
 
 Bot checks
 - Never solve one (CAPTCHA, puzzle, press-and-hold, Cloudflare wall), and

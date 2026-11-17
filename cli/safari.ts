@@ -22,7 +22,7 @@ import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { connectionRefused, daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
-import { alertHealth, isAway } from "../daemon/phone.ts";
+import { alertHealth } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
@@ -95,8 +95,9 @@ const USAGE = `safari — drive Safari from the terminal
 
   Page commands need --tab N, the id open printed, or --tab front for the
   tab the user has in front. Tabs a command opens close when omp's turn
-  ends, once the program that ran safari exits, or after 20 minutes
-  unused; --keep on open, or safari keep <tab>, leaves one open for him.
+  ends, once the program that ran safari exits, after 2 minutes unused,
+  or past 4 open tabs per agent session; --keep on open, or safari keep
+  <tab>, leaves one open for him.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
@@ -190,8 +191,6 @@ const USAGE = `safari — drive Safari from the terminal
                                              your address, name, email, phone from your Contacts card
   safari fill login [--bitwarden] [--user name] --tab N
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
-  safari passwords approvals-phone           at the Mac: set up Face ID on your iPhone to
-                                             approve agents' steps while you are away
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
                                              (safari passwords logins --tab N: a first word is do)
@@ -259,6 +258,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari playbooks save --tab N --selector '#results[data-ready="yes"]'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']
                       [--applied '{"param":"q","in":"hash","prefix":"search/"}']
+                      [--applied '{"param":"q","in":"query","key":"q"}']
                       [--result-selector '#results']
                                              verify new results; optionally return rows
   safari playbooks list | cancel --tab N
@@ -365,9 +365,12 @@ function printRaw(result: unknown): void {
 
 // open --id: the tab's id alone, for T=$(safari open <url> --id). Agents
 // scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
-// takes the first number an error names too.
+// takes the first number an error names too. Its note and hint go to
+// stderr: on 11-16 a script opened two Proton pages, got one tab's id
+// twice (the second open reused the first's tab), and closed both at once.
 function printId(result: unknown): void {
-  const { id, file } = result as { id?: unknown; file?: unknown };
+  const { id, file, note, hint } = result as { id?: unknown; file?: unknown; note?: unknown; hint?: unknown };
+  for (const [k, v] of Object.entries({ note, hint })) if (typeof v === "string") console.error(`${k}: ${v}`);
   if (id !== undefined) show(String(id));
   else if (file !== undefined) {
     say("miss: the address is a file, not a page, so no tab holds it; run open without --id to read it");
@@ -769,30 +772,6 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
 // are not.
 const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, restarted: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
 
-// passwords approvals-phone: the approvals passkey on his iPhone, made at
-// the Mac (phone-approvals.ts), never through a tool a model calls. His
-// phone gets the link; this waits until he has set it up there, cancelled,
-// or the link ended.
-async function approvalsPhone(): Promise<void> {
-  if (await isAway()) fail("set up Face ID approvals at the Mac, with your iPhone at hand");
-  const opened = await rpc("approval_phone_setup");
-  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "string") fail("the daemon's answer named no setup request");
-  const id = opened.id;
-  if (!("alerted" in opened) || opened.alerted !== true) {
-    await rpc("approval_phone_close", { id });
-    fail(`the setup link did not reach your phone: ${"why" in opened ? String(opened.why) : "no reason given"}`);
-  }
-  console.log("a link went to your phone: open it in Safari on your iPhone, and tap Set up with Face ID");
-  for (;;) {
-    await Bun.sleep(2000);
-    const answer = await rpc("approval_phone_state", { id });
-    const state = answer && typeof answer === "object" && "state" in answer ? answer.state : undefined;
-    if (state === "approved") return console.log("set up: while you are away from the Mac, agents' approvals come to your iPhone");
-    if (state === "denied") return console.log("cancelled on your iPhone: nothing was set up");
-    if (state === "expired") fail("the link ended before Face ID was set up: run safari passwords approvals-phone again");
-  }
-}
-
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2).filter((a) => a !== "-q");
   if (!cmd || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
@@ -1001,8 +980,6 @@ async function main() {
 
   if (cmd === "mint") return mintCommand(rest, host);
 
-  if (cmd === "passwords" && rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) === "approvals-phone") return approvalsPhone();
-
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");
     if (!task) fail("usage: safari do \"<task>\" [--tab N] [--steps N] [--model m]", 2);
@@ -1079,7 +1056,16 @@ async function main() {
     }
     case "click": args.ref = positional[0]; break;
     case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
-    case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
+    case "type": {
+      // --ref is the first word given as a flag: on 11-16 `type --tab N
+      // --ref 1 "Eval Agent"` looked for "Eval Agent" on the page.
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      args.text = words.join(" ").replace(/^"|"$/g, "");
+      args.append = hasFlag("append", rest);
+      break;
+    }
     case "press": {
       args.key = positional[0];
       const ref = flag("ref", rest);
@@ -1087,8 +1073,10 @@ async function main() {
       break;
     }
     case "select": {
-      args.ref = positional[0];
-      if (positional.length > 1) args.option = positional.slice(1).join(" ");
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      if (words.length) args.option = words.join(" ");
       break;
     }
     case "hover": args.ref = positional[0]; break;
@@ -1178,7 +1166,9 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": case "read": args.url = positional[0]; break;
-    case "map": args.urls = positional; break;
+    // No words leave the urls to --urls '[…]', as map --help offers: on
+    // 11-16 that form failed "map needs urls".
+    case "map": if (positional.length) args.urls = positional; break;
     case "pdf": {
       // On 10-29 `pdf --do read --url` failed "tab is required": do was
       // save before the flags were read.

@@ -378,6 +378,48 @@ test("a kind unanswered for a minute while it is asked has the extension reload 
   expect(ext.asked.slice(3)).toEqual(["windows.open", "reload"]);
 });
 
+// 11-16 22:48 and 23:15: an agent's opens of sites that hung went
+// unanswered 30 s each while the extension went on answering Safari's
+// other tab calls; the reload that followed took the link away until
+// Safari was free, 10 minutes the first time, and a Safari restart the
+// second.
+test("a kind stuck while the extension answers Safari's other tab calls does not reload it, and a model's call says Safari is slow", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = holding(bridge);
+  pastGrace(bridge, ext.sock);
+  await timesOut(bridge, "tabs.open", 30000);
+  const list = bridge.request("tabs.list");
+  await settled();
+  ext.answer(ext.asked.find((a) => a.op === "tabs.list")!.id, []);
+  expect(await list).toEqual([]);
+  await timesOut(bridge, "tabs.open", 30000);
+  expect(bridge.health()).toMatchObject({ stuck: true });
+  await expect(bridge.healing(() => bridge.request("tabs.open"))).rejects.toThrow("Safari itself is slow");
+  expect(ext.asked.map((a) => a.op)).toEqual(["tabs.open", "tabs.list", "tabs.open"]);
+});
+
+// 11-16 20:02-20:04: three reloads went to one page that Safari, stalled,
+// had yet to run the first of; a late answer in between let the next go.
+test("an extension asked to reload is not asked again on that socket, though it answered since", async () => {
+  jest.useFakeTimers();
+  const bridge = new Bridge();
+  const ext = holding(bridge);
+  pastGrace(bridge, ext.sock);
+  void bridge.reload().catch(() => {});
+  await settled();
+  const late = bridge.request("relay", [7, "tabInfo", []]);
+  await settled();
+  jest.advanceTimersByTime(1000);
+  ext.answer(ext.asked.find((a) => a.op === "relay")!.id, {});
+  await late;
+  // windows.open unanswered for a minute: a reload's due, but one is asked
+  await timesOut(bridge, "windows.open", 30000);
+  await timesOut(bridge, "windows.open", 30000);
+  await expect(bridge.healing(() => bridge.request("windows.open"))).rejects.toThrow("extension stuck");
+  expect(ext.asked.filter((a) => a.op === "reload")).toHaveLength(1);
+});
+
 // 11-06: Safari answered no extension call from 19:16:42 while the page kept
 // its socket open, and eight reloads in 50 minutes went unheard; each model's
 // call that met it waited 30 s on one and was told to reload again.

@@ -317,6 +317,9 @@ export class Bridge {
   // An answer can change what tabs.list says, so a list asked after one
   // shares none asked before (epoch, listing).
   private answeredAt = 0;
+  // when the extension last answered a request Safari's own tab and window
+  // calls carry (not ELSEWHERE): it is not stuck then, Safari is slow
+  private safariAnsweredAt = 0;
   private runs = new Map<string, Run>();
   private reloads: number[] = [];
   private epoch = 0;
@@ -718,6 +721,7 @@ export class Bridge {
     this.answeredAt = now;
     if (asked !== this.listing) this.epoch++;
     const op = asked?.op ?? [...this.runs].find(([, r]) => r.ids.has(id))?.[0];
+    if (op !== undefined && !Object.hasOwn(ELSEWHERE, op)) this.safariAnsweredAt = now;
     const run = op === undefined ? undefined : this.runs.get(op);
     if (op !== undefined && run) {
       this.runs.delete(op);
@@ -755,9 +759,24 @@ export class Bridge {
     if (run.misses === STUCK_AFTER) note("stuck", { op: asked.op, ms: now - run.since });
     const reloaded = this.reloads.at(-1) ?? -Infinity;
     this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
-    if (run.misses < STUCK_AFTER || now - Math.max(run.since, reloaded) < RELOAD_AFTER_MS || this.reloads.length >= RELOADS || this.reloadIgnored(now)) return;
+    if (run.misses < STUCK_AFTER || now - Math.max(run.since, reloaded) < RELOAD_AFTER_MS || this.reloads.length >= RELOADS || this.reloaded.has(asked.sock)) return;
+    if (this.safariSlow(run)) {
+      if (run.misses === STUCK_AFTER) note("safari slow", { op: asked.op, answeredMsAgo: now - this.safariAnsweredAt });
+      return;
+    }
     this.reloads.push(now);
     this.askReload(asked.sock, `${asked.op} went unanswered for ${Math.round((now - run.since) / 1000)} s, ${run.misses} requests in a row`);
+  }
+
+  // The extension answered a call of Safari's tabs or windows since run
+  // began: it is running, and Safari is what is slow (a page or a sheet
+  // holding its main thread, too many tabs), which a reload does not cure.
+  // On 11-16 three reloads in such stalls each took the link away for 7 to
+  // 10 minutes, until Safari was free (a client certificate sheet
+  // cancelled) or quit; reloads on 10-13, when nothing but pages answered,
+  // ended the stall in 10 s.
+  private safariSlow(run: Run): boolean {
+    return this.safariAnsweredAt >= run.since;
   }
 
   // Safari unloads the extension and loads it again (background.js): its
@@ -790,6 +809,8 @@ export class Bridge {
     if (this.reloadIgnored(now)) throw new Error(`${stuck}, and Safari ignored its reload; ${IGNORED_FIX}`);
     if (!heal) throw new Error(`${stuck}; try again in a minute`);
     if (!this.reloading) {
+      if (this.safariSlow(run)) throw new Error(`${stuck}, while it answered Safari's other tab calls: Safari itself is slow (a page or a sheet holds it, or too many tabs are open), and reloading the extension would not help; try again in a minute, and close tabs you no longer need`);
+      if (this.reloaded.has(sock)) throw new Error(`${stuck}, and it was asked to reload already; try again in a minute, then tell the user Safari is not answering`);
       this.reloads = this.reloads.filter((t) => now - t < RELOADS_MS);
       if (this.reloads.length >= RELOADS) throw new Error(`${stuck}, and it was reloaded ${RELOADS} times in the last ${RELOADS_MS / 60_000} minutes; try again in a minute, then tell the user Safari is not answering`);
       this.reloads.push(now);
