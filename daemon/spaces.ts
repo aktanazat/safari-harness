@@ -36,6 +36,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
+import { toAgentScreen } from "./place.ts";
 import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -245,6 +246,8 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       sweepSoon();
       save();
       await identify(space, w.tabId);
+      // A window left where Safari put it still works, only on his screen.
+      await toAgentScreen(w.tabId).catch((e: unknown) => note("window not moved to the agents' display", { name, error: e instanceof Error ? e.message : String(e) }));
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();
