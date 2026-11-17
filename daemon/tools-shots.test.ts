@@ -168,3 +168,31 @@ test("raw screenshot consumers refuse missing protection metadata", async () => 
   });
   await expect(captureTab(++nextId)).rejects.toMatchObject({ code: "privacy", effect: "none" });
 });
+
+// In the 11-16 work sessions 9 shots right after an eval that reloaded
+// the page failed on "the protected page is no longer available", and a
+// retry 3-7 s later worked each time. Safari here reloads the page under
+// the first `reloads` shots.
+test.each([1, 2])("a shot the page reloads under %i time(s) waits for the page and is taken once more", async (reloads) => {
+  const sent: string[] = [];
+  const tab = { id: ++nextId, windowId: ++nextId, url: CART, title: "Cart" };
+  tabs.set(tab.id, tab);
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      sent.push(op === "relay" ? String(args[1]) : op);
+      const shots = sent.filter((o) => o === "shot").length;
+      const reply = op === "shot" && shots <= reloads ? { error: "screenshot privacy: the protected page is no longer available" } : answer(op, args);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
+    },
+    close() {},
+  });
+  try {
+    const shot = captureTab(tab.id);
+    if (reloads === 1) expect(await shot).toMatchObject({ source: { url: CART } });
+    else await expect(shot).rejects.toMatchObject({ code: "privacy", effect: "none", message: "screenshot privacy: the page changed or reloaded under the capture twice, so it was not captured" });
+    expect(sent.filter((o) => o === "shot" || o === "wait")).toEqual(["shot", "wait", "shot"]);
+  } finally {
+    tabs.delete(tab.id);
+  }
+});

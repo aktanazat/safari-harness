@@ -588,7 +588,9 @@ carrying the page in context.
   tab as the next call after an action there gets a note saying so, once.
 - An action or `eval` whose page leaves before it answers (a submit, a
   redirect) still answers, with `ok: true` and the page it loaded as
-  `navigated`. It is never sent twice.
+  `navigated`. It is never sent twice. An `eval` whose code starts a load
+  (`location.reload()`, a new `location.href`) answers once that page is
+  in, with `navigated` beside its `result`.
 - An action that starts a load or a tab (a link, a form submit, the page's
   own script moving it) waits for it and reports `navigated` or `newTab`.
   A link or form the page's script takes over gets a short wait in case it
@@ -1830,7 +1832,9 @@ animation) is captured once more with its video, audio and animations
 paused, which play again after. One that still changes (a carousel, a
 live feed) fails saying so: capture it with `shots {urls}`. A page with
 no body yet, or a tab with no viewport (its window minimized), fails
-naming that cause.
+naming that cause. A page that reloads during capture is waited for (10 s
+at most, until quiet) and captured once more; a second such failure says
+the page changed or reloaded under the capture twice.
 
 `tiles: true` also saves readable, overlapping pieces without resizing
 or dropping the original. `tileHeight` defaults to 1400 and accepts

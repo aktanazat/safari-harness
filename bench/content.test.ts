@@ -1331,6 +1331,34 @@ benchRows("content.js in WebKit", [
       { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }, { load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
     ],
   },
+  // In the 11-16 work sessions 9 shots right after an eval that reloaded
+  // its page failed, the page reloading under them.
+  {
+    name: "an eval whose code sends the page elsewhere says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(location.href = 'empty.html', 1)"], answer: { value: { ok: true, result: 1, expect: "load" } } }],
+  },
+  {
+    name: "an eval whose awaited code sends the page elsewhere says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["Promise.resolve().then(() => { location.href = 'empty.html'; return 2; })"], answer: { value: { ok: true, result: 2, expect: "load" } } }],
+  },
+  {
+    name: "an eval that reloads its page says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(location.reload(), 3)"], answer: { value: { ok: true, result: 3, expect: "load" } } }],
+  },
+  {
+    name: "an eval that only sets a handler that reloads the page says no load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(document.body.onclick = () => location.reload(), 4)"], answer: { value: expect.not.objectContaining({ expect: expect.anything() }) } }],
+  },
+  {
+    name: "an eval that reloads an embedded frame says no load of the tab is coming",
+    page: "click-safety-frame-parent.html",
+    frames: 1,
+    steps: [{ op: "eval", frame: "click-safety-frame-child.html", args: ["(location.reload(), 5)"], answer: { value: expect.not.objectContaining({ expect: expect.anything() }) } }],
+  },
   {
     name: "the harness's click on a link that opens a tab announces it once",
     page: "popup.html",

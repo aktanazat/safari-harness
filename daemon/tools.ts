@@ -2638,7 +2638,30 @@ const UNSEEN: Record<"covered" | "hidden", string> = {
 // land; live leaves them running. WebKit does not paint a fully covered
 // window. An owned window may move for a retry, then returns to its place.
 // Other windows stay where they are.
+// A page that reloads during a shot takes its protection with it: the
+// new page's script holds no capture (content.js capturePrivacy), or its
+// document differs (background.js). In the 11-16 work sessions 9 shots
+// right after an eval that reloaded the page failed so, and a retry 3-7 s
+// later worked each time. Such a shot waits for the page to go quiet and
+// is taken once more. The same words also come when the protection's
+// 15 s timer ended first, so a second failure says the page changed or
+// reloaded, not which.
+const RELOADED: Record<string, true> = { "screenshot privacy: the protected page is no longer available": true, "screenshot privacy: a page document changed during capture": true };
+const RELOAD_MS = 10000;
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
+  try {
+    return await captureShown(tab, opts);
+  } catch (error) {
+    if (!(error instanceof Error) || !Object.hasOwn(RELOADED, error.message)) throw error;
+    await wait({ tab, quiet: true, ms: RELOAD_MS });
+    return await captureShown(tab, opts).catch((again: unknown) => {
+      if (!(again instanceof Error) || !Object.hasOwn(RELOADED, again.message)) throw again;
+      throw new HarnessError("privacy", "screenshot privacy: the page changed or reloaded under the capture twice, so it was not captured", { effect: "none", next: "wait for the text you expect on the page, then shot again" });
+    });
+  }
+}
+
+async function captureShown(tab: number, opts: ShotOpts): Promise<Capture> {
   try {
     try {
       return await shotOnce(tab, opts);

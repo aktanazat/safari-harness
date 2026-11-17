@@ -772,6 +772,19 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+// In the 11-16 work sessions 9 shots right after an eval that reloaded
+// its page failed, the page reloading under them.
+test("an eval whose code starts a load answers once that page is in, as navigated", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const next = new Doc("https://example.com/");
+  tab.doc.does = () => ({ ok: true, result: "ok", expect: "load" });
+  const answer = b.ask(tab, "eval", ["(location.reload(), 'ok')"]);
+  await b.clock.advance(100);
+  b.navigate(tab, next);
+  expect((await answer).value).toEqual({ ok: true, result: "ok", navigated: { url: "https://example.com/", title: "" } });
+});
+
 // A gather clicks Load more and scrolls as it reads: asked again of the
 // page it went to, it would gather that page too, and harvest's answer
 // would come back as an action's.

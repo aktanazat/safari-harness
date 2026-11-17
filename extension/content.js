@@ -6069,15 +6069,42 @@
         }
         throw e;
       });
-      const result = run(SH, fetching);
+      // Code that sends the page elsewhere (location.reload(), a new
+      // location.href) answers expect "load", as an action does, so act in
+      // background.js waits for that page and reports it as navigated: in
+      // the 11-16 work sessions 9 shots right after such an eval failed, the
+      // page reloading under them. WebKit fires no navigate event for
+      // location.reload(), and none before the code returns (bench,
+      // 11-17), so code that calls it is read as leaving; act waits 3 s at
+      // most for a load that does not come. Only a call before any
+      // function in the code counts: one in a handler (onclick = () =>
+      // location.reload()) runs later, if ever. An embedded frame's load
+      // is no load of the tab act watches, so a frame's eval never says so.
+      const top = window === window.top;
+      const reload = src.search(/\blocation\s*\.\s*reload\s*\(/);
+      let leaves = top && reload >= 0 && !/=>|\bfunction\b/.test(src.slice(0, reload));
+      const onNav = (e) => { if (top && !e.destination.sameDocument) leaves = true; };
+      navigation.addEventListener("navigate", onNav);
+      const answer = (v) => {
+        navigation.removeEventListener("navigate", onNav);
+        return { ok: true, result: safeClone(v), ...(leaves ? { expect: "load" } : {}) };
+      };
+      let result;
+      try {
+        result = run(SH, fetching);
+      } catch (e) {
+        navigation.removeEventListener("navigate", onNav);
+        throw e;
+      }
       if (result && typeof result.then === "function") {
-        return result.then((v) => ({ ok: true, result: safeClone(v) }), (e) => {
+        return result.then(answer, (e) => {
+          navigation.removeEventListener("navigate", onNav);
           const url = e !== null && typeof e === "object" ? unanswered.get(e) : undefined;
           if (url === undefined) throw e;
           throw new Error(`Load failed for ${url}${failed > 1 ? ` and ${failed - 1} more` : ""}`);
         });
       }
-      return { ok: true, result: safeClone(result) };
+      return answer(result);
     },
     wait: waitFor,
     waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
