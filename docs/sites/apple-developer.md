@@ -9,7 +9,8 @@ The user's developer account: identifiers and capabilities, the CloudKit console
 ## Signing in
 - Signed out, `appstoreconnect.apple.com` goes to `login?...&authResult=FAILED`, and developer.apple.com and the CloudKit console go to `idmsa.apple.com/IDMSWebAuth/signin?...`.
 - The sign-in form sits in an embedded frame, `#aid-auth-widget-iFrame`: "Email or Phone Number" (`#account_name_text_field`), `Continue`, and `Sign in with Passkey` (`#swp`). `snapshot` shows the frame's fields with refs.
-- A `real_input` click on `#swp` with the user's Touch ID signed in with no text-message code. Click it, then `handoff` so he can touch the sensor.
+- Sign in yourself; do not wait for him. `passwords {do: "fill", username: "aktanaazat@gmail.com"}` fills the email (the password field is hidden until Continue), a `real_input` click on `Continue` shows the password field, a second `fill` fills it, and a `click` on `#sign-in` signs in and lands on the page asked for. Enter does nothing on this form. Signed in this way on 2026-11-17 with no code asked.
+- Only when Apple then asks for a code, or the vault has no login for idmsa.apple.com: `passwords {do: "code"}`, else a `real_input` click on `#swp` (Sign in with Passkey) and `handoff` for his Touch ID.
 
 ## CloudKit console
 - `https://icloud.developer.apple.com/dashboard/`. A "What's New" dialog comes up again and again (three times in one session): click `Continue to CloudKit Console` each time.
