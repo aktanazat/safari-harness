@@ -89,7 +89,7 @@ Safari is the user's everyday browser, so treat his tabs as his.
   else still shows it there. A window off that display for another reason
   (opened while it was down) goes there within a minute of the display
   being back; one he moved off it himself stays where he put it. A page
-  you `keep` stays in its window wherever that is.
+  you `keep` leaves your window for his when your turn ends.
   For calls without a task identity, each `group` gets its own window and
   ungrouped tabs share one. The window opens on a page titled with its first
   group's name (or "agent") and your process id; ", window 2" and up
@@ -1187,7 +1187,10 @@ is done with it. `close` on a tab already closed does not fail: it answers
   form waiting on his answer. `keep: true` on `open` (CLI `safari open
   <url> --keep`), or `keep {tab}` once you know (CLI `safari keep <tab>`),
   leaves it open past your turn and your exit; close it yourself once he
-  is done with it. Its popups are his as well, and still come in your
+  is done with it. Until your turn ends you can go on in it in your window;
+  then, or when you exit, it moves to the end of the Safari window he had
+  in front last, without taking focus (to a new window when he has no
+  normal one as private as the tab), under the same tab id. Its popups are his as well, and still come in your
   next result (`safari guide reference lifecycle`). Tabs on another Mac (`--host`) close only once
   nobody has used them for 20 minutes. `keep` on a tab Safari no longer
   has fails as `activate` does, with nothing kept.
