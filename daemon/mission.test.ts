@@ -47,6 +47,11 @@ function safari() {
       closing.get(id as number)?.();
       return { ok: true };
     },
+    // to the window the user had in front last, his own
+    "tabs.toHis": ([id]) => {
+      tabs.get(id as number)!.windowId = USER_WINDOW;
+      return { windowId: USER_WINDOW };
+    },
     dialogs: () => ({ ok: true }),
     probe: () => [],
     relay: ([tab, op, args]) => {

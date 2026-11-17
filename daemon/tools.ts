@@ -430,6 +430,7 @@ function recordClosed(tab: number, why: string, url?: string, agent?: number, fo
   // what was typed there as a secret goes with it (redact.ts)
   tabSecrets.delete(tab);
   keepers.delete(tab);
+  handOver.delete(tab);
   closedTabs.delete(tab);
   closedTabs.set(tab, { why, at: Date.now(), ...(url === undefined ? {} : { url }), ...(safe.title === undefined ? {} : { title: safe.title }), ...(agent === undefined ? {} : { agent }), ...(found ? { found } : {}) });
   // a Map keeps its keys in the order they went in, the oldest first
@@ -710,6 +711,7 @@ export function endTurn(owner: number, prepared?: TurnPreparation, task?: string
     save();
     if (sweepingTabs) await sweepingTabs;
     await sweep();
+    await handOverKept(owner, task);
     unshow(owner, task);
     await turnEnded(owner, task ?? undefined);
     const retained = turnTabs(owner, task);
@@ -748,8 +750,29 @@ export function keepTab(tab: number): { ok: true } {
   forget(id);
   const keeper = currentOwner();
   if (keeper !== undefined) keptBy(id, keeper);
+  handOver.set(id, { owner: keeper, task: currentTask() });
   save();
   return { ok: true };
+}
+
+// A kept page is for the user to see, and an agent window sits on the
+// Agents display he does not look at (place.ts): at the end of its keeper's
+// turn, or its exit, a kept tab still in an agent window goes to his own
+// (background.js tabs.toHis). Until then the agent may go on in it behind
+// his windows, as in any tab of its own.
+const handOver = new Map<number, { owner?: number; task?: string }>();
+
+async function handOverKept(owner: number, task: string | null | undefined): Promise<void> {
+  if (!bridge.connected) return;
+  const due = [...handOver].filter(([, k]) => inTurn(k, owner, task)).map(([tab]) => tab);
+  if (due.length === 0) return;
+  for (const tab of due) handOver.delete(tab);
+  const tabs = await listTabs({ start: false }).catch((): TabInfo[] => []);
+  for (const tab of due) {
+    const windowId = tabs.find((t) => t.id === tab)?.windowId;
+    if (windowId === undefined || !windowOwners().has(windowId)) continue;
+    await bridge.request("tabs.toHis", [tab], undefined, { start: false }).catch((e: unknown) => note("kept tab not moved to the user's window", { tab, error: e instanceof Error ? e.message : String(e) }));
+  }
 }
 
 // The agent that kept each tab, and each popup those open, until it exits.
@@ -763,6 +786,7 @@ function keptBy(tab: number, keeper: number) {
   if (keeperWatches.has(keeper)) return;
   keeperWatches.set(keeper, watchOwner(keeper, () => {
     keeperWatches.delete(keeper);
+    void handOverKept(keeper, undefined).catch(() => {});
     for (const [kept, k] of keepers) if (k === keeper) keepers.delete(kept);
     save();
   }));
@@ -1126,6 +1150,7 @@ function moveKept(from: number, to: number): boolean {
   siteActionsState?.coordinator.invalidate(to);
   move(handoffs, from, to);
   move(tabSecrets, from, to);
+  move(handOver, from, to);
   const kept = move(keepers, from, to);
   return move(harnessTabs, from, to) || kept;
 }
