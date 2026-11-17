@@ -4934,10 +4934,16 @@
   }
 
   // What the page's world saw since `since`: the requests the page made,
-  // those still out, and the errors it did not catch.
-  function hear(since) {
-    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since });
+  // those still out, and the errors it did not catch; with recent, also
+  // those that failed or were thrown in the recent ms before.
+  function hear(since, recent) {
+    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since, recent });
   }
+
+  // How far back an action's receipt looks for what failed before it
+  // (recent in daemon/receipt.ts): long enough to reach from opening a
+  // dialog to its last button.
+  const RECENT_MS = 120_000;
 
   // One response's whole text, as the page's world kept it: that of the
   // request at key.url that the log wrote at key.t (net's body).
@@ -5095,7 +5101,7 @@
         tally(observer.takeRecords().filter(madeByPage));
         observer.disconnect();
         if (away) return resolve({ ...res, expect: "load" });
-        const heard = hear(start);
+        const heard = hear(start, RECENT_MS);
         const now = focusedNow();
         const box = deepQueryAll(DIALOG_BOXES).find((b) => isVisible(b) && !boxes.includes(b));
         resolve({
@@ -5115,6 +5121,7 @@
             requests: heard?.requests ?? null,
             pending: heard?.pending ?? null,
             errors: heard?.errors ?? [],
+            ...(heard?.earlier ? { earlier: heard.earlier } : {}),
           },
         });
       };

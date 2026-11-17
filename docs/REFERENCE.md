@@ -608,6 +608,16 @@ carrying the page in context.
   that nothing above announced, goes unseen: a module the page loads with
   `import()`, work in a Worker, an animation's end. Look before you repeat
   a submit.
+- An effect of `none`, or only one or two elements `changed` in place (a
+  pressed button's own look), also lists as `recent` what failed on the
+  page in the 2 minutes before the action: its own site's failed requests
+  (`failed: GET api.shop.example.com/accounts/7/unified/ 404`) and the
+  errors it threw (`page error: ...`), five lines at most. The small
+  effect alone also sets `next`: if you expected more, the page likely
+  ignored the action, and `recent` may say why. On 11-17 a transfer
+  dialog's Review button answered only `changed: 1`, and ten more calls
+  found no cause: picking an account had logged a 404 and the page error
+  "Unsuccessful HTTP response" a minute before.
 - A page error saying the page refused for want of focus or a real click
   ("The document is not focused", a `NotAllowedError`), as a passkey,
   Touch ID, or clipboard call does in a tab Safari does not have in front

@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Transfer</title>
+<!-- A transfer dialog whose account lookup failed as it opened, on a page
+     that then polled past the request log's 100 entries (11-17), and
+     cancelled two requests of its own. -->
+<h1>Transfer money</h1>
+<button onclick="this.classList.toggle('pressed')">Review transfer</button>
+<p id="state">loading</p>
+<script>
+(async () => {
+  await fetch("missing/unified/").catch(() => {});
+  const stop = new AbortController();
+  const cancelled = fetch("data:text/plain,late", { signal: stop.signal }).catch(() => {});
+  stop.abort();
+  await cancelled;
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", "data:text/plain,late");
+  xhr.send();
+  xhr.abort();
+  for (let i = 0; i < 120; i++) await fetch(`data:text/plain,poll-${i}`).then((r) => r.text());
+  document.getElementById("state").textContent = "polled";
+})();
+</script>
