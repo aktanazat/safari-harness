@@ -5935,19 +5935,39 @@
     },
     data: pageData,
     tabInfo,
+    // Safari fails a fetch that got no answer with only "Load failed",
+    // which says not which: on 11-17 an eval fetching a page's script
+    // bundles failed whole so, one cross-origin bundle refused. The code's
+    // fetch notes the address of each such error, and the error that failed
+    // the eval is named by its own; one the harness did not see is left as
+    // it is.
     eval: (src) => {
       let run;
       try {
         // eslint-disable-next-line no-new-func
-        run = new Function("sh", `return (${src})`);
+        run = new Function("sh", "fetch", `return (${src})`);
       } catch (e) {
         // bad code is the caller's to fix; any other refusal is the page's policy
         if (e instanceof SyntaxError) throw e;
         return { error: EVAL_BLOCKED };
       }
-      const result = run(SH);
+      const LOAD_FAILED = /^(?:TypeError: )?Load failed$/;
+      const unanswered = new WeakMap(); // error -> its request's address
+      let failed = 0;
+      const fetching = (input, init) => fetch(input, init).catch((e) => {
+        if (LOAD_FAILED.test(String(e?.message))) {
+          failed++;
+          try { unanswered.set(e, new URL(input instanceof Request ? input.url : String(input), document.baseURI).href); } catch {}
+        }
+        throw e;
+      });
+      const result = run(SH, fetching);
       if (result && typeof result.then === "function") {
-        return result.then((v) => ({ ok: true, result: safeClone(v) }));
+        return result.then((v) => ({ ok: true, result: safeClone(v) }), (e) => {
+          const url = e !== null && typeof e === "object" ? unanswered.get(e) : undefined;
+          if (url === undefined) throw e;
+          throw new Error(`Load failed for ${url}${failed > 1 ? ` and ${failed - 1} more` : ""}`);
+        });
       }
       return { ok: true, result: safeClone(result) };
     },

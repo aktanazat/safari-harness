@@ -12,8 +12,11 @@
 
 import { isIP } from "node:net";
 import { promises as dns } from "node:dns";
+import { redactUrl } from "./redact.ts";
 
-const LOAD_FAILED = /^(?:TypeError: )?Load failed$/;
+// eval's own fetch names the latest request that got no answer, and how
+// many more did ("Load failed for <url> and 2 more"; eval in content.js).
+const LOAD_FAILED = /^(?:TypeError: )?Load failed(?: for (\S+)(?: and (\d+) more)?)?$/;
 const UNOPENED = /^Safari could not open (\S+): the site did not answer$/;
 const NET = "net shows the addresses the page itself calls";
 
@@ -31,15 +34,20 @@ export async function hostAnswer(host: string): Promise<HostAnswer | undefined> 
   }
 }
 
-// e, explained when it is Safari's "Load failed"; url is the request's.
+// e, explained when it is Safari's "Load failed"; url is the request's,
+// when the caller knows it, else the one the error names.
 export async function unanswered(e: unknown, url?: string): Promise<unknown> {
-  if (!(e instanceof Error) || !LOAD_FAILED.test(e.message)) return e;
-  const host = url !== undefined && URL.canParse(url) ? new URL(url).hostname : undefined;
-  if (host === undefined) return new Error(`Load failed: a request got no answer. Its host may not exist, or the page's rules (CORS, its security policy) refused it; ${NET}`);
+  const failed = e instanceof Error ? LOAD_FAILED.exec(e.message) : null;
+  if (!failed) return e;
+  const [, named, more] = failed;
+  url ??= named;
+  const which = named === undefined ? "Load failed" : `Load failed for ${redactUrl(named)}${more === undefined ? "" : ` and ${more} more requests`}`;
+  const host = url !== undefined && URL.canParse(url) ? new URL(url).hostname || undefined : undefined;
+  if (host === undefined) return new Error(`${which}: ${named === undefined ? "a request" : "it"} got no answer. Its host may not exist, or the page's rules (CORS, its security policy) refused it; ${NET}`);
   const answer = await hostAnswer(host);
-  if (answer === "missing") return new Error(`Load failed: no such host as ${host}, so the address is wrong or out of date; ${NET}`);
-  if (answer === "blocked") return new Error(`Load failed: a DNS block list on this network answers 0.0.0.0 for ${host}, so the request never left this Mac; ${NET}`);
-  return new Error(`Load failed: ${host} ${answer === "found" ? "exists, so" : "may exist;"} the page's rules (CORS, its security policy) refused the request, or the server dropped it; ${NET}`);
+  if (answer === "missing") return new Error(`${which}: no such host as ${host}, so the address is wrong or out of date; ${NET}`);
+  if (answer === "blocked") return new Error(`${which}: a DNS block list on this network answers 0.0.0.0 for ${host}, so the request never left this Mac; ${NET}`);
+  return new Error(`${which}: ${host} ${answer === "found" ? "exists, so" : "may exist;"} the page's rules (CORS, its security policy) refused the request, or the server dropped it; ${NET}`);
 }
 
 // On 10-05 Safari could not open omp's sign-in server at localhost:54545,
