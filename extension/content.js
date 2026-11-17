@@ -1481,10 +1481,14 @@
   // divs, so the CSS "dialog" matched nothing and the name was not CSS
   // (09-30). A ref from the latest snapshot, bracketed as it prints or not,
   // is its element: root "[23]" failed as CSS (01a10ea8, 10-05). Any other
-  // selector is CSS.
+  // selector is CSS, but the CSS for a dialog ([role=dialog], dialog[open],
+  // [aria-modal=true]) is the dialog open over the page too: on 11-17 root
+  // "[role=dialog]" read a plan dialog left in the page, not the one a
+  // click had just opened.
+  const DIALOG_CSS = /^(?:dialog(?:\[open\])?|\[(?:role=["']?(?:alert)?dialog["']?|aria-modal=["']?true["']?)\])$/;
   function rootFor(selector) {
     const want = selector.trim();
-    if (want === "dialog") return openDialog() ?? deepQuery(selector);
+    if (DIALOG_CSS.test(want.replace(/\s+/g, ""))) return openDialog() ?? deepQuery(selector);
     const ref = /^\[?(\d+)\]?$/.exec(want);
     if (ref) return resolve(ref[1]);
     if (!/^[\w-]+ ".*"$/s.test(want)) return deepQuery(selector);

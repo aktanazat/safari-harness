@@ -1144,6 +1144,11 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a root of [role=dialog] reads the dialog open over the page, not the first one left in it",
+    page: "two-dialogs.html",
+    steps: [{ op: "snapshot", args: [{ root: "[role=dialog]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Pick a plan)[\s\S]*Your card is charged today/) } } }],
+  },
+  {
     name: "a root named as a click's answer names a dialog reads that dialog beneath a second one, which a root of dialog reads",
     page: "slate-dialog.html",
     steps: [
