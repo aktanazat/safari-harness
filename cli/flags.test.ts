@@ -142,3 +142,20 @@ test("a tool's flag that takes no value leaves the flag or word after it to the 
     { tool: "close", args: { tab: 7, confirm: true } },
   ]);
 });
+
+// On 11-16 an eval agent's `type --tab N --ref 1 "Eval Agent"` looked for
+// "Eval Agent" on the page, and `map --urls '[…]'` failed "map needs
+// urls": both forms are the ones their --help offers.
+test("a parameter given as its flag leaves the command's words to the next parameter", async () => {
+  calls.length = 0;
+  // type marks its field first (input.ts); this daemon answers no mark, so
+  // the call it asked for is the observation.
+  await safari(["type", "--tab", "7", "--ref", "1", "Eval Agent"]);
+  expect(await safari(["select", "--tab", "7", "--ref", "4", "Medium"])).toEqual({ err: "", code: 0 });
+  expect(await safari(["map", "--urls", '["https://a.example/","https://b.example/"]'])).toEqual({ err: "", code: 0 });
+  expect(calls.filter((c) => ["type_mark", "select", "map"].includes(c.tool))).toEqual([
+    { tool: "type_mark", args: { ref: "1", text: "Eval Agent", append: false } },
+    { tool: "select", args: { tab: 7, ref: "4", option: "Medium" } },
+    { tool: "map", args: { urls: ["https://a.example/", "https://b.example/"] } },
+  ]);
+});

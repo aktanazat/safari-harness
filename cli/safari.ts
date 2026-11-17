@@ -1068,7 +1068,16 @@ async function main() {
     }
     case "click": args.ref = positional[0]; break;
     case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
-    case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
+    case "type": {
+      // --ref is the first word given as a flag: on 11-16 `type --tab N
+      // --ref 1 "Eval Agent"` looked for "Eval Agent" on the page.
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      args.text = words.join(" ").replace(/^"|"$/g, "");
+      args.append = hasFlag("append", rest);
+      break;
+    }
     case "press": {
       args.key = positional[0];
       const ref = flag("ref", rest);
@@ -1076,8 +1085,10 @@ async function main() {
       break;
     }
     case "select": {
-      args.ref = positional[0];
-      if (positional.length > 1) args.option = positional.slice(1).join(" ");
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      if (words.length) args.option = words.join(" ");
       break;
     }
     case "hover": args.ref = positional[0]; break;
@@ -1167,7 +1178,9 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": case "read": args.url = positional[0]; break;
-    case "map": args.urls = positional; break;
+    // No words leave the urls to --urls '[…]', as map --help offers: on
+    // 11-16 that form failed "map needs urls".
+    case "map": if (positional.length) args.urls = positional; break;
     case "pdf": {
       // On 10-29 `pdf --do read --url` failed "tab is required": do was
       // save before the flags were read.
