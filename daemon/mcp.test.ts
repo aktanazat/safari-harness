@@ -162,7 +162,9 @@ import { TOOLS } from "./tools.ts";
 // pass what the list hid: two maps of measuring scripts failed every page
 // after one threw, for want of read (LOCK#1331, BERK#65), and window's
 // width, the window's points, gave pages 455 and 1038 CSS px for 390.
-const TOOL_LIST_MAX_BYTES = 28_714;
+// Merged with master on 11-17, master's map concurrency and playbooks
+// drafts (79) brought it to 28,793.
+const TOOL_LIST_MAX_BYTES = 28_793;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

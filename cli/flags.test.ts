@@ -12,7 +12,8 @@ const server = Bun.serve({
   async fetch(req) {
     const { tool, args }: { tool: string; args: Record<string, unknown> } = await req.json();
     calls.push({ tool, args });
-    return Response.json({ ok: true, value: "done" });
+    // type lists tabs first, to refuse a send from Slack's own page (input.ts).
+    return Response.json({ ok: true, value: tool === "tabs" ? { tabs: [] } : "done" });
   },
 });
 afterAll(() => server.stop(true));
