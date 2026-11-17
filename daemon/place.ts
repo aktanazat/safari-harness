@@ -6,8 +6,9 @@ import { bridge } from "./bridge.ts";
 import { input } from "./front.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
-// A display, its name, and the part of it the menu bar and Dock leave free.
-type Screen = { name?: string; frame: Rect; visible: Rect };
+// A display, its id and name, and the part of it the menu bar and Dock
+// leave free.
+type Screen = { id?: number; name?: string; frame: Rect; visible: Rect };
 type Here = { at: Rect; front: Rect[]; behind: Rect[]; screen: Rect; screens: Screen[] };
 
 const FRAME_MS = 5000;
@@ -96,6 +97,11 @@ async function onScreen(tab: number): Promise<Here | "hidden" | undefined> {
   return { at, front: windows.slice(0, mine[0]), behind: windows.slice(mine[0] + 1), screen: screen.frame, screens };
 }
 
+// Windows a screenshot has moved and not yet put back, by size: a sweep
+// that met one there would take it for a window the user moved.
+const uncovering = new Set<string>();
+const sizeKey = (r: { width: number; height: number }) => `${Math.round(r.width)}x${Math.round(r.height)}`;
+
 // A screenshot may temporarily move its owned window where Safari can paint
 // it. Return a restoration step only when it moved; a user who moves the
 // window during capture keeps their chosen position.
@@ -105,17 +111,29 @@ export async function uncover(tab: number): Promise<(() => Promise<void>) | "sho
   const to = showingSpot(here);
   if (!to) return "covered";
   if (to.x === here.at.x && to.y === here.at.y) return "shown";
-  await bridge.request("windows.frame", [tab, { left: Math.round(to.x - here.screen.x), top: Math.round(to.y - here.screen.y) }], FRAME_MS);
-  const placed = await onScreen(tab);
-  if (placed === undefined || placed === "hidden") {
-    await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - here.screen.x), top: Math.round(here.at.y - here.screen.y) }], FRAME_MS);
-    return undefined;
+  const key = sizeKey(here.at);
+  uncovering.add(key);
+  let restore: (() => Promise<void>) | undefined;
+  try {
+    await bridge.request("windows.frame", [tab, { left: Math.round(to.x - here.screen.x), top: Math.round(to.y - here.screen.y) }], FRAME_MS);
+    const placed = await onScreen(tab);
+    if (placed === undefined || placed === "hidden") {
+      await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - here.screen.x), top: Math.round(here.at.y - here.screen.y) }], FRAME_MS);
+      return undefined;
+    }
+    restore = async () => {
+      try {
+        const now = await onScreen(tab);
+        if (now === undefined || now === "hidden" || now.at.x !== placed.at.x || now.at.y !== placed.at.y) return;
+        await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - now.screen.x), top: Math.round(here.at.y - now.screen.y) }], FRAME_MS);
+      } finally {
+        uncovering.delete(key);
+      }
+    };
+    return restore;
+  } finally {
+    if (!restore) uncovering.delete(key);
   }
-  return async () => {
-    const now = await onScreen(tab);
-    if (now === undefined || now === "hidden" || now.at.x !== placed.at.x || now.at.y !== placed.at.y) return;
-    await bridge.request("windows.frame", [tab, { left: Math.round(here.at.x - now.screen.x), top: Math.round(here.at.y - now.screen.y) }], FRAME_MS);
-  };
 }
 
 // The virtual display agent-display (github.com/mikedelgaudio/agent-display)
@@ -124,18 +142,37 @@ export async function uncover(tab: number): Promise<(() => Promise<void>) | "sho
 // without it keeps them where Safari puts them.
 const AGENTS = "Agents";
 
-// Moves tab's window onto the agents' display, to the place there that
+// Moves tab's window onto the Agents display, to the place there that
 // covers least of the windows already on it, since one fully covered stops
-// painting. Answers whether the window is there.
-export async function toAgentScreen(tab: number): Promise<boolean> {
+// painting. Takes no focus. Answers the display's id once the window is
+// there, undefined when the Mac has no such display or the window is not
+// found or did not land there.
+export async function toAgentScreen(tab: number): Promise<number | undefined> {
   const here = await onScreen(tab);
-  if (here === undefined || here === "hidden") return false;
-  const agents = here.screens.find((s) => s.name === AGENTS);
-  if (!agents) return false;
-  if (holding(here.at, here.screens) === agents) return true;
-  const there = [...here.front, ...here.behind].filter((w) => shared(w, agents.frame) > 0);
+  if (here === undefined || here === "hidden") return undefined;
+  const to = here.screens.find((s) => s.name === AGENTS);
+  if (!to) return undefined;
+  if (holding(here.at, here.screens) === to) return to.id;
+  const there = [...here.front, ...here.behind].filter((w) => shared(w, to.frame) > 0);
   const covered = (r: Rect) => there.reduce((sum, w) => sum + shared(r, w), 0);
-  const to = places(here.at, agents.visible, there).reduce((best, r) => (covered(r) < covered(best) ? r : best));
-  await bridge.request("windows.frame", [tab, { left: Math.round(to.x - here.screen.x), top: Math.round(to.y - here.screen.y) }], FRAME_MS);
-  return true;
+  const spot = places(here.at, to.visible, there).reduce((best, r) => (covered(r) < covered(best) ? r : best));
+  await bridge.request("windows.frame", [tab, { left: Math.round(spot.x - here.screen.x), top: Math.round(spot.y - here.screen.y) }], FRAME_MS);
+  const landed = await onScreen(tab);
+  return landed !== undefined && landed !== "hidden" && holding(landed.at, landed.screens)?.name === AGENTS ? to.id : undefined;
+}
+
+// Where the Safari window of each size is: on the Agents display, off it,
+// or undefined when not on screen (minimized, on another desktop) or two
+// windows share the size. agents is that display's id, which a restarted
+// agent-display changes; undefined while the Mac has none.
+export async function agentWindows(sizes: { width: number; height: number }[]): Promise<{ agents?: number; at: ("agents" | "off" | undefined)[] }> {
+  const { windows, screens } = (await input(["windows"], FRAME_MS)) as { windows: (Rect & { safari: boolean })[]; screens: Screen[] };
+  const agents = screens.find((s) => s.name === AGENTS);
+  if (!agents) return { at: [] };
+  const at = sizes.map(({ width, height }) => {
+    const mine = windows.filter((w) => w.safari && Math.abs(w.width - width) < 1 && Math.abs(w.height - height) < 1);
+    if (mine.length !== 1 || uncovering.has(sizeKey(mine[0]))) return undefined;
+    return holding(mine[0], screens) === agents ? "agents" : "off";
+  });
+  return { agents: agents.id, at };
 }
