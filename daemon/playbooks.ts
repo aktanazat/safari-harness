@@ -381,7 +381,7 @@ export const PLAYBOOK_TOOLS: Record<string, Tool> = {
       selector: { type: "string", description: "" },
       resultSelector: { type: "string", description: "" },
       output: { type: "object", description: '{"rows":"tr.item","fields":{"title":".title"}}' },
-      applied: { type: "object", description: '{"param":"query","in":"hash","prefix":"search/"}' },
+      applied: { type: "object", description: '{"param":"query","in":"hash","prefix":"search/"} or {"param":"query","in":"query","key":"q"}' },
       example: { type: "object", description: "live inputs" },
       vars: { type: "object", description: "" },
     },

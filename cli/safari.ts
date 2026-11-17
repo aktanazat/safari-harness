@@ -257,6 +257,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari playbooks save --tab N --selector '#results[data-ready="yes"]'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']
                       [--applied '{"param":"q","in":"hash","prefix":"search/"}']
+                      [--applied '{"param":"q","in":"query","key":"q"}']
                       [--result-selector '#results']
                                              verify new results; optionally return rows
   safari playbooks list | cancel --tab N
