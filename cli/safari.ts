@@ -75,17 +75,20 @@ const USAGE = `safari — drive Safari from the terminal
   safari focus <tab>                         activate a tab
   safari snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
                                              page outline with [ref]s; recoverable updates
-  safari click <ref> --tab N                 click by snapshot ref
+  safari click <ref|text|sel> --tab N        click a snapshot ref, the control's visible
+                                             text ("Continue"), or a CSS selector: no
+                                             need to grep a ref out of a snapshot
   safari clickat <x> <y> --tab N             click by coordinates
-  safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
+  safari type <ref|text|sel> <text> --tab N  type into a field; '{{code}}' in text types the
                                              code texted or mailed to him (--secret mail: Gmail only;
                                              --secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
-  safari press <key> [--ref R] --tab N       press a key
-  safari select <ref> [option] --tab N       choose a dropdown option; none lists them
+  safari press <key> [--ref R] --tab N       press a key (R: ref, text, or selector)
+  safari select <ref|text|sel> [option] --tab N
+                                             choose a dropdown option; none lists them
   safari refill --tab N                      put back the form fields a click sent on
                                              before the page emptied them (an error, a sign-in)
-  safari hover <ref> --tab N                 hover an element
+  safari hover <ref|text|sel> --tab N        hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
   safari upload --find <words> --tab N       list the user's files that match, to pick

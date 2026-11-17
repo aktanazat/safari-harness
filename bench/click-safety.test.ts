@@ -406,6 +406,16 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
+    // in the 11-16 sessions an empty grep for a ref sent click ""
+    name: "an empty target says it is empty and that nothing was sent",
+    page: targets,
+    steps: [
+      { op: "click", args: [""], answer: { error: expect.stringContaining("the target is empty"), failure: unsent } },
+      { op: "type", args: [" ", "hi", { noWaitAfter: true }], answer: { error: expect.stringContaining("the target is empty"), failure: unsent } },
+      { op: "select", args: ["", "Pro"], answer: { error: expect.stringContaining("the target is empty"), failure: unsent } },
+    ],
+  },
+  {
     name: "select propagates an option's click refusal instead of reporting it was chosen",
     page: targets,
     steps: [

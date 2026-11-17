@@ -1530,9 +1530,13 @@
   // A ref or text that names nothing sent nothing, as keptFor in
   // background.js relies on, so its answer says so (failures.ts). A lookup
   // of a mark after real input went (typeField, sendButton, pressDone)
-  // drops that: the input was sent.
+  // drops that: the input was sent. An empty target is named as one: in
+  // the 11-16 sessions agents grepped refs out of snapshots 126 times,
+  // and a grep that found nothing sent "".
+  const EMPTY_TARGET = "the target is empty (a grep for its ref found nothing?): pass the control's visible text or a CSS selector, as a ref";
   function missing(target) {
     const key = String(target).trim();
+    if (!key) return { error: EMPTY_TARGET, failure: UNSENT };
     if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
     return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}`, failure: UNSENT };
   }

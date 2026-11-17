@@ -1589,7 +1589,7 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
     return sent ? afterStep(tab, sent, result, opts.noWaitAfter !== true) : result;
   }
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
-  throw new HarnessError("invalid_argument", "click needs ref or x+y");
+  throw new HarnessError("invalid_argument", "click needs a target: a snapshot ref, the control's visible text, or a CSS selector (or x and y); an empty grep for a ref leaves none");
 }
 
 async function clickRef(tab: number, ref: number | string, opts: { noWaitAfter?: true; dismiss?: true }): Promise<unknown> {
