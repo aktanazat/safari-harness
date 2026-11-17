@@ -282,6 +282,18 @@
     return TEXT_NAMED_TAGS.test(el.tagName) || NAME_FROM_CONTENT.has(el.getAttribute("role"));
   }
 
+  // A box named by a label elsewhere that opens a list of choices shows
+  // the one picked as its own text, which is its value, as a select's
+  // picked option is: Robinhood's "Sell in" box printed "Dollars" on a line
+  // of its own, which a query for the box left out, and on 11-17 an agent
+  // opened the list to learn the choice. A box that holds its field or
+  // list (ARIA 1.1's combobox around an input and its listbox) shows no
+  // choice of its own: its text is the options'.
+  function showsChoice(el, role) {
+    return !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && (role === "combobox" || el.getAttribute("aria-haspopup") === "listbox")
+      && !el.querySelector("input, select, textarea, [role=listbox], [role=option], [role=textbox]");
+  }
+
   function accessibleName(el) {
     const own = ownName(el);
     if (own !== null) return own;
@@ -938,10 +950,11 @@
       // source and style rules as its text.
       if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+      const clear = transparent(el, style);
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
-        if (style.display === "none" || (transparent(el, style) && !standIn(el))) return;
+        if (style.display === "none" || (clear && !standIn(el) && !labelDraws(el))) return;
         if (style.position === "fixed" && (el.getClientRects().length === 0 || putAway(el.getBoundingClientRect(), el.ownerDocument.defaultView || window))) return;
       }
       // A child of a hidden element can show itself with visibility: visible
@@ -959,14 +972,18 @@
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
         parent.kids.push(node);
         seen ||= actionable && !boxed;
-        // A field with no box of its own (appearance: none, 0 by 0) is one
-        // its label draws.
-        if (actionable && !boxed && el.labels?.length) {
+        // A field with no box of its own (appearance: none, 0 by 0), or
+        // one drawn transparent, is one its label draws.
+        if (actionable && !boxed && !clear && el.labels?.length) {
           const r = el.getBoundingClientRect();
           if (r.width && r.height) fields.set(el, node);
         }
         if (node.name === null && namedByContent(el)) {
           node.text = [];
+          named = [...named, node];
+        } else if (node.name && showsChoice(el, role)) {
+          node.text = [];
+          node.choice = true;
           named = [...named, node];
         }
       } else if ((el.tagName === "UL" || el.tagName === "OL") && inItem) {
@@ -1014,7 +1031,11 @@
         }
       }
       if (node.el !== el) return;
-      if (node.text) {
+      if (node.choice) {
+        const full = norm(node.text.join(""));
+        if (full) node.choice = full.length > 40 ? full.slice(0, 40) + "…" : full;
+        delete node.text;
+      } else if (node.text) {
         const full = norm(node.text.join(""));
         const cap = /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX;
         if (full) {
@@ -1069,6 +1090,7 @@
     // stated name or title can run to a whole commit message: one line of it.
     const head = (n) => {
       const st = stateOf(n.el);
+      if (typeof n.choice === "string") st.push(`value="${n.choice}"`);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
       const first = url && gave.get(hrefOf(n));
@@ -1145,7 +1167,7 @@
         if (typeof c !== "object") {
           let { items, next } = textItems(kids, i);
           i = next;
-          if (node.fromText && !node.long) continue; // already the name
+          if ((node.fromText && !node.long) || node.choice) continue; // already the name, or the choice it shows
           // text a stated name already carries (aria-label ".cargo, (Directory)" over ".cargo")
           if (node.name && !node.fromText) items = items.filter((t) => !node.name.toLowerCase().includes(t.toLowerCase()));
           // short neighbours share a line ("£51.77 · In stock"); table rows and long text keep their own
@@ -1381,9 +1403,15 @@
   // box counts when the hand starts there (not a row's hand it inherits),
   // it holds no words (a row's title), and it holds no other control. An
   // input refused for any reason but being unseen (disabled, inert) has
-  // none, so its refusal stands.
+  // none, so its refusal stands. One a label draws (labelDraws) has that
+  // label, when the label holds no other control: a click on the radio's
+  // ref the snapshot prints is the label's click, not a refusal naming it.
   const STAND_IN_CONTROLS = "input, select, textarea, button, a[href], [role=button], [role=link], [role=switch], [role=checkbox], [role=radio]";
   function standIn(el) {
+    if (labelDraws(el)) {
+      const label = el.parentElement.closest("label");
+      return !hittable(el) && [...label.querySelectorAll(STAND_IN_CONTROLS)].every((c) => c === el) ? label : null;
+    }
     if (!el.matches("input[type=checkbox], input[type=radio]") || hittable(el) || [...el.labels].some(hittable) || clickBlocked(el)?.reason !== "hidden") return null;
     for (let box = parentOf(el), up = 0; box && up < 3; box = parentOf(box), up++) {
       if (!hittable(box)) continue;
@@ -1391,6 +1419,18 @@
       return !box.textContent.trim() && [...box.querySelectorAll(STAND_IN_CONTROLS)].every((c) => c === el) ? box : null;
     }
     return null;
+  }
+
+  // A checkbox or radio drawn transparent inside a label a person sees: the
+  // label draws it and takes its click, and the snapshot prints it under
+  // the label with its state, as it does one cut to a pixel. On 11-17 Bank
+  // of America's Zelle contact choice printed three labels and no radio,
+  // and which one was checked took an eval over input. One laid over a
+  // label outside it (Wikipedia's menu checkbox) stays unprinted: the
+  // label's line is the one to click.
+  function labelDraws(el) {
+    const label = el.parentElement?.closest("label");
+    return /^(checkbox|radio)$/.test(getExplicitRole(el)) && el.tagName === "INPUT" && label?.control === el && hittable(label);
   }
 
   // The dialog open over the page: the last shown, when several are.

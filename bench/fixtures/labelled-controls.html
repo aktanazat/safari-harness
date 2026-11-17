@@ -1,0 +1,44 @@
+<!doctype html>
+<title>Labelled controls</title>
+<!-- Form controls a snapshot must print as themselves, from a session on
+     11-17 that read each one with an eval over input instead. Bank of
+     America's Zelle contact choice: radios in one group, each inside the
+     label whose text names it, drawn transparent under a styled dot. A
+     plain radio named by label[for]. A radio clipped to nothing (the
+     screen-reader-only pattern) beside its own label. A payment date typed
+     into a text field its label names, beside a calendar button. Robinhood's
+     "Sell in" box: a button named by a label elsewhere, showing its current
+     choice as its own text, its list not drawn until it opens, and an
+     "Order type" button that opens a list the same way without the role.
+     A "Fruit" combobox in the ARIA 1.1 way, wrapping its input and its
+     open list, which holds no choice of its own. -->
+<style>
+  .dot input { opacity: 0; position: absolute; }
+  .dot span::before { content: ""; display: inline-block; width: 12px; height: 12px; border: 1px solid #333; border-radius: 50%; margin-right: 4px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+<fieldset>
+  <legend>Contact method</legend>
+  <label class="dot"><input type="radio" name="zelle_email_mobile" id="radio_0" value="0"><span>Email address</span></label>
+  <label class="dot"><input type="radio" name="zelle_email_mobile" id="radio_1" value="1" checked><span>Mobile number</span></label>
+  <label class="dot"><input type="radio" name="zelle_email_mobile" id="radio_2" value="2"><span>Add mobile number or email</span></label>
+</fieldset>
+<fieldset>
+  <legend>Frequency</legend>
+  <input type="radio" name="frequency" id="once" value="once" checked><label for="once">One time</label>
+  <input type="radio" name="frequency" id="repeat" value="repeat"><label for="repeat">Repeating</label>
+</fieldset>
+<fieldset>
+  <legend>Delivery</legend>
+  <input class="sr" type="radio" name="speed" id="standard" value="standard"><label for="standard">Standard</label>
+  <input class="sr" type="radio" name="speed" id="instant" value="instant" checked><label for="instant">Instant</label>
+</fieldset>
+<label for="paymentDate-1">Choose a payment date *</label>
+<input type="text" id="paymentDate-1" value="11/18/2026">
+<button aria-label="Calendar for Choose a payment date" aria-haspopup="dialog" aria-expanded="false"></button>
+<label id="sell-in">Sell in</label>
+<button role="combobox" aria-labelledby="sell-in" aria-haspopup="listbox" aria-expanded="false"><span>Dollars</span></button>
+<span id="order-type">Order type</span>
+<button aria-haspopup="listbox" aria-labelledby="order-type" aria-expanded="false">Market order</button>
+<span id="fruit">Fruit</span>
+<div role="combobox" aria-labelledby="fruit" aria-expanded="true" aria-haspopup="listbox"><input aria-labelledby="fruit" value=""><ul role="listbox"><li role="option">Apple</li><li role="option">Banana</li></ul></div>
