@@ -42,10 +42,11 @@ db.exec(`
   CREATE TABLE message (date INTEGER, is_from_me INTEGER, text TEXT, attributedBody BLOB,
     cache_has_attachments INTEGER, handle_id INTEGER, item_type INTEGER, associated_message_type INTEGER,
     is_sent INTEGER, is_delivered INTEGER, error INTEGER);
-  INSERT INTO handle VALUES ('63641'),('22395');
+  INSERT INTO handle VALUES ('63641'),('22395'),('73981');
 `);
 const APPLE = Date.UTC(2001, 0, 1);
-// A text at ms at from handle 1, the shop's short code, or 2, another site's.
+// A text at ms at from handle 1, the shop's short code, 2, another site's,
+// or 3, Bank of America's.
 function text(body: string, at = Date.now(), handle = 1) {
   db.query("INSERT INTO message VALUES (?, 0, ?, NULL, 0, ?, 0, 0, 0, 1, 0)").run((at - APPLE) * 1e6, body, handle);
 }
@@ -267,6 +268,15 @@ test("a texted code that does not name the page's site is passed over, unless it
   expect(error).toContain("passed over a code that does not name shop.example (text from 22395); a code that does not name shop.example (text from 63641)");
   expect(fields).toEqual([]);
   expect(await waited(invoke("type", { ...CALL, sender: "63641" }, true))).toMatchObject({ ok: true, source: "text from 63641" });
+  expect(fields).toEqual(typedCode(CODE));
+});
+
+// 11-17: Bank of America texted its code from 73981 without its name; the
+// call waited 30 s, and only a second one with sender typed it.
+test("a code texted without the site's name from a number its guide names is typed in one call", async () => {
+  page = "https://secure.bankofamerica.com/auth/signon/#/authcode";
+  setTimeout(() => text(`${CODE} is your authorization code. Never share it.`, Date.now(), 3), 1_000);
+  expect(await waited(invoke("type", { ...CALL, secret: "sms" }, true))).toMatchObject({ ok: true, source: "text from 73981" });
   expect(fields).toEqual(typedCode(CODE));
 });
 
