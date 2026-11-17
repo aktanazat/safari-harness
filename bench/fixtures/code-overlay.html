@@ -1,0 +1,21 @@
+<!doctype html>
+<title>Verify it's you</title>
+<!-- A sign-in's code step (11-17): one unnamed text input marked
+     one-time-code, made transparent over the six boxes that draw its
+     digits, so the boxes show what is typed. -->
+<style>
+  .otp { position: relative; display: inline-flex; gap: 8px; }
+  .otp span { width: 32px; height: 40px; border: 1px solid #888; display: inline-block; }
+  .otp input { position: absolute; inset: 0; opacity: 0; }
+</style>
+<div class="otp">
+  <span></span><span></span><span></span><span></span><span></span><span></span>
+  <input type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Six-digit verification code" maxlength="6">
+</div>
+<button type="button" id="verify">Verify</button>
+<p id="said"></p>
+<script>
+  verify.addEventListener("click", () => {
+    said.textContent = document.querySelector("input").value === "402913" ? "Code accepted" : "Wrong code";
+  });
+</script>

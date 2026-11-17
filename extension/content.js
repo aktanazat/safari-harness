@@ -2877,16 +2877,23 @@
   }
 
   // A verification-code field: the one marked one-time-code, a row of code
-  // boxes (one digit each), or one named like a code.
+  // boxes (one digit each), or one named like a code. Last, a marked one
+  // drawn transparent with a box of its own: SoFi's code step (11-17) draws
+  // six boxes under one unnamed input at opacity 0, and code answered that
+  // no field was there. A shown field wins over it, so a faded panel left
+  // in the page is never filled in place of the one shown.
   function codeFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const inputs = deepQueryAll(CODE_INPUTS).filter(usable);
+    const all = deepQueryAll(CODE_INPUTS);
+    const inputs = all.filter(usable);
     const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
     if (marked) return [marked];
     const boxes = codeBoxes();
     if (boxes.length) return boxes;
     const named = inputs.find((el) => /otp|one.?time|totp|2fa|mfa|verif|security.?code|auth.?code|\bcode\b/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") ?? ""} ${el.placeholder}`));
-    return named ? [named] : [];
+    if (named) return [named];
+    const drawnOver = all.find((el) => el.getAttribute("autocomplete") === "one-time-code" && !el.disabled && !el.readOnly && el.ownerDocument.defaultView.getComputedStyle(el).visibility !== "hidden" && [...el.getClientRects()].some((r) => r.width >= 1 && r.height >= 1));
+    return drawnOver ? [drawnOver] : [];
   }
 
   // The ways a sign-in offers to send its code, when it asks for one before

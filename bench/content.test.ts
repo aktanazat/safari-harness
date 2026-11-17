@@ -207,6 +207,25 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "a code field marked one-time-code and drawn transparent over its digit boxes is found and filled",
+    page: "code-overlay.html",
+    steps: [
+      { op: "eval", args: ["window.__safariHarnessProbe.code()"], answer: { value: { ok: true, result: { found: true } } } },
+      { op: "fillCode", args: ["", "402913"], answer: { value: { ok: true, filled: ["code"] } } },
+      { op: "click", args: ["Verify"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
+    name: "a shown code field is filled in place of a marked one faded out before it",
+    page: "code-faded-panel.html",
+    steps: [
+      { op: "fillCode", args: ["", "402913"], answer: { value: { ok: true, filled: ["code"] } } },
+      { op: "click", args: ["Verify"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
     name: "a code typed as a secret is cut from what the page answers, where the page repeats it in the field's name and its text, and a longer number holding its digits stays whole",
     page: "echo-code.html",
     steps: [

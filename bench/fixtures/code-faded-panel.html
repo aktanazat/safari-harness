@@ -1,0 +1,14 @@
+<!doctype html>
+<title>Verify it's you</title>
+<!-- A code step that keeps its other way in the page faded out: the
+     emailed-code panel at opacity 0 comes first, the texted-code field
+     shown after it. Only the shown field is read. -->
+<div><input type="text" autocomplete="one-time-code" aria-label="Emailed code" style="opacity: 0"></div>
+<input type="text" autocomplete="one-time-code" aria-label="Texted code" id="shown">
+<button type="button" id="verify">Verify</button>
+<p id="said"></p>
+<script>
+  verify.addEventListener("click", () => {
+    said.textContent = document.getElementById("shown").value === "402913" ? "Code accepted" : "Wrong code";
+  });
+</script>
