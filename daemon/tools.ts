@@ -26,7 +26,7 @@ import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAns
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
-import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
+import { site, urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
@@ -1960,7 +1960,9 @@ async function blankHint(tab: number, end: number): Promise<string> {
 // September such sleeps held agents about 9 minutes. A page that cannot be
 // watched still gets its ms, as a sleep did. On screen (front), it holds
 // the tab there all of ms: what it waits on is an animation, which a quiet
-// page does not rule out.
+// page does not rule out. A bare wait is a quiet wait of the default ms,
+// as its description says: `safari open X && safari wait` failed on
+// "wait needs ms ..." in the work sessions of 11-16.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
   // The wait's time runs from the call, finding the user's front tab in it:
   // a list Safari was slow to give held a 3 s wait on --tab front 5 s more
@@ -1968,7 +1970,6 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   const start = Date.now();
   if (opts.look !== undefined) return relay(await resolveTab(opts.tab), "wait", [null, { look: opts.look }]);
   const named = waitsOnPage(opts);
-  if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const asked = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
   // On screen, the tab holds the user's screen all the while: 30 s at most.
   const most = opts.front ? 30000 : WAIT_MAX_MS;

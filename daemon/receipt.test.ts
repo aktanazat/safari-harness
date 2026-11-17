@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { effectOf, keepRequest, NO_EFFECT, type RawReceipt, site, urlMatch, WAIT_NEEDS } from "./receipt.ts";
+import { effectOf, keepRequest, NO_EFFECT, type RawReceipt, site, urlMatch } from "./receipt.ts";
 import { callTool } from "./tools.ts";
 
 // An action's receipt (receipt.ts, withReceipt in content.js) and the waits
@@ -388,7 +388,6 @@ test("a wait on several texts asks the page for all it wants and says which it s
 
 test("a wait refuses what the page could not check", async () => {
   safari({});
-  await expect(callTool("wait", { tab: 7 })).rejects.toThrow(WAIT_NEEDS);
   await expect(callTool("wait", { tab: 7, any: "Placed" })).rejects.toThrow("any must be a list of texts");
   await expect(callTool("wait", { tab: 7, any: [] })).rejects.toThrow("any must be a list of texts");
   await expect(callTool("wait", { tab: 7, url: "/(/" })).rejects.toThrow("is not a valid /regex/");
@@ -399,6 +398,12 @@ test("a wait refuses what the page could not check", async () => {
 test("a wait with only ms ends once the page settles, which it asks the page for", async () => {
   const sent = safari({ wait: () => ({ found: true }) });
   expect(await callTool("wait", { tab: 7, ms: 20000 })).toMatchObject({ ok: true });
+  expect(sent).toEqual([["wait", [null, { quiet: true }]]]);
+});
+
+test("a bare wait is a quiet wait of the default ms, as its description says", async () => {
+  const sent = safari({ wait: () => ({ found: true }) });
+  expect(await callTool("wait", { tab: 7 })).toMatchObject({ ok: true });
   expect(sent).toEqual([["wait", [null, { quiet: true }]]]);
 });
 

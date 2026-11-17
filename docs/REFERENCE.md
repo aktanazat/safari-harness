@@ -2066,7 +2066,7 @@ Wait for the page, not the clock.
   carries `challenge`.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
-- `wait` with only `ms` ends once the page goes quiet, `ms` at most. On a
+- `wait` with only `ms`, or with nothing (10 s), ends once the page goes quiet, `ms` at most. On a
   page that cannot be watched it waits out all of `ms`. Prefer text or a
   selector: a quiet page may not yet show what you came for. In a CLI
   script, never put a shell `sleep` before a command: `safari wait --text
