@@ -29,7 +29,7 @@ const ABOVE = { frame: { x: -538, y: -1440, width: 2560, height: 1440 }, visible
 const HIS = { id: 1, safari: true, ...MAIN.visible };
 const SAFARI_PUT = { x: -538, y: -1440 };
 // The virtual display agent-display adds right of the main one, for agents.
-const AGENTS = { name: "Agents", frame: { x: 1512, y: 0, width: 2560, height: 1440 }, visible: { x: 1512, y: 0, width: 2560, height: 1440 } };
+const AGENTS = { id: 26, name: "Agents", frame: { x: 1512, y: 0, width: 2560, height: 1440 }, visible: { x: 1512, y: 0, width: 2560, height: 1440 } };
 const UNPAINTED = "screenshot privacy: the protected page did not paint";
 
 const shared = (a: Rect, b: Rect) =>
@@ -149,4 +149,47 @@ test("on a Mac with an Agents display, a new agent window opens there, clear of 
   expect(shared(opened, AGENTS.frame)).toBe(opened.width * opened.height);
   expect(shared(opened, there)).toBe(0);
   expect([byId(windows, 1), byId(windows, 2)]).toEqual([HIS, there]);
+});
+
+const onAgents = (w: Rect) => shared(w, AGENTS.frame) === w.width * w.height;
+
+test("an agent window opened while the Agents display was down goes there once a sweep finds the display back", async () => {
+  const screens = [MAIN, ABOVE];
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, screens);
+  const fresh = (await import(`./spaces.ts?down`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("down"));
+  const before = onAgents(byId(windows, space.window));
+  screens.push(AGENTS);
+  await fresh.sweep();
+  expect([before, onAgents(byId(windows, space.window))]).toEqual([false, true]);
+});
+
+test("an agent window the user moves off the Agents display stays where he put it, through an activate and its turn's end", async () => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  const fresh = (await import(`./spaces.ts?moved`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("moved"));
+  Object.assign(byId(windows, space.window), { x: 100, y: 100 });
+  await fresh.sweep();
+  runAs(process.pid, () => fresh.showing(space.window));
+  fresh.unshow(process.pid, undefined);
+  await fresh.sweep();
+  expect(byId(windows, space.window)).toMatchObject({ x: 100, y: 100 });
+});
+
+// omp's tasks: a lead's [session, agent], and a helper's with its lead.
+const LEAD = JSON.stringify(["s", "Main"]);
+const HELPER = JSON.stringify(["s", "Helper", "Main"]);
+
+test("a window activate showed stays on his screen through another task's turn end, and goes back at the end of its own", async () => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  const fresh = (await import(`./spaces.ts?shown`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("shown"), LEAD);
+  runAs(process.pid, () => fresh.showing(space.window), LEAD);
+  Object.assign(byId(windows, space.window), { x: 100, y: 100 });
+  fresh.unshow(process.pid, HELPER);
+  await fresh.sweep();
+  const afterHelper = onAgents(byId(windows, space.window));
+  fresh.unshow(process.pid, LEAD);
+  await fresh.sweep();
+  expect([afterHelper, onAgents(byId(windows, space.window))]).toEqual([false, true]);
 });
