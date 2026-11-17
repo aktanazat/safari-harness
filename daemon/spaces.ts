@@ -36,7 +36,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, linkDropped, windowPageClosed, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -543,6 +543,8 @@ async function end(space: Space) {
   const failed = unclosed.get(space);
   if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
+  // a Safari that started again may not have restored a window from before
+  if (inWindow.length === 0 && stillFinding() && (space.used ?? 0) < (bridge.extensionInfo?.connectedAt ?? 0)) return;
   if (!space.done || (taskTracked?.(space.owner) !== false && pagesIn(inWindow, space).length > 0)) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
@@ -740,9 +742,10 @@ export function spaceEnded(id: string): boolean {
 
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
+// A window that ended still holds its agent's tabs until they close.
 export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task"> & { family?: true }> {
   const owners = new Map<number, Pick<Space, "owner" | "task"> & { family?: true }>();
-  const byId = new Map([...spaces.values()].map((space) => [space.id, space]));
+  const byId = new Map([...ended, ...closing.values(), ...spaces.values()].map((space) => [space.id, space]));
   for (const t of tabs) {
     const p = pageAt(t);
     const space = p === undefined ? undefined : byId.get(p.id);

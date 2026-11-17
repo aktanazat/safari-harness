@@ -473,6 +473,19 @@ function lost(tab: number, reopens: boolean): void {
   note("tab gone", { tab, owner: t.owner ?? null });
 }
 
+// Whether what the harness holds and Safari does not list now may still be
+// found under a new id: the extension's page started (a reload, or Safari
+// starting again) less than RECOVERY_MS ago, and a late page's id may
+// still come (lateMark in background.js), or Safari may still be restoring
+// its windows (restored, and located in spaces.ts). On 11-16 Safari quit
+// 7 s after a reload and started again; the sweep listed its tabs 40 ms
+// after it connected, before it had restored any window, and let 45
+// agents' tabs go, open for good. A socket that only dropped keeps its
+// page, and its tab ids.
+export function stillFinding(): boolean {
+  return Date.now() - (bridge.extensionInfo?.started ?? 0) < RECOVERY_MS;
+}
+
 // What closed a tab Safari says is gone, for a call that named it as: on
 // 10-16 Safari lost every hunt tab as it restored its windows after a
 // crash, and six agents were told their turns had ended or the tabs sat
@@ -805,7 +818,7 @@ async function sweepOnce() {
     if (harnessTabs.get(tab) !== t) return;
     const page = shown.get(tab);
     if (!page) {
-      lost(tab, false);
+      if (!reconnectedSince(t) || !stillFinding()) lost(tab, false);
       return;
     }
     await closeTrackedTab(tab, t, page);
