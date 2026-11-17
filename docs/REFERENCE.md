@@ -833,8 +833,9 @@ things unless its saved task explicitly says to.
   on its own stays the user's until the page reloads.
 - "that tab is gone: tab N was closed <why> at <time> (it showed <url>);
   open it again": the harness closed it itself (a close call, the end of
-  your turn, 20 minutes unused, its agent exited, or "with its window" as
-  that window's task ended). "agent P's tab N" says another agent's
+  your turn, 2 minutes unused, past its agent's limit of 4 open tabs, its
+  agent exited, or "with its window" as that window's task ended).
+  "agent P's tab N" says another agent's
   cleanup closed it, not yours. If a safe address was retained for
   recovery, the original tab id can reopen it for five
   minutes after closure ([cleanup and recovery](#cleanup-authority)).
@@ -843,7 +844,7 @@ things unless its saved task explicitly says to.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
   - "the harness closed it <t> ago, as its agent's turn or task ended or
-    after 20 minutes unused".
+    after 2 minutes unused".
   - "it closed with its window <t> ago".
   - "the user or its own page closed it <t> ago".
   - "Safari has had no tab N in the <t> since the extension started": it

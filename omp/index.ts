@@ -140,7 +140,7 @@ async function release(pi: ExtensionApi, task?: string): Promise<void> {
   const base = daemonHttp();
   const warn = (e: unknown) => {
     const timedOut = e instanceof Error && e.name === "TimeoutError";
-    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 20 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
+    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 2 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
   };
   try {
     let answer = await releaseOnce(base, admission);

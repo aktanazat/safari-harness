@@ -529,10 +529,28 @@ export function loadTabs(path: string): void {
   save();
 }
 
+// Each agent session keeps at most AGENT_TAB_CAP of its own tabs open: a
+// new one closes its least recently used idle tabs past the cap (11-16:
+// 37 windows and 133 tabs left open stalled Safari's tab opens, and the
+// extension reload that followed did not come back).
+const AGENT_TAB_CAP = 4;
+
 function own(tab: number, owner: number | undefined, task = currentTask()) {
   remember(tab, owner, Date.now(), task);
   tabChanges++;
   save();
+  if (owner !== undefined) void capTabs(owner, task, tab).catch(() => {});
+}
+
+async function capTabs(owner: number, task: string | undefined, opened: number): Promise<void> {
+  const mine = [...harnessTabs].filter(([tab, t]) => tab !== opened && matchesTask(t, owner, task));
+  const extra = mine.length + 1 - AGENT_TAB_CAP;
+  if (extra <= 0) return;
+  const closable = mine.filter(([tab, t]) => {
+    const handoff = handoffs.get(tab);
+    return !t.closing && !t.calls?.size && !t.handoff && !(handoff && !handoff.done && handoff.error === undefined);
+  }).sort(([, a], [, b]) => a.used - b.used).slice(0, extra);
+  await Promise.all(closable.map(([tab, t]) => closeTrackedTab(tab, t)));
 }
 
 
@@ -757,7 +775,7 @@ function sweep(): Promise<void> {
 // and on 10-29 the extension had answered 19,614 closes and opened 626
 // tabs in 14 hours (/health), a refusal setting no wait. A close the
 // extension's link took down goes again on the next connection.
-const IDLE_MS = 20 * 60_000;
+const IDLE_MS = 2 * 60_000;
 
 async function sweepOnce() {
   // Timer work never starts Safari: once the user quits it, only a caller's
@@ -811,7 +829,7 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo): Pro
       if (res?.protected === "form") t.acted = true;
       closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
     } else {
-      const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 20 minutes unused";
+      const why = t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : t.used > Date.now() - IDLE_MS ? "past its agent's limit of open tabs" : "after 2 minutes unused";
       recordClosed(tab, why, resumeAddress(shown?.url ?? t.url), t.owner, undefined, shown?.title);
       forget(tab);
       note("tab closed", { tab, owner: t.owner ?? null, why });
