@@ -544,8 +544,12 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   }
   const pdfRead = async (): Promise<Outcome> => ({ ok: true, value: await call("pdf", { do: "read", url: opened.url ?? url, ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}) }) });
   if (wait) {
-    const missed = missOf(await call("wait", { ...wait, tab: opened.id }), waited);
-    if (missed) return check ? { ...missed, challenge: check } : missed;
+    const seen = await call("wait", { ...wait, tab: opened.id });
+    const missed = missOf(seen, waited, url);
+    if (missed) {
+      const outcome = (await signedOut(seen, url, waited, opened.id, call)) ?? missed;
+      return check ? { ...outcome, challenge: check } : outcome;
+    }
   }
   // fetch asks again for the address the tab opened, with its cookies: the
   // body as the server sends it, where the others read the page it drew.
@@ -629,15 +633,46 @@ async function indexed(target: Target | undefined, pages: Page[]): Promise<{ ind
 // A page that never showed what the wait asked for is most often another
 // page (a redirect, a page not found): the address and title say which. A
 // page that gave the wait no answer in time (unanswered, a loaded Safari)
-// may show it all the same.
-function missOf(seen: unknown, waited = "what wait asked for"): { ok: false; error: string; failure: Failure } | undefined {
+// may show it all the same. One sent to another address says it was
+// redirected.
+function missOf(seen: unknown, waited = "what wait asked for", asked?: string): { ok: false; error: string; failure: Failure } | undefined {
   if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
   const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
   const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
-  const error = "unanswered" in seen && seen.unanswered === true
-    ? `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`
-    : `${MISSED} ${waited}; the tab is at ${at}${title}`;
+  if ("unanswered" in seen && seen.unanswered === true) {
+    const error = `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`;
+    return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
+  }
+  const error = `${MISSED} ${waited}; ${redirectedTo(seen, asked) ? "it was redirected: " : ""}the tab is at ${at}${title}`;
   return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
+}
+
+// The address a missed wait ended on, when it is not the one asked for.
+function redirectedTo(seen: object, asked: string | undefined): URL | undefined {
+  const at = "url" in seen && typeof seen.url === "string" ? URL.parse(seen.url) : null;
+  const from = asked === undefined ? null : URL.parse(asked);
+  return at && from && at.origin + at.pathname !== from.origin + from.pathname ? at : undefined;
+}
+
+// A wait that ended on a sign-in page says so: in the 11-16 work sessions
+// ServiceNow, SAP and UKG doc pages missed their waits 6 times at 20-27 s
+// each, mostly on sign-in redirects the miss did not name. An address or
+// title only nominates the page, since docs pages about sign-on match
+// them too ("Configure single sign-on | ServiceNow", help.sap.com/.../sso);
+// it is a sign-in only when its read finds a sign-in form (page-state.ts
+// login_wall). The address is read without its query (?next=/login).
+const SIGN_IN_AT = /^https?:\/\/(?:(?:login|signin|sso|auth|accounts|idp)\.|[^/]*\.(?:okta|onelogin|microsoftonline)\.com\/)|\/(?:signin|sign-in|login|log-in|sso|saml2?|oauth2?|auth)(?:\/|$)/i;
+const SIGN_IN_TITLE = /\b(?:sign[ -]?in|log[ -]?in|login|single sign-on)\b/i;
+async function signedOut(seen: unknown, asked: string, waited = "what wait asked for", tab: number | undefined, call: Call): Promise<{ ok: false; error: string; failure: Failure } | undefined> {
+  if (!seen || typeof seen !== "object") return undefined;
+  const at = redirectedTo(seen, asked);
+  const named = "title" in seen && typeof seen.title === "string" ? seen.title : "";
+  if (!at || !(SIGN_IN_AT.test(at.origin + at.pathname) || SIGN_IN_TITLE.test(named))) return undefined;
+  const read = await call("extract", { tab, maxBytes: 2000 }).catch(() => undefined);
+  const state = read && typeof read === "object" && "pageState" in read && read.pageState && typeof read.pageState === "object" && "kind" in read.pageState ? read.pageState.kind : undefined;
+  if (state !== "login_wall") return undefined;
+  const error = `redirected to sign-in at ${at.href}${named ? ` ("${named}")` : ""}, so it shows no ${waited}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: "sign in to the site in a tab (handoff for a step only the user can do), then map it again" })) };
 }
 
 type Row = { page: Page | Listing; depth: number; head: string; body: string; sep: string };
@@ -648,9 +683,12 @@ type Row = { page: Page | Listing; depth: number; head: string; body: string; se
 // followed has the pages it links to under it. Past max, an index of every
 // page comes first, and each page keeps an even share of the rest: on
 // 10-23 seven map answers were cut at a reply's 30,000 characters, and
-// three of their pages did not show at all (K6).
+// three of their pages did not show at all (K6). A page the answer's urls
+// name again is not read, not failed: on 11-16 a map of 20 X profiles
+// answered "2 read, 18 failed" while its urls named pages to map again.
 export function mapText(answer: MapAnswer, format: (value: unknown) => string, max = Infinity): string {
   const rows: Row[] = [];
+  const left = new Set(answer.urls);
   const add = (list: (Page | Listing)[], level: string, depth: number) => list.forEach((p, i) => {
     const notes = [
       `${p.ms} ms`,
@@ -665,21 +703,22 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     const titled = !!value && typeof value === "object" && "title" in value;
     const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${notes.join("; ")})`;
     const sep = i > 0 ? "\n\n" : depth > 0 ? "\n" : "";
-    if (!p.ok) return rows.push({ page: p, depth, head, body: `error: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
+    if (!p.ok) return rows.push({ page: p, depth, head, body: `${left.has(p.url) ? "not read" : "error"}: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
     if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep });
     rows.push({ page: p, depth, head, body: p.items.length ? "" : "no page of its own: its links were read above, or are past max", sep });
     add(p.items, `${level}#`, depth + 1);
   });
   add(answer.pages, "##", 0);
   const read = rows.filter((r) => r.page.ok).length;
+  const unread = rows.filter((r) => !r.page.ok && left.has(r.page.url)).length;
   const kept = rows.filter((r) => "from" in r.page && r.page.from).length;
   const top = [
     ...(rows.length > 1 || answer.urls?.length || answer.index
-      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${rows.length - read} failed${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
+      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${rows.length - read - unread} failed${unread ? `, ${unread} not read` : ""}${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
       : []),
     ...(answer.index ? [`index: ${answer.index}`] : []),
     ...(answer.urls?.length
-      ? [`not read: ${answer.urls.length} (past max, or when map's ${BUDGET_MS / 1000} s ran out); map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next: ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
+      ? [`map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next (past max, no answer in time, or past map's ${BUDGET_MS / 1000} s): ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
       : []),
   ];
   const text = (bodies: string[], lines: string[]) => [...(lines.length ? [`${lines.join("\n")}\n\n`] : []), ...rows.map((r, i) => `${r.sep}${r.head}${bodies[i] ? `\n${bodies[i]}` : ""}`)].join("");
@@ -695,7 +734,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
   });
   const index = rows.map((r, i) => {
     const p = r.page;
-    const state = !p.ok ? `failed: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `read, ${sizes[i].of}${sizes[i].saved}`;
+    const state = !p.ok ? `${left.has(p.url) ? "not read" : "failed"}: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `read, ${sizes[i].of}${sizes[i].saved}`;
     return `${"  ".repeat(r.depth)}- ${p.url}: ${state}`;
   });
   const lines = [...top, `each page below is cut to its share of ${max} characters:`, ...index];

@@ -1321,7 +1321,11 @@ first line counts the pages read and failed.
   that. Pass it for pages whose script draws what you read after they
   load (listings, prices, search results): read at once, they come back
   empty. A page that never shows it is reported with the tab's address
-  and title instead of read. Never sleep inside `expression` for this.
+  and title instead of read, saying when it was redirected, and as
+  `redirected to sign-in` (code `blocked`) when it landed on a page whose
+  address or title names a sign-in and whose read finds a sign-in form;
+  a docs page about sign-on stays a plain redirected miss. Never sleep
+  inside `expression` for this.
 - `follow: {"match": "a.result-title", "max": 20}` reads each of `urls`
   as a listing (search results, a category, a feed) instead. map takes
   the links on it to its own site: the link of each element the CSS
@@ -1343,7 +1347,9 @@ first line counts the pages read and failed.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
   reads as an error page (HTTP 400 or more, a page titled not found, a rate
-  limit): it fails, with what it read in `value`.
+  limit): it fails, with what it read in `value`. A page Safari barred
+  the extension from ("Safari would not let the extension into the tab")
+  is read once more in a new tab before it fails.
 - A page that opens as its site's error page (eBay's "Error Page | eBay")
   is loaded again 2 s and then 5 s later, and `retried` says how often;
   one that stays an error page fails with open's warning.
@@ -1364,7 +1370,8 @@ first line counts the pages read and failed.
   "read", url}` for `extract`. Its value is the file's text, or its path.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
   with the pages read so far. A page not read by then is reported in its
-  place as unfinished, and its address comes back in `urls`: map those
+  place as unfinished, counted as not read rather than failed, and its
+  address comes back in `urls`: map those
   again, in a call with fewer pages. One still being read goes on, and
   its tab closes when it ends; with `save`, it writes no file.
 - Each search engine's results pages (Google's, Bing's) load one at a
