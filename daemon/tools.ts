@@ -50,7 +50,7 @@ import { searchPage } from "./search-tabs.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { copyFile, writeFile, mkdtemp, mkdir, readdir, readFile, unlink } from "node:fs/promises";
+import { copyFile, writeFile, mkdtemp, mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 
@@ -2895,17 +2895,21 @@ function askedExtension(out: string | undefined, url: string): string | undefine
 // not ok and quotes its start. Any extension out ends with asks for its
 // kind of file.
 async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string, prefix?: string) {
-  const asked = askedExtension(out, url);
+  // out may name a folder: the file goes in it under its own name. On
+  // 11-05 and 11-14 a download into a folder failed EISDIR.
+  const into = out !== undefined && (out.endsWith("/") || (await stat(out).catch(() => undefined))?.isDirectory()) ? out : undefined;
+  const file = into === undefined ? out : undefined;
+  const asked = askedExtension(file, url);
   if (asked !== undefined && /^text\/html\b/i.test(f.type)) {
     const went = f.url && f.url !== url ? ` (it went to ${f.url})` : "";
     throw new Error(`${url || "the link"} answered a web page${went}, not a .${asked} file; nothing was saved. A sign-in page is the usual cause: download it with the tab of a page signed in to that site, or give out a name ending in .html to keep the page`);
   }
-  const path = out ?? await freePath(folder, (prefix ?? "") + nameOf(f, url));
+  const path = file ?? await freePath(into ?? folder, (prefix ?? "") + nameOf(f, url));
   await mkdir(dirname(path), { recursive: true });
   const data = Buffer.from(f.data, "base64");
   await writeFile(path, data);
   const saved = { path, name: basename(path), size: f.size, type: f.type };
-  const kind = out !== undefined && extname(out) ? extname(out).slice(1).toLowerCase() : asked;
+  const kind = file !== undefined && extname(file) ? extname(file).slice(1).toLowerCase() : asked;
   if (kind === undefined || /json|^txt$/.test(kind) || !/^(?:application|text)\/(?:[\w.+-]+\+)?json\b/i.test(f.type)) return saved;
   return { ok: false as const, ...saved, warning: `the site answered JSON, not a .${kind} file; that is most often an error, and it reads: ${data.toString("utf8", 0, 200)}` };
 }

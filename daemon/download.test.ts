@@ -1,6 +1,6 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { download, extract, pageFetch, TOOLS } from "./tools.ts";
@@ -58,6 +58,16 @@ test("download of a page's url saves the page, and so does any url saved at an o
   const kept = join(dir, "kept.html");
   await download({ url: IMAGE, out: kept }, dir);
   expect(readFileSync(kept)).toEqual(PAGE);
+});
+
+// On 11-05 and 11-14 a download with out naming a folder failed EISDIR.
+test("a download whose out names a folder saves the file in it under its own name", async () => {
+  page("https://example.com/report");
+  const folder = join(dir, "into");
+  mkdirSync(folder);
+  const saved = await download({ url: "https://example.com/report", out: folder }, dir);
+  expect(dirname(saved.path)).toBe(folder);
+  expect(readFileSync(saved.path)).toEqual(PAGE);
 });
 
 const KEY_URL = "https://developer.apple.com/account/auth/key/download?keyId=9FRH7PU7RZ";
