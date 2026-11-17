@@ -328,8 +328,13 @@ function save() {
 // comes once per agent, not once per window: on 09-29 agent 21859's windows
 // 681333, 693176, and 801195 each repeated a day-old reason
 // (groups-off.json), 330 characters that only the user can act on. Calls
-// with no agent known share one list.
+// with no agent known share one list. A reason goes to any agent at most
+// once an hour: a CLI call is an agent of its own, and on 11-16 and 11-17
+// 31 opens repeated one day-old reason naming another task's site, which
+// agents cut with grep 12 times.
 const told = new Map<number | undefined, Set<string>>();
+const toldAt = new Map<string, number>();
+const TOLD_MS = 60 * 60_000;
 
 // What an open says of its window, with why it stays plain the first time
 // its agent meets that reason.
@@ -340,8 +345,12 @@ export function spaceNote(s: Space): SpaceNote {
     told.set(s.owner, reasons);
     if (s.owner !== undefined) watchOwner(s.owner, () => told.delete(s.owner));
   }
-  const why = s.why === undefined || reasons.has(s.why) ? undefined : s.why;
-  if (why) reasons.add(why);
+  const now = Date.now();
+  const why = s.why === undefined || reasons.has(s.why) || now - (toldAt.get(s.why) ?? -Infinity) < TOLD_MS ? undefined : s.why;
+  if (why) {
+    reasons.add(why);
+    toldAt.set(why, now);
+  }
   return { name: s.name, group: s.group, ...(why ? { why } : {}) };
 }
 
