@@ -26,7 +26,7 @@ import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAns
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
-import { site, urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
+import { site, STILL_LOADING, urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
@@ -3305,16 +3305,27 @@ const SAVE: Param = { description: "true or absolute path; returns path,size,500
 // last snapshot for diff), saving the agent a separate read. A read that
 // finds nothing is asked again once the page goes quiet (SETTLE_MS at
 // most): on 11-08 open and click on a billing app each answered 0 nodes
-// while it drew, and a snapshot a moment later had the whole page.
+// while it drew, and a snapshot a moment later had the whole page. An
+// action whose own request is still out (STILL_LOADING) is read once the
+// page goes quiet, SETTLE_MS at most, and then no longer says to wait: in
+// the 11-16 sessions 99 actions were followed by a shell sleep and a read.
 const SETTLE_MS = 3000;
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   const read = pageRead(want);
   if (read === undefined) return result;
   const at = newTabOf(result)?.id ?? tab;
+  let answer = result as Record<string, unknown>;
+  if (answer?.next === STILL_LOADING) {
+    const settled = await wait({ tab: at, quiet: true, ms: SETTLE_MS });
+    if ("found" in settled && settled.found === true) {
+      const { next: _, ...rest } = answer;
+      answer = rest;
+    }
+  }
   const first = await snapshot({ ...read, tab: at });
-  if (first.nodes !== 0 || read.diff || read.updates || read.since !== undefined) return { ...(result as object), page: first };
+  if (first.nodes !== 0 || read.diff || read.updates || read.since !== undefined) return { ...answer, page: first };
   await wait({ tab: at, quiet: true, ms: SETTLE_MS });
-  return { ...(result as object), page: await snapshot({ ...read, tab: at }) };
+  return { ...answer, page: await snapshot({ ...read, tab: at }) };
 }
 
 export type PageRead = { query?: string; root?: string; diff?: boolean; full?: boolean; updates?: boolean; since?: string };

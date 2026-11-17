@@ -69,7 +69,7 @@ export const NO_EFFECT = "the page did not react while watched: look again (snap
 // site the action started holds the watch until it comes back, 3 s at
 // most; one still out then may be what fills in the part the agent came
 // for.
-const STILL_LOADING = "the page is still waiting, 3 s on, on a request this started (pending): wait with quiet, or with text you expect, before reading; a sleep only guesses";
+export const STILL_LOADING = "the page is still waiting, 3 s on, on a request this started (pending): wait with quiet, or with text you expect, before reading; a sleep only guesses";
 
 // A click that did nothing, or changed only an element or two in place (a
 // pressed button's own look), comes with what failed shortly before it:

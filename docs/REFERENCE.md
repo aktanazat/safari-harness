@@ -581,7 +581,10 @@ carrying the page in context.
   page after it in the same call, `snapshot: "Sign in|Email"` (CLI
   `--snapshot="Sign in|Email"`) for only its lines that have those words, or
   `snapshot: {query, root, diff, full}` as the `snapshot` tool takes them: the
-  fastest way to act and then read. `wait` takes it too. A `snapshot` of a
+  fastest way to act and then read. `wait` takes it too. When the action
+  answers with a request it started still `pending`, that read first waits
+  for the page to go quiet (3 s at most), and drops the `next` saying to
+  wait once it has. A `snapshot` of a
   tab as the next call after an action there gets a note saying so, once.
 - An action or `eval` whose page leaves before it answers (a submit, a
   redirect) still answers, with `ok: true` and the page it loaded as

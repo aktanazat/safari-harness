@@ -104,7 +104,9 @@ const USAGE = `safari — drive Safari from the terminal
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
-  or --snapshot=<words> for only its lines that have those words.
+  or --snapshot=<words> for only its lines that have those words. That read
+  waits for requests the action started (3 s at most); never sleep between an
+  action and a read: use --snapshot, or safari wait --text "<words>" --tab N.
 
   Reads (snapshot eval extract fetch read) take --save to write the whole output
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
@@ -127,7 +129,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
-  safari wait <ms> --tab N                   until the page goes quiet, ms at most
+  safari wait [ms] --tab N                   until the page goes quiet, ms (10000) at most
   safari wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
