@@ -1962,14 +1962,22 @@ async function handle(msg) {
       else regrouping.delete(id);
       return { ok: true };
     }
-    // A tab an agent opened for the user leaves the agent's window, which
-    // goes with its tab group, for one of his own; only while it is still
-    // in that window.
-    case "tabs.detach": {
-      const [tabId, windowId] = args;
-      if ((await api.tabs.get(tabId)).windowId !== await resolveWindow(windowId)) return { ok: false };
-      await api.windows.create({ tabId, focused: false });
-      return { ok: true };
+    // A tab kept for the user leaves the agent's window, which sits on the
+    // Agents display he does not look at (daemon/place.ts), for the end of
+    // the window he had in front last, taking no focus. Only a normal,
+    // shown window as private as the tab takes it: Safari refuses to move a
+    // tab into a popup or across private browsing. With no such window, it
+    // goes to a new one. Answers where it went.
+    case "tabs.toHis": {
+      const [tabId] = args;
+      const until = Date.now() + LIST_MS;
+      if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
+      const [tab, open] = await Promise.all([api.tabs.get(tabId), bounded(api.windows.getAll({ windowTypes: ["normal"] }), "windows.getAll", until), bounded(listsChanged, "window lists", until)]);
+      const fits = new Set(open.filter((w) => !windowLists.agentWindows.includes(w.id) && w.state !== "minimized" && !!w.incognito === !!tab.incognito).map((w) => w.id));
+      const his = [...windowLists.focusOrder, ...fits].find((id) => fits.has(id));
+      if (his === undefined) return { windowId: (await api.windows.create({ tabId, focused: false })).id };
+      await api.tabs.move(tabId, { windowId: his, index: -1 });
+      return { windowId: his };
     }
     case "ping":
       return "pong";
