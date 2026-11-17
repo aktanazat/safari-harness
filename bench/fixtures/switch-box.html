@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Switch its box draws</title>
+<!-- LinkedIn's notification switches (11-16): the input transparent and
+     0 by 0, its label empty, and the box that holds them toggling it. A
+     transparent checkbox in a box with no hand stays unprinted. -->
+<style>
+  .switch { position: relative; display: inline-block; width: 52px; height: 32px; cursor: pointer; background: #ccc; border-radius: 16px; }
+  .switch input { position: absolute; width: 0; height: 0; margin: 0; opacity: 0; }
+  .switch span { position: absolute; left: 2px; top: 2px; width: 28px; height: 28px; border-radius: 14px; background: white; }
+  .plain { position: relative; display: inline-block; width: 52px; height: 32px; }
+  .plain input { position: absolute; width: 0; height: 0; margin: 0; opacity: 0; }
+</style>
+<p>Email</p>
+<p id="email-state">Off</p>
+<div class="switch" id="email-box"><label for="email"></label><input type="checkbox" role="switch" id="email" aria-label="Email"><span></span></div>
+<div class="plain"><input type="checkbox" aria-label="Unseen offer"></div>
+<script>
+  const input = document.getElementById("email");
+  document.getElementById("email-box").addEventListener("click", (e) => {
+    if (e.target === input) return;
+    input.checked = !input.checked;
+    document.getElementById("email-state").textContent = input.checked ? "On" : "Off";
+  });
+</script>

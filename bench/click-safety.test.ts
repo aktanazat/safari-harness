@@ -311,6 +311,43 @@ benchRows("safe clicks in WebKit", [
       evaluate("document.getElementById('checkbox').checked", false),
     ],
   },
+  // On 11-16 LinkedIn's notification settings printed each email switch as
+  // an empty label with no box, and a click on it found nothing to hit.
+  {
+    name: "a switch drawn by its box prints by its name, and a click on it toggles it through that box",
+    page: "switch-box.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: 'Email · Off\n[1] switch "Email"' } } },
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      evaluate("[document.getElementById('email').checked, document.getElementById('email-state').textContent]", [true, "On"]),
+    ],
+  },
+  {
+    name: "a transparent checkbox spread over the box that shows the hand takes that box's click itself",
+    page: "switch-box-more.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.stringContaining('[1] checkbox "Select row"') } } },
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      evaluate("document.getElementById('select-row').checked", true),
+    ],
+  },
+  {
+    name: "a disabled switch its box draws is refused as disabled, and its box is not clicked in its place",
+    page: "switch-box-more.html",
+    steps: [
+      { op: "click", args: ["#push"], answer: { error: expect.stringContaining("disabled") } },
+      evaluate("document.getElementById('push').checked", false),
+    ],
+  },
+  {
+    name: "a row that holds words never stands in for the hidden checkbox inside it",
+    page: "switch-box-more.html",
+    steps: [
+      { op: "snapshot", answer: { value: { snapshot: expect.not.stringContaining('checkbox "Select item"') } } },
+      { op: "click", args: ["#item-check"], answer: { error: expect.stringContaining("not visible") } },
+      evaluate("document.getElementById('item').dataset.opened ?? null", null),
+    ],
+  },
   // On 11-08 ten of ten clicks on Wikipedia's [2] label "Main menu" failed
   // as covered by button "Main menu": the menu's own checkbox, laid over it.
   {
