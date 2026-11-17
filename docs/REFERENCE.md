@@ -126,6 +126,26 @@ Safari is the user's everyday browser, so treat his tabs as his.
   CLI, a `repl --session`, or site globals. Empty project windows close
   after their tabs are gone; later tab-group bookkeeping does not keep an
   ended window open. A protected or user-owned tab keeps its window.
+- Your tabs are your agent's: the omp, Claude or Codex process above the
+  call, else the first program above it that is not a shell. Inside an
+  agent, leave it so: its turn end and exit close your tabs. A command
+  run over ssh (`ssh mac 'safari open …'`) or by a script outside any
+  agent has no such program that lasts, so its tabs closed as each
+  command ended. For those alone, set `SAFARI_OWNER=<key>` (letters,
+  digits, `-` and `_`, at most 40), or pass `--owner <key>` to any
+  command, and calls that name the same key work for one lease instead:
+  a small process of its own that holds their tabs across commands. Pick
+  a key unique to the job, such as a random suffix
+  (`SAFARI_OWNER=taxes-$RANDOM`), since every command that names it
+  shares its tabs. Put it before each command over ssh
+  (`ssh mac 'SAFARI_OWNER=taxes-4821 safari open …'`) or `export` it in
+  the script; through `--host`, the lease runs on that Mac. The 4-tab
+  limit, the 2-minute idle close, handoffs and `keep` work as for any
+  agent; omp's turn end does not reach a lease. It ends after 30 minutes
+  without a call, or at `safari owner --end`, and its tabs close then as
+  an exited agent's do. A key is a name, not a password: any process of
+  your user account that names it shares its tabs. It never reaches an
+  agent's own tabs, nor another user's.
 - A click can open another tab (many shops open items in a new tab). The
   click result then carries `newTab` with its id: continue there, and close
   it too. If the user's tab was in front, it stays in front.

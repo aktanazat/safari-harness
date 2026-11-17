@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { alive } from "./owner.ts";
 import { rpc } from "./rpc.ts";
 
 // A stand-in daemon: answers /rpc calls in turn from answers, and /health ok.
@@ -84,4 +87,41 @@ test.each([
   servers.push(d.server);
   await expect(rpc(tool, args)).rejects.toMatchObject({ effect: "possibly_effected", retryable: false });
   expect(d.calls).toHaveLength(1);
+});
+
+// From 11-10 to 11-16 a tab opened by `ssh personal 'safari …'` closed as
+// that one command ended, 27 times in 16 sessions: each command's agent
+// was its ssh session. Commands that name one SAFARI_OWNER work for one
+// lease that outlives them, until it is ended.
+test("separate processes that name one owner key work for one lease that outlives them, until it ends", async () => {
+  const calls: { caller?: number }[] = [];
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    calls.push((await req.json()) as { caller?: number });
+    return Response.json({ ok: true, value: { tabs: [] } });
+  } });
+  servers.push(server);
+  const home = mkdtempSync("/private/var/tmp/sho-");
+  const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${server.port}` };
+  delete env.SAFARI_HARNESS_REMOTE;
+  delete env.SAFARI_OWNER;
+  const call = async (owner?: string) => {
+    const p = Bun.spawn([process.execPath, "-e", `await (await import(${JSON.stringify(join(import.meta.dir, "rpc.ts"))})).rpc("tabs")`], { env: owner === undefined ? env : { ...env, SAFARI_OWNER: owner }, stderr: "pipe" });
+    expect(await p.exited).toBe(0);
+    return p.pid;
+  };
+  try {
+    const first = await call("job");
+    const second = await call("job");
+    const plain = await call();
+    const lease = calls[0].caller!;
+    expect(calls).toEqual([{ tool: "tabs", args: {}, caller: lease, own: true }, { tool: "tabs", args: {}, caller: lease, own: true }, { tool: "tabs", args: {}, caller: plain }]);
+    expect([first, second, plain]).not.toContain(lease);
+    expect(alive(lease)).toBe(true);
+    const end = Bun.spawn([process.execPath, join(import.meta.dir, "../cli/safari.ts"), "owner", "--owner", "job", "--end", "--json"], { env, stdout: "pipe" });
+    expect(JSON.parse(await new Response(end.stdout).text())).toEqual({ owner: "job", pid: lease });
+    for (let i = 0; i < 100 && alive(lease); i++) await Bun.sleep(20);
+    expect(alive(lease)).toBe(false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
