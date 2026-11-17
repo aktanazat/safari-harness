@@ -2432,8 +2432,11 @@ list, so the next read shows only what follows; `do: "stop"` ends it on this
 page. It sees fetch and XHR only: not page loads, images, scripts, or web
 workers.
 
-`net {tab, url}` lists only the requests whose address has that part, each
-with its `index` in the whole list. `net {tab, body}` returns one request's
+`net {tab, url}` lists only the requests whose address has that part
+(`a|b`: either; `/v[0-9]+/`: a pattern, while a plain path such as `/api/`
+stays a part), each with its `index` in the whole list. `net {tab, urls:
+true}` answers a line per request, `index method status address`, with no
+bodies or readers; it takes `url` too. `net {tab, body}` returns one request's
 whole text or JSON response: `body` is its place in the list (from the end
 below 0: `-1` is the latest) or part of its url (the latest request with
 it). The answer is the request's entry with the body as `text`. The page
