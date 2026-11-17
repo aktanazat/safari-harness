@@ -60,8 +60,8 @@ Turns
   Safari shows opens as a page with no text: `safari pdf read URL` reads it.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
-  or `wait` answers with the page after it, and `snapshot: "words"` with
-  only its lines that have them.
+  or `wait` answers with the page after it, and `snapshot: "Sign in|Email"` (the
+  words to keep, `|` between) with only its lines that have them.
 - Through the MCP server, a snapshot of a tab you read in the last 2
   minutes answers with only its changed lines (`- ` gone, `+ ` new), or
   none when nothing changed; `full: true` reads the whole page. The CLI

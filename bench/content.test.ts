@@ -782,6 +782,15 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", args: [{ query: "USCIS told\u200B many people" }], answer: { value: { snapshot: expect.stringContaining("USCIS") } } }],
   },
   {
+    name: "a snapshot query that keeps no line of a page with lines says the page has them, apart from a page that drew nothing",
+    page: "modal.html",
+    steps: [
+      { op: "snapshot", args: [{ query: "words" }], answer: { value: { nodes: 0, hint: 'no line has "words"; the page has 7 other lines: query keeps only lines holding these words' } } },
+      { load: "empty.html" },
+      { op: "snapshot", args: [{ query: "words" }], answer: { value: { nodes: 0, hint: expect.stringContaining("drawn nothing yet") } } },
+    ],
+  },
+  {
     name: "an extract query ignores invisible mail padding in both the page and query",
     page: "padded.html",
     steps: [{ op: "extract", args: [{ query: "USCIS told\u2060 many people" }], answer: { value: { text: expect.stringContaining("USCIS") } } }],
