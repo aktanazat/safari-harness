@@ -272,3 +272,18 @@ test("a call whose tab was opened again fresh after the turn ended runs there", 
   await waited(kit.listWorkspaces());
   expect(evalTabs).toEqual([1, 2, 2]);
 });
+
+// On 11-17 getClient("openfunnel") found no workspace, though Safari held
+// one named "OpenFunnel" (its domain is another word).
+test("getClient finds a workspace by its name, case aside", async () => {
+  const named = { ...TEAM, teamId: "T2", name: "OpenFunnel", domain: "openfunnel-hq", url: "https://openfunnel-hq.slack.com/" };
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool !== "eval") throw new Error(`no ${tool} in this Safari`);
+    return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM, named] } };
+  };
+  const kit = slack(new SiteKit(send, undefined, dir));
+  expect(await waited(kit.getClient("openfunnel"))).toBeDefined();
+  await expect(waited(kit.getClient("nobody"))).rejects.toThrow('no workspace "nobody"');
+});
