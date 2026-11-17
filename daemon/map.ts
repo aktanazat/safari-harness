@@ -70,9 +70,11 @@ type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string; failu
 // title: the page's as it opened, which an eval or fetch read does not
 // carry, where the address may have led to a sign-in or a page not found;
 // finalUrl: where it opened, when not at url; retried: how many times it
-// was loaded again after its site's error page; from: whose read of this
-// task's it is (reads.ts). A failed page's value is what an error page read.
-export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; from?: string };
+// was loaded again after its site's error page; reopened: it was read in
+// a new tab after Safari barred the extension from the first; from: whose
+// read of this task's it is (reads.ts). A failed page's value is what an
+// error page read.
+export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
@@ -101,6 +103,8 @@ const DISCONNECTED = /^(?:the Safari extension (?:disconnected|restarted) before
 // 10-29 os.html, the longest of 20 python docs pages map read four at a
 // time, did not answer in 10 s (baseline).
 const STALLED = /^(?:the page (?:at \S+ )?did not answer\b|Safari did not answer \S+ in time\b|it gave the wait no answer in time\b)/;
+
+const BARRED = /\bSafari would not let the extension into the tab\b/;
 
 // A close the link dropped is asked again, each ask waiting for the
 // extension to connect again (bridge.ts): of the 61 map pages answered
@@ -407,9 +411,13 @@ function recalled(url: string, job: Job): Page | undefined {
 // opens as its site's error page is loaded again after each of RETRY_MS.
 // One that threw leaves its tab in a state not known, so the tab closes;
 // a read of the page the tab showed before is that page's, not url's, so
-// url loads again in a new tab.
-async function visit(url: string, job: Job, warm: Warm, recovering = false): Promise<Visit> {
-  const started = performance.now();
+// url loads again in a new tab. A page Safari barred the extension from
+// (background.js barredText, where nothing was done) loads once more in
+// a new tab: on 11-16 a map failed a Google Forms page so after 21.9 s,
+// and an open of it at once read it. barred: that first try's start and
+// its tab's close error, which the page keeps.
+async function visit(url: string, job: Job, warm: Warm, recovering = false, barred?: { started: number; closeError?: string }): Promise<Visit> {
+  const started = barred?.started ?? performance.now();
   const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
   let opened: Opened | undefined;
   let outcome: Outcome;
@@ -429,13 +437,14 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
     disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
     outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
     closeError = await drop(warm, job.call);
+    if (!barred && !effectful && BARRED.test(error)) return visit(url, job, warm, recovering, { started, ...(closeError === undefined ? {} : { closeError }) });
   }
   // extract and snapshot say the address of the document they read
   const v = outcome.value;
   const shown = v && typeof v === "object" && "url" in v && typeof v.url === "string" ? address(v.url) : undefined;
   if (warm.tab !== undefined && warm.at !== undefined && shown === warm.at && address(url) !== warm.at) {
     await shut(warm, job.call);
-    return visit(url, job, warm, recovering);
+    return visit(url, job, warm, recovering, barred);
   }
   // map has closed the tab by the time its answer is read, so a stalled
   // page's advice to reload it there becomes mapping it again
@@ -450,7 +459,8 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
   const ms = Math.round(performance.now() - started);
   const finalUrl = opened?.url && opened.url !== URL.parse(url)?.href ? opened.url : undefined;
   const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(opened?.title ? { title: opened.title } : {}) };
-  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(closeError === undefined ? {} : { closeError }) };
+  closeError ??= barred?.closeError;
+  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(barred ? { reopened: true } : {}), ...(closeError === undefined ? {} : { closeError }) };
   if (warm.tab !== undefined) warm.last = page;
   if (outcome.ok && job.key !== undefined && keeps(page)) keep(job.key, url, { ok: true, value: outcome.value, ...about });
   return { page, disconnected, stalled };
@@ -646,6 +656,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
       `${p.ms} ms`,
       ...("from" in p && p.from ? [p.from] : []),
       ...("retried" in p && p.retried ? [`loaded again ${p.retried === 1 ? "once" : `${p.retried} times`} after its error page`] : []),
+      ...("reopened" in p && p.reopened ? ["read in a new tab after Safari barred the first"] : []),
       ...("challenge" in p && p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []),
       ...(p.closeError ? [`not closed: ${p.closeError}`] : []),
       ...("unread" in p && p.unread ? [`${p.unread} more matching links past max`] : []),

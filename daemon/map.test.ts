@@ -98,6 +98,10 @@ let stuck: string | undefined;
 let nextTab = 0;
 const probes = new Map<number, number>();
 const loaded: [string, number][] = [];
+// A page Safari bars the extension from in the first tab it opens in, as
+// a Google Forms page was on 11-16.
+const BARRED_ONCE = "https://forms.example/form";
+const barredOnce = new Set<number>();
 
 const evaluate = historyFixture();
 function read(tab: number, op: string): { value?: unknown; error?: string } {
@@ -164,7 +168,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "tabs.close") {
     const tab = Number(args[0]);
-    if (tabs.get(tab)?.url === stuck) return { error: "a sheet on the tab kept Safari from closing it" };
+    if (tabs.get(tab)?.url === stuck || barredOnce.has(tab)) return { error: "a sheet on the tab kept Safari from closing it" };
     tabs.delete(tab);
     closed.push(tab);
     return { value: { ok: true } };
@@ -213,7 +217,10 @@ connect({
     }
     if (holding) held.push(() => reply(read(Number(args[0]), String(args[1]))));
     else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]), String(args[1]))), SLOW_MS);
-    else reply(read(Number(args[0]), String(args[1])));
+    else if (tabs.get(Number(args[0]))?.url === BARRED_ONCE && barredOnce.size === 0) {
+      barredOnce.add(Number(args[0]));
+      reply({ error: `Safari would not let the extension into the tab at ${BARRED_ONCE}: it shows a page no extension may read. Nothing was done in the page` });
+    } else reply(read(Number(args[0]), String(args[1])));
   },
   close() {},
 });
@@ -644,6 +651,15 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
   expect(asked).toEqual(["wait https://shop.example/a for Price", "read https://shop.example/a", `wait ${LOST} for Price`]);
   expect(pages[0]).toMatchObject({ ok: true, value: { text: "text of https://shop.example/a" } });
   expect(pages[1]).toMatchObject({ ok: false, error: `it did not show what wait asked for; the tab is at ${LOST} ("Page Not Found")` });
+});
+
+// The barred tab here also fails to close, which the page still tells.
+test("a page Safari bars the extension from is read once more in a new tab, and says so", async () => {
+  const before = opened.length;
+  const answer = await mapPages({ urls: [BARRED_ONCE] }, callTool);
+  expect(answer.pages[0]).toMatchObject({ ok: true, value: { text: `text of ${BARRED_ONCE}` }, reopened: true, closeError: "a sheet on the tab kept Safari from closing it" });
+  expect(opened.length - before).toBe(2);
+  expect(formatResult(answer)).toContain("read in a new tab after Safari barred the first");
 });
 
 // On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for
