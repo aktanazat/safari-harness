@@ -210,64 +210,22 @@ test.each(["read", "write", "mcp__iris_capture", "mcp__safari2_open"])("a non-Sa
   });
 });
 
-// The lead's terminal prompt, answered with Esc as soon as omp shows it.
-const escapes = {
-  custom: <T>(factory: (tui: { requestRender(): void }, theme: { fg(c: string, t: string): string; bold(t: string): string }, keys: { matches(): boolean }, done: (r: T) => void) => { handleInput(data: string): void }) =>
-    new Promise<T>((resolve) => factory({ requestRender() {} }, { fg: (_c, t) => t, bold: (t) => t }, { matches: () => false }, resolve).handleInput("\x1b")),
-};
-
-test("a vault command a lead's agent runs goes without asking, though its terminal would answer Esc", async () => {
-  const before = process.env.SAFARI_HARNESS_AWAY;
-  process.env.SAFARI_HARNESS_AWAY = "0";
-  try {
-    await withHook(async (_end, tool) => {
-      for (const command of ["mem-secret run NOT_A_REAL_SECRET -- python3 status.py", "sops -d vault.yaml | head", "mem-secret run --all -- env"]) {
-        expect(await tool({ toolName: "bash", input: { command } }, { ...context("main"), hasUI: true, ui: escapes } as Context)).toBeUndefined();
-      }
-    });
-  } finally {
-    if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-    else process.env.SAFARI_HARNESS_AWAY = before;
-  }
-});
-
-// Fills never ask (owner order 2026-11-13): a code typed from his texts, a
-// saved password under another parameter name, the safari CLI's fill, and
-// a vault password the CLI types unseen.
+// No step waits for an approval popup (owner order 2026-11-16: "remove the
+// consent gate"): a text the safari CLI sends, a vault command, a code fill
+// and a handoff pass the hook as given, even for a lead whose terminal could
+// show a card.
+const asking = { hasUI: true, ui: { custom: () => { throw new Error("asked"); } } };
 test.each([
+  ["bash", { command: "mem-secret run NOT_A_REAL_SECRET -- python3 status.py" }],
+  ["bash", { command: "safari imessage send --to +15550100 --text hi --approve d1" }],
+  ["mcp__safari_imessage_send", { to: "+15550100", text: "hi", approved: "d1" }],
   ["mcp__safari_type", { ref: "12", text: "{{code}}" }],
-  ["mcp__safari_passwords", { action: "fill" }],
-  ["bash", { command: "safari fill login --tab 3" }],
-  ["bash", { command: "mem-secret run GH_PW -- safari type 12 '{{code}}' --tab 3 --secret env --env GH_PW" }],
-])("a lead's %s fill runs without asking, though its terminal would answer Esc", async (toolName, input) => {
-  const before = process.env.SAFARI_HARNESS_AWAY;
-  process.env.SAFARI_HARNESS_AWAY = "0";
-  try {
-    await withHook(async (_end, tool) => {
-      const result = await tool({ toolName, input }, { ...context("main"), hasUI: true, ui: escapes } as Context);
-      expect(result).toEqual(toolName === "bash" ? undefined : { input: expect.objectContaining(input) });
-    });
-  } finally {
-    if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-    else process.env.SAFARI_HARNESS_AWAY = before;
-  }
-});
-
-test.each([
-  "safari imessage send --to +15550100 --text hi --approve d1",
-  "safari passwords fill --tab 3 && safari iMessageSend +15550100 hi --approve d1",
-])("a text the safari CLI would send in his name still waits for his ok: %s", async (command) => {
-  const before = process.env.SAFARI_HARNESS_AWAY;
-  process.env.SAFARI_HARNESS_AWAY = "0";
-  try {
-    await withHook(async (_end, tool) => {
-      const result = await tool({ toolName: "bash", input: { command } }, { ...context("main"), hasUI: true, ui: escapes } as Context);
-      expect(result).toEqual({ block: true, reason: expect.stringContaining("the user denied this (send a text: Safari)") });
-    });
-  } finally {
-    if (before === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-    else process.env.SAFARI_HARNESS_AWAY = before;
-  }
+  ["mcp__safari_handoff", { tab: 3, why: "a passkey" }],
+])("a lead's %s call runs with no approval popup", async (toolName, input) => {
+  await withHook(async (_end, tool) => {
+    const result = await tool({ toolName, input }, { ...context("main"), ...asking } as Context);
+    expect(result).toEqual(toolName === "bash" ? undefined : { input: expect.objectContaining(input) });
+  });
 });
 
 type Block = { type: string; text?: string };
