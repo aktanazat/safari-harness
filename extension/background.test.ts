@@ -1113,6 +1113,16 @@ test("a stale ref, a cover's close controls, or a heal in an embedded frame name
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe('that target is covered by dialog "Offer"; its close controls are [f5:7] button "Close", [f5:8] link "No thanks"');
 });
 
+test("a frame click its parent page refuses before any event says nothing was sent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const frame = b.frame(tab, 5, "https://example.com/embedded");
+  frame.does = (op) => op === "clickProbe" ? { frame: frame.world.__safariHarnessFrame, x: 10, y: 20 } : { ok: true };
+  tab.doc.does = (op) => op === "assertFrameClickable" ? { found: true, blocker: "that frame is covered by dialog \"Offer\"" } : { url: tab.doc.url };
+  expect(await b.ask(tab, "click", ["f5:3"])).toMatchObject({ error: 'that frame is covered by dialog "Offer"', failure: { code: "stale_view", effect: "none" } });
+  expect(frame.ran).toEqual(["clickProbe"]);
+});
+
 // On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref
 // from their snapshot of it, and each click failed as a stale ref
 // (partners, calendar, inbox).

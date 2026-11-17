@@ -390,7 +390,7 @@ benchRows("safe clicks in WebKit", [
     page: targets,
     steps: [
       cover("#plan"),
-      { op: "select", args: ["#plan", "Pro"], answer: { error: expect.stringContaining("covered") } },
+      { op: "select", args: ["#plan", "Pro"], answer: { error: expect.stringContaining("covered"), failure: { ...unsent, retryable: false } } },
       state("safety.plan", "free"),
     ],
   },
@@ -399,7 +399,9 @@ benchRows("safe clicks in WebKit", [
     page: targets,
     steps: [
       cover("#combo"),
-      { op: "select", args: ["#combo", "Paris"], answer: { error: expect.stringContaining("covered") } },
+      { op: "select", args: ["#combo", "Paris"], answer: { error: expect.stringContaining("covered"), failure: { ...unsent, retryable: false } } },
+      { op: "click", args: ["No such button"], answer: { error: "nothing on the page matches No such button", failure: unsent } },
+      { op: "select", args: ["#no-such-list", "Paris"], answer: { error: "nothing on the page matches #no-such-list", failure: unsent } },
       state("({ opened: safety.comboOpen, chosen: safety.comboChoice })", { opened: 0, chosen: "" }),
     ],
   },

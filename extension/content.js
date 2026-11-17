@@ -874,7 +874,7 @@
   // another frame's, which relayOp then asks.
   async function pressDone(ref, mark, ms) {
     const p = presses.get(mark);
-    if (!p) return missing(ref);
+    if (!p) return { error: missing(ref).error };
     presses.delete(mark);
     const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
     p.el.classList.remove(mark);
@@ -1527,10 +1527,14 @@
     return keepLabel ? found : fieldOf(found);
   }
 
+  // A ref or text that names nothing sent nothing, as keptFor in
+  // background.js relies on, so its answer says so (failures.ts). A lookup
+  // of a mark after real input went (typeField, sendButton, pressDone)
+  // drops that: the input was sent.
   function missing(target) {
     const key = String(target).trim();
     if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
-    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
+    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}`, failure: UNSENT };
   }
 
   function centerOf(el) {
@@ -1947,13 +1951,13 @@
     const el = kind === "select" ? fieldOf(target) : kind === "click" && target ? standIn(target) ?? target : target;
     if (!el) return missing(ref);
     const point = clickPoint(el);
-    if (point.error) return point.recovery === "present" ? refused(el, point) : point;
+    if (point.error) return refused(el, point);
     let { x, y } = point;
     for (let doc = el.ownerDocument; doc !== document;) {
       const frame = doc.defaultView?.frameElement;
-      if (!frame) return { error: "the target's frame changed; re-run snapshot" };
+      if (!frame) return { error: "the target's frame changed; re-run snapshot", failure: UNSENT };
       const parentPoint = framePoint(frame, { x, y });
-      if (parentPoint.error) return parentPoint;
+      if (parentPoint.error) return refused(el, parentPoint);
       ({ x, y } = parentPoint);
       doc = frame.ownerDocument;
     }
@@ -2126,17 +2130,20 @@
 
   // select takes a <select>, a label of one, or a combobox, resolved before
   // the first await (answer). A null choice lists the options.
+  // A refusal before the click point is checked, or by it, sent nothing:
+  // on 11-16 a select a cover refused held its identical retry as "may
+  // already have happened", and the agent set the list with eval instead.
   function selectIn(ref, choice, opts) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it", failure: UNSENT };
     if (choice !== null) {
       const point = clickPoint(el);
-      if (point.error) return point;
+      if (point.error) return refused(el, point);
     }
     if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
-    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
+    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot", failure: UNSENT };
   }
 
   // files: [{ name, type, data (base64) }]. File inputs are usually hidden
@@ -2148,13 +2155,13 @@
       const el = resolve(ref);
       if (!el) return missing(ref);
       input = el.matches("input[type=file]") ? el : deepQueryAll("input[type=file]", el)[0];
-      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
+      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input", failure: UNSENT };
     } else {
       const all = deepQueryAll("input[type=file]");
-      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
+      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area`, failure: UNSENT };
       input = all[0];
     }
-    if (files.length > 1 && !input.multiple) return { error: "this input takes one file" };
+    if (files.length > 1 && !input.multiple) return { error: "this input takes one file", failure: UNSENT };
     const dt = new DataTransfer();
     for (const f of files) {
       const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
@@ -2786,9 +2793,9 @@
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    if (!(await focusField(el))) return untaken("the field");
+    if (!(await focusField(el))) return { ...untaken("the field"), failure: UNSENT };
     lastTyped = el;
     lookBeforeTyping(opts.secret ? null : text);
     const before = el.isContentEditable ? "" : String(el.value || "");
@@ -2851,7 +2858,7 @@
     const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
     if (!el && ref !== null) return missing(ref);
     if (!el || !(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return { field: false };
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     lookBeforeTyping(text);
     el.setAttribute("autocorrect", "off");
     el.focus();
@@ -2874,7 +2881,7 @@
   // does not hold is another frame's, which relayOp then asks.
   async function typeField(ref, mark, text, sent) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const { el, before, boxes } = field;
     el.classList.remove(mark);
     boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
@@ -2901,7 +2908,7 @@
   const SEND = /(^|[^a-z])(send|submit)/i;
   function sendButton(ref, mark) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const up = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
     const named = (b) => [accessibleName(b), b.title, b.id, b.getAttribute("data-testid"), b.getAttribute("class")].filter(Boolean).join(" ");
     let box = up(field.el);
