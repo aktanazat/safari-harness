@@ -1149,6 +1149,11 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", args: [{ root: "[role=dialog]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Pick a plan)[\s\S]*Your card is charged today/) } } }],
   },
   {
+    name: "a snapshot marks a date field's type and says how long a value it cuts is",
+    page: "typed-fields.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: expect.stringMatching(/type=date, value="2027-01-04"[\s\S]*value="I grew up repairing radios with my grand…" \(127 chars\)/) } } }],
+  },
+  {
     name: "a root named as a click's answer names a dialog reads that dialog beneath a second one, which a root of dialog reads",
     page: "slate-dialog.html",
     steps: [

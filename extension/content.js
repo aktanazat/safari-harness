@@ -371,8 +371,12 @@
     if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       if (el.getRootNode().activeElement === el) s.push("focused");
+      // A typed field's kind tells the format it takes, and a value cut at
+      // 40 says how long it is: on 11-16 agents read .value and .type with
+      // eval 12 times to check a date or a typed essay.
+      if (/^(date|time|datetime-local|month|week|number)$/.test(el.type)) s.push(`type=${el.type}`);
       const v = /^(submit|reset|button|image)$/.test(el.type) ? "" : el.value; // a button's value is its name
-      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
+      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? `${v.slice(0, 40)}…" (${v.length} chars)` : `${v}"`}`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
       const sel = el.selectedOptions[0];
