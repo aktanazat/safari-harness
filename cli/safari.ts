@@ -362,9 +362,12 @@ function printRaw(result: unknown): void {
 
 // open --id: the tab's id alone, for T=$(safari open <url> --id). Agents
 // scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
-// takes the first number an error names too.
+// takes the first number an error names too. Its note and hint go to
+// stderr: on 11-16 a script opened two Proton pages, got one tab's id
+// twice (the second open reused the first's tab), and closed both at once.
 function printId(result: unknown): void {
-  const { id, file } = result as { id?: unknown; file?: unknown };
+  const { id, file, note, hint } = result as { id?: unknown; file?: unknown; note?: unknown; hint?: unknown };
+  for (const [k, v] of Object.entries({ note, hint })) if (typeof v === "string") console.error(`${k}: ${v}`);
   if (id !== undefined) show(String(id));
   else if (file !== undefined) {
     say("miss: the address is a file, not a page, so no tab holds it; run open without --id to read it");
