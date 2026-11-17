@@ -54,8 +54,9 @@ Turns
   while `max` wants more. Never a loop of `goto`, nor a bash loop of `map`
   or `eval`. A page your task read in the last 10 min comes from that
   read; `fresh: true` loads it again. Map the `urls` an answer gives back
-  next. Files by address: one `download {urls, out: folder}`; `open` of
-  a file's address (a PDF, a CSV) answers with its text or saved path.
+  next. Files by address: one `download {urls, out: folder}`; `open` of a
+  file Safari downloads (a CSV) answers with its text or saved path. A PDF
+  Safari shows opens as a page with no text: `safari pdf read URL` reads it.
 - An action and the read after it are one call: `snapshot: true` (CLI
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "words"` with
@@ -73,14 +74,20 @@ Turns
   `safari guide wait`.
 - Read the whole output. Narrow a read with `query` (plain text; `a|b` is
   either) or `root`, never `| head`, `| grep`, or `sed`, which can hide a
-  failed call. The tab id alone: `safari open --id URL`. A CLI step whose
-  answer you do not need takes `-q`: silent when it works, one line and
-  exit 1 when it misses. Never `>/dev/null`, which hides the miss too.
+  failed call. `query` keeps only the lines that hold its text, so a table
+  row's value on a line of its own drops out: read a table with `as:
+  "table"` (CLI `--as table`, with `--selector` to pick it), whose rows
+  keep label and value together. The tab id alone: `safari open --id
+  URL`. A CLI step whose answer you do not need takes `-q`: silent when it
+  works, one line and exit 1 when it misses. Never `>/dev/null`, which
+  hides the miss too.
 - A read past its limit (`extract` and each `map` page: 20,000
   characters) shows its start, the whole length, and the file that holds
   all of it: grep or read that file, or pass `maxBytes`.
 - A link reading `=[15]` goes where line `[15]` goes; it is its own
   element: click its own ref.
+- A ref is the number alone: `safari click 15 --tab N`. In zsh an
+  unquoted `[15]` is a file pattern and the command never runs.
 - A site's own API: `safari fetch --tab N <url>`, not `fetch()` in `eval`.
   Framework state (Next.js, Nuxt, Apollo): `data --pick`, not outerHTML.
 - A signed-in page by URL: `safari read URL --expect "known text"` reuses
