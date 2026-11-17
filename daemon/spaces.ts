@@ -473,8 +473,12 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (a.cancelled === true && unclosed.delete(s)) void sweep().catch(() => {});
       return { ok: true };
     }
+    // The size of each agent window, for a caller cancelling a client
+    // certificate prompt on agent windows alone (sheets.ts).
+    case "windows":
+      return { windows: [...spaces.values(), ...closing.values()].map((s) => s.size) };
   }
-  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, or looked");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, looked, or windows");
 }
 
 // A print sheet a frame of a page raised stays on its window once the

@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { invoke } from "./call.ts";
 import type { Answer, Helper } from "./groups.ts";
 import * as daemonRpc from "./rpc.ts";
+import * as sheets from "./sheets.ts";
 import { cancelSheets } from "./sheets.ts";
 
 // Two windows as the space tool lists them (spaces.ts).
@@ -56,4 +57,34 @@ test("a close call that failed still looks for a print sheet a closed tab left",
     port.mockRestore();
   }
   expect(asked).toEqual(["close", "space sheets"]);
+});
+
+// On 11-16 a client certificate prompt from an agent's tab held Safari, and
+// every agent's call failed "Safari extension not connected" for ten
+// minutes, until the prompt was cancelled.
+const HELD = "Safari extension not connected — enable the Safari Harness extension";
+const PROMPT = "The website “www.press.bmwgroup.com” requires a client certificate.";
+
+function heldOnce(sent: string[]) {
+  let fails = 1;
+  return spyOn(daemonRpc, "rpc").mockImplementation(async (tool: string) => {
+    sent.push(tool);
+    if (fails-- > 0) throw new Error(HELD);
+    return { url: "https://shop.example/" };
+  });
+}
+
+test("a call a client certificate prompt held cancels the prompt and fails as nothing sent and retryable, without sending the call again", async () => {
+  const sent: string[] = [];
+  const port = heldOnce(sent);
+  const prompts = spyOn(sheets, "cancelCertificatePrompts").mockImplementation(async () => [PROMPT]);
+  let error: unknown;
+  try {
+    error = await invoke("info", { tab: 7 }).catch((e: unknown) => e);
+  } finally {
+    port.mockRestore();
+    prompts.mockRestore();
+  }
+  expect(error).toMatchObject({ message: `${HELD}; a client certificate prompt held Safari and is cancelled now (${PROMPT})`, code: "unavailable", effect: "none", retryable: true });
+  expect(sent).toEqual(["info"]);
 });

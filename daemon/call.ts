@@ -13,7 +13,15 @@ import { remoteCall } from "./host.ts";
 import { secretType, typeSecret, type CallerEnv } from "./secret.ts";
 import { TOOLS, pageRead, runSteps, type PageRead } from "./tools.ts";
 import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
-import { cancelLeftSheets } from "./sheets.ts";
+import { HarnessError } from "./failures.ts";
+import { cancelCertificatePrompts, cancelLeftSheets } from "./sheets.ts";
+
+// A call that never reached Safari's extension (bridge.ts): its kind is
+// stuck, none is connected, or its reload did not connect again. Nothing
+// was sent, so a client certificate prompt holding Safari is cancelled
+// then, and the call fails saying to call again. It does not go again
+// here: the page that asked for the certificate would ask again.
+const HELD = /^(extension stuck|Safari extension not connected|the extension (did not reload|reloaded but did not connect again))/;
 
 // model: the call counts as the model's own, as invoke's does.
 export type Invoke = (tool: string, args: Record<string, unknown>, model?: boolean) => Promise<unknown>;
@@ -80,7 +88,12 @@ async function invokeInner(tool: string, args: Record<string, unknown>, model: b
   if (!routed && !coded && nameIn(CALLER_NAMES, tool) === undefined) {
     const name = nameIn(DAEMON_NAMES, tool) ?? tool;
     try {
-      const result = await rpc(tool, args, model);
+      const result = await rpc(tool, args, model).catch(async (e: unknown) => {
+        if (!(e instanceof Error) || !HELD.test(e.message)) throw e;
+        const cancelled = await cancelCertificatePrompts().catch((): string[] => []);
+        if (cancelled.length === 0) throw e;
+        throw new HarnessError("unavailable", `${e.message}; a client certificate prompt held Safari and is cancelled now (${cancelled.join("; ")})`, { effect: "none", retryable: true, next: "call again, and do not open that site again: it asks for a client certificate, which no agent presents" });
+      });
       claimSpaces(name, result);
       return result;
     } finally {
