@@ -764,10 +764,16 @@ export function firstNotes(url: unknown, again = false): { notes?: string; first
   const first = again || !sites.has(host);
   const lines: string[] = [];
   for (const site of sitesOf(host)) {
-    if (sites.has(site) && !again) continue;
-    sites.add(site);
+    // A site's bot check is told apart from its notes: it shows only on
+    // its own pages, so a subdomain's page that told the notes leaves it
+    // for the site's next page.
+    const notes = again || !sites.has(site);
+    const check = (host === site || host === `www.${site}`) && (again || !sites.has(`check ${site}`));
+    if (!notes && !check) continue;
+    if (notes) sites.add(site);
+    if (check) sites.add(`check ${site}`);
     try {
-      lines.push(...linesFor(site));
+      lines.push(...linesFor(site, notes, check));
     } catch (e) {
       console.error(`[safari-harness] site notes for ${site} not read:`, e instanceof Error ? e.message : e);
     }
@@ -777,16 +783,19 @@ export function firstNotes(url: unknown, again = false): { notes?: string; first
 
 // Notes past INLINE_CHARS come as a count and the call that reads them,
 // learn with only site, which every agent has: on 09-29 an agent over MCP
-// called guide, a CLI command, and was told there is no such tool.
-function linesFor(site: string): string[] {
-  const notes = readNotes(site);
-  const readers = Object.keys(readersAt(site));
-  const check = readCheck(site);
+// called guide, a CLI command, and was told there is no such tool. A bot
+// check is the wall of the pages it was learned on, so it shows on its
+// site and that site's www only: on 11-17, 12 answers on Google Forms and
+// Meet pages said "bot check learned for google.com: recaptcha wall".
+function linesFor(site: string, withNotes: boolean, withCheck: boolean): string[] {
+  const notes = withNotes ? readNotes(site) : [];
+  const readers = withNotes ? Object.keys(readersAt(site)) : [];
+  const check = withCheck ? readCheck(site) : undefined;
   const chars = notes.reduce((sum, n) => sum + n.fact.length, 0);
   return [
     ...(notes.length === 0 ? [] : chars <= INLINE_CHARS ? [`site notes for ${site}: ${notes.map((n, i) => `(${i + 1}) ${n.fact}`).join(" ")}`] : [`site notes for ${site}: ${notes.length}; read them with learn {site: "${site}"}`]),
     ...(readers.length ? [`readers saved for ${site}: ${readers.join(", ")}; run one with eval {tab, reader: "<name>"}`] : []),
-    ...(readReal(site) === null ? [] : [`real input for ${site}: a model's click and type with a ref here go as real input`]),
+    ...(!withNotes || readReal(site) === null ? [] : [`real input for ${site}: a model's click and type with a ref here go as real input`]),
     ...(check === undefined ? [] : [`bot check learned for ${site}: ${checkWords(check)}`]),
   ];
 }
