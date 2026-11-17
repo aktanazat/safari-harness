@@ -62,6 +62,11 @@ Turns
   `--snapshot`) on `open`, `goto`, `click`, `type`, `press`, `select`,
   or `wait` answers with the page after it, and `snapshot: "Sign in|Email"` (the
   words to keep, `|` between) with only its lines that have them.
+- A click refused because a welcome or promo dialog covers it, whose
+  refusal says to click again with `dismiss: true`: that click closes the
+  dialog by its Close, No thanks or × and clicks the ref, answering with
+  `dismissed`. Pass it only after reading that refusal or the dialog
+  itself; it never answers a dialog's question (Skip, Decline).
 - Through the MCP server, a snapshot of a tab you read in the last 2
   minutes answers with only its changed lines (`- ` gone, `+ ` new), or
   none when nothing changed; `full: true` reads the whole page. The CLI

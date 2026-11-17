@@ -1657,11 +1657,43 @@
     const el = resolve(ref, true);
     const fp = el && (fingerprints.get(String(ref).trim()) ?? candidateOf(el));
     const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts);
+    lastCover = null;
     const first = once();
+    const cover = first?.reason === "covered" && first.failure?.effect === "none" ? lastCover : null;
+    if (cover && closeControls(cover.hit, cover.target, true).length) {
+      if (opts?.dismiss) return dismissThen(cover, once);
+      return { ...first, error: `${first.error}; click again with dismiss: true to close it and click in one call`, failure: { ...first.failure, next: "click again with dismiss: true, or click a close control first" } };
+    }
     if (!first?.unseen || first.failure?.effect !== "none") return first;
     return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(() => {
       if (changedSince(String(ref).trim(), el, fp)) return { ...missing(ref), failure: UNSENT };
       return once();
+    });
+  }
+
+  // dismiss: a click a cover refuses clicks the close control of the
+  // dialog, or the fixed or sticky box, holding the cover (closeControls
+  // with auto: "Close", "No thanks", "Not now", "×" only; never "Skip",
+  // "Cancel", or a choice such as "Decline"), waits for the cover to go,
+  // and clicks the target again. On 11-17 Bank of America's "Welcome to
+  // Online Banking" dialog over Pay & Transfer cost three calls: the
+  // refused click, a click on its "No thanks", and the click again. Once
+  // the close control took its click the page has changed, so a later
+  // refusal is no longer one with no effect.
+  const DISMISS_MS = 2000;
+  const DISMISSED = { code: "effect_unknown", effect: "possibly_effected", retryable: false, next: "the cover's close control was clicked: snapshot the page before clicking again" };
+  // { target, hit }: the cover clickPoint last refused a click for
+  let lastCover = null;
+  function dismissThen(cover, again) {
+    const closer = closeControls(cover.hit, cover.target, true)[0];
+    const dismissed = `${named(cover.hit)} with its ${named(closer)}`;
+    const closed = withOutcome(() => clickElement(closer));
+    if (closed.error) return { ...closed, error: `that target is covered by ${named(cover.hit)}, and its close control ${named(closer)} refused the click: ${closed.error}` };
+    if (closed.expect === "load" || closed.expect === "tab") return { error: `closing ${dismissed} ${closed.expect === "load" ? "loaded another page" : "opened a tab"}; the target was not clicked`, failure: DISMISSED };
+    const free = () => clickPoint(cover.target, false).reason !== "covered";
+    return (free() ? Promise.resolve(true) : whenPage(free, DISMISS_MS)).then((gone) => {
+      if (!gone) return { error: `closed ${dismissed}, but the target is still covered by ${lastCover ? named(lastCover.hit) : "something"} after ${DISMISS_MS / 1000} s; the target was not clicked`, failure: DISMISSED };
+      return Promise.resolve(again()).then((res) => (res?.error ? { ...res, error: `closed ${dismissed}, then ${res.error}`, failure: DISMISSED } : { ...res, dismissed }));
     });
   }
 
@@ -1718,15 +1750,20 @@
     return el.localName === "label" && !!el.control && insideTarget(el.control, hit);
   }
 
-  // A cover named with its way out: up to three shown controls in the
-  // dialog, or the fixed or sticky box, that holds the cover, or in the
-  // cover itself, whose whole name says to close it ("Close", "Not now",
-  // "×"); "Cancel subscription" or "Decline" is a choice, not a way out. A
-  // box that holds the target too is the page's own, whose Cancel is no way
-  // out.
+  // A cover's way out: up to three shown controls in the dialog, or the
+  // fixed or sticky box, that holds the cover, or in the cover itself,
+  // whose whole name says to close it ("Close", "Not now", "×"); "Cancel
+  // subscription" or "Decline" is a choice, not a way out. A box that holds
+  // the target too is the page's own, whose Cancel is no way out.
+  // auto: the ones dismiss may click itself: only in a dialog, fixed or
+  // sticky box, as an inline editor's Cancel or a tag's × over the target
+  // would lose an edit or an item; and only a name that does nothing but
+  // close, as "Skip" or "Cancel" in "Turn on two-step verification" is
+  // the dialog's question answered.
   const DISMISS = /^\s*(?:(?:close|dismiss|cancel|hide|skip|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
-  function coveredBy(hit, target, again = "") {
-    let box = hit;
+  const CLOSE_ONLY = /^\s*(?:(?:close|dismiss|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
+  function closeControls(hit, target, auto = false) {
+    let box = null;
     for (let node = hit; node && !insideTarget(node, target); node = node.assignedSlot ?? parentOf(node)) {
       const { position } = (node.ownerDocument.defaultView || window).getComputedStyle(node);
       if (node.matches(DIALOG_BOXES) || position === "fixed" || position === "sticky") {
@@ -1734,9 +1771,17 @@
         break;
       }
     }
-    const ways = insideTarget(box, target) ? [] : [box, ...deepElements(box)]
-      .filter((el) => isInteractive(el) && shown(el) && DISMISS.test(accessibleName(el)))
-      .slice(0, 3).map((el) => `[${ensureRef(el)}] ${named(el)}`);
+    if (auto && !box) return [];
+    box ??= hit;
+    const names = auto ? CLOSE_ONLY : DISMISS;
+    return insideTarget(box, target) ? [] : [box, ...deepElements(box)]
+      .filter((el) => isInteractive(el) && shown(el) && names.test(accessibleName(el)))
+      .slice(0, 3);
+  }
+
+  // A cover named with its way out (closeControls).
+  function coveredBy(hit, target, again = "") {
+    const ways = closeControls(hit, target).map((el) => `[${ensureRef(el)}] ${named(el)}`);
     if (!ways.length) return `${named(hit)}; dismiss the cover before clicking${again}`;
     return `${named(hit)}; its close control${ways.length > 1 ? "s are" : " is"} ${ways.join(", ")}`;
   }
@@ -1860,7 +1905,11 @@
       }
     }
     if (targetStyle.pointerEvents === "none") return { error: "that target does not receive pointer events; click its visible interactive control instead", reason: "pointer_events", next: "click the visible interactive control instead" };
-    if (cover) return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
+    if (cover) {
+      // the cover clickShown's dismiss closes
+      lastCover = { target: el, hit: cover };
+      return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
+    }
     if (points) return { error: "that target has a visible box but Safari returned no hit-test target; wait for the page to draw before clicking", reason: "unpainted", next: "wait for the page to draw before clicking", unseen: true };
     return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
   }

@@ -34,6 +34,30 @@ const relabel = (name: string): Step => evaluate(`(() => {
   document.querySelector("#descendant span").textContent = ${JSON.stringify(name)};
   return true;
 })()`, true);
+// A dialog over #descendant holding buttons; each press is kept in
+// body.dataset.pressed, and a press on the one named `closes` takes the
+// dialog away (null: none does). inline: a plain box laid over it in the
+// page instead, as an inline editor is, no dialog and not fixed.
+const coverDialog = (buttons: string, closes: string | null, inline = false): Step => evaluate(`(() => {
+  const target = document.getElementById("descendant");
+  target.scrollIntoView({ block: "center", behavior: "instant" });
+  const rect = target.getBoundingClientRect();
+  const inline = ${inline};
+  const dialog = document.createElement("div");
+  if (!inline) dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-label", "Confirm your address");
+  dialog.style.cssText = (inline ? "position:absolute" : "position:fixed") + ";z-index:10000;background:white";
+  const x = inline ? scrollX : 0, y = inline ? scrollY : 0;
+  Object.assign(dialog.style, { left: rect.left + x - 20 + "px", top: rect.top + y - 20 + "px", width: rect.width + 240 + "px", height: rect.height + 40 + "px" });
+  dialog.innerHTML = '<div style="position:absolute;right:0;top:0">' + ${JSON.stringify(buttons)} + "</div>";
+  document.body.dataset.pressed = "[]";
+  for (const button of dialog.querySelectorAll("button")) button.addEventListener("click", () => {
+    document.body.dataset.pressed = JSON.stringify([...JSON.parse(document.body.dataset.pressed), button.textContent]);
+    if (button.textContent === ${JSON.stringify(closes)}) dialog.remove();
+  });
+  document.body.append(dialog);
+  return true;
+})()`, true);
 
 const clickEvents = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
 const recordInputs = (selector: string): Step => evaluate(`(() => {
@@ -458,28 +482,67 @@ benchRows("safe clicks in WebKit", [
     ],
   },
   {
-    name: "a covered click names the close control of the dialog covering it, which clears the way",
+    name: "a covered click names the close control of the dialog covering it, which clears the way, and offers dismiss",
     page: targets,
     steps: [
-      evaluate(`(() => {
-        const target = document.getElementById("descendant");
-        target.scrollIntoView({ block: "center", behavior: "instant" });
-        const rect = target.getBoundingClientRect();
-        const dialog = document.createElement("div");
-        dialog.setAttribute("role", "dialog");
-        dialog.setAttribute("aria-label", "Confirm your address");
-        dialog.style.cssText = "position:fixed;z-index:10000;background:white";
-        Object.assign(dialog.style, { left: rect.left - 20 + "px", top: rect.top - 20 + "px", width: rect.width + 240 + "px", height: rect.height + 40 + "px" });
-        dialog.innerHTML = '<div style="position:absolute;right:0;top:0"><button>Cancel subscription</button><button>Close</button></div>';
-        dialog.querySelector("button:last-child").addEventListener("click", () => dialog.remove());
-        document.body.append(dialog);
-        return true;
-      })()`, true),
-      { op: "click", args: ["#descendant"], answer: { error: 'that target is covered by dialog "Confirm your address"; its close control is [1] button "Close"', failure: unsent } },
+      coverDialog("<button>Cancel subscription</button><button>Close</button>", "Close"),
+      { op: "click", args: ["#descendant"], answer: { error: 'that target is covered by dialog "Confirm your address"; its close control is [1] button "Close"; click again with dismiss: true to close it and click in one call', failure: unsent } },
       state("safety.descendant", 0),
       { op: "click", args: ["1"], answer: { value: { ok: true } } },
       { op: "click", args: ["#descendant"], answer: { value: { ok: true } } },
       state("safety.descendant", 1),
+    ],
+  },
+  // On 11-17 a dialog over Bank of America's Pay & Transfer cost three
+  // calls: the refused click, its "No thanks", and the click again.
+  {
+    name: "a covered click with dismiss clicks the cover's close control, never the choice beside it, then the target, in one call",
+    page: targets,
+    steps: [
+      coverDialog("<button>Cancel subscription</button><button>Close</button>", "Close"),
+      { op: "click", args: ["#descendant", { dismiss: true }], answer: { value: { ok: true, dismissed: 'dialog "Confirm your address" with its button "Close"' } } },
+      state("safety.descendant", 1),
+      evaluate("JSON.parse(document.body.dataset.pressed)", ["Close"]),
+    ],
+  },
+  {
+    name: "a covered click with dismiss on a cover offering only choices clicks nothing and is refused as before any event",
+    page: targets,
+    steps: [
+      coverDialog("<button>Decline</button><button>Cancel subscription</button>", "Decline"),
+      { op: "click", args: ["#descendant", { dismiss: true }], answer: { error: 'that target is covered by dialog "Confirm your address"; dismiss the cover before clicking', failure: unsent } },
+      state("safety.descendant", 0),
+      evaluate("JSON.parse(document.body.dataset.pressed)", []),
+    ],
+  },
+  {
+    name: "a covered click with dismiss never clicks Skip, which answers the dialog's question, though the refusal names it",
+    page: targets,
+    steps: [
+      coverDialog("<button>Turn on</button><button>Skip</button>", "Skip"),
+      { op: "click", args: ["#descendant", { dismiss: true }], answer: { error: 'that target is covered by dialog "Confirm your address"; its close control is [1] button "Skip"', failure: unsent } },
+      state("safety.descendant", 0),
+      evaluate("JSON.parse(document.body.dataset.pressed)", []),
+    ],
+  },
+  {
+    name: "a covered click with dismiss never clicks a Cancel in a box over the target that is no dialog or fixed box, as an inline editor's",
+    page: targets,
+    steps: [
+      coverDialog("<button>Close</button><button>Cancel</button>", "Cancel", true),
+      { op: "click", args: ["#descendant", { dismiss: true }], answer: { error: 'that target is covered by div "Confirm your address"; its close controls are [1] button "Close", [2] button "Cancel"', failure: unsent } },
+      state("safety.descendant", 0),
+      evaluate("JSON.parse(document.body.dataset.pressed)", []),
+    ],
+  },
+  {
+    name: "a covered click with dismiss whose close control leaves the cover in place clicks no target and says the page may have changed",
+    page: targets,
+    steps: [
+      coverDialog("<button>Close</button>", null),
+      { op: "click", args: ["#descendant", { dismiss: true }], answer: { error: expect.stringContaining('closed dialog "Confirm your address" with its button "Close", but the target is still covered'), failure: { code: "effect_unknown", effect: "possibly_effected" } } },
+      state("safety.descendant", 0),
+      evaluate("JSON.parse(document.body.dataset.pressed)", ["Close"]),
     ],
   },
   {
