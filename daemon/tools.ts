@@ -34,7 +34,6 @@ import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { afterStep, checkpoint, refill } from "./drafts.ts";
-import { APPROVAL_PHONE } from "./phone-approvals.ts";
 import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, type ConditionalCaptureResult } from "./evidence.ts";
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
@@ -4144,10 +4143,6 @@ export const TOOLS: Record<string, Tool> = {
       return bridge.tab(tab, "fillCard", [str(a.site, "site"), card, secrets], 30000, a.frame === undefined ? 0 : num(a.frame, "frame"));
     },
   },
-  approval_phone_open: APPROVAL_PHONE.open,
-  approval_phone_state: APPROVAL_PHONE.state,
-  approval_phone_close: APPROVAL_PHONE.close,
-  approval_phone_setup: APPROVAL_PHONE.setup,
   passwords: {
     desc: "Never reveal/ask secrets. fill and code come from the vault, no Touch ID; setup-code confirms a setup-code QR; logins lists users; change saves/fills strong password (set passwordrules; caller submits). Locked calls pair on Mac. cards lists, card-fill fills (no Touch ID), card-save keeps one he gave. done releases access; status explains locks.",
     params: { do: { type: "string", enum: ["pair", "unlock", "status", "done", "logins", "fill", "code", "change", "setup-code", "cards", "card-save", "card-fill", "card-rm"] }, code: { type: "string", description: "6 digits off the Mac" }, tab: TAB, username: { type: "string", description: "which login, if several" }, site: { type: "string", description: "logins, change: host if not the page's" }, shared: { type: "boolean" }, card: { type: "string", description: "label or last 4" } },

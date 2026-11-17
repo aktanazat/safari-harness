@@ -787,43 +787,6 @@ something, or deleting anything, show the user what will happen (a snapshot or
 screenshot of the filled form) and get a yes. A routine never does these
 things unless its saved task explicitly says to.
 
-## The approval popup (omp)
-
-In an omp session the harness's omp extension asks the user before a step
-that acts in his name runs: `imessage_send` with `approved`; a
-`site_actions` call with `approved`; the first `handoff` call; and
-outside this harness `mac_shortcut`, `mac_handoff`, and shell or eval
-code that calls the `safari` CLI to send a text or run a site action it is
-told to approve, including the steps a `--steps-file` holds. Steps piped
-in on stdin are not read. Passwords and secrets never ask (his order, 2026-11-13):
-`passwords` and `bitwarden` fills, codes, password changes and cards,
-`type` or `real_input` with `secret` or `{{code}}`, the `safari` CLI doing
-the same, and vault commands (`mem-secret`, `sops`). Fills, codes and
-saved cards come from the vault and take no Touch ID either. It reads
-each call and run step as the daemon will, with other names for its tool and
-parameters folded in. A
-popup on his Mac names the thing and one fact about it (the command, the
-text), and the omp session that asked shows the same card in place of
-its prompt: Enter there approves through the popup, so it still takes
-Touch ID (a handoff's "Show me" does not), and Esc denies. While he is away
-from the Mac the same request reaches his phone for Face ID once he has set
-it up (`safari passwords approvals-phone`).
-
-- A yes covers the same step for that session 10 minutes: the same exact
-  shell command, or the same handoff on the same site. A text asks every
-  time.
-- Popups show one at a time. One waiting behind another shows "After the
-  one on your Mac" in the terminal, where Enter does nothing until it is on
-  screen; Esc still denies it.
-- A lead with a terminal waits for the answer as long as the popup lives.
-  Any other call that waits 25 s comes back "waiting for the user's ok":
-  make the same call again; it joins the popup already showing.
-- A no comes back as a blocked call. Do not retry it; ask him in chat. A
-  popup that closed with no answer says so; that call may be made again.
-- Headless (print-mode) sessions and their helpers are not asked.
-- The popup is a consent gate for agents that use these tools, not a wall:
-  a shell can still reach the vault key. Do not go around it.
-
 ## Limits compared to Chrome
 
 - No `chrome.debugger`: no CPU profiling, request interception or blocking,
