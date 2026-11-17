@@ -2416,7 +2416,7 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
   if (!final || final.origin !== requested.origin || /\/(?:login|log-in|signin|sign-in|captcha|challenge)(?:\/|$)/i.test(final.pathname) || final.pathname === "/account/access") throw new HarnessError("unavailable", "the site redirected this read to sign-in or another site; open the page and complete its sign-in first");
   if (response.status === undefined || response.status < 200 || response.status >= 300) throw new HarnessError("unavailable", `the signed-in page answered HTTP ${response.status ?? "unknown"}`);
   const type = response.type ?? null;
-  if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", "this response is not readable text; use download for a file");
+  if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", /^application\/pdf\b/i.test(type ?? "") ? "this response is a PDF, not text: pdf {do: \"read\", url} (CLI safari pdf read URL) reads its text" : "this response is not readable text; use download for a file");
   const html = /^text\/html\b/i.test(type) ? await readableHtml(response.text) : undefined;
   if (html && (html.login || html.shell || /\b(?:sign in|log in|login|just a moment|verify you are human|captcha)\b/i.test(html.title))) throw new HarnessError("unavailable", "the site returned a sign-in, challenge, or loading page instead of the requested content");
   if (format === "json" && !/[/+]json\b/i.test(type)) throw new HarnessError("not_content", "this response is not JSON");
