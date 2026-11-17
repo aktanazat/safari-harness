@@ -267,6 +267,7 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari guide sites                         sites with a usage guide
   safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
+  safari guide <name> --query "a|b"          only the parts that hold the words
   safari guide repl                          the REPL's API and recipes
   safari learn <site> "<fact>"               save a fact about a site for later agents
                                              (at most 300 characters; never a secret)
@@ -789,10 +790,14 @@ async function main() {
     // Every word names the guide: guide reference two lanes read only its
     // first word, and printed the whole reference.
     const which = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ") || undefined;
-    const { guide, noGuide } = await import("../daemon/guides.ts");
+    const { guide, narrow, noGuide } = await import("../daemon/guides.ts");
     const text = await guide(which);
     if (text === null) fail(noGuide(which ?? ""));
-    console.log(text);
+    const query = flag("query", rest);
+    if (query === undefined) return console.log(text);
+    const part = narrow(text, query);
+    if (part === null) fail(`no part of ${which ?? "the card"} holds ${query}; its headings: ${text.split("\n").filter((l) => /^#{1,6} /.test(l)).join(" · ")}`);
+    console.log(part);
     return;
   }
 

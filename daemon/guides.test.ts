@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guide, noGuide } from "./guides.ts";
+import { guide, narrow, noGuide } from "./guides.ts";
 import { listTools } from "./mcp-tools.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
@@ -106,3 +106,24 @@ test("google and search print the google search guide", async () => {
   expect(await guide("google")).toStartWith((search ?? "").trimEnd());
 });
 
+
+// On 11-16 agents piped the 7 KB Slack guide into head or grep about 15
+// times; --query keeps a match with the headings and opening rule it sits
+// under, so a slice never drops "every write drafts first".
+test("narrow keeps matching parts under their headings and their section's opening rule", () => {
+  const text = [
+    "# Site", "", "Intro.", "",
+    "## Reading", "- `list()`: lists.", "- `download(file)`: saves a file.", "",
+    "### Writing", "Every write drafts first.", "", "- `post(text)`: posts.", "- `upload(file)`: shares a file.", "",
+    "```js", "", "await post(x);", "```", "",
+  ].join("\n");
+  expect(narrow(text, "FILE")).toBe([
+    "# Site", "", "## Reading", "", "- `download(file)`: saves a file.", "",
+    "### Writing", "", "Every write drafts first.", "", "- `upload(file)`: shares a file.", "",
+  ].join("\n"));
+  expect(narrow(text, "writing")).toBe([
+    "# Site", "", "## Reading", "", "### Writing", "", "Every write drafts first.", "",
+    "- `post(text)`: posts.", "- `upload(file)`: shares a file.", "", "```js", "", "await post(x);", "```", "",
+  ].join("\n"));
+  expect(narrow(text, "zzqq|")).toBeNull();
+});

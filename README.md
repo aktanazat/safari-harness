@@ -382,8 +382,9 @@ and any that was in use in the past week.
 
 `safari guide` is the short card of rules: tabs, sign-in, bot checks, and
 waiting. `safari guide <tool>` prints one tool's section of the reference,
-`safari guide reference` lists its sections. The omp skill `safari` points
-agents at both.
+`safari guide reference` lists its sections, and `--query words` prints
+only the parts of a guide that hold the words. The omp skill `safari`
+points agents at both.
 
 ```
 safari open https://example.com --bg   # prints the new tab's id, say 7
