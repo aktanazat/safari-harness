@@ -2191,10 +2191,16 @@ function readerOffers(entries: NetEntry[], page: string | undefined): { request:
 }
 
 // The requests the page made, or with url only those whose address has
-// that part, each with its index in the whole list, which body takes.
-function netShown(read: { entries: NetEntry[] }, url: string | undefined) {
-  if (url === undefined) return read;
-  return { entries: read.entries.flatMap((e, index) => (e.url.includes(url) ? [{ index, ...e }] : [])) };
+// that part (a|b: either, or /regex/, as wait's url), each with its index
+// in the whole list, which body takes. A path such as "/api/" has no
+// pattern in it and stays a part. urls gives a line per request and no
+// bodies: on 11-17 a read with no filter answered 52 KB, mostly the
+// starts of bodies, when the agent wanted the addresses.
+const netMatch = (href: string, url: string) => (/^\/[^\\^$.*+?()[\]{}|]*\/[dgimsuvy]*$/.test(url) ? href.includes(url) : urlMatch(href, url));
+function netShown(read: { entries: NetEntry[] }, url: string | undefined, urls = false) {
+  const kept = read.entries.flatMap((e, index) => (url === undefined || netMatch(e.url, url) ? [{ index, ...e }] : []));
+  if (urls) return { requests: kept.map((e) => `${e.index} ${e.method ?? e.kind ?? "GET"} ${e.error === undefined ? (e.status ?? "pending") : "failed"} ${e.url}`) };
+  return url === undefined ? read : { entries: kept };
 }
 
 export async function netRead(opts: { tab?: number; url?: string } = {}) {
@@ -2204,13 +2210,14 @@ export async function netRead(opts: { tab?: number; url?: string } = {}) {
 
 // net read for the agent: the requests, and those it can save as a reader
 // that asks for the same data without the page.
-async function netReadOffering(opts: { tab?: number; url?: string } = {}) {
+async function netReadOffering(opts: { tab?: number; url?: string; urls?: boolean } = {}) {
   const tab = await resolveTab(opts.tab);
   const read = (await relay(tab, "netRead")) as { entries: NetEntry[] };
   const page = (await relay(tab, "tabInfo")) as { url?: string };
   const { url } = opts;
-  const shown = netShown(read, url);
-  const offered = readerOffers(read.entries, page.url).filter((o) => url === undefined || read.entries[o.request]!.url.includes(url));
+  const shown = netShown(read, url, opts.urls);
+  if (opts.urls) return shown;
+  const offered = readerOffers(read.entries, page.url).filter((o) => url === undefined || netMatch(read.entries[o.request]!.url, url));
   const whole = await Promise.all(offered.map(async ({ request }) => {
     const e = read.entries[request]!;
     try {
@@ -3918,13 +3925,13 @@ export const TOOLS: Record<string, Tool> = {
   },
   net: {
     desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends.",
-    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "only those with this in their url" }, body: { description: "index or url part: its whole body" } },
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "url part (a|b: either), or /regex/" }, urls: { type: "boolean", description: "a line each, no bodies" }, body: { description: "index or url part: its whole body" } },
     required: ["tab"],
     run: (a) => {
       if (a.body !== undefined) return netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do });
-      if (a.url === undefined) return capture({ start: netStart, read: netReadOffering, stop: netStop }, a);
-      if (a.do !== undefined && a.do !== "read") throw new Error("url goes with do: read");
-      return netReadOffering({ tab: a.tab as number | undefined, url: str(a.url, "url") });
+      if (a.url === undefined && a.urls === undefined) return capture({ start: netStart, read: netReadOffering, stop: netStop }, a);
+      if (a.do !== undefined && a.do !== "read") throw new Error("url and urls go with do: read");
+      return netReadOffering({ tab: a.tab as number | undefined, url: a.url === undefined ? undefined : str(a.url, "url"), urls: a.urls === true || a.urls === "true" });
     },
   },
   console: {
