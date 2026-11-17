@@ -2155,8 +2155,10 @@ what an action reports).
   an address, or a domain) takes a code only from there, any text from
   that number included, for a site whose texts do not name it or that
   mails from another domain; give only a sender the site's guide or its
-  own page names. Matching by name cannot tell a brand's lookalike
-  (chase.co for Chase), or a site named for a word code texts use, from
+  own page names. A text from a number the site's guide lists under
+  `code-senders:` counts without `sender`. Matching by name cannot tell
+  a brand's lookalike (chase.co for Chase), or a site named for a word
+  code texts use, from
   the brand: type a code only into the site that sent it. A wait that
   finds none fails after 30 s saying where it looked and what it passed
   over. The answer comes as soon as the code does; a Gmail tab still

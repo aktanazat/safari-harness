@@ -23,6 +23,7 @@ import { nameIn } from "./guard.ts";
 import { CODE_POLL_MS, codeTexts, handleKey, type CodeText, type CodeTexts } from "./imessage.ts";
 import { site } from "./receipt.ts";
 import { rpc } from "./rpc.ts";
+import { codeSenders } from "./site-guides.ts";
 import type { GmailThreadSummary } from "./sites/google.ts";
 
 const CODE = "{{code}}";
@@ -175,11 +176,14 @@ function fromSender(from: string, sender: string): boolean {
 
 // What texts offer, sender's alone when given: codes in texts bound to the
 // page's host or one above it (WebOTP), or else naming its site, as most
-// name their brand ("Shop Example: 482915 is your code"); from sender, any
-// unbound text. skipped notes the rest. Until the 11-11 review a text that
-// named no site was taken too, so a code another site texted in the same
-// minute went into the page that asked.
+// name their brand ("Shop Example: 482915 is your code"), or from a number
+// the site's guide names; from sender, any unbound text. skipped notes the
+// rest. Until the 11-11 review a text that named no site was taken too, so
+// a code another site texted in the same minute went into the page that
+// asked. On 11-17 Bank of America's code, texted from 73981 without its
+// name, waited 30 s and was typed only on a second call with sender.
 function fromTexts(texts: CodeText[], s: Site, sender: string | undefined, typed: Set<string>, skipped: Set<string>): Sent[] {
+  const listed = s.host === undefined ? [] : codeSenders(s.host);
   return texts.flatMap((t) => {
     const key = `text:${t.rowid}`;
     const source = `text from ${t.from}`;
@@ -192,7 +196,7 @@ function fromTexts(texts: CodeText[], s: Site, sender: string | undefined, typed
       skipped.add(`a code for ${t.bound} (${source})`);
       return [];
     }
-    if (t.bound === undefined && sender === undefined && !names(t.text, s)) {
+    if (t.bound === undefined && sender === undefined && !names(t.text, s) && !listed.some((n) => fromSender(t.handle, n))) {
       skipped.add(`a code that does not name ${s.domain ?? "the page's site"} (${source})`);
       return [];
     }

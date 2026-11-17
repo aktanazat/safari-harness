@@ -6,20 +6,22 @@
 // `error-titles:` names the exact titles of the site's error page, comma
 // separated: open and goto answer such a page as not ok (tools.ts). `safari
 // guide` prints them (guides.ts); the first result on a site names its own
-// (tools.ts).
+// (tools.ts). `code-senders:` names the numbers a site texts its codes
+// from without its name in the text, comma separated (secret.ts).
 
 import { readdirSync, readFileSync } from "node:fs";
 
 const SITES = new URL("../docs/sites/", import.meta.url);
 
-export type Guide = { slug: string; name: string; hosts: string[]; real: boolean; errorTitles: string[]; text: string };
+export type Guide = { slug: string; name: string; hosts: string[]; real: boolean; errorTitles: string[]; codeSenders: string[]; text: string };
 
 export function bundled(): Guide[] {
   return readdirSync(SITES).filter((f) => f.endsWith(".md")).sort().map((f) => {
     const text = readFileSync(new URL(f, SITES), "utf8");
     const hosts = (/^hosts:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((h) => h.trim()).filter(Boolean);
     const errorTitles = (/^error-titles:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
-    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, real: /^real-input:\s*true\s*$/m.test(text), errorTitles, text };
+    const codeSenders = (/^code-senders:(.*)$/m.exec(text)?.[1] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+    return { slug: f.slice(0, -3), name: /^name:\s*(.*)$/m.exec(text)?.[1] ?? f, hosts, real: /^real-input:\s*true\s*$/m.test(text), errorTitles, codeSenders, text };
   });
 }
 
@@ -62,4 +64,10 @@ export function errorPage(url: string, title: string): boolean {
   if (!parsed || title.trim() === "") return false;
   guides ??= bundled();
   return covering(guides, parsed.hostname, parsed.pathname)?.errorTitles.includes(title.trim()) ?? false;
+}
+
+// The numbers the guide for host says its site texts codes from.
+export function codeSenders(host: string): string[] {
+  guides ??= bundled();
+  return covering(guides, host, "/")?.codeSenders ?? [];
 }
