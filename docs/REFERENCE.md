@@ -3009,6 +3009,12 @@ Read it before working on that site.
   notes or readers.
 - Several topics print in one call, each in turn: `safari guide repl x
   linkedin`; a word that names nothing says so in its place.
+- `--query "words"` prints only the parts of a guide that hold the words
+  (`a|b` is either, any case): each paragraph, list item or code block
+  that matches, under its headings and its section's opening paragraphs;
+  a heading that matches keeps its whole section (`safari guide slack
+  --query download`). Use it instead of piping a guide into head or grep.
+  When nothing matches, it fails and lists the guide's headings.
 - `safari guide google` and `safari guide search` print the Google search
   guide, with a line naming google's other guides.
 
