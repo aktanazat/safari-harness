@@ -94,11 +94,13 @@ const USAGE = `safari — drive Safari from the terminal
   safari scroll <dy> --tab N [--to top|bottom]
                                              scroll by dy, or all the way to the page's top or bottom
 
-  Page commands need --tab N, the id open printed, or --tab front for the
-  tab the user has in front. Tabs a command opens close when omp's turn
-  ends, once the program that ran safari exits, after 2 minutes unused,
-  or past 4 open tabs per agent session; --keep on open, or safari keep
-  <tab>, leaves one open for him.
+  Page commands need --tab N, the id open printed, --tab latest for your
+  tab opened or named last, or --tab front for the tab the user has in
+  front. Tabs a command opens close when omp's turn ends, once the
+  program that ran safari exits, after 2 minutes unused, or past 4 open
+  tabs per agent session; --keep on open, or safari keep <tab>, leaves
+  one open for him. Commands over ssh or from a script outside an agent
+  keep one set of tabs with a unique SAFARI_OWNER=<key> or --owner <key>.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
@@ -412,7 +414,7 @@ function fileFlags(argv: string[]): string[] | undefined {
 function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
-  return { tab: t === "front" ? t : Number(t) };
+  return { tab: t === "front" || t === "latest" ? t : Number(t) };
 }
 
 // --save writes a read's whole output to a new file in the saved folder;

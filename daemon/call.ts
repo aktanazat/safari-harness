@@ -129,8 +129,11 @@ async function runHere(tool: string, args: Record<string, unknown>, model: boole
     return typeSecret(a, model, (text) => rpc("type", { ...a, secret: true, text }, model), caller);
   }
   // real_input takes a code's source as type does, and its own parameters
-  // go to it (secret.ts).
-  const call = checkCall(CALLER_TOOLS, tool, args, model);
+  // go to it (secret.ts). Tab "latest" is the daemon's to name: it alone
+  // knows this agent's tabs (resolveTab in tools.ts).
+  const checked = checkCall(CALLER_TOOLS, tool, args, model);
+  const latest = checked.args.tab === "latest" ? await rpc("resolve_tab", { tab: "latest" }) : undefined;
+  const call = latest && typeof latest === "object" && "tab" in latest ? { ...checked, args: { ...checked.args, tab: latest.tab } } : checked;
   if (call.tool === "real_input" && call.args.do === "paste"
     && (["secret", "from", "from_selector", "env", "sender", "account"].some((key) => call.args[key] !== undefined)
       || ["text", "html", "tsv"].some((key) => typeof call.args[key] === "string" && call.args[key].includes("{{code}}")))) {

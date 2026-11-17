@@ -76,6 +76,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the active tab of the Safari window he had in front last. Use it only when
   he asks about the page he is looking at. `close`, `keep`, `activate`, and
   `window` take only a tab id.
+- `tab: "latest"` (CLI `--tab latest`) names your own tab you opened or
+  named last, as a `run` step without `tab` does; it fails when you have
+  none open, and never reaches another agent's tab or the user's.
 - Every tab you open goes into a Safari window for your project, never into
   the user's windows or tab groups. The main task and its direct parallel
   helpers share that window, even when they use different group names.
