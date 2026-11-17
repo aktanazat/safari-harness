@@ -17,7 +17,7 @@
 // tools.ts). A new tab opens at the results asked for, never the engine's
 // home page first: on 11-08 Google's home page was 1,732 of 10,654 loads in
 // 6 days, each one no search needed. The tab closes once no search has
-// used it for 20 minutes (sweepOnce in tools.ts).
+// used it for IDLE_MS (sweepOnce in tools.ts).
 
 import { challengeOf } from "./challenge.ts";
 import { HarnessError } from "./failures.ts";

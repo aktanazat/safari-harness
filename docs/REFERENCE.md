@@ -166,8 +166,9 @@ Safari is the user's everyday browser, so treat his tabs as his.
   cleanup open. A handoff tab whose agent exits before he finishes is his:
   the harness lets go of it (`tab released` in the journal) and never
   closes it.
-- Ordinary idle cleanup is unchanged: eligible unused pages close after
-  20 minutes. Existing protections for changed pages, unsent forms,
+- Idle cleanup is strict: eligible unused pages close after 2 minutes, and
+  each agent session keeps at most 4 tabs, a fifth closing its least
+  recently used eligible one. Existing protections for changed pages, unsent forms,
   site-global tabs, kept pages, pending handoffs and the front tab still
   apply to idle cleanup. A change, filled field, site-global tab or front
   position alone does not protect a disposable agent tab at completion
@@ -833,8 +834,9 @@ things unless its saved task explicitly says to.
   on its own stays the user's until the page reloads.
 - "that tab is gone: tab N was closed <why> at <time> (it showed <url>);
   open it again": the harness closed it itself (a close call, the end of
-  your turn, 20 minutes unused, its agent exited, or "with its window" as
-  that window's task ended). "agent P's tab N" says another agent's
+  your turn, 2 minutes unused, past its agent's limit of 4 open tabs, its
+  agent exited, or "with its window" as that window's task ended).
+  "agent P's tab N" says another agent's
   cleanup closed it, not yours. If a safe address was retained for
   recovery, the original tab id can reopen it for five
   minutes after closure ([cleanup and recovery](#cleanup-authority)).
@@ -842,8 +844,8 @@ things unless its saved task explicitly says to.
   page the user still needs left open.
 - Any other "that tab is gone" comes from the extension, names why, and
   ends "find it with tabs, or open it again":
-  - "the harness closed it <t> ago, as its agent's turn or task ended or
-    after 20 minutes unused".
+  - "the harness closed it <t> ago, as its agent's turn or task ended,
+    after it sat unused, or past its agent's limit of open tabs".
   - "it closed with its window <t> ago".
   - "the user or its own page closed it <t> ago".
   - "Safari has had no tab N in the <t> since the extension started": it
@@ -1247,7 +1249,7 @@ or one after a read, can still match text already shown.
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
 each with: `extract` (the default), `snapshot`, `eval` with `expression`,
 or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
-page is read in a background tab in your window, 6 at a time
+page is read in a background tab in your window, 4 at a time
 (`concurrency`, fewer if you ask): one tab for each page read at once,
 which loads the next page once its page is read, and closes when map
 answers. A load that never began opens the page in a new tab, so a page

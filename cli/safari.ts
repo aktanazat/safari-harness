@@ -95,8 +95,9 @@ const USAGE = `safari — drive Safari from the terminal
 
   Page commands need --tab N, the id open printed, or --tab front for the
   tab the user has in front. Tabs a command opens close when omp's turn
-  ends, once the program that ran safari exits, or after 20 minutes
-  unused; --keep on open, or safari keep <tab>, leaves one open for him.
+  ends, once the program that ran safari exits, after 2 minutes unused,
+  or past 4 open tabs per agent session; --keep on open, or safari keep
+  <tab>, leaves one open for him.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,

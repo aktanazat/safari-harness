@@ -467,25 +467,26 @@ test("a restart preserves the idle deadline while a recently used page remains o
   expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9022"]);
 });
 
-// On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.
-test("opening a ninth tab preserves unfinished work until admitted cleanup", async () => {
+// On 10-07 a tire-price agent held 42 tabs in his Safari within one turn,
+// and on 11-16 agents left 133 tabs in 37 windows, which stalled Safari.
+test("opening a fifth tab closes its agent's least recently used tab", async () => {
   const agent = Bun.spawn(["sleep", "60"]);
   const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   const tabs: number[] = [];
-  for (let n = 0; n < 8; n++) {
+  for (let n = 0; n < 4; n++) {
     await as("open", { url: `https://shop${n}.example/`, background: true });
     tabs.push(nextTab);
   }
   showing = tabs.map((id, n) => ({ id, url: `https://shop${n}.example/` }));
   // the first is used again, so the second is the least recently used
   await as("info", { tab: tabs[0] });
-  await as("open", { url: "https://shop8.example/", background: true });
-  await endTurn(agent.pid + 1);
-  expect(tabs.map(tab => gone.has(tab))).toEqual(Array(8).fill(false));
-  expect(await as("info", { tab: tabs[1] })).not.toHaveProperty("note");
+  await as("open", { url: "https://shop4.example/", background: true });
+  const fifth = nextTab;
+  for (let i = 0; i < 100 && !gone.has(tabs[1]); i++) await Bun.sleep(5);
+  expect([...tabs, fifth].map(tab => gone.has(tab))).toEqual([false, true, false, false, false]);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs([tabs[0]]);
+  await closedAs([tabs[0], tabs[2], tabs[3], fifth]);
   showing = [];
 });
 

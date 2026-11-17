@@ -20,8 +20,9 @@ Tabs
   pending handoffs stay protected; a handoff tab whose agent exits before
   he finishes is his, never closed. `keep` only a page he still needs; do
   not keep a finished result unless he asked to leave it open.
-- Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
-  even if you clicked them. Unsent forms and his front tab stay during idle
+- Idle cleanup is strict: unused pages close after 2 minutes, even if you
+  clicked them, and each agent session keeps at most 4 tabs: a fifth closes
+  its least recently used one. Unsent forms and his front tab stay during idle
   cleanup. At completion or owner exit, only pages explicitly kept for him
   and pending handoffs keep those agent tabs protected.
 - For five minutes after a recoverable tab closes, its safe address is

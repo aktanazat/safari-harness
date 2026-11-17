@@ -247,7 +247,8 @@ finished call alive. After Safari restarts, a restored tab is reattached
 only when its helper can be identified; identical addresses from different
 helpers stay open and unclaimed rather than crossing ownership.
 
-Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
+Idle cleanup is strict: unused pages close after 2 minutes, and each agent
+session keeps at most 4 tabs open, a fifth closing its least recently used,
 with the existing form, front-page, kept-page and handoff protections.
 Those form and front-page protections do not keep disposable agent tabs
 open after completion or owner exit.

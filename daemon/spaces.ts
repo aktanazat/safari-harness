@@ -60,7 +60,7 @@ const closing = new Map<string, Space>();
 // and the extension's connect in tools.ts). Every 5 s, it was 12 lists a
 // minute while an agent ran (10-21 audit).
 const SWEEP_MS = 60_000;
-const IDLE_MS = 20 * 60_000;
+const IDLE_MS = 2 * 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -453,7 +453,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const s = await runAs(undefined, () => spaceWindow("tab group cleanup", undefined, false, quiet));
       s.group = "plain";
       s.why = "a window to delete tab groups from";
-      // In use while the keeper deletes from it: unused 20 min, it ends.
+      // In use while the keeper deletes from it: unused IDLE_MS, it ends.
       s.used = Date.now();
       save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };
@@ -555,7 +555,7 @@ async function end(space: Space) {
       const tracked = taskTracked?.(space.owner);
       let why = "as its agent's turn ended";
       if (tracked === false) why = "as its agent's task ended";
-      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 20 minutes unused";
+      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 2 minutes unused";
       else if (taskTracked && tracked === undefined) why = "as no task record names its agent";
       windowPageClosed(page.id, `with its window, ${why}`, space.owner);
     } catch (e) {
