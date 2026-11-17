@@ -1053,10 +1053,15 @@
     // lines keep theirs, which the query may have matched, and so does a
     // read for a file or a script (everyAddress), searched line by line.
     const gave = new Map();
+    // Lines the query left out: a read that keeps none says whether the
+    // page had any. On 11-17 three opens with snapshot "words", the guide's
+    // stand-in taken as the words, answered "(0 nodes)" on full pages, and
+    // each was read again as if the page had not drawn.
+    let dropped = 0;
     const push = (depth, text, n, lead = "") => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
-      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) return;
+      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) { dropped++; return; }
       if (lines.length >= maxLines) { truncated = true; return; }
       const ref = n && `${prefix}${refOf(n.el)}`;
       if (ref && !query && !opts.everyAddress && hrefOf(n) && !gave.has(hrefOf(n))) gave.set(hrefOf(n), ref);
@@ -1181,7 +1186,7 @@
       }
     };
     withCensus(() => render(top, 0));
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? queryMissed(opts.query, dropped) : {}), seen };
   }
 
   // A page still drawing can show for a moment nothing a person sees: a
@@ -4618,6 +4623,15 @@
   // "(?i)credit|balance|\$\d"): agents took the empty answer for the
   // page's (09-29).
   const regexHint = (query) => (/\\|\^|\(\?|\.\*|\[.*\]|\$$/.test(query) ? { hint: 'the query is plain text, not a regex: "a|b" keeps lines containing a or b, case aside' } : {});
+
+  // A snapshot whose query kept no line on a page that has lines says so,
+  // so its "0 nodes" is not read as a page still drawing.
+  const queryMissed = (query, dropped) => {
+    const regex = regexHint(query).hint;
+    const missed = dropped ? `no line has "${query}"; the page has ${dropped} other line${dropped === 1 ? "" : "s"}: query keeps only lines holding these words` : undefined;
+    const hint = [missed, regex].filter(Boolean).join("; ");
+    return hint ? { hint } : {};
+  };
 
   // ---------- tables as rows ----------
   // extract with as: "table" reads the page's data as rows instead of text:
