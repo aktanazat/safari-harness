@@ -908,6 +908,24 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "click", args: ["Next"], answer: { value: { receipt: { said: ["Maximum number of attempts reached. Try again later."] } } } }],
   },
   {
+    name: "a click's receipt carries the requests that failed and the errors the page threw before it",
+    page: "no-op-review.html",
+    steps: [{ op: "click", args: ["Review transfer"], answer: { value: { receipt: { changed: 1, requests: [], errors: [], earlier: {
+      requests: [{ method: "GET", url: expect.stringMatching(/\/missing\/unified\/$/), error: expect.any(String) }],
+      errors: ["unhandled rejection: Unsuccessful HTTP response"],
+    } } } } }],
+  },
+  {
+    name: "a click's earlier failures outlast a page's polling past the request log, and leave out requests the page cancelled",
+    page: "no-op-review-busy.html",
+    steps: [
+      { op: "wait", args: [null, { text: "polled" }] },
+      { op: "click", args: ["Review transfer"], answer: { value: { receipt: { changed: 1, earlier: {
+        requests: [{ method: "GET", url: expect.stringMatching(/\/missing\/unified\/$/), error: expect.any(String) }],
+      } } } } },
+    ],
+  },
+  {
     name: "a changed wait counts a reply that came between two waits",
     page: "chat.html",
     steps: [

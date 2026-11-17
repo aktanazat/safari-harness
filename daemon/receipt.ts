@@ -38,6 +38,10 @@ export type RawReceipt = {
   requests: NetEntry[] | null;
   pending: NetEntry[] | null;
   errors: string[];
+  // the requests that failed and the errors the page threw in the
+  // RECENT_MS (content.js) before the action; a page whose dialogs.js
+  // predates them sends none
+  earlier?: { requests: NetEntry[]; errors: string[] };
 };
 
 export type Effect = {
@@ -66,6 +70,26 @@ export const NO_EFFECT = "the page did not react while watched: look again (snap
 // most; one still out then may be what fills in the part the agent came
 // for.
 const STILL_LOADING = "the page is still waiting, 3 s on, on a request this started (pending): wait with quiet, or with text you expect, before reading; a sleep only guesses";
+
+// A click that did nothing, or changed only an element or two in place (a
+// pressed button's own look), comes with what failed shortly before it:
+// on 11-17 a transfer dialog's Review button answered only changed: 1,
+// and ten more calls (a real click, keys, net, console) found no cause.
+// It showed only once the dialog was opened again: picking an account
+// had logged a 404 and the page error "Unsuccessful HTTP response".
+const SLIGHT_MAX = 2;
+const RECENT_LINES_MAX = 5;
+// With no word of what came before (a page script older than earlier),
+// the note claims nothing about it.
+const slightly = (changed: number, recent: boolean, known: boolean) => `only ${changed} element${changed === 1 ? "" : "s"} changed in place, with no request, new text, focus, or state change: if you expected more, the page likely ignored this${recent ? "; recent lists what failed on the page in the 2 minutes before, which may be why" : known ? "; nothing failed or threw on the page in the 2 minutes before" : ""}`;
+
+// The earlier failures a receipt lists: the requests to the page's own site
+// that failed, as net lines, then the errors the page threw.
+function recentLines(raw: RawReceipt): string[] {
+  if (!raw.earlier) return [];
+  const lines = [...netLines(raw.earlier.requests, [], raw.page).filter((l) => l.startsWith("failed: ")), ...raw.earlier.errors.map((e) => `page error: ${redactUrl(e)}`)];
+  return lines.length > RECENT_LINES_MAX ? [...lines.slice(0, RECENT_LINES_MAX), `and ${lines.length - RECENT_LINES_MAX} more`] : lines;
+}
 
 // A page that refused what an action started because Safari did not have
 // it in front, or because no real click started it: a passkey, Touch ID,
@@ -189,10 +213,12 @@ export function stateLines(changes: StateChange[]): string[] {
 // The effect a raw receipt shows, or "none" with the next thing to try.
 // The page's uncaught errors come beside it, since a handler that threw is
 // often why nothing happened; one that says the page refused for want of
-// focus or a real click sets the next step even beside an effect. Page text
-// in it (a name, a link's address, an error) has its secret parameters cut,
-// as addresses are (redact.ts).
-export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: string; pageErrors?: string[] } {
+// focus or a real click sets the next step even beside an effect. An
+// effect of none, or of an element or two changed in place, also lists
+// what failed on the page shortly before (recent). Page text in it (a
+// name, a link's address, an error) has its secret parameters cut, as
+// addresses are (redact.ts).
+export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: string; pageErrors?: string[]; recent?: string[] } {
   const states = stateLines(raw.states).map(redactUrl);
   const said = (raw.said ?? []).map(redactUrl);
   const pending = raw.requests === null ? [] : (raw.pending ?? []).filter((e) => keepRequest(e, raw.page));
@@ -209,10 +235,15 @@ export function effectOf(raw: RawReceipt): { effect: Effect | "none"; next?: str
     ...(net.length ? { net } : {}),
   };
   const errors = pageErrorsOf(raw.errors);
-  if (!Object.keys(effect).length) return { effect: "none", next: NO_EFFECT, ...errors };
+  // judged on the raw receipt: lines past what said quotes are a section
+  // the action showed, and a tab with no request log cannot say none went
+  const slight = Object.keys(effect).length === 1 && raw.changed > 0 && raw.changed <= SLIGHT_MAX && !raw.said?.length && raw.requests !== null;
+  const recent = !Object.keys(effect).length || slight ? recentLines(raw) : [];
+  const listed = recent.length ? { recent } : {};
+  if (!Object.keys(effect).length) return { effect: "none", next: NO_EFFECT, ...errors, ...listed };
   const refused = said.some((l) => SITE_REFUSED.test(l)) || (raw.requests ?? []).some((e) => e.status === 429 && keepRequest(e, raw.page));
-  const next = errors.next ?? (refused ? TRY_REAL : pending.length ? STILL_LOADING : undefined);
-  return { effect, ...errors, ...(next === undefined ? {} : { next }) };
+  const next = errors.next ?? (refused ? TRY_REAL : pending.length ? STILL_LOADING : slight ? slightly(raw.changed, recent.length > 0, raw.earlier !== undefined) : undefined);
+  return { effect, ...errors, ...listed, ...(next === undefined ? {} : { next }) };
 }
 
 // An action's answer with the page's raw receipt turned into its effect.

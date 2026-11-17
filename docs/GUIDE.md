@@ -122,9 +122,11 @@ Turns
 - `real_input` also supports guarded `drag` and formatted `paste`.
   It never solves bot checks or fills secrets through the clipboard.
 - A field rejecting scripted typing, or a click with no intended result:
-  inspect a fresh snapshot before retrying with `real_input`. Never retry
-  an uncertain send, purchase or submit blindly. If real input works,
-  `learn {site, real: true}` before changing the account, network or cookies.
+  read the click's `recent` first (requests that failed and errors the
+  page threw in the 2 minutes before), then inspect a fresh snapshot
+  before retrying with `real_input`. Never retry an uncertain send,
+  purchase or submit blindly. If real input works, `learn {site, real:
+  true}` before changing the account, network or cookies.
 - Prefer the safari tools to the CLI. From bash, a `safari map` or
   `repl` that may run past 25 s starts in the background at once (omp
   `async: true`); its result arrives by itself, so never poll it.
