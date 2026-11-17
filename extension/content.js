@@ -3879,17 +3879,31 @@
   // region, or its only article, unless that holds little of the page's
   // text (Amazon's Prime page put only the account's name in it, 09-29);
   // else the whole body (the first of many articles is a card, not the
-  // content). A root other than the main region comes with a note.
+  // content). A root other than the main region comes with a note. A
+  // consent prompt is no content: a map read of a savings site (11-17)
+  // returned only its "Web tracking consent preferences" dialog, so it is
+  // read past, and the note names it. A prompt asks to accept or decline:
+  // a dialog of switches the agent opened (privacy settings), one with a
+  // field to fill (a sign-in that links its cookie policy), or one that
+  // only names a cookie (a cart's) is read as any dialog is.
+  const CONSENT = /\bcookie|\bconsent\b|privacy (?:choices|preferences|settings)/i;
+  const CONSENT_ANSWER = /^(?:accept|reject|decline|allow|deny|agree|i agree|got it|ok(?:ay)?)\b/i;
+  const consentPrompt = (box) => CONSENT.test(`${accessibleName(box)} ${norm(box.innerText ?? "").slice(0, 300)}`)
+    && [...box.querySelectorAll("button, [role=button], input[type=button], input[type=submit], a[href]")].some((b) => CONSENT_ANSWER.test(norm(accessibleName(b) || b.textContent || "")))
+    && !box.querySelector("textarea, select, input:not([type=hidden], [type=button], [type=submit]), [role=switch], [role=checkbox]");
   function contentRoot() {
     const box = openDialog();
-    if (box && (norm(box.innerText ?? "") || framesIn(box).length)) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const read = box && (norm(box.innerText ?? "") || framesIn(box).length);
+    const consent = read && consentPrompt(box);
+    if (read && !consent) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const behind = consent ? `the ${named(box)} is open over the page; this is the page behind it; extract with selector "dialog" reads the prompt` : undefined;
     const articles = document.querySelectorAll("article");
     const main = document.querySelector("main, [role=main]") ?? (articles.length === 1 ? articles[0] : null);
-    if (!main) return { root: document.body };
+    if (!main) return { root: document.body, ...(behind ? { note: behind } : {}) };
     const inMain = norm(main.innerText ?? "").length;
-    const inBody = norm(document.body.innerText ?? "").length;
-    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: "the main region holds little of the page's text, so this is the whole page" };
-    return { root: main };
+    const inBody = norm(document.body.innerText ?? "").length - (consent ? norm(box.innerText ?? "").length : 0);
+    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: [behind, "the main region holds little of the page's text, so this is the whole page"].filter(Boolean).join("; ") };
+    return { root: main, ...(behind ? { note: behind } : {}) };
   }
 
   // The embedded frames shown in root that have a copy of this script of
