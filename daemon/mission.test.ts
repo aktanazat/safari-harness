@@ -519,6 +519,31 @@ test("a refused repeat of an uncertain action reports the earlier action's unkno
   await expect(observedCall(a.pid, "click", { tab, ref: 4 }, async () => ({ ok: true }))).rejects.toMatchObject({ code: "effect_unknown", effect: "possibly_effected", retryable: false });
 });
 
+// On 11-17 an eval {file} that read a page's script bundles failed after
+// it was sent. The agent rewrote the file and sent it with a timeoutMs,
+// and the new code was refused as a repeat of the old, the path alone
+// compared, with "this call was not sent" and no why.
+test("an eval file rewritten after an uncertain run is sent; the same code is refused saying why, and read: true runs it", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://bundles.example/");
+  const dir = mkdtempSync("/private/var/tmp/safari-eval-file-");
+  const file = `${dir}/read.js`;
+  let sent = 0;
+  const run = (args: Record<string, unknown> = {}) => observedCall(a.pid, "eval", { tab, file, ...args }, async () => { sent++; throw new HarnessError("timeout", "reply lost after dispatch"); });
+  try {
+    writeFileSync(file, "fetch('/a.js')");
+    await expect(run()).rejects.toMatchObject({ effect: "possibly_effected" });
+    await expect(run({ timeoutMs: 60000 })).rejects.toMatchObject({ code: "effect_unknown", message: expect.stringMatching(/^the same action failed after it was sent and may already have happened, so this call was not sent; if its code only reads, send it again with read: true/) });
+    expect(sent).toBe(1);
+    await expect(run({ read: true })).rejects.toMatchObject({ code: "timeout" });
+    writeFileSync(file, "Promise.allSettled([fetch('/a.js')])");
+    await expect(run()).rejects.toMatchObject({ code: "timeout" });
+    expect(sent).toBe(3);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 // A site kit's read (Slack's conversations.history goes out as a POST from
 // the page) says read: it can run twice, so losing its answer holds nothing
 // (MineSessionD-7, MineSessionE-4).

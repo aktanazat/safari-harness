@@ -1693,7 +1693,11 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
     const past = e instanceof Error && e.message.startsWith("your code ran past");
     if (past && !opts.page && code.includes("requestAnimationFrame")) throw new Error(`${e.message}. eval's requestAnimationFrame never fires while the tab is hidden; use setTimeout`);
     if (past && limit < EVAL_MAX_MS) throw new Error(`${e.message}. Code that needs longer can have timeoutMs, up to ${EVAL_MAX_MS} (CLI --timeout SECS, up to ${EVAL_MAX_MS / 1000})`);
-    throw await unanswered(e);
+    // One refused request failed a whole eval of a page's script bundles
+    // on 11-17, and its retry was refused as a repeat of an action.
+    const why = await unanswered(e);
+    if (why === e || !(why instanceof Error)) throw why;
+    throw new Error(`${why.message}. One request that fails fails the whole eval: catch each (try/catch, or Promise.allSettled for Promise.all) to keep the rest's answers; code that only reads may run again at once with read: true`);
   });
 }
 

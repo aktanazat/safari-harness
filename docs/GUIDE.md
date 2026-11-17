@@ -136,6 +136,8 @@ When a call fails
   Do not repeat it blindly. Read a fresh whole-page snapshot or extract,
   check the result, then decide. Follow the failure's `next` field.
   `effect: "none"`: nothing happened; a refused link names its address.
+  An `eval` or `fetch` that only reads can go again at once with
+  `read: true`.
 - `pageState` distinguishes content from sign-in, subscriber, consent and
   region walls, loading, errors and unread pages. A successful read of a
   wall is not a successful read of the requested content.

@@ -926,6 +926,17 @@ benchRows("content.js in WebKit", [
     ],
   },
   {
+    name: "an eval whose fetch got no answer names the request, and how many more failed, in place of Safari's bare Load failed",
+    page: "blank.html",
+    steps: [
+      { op: "eval", args: ["(async () => { await fetch('data:text/plain,ok'); await Promise.allSettled([fetch('http://127.0.0.1:9/b.js')]); return (await fetch('http://127.0.0.1:9/a.js')).text(); })()"], answer: { error: "Load failed for http://127.0.0.1:9/a.js and 1 more" } },
+      { op: "eval", args: ["fetch('data:text/plain,ok').then((r) => r.status)"], answer: { value: { ok: true, result: 200 } } },
+      // a failure the code caught is not the one that failed it, and a fetch
+      // the harness did not hand the code goes unnamed
+      { op: "eval", args: ["(async () => { try { await fetch('http://127.0.0.1:9/a.js'); } catch {} await window.fetch('http://127.0.0.1:9/b.js'); })()"], answer: { error: "Load failed" } },
+    ],
+  },
+  {
     name: "a changed wait counts a reply that came between two waits",
     page: "chat.html",
     steps: [

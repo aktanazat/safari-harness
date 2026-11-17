@@ -1734,6 +1734,18 @@ words the page will show.
 - A request slower than the timeout: start it and keep its promise on the
   page, `window.__r = fetch(url).then((r) => r.json())`, then read it with
   a second `eval` (`await window.__r`) once it has answered.
+- A `fetch` in your code that gets no answer (Safari's bare "Load failed":
+  CORS, a security policy, a host that does not exist) fails the whole
+  eval, and outside `page: true` the error names that request's address
+  and how many more got none, with whether its host exists. Catch each
+  request (`try`/`catch`, or `Promise.allSettled` in place of
+  `Promise.all`) to keep the others' answers. On 11-17 an eval reading a
+  page's script bundles failed whole so, one cross-origin bundle refused.
+- An eval that failed after it was sent may have changed the page, so
+  the same code again is refused until the tab is read whole. Code that
+  only reads can say so with `read: true`: it is then sent at once, and
+  may run twice. A file is compared by the code it holds, so a rewritten
+  file goes out.
 - `innerText` reading empty on a page that shows text means a shadow root:
   `sh.text(sh.q(selector))`, or `snapshot`/`extract`.
 - A model's third `eval` on one site in a task carries a `hint` to save a
