@@ -53,7 +53,9 @@ type Routed = { args: Record<string, unknown>; page: PageRead | undefined; why: 
 async function asReal(tool: string, args: Record<string, unknown>, real: boolean): Promise<Routed | undefined> {
   const name = nameIn(DAEMON_NAMES, tool);
   if (name !== "click" && name !== "type") return undefined;
-  const { snapshot, noWaitAfter: _, ...a } = checkCall(TOOLS, tool, args, true).args;
+  // real_input refuses a covered target as a scripted click does, and
+  // closes nothing: dismiss is a scripted click's (content.js)
+  const { snapshot, noWaitAfter: _, dismiss: __, ...a } = checkCall(TOOLS, tool, args, true).args;
   if (a.ref === undefined) return undefined;
   const page = pageRead(snapshot);
   const site = real ? undefined : await rpc("real_site", { tab: a.tab });

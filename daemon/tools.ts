@@ -1516,30 +1516,29 @@ export function refLines(lines: string[]): string[] {
 }
 
 // A click that sends a form on (Submit, Next, Continue) keeps what the form
-// holds first, and looks at the page it led to after (drafts.ts).
-export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean }) {
+// holds first, and looks at the page it led to after (drafts.ts). dismiss
+// closes a cover the click meets by its close control first (content.js).
+export async function click(opts: { tab?: number; ref?: number | string; x?: number; y?: number; noWaitAfter?: boolean; dismiss?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const ref = opts.ref;
   if (ref !== undefined) {
     const sent = await checkpoint(tab, [ref]);
-    const result = await clickRef(tab, ref, opts.noWaitAfter === true);
+    const result = await clickRef(tab, ref, { ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}), ...(opts.dismiss === true ? { dismiss: true } : {}) });
     return sent ? afterStep(tab, sent, result, opts.noWaitAfter !== true) : result;
   }
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
   throw new HarnessError("invalid_argument", "click needs ref or x+y");
 }
 
-async function clickRef(tab: number, ref: number | string, noWaitAfter: boolean): Promise<unknown> {
+async function clickRef(tab: number, ref: number | string, opts: { noWaitAfter?: true; dismiss?: true }): Promise<unknown> {
   try {
-    return await relay(tab, "click", noWaitAfter ? [ref, { noWaitAfter: true }] : [ref]);
+    return await relay(tab, "click", Object.keys(opts).length ? [ref, opts] : [ref]);
   } catch (error) {
     if (!(error instanceof HarnessError) || error.effect !== "none" || error.recovery?.kind !== "present") throw error;
     const { document, target, frame } = error.recovery;
     const retryRef = frame === undefined || (typeof ref === "string" && /^f\d+:/.test(ref)) ? ref : `f${frame}:${ref}`;
     return inFront(tab, { tabs: listTabs, activate: activateTab },
-      () => relay(tab, "click", [retryRef, noWaitAfter
-        ? { noWaitAfter: true, expectedDocument: document, expectedTarget: target }
-        : { expectedDocument: document, expectedTarget: target }]));
+      () => relay(tab, "click", [retryRef, { ...opts, expectedDocument: document, expectedTarget: target }]));
   }
 }
 
@@ -3719,9 +3718,11 @@ export const TOOLS: Record<string, Tool> = {
   click: {
     desc: "Click a ref (or x/y). Reports navigated, newTab if a tab opened (yours to close), or its effect on the page.",
     params: { tab: TAB, ref: REF, x: X, y: Y, snapshot: PAGE },
-    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" } },
+    // dismiss is offered by the refusal that needs it, so the tool list
+    // the MCP client reads stays within its budget (mcp.test.ts)
+    unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" }, dismiss: { type: "boolean", description: "close a covering dialog by its close control first" } },
     required: ["tab"],
-    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean }))),
+    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean; dismiss?: boolean }))),
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",

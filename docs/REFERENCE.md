@@ -2116,8 +2116,23 @@ what an action reports).
   may go again once the cause is gone; a refused link names its address,
   which `goto` opens, and a cover names by ref the controls whose whole
   name closes it (`its close control is [41] button "Close"`, never
-  "Cancel subscription"). A target with no visible area is scrolled to and
-  tried once more within 0.5 s, as a list still drawing needs.
+  "Cancel subscription"), and says to click again with `dismiss: true`
+  when one of them is one `dismiss` may click. A target with no visible
+  area is scrolled to and tried once more within 0.5 s, as a list still
+  drawing needs.
+- `click {ref, dismiss: true}` on a target a dialog, or a fixed or sticky
+  box, covers clicks that box's first control named only Close, Dismiss,
+  No thanks, Not now or ×, waits up to 2 s for the cover to go, then
+  clicks the target, and answers with `dismissed: 'dialog "Welcome" with
+  its button "No thanks"'` beside the click's effect. It never clicks
+  Cancel, Skip or Hide, which answer a dialog's question, nor anything
+  in a cover that is no dialog or fixed box (an inline editor's Cancel, a
+  tag's ×): such a cover is refused as without `dismiss`. Once the close
+  control took its click, a refusal after it fails with `effect:
+  "possibly_effected"`: the page changed. What the close click itself
+  caused besides removing the cover is not in the click's effect. A
+  model's click sent as real input (`learn {site, real: true}`) closes
+  nothing.
 - `click` and `press` on a tab you opened report the files Safari saved to
   `~/Downloads` while they ran, as `downloaded: [{path, bytes}]`. A
   download still under way when the action ends is waited for up to 30 s;
