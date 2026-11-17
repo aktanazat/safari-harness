@@ -9,7 +9,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import type { Invoke } from "../call.ts";
-import { HarnessError, rateLimited } from "../failures.ts";
+import { failureOf, HarnessError, rateLimited } from "../failures.ts";
+import { affectsPage } from "../lanes.ts";
 import type { Limit } from "../pace.ts";
 
 export class NotSignedIn extends Error {
@@ -53,12 +54,13 @@ const HELD = /did not answer.*; reload it with goto and retry$/;
 // Slack call of a turn failed this way.
 export const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
 
-// The action of the approved send running now (draftOrSend). A request of
-// it whose tab vanished may have reached the site before the tab went: the
+// The approved send running now (draftOrSend): its action, and whether a
+// call of it that changes a page has gone through. A request of it whose
+// tab vanished may have reached the site before the tab went: the
 // extension says "that tab is gone" after dispatch too (background.js), so
 // it is not sent again (SiteKit.call): the kit once posted a Slack message
 // twice so (audit SH-24).
-const sending = new AsyncLocalStorage<string>();
+const sending = new AsyncLocalStorage<{ action: string; acted: boolean }>();
 
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
@@ -86,7 +88,10 @@ export class SiteKit {
 
   private async call(tool: string, args: Record<string, unknown>, onReopen?: (tab: number) => void): Promise<unknown> {
     try {
-      return await this.send(tool, args);
+      const answer = await this.send(tool, args);
+      const send = sending.getStore();
+      if (send && affectsPage(tool, args)) send.acted = true;
+      return answer;
     } catch (e) {
       const gone = Number(args.tab);
       const origin = this.origins.get(gone);
@@ -101,7 +106,7 @@ export class SiteKit {
         return this.send(tool, { ...args, tab });
       }
       if (!GONE.test(e.message)) throw e;
-      const action = sending.getStore();
+      const action = sending.getStore()?.action;
       if (action !== undefined) throw new HarnessError("effect_unknown", `${action}: the ${origin} tab closed while its ${tool} was out (${e.message}), so it may have gone through; it was not sent again`, { next: `check ${origin} for it before sending again, which takes a new draft` });
       const tab = await this.reopen(origin, gone);
       onReopen?.(tab);
@@ -252,6 +257,18 @@ export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action:
   if (d.used) throw refused(`draft ${id} was approved once already, and a draft sends once; draft again for another send`);
   if (d.payload !== payload) throw refused(`this ${action} is not draft ${id}: its text, recipient, sender, or file differs; draft it again`);
   if (d.run === kit.run) throw refused(`draft ${id} was made in this same run, so the owner has not seen it; approve it in a later call`);
+  // A send that failed before any of its steps changed a page, its failure
+  // saying nothing left (effect none), leaves the draft approved: on 11-16
+  // a Slack upload refused by CORS used its draft up, and the retry needed
+  // a new draft and the owner's yes again. One with a step that went
+  // through (Gmail's Send clicked, then a wait that met a restarting
+  // daemon) keeps it used, so it never sends twice.
   d.used = true;
-  return { status: "sent", draftId: id, ...shown, result: await sending.run(action, opts.send) };
+  const send = { action, acted: false };
+  try {
+    return { status: "sent", draftId: id, ...shown, result: await sending.run(send, opts.send) };
+  } catch (e) {
+    if (!send.acted && failureOf(e).effect === "none") delete d.used;
+    throw e;
+  }
 }
