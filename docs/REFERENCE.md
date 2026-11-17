@@ -1482,7 +1482,13 @@ the part you need.
   with no option lists them; `select` with one picks it.
   A dropdown the page draws itself, with no `<select>` behind it, opens on
   `click`: snapshot again, and each option in the list it opens has a ref
-  to click.
+  to click. One named by a label elsewhere (`combobox "Sell in"`) gives
+  the choice it shows as its value, on the box's line: `{value="Dollars"}`.
+- A checkbox or radio a label draws (the input cut to a pixel or drawn
+  transparent inside the label) prints under that label with its state,
+  `{checked}` and its value, so `query: "radio"` finds the whole group.
+  A click on a transparent one's ref clicks its label, when the label
+  holds no other control; otherwise click the label's ref.
 - Through the MCP server, a whole-page snapshot of a tab you read in the
   last 2 minutes, with the same options, answers with only the lines that
   changed since that read (`- ` gone, `+ ` new) and `changes: "delta"`,

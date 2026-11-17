@@ -136,6 +136,46 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] label "Accept terms"\n  [2] checkbox "Accept terms"\n[3] label "Share data"\n  [4] checkbox "Share data"\n[5] checkbox "Newsletter"' } } }],
   },
   {
+    name: "a radio drawn transparent inside the label a person clicks prints under it with its state, so a query for radios finds every one of a group",
+    page: "labelled-controls.html",
+    steps: [{
+      op: "snapshot",
+      args: [{ query: "radio" }],
+      answer: {
+        value: {
+          snapshot: [
+            '[1] radio "Email address" {value="0"}',
+            '[2] radio "Mobile number" {checked, value="1"}',
+            '[3] radio "Add mobile number or email" {value="2"}',
+            '[4] radio "One time" {checked, value="once"}',
+            '[5] radio "Repeating"',
+            '[6] radio "Standard"',
+            '[7] radio "Instant" {checked}',
+          ].join("\n"),
+        },
+      },
+    }],
+  },
+  {
+    name: "a box named by a label elsewhere that opens a list prints the choice it shows as its value, on its own line",
+    page: "labelled-controls.html",
+    steps: [{ op: "snapshot", args: [{ query: "Sell in|Order type" }], answer: { value: { snapshot: '[1] label "Sell in"\n[2] combobox "Sell in" {value="Dollars"}\nOrder type\n[3] button "Order type" {value="Market order"}' } } }],
+  },
+  {
+    name: "a combobox wrapping its input and its list shows no choice of its own, not its options' text run together",
+    page: "labelled-controls.html",
+    steps: [{ op: "snapshot", args: [{ query: "Fruit" }], answer: { value: { snapshot: 'Fruit\n[1] combobox "Fruit" {expanded}\n[2] textbox "Fruit"' } } }],
+  },
+  {
+    name: "a click on the ref of a radio its label draws clicks that label and checks the radio, in one call",
+    page: "labelled-controls.html",
+    steps: [
+      { op: "snapshot", args: [{ query: "radio" }] }, // [1] radio "Email address"
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      { op: "eval", args: ["document.getElementById('radio_0').checked"], answer: { value: { ok: true, result: true } } },
+    ],
+  },
+  {
     name: "a radio named only by its group keeps its value, which alone tells it from the others",
     page: "radio-values.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'Size\n[1] radio "size" {value="s"}\n[2] radio "size" {value="m"}\n[3] radio "Pro plan"' } } }],
