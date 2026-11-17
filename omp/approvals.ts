@@ -18,15 +18,15 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { STEP_TOOLS } from "../daemon/call.ts";
 import { checkCall, checkStep } from "../daemon/guard.ts";
 import { isAway } from "../daemon/phone.ts";
 import { rpc } from "../daemon/rpc.ts";
 
-type Kind = "message" | "shortcut" | "handoff";
+type Kind = "message" | "shortcut" | "handoff" | "action";
 
 export type Ask = {
   kind: Kind;
@@ -88,7 +88,10 @@ const grants = new Map<string, number>();
 // Safari tools this gate reads; it folds a tool's name as loosely as
 // iMessageSend or imessage-send, and only one it is told to approve sends.
 const SAFARI_SHELL = /\bsafari\s[^\n]*\bimessage[\s_-]*send/i;
+const SITE_SHELL = /\bsafari\s[^\n]*\bsite[\s_-]*actions/i;
 const SENDS = /--approve\b|\bapproved\b/;
+// The CLI reads a run's steps from this file, out of the command's sight.
+const STEPS_FILE = /\bsafari\s[^\n]*--steps-file[=\s]+(?:"([^"]+)"|'([^']+)'|(\S+))/g;
 
 function text(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -102,8 +105,29 @@ function clip(s: string, max: number): string {
 // and vault commands (mem-secret, sops) never ask (owner order 2026-11-13).
 function shellAsk(code: string): Ask | undefined {
   const all = code.trim();
-  if (!SAFARI_SHELL.test(all) || !SENDS.test(all)) return undefined;
-  return { kind: "message", verb: "send a text", item: { name: "Safari" }, title: "Text from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Send" };
+  if (!SENDS.test(all)) return undefined;
+  if (SAFARI_SHELL.test(all)) return { kind: "message", verb: "send a text", item: { name: "Safari" }, title: "Text from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Send" };
+  if (SITE_SHELL.test(all)) return { kind: "action", verb: "run a site action", item: { name: "Safari" }, title: "Site action from the safari command", detail: all, mono: true, scope: all, reuseMs: 0, auth: true, approve: "Run" };
+  return undefined;
+}
+
+async function stepsFileAsks(code: string, cwd: string): Promise<Ask[]> {
+  const asks: Ask[] = [];
+  for (const m of code.matchAll(STEPS_FILE)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(resolve(cwd, m[1] ?? m[2] ?? m[3]), "utf8"));
+    } catch {
+      // A file the same command writes is not there yet; its steps are in
+      // the command's own text, and one approving a step there asks.
+      if (SENDS.test(code) && /site[\s_-]*actions|imessage[\s_-]*send/i.test(code)) {
+        asks.push({ kind: "action", verb: "run a site action", item: { name: "Safari" }, title: "Steps from the safari command", detail: code.trim(), mono: true, scope: code.trim(), reuseMs: 0, auth: true, approve: "Run" });
+      }
+      continue;
+    }
+    asks.push(...await runAsks(Array.isArray(parsed) ? { steps: parsed } : parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}));
+  }
+  return asks;
 }
 
 // The page a step acts on. host: shown and part of the grant; without it
@@ -147,6 +171,13 @@ async function safariAsk(tool: string, a: Record<string, unknown>, place: () => 
     const title = why ?? "A step in Safari";
     const detail = why === undefined ? host : host !== undefined && why.includes(host) ? undefined : host ?? "Safari";
     return { kind: "handoff", verb: "hand you a step", item: { name: host ?? "Safari" }, title, detail, where, scope: why ?? "", reuseMs: host ? REUSE_MS : 0, auth: false, approve: "Show me", deny: "Not now" };
+  }
+  if (tool === "site_actions" && a.do === "call" && a.approved !== undefined) {
+    const { host, where } = await place();
+    const name = String(a.name ?? "");
+    const input = JSON.stringify(a.input ?? {});
+    const hash = createHash("sha256").update(JSON.stringify([name, input, a.approved])).digest("hex");
+    return { kind: "action", verb: "run a site action", item: { name: host ?? "Safari" }, title: `Run ${name} on ${host ?? "this page"}`, detail: input, mono: true, where, scope: hash, reuseMs: 0, auth: true, approve: "Run" };
   }
   return undefined;
 }
@@ -198,8 +229,10 @@ async function runAsks(run: Record<string, unknown>): Promise<Ask[]> {
 export async function asksOf(toolName: string, input: Record<string, unknown>): Promise<Ask[]> {
   if (toolName === "bash" || toolName === "eval") {
     const code = toolName === "bash" ? input.command : input.code;
-    const ask = typeof code === "string" ? shellAsk(code) : undefined;
-    return ask ? [ask] : [];
+    if (typeof code !== "string") return [];
+    const ask = shellAsk(code);
+    const files = await stepsFileAsks(code, typeof input.cwd === "string" ? input.cwd : process.cwd());
+    return ask ? [ask, ...files] : files;
   }
   if (toolName === "mac_shortcut" && text(input.name)) {
     const name = String(input.name);

@@ -1,9 +1,10 @@
 import type { ValidateFunction } from "ajv";
 import { createHash, randomUUID } from "node:crypto";
+import { gateOfLabel } from "./recordings.ts";
 
 export type SiteActionBinding = Readonly<{ tab: number; origin: string; document: string; frame: 0 }>;
 export type SiteActionSelection = Readonly<{ revision: string; name: string }>;
-export type SiteActionRequest = SiteActionSelection & Readonly<{ input: Record<string, unknown>; timeoutMs?: number }>;
+export type SiteActionRequest = SiteActionSelection & Readonly<{ input: Record<string, unknown>; timeoutMs?: number; approved?: string }>;
 export type SiteActionTransport = {
   catalog(binding: SiteActionBinding, signal: AbortSignal): Promise<unknown>;
   schema(binding: SiteActionBinding, selection: SiteActionSelection, signal: AbortSignal): Promise<unknown>;
@@ -13,7 +14,8 @@ export type SiteActionTransport = {
 export type SiteActionAdmission = Readonly<{ binding: SiteActionBinding; revision: string; name: string; input: Readonly<Record<string, unknown>>; signal: AbortSignal }>;
 export type SiteActionOutcome =
   | { status: "completed"; result: unknown; trust: "untrusted-site"; retry: false }
-  | { status: "refused" | "unknown"; reason: string; retry: false };
+  | { status: "refused" | "unknown"; reason: string; retry: false }
+  | { status: "draft"; draftId: string; origin: string; name: string; input: Record<string, unknown>; why: string; trust: "untrusted-site"; next: string };
 type Summary = { name: string; title: string; description: string; annotations: Record<string, boolean> };
 type Catalog = { binding: SiteActionBinding; pageRevision: string; revision: string; tools: Summary[]; schemas: Map<string, { inputSchema: Record<string, unknown>; validate: ValidateFunction }> };
 type Pending = { binding: SiteActionBinding; callId: string; controller: AbortController; dispatched: boolean };
@@ -30,6 +32,7 @@ type Options = {
 const MAX_JSON = 32768;
 const MAX_TOOLS = 128;
 const MAX_DOCUMENTS = 128;
+const DRAFT_MS = 30 * 60_000;
 const NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -38,6 +41,34 @@ const same = (a: SiteActionBinding, b: SiteActionBinding): boolean => a.tab === 
 const refused = (reason: string): SiteActionOutcome => ({ status: "refused", reason, retry: false });
 const unknown = (reason: string): SiteActionOutcome => ({ status: "unknown", reason, retry: false });
 const schemaOptions = { strict: true, allErrors: false, coerceTypes: false, useDefaults: false, removeAdditional: false, validateFormats: false, ownProperties: true, addUsedSchema: false, inlineRefs: false, loopRequired: 32, loopEnum: 32 };
+
+// Drafts shown for the owner's yes, by id: a hash of the page, catalog,
+// action and input each covers, and when it was made. One runs once. They
+// outlive a coordinator: Safari reconnects its extension, which replaces it,
+// several times a day (journal-37334, 11-15 to 11-16: 8 connects in 42 h).
+const drafts = new Map<string, { payload: string; at: number }>();
+
+// Why a call waits for the owner's yes to its exact input, or undefined.
+// A tool the page marks read-only runs without one unless its name, title,
+// or an input key or value names a send, spend, delete, stop, account or
+// sign-in step. An honest page's own code could do anything on its origin
+// anyway; this stops an agent asking it to.
+function ownerGate(tool: Summary, input: Record<string, unknown>): string | undefined {
+  if (tool.annotations.consequentialHint === true) return "the page marks it consequential";
+  if (tool.annotations.readOnlyHint !== true) return "the page does not mark it read-only";
+  const texts: string[] = [tool.name, tool.title];
+  const walk = (node: unknown) => {
+    if (typeof node === "string") texts.push(node);
+    else if (Array.isArray(node)) for (const child of node) walk(child);
+    else if (record(node)) for (const [key, child] of Object.entries(node)) {
+      texts.push(key);
+      walk(child);
+    }
+  };
+  walk(input);
+  const gate = gateOfLabel(texts.map((text) => text.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([a-zA-Z])(\d)/g, "$1 $2").replace(/[_.-]+/g, " ")).join(" "));
+  return gate === undefined ? undefined : `its name or input names a ${gate} step`;
+}
 
 // Bounds parsing and compilation work and disallows remote schema references.
 function boundedJSON(value: unknown, limit = MAX_JSON): unknown {
@@ -123,6 +154,9 @@ export class SiteActions {
     }
     return { origin, enabled, reloadRequired: true };
   }
+  enabledFor(origin: string): boolean {
+    return !this.#disposed && this.#enabled.has(origin);
+  }
   async #current(binding: SiteActionBinding, signal: AbortSignal): Promise<void> {
     if (this.#disposed) throw new Error("site action connection ended");
     signal.throwIfAborted();
@@ -182,6 +216,10 @@ export class SiteActions {
     if (options.since === catalog.revision) return { ...base, changed: false };
     return { ...base, changed: true, tools: catalog.tools.slice(0, 32), omitted: Math.max(0, catalog.tools.length - 32) };
   }
+  async declared(binding: SiteActionBinding, signal: AbortSignal): Promise<string[]> {
+    const catalog = await this.#observe(signal, (bounded) => this.#read(binding, bounded));
+    return catalog.tools.map((tool) => tool.name);
+  }
   async #schema(binding: SiteActionBinding, selection: SiteActionSelection, signal: AbortSignal): Promise<{ catalog: Catalog; inputSchema: Record<string, unknown>; validate: ValidateFunction }> {
     const catalog = await this.#read(binding, signal);
     if (catalog.revision !== selection.revision) throw new Error("site action catalog changed; list again before calling");
@@ -200,6 +238,23 @@ export class SiteActions {
   async schema(binding: SiteActionBinding, selection: SiteActionSelection, signal = new AbortController().signal): Promise<unknown> {
     const { inputSchema } = await this.#observe(signal, (bounded) => this.#schema(binding, selection, bounded));
     return { ...selection, origin: binding.origin, document: binding.document, inputSchema: boundedJSON(inputSchema), schemaDigest: digest(stable(inputSchema)), trust: "untrusted-site" };
+  }
+  #draft(payload: string): string {
+    const now = Date.now();
+    for (const [id, draft] of drafts) if (now - draft.at > DRAFT_MS) drafts.delete(id);
+    if (drafts.size >= MAX_DOCUMENTS) {
+      const oldest = drafts.keys().next().value;
+      if (oldest !== undefined) drafts.delete(oldest);
+    }
+    const id = randomUUID();
+    drafts.set(id, { payload, at: now });
+    return id;
+  }
+  #redeem(id: string, payload: string): void {
+    const draft = drafts.get(id);
+    if (!draft || Date.now() - draft.at > DRAFT_MS) throw new Error(`no open draft ${id}: a draft lasts ${DRAFT_MS / 60_000} min and runs once; call without approved for a new one`);
+    if (draft.payload !== payload) throw new Error(`this is not draft ${id}: its page, catalog, action or input differ; call without approved for a new one`);
+    drafts.delete(id);
   }
   async call(binding: SiteActionBinding, request: SiteActionRequest, signal?: AbortSignal): Promise<SiteActionOutcome> {
     if (this.#pending.size >= MAX_DOCUMENTS || (this.#uncertain.size >= MAX_DOCUMENTS && !this.#uncertain.has(binding.tab))) return refused("site_action_connection_limit_reached");
@@ -238,6 +293,18 @@ export class SiteActions {
       const fresh = await this.#read(binding, pending.controller.signal);
       if (fresh.revision !== catalog.revision) throw new Error("site action catalog changed during admission");
       checkAdmission();
+      const tool = catalog.tools.find((entry) => entry.name === selection.name);
+      if (!tool) throw new Error("site action is not registered");
+      const why = ownerGate(tool, input);
+      if (why !== undefined) {
+        const payload = digest(stable([binding.origin, binding.document, catalog.revision, selection.name, input]));
+        if (request.approved === undefined) {
+          const draftId = this.#draft(payload);
+          return { status: "draft", draftId, origin: binding.origin, name: selection.name, input, why, trust: "untrusted-site",
+            next: `nothing ran: show the user this action, its page and its input; only after his yes call again with the same revision, name and input and approved: "${draftId}"` };
+        }
+        this.#redeem(request.approved, payload);
+      }
       pending.controller.signal.throwIfAborted();
       pending.dispatched = true;
       const raw = await this.#options.transport.invoke(binding, { revision: catalog.pageRevision, name: selection.name, input, callId: pending.callId, timeoutMs: ms }, pending.controller.signal);
