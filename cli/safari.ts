@@ -128,6 +128,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari extract --tab N --expand|--scroll   all of a thread or feed: clicks its Load
                                              more, or scrolls and gathers its items
   safari extract --as table --tab N          tables and card lists as JSON rows
+  safari extract --fields price,date --tab N the rows of the best-fitting table or card list
+                                             as objects with those keys, and the column each
+                                             came from ('{"price":"span.price"}' names one)
   safari extract --as chat --tab N           a chat's messages, each with who wrote it
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
@@ -145,6 +148,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari net read|start|stop --tab N         fetch/XHR since the page loaded
   safari net read --body I|URL-PART --tab N  one request's whole body: its index, or
                                              part of its url (the latest with it)
+  safari net pages N --tab N [--body URL-PART] the page's JSON list, its next N pages as
+                                             rows (max 20); --continue H reads on
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
   safari cookies clear --tab N|--url U       forget the site (cookies, storage);
@@ -187,7 +192,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              each page shown (--save keeps all),
                                              --wait '{"text":"Price"}' before each read,
                                              --follow '{"match":"a.item"}' to read the
-                                             pages a listing links to, --fresh to read
+                                             pages a listing links to, --pages 5 to read a
+                                             listing and its next pages, --fresh to read
                                              pages this task read in the last 10 min again)
   safari pdf [save|read] [file.pdf|url] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
@@ -1154,7 +1160,8 @@ async function main() {
       break;
     }
     case "net": case "console": {
-      if (positional[0]) args.do = positional[0];
+      if (cmd === "net" && positional[0] === "pages") args.pages = Number(positional[1] ?? 5);
+      else if (positional[0]) args.do = positional[0];
       const body = flag("body", rest);
       if (cmd === "net" && body !== undefined) args.body = body;
       break;

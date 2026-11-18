@@ -377,6 +377,26 @@ A complete extraction can also carry `controls: [{role, label}]` for
 visible buttons and text fields. these are accessible labels, not field
 values. classification uses them when inline controls run together in
 the readable text; the returned text is unchanged.
+A JSON answer (by its content type, or a body that parses as JSON) is
+judged by its own fields: `requiresLogin: true`, `authenticated: false`,
+`authorized: false`, or `unauthorized: true` read `login_wall`;
+`loading: true` reads `loading`; an `error` that says something (words,
+a code other than 0, a non-empty record), an `errors` list without
+`data`, or `ok: false` / `success: false` with a `message` reads
+`error`; a GraphQL answer with `data` beside its `errors` is content;
+`ok: false` alone reads `unjudged`. `[]`, or an object whose one list is
+empty beside only pager counts (`{items: [], total: 0}`, also under one
+wrapping object) reads `empty`; any other JSON reads `content`. A wall
+needs one of those fields: thin JSON is never a wall. request_catalog
+refuses every answer that reads `login_wall`, `loading`, `error`, or that
+bare `ok: false`.
+`net` with `body`, `pdf` read of an address, and `harvest` are judged too
+(harvest by its items' words). A model's `eval` is judged by its page's
+title and address, as map's evals are, since its value says nothing of
+the page; only a wall or an error is added, with the page's `url`.
+`extract` as `table` or `images` without a selector or query is judged by
+the start of the page's text, which the answer does not carry, so a
+sign-in page's provider buttons read as cards still read `login_wall`.
 
 ## Tool and parameter names
 
@@ -1410,6 +1430,23 @@ first line counts the pages read, those that loaded but hold no content
   The 50 s cover the listings and their pages together. The matching
   links past `max`, and items the 50 s left unread, come back as `urls`,
   to map next.
+- `pages: 5` reads each of `urls` as a listing, page by page: the page,
+  read as map reads its pages (`what`, `selector`, `query`, `as`), then
+  its next page (the link marked `rel=next`, else the one that says next
+  or older, never a carousel's or slider's arrow) in the same tab, up to `pages`
+  pages each. All the listings' pages together are at most 20, inside
+  map's 50 s. Each page comes back in `pages` in order, marked `page 2 of
+  <listing>` and carrying `paged: {n, of}`. A listing stops at the first
+  of: no next link; a next that is a button or a link only a script
+  follows (read the rest with `extract {scroll: true}` or `{expand:
+  true}` in a tab, or `net {pages}`); a next page whose address it read
+  already, or the site's front page; a page that reads the same as one before it (a site that
+  answers `?page=99` with its last page), which is left out; a page that
+  reads as no content (a sign-in, a paywall) or fails. `note` says, for
+  each listing, how many pages it answered and why it stopped. `next`
+  names each listing's next page left unread (past `pages` or the 50 s),
+  and `note` gives the map that goes on: the same arguments with those
+  `urls`. `pages` and `follow` do not go together.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
   reads as an error page (HTTP 400 or more, a page titled not found, a rate
@@ -1475,7 +1512,7 @@ first line counts the pages read, those that loaded but hold no content
   An `eval`'s file holds `{url, title, ok, ms, value}`.
 - `fetch` asks for each address again with its page's cookies and returns
   the body as the server sends it; an answer of HTTP 400 or more fails.
-- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save] [--fresh]`.
+- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--pages 5] [--save] [--fresh]`.
 - More than 3 pages of the same kind (search results, item pages, a
   site's listings) go through `map`, never a `goto` loop, a bash loop of
   `goto` and `eval`, or a bash loop of `map` calls. One call takes 20
@@ -1743,6 +1780,29 @@ order. The rules are fixed, so the same page always reads the same way.
   says rows were left out.
 - CLI: `safari extract --as table --tab N` prints one table per line of
   JSON.
+- `fields` answers rows as objects with exactly the keys named:
+  `fields: ["price", "date", "seller"]` (CLI `--fields price,date,seller`),
+  or an object naming a field's column, `fields: {"price":
+  "span.s-item__price"}` (a column's own key, or its full header). It
+  implies `as: "table"`, and reads the table or card list where the most
+  fields are found (then the most rows); `source` and `sources` say which
+  when there are several, and `selector` picks one. Each field's column is,
+  in order: the one asked for; the one whose name says it (a header, a CSS
+  key, a JSON key; case, separators, plurals and a few synonyms aside:
+  cost and amount for price, posted and time for date, vendor and shop
+  for seller, link and href for url); the one whose hint says it (a
+  card field's `itemprop`, `data-testid`, `aria-label`, `title`, or the
+  `Label:` drawn before it); the one whose values look like it (currency
+  for price, dates and "3 hours ago" for date, "4.5/5" or stars for
+  rating, addresses for url and link, numbers for count, comments,
+  points). A named column whose values cannot be the field (a `Price:`
+  label) is passed over, and a crossed-out value or one named old, was,
+  compare or strike yields to the current one. Two that fit: the named one,
+  else the one filled in more rows. `fields` says for each key its
+  `column`, `by` (`asked`, `name`, `hint`, `value`), 3 `samples`, and the
+  `runnerUp` column with 2 of its values; `missing` lists fields not found
+  (their value is `""`), and `unused` the columns left, to name one. A
+  column a field took is not given to another.
 
 ### A chat as who said what
 
@@ -2621,6 +2681,40 @@ A read that saw the page ask its own site for JSON with a plain GET (no
 query) lists those requests as `readers`, each with its `request` index and
 `observedAt` time: save one with `request_catalog` and later calls get the
 same data in one request, without loading or reading the page.
+
+`net {tab, pages: N}` reads the JSON list behind the page, and its next N
+pages (at most 20 a call), as rows. It picks, among the successful JSON GETs
+the top page made with fetch or XHR to its own site, the reply whose array
+of objects holds the most texts the page shows (an `edges[]` of `{node}`
+reads as its nodes); `body` (an index or url part) names one instead. The
+pager is learned by watching: two requests the page made to that address
+differ in one query key (a JSON value such as GraphQL's `variables` is read
+key by key), which is a page number when it went up by one, an offset when
+by the reply's row count, and a cursor when the earlier reply held its new
+value. A page that made one such request is scrolled once to make it ask for
+the next; with still none, a key named like a pager (page, offset, cursor,
+after, pageToken, max_id, a reply's next link) is used, and the answer's
+`pager.from` says `guessed`. The next pages go out from the page, with its
+cookies and the sign-in header its own requests carry, one a second, only
+the pager key changed. A request whose path or query may change something
+(mark, seen, read, ack, track, vote, like, follow, subscribe, confirm,
+delete, consume, redeem, logout, a GraphQL mutation), carries a signed or
+one-time value (sig, signature, token, nonce, expires, X-Amz-*), or goes to
+another site is never read again. Paging stops at the first reply unlike
+the page's own (another status, not JSON, an error envelope, a redirect),
+at an empty or repeated page, at the reply's last page, or after 50 s; it
+never retries, and a 429 says when the site allows the next ask. The
+answer names the request (its path only), the rows' path, the pager's kind
+and key (never its values), pages read, `of` when the reply gives a total,
+and the rows, de-duplicated by their id key when they have one; rows past
+maxBytes (default 20000) are saved whole to a file named in `saved`.
+`continue` is an opaque handle, good for 10 minutes to the agent and tab
+that got it: `net {tab, pages: N, continue}` reads on. A stop that says
+"scroll instead" means the site would not answer a copy of the page's
+request: `extract {tab, scroll: true}` lets the page ask itself. CLI:
+`safari net pages 5 --tab N [--body /api/items]`, then
+`safari net pages 5 --continue H --tab N`. A table read (`extract as:
+table`) whose rows came from such a request says so in `next`.
 
 ## console
 

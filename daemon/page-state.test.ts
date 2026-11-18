@@ -166,6 +166,26 @@ const fixtures: { name: string; facts: PageFacts; kind: PageKind }[] = [
     kind: "unjudged",
   },
   {
+    name: "a JSON answer that asks for a sign-in",
+    facts: { ...article, text: '{"ok":false,"requiresLogin":true}', contentType: "application/json" },
+    kind: "login_wall",
+  },
+  {
+    name: "a GraphQL answer with data beside a partial error",
+    facts: { ...article, text: '{"data":{"user":{"name":"Ada"}},"errors":[{"message":"field x failed"}]}', contentType: "application/json" },
+    kind: "content",
+  },
+  {
+    name: "a JSON list with no items beside its pager counts",
+    facts: { ...article, text: '{"items":[],"total":0,"page":1}', contentType: "application/json" },
+    kind: "empty",
+  },
+  {
+    name: "a JSON record with an empty list beside its own fields",
+    facts: { ...article, text: '{"tags":[],"name":"x"}', contentType: "application/json" },
+    kind: "content",
+  },
+  {
     name: "a normal article discussing access restrictions",
     facts: article,
     kind: "content",

@@ -126,9 +126,10 @@ export function withQueued(result: unknown, ms: number, on: string, arrived: num
 // the tool reports its own error.
 export async function inLane<T>(tool: string, args: Record<string, unknown>, resolve: (tab: unknown) => Promise<number>, run: () => Promise<T>): Promise<T> {
   // extract's expand and scroll, and the repl's harvest, click and scroll
-  // the page as they read it: they take its lane, as acting calls do, yet
-  // stay reads for everything affectsPage decides.
-  const gathers = tool === "harvest" || (tool === "extract" && (args.expand === true || args.scroll === true));
+  // the page as they read it, and net's pages may scroll it to watch it ask
+  // for its next page: they take its lane, as acting calls do, yet stay
+  // reads for everything affectsPage decides.
+  const gathers = tool === "harvest" || (tool === "extract" && (args.expand === true || args.scroll === true)) || (tool === "net" && args.pages !== undefined);
   if (!acts(tool, args) && !gathers) return run();
   const tab = await resolve(args.tab).catch(() => undefined);
   if (tab === undefined) return run();
