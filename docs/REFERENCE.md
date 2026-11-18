@@ -118,9 +118,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   each step waits until he is idle, the screen unlocked and Safari behind,
   and stops if his front app changes. A menu that will not
   close turns groups off for a day; a make that fails and leaves its group
-  turns off only new groups, and ended agents' groups still go. An exited
-  agent's group whose window is gone and that three deletes could not
-  remove stays in his sidebar for him to delete.
+  turns off only new groups, and ended agents' groups still go. An ended
+  group that still holds pages (kept for him, a handoff, a tab the harness
+  never saw) stays until its window has gone unused for 8 hours (a change
+  to those pages counts as use), then goes with them. An exited agent's
+  group whose window is gone and that three deletes could not remove stays
+  in his sidebar for him to delete.
   `~/.local/share/safari-harness/groups-off.json` says why, and removing it
   turns them on sooner. `safari doctor` warns while it is there, and each
   agent is told why once, not on every open.
@@ -196,12 +199,14 @@ Safari is the user's everyday browser, so treat his tabs as his.
   let go: a late page's new id, or a window Safari restores, can still be
   matched to it, and it closes with its agent as before.
   A protected or foreign tab keeps its window intact; cleanup does not
-  move it to make a group deletable. Use `keep` for a page he still needs,
-  not to preserve an agent's finished work.
+  move it to make a group deletable. In a tab group that protection ends
+  once the window has gone unused for 8 hours: the group goes with its
+  pages. Use `keep` for a page he still needs, not to preserve an agent's
+  finished work.
   Background handoff polling continues without holding a finished call's
   cleanup open. A handoff tab whose agent exits before he finishes is his:
   the harness lets go of it (`tab released` in the journal) and never
-  closes it.
+  closes it, except with its tab group as above.
 - Idle cleanup is strict: eligible unused pages close after 2 minutes, and
   each agent session keeps at most 4 tabs, a fifth closing its least
   recently used eligible one. Existing protections for changed pages, unsent forms,
@@ -1154,7 +1159,10 @@ page has one, and up to 5 s more while the page says it is loading. It can
 use an original agent tab id while its safe-address recovery record is
 still within the five-minute limit ([cleanup and recovery](#cleanup-authority)).
 A page that fills in after loading still needs a `wait` for the text you
-expect.
+expect. A `goto` that changes only the address's `#part` moves within the
+same page and loads nothing again, which the answer notes: after editing a
+local file, `history {do: "reload"}` loads it again. `fresh: true` reads a
+page your task read in the last 10 minutes again.
 
 ## tabs
 
@@ -1222,7 +1230,8 @@ is done with it. `close` on a tab already closed does not fail: it answers
   in front last, without taking focus (to a new window when he has no
   normal one as private as the tab), under the same tab id. Its popups are his as well, and still come in your
   next result (`safari guide reference lifecycle`). Tabs on another Mac (`--host`) close only once
-  nobody has used them for 20 minutes.
+  nobody has used them for 20 minutes. `keep` on a tab Safari no longer
+  has fails as `activate` does, with nothing kept.
 
 ## activate
 
@@ -1254,6 +1263,14 @@ It answers once the page has laid out again at the new size (it reads
 again for up to 1 s), with the page's viewport, so the next `shot` or read
 sees the layout at that width. For screenshots at several widths, use
 `shots` instead of a `window` and `shot` per width.
+
+`width` and `height` are the window's points, and the page's CSS width
+differs by Safari's page zoom and the window's edges: on 11-11 width 390
+gave a page 455 px wide. `cssWidth` (with `height`) resizes until the
+page's `innerWidth` is that many CSS px, at most 3 times, and answers with
+the `viewport` reached; still off by more than 1 px, it answers with
+`missed` naming the width the page reached, since the window did change.
+CLI: `safari window --tab N --css-width 390 --height 844`.
 
 ## run
 
@@ -1301,8 +1318,10 @@ or one after a read, can still match text already shown.
 ## map
 
 `map` reads up to 20 pages in one call. Give it `urls` and `what` to read
-each with: `extract` (the default), `snapshot`, `eval` with `expression`,
-or `fetch`, plus that read's own options (`selector`, `query`, `as`). Each
+each with: `extract` (the default), `snapshot`, `eval` with `expression`
+or `file` (a script's absolute path; `read: true` for one that only
+measures, as for `eval`), or `fetch`, plus that read's own options
+(`selector`, `query`, `as`). An `eval` read is never reused. Each
 page is read in a background tab in your window, 4 at a time
 (`concurrency`, fewer if you ask): one tab for each page read at once,
 which loads the next page once its page is read, and closes when map
@@ -1310,12 +1329,16 @@ answers. A load that never began opens the page in a new tab, so a page
 is never read as the one before it. It returns `pages` in the order of
 `urls`, each `{url, ok, value or error, ms}`, with the `title` it opened
 with, and `finalUrl` when it opened at another address. The answer's
-first line counts the pages read and failed.
+first line counts the pages read, those that loaded but hold no content
+(a sign-in, loading or other wall, by kind), and those that failed:
+`3 pages: 1 read, 2 not content (sign-in 1, loading 1), 0 failed`.
 
 - `maxBytes` sets how much of each page's text comes back (20,000
   characters unless set); a longer page's whole text goes to a file,
-  which its `value.saved` names. When the answer outgrows a reply, its
-  list of pages gives each page's whole size and file.
+  which its `value.saved` names. With `save`, each page's file holds its
+  whole read and `maxBytes` limits only the reply; `query` still keeps
+  only its lines. When the answer outgrows a reply, its list of pages
+  gives each page's whole size and file.
 - `wait`, as the `wait` tool takes it (`{"text": "Price"}`, `{"selector":
   ".listing"}`, `{"quiet": true}`), holds each read until its page shows
   that. Pass it for pages whose script draws what you read after they
@@ -1373,7 +1396,9 @@ first line counts the pages read and failed.
   place as unfinished, counted as not read rather than failed, and its
   address comes back in `urls`: map those
   again, in a call with fewer pages. One still being read goes on, and
-  its tab closes when it ends; with `save`, it writes no file.
+  its tab closes when it ends; with `save`, it writes no file. With a
+  `wait`, about 6 slow pages fit in the 50 s: on 11-14 a map of 20 X
+  profiles with a wait read 6 and left 14.
 - Each search engine's results pages (Google's, Bing's) load one at a
   time, 3 s apart, across every map and the `googleSearch` global: a
   burst of searches meets a reCAPTCHA.
@@ -1384,7 +1409,7 @@ first line counts the pages read and failed.
   changes something, is never kept.
 - A bot check that stands in for a page is waited on as `open` waits on
   one, then reported with `challenge` if it is still up; its page is not
-  read. Open that page in a tab and `wait` a few seconds for its text:
+  read. Open that page in a tab and `wait {gone: "<the check's words>"}`:
   many checks clear by themselves in a real Safari tab (the Lancet's,
   still up after map's 9 s on 10-23, let a tab opened later through).
   If it remains, use another permitted source or report the unavailable page. A
@@ -1768,6 +1793,14 @@ in seconds) gives a slow read up to 300 s. Keep sleeps and long loops out of
 `eval`: a loop across steps goes in `repl`, and `wait {text}` waits for
 words the page will show.
 
+- An eval that fails may have acted, so the same code is refused on that
+  site until a whole read of a tab there (When a call fails, in the card).
+  `read: true` says your code only reads or measures the page: its failure
+  then holds nothing, and it takes no turn among the tab's actions. Never
+  pass it for code that clicks, types, submits, or calls a site's API that
+  changes anything. `map {what: "eval", read: true}` passes it to each
+  page. The same `file` with new contents is new code, not a repeat.
+
 - `--raw` (CLI) prints only the value: a string as it is, unquoted,
   anything else as JSON on one line, nothing for `undefined`; a `note` or
   `hint` goes to stderr. For a shell that reads the answer:
@@ -1821,7 +1854,9 @@ or page stability cannot be confirmed, no image is returned. `live`
 does not disable protection. The masking count is applied rectangles,
 not a count of unique secrets. Unknown sensitive text baked into arbitrary
 images, video, canvas or closed rendering is not a universal detection
-guarantee.
+guarantee. A page that loads again during the capture (a reload, a
+navigation) ends its gate; `shot` waits for the new page to go quiet and
+captures once more, and a second reload fails `unavailable`, retryable.
 
 Safari draws nothing in a window other windows cover whole, so its page
 never passes the privacy gate's paint check. When that window is yours,
@@ -2058,6 +2093,8 @@ Wait for the page, not the clock.
   site still out (one out past 2 s, such as a long poll, does not count).
   Given together, all must hold. `url` and `quiet` read the top page, not
   its frames; `gone` holds once neither the page nor any frame shows it.
+  `ms` alone, with nothing named, waits for quiet up to `ms`; a wait with
+  neither fails.
 - `snapshot: true`, the words to keep, or `{query, root, diff, full}`
   (CLI `--snapshot`, `--snapshot="Sign in"`) answers with the page as the wait ends, as an
   action's does; a wait the page gave no answer comes without it.
@@ -2664,7 +2701,8 @@ and cannot run against the user's front tab or a remote browser. Use
   tab needed), or only a `tab` to save the file it shows (a PDF in
   Safari's viewer). Put a file you only read under /tmp with `out`, an
   absolute path (`download` and `pdf` refuse a relative one; CLI
-  `safari download --tab N --ref R [file]`, or `--out`/`--path`). A ref
+  `safari download --tab N --ref R [file]`, or `--out`/`--path`). An `out`
+  that is a folder, or ends in `/`, takes the file under its own name. A ref
   whose fetch fails says why (no such host, a cross-site refusal) and
   gives the link's address. It
   fetches with the page's cookies, so a signed-in file works. A link to
@@ -2724,6 +2762,10 @@ and cannot run against the user's front tab or a remote browser. Use
   cookies, for a PDF Safari downloads rather than shows), or the PDF the
   tab shows. A path or a url needs no tab: `safari pdf read file.pdf`,
   `safari pdf read https://…/paper.pdf`, or `safari pdf --do read --url …`.
+  A PDF whose pages are pictures (a scan) has no text layer: its read
+  answers `text: ""` and a note saying so, with the saved file's path. A
+  bot check in place of the file is named as one, before a sign-in page is
+  blamed.
 
 ## cookies
 

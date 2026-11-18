@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:
 import { dirname, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
-import { download, extract, pageFetch, TOOLS } from "./tools.ts";
+import * as pdfkit from "./pdf.ts";
+import { download, extract, pageFetch, pdf, TOOLS } from "./tools.ts";
 import * as unanswered from "./unanswered.ts";
 
 // download of a url with no tab is the extension's own fetch, with no
@@ -163,6 +164,66 @@ test("extract of a GitHub file page answers with its raw file, saying so; a read
     expect(fetched).toEqual(["https://github.com/o/r/raw/main/src/a.c"]);
     expect(await extract({ tab: 7, query: "return" })).toMatchObject({ text: "1\n2\n3" });
   } finally {
+    dns.mockRestore();
+  }
+});
+
+const PDF_URL = "https://jhanley.biostat.mcgill.ca/Reprints/If_Nothing_Goes_1983.pdf";
+const PDF = Buffer.from("%PDF-1.3 the scan's bytes");
+
+// On 11-14 download {url, out} of this PDF into a folder failed EISDIR
+// (RSI#933).
+test("download into an out that is a folder saves the file there under its own name", async () => {
+  refuse = undefined;
+  served = { url: PDF_URL, type: "application/pdf", body: PDF };
+  const folder = join(dir, "lmlp-src");
+  mkdirSync(folder);
+  const saved = join(folder, "If_Nothing_Goes_1983.pdf");
+  expect(await download({ url: PDF_URL, out: folder }, dir)).toEqual({ path: saved, name: "If_Nothing_Goes_1983.pdf", size: PDF.length, type: "application/pdf" });
+  expect(readFileSync(saved)).toEqual(PDF);
+});
+
+// On 11-14 and 11-15 pdf reads of four scans, this one among them, answered
+// blank lines alone (RSI#926, #1169, #1296, #1307). pdfkit reads a scan's 3
+// pages as their page breaks.
+test("a pdf read of a PDF with no text layer says so and where the file is", async () => {
+  refuse = undefined;
+  served = { url: PDF_URL, type: "application/pdf", body: PDF };
+  const text = spyOn(pdfkit, "pdfText").mockImplementation(async () => ({ pages: 3, text: "\n\f\n\n\f\n", truncated: false }));
+  try {
+    const { note, ...read } = await pdf({ do: "read", url: PDF_URL }) as { note: string };
+    expect(read).toEqual({ url: PDF_URL, pages: 3, text: "", truncated: false });
+    expect(note).toContain("its 3 pages have no text layer");
+    const kept = /the file is at (\S+),/.exec(note)?.[1];
+    expect(kept === undefined ? undefined : readFileSync(kept)).toEqual(PDF);
+    if (kept !== undefined) rmSync(dirname(kept), { recursive: true, force: true });
+  } finally {
+    text.mockRestore();
+  }
+});
+
+// On 11-15 hal.science and econstor.eu answered Anubis's check for a PDF,
+// and pdf read blamed a sign-in page (RSI#1113, #1218). The check's page as
+// econstor.eu served it on 11-16, its scripts and styles left out.
+const ANUBIS = Buffer.from(`<!doctype html><html lang="en"><head><title>Making sure you&#39;re not a bot!</title><meta name="robots" content="noindex,nofollow"><script id="anubis_version" type="application/json">"v1.27.1"</script></head><body id="top"><main><h1 id="title" class="centered-div">Making sure you&#39;re not a bot!</h1><div class="centered-div"><p id="status">Loading...</p><p id="anubis-script-error" style="display:none;">Anubis could not load its JavaScript. The server may be overloaded.</p></div></main></body></html>`);
+
+test("a pdf read answered a bot check in place of the file says so, and a sign-in page is still named as one", async () => {
+  refuse = undefined;
+  const html = "text/html; charset=utf-8";
+  served = { url: "https://www.econstor.eu/bitstream/10419/221450/1/cmsems-dp1094.pdf", type: html, body: ANUBIS };
+  await expect(pdf({ do: "read", tab: 7 })).rejects.toThrow("answered a bot check");
+  served = { url: "https://acme.example/signin", type: html, body: PAGE };
+  await expect(pdf({ do: "read", tab: 7 })).rejects.toThrow("A sign-in page is the usual cause");
+});
+
+// On 11-14 a pdf read failed "Load failed" and nothing more (RSI#742).
+test("a pdf read whose fetch got no answer says whether its host exists", async () => {
+  const dns = spyOn(unanswered, "hostAnswer").mockImplementation(async () => "missing");
+  refuse = "Load failed";
+  try {
+    await expect(pdf({ do: "read", url: "http://www.institutohorus.org.br/download/artigos/Lockwood_et_al__propagule_pressure_2005.pdf" })).rejects.toThrow("Load failed: no such host as www.institutohorus.org.br");
+  } finally {
+    refuse = undefined;
     dns.mockRestore();
   }
 });

@@ -116,7 +116,7 @@ test("status tells a daemon that is not running from one that answered an error,
   expect(stuck.code).toBe(0);
   const [daemonLine, extensionLine, , ...events] = stuck.out.split("\n");
   expect(daemonLine).toBe("daemon 4242, 1 call(s) in flight");
-  expect(extensionLine).toBe("extension stuck: connected, but its calls time out (snapshot 3 in a row), last answered 95 s ago; run: safari extension reload");
+  expect(extensionLine).toBe("extension stuck: connected, but its calls time out (snapshot 3 in a row), last answered 95 s ago; the next call that needs it reloads it by itself; if that call fails too, quit Safari and open it again");
   expect(events).toHaveLength(1);
   expect(events[0]).toMatch(/ {2}stuck {2}\{"op":"snapshot"\}$/);
 });

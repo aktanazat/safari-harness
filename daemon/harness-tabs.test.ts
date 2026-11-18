@@ -537,6 +537,18 @@ test("an agent's tab called every 30 s keeps its last use in the daemon's file o
   expect(Math.max(...behind)).toBeLessThanOrEqual(60_000);
 });
 
+// 11-16: keep answered ok for tab 2275611, which Safari had not had for 32
+// hours, and the activate right after it failed (LOCK#1915).
+test("keep refuses a tab Safari no longer has, and keeps one it has", async () => {
+  const agent = keeper();
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://kept.example/", background: true });
+  const tab = nextTab;
+  await expect(as("keep", { tab: 2275611 })).rejects.toMatchObject({ code: "stale_view", effect: "none", message: expect.stringContaining("that tab is gone") });
+  expect(await as("keep", { tab })).toEqual({ ok: true });
+  agent.kill();
+});
+
 // On 11-17 keep answered ok for a tab its agent's exit had closed, and the
 // agent told the user the page was left open for him.
 test("keep of a tab Safari no longer shows fails and keeps nothing", async () => {

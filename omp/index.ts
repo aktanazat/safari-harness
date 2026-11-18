@@ -60,6 +60,8 @@ export default function safariTurnEnd(pi: ExtensionApi) {
       const reason = session === undefined ? undefined : unanswered(session);
       return reason === undefined ? undefined : { block: true, reason };
     }
+    const refused = event.toolName === "bash" && typeof event.input.command === "string" ? shellMisuse(event.input.command) : undefined;
+    if (refused !== undefined) return { block: true, reason: refused };
     const task = taskOf(ctx);
     if (task === undefined) return;
     if (event.toolName.startsWith("mcp__safari_")) {
@@ -121,6 +123,172 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     releasing.delete(session ?? "");
     if (session !== undefined) newRun(session);
   });
+}
+
+// ---------- safari output a shell command hides ----------
+
+// From 11-06 to 11-16, 383 of 492 distinct shell commands that ran the
+// safari CLI piped its output into head, tail, grep, sed or cut, or sent it
+// to /dev/null, against the card; on 11-11 and 11-16 a failed call went
+// with it (LOCK#691-692, BERK#168). Shell loops of goto, eval and window
+// ran a page at a time where one map or shots call reads them all.
+const CUTS: Record<string, true> = { head: true, tail: true, grep: true, sed: true, cut: true };
+const LOOPED: Record<string, true> = { map: true, eval: true, goto: true, open: true, shot: true, window: true, repl: true };
+const LOOPS: Record<string, true> = { for: true, while: true, until: true, select: true };
+// Words before a command's own name: shell keywords, and wrappers that run
+// the command after them. A Set, as an object with a then key is thenable.
+const LEADS = new Set(["do", "then", "else", "elif", "if", "!", "{", "time", "command", "exec", "nohup"]);
+const DEV_NULL = /^(?:\d|&)?>>?\/dev\/null$|^>&\/dev\/null$/;
+// A quoted word's text: the shell's words inside quotes are not commands.
+const QUOTED = "\u0000";
+const CARD_PIPE = "\"Read the whole output. Narrow with `query` or `root`, never `| head`, `| grep`, `sed`, or `>/dev/null`, which hide a failed call.\"";
+const CARD_QUIET = "\"A CLI step whose answer you do not need takes `-q`: silent when it works, one line and exit 1 when it misses.\"";
+const CARD_LOOP = "\"More than three pages of one kind: one `map` call (up to 20 addresses), ... never a loop of `goto` or a bash loop of `map` or `eval`.\" and \"Screenshots of pages at several widths: one `shots` call (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of `window` and `shot`.\"";
+
+type Command = string[];
+
+// The command's own name and the words after it, past assignments
+// (T=7 safari ...), keywords (do safari ...), and timeout's duration.
+function ownWords(words: Command): Command {
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i];
+    if (/^[A-Za-z_]\w*=/.test(w) || LEADS.has(w)) i++;
+    else if (w === "timeout") {
+      i++;
+      while (words[i]?.startsWith("-")) i++;
+      i++;
+    } else break;
+  }
+  return words.slice(i);
+}
+
+// The pipelines of a shell command, each a list of commands' words, in the
+// order they run; a command substitution's, a subshell's and a backquoted
+// command's are pipelines of their own. A here-document's lines are its
+// command's input, not commands: a repl script's `for` and `|` are not the
+// shell's.
+function pipelinesOf(command: string): Command[][] {
+  const lines = command.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    kept.push(lines[i]);
+    const ends = [...lines[i].matchAll(/(?<!<)<<(?!<)-?\s*(['"]?)([A-Za-z_]\w*)\1/g)].map((m) => m[2]);
+    for (const end of ends) while (i + 1 < lines.length && lines[++i].replace(/^\t+/, "") !== end);
+  }
+  const src = kept.join("\n");
+  const out: Command[][] = [];
+  const scan = (start: number, close: string | undefined): number => {
+    let pipeline: Command[] = [];
+    let words: Command = [];
+    let word = "";
+    const endWord = () => {
+      if (word !== "") words.push(word);
+      word = "";
+    };
+    const endCommand = () => {
+      endWord();
+      if (words.length) pipeline.push(words);
+      words = [];
+    };
+    const endPipeline = () => {
+      endCommand();
+      if (pipeline.length) out.push(pipeline);
+      pipeline = [];
+    };
+    let i = start;
+    while (i < src.length) {
+      const c = src[i];
+      const next = src[i + 1];
+      if (c === close) {
+        endPipeline();
+        return i + 1;
+      }
+      if (c === "\\") {
+        if (next !== "\n") word += next ?? "";
+        i += 2;
+      } else if (c === "'") {
+        const end = src.indexOf("'", i + 1);
+        word += QUOTED;
+        i = end < 0 ? src.length : end + 1;
+      } else if (c === '"') {
+        word += QUOTED;
+        i++;
+        while (i < src.length && src[i] !== '"') {
+          if (src[i] === "\\") i += 2;
+          else if (src[i] === "$" && src[i + 1] === "(") i = scan(i + 2, ")");
+          else if (src[i] === "`") i = scan(i + 1, "`");
+          else i++;
+        }
+        i++;
+      } else if (c === "$" && next === "(") {
+        word += QUOTED;
+        i = scan(i + 2, ")");
+      } else if (c === "`") {
+        word += QUOTED;
+        i = scan(i + 1, "`");
+      } else if (c === "(") {
+        endWord();
+        i = scan(i + 1, ")");
+      } else if (c === "#" && word === "") {
+        while (i < src.length && src[i] !== "\n") i++;
+      } else if (c === " " || c === "\t") {
+        endWord();
+        i++;
+      } else if (c === "\n" || c === ";") {
+        endPipeline();
+        i++;
+      } else if (c === "|") {
+        if (next === "|") endPipeline();
+        else endCommand();
+        i += next === "|" || next === "&" ? 2 : 1;
+      } else if (c === "&" && next !== ">" && !word.endsWith(">")) {
+        endPipeline();
+        i += next === "&" ? 2 : 1;
+      } else {
+        word += c;
+        i++;
+      }
+    }
+    endPipeline();
+    return i;
+  };
+  scan(0, undefined);
+  return out;
+}
+
+// Why a shell command is refused before it runs: it cuts or hides a safari
+// command's output, or runs a page at a time in a shell loop what one call
+// does. Each kind is named once, with the card's line and the right form.
+function shellMisuse(command: string): string | undefined {
+  if (!/(?:^|[\s;&|('"`])safari\s/.test(command)) return undefined;
+  const found = new Map<string, string>();
+  let depth = 0;
+  for (const pipeline of pipelinesOf(command)) {
+    let ran: string | undefined;
+    for (const words of pipeline) {
+      let own = ownWords(words);
+      if (Object.hasOwn(LOOPS, own[0] ?? "")) {
+        depth++;
+        own = ownWords(own.slice(1));
+      } else if (own[0] === "done") depth = Math.max(0, depth - 1);
+      const name = own[0] ?? "";
+      if (ran !== undefined && Object.hasOwn(CUTS, name) && !found.has("pipe")) {
+        found.set("pipe", `\`safari ${ran}\` pipes its output into ${name}, which can hide a failed call. The card (safari guide) says: ${CARD_PIPE} Run it without the pipe: narrow a read with --query or --root, take a tab's id alone with safari open --id URL, or keep a long output whole with --save and read that file. A pipe into jq is fine.`);
+      }
+      if (name !== "safari" || !/^[a-z][a-z_-]*$/.test(own[1] ?? "")) continue;
+      const sub = own[1];
+      ran ??= sub;
+      if (!found.has("quiet") && own.some((w, i) => DEV_NULL.test(w) || (/^(?:\d|&)?>>?$/.test(w) && own[i + 1] === "/dev/null"))) {
+        found.set("quiet", `\`safari ${sub}\` sends its output to /dev/null, which hides a failed call. The card says: ${CARD_QUIET} Give it -q instead.`);
+      }
+      if (depth > 0 && Object.hasOwn(LOOPED, sub) && !found.has("loop")) {
+        found.set("loop", `a shell loop runs \`safari ${sub}\` a page at a time. The card says: ${CARD_LOOP} Read every address in one safari map call (--what eval --expression for a script on each page), take widths with one safari shots call, or put steps that must go page by page in one safari repl script.`);
+      }
+    }
+  }
+  if (found.size === 0) return undefined;
+  return `safari: refused before it ran. ${[...found.values()].join("\n")}`;
 }
 
 // How long one release waits on the daemon. It first drains the task's

@@ -55,12 +55,20 @@ const HELD = /did not answer.*; reload it with goto and retry$/;
 export const FRESH = /; it is open again on \S+, loaded fresh as tab (\d+), so its refs/;
 
 // The approved send running now (draftOrSend): its action, and whether a
-// call of it that changes a page has gone through. A request of it whose
+// request of it that changes the site has gone out. A request of it whose
 // tab vanished may have reached the site before the tab went: the
 // extension says "that tab is gone" after dispatch too (background.js), so
 // it is not sent again (SiteKit.call): the kit once posted a Slack message
 // twice so (audit SH-24).
-const sending = new AsyncLocalStorage<{ action: string; acted: boolean }>();
+const sending = new AsyncLocalStorage<{ action: string; wrote: boolean }>();
+
+// A request of the send running now that changes the site but goes from
+// this process rather than a kit tab (Slack's file bytes): it keeps the
+// draft spent as a tab's request would.
+export function wroteOutside(): void {
+  const out = sending.getStore();
+  if (out !== undefined) out.wrote = true;
+}
 
 export class SiteKit {
   private tabs = new Map<string, Promise<number>>();
@@ -87,11 +95,15 @@ export class SiteKit {
   }
 
   private async call(tool: string, args: Record<string, unknown>, onReopen?: (tab: number) => void): Promise<unknown> {
+    const out = sending.getStore();
+    const answer = await this.attempt(tool, args, out?.action, onReopen);
+    if (out !== undefined && affectsPage(tool, args)) out.wrote = true;
+    return answer;
+  }
+
+  private async attempt(tool: string, args: Record<string, unknown>, action: string | undefined, onReopen?: (tab: number) => void): Promise<unknown> {
     try {
-      const answer = await this.send(tool, args);
-      const send = sending.getStore();
-      if (send && affectsPage(tool, args)) send.acted = true;
-      return answer;
+      return await this.send(tool, args);
     } catch (e) {
       const gone = Number(args.tab);
       const origin = this.origins.get(gone);
@@ -106,7 +118,6 @@ export class SiteKit {
         return this.send(tool, { ...args, tab });
       }
       if (!GONE.test(e.message)) throw e;
-      const action = sending.getStore()?.action;
       if (action !== undefined) throw new HarnessError("effect_unknown", `${action}: the ${origin} tab closed while its ${tool} was out (${e.message}), so it may have gone through; it was not sent again`, { next: `check ${origin} for it before sending again, which takes a new draft` });
       const tab = await this.reopen(origin, gone);
       onReopen?.(tab);
@@ -237,7 +248,11 @@ const DRAFT_MS = 30 * 60_000;
 // drafted and sent in one run, and a draft of one text to one channel let
 // another text go to another (audit SH-21, E-10). from names the account
 // it goes out as; bind, what else the send depends on (a file's bytes), so
-// that a change to either is a new draft.
+// that a change to either is a new draft. A send that failed before any of
+// its requests changed the site, with nothing sent (effect none), leaves
+// its draft approvable: on 11-16 a Slack upload whose first request got
+// no answer spent its draft, and the agent posted through Slack's composer
+// instead, which no draft guards.
 export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action: string; from?: string; to?: string; text: string; bind?: string; approved?: string | boolean; send: () => Promise<T> }): Promise<Draft | Sent<T>> {
   const { site, action, from, to, text } = opts;
   const shown = { site, action, ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) };
@@ -264,11 +279,14 @@ export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action:
   // through (Gmail's Send clicked, then a wait that met a restarting
   // daemon) keeps it used, so it never sends twice.
   d.used = true;
-  const send = { action, acted: false };
+  const out = { action, wrote: false };
   try {
-    return { status: "sent", draftId: id, ...shown, result: await sending.run(send, opts.send) };
+    return { status: "sent", draftId: id, ...shown, result: await sending.run(out, opts.send) };
   } catch (e) {
-    if (!send.acted && failureOf(e).effect === "none") delete d.used;
+    if (!out.wrote && failureOf(e).effect === "none") {
+      delete d.used;
+      if (e instanceof Error) e.message += `; nothing of it reached ${site}, so draft ${id} can be approved again in a later call`;
+    }
     throw e;
   }
 }

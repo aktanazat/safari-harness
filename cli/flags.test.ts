@@ -12,7 +12,8 @@ const server = Bun.serve({
   async fetch(req) {
     const { tool, args }: { tool: string; args: Record<string, unknown> } = await req.json();
     calls.push({ tool, args });
-    return Response.json({ ok: true, value: "done" });
+    // type lists tabs first, to refuse a send from Slack's own page (input.ts).
+    return Response.json({ ok: true, value: tool === "tabs" ? { tabs: [] } : "done" });
   },
 });
 afterAll(() => server.stop(true));
@@ -71,6 +72,14 @@ test("an unsupported flag is rejected before any call", async () => {
   const result = await safari(["learn", "geico.com", "--fcat", "The quote asks for the address twice"]);
   expect(result.code).toBe(2);
   expect(result.err).not.toBe("");
+  expect(calls).toEqual([]);
+});
+
+// From 11-11 to 11-12 `safari repl --close-all >/dev/null 2>&1` ran 7 times,
+// and repl dropped the flag it did not know.
+test("repl refuses a flag it does not know, naming the near one and its flags", async () => {
+  calls.length = 0;
+  expect(await safari(["repl", "--close-all"])).toEqual({ err: "error: repl takes no --close-all; did you mean --close? (flags: --session --list --close --file --host --json --quiet; safari repl --list lists the sessions running, safari repl --close <name> ends one)", code: 2 });
   expect(calls).toEqual([]);
 });
 

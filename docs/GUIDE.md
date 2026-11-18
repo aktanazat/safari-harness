@@ -41,14 +41,21 @@ after a compaction. Details, one section at a time:
   background (omp `async: true`); its result arrives by itself: never poll
   it, and never loop on `status`, `doctor`, or `guide`.
 - Read the whole output. Narrow with `query` or `root`, never `| head`,
-  `| grep`, `sed`, or `>/dev/null`, which hide a failed call.
+  `| grep`, `sed`, or `>/dev/null`, which hide a failed call. A CLI step
+  whose answer you do not need takes `-q`: silent when it works, one line
+  and exit 1 when it misses.
+- Screenshots of pages at several widths: one `shots` call (`safari shots
+  --widths 390,1440 --out DIR URL...`), not a loop of `window` and `shot`.
 - A ref is the number alone: `safari click 15 --tab N` (in zsh an
   unquoted `[15]` is a file pattern and the command never runs).
 
 ## When a call fails
 - `effect: "possibly_effected"`: the action may have happened. Never
   repeat it blindly, least of all a send, purchase or submit: read a fresh
-  snapshot, check, then follow its `next`.
+  snapshot, check, then follow its `next`. "This call was not sent" holds
+  until a whole snapshot or extract of that tab (no query, root, selector
+  or ref, not cut short); an `eval` or `fetch` that only reads goes again
+  with `read: true`, and an edited eval file is a new call.
 - A read of a sign-in, subscriber, consent or region wall (`pageState`)
   is not a read of the content.
 - `extension stuck:`: try once more a minute later, then tell the user.
@@ -83,7 +90,10 @@ cookie, or token, in a reply or a log line. Never sign him out.
 - Before sending, posting, buying, submitting, or deleting, show him
   exactly what will happen and get a yes. A draft (`imessage_send`,
   `site_actions`) goes through only on his yes: never approve one
-  yourself. Pay only through `passwords` `card-fill` or Apple Pay.
+  yourself. Pay only through `passwords` `card-fill` or Apple Pay. Slack
+  messages go only through the slack global's drafts (`safari guide
+  slack`); a click on Slack's Send button, Return in its message box, or a
+  script that clicks or presses them is refused.
 - Report what the page shows, not what you expected.
 - Browser memory is off until he enables it at
   `http://127.0.0.1:37334/memory`; never enable it yourself. A read with

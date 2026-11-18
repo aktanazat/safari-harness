@@ -10,8 +10,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import { rateLimited } from "../failures.ts";
-import { NotSignedIn, draftOrSend, type SiteKit } from "./kit.ts";
+import { HarnessError, rateLimited } from "../failures.ts";
+import { NotSignedIn, draftOrSend, wroteOutside, type SiteKit } from "./kit.ts";
 
 const SITE = "Slack";
 const ORIGIN = "https://app.slack.com";
@@ -212,7 +212,18 @@ function fileOf(f: RawFile): SlackFile {
 // The fetch tool's answer with base64: true (content.js pageFetch).
 type FileAnswer = { status: number; type: string | null; headers?: [string, string][]; data: string; truncated: boolean };
 
-type RawMessage = { ts: string; subtype?: string; user?: string; bot_id?: string; username?: string; text?: string; thread_ts?: string; reply_count?: number; reactions?: { name: string; count: number }[]; files?: RawFile[]; attachments?: unknown[] };
+type RawMessage = { ts: string; subtype?: string; user?: string; bot_id?: string; username?: string; text?: string; blocks?: unknown[]; thread_ts?: string; reply_count?: number; reactions?: { name: string; count: number }[]; files?: RawFile[]; attachments?: unknown[] };
+
+type LocalFile = { file: string; name: string; bytes: Buffer };
+
+// A local file to send; a relative path begins in the session's folder.
+async function localFile(kit: SiteKit, path: string): Promise<LocalFile> {
+  if (typeof path !== "string" || !path) throw new Error("a file to send is given by its path, as a string");
+  const file = resolve(kit.cwd, path);
+  const bytes = await readFile(file);
+  if (bytes.length > FILE_MAX) throw new Error(`${file} has ${bytes.length} bytes; upload takes at most ${FILE_MAX}`);
+  return { file, name: basename(file), bytes };
+}
 
 function message(m: RawMessage) {
   return {
@@ -269,12 +280,31 @@ function client(kit: SiteKit, workspace: Workspace) {
   const from = `${workspace.name} (${workspace.domain}.slack.com), as ${workspace.userId ?? "an unknown user"}`;
   // The message at ts, as history lists it. A thread reply is not in its
   // channel's history: name its thread's ts as thread_ts.
-  const messageAt = async (channel: string, ts: string, opts: { thread_ts?: string } = {}) => {
+  const rawAt = async (channel: string, ts: string, opts: { thread_ts?: string } = {}) => {
     const top = await api<{ messages: RawMessage[] }>("conversations.history", { channel, latest: ts, oldest: ts, inclusive: true, limit: 1 });
     let found = top.messages.find((m) => m.ts === ts);
     if (!found && opts.thread_ts) found = (await api<{ messages: RawMessage[] }>("conversations.replies", { channel, ts: opts.thread_ts, limit: 1000 })).messages.find((m) => m.ts === ts);
     if (!found) throw new Error(`no message ${ts} in ${channel}${opts.thread_ts ? ` or its thread ${opts.thread_ts}` : "; a thread reply needs its thread's ts as thread_ts"}`);
-    return message(found);
+    return found;
+  };
+  const messageAt = async (channel: string, ts: string, opts: { thread_ts?: string } = {}) => message(await rawAt(channel, ts, opts));
+  // Sends a file's bytes to the address Slack gives for them. The file is
+  // no one's to see until files.completeUploadExternal names it.
+  const sendBytes = async (f: LocalFile) => {
+    const slot = await api<{ upload_url: string; file_id: string }>("files.getUploadURLExternal", { filename: f.name, length: f.bytes.length });
+    const host = new URL(slot.upload_url).host;
+    const sent = await paced(kit, new URL(slot.upload_url).origin, async () => {
+      // The bytes go from this process, not the page: Safari's fetch takes
+      // only text. On 11-11 this Mac's connection to the host was refused
+      // three times and the error named neither the host nor the outcome.
+      const res = await fetch(slot.upload_url, { method: "POST", body: f.bytes }).catch((e: unknown) => {
+        throw new HarnessError("command_failed", `this Mac could not reach ${host}, Slack's upload address (${e instanceof Error ? e.message : String(e)}); nothing was shared`, { effect: "none", next: "try again in a minute" });
+      });
+      return { status: res.status, retryAfter: res.headers.get("retry-after") };
+    });
+    if (sent.status !== 200) throw new HarnessError("command_failed", `Slack's upload address ${host} answered HTTP ${sent.status}; nothing was shared`, { effect: "none" });
+    wroteOutside();
+    return slot.file_id;
   };
   return {
     workspace,
@@ -374,18 +404,81 @@ function client(kit: SiteKit, workspace: Workspace) {
 
     // Edits a message the owner wrote. The draft shows the text it replaces
     // as was, so the owner approves the change, not just the new text.
-    async update(channel: string, ts: string, text: string, opts: { thread_ts?: string; approved?: string | boolean } = {}) {
-      const was = (await messageAt(channel, ts, opts)).text;
+    // files (local paths) take the place of the message's files, or join
+    // them with keepFiles: they are uploaded private, chat.update puts them
+    // on the message, and the owner's files they replaced are deleted, so
+    // no stale copy stays in the channel's files. On 11-16 a posted html
+    // could only be followed by a thread reply. text null keeps the text
+    // and its formatting, sent back with the message's blocks: on 11-09 a
+    // link sent back as <http://…|…> text came out escaped.
+    async update(channel: string, ts: string, text: string | null, opts: { thread_ts?: string; files?: string[]; keepFiles?: boolean; approved?: string | boolean } = {}) {
+      const raw = await rawAt(channel, ts, opts);
+      const was = raw.text ?? "";
+      if (opts.files === undefined) {
+        if (typeof text !== "string") throw new Error("update needs the new text, or files to put on the message");
+        const out = await draftOrSend(kit, {
+          site: "slack",
+          action: `edit message ${ts} in ${channel}`,
+          from,
+          to: channel,
+          text,
+          approved: opts.approved,
+          send: async () => {
+            const r = await api<{ ts: string; channel: string }>("chat.update", { channel, ts, text });
+            return { ts: r.ts, channel: r.channel };
+          },
+        });
+        return { ...out, was };
+      }
+      if (!Array.isArray(opts.files) || !opts.files.length) throw new Error("files takes a list of local file paths");
+      if (!workspace.userId || raw.user !== workspace.userId) throw new Error(`message ${ts} in ${channel} is not the owner's (its author is ${raw.user ?? "unknown"}); files go only on his own messages`);
+      const added = await Promise.all(opts.files.map((path) => localFile(kit, path)));
+      const old = raw.files ?? [];
+      const replaced = opts.keepFiles ? [] : old.filter((f) => f.user === workspace.userId);
+      const had = old.map((f) => `${f.name ?? f.id} (${f.id})`).join(", ") || "no files";
+      const adding = added.map((f) => `${f.file} (${f.bytes.length} bytes)`).join(", ");
+      const keep = typeof text !== "string";
+      const bind = createHash("sha256");
+      for (const f of added) bind.update(f.name).update(f.bytes);
+      bind.update(JSON.stringify([!!opts.keepFiles, old.map((f) => f.id), keep ? (raw.blocks ?? null) : null]));
       const out = await draftOrSend(kit, {
         site: "slack",
-        action: `edit message ${ts} in ${channel}`,
+        action: `edit message ${ts} in ${channel}: ${opts.keepFiles ? `add ${adding} to its ${had}` : `replace its ${had} with ${adding}`}${replaced.length ? `, then delete ${replaced.map((f) => f.id).join(", ")} from Slack` : ""}${keep ? "; its text stays as it is" : ""}`,
         from,
         to: channel,
-        text,
+        text: keep ? was : text,
+        bind: bind.digest("hex"),
         approved: opts.approved,
         send: async () => {
-          const r = await api<{ ts: string; channel: string }>("chat.update", { channel, ts, text });
-          return { ts: r.ts, channel: r.channel };
+          const ids: string[] = [];
+          const deleted: string[] = [];
+          let updated = false;
+          try {
+            for (const f of added) ids.push(await sendBytes(f));
+            await api("files.completeUploadExternal", { files: ids.map((id, i) => ({ id, title: added[i].name })) });
+            const fileIds = [...(opts.keepFiles ? old.map((f) => f.id) : []), ...ids];
+            await api("chat.update", { channel, ts, text: keep ? was : text, ...(keep && raw.blocks ? { blocks: raw.blocks } : {}), file_ids: fileIds });
+            updated = true;
+            const on = ((await rawAt(channel, ts, opts)).files ?? []).map((f) => f.id);
+            const missing = fileIds.filter((id) => !on.includes(id));
+            if (missing.length) throw new Error(`message ${ts} carries ${on.join(", ") || "no files"}, without ${missing.join(", ")}`);
+            for (const f of replaced) {
+              if (on.includes(f.id)) continue;
+              await api("files.delete", { file: f.id });
+              deleted.push(f.id);
+            }
+            return { ts, channel, files: on, ...(deleted.length ? { deleted } : {}) };
+          } catch (e) {
+            // A new draft of the same update would upload again and delete
+            // the new files: the error names what is where instead.
+            if (e instanceof Error && ids.length) {
+              const left = replaced.map((f) => f.id).filter((id) => !deleted.includes(id));
+              e.message += updated
+                ? `; chat.update had answered ok for ${ids.join(", ")}; ${deleted.length ? `${deleted.join(", ")} deleted` : "nothing deleted"}${left.length ? `, ${left.join(", ")} not` : ""}. Do not draft this update again: read message ${ts}, then deleteFile what should go`
+                : `; ${ids.join(", ")} uploaded private to the owner's files and may not be on message ${ts}: read it, then deleteFile any that is not`;
+            }
+            throw e;
+          }
         },
       });
       return { ...out, was };
@@ -493,32 +586,24 @@ function client(kit: SiteKit, workspace: Workspace) {
     // folder) to a channel or thread through Slack's external upload: one
     // address to send the bytes to, then one call that shares the file.
     async upload(channel: string, path: string, opts: { thread_ts?: string; title?: string; comment?: string; approved?: string | boolean } = {}) {
-      const file = resolve(kit.cwd, path);
-      const bytes = await readFile(file);
-      if (bytes.length > FILE_MAX) throw new Error(`${file} has ${bytes.length} bytes; upload takes at most ${FILE_MAX}`);
-      const name = basename(file);
+      const f = await localFile(kit, path);
       return draftOrSend(kit, {
         site: "slack",
-        action: `upload ${file} (${bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
+        action: `upload ${f.file} (${f.bytes.length} bytes) ${opts.thread_ts ? `in thread ${opts.thread_ts} of` : "to"} ${channel}`,
         from,
         to: channel,
         text: opts.comment ?? "",
-        bind: createHash("sha256").update(bytes).update(JSON.stringify([opts.title ?? null])).digest("hex"),
+        bind: createHash("sha256").update(f.bytes).update(JSON.stringify([opts.title ?? null])).digest("hex"),
         approved: opts.approved,
         send: async () => {
-          const slot = await api<{ upload_url: string; file_id: string }>("files.getUploadURLExternal", { filename: name, length: bytes.length });
-          const sent = await paced(kit, new URL(slot.upload_url).origin, async () => {
-            const res = await fetch(slot.upload_url, { method: "POST", body: bytes });
-            return { status: res.status, retryAfter: res.headers.get("retry-after") };
-          });
-          if (sent.status !== 200) throw new Error(`Slack's upload address answered HTTP ${sent.status}; the file was not shared`);
+          const id = await sendBytes(f);
           const shared = await api<{ files: { id: string; permalink?: string }[] }>("files.completeUploadExternal", {
-            files: [{ id: slot.file_id, title: opts.title ?? name }],
+            files: [{ id, title: opts.title ?? f.name }],
             channel_id: channel,
             ...(opts.thread_ts ? { thread_ts: opts.thread_ts } : {}),
             ...(opts.comment ? { initial_comment: opts.comment } : {}),
           });
-          return { file: slot.file_id, channel, ...(shared.files[0]?.permalink ? { permalink: shared.files[0].permalink } : {}) };
+          return { file: id, channel, ...(shared.files[0]?.permalink ? { permalink: shared.files[0].permalink } : {}) };
         },
       });
     },

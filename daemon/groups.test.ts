@@ -271,30 +271,64 @@ test("an ended task's group goes once its tabs for the user are out, with its wi
   expect(readQueue()).toEqual({});
 });
 
-// Deleting a group closes its tabs: one for the user still in it must stop
-// the delete. He may keep that tab for days: no keeper stays on for it.
-test("an ended task's group stays, queued, while a tab would not move out of it", async () => {
-  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }]);
+// Deleting a group closes its tabs: a page still in it stops the delete
+// until the group has gone unused 8 hours. On 11-15 seven groups holding
+// pages kept for him, the oldest from 11-07, stood in his sidebar.
+test("an ended task's group holding a page stays queued and untouched until it is stale, then goes with the page", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: "“app.dover.com” and 1 other tab will be closed immediately.", selected: true }]);
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
-  const { d } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 2, left: 1 });
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() }], { tabs: 2, left: 1 });
   const given: Given = new Map();
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect(await pass(h, d, given, quiet)).toBe(false);
   expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [TRIP], [TRIP]]);
+  setSystemTime(new Date(Date.now() + 8 * 60 * 60_000 + 1000));
+  try {
+    await pass(h, d, given, quiet);
+  } finally {
+    setSystemTime();
+  }
+  expect([groups(), s.closed, Object.keys(readQueue())]).toEqual([[], [7], []]);
 });
 
-// 10-30: a sheet naming tabs the daemon did not see makes the group the
-// user's: it stays, with its window, and leaves the queue. Wording not seen
-// before is no proof, and the group stays queued.
-test("an ended task's group whose Delete would close pages stays, and only proof of pages lets the queue forget it", async () => {
-  for (const [closes, queued] of [["“app.dover.com” and 8 other tabs will be closed immediately.", []], ["“Start Page” will be closed immediately.", [TRIP]]] as const) {
-    const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: closes, selected: true }]);
+// 10-30: a sheet naming tabs the daemon did not see holds the group in the
+// queue. Once stale, it goes with them from a window opened for it, which
+// draws them once it shows the group.
+test("an ended group whose Delete would close pages it never saw stays queued until it is stale, then goes with them", async () => {
+  for (const closes of ["“app.dover.com” and 8 other tabs will be closed immediately.", "“Start Page” will be closed immediately."]) {
+    const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: closes }]);
     s.tabs = 1;
+    s.on.select = () => (s.tabs = 9);
     changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
-    const { d } = daemon([{ ...waiting, group: "grouped", ended: true }]);
-    await pass(h, d, new Map(), quiet);
-    expect([groups(), s.closed, s.asking, Object.keys(readQueue())]).toEqual([[TRIP], [], undefined, [...queued]]);
+    const ended = { ...waiting, group: "grouped" as const, ended: true, used: Date.now() };
+    await pass(h, daemon([ended], { tabs: 0, left: 0 }).d, new Map(), quiet);
+    expect([groups(), s.asking, Object.keys(readQueue())]).toEqual([[TRIP], undefined, [TRIP]]);
+    // the next window opened for it shows its own tab
+    s.tabs = 1;
+    s.rows.forEach((r) => (r.selected = r.kind === "local"));
+    await pass(h, daemon([{ ...ended, used: Date.now() - 8 * 60 * 60_000 - 1000 }], { tabs: 0, left: 0 }).d, new Map(), quiet);
+    expect([groups(), Object.keys(readQueue())]).toEqual([[], []]);
   }
+});
+
+// Measured 11-15: a window that selects a group another window shows does
+// not take it and draws none of its tabs; that other window may be his.
+test("a stale group another window shows is not deleted from a window opened for it", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: "“app.dover.com” and 8 other tabs will be closed immediately." }]);
+  s.tabs = 1;
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  await pass(h, daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() - 9 * 60 * 60_000 }], { tabs: 0, left: 0 }).d, new Map(), quiet);
+  expect([groups(), s.asking, Object.keys(readQueue())]).toEqual([[TRIP], undefined, [TRIP]]);
+});
+
+// A page that changed in an ended group's window is the user's use of it:
+// the release's use time, not the window's last agent call, decides.
+test("an ended group whose pages changed since its agent's last call is not stale", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: "“app.dover.com” and 1 other tab will be closed immediately.", selected: true }]);
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() - 9 * 60 * 60_000 }], { tabs: 2, left: 1, used: Date.now() });
+  await pass(h, d, new Map(), quiet);
+  expect([s.menus, groups(), Object.keys(readQueue())]).toEqual([0, [TRIP], [TRIP]]);
 });
 
 // 10-07: a delete left agent 8780's group queued (the selection moved off
@@ -461,11 +495,11 @@ test("a delete that waits is said once, and tried again only after a wait that g
 });
 
 // 11-06: one keeper retried two groups his tabs held every 10 min for 17
-// hours, though such a group waits for the next keeper.
-test("a group a tab of his holds is not tried again by the same keeper, however long it runs", async () => {
+// hours, though such a group waits until it is stale.
+test("a group a tab of his holds is not tried again by the same keeper before it is stale", async () => {
   const { h } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: true, selected: true }]);
   changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
-  const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true }], { tabs: 2, left: 1 });
+  const { d, told } = daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() }], { tabs: 2, left: 1 });
   const given: Given = new Map();
   try {
     await pass(h, d, given, quiet);

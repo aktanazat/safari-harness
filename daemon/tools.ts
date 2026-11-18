@@ -3,7 +3,7 @@
 
 import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeNamed, challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
+import { challengeNamed, challengeOf, named, PASS_MS, passesByItself, settledChallenge, TEXT_MAX, type Challenge } from "./challenge.ts";
 import { handedOff, paced, seenLater, settledVisit, waitsInVain } from "./checks.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
@@ -38,6 +38,7 @@ import { ConditionalCaptures, saveCapture, type Capture, type CaptureResult, typ
 import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
+import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
@@ -168,6 +169,14 @@ function webAddress(url: unknown): string {
   if (protocol === "http:" || protocol === "https:" || s === "about:blank") return s;
   if (protocol === "file:") throw new Error("Safari opens no local file for the harness: serve its folder over http (python3 -m http.server -d <folder> <port>) and open http://127.0.0.1:<port>/ (Safari fails to open localhost here)");
   throw new Error(`${s.slice(0, 80) || "an empty url"} is not a web address; give a whole one, like https://example.com`);
+}
+
+// An address without its #part, the part a page moves to within itself.
+function withoutHash(url: string): string {
+  const u = URL.parse(url);
+  if (!u) return url;
+  u.hash = "";
+  return u.href;
 }
 
 // Every tab opens in a window of the calling agent's own (spaces.ts), which
@@ -1355,6 +1364,11 @@ export async function snapshot(opts: SnapshotOptions = {}) {
   const changing = reader !== undefined && verbatimCall() && fromModel() && opts.full !== true && !updates && !opts.diff
     && !missed && opts.root === undefined && opts.query === undefined && opts.interactive !== true && opts.everyAddress !== true;
   if (reader) lastReads.release(tab, reader, changing ? view : undefined);
+  // A query that matches no line answered "(0 nodes)" and nothing more: in
+  // the logs to 11-16 agents gave an action's snapshot the placeholder
+  // "words" 15 times (LOCK#1893, BERK#6) and took the empty answer for an
+  // empty page.
+  if (!updates && opts.query !== undefined && !missed && snap.nodes === 0) return { ...snap, note: `no line of the page holds "${opts.query}": a query keeps only the lines with its words; snapshot: true, or a snapshot with no query, reads the whole page` };
   if (!updates && (missed || opts.root !== undefined || opts.query !== undefined || opts.interactive === true)) return missed ? { ...snap, note: missed } : snap;
   const observed = snapshotHistory.observe(snap, tab, owner, view, opts.since);
   if (updates) {
@@ -1682,13 +1696,23 @@ export async function upload(opts: { tab?: number; ref?: number | string; paths?
     return { name: basename(p), type: f.type, data: Buffer.from(await f.arrayBuffer()).toString("base64") };
   }));
   const at = opts.ref ?? null;
-  return relay(tab, "upload", [at, files], 60000).catch(async (e: unknown) => {
+  const names = files.map((f) => f.name);
+  return relay(tab, "upload", [at, files], 60000).then((done) => emptiedInput(done, names), async (e: unknown) => {
     if (at === null || !(e instanceof Error) || !e.message.startsWith("no file input at that ref")) throw e;
     const only = await relay(tab, "upload", [null, files], 60000).catch((again: unknown) => {
       throw new Error(`no file input at that ref, and the ${again instanceof Error ? again.message : String(again)}`);
     });
-    return beside(only, "note", "no file input at that ref, so the page's only one took the files");
+    return beside(emptiedInput(only, names), "note", "no file input at that ref, so the page's only one took the files");
   });
+}
+
+// The extension answers the names the file input holds after its change
+// event. Slack's and Hugging Face's uploads take the files out of the input
+// on that event: on 11-11 and 11-16 three uploads answered files: [] while
+// the page showed the file (LOCK#862, #872, #1898).
+function emptiedInput(result: unknown, names: string[]): unknown {
+  if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true || !("files" in result) || !Array.isArray(result.files) || result.files.length > 0) return result;
+  return beside(result, "note", `the file input reads empty after the change, as it does when the page takes the files out of it; check that the page shows ${names.join(", ")}`);
 }
 
 const HISTORY = new Set(["back", "forward", "reload"]);
@@ -2674,13 +2698,7 @@ async function captureShown(tab: number, opts: ShotOpts): Promise<Capture> {
       return await shotOnce(tab, opts);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== UNPAINTED) throw error;
-      const tabs = await listTabs().catch((): TabInfo[] => []);
-      const window = tabs.find((t) => t.id === tab)?.windowId;
-      if (window === undefined) throw error;
-      const owners = windowOwners();
-      const owner = currentOwner();
-      const mine = owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
-      if (!mine) throw error;
+      if (!(await ownWindow(tab))) throw error;
       const restore = await uncover(tab).catch(() => undefined);
       if (restore === "covered" || restore === "hidden") throw new HarnessError("unavailable", UNSEEN[restore], { effect: "none", next: "activate brings your window in front, where it paints (the user sees it), then shot again; or read the page with snapshot or extract" });
       if (typeof restore !== "function") throw error;
@@ -2961,7 +2979,10 @@ function askedExtension(out: string | undefined, url: string): string | undefine
 // often the site's error: on 10-12 an Apple key saved as a .p8 was
 // application/json (AkylUsage). It is kept as it came, and the answer is
 // not ok and quotes its start. Any extension out ends with asks for its
-// kind of file.
+// kind of file. A bot check in place of the file is named as one: on 11-15
+// hal.science and econstor.eu each answered Anubis's "Making sure you're
+// not a bot!" for a PDF, and the error blamed a sign-in page (RSI#1113,
+// #1218).
 async function saveFile(f: FilePayload, url: string, out: string | undefined, folder: string, prefix?: string) {
   // out may name a folder: the file goes in it under its own name. On
   // 11-05 and 11-14 a download into a folder failed EISDIR.
@@ -2970,6 +2991,7 @@ async function saveFile(f: FilePayload, url: string, out: string | undefined, fo
   const asked = askedExtension(file, url);
   if (asked !== undefined && /^text\/html\b/i.test(f.type)) {
     const went = f.url && f.url !== url ? ` (it went to ${f.url})` : "";
+    if (await botCheck(f, url)) throw new Error(`${url || "the link"} answered a bot check${went}, not a .${asked} file; nothing was saved. Safari passes many checks by itself in a tab: open the site's front page, wait until it shows the site (handoff when the check asks for the user), then ask for the file again`);
     throw new Error(`${url || "the link"} answered a web page${went}, not a .${asked} file; nothing was saved. A sign-in page is the usual cause: download it with the tab of a page signed in to that site, or give out a name ending in .html to keep the page`);
   }
   const path = file ?? await freePath(into ?? folder, (prefix ?? "") + nameOf(f, url));
@@ -2980,6 +3002,14 @@ async function saveFile(f: FilePayload, url: string, out: string | undefined, fo
   const kind = file !== undefined && extname(file) ? extname(file).slice(1).toLowerCase() : asked;
   if (kind === undefined || /json|^txt$/.test(kind) || !/^(?:application|text)\/(?:[\w.+-]+\+)?json\b/i.test(f.type)) return saved;
   return { ok: false as const, ...saved, warning: `the site answered JSON, not a .${kind} file; that is most often an error, and it reads: ${data.toString("utf8", 0, 200)}` };
+}
+
+// Whether a web page a fetch answered is a bot check, judged as a tab's is
+// (challenge.ts) from its title, its words, and its HTML as served.
+async function botCheck(f: FilePayload, url: string): Promise<boolean> {
+  const html = Buffer.from(f.data, "base64").toString("utf8");
+  const page = await readableHtml(html);
+  return named([{ url: f.url || url, title: page.title, text: page.content.length <= TEXT_MAX ? page.content : "", markers: [], answered: [], frames: [], source: html }]) !== undefined;
 }
 
 const isFile = (f: unknown): f is FilePayload => !!f && typeof f === "object" && "data" in f && typeof f.data === "string";
@@ -3000,17 +3030,22 @@ async function fileAfterClick(res: unknown): Promise<FilePayload> {
 // fetch when the page may not read that site, or when no tab is given), the
 // file a ref's link or button downloads, or with only a tab, the file the
 // tab shows (a PDF in Safari's viewer). Saved in folder (~/Downloads, where
-// Safari saves too) unless out says where.
+// Safari saves too) unless out says where. An out that is a folder, or ends
+// in /, takes the file under its own name, as urls' out does: on 11-14
+// download {url, out} of a PDF into a folder failed EISDIR (RSI#933).
 export async function download(opts: { tab?: number; ref?: string; url?: string; out?: string; prefix?: string }, folder = DOWNLOADS): Promise<{ ok?: false; path: string; name: string; size: number; type: string; warning?: string; note?: string }> {
-  const out = absoluteOut(opts.out);
+  const asked = absoluteOut(opts.out);
+  const into = asked !== undefined && (asked.endsWith("/") || (await stat(asked).catch(() => undefined))?.isDirectory() === true);
+  const out = into ? undefined : asked;
+  const saveIn = asked !== undefined && into ? asked : folder;
   if (opts.tab === undefined && opts.url !== undefined) {
     const url = str(opts.url, "url");
     const mine = await agentTabOn(url);
     if (mine !== undefined) return download({ ...opts, tab: mine }, folder);
     const f = await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e));
-    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, saveIn, opts.prefix)), note: f.note };
     const signIn = signInOrigin(f, url, out);
-    if (signIn === undefined) return saveFile(f, url, out, folder, opts.prefix);
+    if (signIn === undefined) return saveFile(f, url, out, saveIn, opts.prefix);
     // The extension's own fetch carries no sign-in, and a tab opened on the
     // site the sign-in page answered from carries Safari's: on 10-07 a
     // Slack image came back as the sign-in page of 99-point.slack.com,
@@ -3020,7 +3055,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // signed-out fetches drew Slack's 429.
     const opened = (await TOOLS.open.run({ url: `${signIn}/`, background: true })) as { id: number; url?: string };
     const saved = await download({ ...opts, tab: opened.id }, folder);
-    return { ...saved, note: `the site answered with its sign-in page, so the file came through your tab ${opened.id} on ${pageHost(opened.url ?? signIn)}, opened for it; later files from that site come through it too` };
+    return { ...saved, note: `the site answered with ${(await botCheck(f, url)) ? "a bot check" : "its sign-in page"}, so the file came through your tab ${opened.id} on ${pageHost(opened.url ?? signIn)}, opened for it; later files from that site come through it too` };
   }
   const tab = await resolveTab(opts.tab);
   if (opts.url !== undefined || opts.ref === undefined) {
@@ -3028,8 +3063,8 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // A page that navigates while it fetches answers where it went instead.
     const inPage = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
     const f = isFile(inPage) ? inPage : await (bridge.request("fetchFile", [url], 120000) as Promise<FilePayload>).catch((e: unknown) => fetchedOnSite(url, e, tab));
-    if ("via" in f) return { ...(await saveFile(f.file, url, out, folder, opts.prefix)), note: f.note };
-    return saveFile(f, url, out, folder, opts.prefix);
+    if ("via" in f) return { ...(await saveFile(f.file, url, out, saveIn, opts.prefix)), note: f.note };
+    return saveFile(f, url, out, saveIn, opts.prefix);
   }
   const ref = String(opts.ref);
   // A file the server sends after the click is saved by Safari itself, never
@@ -3039,7 +3074,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
   const stop = setTimeout(() => { relay(tab, "downloadStop", [ref]).catch(() => {}); }, 10000);
   try {
     const f = await relay(tab, "download", [ref], 120000);
-    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", out, folder);
+    return saveFile(isFile(f) ? f : await fileAfterClick(f), "", out, saveIn);
   } catch (e) {
     const got = saved ? await saved() : {};
     // A file Safari saved itself is answered as saveFile answers one, and
@@ -3047,7 +3082,7 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
     // list and failed ("src must be a string").
     const file = got.downloaded?.[0];
     if (file) {
-      const path = out ?? file.path;
+      const path = out ?? (saveIn === folder ? file.path : await freePath(saveIn, basename(file.path)));
       if (path !== file.path) {
         await mkdir(dirname(path), { recursive: true });
         await copyFile(file.path, path);
@@ -3082,10 +3117,12 @@ export async function download(opts: { tab?: number; ref?: string; url?: string;
 // 5 of 5 of a PDF Safari itself showed (11-13), and passed 5 of 5 fetched
 // from a page of ft.dk. The file comes from a page of its site in another
 // of the agent's tabs (not skip, which could not fetch it), or the site's
-// front page in a tab opened for it, which stays for the next file.
+// front page in a tab opened for it, which stays for the next file. A fetch
+// that got no answer says whether its host exists (unanswered): on 11-14 a
+// pdf read failed "Load failed" and nothing more (RSI#742).
 async function fetchedOnSite(url: string, refused: unknown, skip?: number): Promise<{ via: number; file: FilePayload; note: string }> {
   const origin = URL.parse(url)?.origin;
-  if (!(refused instanceof Error) || !/^download failed: HTTP 40[13]$/.test(refused.message) || !origin) throw refused;
+  if (!(refused instanceof Error) || !/^download failed: HTTP 40[13]$/.test(refused.message) || !origin) throw await unanswered(refused, url);
   const fetchIn = async (tab: number) => {
     const f = await relay(tab, "fetchFile", [url, ""], 120000).catch(() => null);
     return isFile(f) ? f : undefined;
@@ -3228,19 +3265,19 @@ async function fileRead(kind: TabInfo["file"], url: string): Promise<object> {
 // tab shows.
 export async function pdf(opts: { tab?: number; do?: string; path?: string; url?: string; out?: string; maxBytes?: number }) {
   if (opts.do === "read") {
-    if (opts.path !== undefined) return pdfText(str(opts.path, "path"), opts.maxBytes);
+    if (opts.path !== undefined) return pdfRead(str(opts.path, "path"), opts.maxBytes);
     // An address Safari downloads opens no page to read it from (K13,
     // SR-7): it comes through download, which refuses a sign-in page in
     // its place or fetches it again through a signed-in tab.
     if (opts.url !== undefined) {
       const url = str(opts.url, "url");
       const saved = await download({ url, out: await scratchFile("safari-pdf-", "page.pdf") });
-      return { url, ...(saved.note ? { note: saved.note } : {}), ...(await pdfText(saved.path, opts.maxBytes)) };
+      return { url, ...(await pdfRead(saved.path, opts.maxBytes, saved.note, true)) };
     }
     const tab = await resolveTab(opts.tab);
     const url = ((await listTabs()).find((t) => t.id === tab)?.url) ?? "";
     const saved = await download({ tab, out: await scratchFile("safari-pdf-", "page.pdf") });
-    return { url, ...(saved.note ? { note: saved.note } : {}), ...(await pdfText(saved.path, opts.maxBytes)) };
+    return { url, ...(await pdfRead(saved.path, opts.maxBytes, saved.note, true)) };
   }
   if (opts.do !== undefined && opts.do !== "save") throw new Error("do must be save or read");
   const asked = absoluteOut(opts.out);
@@ -3265,6 +3302,17 @@ export async function pdf(opts: { tab?: number; do?: string; path?: string; url?
   return firstLine === undefined ? saved : { ...saved, firstLine: firstLine.slice(0, 200) };
 }
 
+// A PDF whose pages are pictures (a scan) has no text layer, and its text
+// read as blank lines and page breaks alone: on 11-14 and 11-15 four reads
+// of 3 to 160 pages answered only those, and nothing said why (RSI#926,
+// #1169, #1296, #1307). fetched: the harness saved it, at path.
+async function pdfRead(path: string, maxBytes: number | undefined, note?: string, fetched = false) {
+  const read = await pdfText(path, maxBytes);
+  if (read.text.trim() !== "") return note === undefined ? read : { note, ...read };
+  const none = `its ${read.pages} pages have no text layer (they are pictures of pages, as a scan's are), so there is no text to read${fetched ? `; the file is at ${path}, and download {url, out} saves it where you choose` : ""}`;
+  return { note: note === undefined ? none : `${note}; ${none}`, ...read, text: "" };
+}
+
 // A tab in its agent's window sizes that window, the agent's other tabs and
 // all (background.js "window"), and the window's keeper finds it at the
 // size Safari gave it. A tab opened again is reached by its old id
@@ -3276,6 +3324,68 @@ export async function viewport(opts: { tab: number; width: number; height: numbe
   const sized = (await bridge.request("window", [tab, { width: num(opts.width, "width"), height: num(opts.height, "height") }, whole])) as { windowId: number; size: { width: number; height: number } };
   if (whole) resized(sized.windowId, sized.size);
   return sized;
+}
+
+// Whether tab's window is the calling agent's own, which only it may move
+// (place.ts uncover): a registered agent window it owns, or one holding
+// only its tabs.
+async function ownWindow(tab: number): Promise<boolean> {
+  const tabs = await listTabs().catch((): TabInfo[] => []);
+  const window = tabs.find((t) => t.id === tab)?.windowId;
+  if (window === undefined) return false;
+  const owners = windowOwners();
+  const owner = currentOwner();
+  return owners.has(window) ? owners.get(window) === owner : owner !== undefined && tabs.every((t) => t.windowId !== window || harnessTabs.get(t.id)?.owner === owner);
+}
+
+// window's width and height are the window's points, not the page's CSS
+// px, which differ by Safari's page zoom and the window's edges: on 11-11
+// width 390 gave a page 455 px wide at zoom 0.85 (LOCK#595). cssWidth reads
+// the page's innerWidth after each resize (tabInfo, which runs no eval) and
+// moves the window by what it missed, CSS_ROUNDS resizes at most. A page
+// still off by more than 1 px answers ok, since the window did change, with
+// the width it reached in missed.
+//
+// Safari lays out no page in a window others cover whole, as it paints
+// none (place.ts): on 11-16 390, 1200 and 1440 each gave 1038 (BERK#121 to
+// #155), and a live check of this code kept 948 while the window went from
+// 160 to 2187 points, as it took each unchanged width for a page that
+// needed more. An own window is moved where it shows while it is sized,
+// as shot moves it, and put back; a page whose width does not change after
+// the first resize is not resized again.
+const CSS_ROUNDS = 3;
+async function cssViewport(tab: number, cssWidth: number, height: number, start = cssWidth) {
+  const id = followTab(tab);
+  const was = pageSize(await relay(id, "tabInfo"));
+  const restore = (await ownWindow(id)) ? await uncover(id).catch(() => undefined) : undefined;
+  try {
+    let width = start;
+    let before = was === undefined ? undefined : { window: Number.NaN, page: was.width };
+    for (let round = 1; ; round++) {
+      const sized = await viewport({ tab, width, height });
+      const page = pageSize(await relay(id, "tabInfo"));
+      if (page === undefined) return { ...sized, missed: "the page did not say its width; call window again once it has loaded" };
+      const off = page.width - cssWidth;
+      if (Math.abs(off) <= 1) return { ...sized, viewport: page };
+      const stuck = before !== undefined && before.page === page.width;
+      const unseen = restore === "covered" || restore === "hidden" ? `; other windows ${restore === "covered" ? "cover your window and no display has room to show it" : "hide it (minimized or on another desktop)"}, and Safari lays out no page it does not draw` : "";
+      if (stuck || round === CSS_ROUNDS) return { ...sized, viewport: page, missed: `the page is ${page.width} CSS px wide, not ${cssWidth}, ${stuck ? "and its width did not follow the window's" : `after ${round} resizes`}; the window is ${sized.size.width} points wide${unseen}` };
+      // window points per CSS px: between the last two resizes, else the
+      // window's width over the page's
+      const rate = before === undefined || !Number.isFinite(before.window) || before.window === sized.size.width ? sized.size.width / page.width : (sized.size.width - before.window) / (page.width - before.page);
+      before = { window: sized.size.width, page: page.width };
+      width = Math.round(sized.size.width - off * rate);
+    }
+  } finally {
+    if (typeof restore === "function") await restore().catch((e: unknown) => note("window not restored after cssWidth", { tab, error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
+// The page's innerWidth and innerHeight, as tabInfo answers them.
+function pageSize(info: unknown): { width: number; height: number } | undefined {
+  const size = info && typeof info === "object" && "viewport" in info ? info.viewport : undefined;
+  if (!size || typeof size !== "object" || !("w" in size) || !("h" in size)) return undefined;
+  return typeof size.w === "number" && typeof size.h === "number" ? { width: size.w, height: size.h } : undefined;
 }
 
 export async function dialogs(opts: { tab?: number; do?: string; text?: string }) {
@@ -3316,6 +3426,12 @@ const FRESH: Param = { type: "boolean", description: "load a site that showed a 
 // A site kit's request that only reads, so asking it twice is asking once:
 // it takes no lane, and a lost answer holds no retry (lanes.ts).
 const READ: Param = { type: "boolean", description: "the request only reads; it may run twice" };
+// The same for eval's code, which an agent marks itself. A script that
+// threw counts as one that may have acted, and holds the site against a
+// repeat (mission.ts): on 11-13 and 11-15 two maps of measuring scripts
+// failed every page after the first one threw (LOCK#1331, BERK#65), with
+// read unlisted.
+const READ_CODE: Param = { type: "boolean", description: "code only reads or measures: a failure holds nothing; never if it clicks, types, or submits" };
 export const REF: Param = { description: "snapshot ref, CSS, visible text" };
 // A point of the tab's viewport in CSS px, as the page's clientX and
 // clientY count it: click's x and y, and real_input's (input.ts).
@@ -3390,6 +3506,22 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
     if (opened && from) own(opened.id, from.owner, from.task);
     return withPage(result, tab, a.snapshot);
   };
+}
+
+// Refuses an action that would send a Slack message from Slack's own page
+// (slack-send.ts): the element's data-qa is read only on a Slack tab, for a
+// click, Return, or text with a line break.
+async function slackSend(tab: number, act: SlackAct, a: Record<string, unknown>): Promise<void> {
+  const url = (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  await refuseSlackSend(url, act, async () => {
+    if (a.ref !== undefined && a.ref !== null) {
+      const fact = await relay(tab, "element", [String(a.ref), "attr", "data-qa"]);
+      return fact && typeof fact === "object" && "value" in fact && typeof fact.value === "string" ? fact.value : null;
+    }
+    const at = act.tool === "click" ? `document.elementFromPoint(${Number(a.x)}, ${Number(a.y)})` : "document.activeElement";
+    const r = await evaluate({ tab, expression: qaAround(at), timeoutMs: 5000 });
+    return r && typeof r === "object" && "result" in r && typeof r.result === "string" ? r.result : null;
+  });
 }
 
 // save on a read writes its whole output to a file and answers with the
@@ -3695,7 +3827,7 @@ export const TOOLS: Record<string, Tool> = {
     },
   },
   run: {
-    desc: 'Validate then run steps until error. Action text waits count new lines. Missing tab: latest opened/named. {"steps":[{"tool":"open","args":{"url":"https://example.com"}},{"tool":"extract"}]}',
+    desc: 'Validate then run steps until error. Action text waits count new lines. A step without tab gets the latest opened or named; tab is an id, never "latest". {"steps":[{"tool":"open","args":{"url":"https://example.com"}},{"tool":"extract"}]}',
     params: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" } }, required: ["tool"] }, description: "{tool, args} objects; args as that tool takes them" } },
     required: ["steps"],
     // real: true sends the steps' click and type on a ref as real input;
@@ -3787,29 +3919,37 @@ export const TOOLS: Record<string, Tool> = {
       return closeTab(tab, "by a close call", a.held === true && a.ended !== true ? "idle" : undefined);
     },
   },
+  // A tab Safari no longer has is refused, as activate refuses it: on 11-16
+  // keep answered ok for tab 2275611, gone for 32 hours, and the activate
+  // right after it failed (LOCK#1915). A listing Safari did not finish
+  // (partial) does not say a tab is gone.
   keep: {
     desc: "Leave a tab you opened open for the user when your turn ends: a page he asked to see, or a form waiting on his answer. Your other tabs close then.",
     params: { tab: OWN_TAB },
     required: ["tab"],
-    // On 11-17 keep answered ok for a tab its agent's exit had closed, and
-    // the agent told the user the page was left open for him.
     run: async (a) => {
-      const tab = num(a.tab, "tab");
-      const id = followTab(tab);
-      if (!(await listTabs()).some((t) => t.id === id)) throw new HarnessError("stale_view", `that tab is gone: ${goneCause(id, tab)}; nothing was kept: open it again, then keep it`);
+      const asked = num(a.tab, "tab");
+      const tabs = await listTabs();
+      const tab = followTab(asked);
+      if (!tabs.some((t) => t.id === tab || typeof t.partial === "string")) throw new HarnessError("stale_view", `that tab is gone: ${goneCause(tab, asked)}; nothing was kept: open it again, then keep it`, { effect: "none", retryable: false, next: "find the tab with tabs, or open it again, then keep it" });
       return keepTab(tab);
     },
   },
+  // A goto that changes only the #part of the address leaves the page as
+  // it was: on 11-14 a goto to the page's own address with #starter added
+  // answered the old page, read as if it had loaded again (RSI#653).
   goto: {
     desc: "Load a URL in a tab and wait until it is readable.",
-    params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE },
-    unlisted: { fresh: FRESH },
+    params: { tab: TAB, url: { type: "string", description: "address to load" }, snapshot: PAGE, fresh: FRESH },
     required: ["tab", "url"],
     run: action(async (a) => {
-      unwalled(str(a.url, "url"), a.fresh);
-      const visit = await paced(str(a.url, "url"));
-      const t = await navigate(a.tab, str(a.url, "url"));
-      return t.file ? fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab, visit)));
+      const url = str(a.url, "url");
+      unwalled(url, a.fresh);
+      const visit = await paced(url);
+      const was = url.includes("#") ? (await listTabs()).find((t) => t.id === a.tab)?.url : undefined;
+      const t = await navigate(a.tab, url);
+      const result = t.file ? await fileOpened(t, false) : withNotes(flagged(await afterWall(t, a.tab, visit)));
+      return was !== undefined && withoutHash(was) === withoutHash(t.url ?? url) ? beside(result, "note", "only the #part of the address changed, so Safari moved within the page it had and did not load it again; history {do: \"reload\"} loads it again") : result;
     }),
   },
   activate: { desc: "Put a tab's window in front, on screen; it stays.", params: { tab: OWN_TAB }, required: ["tab"], run: (a) => showTab(followTab(num(a.tab, "tab"))) },
@@ -3837,7 +3977,10 @@ export const TOOLS: Record<string, Tool> = {
     // the MCP client reads stays within its budget (mcp.test.ts)
     unlisted: { noWaitAfter: { type: "boolean", description: "with ref: answer once the click ran, without watching what it changed; a snapshot may show the page before the click's effect" }, dismiss: { type: "boolean", description: "close a covering dialog by its close control first" } },
     required: ["tab"],
-    run: action(watched((a) => click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean; dismiss?: boolean }))),
+    run: action(watched(async (a) => {
+      await slackSend(a.tab, { tool: "click" }, a);
+      return click(a as { tab: number; ref?: string; x?: number; y?: number; noWaitAfter?: boolean; dismiss?: boolean });
+    })),
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",
@@ -3846,14 +3989,20 @@ export const TOOLS: Record<string, Tool> = {
     // MCP client is never offered it: safari type --secret env --env VAR
     unlisted: { env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
-    run: action((a) => type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean })),
+    run: action(async (a) => {
+      if (typeof a.text === "string") await slackSend(a.tab, { tool: "type", text: a.text }, a);
+      return type(a as { tab: number; ref: string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean });
+    }),
   },
   press: {
     desc: "Press a key (Enter, Tab, Escape, ArrowDown) or combo (Cmd+K) on a ref or the focused element. Enter in a one-line field submits its form.",
     params: { tab: TAB, ref: REF, key: { type: "string", description: "key name" }, snapshot: PAGE },
     unlisted: { noWaitAfter: { type: "boolean", description: "answer once the key was pressed, without watching what it changed; a snapshot may show the page before its effect" } },
     required: ["tab", "key"],
-    run: action(watched((a) => press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean }))),
+    run: action(watched(async (a) => {
+      if (typeof a.key === "string") await slackSend(a.tab, { tool: "press", key: a.key }, a);
+      return press(a as { tab: number; ref?: string; key: string; noWaitAfter?: boolean });
+    })),
   },
   refill: {
     desc: "Put back form fields saved before a click or Enter sent the form on, after the page emptied them.",
@@ -3895,8 +4044,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   eval: {
     desc: "Run JS/await in DOM or site world (page:true). Prefer extract {query} over stale selectors. sh.q/qa shadow DOM; sh.text/jsonld/scripts/wait. Split work over timeoutMs.",
-    params: { tab: TAB, expression: { type: "string", description: "JS (or file: path)" }, file: { type: "string" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, save: SAVE },
-    unlisted: { read: READ },
+    params: { tab: TAB, expression: { type: "string", description: "JS (or file: path)" }, file: { type: "string" }, page: { type: "boolean", description: "run in the page's own world" }, reader: { type: "string", description: "a script saved with learn, instead" }, timeoutMs: { type: "number", description: "default 30000, at most 300000" }, read: READ_CODE, save: SAVE },
     required: ["tab"],
     run: saving("eval", async (a) => {
       const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
@@ -3905,6 +4053,7 @@ export const TOOLS: Record<string, Tool> = {
       if (given > 1) throw new Error("give one of expression, file, or reader");
       if (a.reader !== undefined) return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
       const expression = a.file === undefined ? str(a.expression, "expression") : await codeFrom(a.file);
+      await slackSend(await resolveTab(a.tab), { tool: "eval", code: expression }, a);
       return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
     }),
   },
@@ -3972,6 +4121,8 @@ export const TOOLS: Record<string, Tool> = {
       what: { type: "string", enum: ["extract", "snapshot", "eval", "fetch"], description: "default extract" },
       wait: { type: "object", description: "before each page: wait options" },
       expression: { type: "string", description: "JS, for eval (or reader)" },
+      file: { type: "string", description: "for eval: code's path" },
+      read: { type: "boolean", description: "for eval: as eval's read" },
       selector: { type: "string", description: "for extract" },
       query: { type: "string", description: "only lines containing this" },
       maxBytes: { type: "number" },
@@ -3988,7 +4139,7 @@ export const TOOLS: Record<string, Tool> = {
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {
-    desc: "Wait for text/selector/any/gone/URL/changed/quiet; ms defaults 10s, max 110s; alone means quiet. Miss returns changes.",
+    desc: "Wait for text/selector/any/gone/URL/changed/quiet; ms defaults 10s, max 110s; ms alone waits up to ms for quiet. Miss returns changes.",
     params: {
       tab: TAB,
       text: { type: "string", description: "visible text" },
@@ -4103,9 +4254,9 @@ export const TOOLS: Record<string, Tool> = {
   },
   window: {
     desc: "Resize the tab's window, e.g. to phone width; your tabs stay in it.",
-    params: { tab: OWN_TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" } },
-    required: ["tab", "width", "height"],
-    run: (a) => viewport(a as { tab: number; width: number; height: number }),
+    params: { tab: OWN_TAB, width: { type: "number", description: "points" }, height: { type: "number", description: "points" }, cssWidth: { type: "number", description: "page CSS px, read back and corrected" } },
+    required: ["tab", "height"],
+    run: (a) => (a.cssWidth === undefined ? viewport(a as { tab: number; width: number; height: number }) : cssViewport(num(a.tab, "tab"), num(a.cssWidth, "cssWidth"), num(a.height, "height"), a.width === undefined ? undefined : num(a.width, "width"))),
   },
   video: createVideoTool({ call: (tool, args) => callTool(tool, args, false, false), admit: admitPageObservation, present: (tab, check, act) => inFront(tab, { tabs: listTabs, activate: activateTab }, act, check) }),
   input_state: inputStateTool(),

@@ -122,6 +122,28 @@ test("invalid action snapshot options refuse before the page receives an action"
   expect(sent).toEqual([]);
 });
 
+// On 11-16 open {snapshot: "words"} on a Hugging Face upload page answered
+// "(0 nodes)" and nothing more (LOCK#1893); the placeholder "words" was
+// given so 15 times. Safari here keeps the lines of that page's upload
+// form (LOCK#1898) that hold the snapshot's query.
+test("a snapshot whose words match no line says so, alone or after an action", async () => {
+  const lines = ['[59] button "Upload file(s)"', '[64] textbox "Upload eval-v2.jsonl"', '[69] button "Commit changes to main"'];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      const query: string | undefined = op === "relay" && args[1] === "snapshot" ? args[2][0].query : undefined;
+      const kept = lines.filter((l) => query === undefined || l.includes(query));
+      const value = op !== "relay" ? [] : args[1] === "snapshot" ? { url: "https://huggingface.co/datasets/o/d/upload/main", title: "Hugging Face", nodes: kept.length, truncated: false, snapshot: kept.join("\n") } : args[1] === "wait" ? { found: true } : { ok: true };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  const none = 'no line of the page holds "words": a query keeps only the lines with its words; snapshot: true, or a snapshot with no query, reads the whole page';
+  expect(await callTool("snapshot", { tab: 9, query: "words" })).toMatchObject({ nodes: 0, note: none });
+  expect(await callTool("click", { tab: 9, ref: "Upload file(s)", snapshot: "words" })).toMatchObject({ page: { nodes: 0, note: none } });
+  expect(await callTool("snapshot", { tab: 9, query: "Commit" })).not.toHaveProperty("note");
+});
+
 // From 10-07 to 10-12 agents gave snapshot interactive seven times, as the
 // repl's snapshot takes it, and each call failed. The read is a view of
 // the page, as one with a query is, so a diff after it still runs from

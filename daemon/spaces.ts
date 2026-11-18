@@ -23,7 +23,8 @@
 //
 // A turn's end or its agent's exit ends an empty owned window: an exited
 // agent can use none of its windows again. A group waits for the keeper and
-// remains intact while it contains any protected or foreign page. Only a
+// remains intact while it contains any protected or foreign page, until it
+// has gone unused for 8 hours (keeper.ts STALE_MS). Only a
 // caller's own call may start a Safari the user quit; ended windows wait
 // while it is gone.
 // The windows are saved as they change, so a restarted daemon picks up
@@ -48,11 +49,13 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // id: this window alone, in its page's address
 // done: the agent's turn ended (turnEnded); the window ends once it holds
 // nothing but its page, and its agent's next open clears it
+// seen: the addresses of the pages in an ended group's window, as release
+// last saw them
 // shownFor: the calls that brought it onto the user's screen for him (an
 // activate, a handoff), each until its turn or the handoff ends
 // moved: he moved it off the Agents display himself; it stays where he put it
 // home: the id of the Agents display it was last seen on (place.ts)
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; shownFor?: Shown[]; moved?: true; home?: number };
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number };
 export type Shown = { owner?: number; task?: string; handoff?: true };
 
 const spaces = new Map<string, Space>();
@@ -313,7 +316,7 @@ function watchExit(owner: number | undefined) {
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.seen === undefined ? {} : { seen: s.seen }), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -412,7 +415,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       // A waiting window holding fewer than GROUP_AT of its agent's tabs is
       // not yet one the keeper makes a group of.
       const due = counted.filter(({ s, inWindow }) => s.group !== "waiting" || (inWindow?.filter((t) => !isPage(t, s)).length ?? 0) >= GROUP_AT);
-      const row = (s: Space, over: boolean, inWindow?: TabInfo[]) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(inWindow ? { tabs: inWindow.length } : {}) });
+      const row = (s: Space, over: boolean, inWindow?: TabInfo[]) => ({ name: s.name, ...s.size, owner: s.owner, group: s.group, ended: over, ...(s.used === undefined ? {} : { used: s.used }), ...(inWindow ? { tabs: inWindow.length } : {}) });
       return { connected: bridge.connected && !bridge.stuck && (!asks || tabs !== undefined), spaces: [...[...closing.values()].map((s) => row(s, s.done === true)), ...due.map(({ s, inWindow }) => row(s, false, inWindow))] };
     }
     case "making":
@@ -443,10 +446,24 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (!s?.done) return { ok: false };
       const now = await located(s, await passTabs(a.pass));
       if (!s.done) return { ok: false };
-      const left = pagesIn(now, s).length;
+      const pages = pagesIn(now, s);
+      // The user's own use of an ended group's window moves no agent's call:
+      // a change to the pages in it counts as use, so the keeper takes the
+      // group as stale only once they have stood unchanged its while.
+      if (now.length > 0) {
+        const seen = pages.map((t) => t.url ?? "").sort().join("\n");
+        if (seen !== s.seen) {
+          s.seen = seen;
+          s.used = Date.now();
+          save();
+        }
+      }
+      const left = pages.length;
+      const used = s.used === undefined ? {} : { used: s.used };
       // A kept, foreign, or newly added page is never moved to enable
-      // deletion. Leave the whole group intact until it is truly empty.
-      if (left) return { ok: true, tabs: now.length, left, ...s.size };
+      // deletion. The keeper leaves the group intact until it is truly empty
+      // or stale.
+      if (left) return { ok: true, tabs: now.length, left, ...used, ...s.size };
       // Safari hides the tab bar of a window as narrow as a phone's, and the
       // keeper counts a window's tabs in it: on 10-07 it waited for good on
       // agent 1431's groups, whose windows the agent had sized to 390
@@ -459,7 +476,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
         s.size = widened.size;
         save();
       }
-      return { ok: true, tabs: now.length, left, ...s.size };
+      return { ok: true, tabs: now.length, left, ...used, ...s.size };
     }
     case "gone": {
       const ok = closing.delete(name);

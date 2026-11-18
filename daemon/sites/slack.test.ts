@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, jest, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Invoke } from "../call.ts";
 import { PACE_TOOL } from "../pace.ts";
@@ -34,7 +34,8 @@ afterAll(() => {
 // A method's answer is an object, or a list answered one per call in turn.
 // goneAfter names a method whose next call reaches Slack and then fails as
 // the extension answers when the tab closed before the answer came back.
-function safari(methods: Record<string, object | object[]>, files: Served[], opts: { goneAfter?: string } = {}) {
+// failOnce names a method whose first call fails with that error.
+function safari(methods: Record<string, object | object[]>, files: Served[], opts: { goneAfter?: string; failOnce?: { method: string; error: Error } } = {}) {
   const asked: string[] = [];
   // Each web-API call with the params the page would send, and whether it
   // went as a read the daemon may ask twice.
@@ -42,6 +43,7 @@ function safari(methods: Record<string, object | object[]>, files: Served[], opt
   const fetched: { url: string; at: number }[] = [];
   let tabs = 0;
   let goneAfter = opts.goneAfter;
+  let failOnce = opts.failOnce;
   const send: Invoke = async (tool, args) => {
     if (tool === "open") return { id: ++tabs };
     if (tool === "pace") return PACE_TOOL.run(args);
@@ -52,6 +54,11 @@ function safari(methods: Record<string, object | object[]>, files: Served[], opt
       calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}"), read: args.read === true });
       const answers = methods[method];
       const answer = Array.isArray(answers) ? answers.shift() : answers;
+      if (failOnce?.method === method) {
+        const { error } = failOnce;
+        failOnce = undefined;
+        throw error;
+      }
       if (goneAfter === method) {
         goneAfter = undefined;
         throw new Error("that tab is gone: the user or its own page closed it 0 s ago; find it with tabs, or open it again");
@@ -162,6 +169,34 @@ test("delete refuses a message someone else wrote, even approved, and deletes no
   expect(s.asked).toEqual(["conversations.history"]);
 });
 
+// A file replace deletes files from Slack for good. Only the owner's file
+// it took off the message goes, never a file someone else put there, and
+// only once the message read back carries the new file.
+const upload = Bun.serve({ port: 0, fetch: () => new Response("OK") });
+afterAll(() => upload.stop(true));
+const withFiles = (files: object[]) => ({ messages: [{ ts: "7.0", user: "U1", text: "the report", files }] });
+const POSTED = withFiles([{ id: "F_OLD", name: "report.html", user: "U1" }, { id: "F_THEIRS", name: "chart.png", user: "U2" }]);
+
+function replacing(readBack: object) {
+  writeFileSync(join(dir, "report.html"), "<p>new</p>");
+  return safari({ "conversations.history": [POSTED, POSTED, readBack], "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" } }, []);
+}
+
+test("an approved file replace deletes the owner's file it replaced and not another's", async () => {
+  const s = replacing(withFiles([{ id: "F_NEW", name: "report.html", user: "U1" }]));
+  const c = await s.client();
+  const sent = await approved(s.kit, (ok) => c.update("C1", "7.0", null, { files: ["report.html"], approved: ok }));
+  expect(sent).toMatchObject({ status: "sent", result: { files: ["F_NEW"], deleted: ["F_OLD"] } });
+  expect(s.calls.filter((x) => x.method === "files.delete").map((x) => x.params.file)).toEqual(["F_OLD"]);
+});
+
+test("a file replace whose message does not show the new file deletes nothing", async () => {
+  const s = replacing(withFiles([]));
+  const c = await s.client();
+  await expect(approved(s.kit, (ok) => c.update("C1", "7.0", null, { files: ["report.html"], approved: ok }))).rejects.toThrow("message 7.0 carries no files, without F_NEW");
+  expect(s.calls.filter((x) => x.method === "files.delete")).toEqual([]);
+});
+
 // A retried postThread would post the top message and earlier replies again.
 test("postThread that fails midway names the top message and the replies already posted", async () => {
   const s = safari({ "chat.postMessage": [{ ts: "9.0", channel: "D1" }, { ts: "9.1" }, { ok: false, error: "msg_too_long" }] }, []);
@@ -220,6 +255,45 @@ test("a draft's id approves only that draft's text, channel and sender, once, an
   expect(await waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).toMatchObject({ status: "sent", draftId: draft.draftId, result: { ts: "1.0" } });
   await expect(waited(c.postMessage("C1", "the text the owner saw", { approved: draft.draftId }))).rejects.toThrow("approved once already");
   expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" }, read: false }]);
+});
+
+// On 11-16 an upload's first request, a read, got no answer and the daemon
+// said nothing was sent (effect none), yet the draft was spent; the agent
+// then posted through Slack's composer, which no draft guards.
+const UNANSWERED = () => new HarnessError("command_failed", "Load failed: a request got no answer", { effect: "none" });
+
+test("an approved upload whose first request got no answer can be approved again", async () => {
+  writeFileSync(join(dir, "report.html"), "<p>new</p>");
+  const s = safari({ "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" }, "files.completeUploadExternal": { files: [{ id: "F_NEW" }] } }, [], { failOnce: { method: "files.getUploadURLExternal", error: UNANSWERED() } });
+  const c = await s.client();
+  const draft = await waited(c.upload("C1", "report.html"));
+  s.kit.run++;
+  await expect(waited(c.upload("C1", "report.html", { approved: draft.draftId }))).rejects.toThrow("can be approved again");
+  s.kit.run++;
+  expect(await waited(c.upload("C1", "report.html", { approved: draft.draftId }))).toMatchObject({ status: "sent", result: { file: "F_NEW" } });
+});
+
+// A write whose answer was lost may have gone through: the daemon calls it
+// possibly effected (failures.ts), and its draft stays spent.
+test("an approved post whose answer was lost is not approved again", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, [], { failOnce: { method: "chat.postMessage", error: new HarnessError("effect_unknown", "Load failed") } });
+  const c = await s.client();
+  const draft = await waited(c.postMessage("C1", "hello"));
+  s.kit.run++;
+  await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("Load failed");
+  s.kit.run++;
+  await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("approved once already");
+});
+
+test("a file replace whose second file failed after the first one's bytes went up is not approved again", async () => {
+  writeFileSync(join(dir, "a.html"), "<p>a</p>");
+  writeFileSync(join(dir, "b.html"), "<p>b</p>");
+  const s = safari({ "conversations.history": POSTED, "files.getUploadURLExternal": [{ upload_url: `${upload.url}upload`, file_id: "F_A" }, { upload_url: "http://127.0.0.1:1/upload", file_id: "F_B" }] }, []);
+  const c = await s.client();
+  const update = (ok?: string) => c.update("C1", "7.0", null, { files: ["a.html", "b.html"], approved: ok });
+  await expect(approved(s.kit, update)).rejects.toThrow("could not reach 127.0.0.1:1");
+  s.kit.run++;
+  await expect(waited(update(s.kit.drafts.keys().next().value))).rejects.toThrow("approved once already");
 });
 
 // Audit SH-24: the extension says a tab is gone after the request left it

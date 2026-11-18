@@ -668,10 +668,10 @@ function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, 
   }
   const reads = Object.hasOwn(READS_AGAIN, tool) ? `${READS_AGAIN[tool]}; otherwise ` : "";
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
-    throw new HarnessError("effect_unknown", `${ALREADY}; ${reads}snapshot or read this tab before repeating it`, { next: `${reads}snapshot or extract this tab and check whether the action already happened` });
+    throw new HarnessError("effect_unknown", `${ALREADY}; ${reads}only a snapshot or extract of this tab releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract this tab with no query, root, selector or ref, not cut short, and check whether the action already happened` });
   }
   if (site !== undefined && agent.sites.has(site)) {
-    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; ${reads}read a tab there whole (snapshot or extract) before repeating it`, { next: `${reads}snapshot or extract a tab on ${origin} (tabs lists them) and check whether the action already happened` });
+    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; ${reads}only a snapshot or extract of any tab on ${origin} releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract a tab on ${origin} with no query, root, selector or ref, not cut short, and check whether the action already happened (tabs lists them)` });
   }
   return { tab, effectful, key, site };
 }

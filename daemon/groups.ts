@@ -25,9 +25,10 @@
 // gets one) naming that group in full: agent-sweep is a prefix of
 // agent-sweep-4. Anything else ends the menu, and the group stays queued.
 //
-// Never close a page: the keeper deletes only a group the daemon found
+// Never close a page early: the keeper deletes a group the daemon found
 // empty, so a sheet listing any tab but the window's own page (the daemon's
-// address) means tabs it could not see, and the delete is cancelled.
+// address) means tabs it could not see, and the delete is cancelled until
+// the group is stale (keeper.ts STALE_MS), when its pages go with it.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -206,8 +207,9 @@ async function refuse(h: Helper, window: number, outcome: Outcome): Promise<Outc
 
 // Deletes the tab group named name from the sidebar of window (a
 // CGWindowID), which then shows its own tabs. done once no group of that
-// name is left.
-export async function deleteGroup(h: Helper, window: number, name: string): Promise<Outcome> {
+// name is left. pages: the group is stale, and a confirm sheet naming it
+// may close its pages.
+export async function deleteGroup(h: Helper, window: number, name: string, pages = false): Promise<Outcome> {
   const off = deletesOff();
   if (off) return stop(off);
   const start = await check(h);
@@ -245,16 +247,21 @@ export async function deleteGroup(h: Helper, window: number, name: string): Prom
     const asked = quotedName(pressed.sheet.text);
     if (asked !== name || !pressed.sheet.buttons.includes("Delete")) return refuse(h, window, stop(asked === undefined ? "the confirm sheet named no group" : `the confirm sheet asked about ${asked}`));
     // Its second line names the tabs it closes: "“app.dover.com” and 8
-    // other tabs will be closed immediately." (measured 10-30). Only the
-    // window's own page may go; a host alone cannot tell it from another
-    // page on 127.0.0.1. Proof of other pages makes the group the user's;
-    // wording not seen before leaves it queued.
+    // other tabs will be closed immediately." (measured 10-30). Until the
+    // group is stale only the window's own page may go; a host alone cannot
+    // tell it from another page on 127.0.0.1. Proof of other pages holds
+    // the group until then; wording not seen before leaves it queued.
     const closes = pressed.sheet.text.slice(1).join(" ");
     const shown = quotedName([closes]);
-    if ((shown !== PAGE_HOST && shown !== name) || /other tab/.test(closes)) {
-      const pages = /\band \d+ other tabs?\b/.test(closes) || (shown !== undefined && /^[\w-]+(\.[\w-]+)+$/.test(shown));
-      return refuse(h, window, pages ? { done: false, why: `deleting ${name} would close pages: ${closes}`, wait: false, pages: true } : stop(`the confirm sheet named tabs not known: ${closes || "none"}`));
+    const others = (shown !== PAGE_HOST && shown !== name) || /other tab/.test(closes);
+    if (others && !pages) {
+      const proof = /\band \d+ other tabs?\b/.test(closes) || (shown !== undefined && /^[\w-]+(\.[\w-]+)+$/.test(shown));
+      return refuse(h, window, proof ? { done: false, why: `deleting ${name} would close pages: ${closes}`, wait: false, pages: true } : stop(`the confirm sheet named tabs not known: ${closes || "none"}`));
     }
+    // A group another window shows stays there when this one selects it,
+    // its tabs drawn there and not here (measured 11-15), and those may be
+    // tabs he works in: its pages go only from a window that draws them.
+    if (others && (((await h("state", { window })) as Answer & { tabs?: number }).tabs ?? 0) < 2) return refuse(h, window, stop(`${name} is not drawn in this window, so another may show it`));
     const confirmed = await h("confirm", { window, button: "Delete" });
     if (!confirmed.ok) return refuse(h, window, stop(confirmed.error ?? "the confirm sheet took no answer"));
   }
