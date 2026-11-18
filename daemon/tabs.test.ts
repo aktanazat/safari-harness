@@ -25,5 +25,5 @@ test('"front" is the active tab of the window in front, not the first active tab
 test("a tab id arrives as a number or a numeric string, and nothing else", async () => {
   expect(await resolveTab(12, tabs)).toBe(12);
   expect(await resolveTab("12", tabs)).toBe(12);
-  await expect(resolveTab("Front", tabs)).rejects.toThrow('tab must be a tab id from open, or "front"');
+  await expect(resolveTab("Front", tabs)).rejects.toThrow('tab must be a tab id from open, "latest", or "front"');
 });

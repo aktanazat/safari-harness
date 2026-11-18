@@ -581,11 +581,16 @@ carrying the page in context.
   page after it in the same call, `snapshot: "Sign in|Email"` (CLI
   `--snapshot="Sign in|Email"`) for only its lines that have those words, or
   `snapshot: {query, root, diff, full}` as the `snapshot` tool takes them: the
-  fastest way to act and then read. `wait` takes it too. A `snapshot` of a
+  fastest way to act and then read. `wait` takes it too. When the action
+  answers with a request it started still `pending`, that read first waits
+  for the page to go quiet (3 s at most), and drops the `next` saying to
+  wait once it has. A `snapshot` of a
   tab as the next call after an action there gets a note saying so, once.
 - An action or `eval` whose page leaves before it answers (a submit, a
   redirect) still answers, with `ok: true` and the page it loaded as
-  `navigated`. It is never sent twice.
+  `navigated`. It is never sent twice. An `eval` whose code starts a load
+  (`location.reload()`, a new `location.href`) answers once that page is
+  in, with `navigated` beside its `result`.
 - An action that starts a load or a tab (a link, a form submit, the page's
   own script moving it) waits for it and reports `navigated` or `newTab`.
   A link or form the page's script takes over gets a short wait in case it
@@ -1316,7 +1321,11 @@ first line counts the pages read and failed.
   that. Pass it for pages whose script draws what you read after they
   load (listings, prices, search results): read at once, they come back
   empty. A page that never shows it is reported with the tab's address
-  and title instead of read. Never sleep inside `expression` for this.
+  and title instead of read, saying when it was redirected, and as
+  `redirected to sign-in` (code `blocked`) when it landed on a page whose
+  address or title names a sign-in and whose read finds a sign-in form;
+  a docs page about sign-on stays a plain redirected miss. Never sleep
+  inside `expression` for this.
 - `follow: {"match": "a.result-title", "max": 20}` reads each of `urls`
   as a listing (search results, a category, a feed) instead. map takes
   the links on it to its own site: the link of each element the CSS
@@ -1338,7 +1347,9 @@ first line counts the pages read and failed.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
   reads as an error page (HTTP 400 or more, a page titled not found, a rate
-  limit): it fails, with what it read in `value`.
+  limit): it fails, with what it read in `value`. A page Safari barred
+  the extension from ("Safari would not let the extension into the tab")
+  is read once more in a new tab before it fails.
 - A page that opens as its site's error page (eBay's "Error Page | eBay")
   is loaded again 2 s and then 5 s later, and `retried` says how often;
   one that stays an error page fails with open's warning.
@@ -1359,7 +1370,8 @@ first line counts the pages read and failed.
   "read", url}` for `extract`. Its value is the file's text, or its path.
 - The call answers by 50 s, inside the 60 s an MCP client may give it,
   with the pages read so far. A page not read by then is reported in its
-  place as unfinished, and its address comes back in `urls`: map those
+  place as unfinished, counted as not read rather than failed, and its
+  address comes back in `urls`: map those
   again, in a call with fewer pages. One still being read goes on, and
   its tab closes when it ends; with `save`, it writes no file.
 - Each search engine's results pages (Google's, Bing's) load one at a
@@ -1827,7 +1839,9 @@ animation) is captured once more with its video, audio and animations
 paused, which play again after. One that still changes (a carousel, a
 live feed) fails saying so: capture it with `shots {urls}`. A page with
 no body yet, or a tab with no viewport (its window minimized), fails
-naming that cause.
+naming that cause. A page that reloads during capture is waited for (10 s
+at most, until quiet) and captured once more; a second such failure says
+the page changed or reloaded under the capture twice.
 
 `tiles: true` also saves readable, overlapping pieces without resizing
 or dropping the original. `tileHeight` defaults to 1400 and accepts
@@ -2053,7 +2067,10 @@ Wait for the page, not the clock.
   for the page to draw: it answers once the page shows something, or after
   2 s with what it has. A `query` or `root` read of such a page waits the
   same way, until a line matches or the root shows something; on a page a
-  person already sees, one that finds nothing answers at once.
+  person already sees, one that finds nothing answers at once. Its hint,
+  and that of a `wait` that misses on a blank page, say a Safari prompt
+  over the tab (camera, microphone, location) may hold it: no read of the
+  page sees one, and only the user can answer it (`handoff`).
 - Wait for the page's exact words. A site's email and its page often word
   the same thing differently (Gusto's email says "Paid on", its page
   "Payday"); snapshot once with a `query` before waiting on a guess.
@@ -2066,7 +2083,7 @@ Wait for the page, not the clock.
   carries `challenge`.
 - A page that fills in after loading (search results, feeds) still needs a
   `wait` for the text you expect.
-- `wait` with only `ms` ends once the page goes quiet, `ms` at most. On a
+- `wait` with only `ms`, or with nothing (10 s), ends once the page goes quiet, `ms` at most. On a
   page that cannot be watched it waits out all of `ms`. Prefer text or a
   selector: a quiet page may not yet show what you came for. In a CLI
   script, never put a shell `sleep` before a command: `safari wait --text

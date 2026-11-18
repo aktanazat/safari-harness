@@ -26,7 +26,7 @@ import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAns
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
-import { site, urlMatch, WAIT_NEEDS, waitsOnPage, withEffect } from "./receipt.ts";
+import { site, STILL_LOADING, urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
@@ -1589,7 +1589,7 @@ export async function click(opts: { tab?: number; ref?: number | string; x?: num
     return sent ? afterStep(tab, sent, result, opts.noWaitAfter !== true) : result;
   }
   if (opts.x !== undefined && opts.y !== undefined) return relay(tab, "clickAt", [num(opts.x, "x"), num(opts.y, "y")]);
-  throw new HarnessError("invalid_argument", "click needs ref or x+y");
+  throw new HarnessError("invalid_argument", "click needs a target: a snapshot ref, the control's visible text, or a CSS selector (or x and y); an empty grep for a ref leaves none");
 }
 
 async function clickRef(tab: number, ref: number | string, opts: { noWaitAfter?: true; dismiss?: true }): Promise<unknown> {
@@ -1905,7 +1905,14 @@ export const WAIT_MAX_MS = 110000;
 // after it read "(0 nodes)" (S99PartC). Such a wait goes on until the page
 // shows text, a picture, a canvas, a video, or a frame, ms at most; a page
 // blank still is a miss. A page whose policy refuses eval counts as drawn.
-const BLANK = "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show";
+// A Safari prompt over the tab (camera, microphone, location) keeps a page
+// that waits on its answer blank, and no read of the page can see it: on
+// 11-16 a Meet tab under a camera and microphone prompt read empty and 8
+// text waits ran out, 3.5 minutes, before the agent found the prompt. A
+// miss on a blank page names that cause too.
+const PROMPT = "if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff";
+const BLANK = `the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show; ${PROMPT}`;
+const SHOWS_NOTHING = `the page shows nothing: no text, picture, or frame; ${PROMPT}`;
 const DRAWN = "(() => { const b = document.body; return !b || b.innerText.trim() !== '' || !!b.querySelector('img, canvas, video, svg, iframe, embed, object') || [...b.querySelectorAll('*')].some((e) => e.shadowRoot); })()";
 const DRAW_POLL_MS = 250;
 
@@ -1960,7 +1967,9 @@ async function blankHint(tab: number, end: number): Promise<string> {
 // September such sleeps held agents about 9 minutes. A page that cannot be
 // watched still gets its ms, as a sleep did. On screen (front), it holds
 // the tab there all of ms: what it waits on is an animation, which a quiet
-// page does not rule out.
+// page does not rule out. A bare wait is a quiet wait of the default ms,
+// as its description says: `safari open X && safari wait` failed on
+// "wait needs ms ..." in the work sessions of 11-16.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
   // The wait's time runs from the call, finding the user's front tab in it:
   // a list Safari was slow to give held a 3 s wait on --tab front 5 s more
@@ -1968,7 +1977,6 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   const start = Date.now();
   if (opts.look !== undefined) return relay(await resolveTab(opts.tab), "wait", [null, { look: opts.look }]);
   const named = waitsOnPage(opts);
-  if (!named && opts.ms === undefined) throw new Error(WAIT_NEEDS);
   const asked = opts.ms === undefined ? 10000 : num(opts.ms, "ms");
   // On screen, the tab holds the user's screen all the while: 30 s at most.
   const most = opts.front ? 30000 : WAIT_MAX_MS;
@@ -2029,7 +2037,7 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     const words = (opts.text !== undefined || opts.any !== undefined) && opts.selector === undefined && opts.gone === undefined && opts.url === undefined && opts.quiet !== true && opts.changed !== true;
     const missed = opts.after === undefined ? NEVER_SHOWN : "none of those words appeared after the preceding action; meanwhile says what changed while waiting";
     // what the tab shows, each read left out when it has no answer by the end
-    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? undefined : blankHint(tab, end)]);
+    const [now, shown, blank] = await Promise.all([by(listTabs(), end).then((tabs) => tabs?.find((t) => t.id === tab)), by(challengeNamed(tab), end), drew ? by(relay(tab, "eval", [DRAWN]), end).then((a) => (a && typeof a === "object" && "result" in a && a.result === false ? SHOWS_NOTHING : undefined)) : blankHint(tab, end)]);
     seenLater(tab, now?.url, shown);
     const challenge = shown?.challenge;
     const hints = [hint, words ? missed : undefined, opts.changed === true ? NOTHING_NEW : undefined, blank].filter((h) => h !== undefined);
@@ -2637,7 +2645,30 @@ const UNSEEN: Record<"covered" | "hidden", string> = {
 // land; live leaves them running. WebKit does not paint a fully covered
 // window. An owned window may move for a retry, then returns to its place.
 // Other windows stay where they are.
+// A page that reloads during a shot takes its protection with it: the
+// new page's script holds no capture (content.js capturePrivacy), or its
+// document differs (background.js). In the 11-16 work sessions 9 shots
+// right after an eval that reloaded the page failed so, and a retry 3-7 s
+// later worked each time. Such a shot waits for the page to go quiet and
+// is taken once more. The same words also come when the protection's
+// 15 s timer ended first, so a second failure says the page changed or
+// reloaded, not which.
+const RELOADED: Record<string, true> = { "screenshot privacy: the protected page is no longer available": true, "screenshot privacy: a page document changed during capture": true };
+const RELOAD_MS = 10000;
 export async function captureTab(tab: number, opts: ShotOpts = {}): Promise<Capture> {
+  try {
+    return await captureShown(tab, opts);
+  } catch (error) {
+    if (!(error instanceof Error) || !Object.hasOwn(RELOADED, error.message)) throw error;
+    await wait({ tab, quiet: true, ms: RELOAD_MS });
+    return await captureShown(tab, opts).catch((again: unknown) => {
+      if (!(again instanceof Error) || !Object.hasOwn(RELOADED, again.message)) throw again;
+      throw new HarnessError("privacy", "screenshot privacy: the page changed or reloaded under the capture twice, so it was not captured", { effect: "none", next: "wait for the text you expect on the page, then shot again" });
+    });
+  }
+}
+
+async function captureShown(tab: number, opts: ShotOpts): Promise<Capture> {
   try {
     try {
       return await shotOnce(tab, opts);
@@ -3304,16 +3335,27 @@ const SAVE: Param = { description: "true or absolute path; returns path,size,500
 // last snapshot for diff), saving the agent a separate read. A read that
 // finds nothing is asked again once the page goes quiet (SETTLE_MS at
 // most): on 11-08 open and click on a billing app each answered 0 nodes
-// while it drew, and a snapshot a moment later had the whole page.
+// while it drew, and a snapshot a moment later had the whole page. An
+// action whose own request is still out (STILL_LOADING) is read once the
+// page goes quiet, SETTLE_MS at most, and then no longer says to wait: in
+// the 11-16 sessions 99 actions were followed by a shell sleep and a read.
 const SETTLE_MS = 3000;
 async function withPage(result: unknown, tab: number, want: unknown): Promise<unknown> {
   const read = pageRead(want);
   if (read === undefined) return result;
   const at = newTabOf(result)?.id ?? tab;
+  let answer = result as Record<string, unknown>;
+  if (answer?.next === STILL_LOADING) {
+    const settled = await wait({ tab: at, quiet: true, ms: SETTLE_MS });
+    if ("found" in settled && settled.found === true) {
+      const { next: _, ...rest } = answer;
+      answer = rest;
+    }
+  }
   const first = await snapshot({ ...read, tab: at });
-  if (first.nodes !== 0 || read.diff || read.updates || read.since !== undefined) return { ...(result as object), page: first };
+  if (first.nodes !== 0 || read.diff || read.updates || read.since !== undefined) return { ...answer, page: first };
   await wait({ tab: at, quiet: true, ms: SETTLE_MS });
-  return { ...(result as object), page: await snapshot({ ...read, tab: at }) };
+  return { ...answer, page: await snapshot({ ...read, tab: at }) };
 }
 
 export type PageRead = { query?: string; root?: string; diff?: boolean; full?: boolean; updates?: boolean; since?: string };

@@ -75,17 +75,20 @@ const USAGE = `safari — drive Safari from the terminal
   safari focus <tab>                         activate a tab
   safari snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
                                              page outline with [ref]s; recoverable updates
-  safari click <ref> --tab N                 click by snapshot ref
+  safari click <ref|text|sel> --tab N        click a snapshot ref, the control's visible
+                                             text ("Continue"), or a CSS selector: no
+                                             need to grep a ref out of a snapshot
   safari clickat <x> <y> --tab N             click by coordinates
-  safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
+  safari type <ref|text|sel> <text> --tab N  type into a field; '{{code}}' in text types the
                                              code texted or mailed to him (--secret mail: Gmail only;
                                              --secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
-  safari press <key> [--ref R] --tab N       press a key
-  safari select <ref> [option] --tab N       choose a dropdown option; none lists them
+  safari press <key> [--ref R] --tab N       press a key (R: ref, text, or selector)
+  safari select <ref|text|sel> [option] --tab N
+                                             choose a dropdown option; none lists them
   safari refill --tab N                      put back the form fields a click sent on
                                              before the page emptied them (an error, a sign-in)
-  safari hover <ref> --tab N                 hover an element
+  safari hover <ref|text|sel> --tab N        hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
   safari upload --find <words> --tab N       list the user's files that match, to pick
@@ -104,7 +107,9 @@ const USAGE = `safari — drive Safari from the terminal
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
-  or --snapshot=<words> for only its lines that have those words.
+  or --snapshot=<words> for only its lines that have those words. That read
+  waits for requests the action started (3 s at most); never sleep between an
+  action and a read: use --snapshot, or safari wait --text "<words>" --tab N.
 
   Reads (snapshot eval extract fetch read) take --save to write the whole output
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
@@ -127,7 +132,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
-  safari wait <ms> --tab N                   until the page goes quiet, ms at most
+  safari wait [ms] --tab N                   until the page goes quiet, ms (10000) at most
   safari wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile

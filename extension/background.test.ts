@@ -772,6 +772,19 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+// In the 11-16 work sessions 9 shots right after an eval that reloaded
+// its page failed, the page reloading under them.
+test("an eval whose code starts a load answers once that page is in, as navigated", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const next = new Doc("https://example.com/");
+  tab.doc.does = () => ({ ok: true, result: "ok", expect: "load" });
+  const answer = b.ask(tab, "eval", ["(location.reload(), 'ok')"]);
+  await b.clock.advance(100);
+  b.navigate(tab, next);
+  expect((await answer).value).toEqual({ ok: true, result: "ok", navigated: { url: "https://example.com/", title: "" } });
+});
+
 // A gather clicks Load more and scrolls as it reads: asked again of the
 // page it went to, it would gather that page too, and harvest's answer
 // would come back as an action's.
@@ -1111,6 +1124,16 @@ test("a stale ref, a cover's close controls, or a heal in an embedded frame name
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
   frame.does = () => ({ error: 'that target is covered by dialog "Offer"; its close controls are [7] button "Close", [8] link "No thanks"', failure: { code: "stale_view", effect: "none" } });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe('that target is covered by dialog "Offer"; its close controls are [f5:7] button "Close", [f5:8] link "No thanks"');
+});
+
+test("a frame click its parent page refuses before any event says nothing was sent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const frame = b.frame(tab, 5, "https://example.com/embedded");
+  frame.does = (op) => op === "clickProbe" ? { frame: frame.world.__safariHarnessFrame, x: 10, y: 20 } : { ok: true };
+  tab.doc.does = (op) => op === "assertFrameClickable" ? { found: true, blocker: "that frame is covered by dialog \"Offer\"" } : { url: tab.doc.url };
+  expect(await b.ask(tab, "click", ["f5:3"])).toMatchObject({ error: 'that frame is covered by dialog "Offer"', failure: { code: "stale_view", effect: "none" } });
+  expect(frame.ran).toEqual(["clickProbe"]);
 });
 
 // On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref

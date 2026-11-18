@@ -874,7 +874,7 @@
   // another frame's, which relayOp then asks.
   async function pressDone(ref, mark, ms) {
     const p = presses.get(mark);
-    if (!p) return missing(ref);
+    if (!p) return { error: missing(ref).error };
     presses.delete(mark);
     const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
     p.el.classList.remove(mark);
@@ -1238,7 +1238,8 @@
   // it, and the read says so.
   const DRAW_WAIT_MS = 2000;
   const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
-  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
+  // a Safari prompt over the tab keeps a page blank too (PROMPT in tools.ts)
+  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again; if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff";
   // A page that hit an error may draw nothing however long a wait looks for
   // its text: on 10-09 an agent waited 25 s on one whose script had thrown,
   // then read an empty console (S99PartB). A blank read names the errors
@@ -1527,10 +1528,18 @@
     return keepLabel ? found : fieldOf(found);
   }
 
+  // A ref or text that names nothing sent nothing, as keptFor in
+  // background.js relies on, so its answer says so (failures.ts). A lookup
+  // of a mark after real input went (typeField, sendButton, pressDone)
+  // drops that: the input was sent. An empty target is named as one: in
+  // the 11-16 sessions agents grepped refs out of snapshots 126 times,
+  // and a grep that found nothing sent "".
+  const EMPTY_TARGET = "the target is empty (a grep for its ref found nothing?): pass the control's visible text or a CSS selector, as a ref";
   function missing(target) {
     const key = String(target).trim();
+    if (!key) return { error: EMPTY_TARGET, failure: UNSENT };
     if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
-    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
+    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}`, failure: UNSENT };
   }
 
   function centerOf(el) {
@@ -1947,13 +1956,13 @@
     const el = kind === "select" ? fieldOf(target) : kind === "click" && target ? standIn(target) ?? target : target;
     if (!el) return missing(ref);
     const point = clickPoint(el);
-    if (point.error) return point.recovery === "present" ? refused(el, point) : point;
+    if (point.error) return refused(el, point);
     let { x, y } = point;
     for (let doc = el.ownerDocument; doc !== document;) {
       const frame = doc.defaultView?.frameElement;
-      if (!frame) return { error: "the target's frame changed; re-run snapshot" };
+      if (!frame) return { error: "the target's frame changed; re-run snapshot", failure: UNSENT };
       const parentPoint = framePoint(frame, { x, y });
-      if (parentPoint.error) return parentPoint;
+      if (parentPoint.error) return refused(el, parentPoint);
       ({ x, y } = parentPoint);
       doc = frame.ownerDocument;
     }
@@ -2126,17 +2135,20 @@
 
   // select takes a <select>, a label of one, or a combobox, resolved before
   // the first await (answer). A null choice lists the options.
+  // A refusal before the click point is checked, or by it, sent nothing:
+  // on 11-16 a select a cover refused held its identical retry as "may
+  // already have happened", and the agent set the list with eval instead.
   function selectIn(ref, choice, opts) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it", failure: UNSENT };
     if (choice !== null) {
       const point = clickPoint(el);
-      if (point.error) return point;
+      if (point.error) return refused(el, point);
     }
     if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
-    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
+    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot", failure: UNSENT };
   }
 
   // files: [{ name, type, data (base64) }]. File inputs are usually hidden
@@ -2148,13 +2160,13 @@
       const el = resolve(ref);
       if (!el) return missing(ref);
       input = el.matches("input[type=file]") ? el : deepQueryAll("input[type=file]", el)[0];
-      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
+      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input", failure: UNSENT };
     } else {
       const all = deepQueryAll("input[type=file]");
-      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
+      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area`, failure: UNSENT };
       input = all[0];
     }
-    if (files.length > 1 && !input.multiple) return { error: "this input takes one file" };
+    if (files.length > 1 && !input.multiple) return { error: "this input takes one file", failure: UNSENT };
     const dt = new DataTransfer();
     for (const f of files) {
       const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
@@ -2786,9 +2798,9 @@
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    if (!(await focusField(el))) return untaken("the field");
+    if (!(await focusField(el))) return { ...untaken("the field"), failure: UNSENT };
     lastTyped = el;
     lookBeforeTyping(opts.secret ? null : text);
     const before = el.isContentEditable ? "" : String(el.value || "");
@@ -2851,7 +2863,7 @@
     const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
     if (!el && ref !== null) return missing(ref);
     if (!el || !(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return { field: false };
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     lookBeforeTyping(text);
     el.setAttribute("autocorrect", "off");
     el.focus();
@@ -2874,7 +2886,7 @@
   // does not hold is another frame's, which relayOp then asks.
   async function typeField(ref, mark, text, sent) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const { el, before, boxes } = field;
     el.classList.remove(mark);
     boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
@@ -2901,7 +2913,7 @@
   const SEND = /(^|[^a-z])(send|submit)/i;
   function sendButton(ref, mark) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const up = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
     const named = (b) => [accessibleName(b), b.title, b.id, b.getAttribute("data-testid"), b.getAttribute("class")].filter(Boolean).join(" ");
     let box = up(field.el);
@@ -6058,15 +6070,42 @@
         }
         throw e;
       });
-      const result = run(SH, fetching);
+      // Code that sends the page elsewhere (location.reload(), a new
+      // location.href) answers expect "load", as an action does, so act in
+      // background.js waits for that page and reports it as navigated: in
+      // the 11-16 work sessions 9 shots right after such an eval failed, the
+      // page reloading under them. WebKit fires no navigate event for
+      // location.reload(), and none before the code returns (bench,
+      // 11-17), so code that calls it is read as leaving; act waits 3 s at
+      // most for a load that does not come. Only a call before any
+      // function in the code counts: one in a handler (onclick = () =>
+      // location.reload()) runs later, if ever. An embedded frame's load
+      // is no load of the tab act watches, so a frame's eval never says so.
+      const top = window === window.top;
+      const reload = src.search(/\blocation\s*\.\s*reload\s*\(/);
+      let leaves = top && reload >= 0 && !/=>|\bfunction\b/.test(src.slice(0, reload));
+      const onNav = (e) => { if (top && !e.destination.sameDocument) leaves = true; };
+      navigation.addEventListener("navigate", onNav);
+      const answer = (v) => {
+        navigation.removeEventListener("navigate", onNav);
+        return { ok: true, result: safeClone(v), ...(leaves ? { expect: "load" } : {}) };
+      };
+      let result;
+      try {
+        result = run(SH, fetching);
+      } catch (e) {
+        navigation.removeEventListener("navigate", onNav);
+        throw e;
+      }
       if (result && typeof result.then === "function") {
-        return result.then((v) => ({ ok: true, result: safeClone(v) }), (e) => {
+        return result.then(answer, (e) => {
+          navigation.removeEventListener("navigate", onNav);
           const url = e !== null && typeof e === "object" ? unanswered.get(e) : undefined;
           if (url === undefined) throw e;
           throw new Error(`Load failed for ${url}${failed > 1 ? ` and ${failed - 1} more` : ""}`);
         });
       }
-      return { ok: true, result: safeClone(result) };
+      return answer(result);
     },
     wait: waitFor,
     waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },
