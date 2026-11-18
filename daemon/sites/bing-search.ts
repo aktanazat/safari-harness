@@ -5,8 +5,9 @@
 // check in 51 loads, so web-search.ts sends a search here when Google's
 // turn is far off or Google asks for its human check.
 
+import type { Busy } from "../search-tabs.ts";
 import type { SiteKit } from "./kit.ts";
-import type { SearchPage } from "./google-search.ts";
+import { type SearchPage, SearchBusy } from "./google-search.ts";
 
 const ORIGIN = "https://www.bing.com";
 const PAGE_SIZE = 10;
@@ -69,8 +70,9 @@ export const COLLECT = `(async () => {
 export function bingSearch(kit: SiteKit) {
   return {
     // One page of organic results for query; limit caps the results kept.
-    // The caller has taken Bing's turn (web-search.ts).
-    async search(query: string, opts: { limit?: number } = {}): Promise<SearchPage> {
+    // With maxWait, a load that could not start within maxWait ms throws
+    // SearchBusy (search-tabs.ts).
+    async search(query: string, opts: { limit?: number; maxWait?: number } = {}): Promise<SearchPage> {
       const asked = query.trim();
       if (!asked) throw new Error("search needs a query");
       // Bing in Safari answers any site: query with unrelated pages (11-08:
@@ -79,7 +81,8 @@ export function bingSearch(kit: SiteKit) {
       const sites = [...asked.matchAll(SITE)].map((m) => m[2].toLowerCase().replace(/^https?:\/\//, ""));
       const q = asked.replace(SITE, (_, space: string, site: string) => `${space}${site.replace(/^https?:\/\//, "").split("/")[0]}`);
       const url = `${ORIGIN}/search?q=${encodeURIComponent(q)}`;
-      const got = (await kit.invoke("search_page", { url })) as Collected;
+      const got = (await kit.invoke("search_page", { url, ...(opts.maxWait === undefined ? {} : { maxWait: opts.maxWait }) })) as Collected | Busy;
+      if ("busy" in got) throw new SearchBusy("Bing", got.busy.at, got.busy.stalled);
       if (got.captcha) throw new Error(`bing search is asking for a human check at ${got.url}`);
       const results = sites.length ? got.results.filter((r) => sites.some((site) => onSite(r.url, site))) : got.results;
       return { query: asked, start: 0, results: results.slice(0, opts.limit ?? PAGE_SIZE) };

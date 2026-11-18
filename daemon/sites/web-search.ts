@@ -1,5 +1,5 @@
 // An agent's web search: Google through Safari first, Bing when Google's
-// turn is far off or Google asks for its human check, and the local page
+// line is long or Google asks for its human check, and the local page
 // store (page-store.ts) for a repeat of a recent query and for pages agents
 // already read. Never solves or evades a bot check: once Google shows its
 // "unusual traffic" page, every search on the Mac goes to Bing for
@@ -7,21 +7,26 @@
 //
 // On 11-02..08, 1,874 searches took 12.0 s median and 59.7 s at p90, with
 // 30.4% failing: every search on the Mac waits for one Google turn 3 s
-// after the last, and 54% arrived less than 3 s apart.
+// after the last, and 54% arrived less than 3 s apart. On 11-18 32 agents
+// asked 4 to 6 searches at a time, about 40 a minute fit through both
+// engines, and searches waited up to 7.7 minutes: a search that would wait
+// past MAX_WAIT_MS on both is now told at once when to search again.
 
 import { HarnessError } from "../failures.ts";
+import { SEARCH_GAP_MS } from "../pace.ts";
 import { bingSearch } from "./bing-search.ts";
-import { GOOGLE_GAP_MS, GOOGLE_REST_MS, googleSearch, HumanCheck, type SearchResult } from "./google-search.ts";
+import { GOOGLE_REST_MS, googleSearch, HumanCheck, SearchBusy, type SearchResult } from "./google-search.ts";
 import type { SiteKit } from "./kit.ts";
 
-const GOOGLE = "https://www.google.com";
-const BING = "https://www.bing.com";
-const BING_GAP_MS = 3000;
-// A turn this near is taken; past it the other engine is asked, then both
-// again twice as far, so a search takes whichever turn comes first. One
-// Google gap: an agent searching alone, one search after another, stays on
-// Google, and Bing takes the searches that would queue behind it.
-const NEAR_MS = GOOGLE_GAP_MS;
+// The first wait asked of each engine's line; past it the other engine is
+// asked, then both again twice as long, so a search takes whichever load
+// starts first. One gap: an agent searching alone, one search after
+// another, stays on Google, and Bing takes the searches that would queue
+// behind it.
+const NEAR_MS = SEARCH_GAP_MS;
+// The longest a search waits for its load to start: some MCP clients end a
+// call at 60 s, and the load and its read take seconds more.
+const MAX_WAIT_MS = 45_000;
 // A query asked again this soon is answered from the store.
 const REPEAT_MS = 10 * 60_000;
 
@@ -31,6 +36,19 @@ export type WebSearch = { engine: "google" | "bing" | "stored"; results: SearchR
 const limitedUntil = (e: unknown) => (e instanceof HarnessError && e.code === "rate_limited" && e.detail && typeof e.detail === "object" && "resetAt" in e.detail ? Number(e.detail.resetAt) : undefined);
 const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// No engine could start the search within MAX_WAIT_MS: when the soonest one
+// may, and what to do meanwhile. Safari not loading results pages at all
+// is named apart from a long line.
+function busyError(busy: SearchBusy[]): HarnessError {
+  const resetAt = Math.min(...busy.map((b) => b.at));
+  const s = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
+  const stalled = busy.find((b) => b.stalled !== undefined)?.stalled;
+  const why = stalled === undefined
+    ? `Google and Bing each load one results page every ${SEARCH_GAP_MS / 1000} s for every agent on this Mac, and their lines are full until ${clock(resetAt)}`
+    : `Safari has loaded no results page since ${clock(stalled)} (it is overloaded or stuck)`;
+  return new HarnessError("rate_limited", `web search is busy: ${why}. Search again in ${s} s; meanwhile read addresses you already know with read, or search inside a site with its own search page (safari guide reference research).`, { detail: { host: "web search", resetAt } });
+}
 
 type Stored = { engine: string; results: SearchResult[]; at: number };
 
@@ -51,39 +69,42 @@ export function webSearch(kit: SiteKit) {
   const google = googleSearch(kit);
   const bing = bingSearch(kit);
 
-  // Google, unless Bing's turn comes first, Google shows its human check or
-  // is resting after one, or finds nothing. Results, the engine, and what
-  // to tell the agent.
+  // Google, unless Bing's load starts first, Google shows its human check
+  // or is resting after one, or finds nothing. Results, the engine, and
+  // what to tell the agent; when neither engine starts it within
+  // MAX_WAIT_MS of the ask, a rate_limited error that says when to search
+  // again.
   async function engines(query: string): Promise<{ engine: "google" | "bing"; results: SearchResult[]; notes: string[] }> {
     const notes: string[] = [];
+    const busy: SearchBusy[] = [];
     let googleOpen = true;
-    for (let near = NEAR_MS; ; near *= 2) {
+    const deadline = Date.now() + MAX_WAIT_MS;
+    for (let step = NEAR_MS; ; step *= 2) {
       if (googleOpen) {
-        let mine = false;
         try {
-          mine = await kit.turn(GOOGLE, GOOGLE_GAP_MS, undefined, near);
+          const { results } = await google.search(query, { maxWait: Math.max(0, Math.min(step, deadline - Date.now())) });
+          if (results.length) return { engine: "google", results, notes };
+          notes.push("Google returned no readable results, so Bing answered.");
+          googleOpen = false;
         } catch (e) {
-          const until = limitedUntil(e);
-          if (until === undefined) throw e;
-          notes.push(`Google is resting after its human check until ${clock(until)}, so Bing answered.`);
-          googleOpen = false;
-        }
-        if (mine) {
-          try {
-            const results = (await google.search(query, { paced: false })).results;
-            if (results.length) return { engine: "google", results, notes };
-            notes.push("Google returned no readable results, so Bing answered.");
-          } catch (e) {
-            if (!(e instanceof HumanCheck)) throw e;
-            notes.push(`Google asked for its human check, so Bing answered; searches use Bing until ${clock(Date.now() + GOOGLE_REST_MS)}.`);
+          if (e instanceof SearchBusy) busy.push(e);
+          else {
+            const until = limitedUntil(e);
+            if (until !== undefined) notes.push(`Google is resting after its human check until ${clock(until)}, so Bing answered.`);
+            else if (e instanceof HumanCheck) notes.push(`Google asked for its human check, so Bing answered; searches use Bing until ${clock(Date.now() + GOOGLE_REST_MS)}.`);
+            else throw e;
+            googleOpen = false;
           }
-          googleOpen = false;
         }
       }
-      if (await kit.turn(BING, BING_GAP_MS, undefined, googleOpen ? near : undefined)) {
-        const results = (await bing.search(query)).results;
+      try {
+        const { results } = await bing.search(query, { maxWait: Math.max(0, Math.min(step, deadline - Date.now())) });
         return { engine: "bing", results, notes: googleOpen ? [...notes, "Google was busy with other searches, so Bing answered."] : notes };
+      } catch (e) {
+        if (!(e instanceof SearchBusy)) throw e;
+        busy.push(e);
       }
+      if (step >= MAX_WAIT_MS) throw busyError(busy);
     }
   }
 

@@ -15,7 +15,7 @@ import { site, WAIT_NEEDS, waitsOnPage } from "./receipt.ts";
 import { saveOutput, SAVED_DIR, targetOf, withLimit, writeIndex, type SaveKind, type Target } from "./save.ts";
 import { failureOf, HarnessError, readFailure, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
-import { turnAt } from "./pace.ts";
+import { SEARCH_GAP_MS, turnAt } from "./pace.ts";
 import { classifyPage, partialRead, type PageKind, type PageState } from "./page-state.ts";
 import { checked, keep, recall } from "./reads.ts";
 import { cutFenced, defused } from "./injection.ts";
@@ -50,11 +50,8 @@ const CHECKED: Record<"page" | "block", string> = {
 // after each of these.
 const RETRY_MS = [2000, 5000];
 
-// Google and Bing answer a burst of searches with a check: on 10-22 a map of
-// four Google searches met four reCAPTCHA pages (K12). Each engine's results
-// pages load one at a time, SEARCH_GAP_MS apart, across every map and the
-// Google kit's searches (pace.ts).
-const SEARCH_GAP_MS = 3000;
+// Each engine's results pages load one at a time, SEARCH_GAP_MS apart,
+// across every map and the engines' own tabs (pace.ts, search-tabs.ts).
 const SEARCH = /^(?:www\.)?(?:google\.[a-z]{2,3}(?:\.[a-z]{2})?|bing\.com)$/;
 
 // The start of the error a page gets that never showed what its wait asked.

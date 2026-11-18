@@ -14,6 +14,12 @@ export const WAIT_MS = 30_000;
 // doubles it, up to MAX_BACKOFF_MS.
 const BACKOFF_MS = 60_000;
 const MAX_BACKOFF_MS = 15 * 60_000;
+// A results page of Google or Bing starts at least this long after the
+// engine's one before it, from any agent, map or session: both answer a
+// burst of searches with a check (on 10-22 a map of four Google searches
+// met four reCAPTCHA pages; on 11-18 Google's came up two minutes after
+// 40 of its results pages loaded under 2.5 s apart).
+export const SEARCH_GAP_MS = 3000;
 
 export type Limit = { host: string; resetAt: number; guessed: boolean };
 type Hold = { until: number; guessed: boolean; strikes: number };
@@ -39,23 +45,35 @@ export function turnAt(host: string, gap: number, from = Date.now()): number {
   return at;
 }
 
-// host's turn once a hold on it, or on its bucket, ends; a hold that ends
-// past WAIT_MS answers instead, and takes no turn. With within, a turn
-// further off than within ms is not taken either: its answer says when it
-// would be (taken: false), so a web search can ask another engine first.
-export function turn(host: string, gap: number, bucket?: string, within?: number): { at: number; taken?: false } | Limit {
-  const key = hostOf(host);
-  const now = Date.now();
-  const held = [holds.get(key), bucket === undefined ? undefined : holds.get(`${key} ${bucket}`)]
+// The hold on host, or on its bucket, that ends last, if any is on.
+function holdOn(key: string, bucket: string | undefined, now: number): Hold | undefined {
+  return [holds.get(key), bucket === undefined ? undefined : holds.get(`${key} ${bucket}`)]
     .filter((h): h is Hold => h !== undefined && h.until > now)
     .sort((a, b) => b.until - a.until)[0];
-  if (held && held.until - now > WAIT_MS) return { host: key, resetAt: held.until, guessed: held.guessed };
-  const from = held?.until ?? now;
-  if (within !== undefined) {
-    const at = Math.max(from, turns.get(key) ?? 0);
-    if (at - now > within) return { at, taken: false };
-  }
-  return { at: turnAt(key, gap, from) };
+}
+
+// host's turn once a hold on it, or on its bucket, ends; a hold that ends
+// past WAIT_MS answers instead, and takes no turn.
+export function turn(host: string, gap: number, bucket?: string): { at: number } | Limit {
+  const key = hostOf(host);
+  const now = Date.now();
+  const on = holdOn(key, bucket, now);
+  if (on && on.until - now > WAIT_MS) return { host: key, resetAt: on.until, guessed: on.guessed };
+  return { at: turnAt(key, gap, on?.until ?? now) };
+}
+
+// The hold on host, if one is on; takes no turn.
+export function held(host: string, bucket?: string): Limit | undefined {
+  const key = hostOf(host);
+  const h = holdOn(key, bucket, Date.now());
+  return h && { host: key, resetAt: h.until, guessed: h.guessed };
+}
+
+// When the next turn of host could start, past any hold; takes none.
+export function nextTurn(host: string): number {
+  const key = hostOf(host);
+  const now = Date.now();
+  return Math.max(now, turns.get(key) ?? 0, holdOn(key, undefined, now)?.until ?? 0);
 }
 
 // Holds host, or its bucket, after a rate limit: until resetAt when the
@@ -77,12 +95,11 @@ export function hold(host: string, bucket: string | undefined, resetAt: number |
 }
 
 export const PACE_TOOL: Tool = {
-  desc: "A site kit's turn for a request to a host, or a hold on the host after its rate limit (sites/kit.ts).",
+  desc: "A site kit's turn for a request to a host, a hold on the host after its rate limit, or the hold on now (sites/kit.ts).",
   params: {
-    do: { type: "string", enum: ["turn", "hold"], description: "default turn" },
+    do: { type: "string", enum: ["turn", "hold", "held"], description: "default turn" },
     host: { type: "string", description: "host or address" },
     gap: { type: "number", description: "turn: ms after the turn before it" },
-    within: { type: "number", description: "turn: take it only if it starts within this many ms" },
     bucket: { type: "string", description: "the one of the host's limits the request falls under" },
     until: { type: "number", description: "hold: the reset the site named, epoch ms" },
     backoff: { type: "number", description: "hold: the first back-off, ms, when the site named no reset" },
@@ -93,6 +110,12 @@ export const PACE_TOOL: Tool = {
     const host = String(a.host);
     const bucket = a.bucket === undefined ? undefined : String(a.bucket);
     if (a.do === "hold") return hold(host, bucket, a.until === undefined ? undefined : Number(a.until), a.backoff === undefined ? undefined : Number(a.backoff));
-    return turn(host, Number(a.gap ?? 0), bucket, a.within === undefined ? undefined : Number(a.within));
+    if (a.do === "held") return held(host, bucket) ?? null;
+    // A web search from an omp process started before 11-18's deploy, which
+    // keeps its web-search.ts until it exits, asks Google's or Bing's turn
+    // with within: it gets the turn now and waits in search-tabs.ts, which
+    // takes the turn as the load starts, rather than taking two.
+    if (a.within !== undefined) return held(host, bucket) ?? { at: Date.now() };
+    return turn(host, Number(a.gap ?? 0), bucket);
   },
 };

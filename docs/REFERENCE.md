@@ -545,6 +545,40 @@ carrying the page in context.
   `…showing 20000 of 189269 characters; full text in <path>`. `save:
   false` writes nothing.
 
+## Research at volume: many agents, many pages
+
+Every agent on the Mac shares one Safari and one results tab per search
+engine. On 11-18 32 helpers of one lead searched and read at once:
+searches waited up to 7.7 minutes, Safari answered nothing for 3.6
+minutes, and Google then showed its human check.
+
+- `web_search` fits about 40 searches a minute in all: Google and Bing
+  each load one results page every 3 s. A search that neither can start
+  within 45 s answers at once, `web search is busy: … Search again in N
+  s`, as does one while Safari is not loading results pages at all. Do
+  other work meanwhile (read what you already found), then search again
+  once; never loop on it. Ask two or three searches per message, not six.
+- A source with its own search goes there, not through `web_search` with
+  `site:`: Internet Archive
+  (`https://archive.org/advancedsearch.php?q=WORDS&fl[]=identifier&fl[]=title&rows=50&output=json`),
+  Project Gutenberg (`https://www.gutenberg.org/ebooks/search/?query=WORDS`),
+  the Library of Congress (`https://www.loc.gov/search/?q=WORDS&fo=json`),
+  Wikipedia. Reddit: `safari guide reddit`.
+- A public page that opens without a login (public-domain books,
+  government archives, transcripts) is a plain `read`, which takes no
+  Safari tab. Safari is for his session, script-drawn pages, and pages
+  that wall off `read`.
+- These sites limit bursts too: a 429 or 503 from one (on 11-18 the
+  Library of Congress answered "We're swamped") means leave that site for
+  some minutes, not ask again at once.
+- Many pages in Safari: one `map` of up to 20 addresses with `save`, then
+  work from the files. `extension stuck:` from a map means Safari is
+  overloaded: wait a minute, then map fewer pages.
+- Each helper's Safari tabs open in a window of its own. Safari stalled
+  with 37 windows open on 11-16, and on 11-18 after 7 helper windows
+  opened in 100 s with under 350 MB of memory free; start helpers that
+  need Safari in smaller waves.
+
 ## Acting
 
 - Every action's `ref` takes a snapshot ref (`12`), a CSS selector

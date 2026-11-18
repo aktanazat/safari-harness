@@ -33,7 +33,8 @@ after a compaction. Details, one section at a time:
   steps: `run`; loops and a site's API: `repl`. Write a script or steps
   file and run it in the same message.
 - More than three pages of one kind: one `map` call (up to 20 addresses),
-  never a loop of `goto` or a bash loop of `map` or `eval`.
+  never a loop of `goto` or a bash loop of `map` or `eval`. Many agents
+  searching or reading at once: `safari guide reference research`.
 - Wait on the page, never the clock: `wait {text}` with words only the
   next page shows, `{selector}`, or `{changed: true}`. No `sleep` in bash
   or `eval`. A wait of minutes is `wait` again (110 s each).

@@ -12,10 +12,13 @@ const TEN = Array.from({ length: 10 }, (_, i) => ({ title: `Keel ${i}`, url: `ht
 // page while google.blocked is set, else ten results; Bing answers with
 // one. pace is the daemon's own (pace.ts) and pages the given store, by
 // default one that keeps the searches it is given. Records the host of
-// each results page loaded.
+// each results page loaded. wait holds how long each engine's next load
+// would wait to start: a search asked to start sooner is told busy, as
+// search-tabs.ts tells it.
 function safari(pages?: (args: Record<string, unknown>) => unknown) {
   const loaded: string[] = [];
   const google = { blocked: true };
+  const wait: Record<string, number> = { "www.google.com": 0, "www.bing.com": 0 };
   const saved = new Map<string, { engine: string; results: unknown[]; at: number }>();
   const store = pages ?? ((args: Record<string, unknown>) => {
     if (args.do === "find") return { pages: [] };
@@ -28,6 +31,7 @@ function safari(pages?: (args: Record<string, unknown>) => unknown) {
     if (tool === "pages") return store(args);
     if (tool === "search_page") {
       const url = new URL(String(args.url));
+      if (args.maxWait !== undefined && wait[url.hostname] > Number(args.maxWait)) return { busy: { at: Date.now() + wait[url.hostname] } };
       loaded.push(url.hostname);
       if (url.hostname === "www.bing.com") return { url: url.href, captcha: false, results: [{ title: "Keel Infrastructure", url: "https://example.com/keel", snippet: "Bitfarms is now Keel Infrastructure." }] };
       if (google.blocked) return { url: `https://www.google.com/sorry/index?continue=${encodeURIComponent(url.href)}`, captcha: true, results: [], next: null };
@@ -35,7 +39,7 @@ function safari(pages?: (args: Record<string, unknown>) => unknown) {
     }
     throw new Error(`no ${tool} here`);
   };
-  return { loaded, google, kit: new SiteKit(send) };
+  return { loaded, google, wait, kit: new SiteKit(send) };
 }
 
 // Each test runs hours after the last on the clock pace.ts reads, so no
@@ -102,4 +106,22 @@ test("a failing page store leaves the search to the engines", () => later(async 
   });
   google.blocked = false;
   expect(await webSearch(kit).search("Keel Infrastructure")).toMatchObject({ engine: "google", results: TEN, read: [] });
+}));
+
+// On 11-18 32 agents' searches waited in line up to 7.7 minutes.
+test("a search neither engine can start within 45 s fails at once, saying when to search again", () => later(async () => {
+  const { loaded, google, wait, kit } = safari();
+  google.blocked = false;
+  wait["www.google.com"] = 90_000;
+  wait["www.bing.com"] = 60_000;
+  await expect(webSearch(kit).search("Keel Infrastructure")).rejects.toMatchObject({ code: "rate_limited", message: expect.stringContaining("Search again in 60 s") });
+  expect(loaded).toEqual([]);
+}));
+
+test("a search takes whichever engine starts it first", () => later(async () => {
+  const { google, wait, kit } = safari();
+  google.blocked = false;
+  wait["www.google.com"] = 30_000;
+  wait["www.bing.com"] = 10_000;
+  expect(await webSearch(kit).search("Keel Infrastructure")).toMatchObject({ engine: "bing", notes: ["Google was busy with other searches, so Bing answered."] });
 }));

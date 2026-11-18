@@ -4264,10 +4264,10 @@ export const TOOLS: Record<string, Tool> = {
   pages: PAGES_TOOL,
   search_page: {
     desc: "Load a results page of Google or Bing in the daemon's own tab for that engine and read its results (search-tabs.ts, sites/web-search.ts).",
-    params: { url: { type: "string", description: "https://www.google.com/search?q=… or https://www.bing.com/search?q=…" } },
+    params: { url: { type: "string", description: "https://www.google.com/search?q=… or https://www.bing.com/search?q=…" }, maxWait: { type: "number", description: "ms the load may wait to start; past it, or behind a load Safari is not answering, the answer is {busy: {at, stalled?}}" } },
     required: ["url"],
     hidden: true,
-    run: (a) => searchPage(str(a.url, "url")),
+    run: (a) => searchPage(str(a.url, "url"), a.maxWait === undefined ? undefined : num(a.maxWait, "maxWait")),
   },
   native_preflight: {
     desc: "Check native drag or paste targets without scrolling or sending input.",
