@@ -1678,7 +1678,7 @@ async function handle(msg) {
       // owned: the daemon may close it, and its dialogs are answered here
       const [url, background, windowId, owned = background] = args;
       const known = await fileFirst(url);
-      const [tab] = await harnessMade(async () => [await api.tabs.create({ url: known || !url ? "about:blank" : url, active: !background, ...(typeof windowId === "number" ? { windowId } : {}) })]);
+      const tab = await createInAgentWindow(windowId, { url: known || !url ? "about:blank" : url, active: !background });
       if (ready.get(tab.id) !== true) ready.set(tab.id, false);
       drive(tab.id);
       if (owned) await ownTab(tab.id);
@@ -1690,6 +1690,17 @@ async function handle(msg) {
         throw unopened(url);
       }
       return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), windowId: t.windowId, ...(loading ? { loading: true } : {}), ...fileFields(file) };
+    }
+    // A page the user reopened from the agents page (daemon tools.ts
+    // restoreClosedTab), in a window of its own in front of his: no tab
+    // opens in a window that is already his (createInAgentWindow).
+    case "tabs.restore": {
+      const [url] = args;
+      const [tab] = await harnessMade(async () => {
+        const w = await api.windows.create({ url, focused: true });
+        return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
+      });
+      return { id: tab.id, url: tab.url || url, ...(realTitle(tab) ? { title: tab.title } : {}), windowId: tab.windowId };
     }
     case "tabs.close": {
       const [tabId, only] = args;
@@ -1941,6 +1952,14 @@ async function handle(msg) {
         const w = await api.windows.create({ url, focused: false, ...dims });
         return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
       });
+      // Only a window that holds this page alone is one of the agent's: a
+      // Safari that opened the page in a window of the user's would make
+      // his an agent window, and every open after it would go there.
+      if ((await api.tabs.query({ windowId: tab.windowId })).length !== 1) {
+        closing.add(tab.id);
+        await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
+        throw new Error(`Safari opened the agent window's page in window ${tab.windowId}, which holds other tabs, so it was closed`);
+      }
       await markAgentWindow(tab.windowId);
       await ownTab(tab.id);
       if (!size) return { windowId: tab.windowId, tabId: tab.id };
@@ -1955,11 +1974,20 @@ async function handle(msg) {
     }
     // The tab group keeper begins, or is done, making a window's tab group
     // (spaces.ts); a tab Safari makes in the window meanwhile is its own.
+    // The keeper presses New Tab Group only once the opens under way in the
+    // window are in it, and later opens there wait for its step to end
+    // (createInAgentWindow).
     case "windows.regrouping": {
       const [windowId, on] = args;
       const id = await resolveWindow(windowId);
-      if (on) regrouping.set(id, Date.now());
-      else regrouping.delete(id);
+      if (!on) {
+        regrouping.get(id)?.resolve();
+        regrouping.delete(id);
+        return { ok: true };
+      }
+      regrouping.get(id)?.resolve();
+      regrouping.set(id, { at: Date.now(), ...Promise.withResolvers() });
+      await bounded(Promise.allSettled(creatingIn.get(id) ?? []), "opens under way", Date.now() + OPEN_MS).catch(() => {});
       return { ok: true };
     }
     // A tab kept for the user leaves the agent's window, which sits on the
@@ -2347,6 +2375,58 @@ function markAgentWindow(id) {
   return updateList("agentWindows", (ids) => [...ids, id]);
 }
 
+// Every tab the harness opens goes into a window it made for an agent,
+// never into one of the user's (his order of 11-18): this is the one place
+// it makes a tab in a window that is already open. On 11-18 six tabs an
+// agent's scripts opened on the work Mac, in the two seconds the keeper
+// made their window a tab group, went into the window he had in front,
+// beside his own tab: Safari does not keep a tab made in a window while it
+// turns that window's tabs into a group. So a window not on the list is
+// refused, an open waits out its window's group step (windows.regrouping),
+// and a tab Safari puts in any other window is closed at once.
+const NOT_AGENT = "is not an agent window";
+// Longer than Safari takes to make a tab: on the work Mac on 11-18 opens
+// took up to 7.4 s while it was busy.
+const OPEN_MS = 15_000;
+// How long an open waits out its window's group step, which takes seconds:
+// less than the daemon gives tabs.open (bridge.ts, 30 s), so a keeper
+// stopped midway fails the open in words, not a time-out.
+const GROUP_WAIT_MS = 20_000;
+const creatingIn = new Map(); // windowId -> the tab creates under way in it
+
+async function agentWindow(windowId) {
+  if (typeof windowId !== "number") throw new Error(`no window was named, and the harness opens tabs only in an agent's window: one with no window ${NOT_AGENT}`);
+  const id = await resolveWindow(windowId);
+  await bounded(listsChanged, "window lists", Date.now() + LIST_MS);
+  if (!windowLists.agentWindows.includes(id)) throw new Error(`window ${windowId} ${NOT_AGENT}, so no tab opens in it`);
+  return id;
+}
+
+async function createInAgentWindow(windowId, props) {
+  const id = await agentWindow(windowId);
+  // A keeper stopped midway never says its step ended (REGROUP_MS).
+  const until = Date.now() + GROUP_WAIT_MS;
+  for (let step = regrouping.get(id); step && Date.now() - step.at < REGROUP_MS; step = regrouping.get(id)) {
+    if (Date.now() >= until) throw new Error(`agent window ${id} is still becoming a tab group after ${GROUP_WAIT_MS / 1000} s, so no tab opened in it; open again in a minute`);
+    await bounded(step.promise, "tab group", Math.min(step.at + REGROUP_MS, until)).catch(() => {});
+  }
+  const made = harnessMade(async () => [await api.tabs.create({ ...props, windowId: id })]);
+  const under = creatingIn.get(id) ?? new Set();
+  creatingIn.set(id, under.add(made));
+  let tab;
+  try {
+    [tab] = await made;
+  } finally {
+    under.delete(made);
+    if (under.size === 0 && creatingIn.get(id) === under) creatingIn.delete(id);
+  }
+  const placed = await api.tabs.get(tab.id).catch(() => tab);
+  if (placed.windowId === id) return placed;
+  closing.add(tab.id);
+  await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
+  throw new Error(`Safari put the new tab in window ${placed.windowId}, not in agent window ${id}, so it was closed; open it again`);
+}
+
 api.runtime.onStartup.addListener(() => {
   updateList("agentWindows", () => []);
   updateList("focusOrder", () => []);
@@ -2358,6 +2438,7 @@ api.windows.onFocusChanged.addListener((id) => {
 api.windows.onRemoved.addListener((id) => {
   updateList("agentWindows", (ids) => ids.filter((w) => w !== id));
   updateList("focusOrder", (ids) => ids.filter((w) => w !== id));
+  regrouping.get(id)?.resolve();
   regrouping.delete(id);
   api.storage.local.get("windowAliases").then(({ windowAliases }) => {
     if (!windowAliases) return;
@@ -2511,7 +2592,7 @@ const unclaimed = new Map(); // tabId -> { tab, windowId, at }
 // (01a0f14c); the page of an agent's window could go the same way.
 const harnessTabs = new Set();
 const creating = new Set(); // calls making tabs, each settled once they are in harnessTabs
-const regrouping = new Map(); // windowId -> when the keeper began making its tab group
+const regrouping = new Map(); // windowId -> { at: when the keeper began making its tab group, promise: settled as it ends }
 // A step that never tells its end (a keeper stopped midway) leaves the
 // window's tabs a page's again after this; one takes seconds.
 const REGROUP_MS = 60_000;
@@ -2599,7 +2680,7 @@ api.tabs.onCreated.addListener(async (t) => {
   // As of when Safari told of the tab, not after the wait on the harness's
   // own calls below: a page's word could expire meanwhile.
   const at = Date.now();
-  const since = regrouping.get(t.windowId);
+  const since = regrouping.get(t.windowId)?.at;
   if (since !== undefined && at - since < REGROUP_MS) harnessTabs.add(t.id);
   if (creating.size) await Promise.all(creating);
   if (harnessTabs.has(t.id)) return;

@@ -31,6 +31,11 @@ function safari() {
       tabs.set(t.id, t);
       return t;
     },
+    "tabs.restore": ([url]) => {
+      const t = { id: next++, url: String(url), title: "A page", windowId: next++, active: true };
+      tabs.set(t.id, t);
+      return t;
+    },
     "windows.open": ([url]) => {
       const t = { id: next++, url: String(url), title: "", windowId: next++, active: true };
       tabs.set(t.id, t);

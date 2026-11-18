@@ -14,7 +14,7 @@ import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
-import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, release, resized, showing, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, unshow, windowOwners, type Shown, type Space, type SpaceNote } from "./spaces.ts";
+import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, refusedSpace, release, resized, showing, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, unshow, windowOwners, type Shown, type Space, type SpaceNote } from "./spaces.ts";
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
@@ -220,8 +220,9 @@ export function heldSearchTab(tab: number): number | undefined {
 }
 
 // The daemon's own pages (mission.ts): an agent's open of one goes in its
-// window when it has one, else in a tab of its own outside any agent
-// window: on 10-23 each open of /agents from an agent made it a window.
+// window when it has one: on 10-23 each open of /agents from an agent made
+// it a window of its own. One with none gets its window as any open does,
+// as no tab opens in a window of the user's (background.js).
 function daemonPage(address: string): boolean {
   const u = URL.parse(address);
   return u !== null && (u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port === String(Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)) && /^\/(agents|space|memory)(\/|$)/.test(u.pathname);
@@ -231,16 +232,16 @@ function daemonPage(address: string): boolean {
 // 10-12 to 10-16 opens failed "Invalid call to tabs.create(). Window not
 // found." after the agent's window closed, 8.7 s each (S99PartC). The space
 // is found again, in a new window when its own is gone, and the open tried
-// once more. No space opens a plain tab.
-async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean, isolated?: boolean): Promise<TabInfo & { space: SpaceNote }>;
-async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean, isolated?: boolean): Promise<TabInfo & { space?: SpaceNote }>;
-async function openIn(group: string | undefined, space: Space | undefined, address: string, background: boolean, owned: boolean, isolated = false): Promise<TabInfo & { space?: SpaceNote }> {
-  if (space === undefined) return (await bridge.request("tabs.open", [address, background, undefined, owned])) as TabInfo;
+// once more. A window the extension does not hold as an agent's (a Safari
+// that started again restored it under a new id, which its page then gave
+// the space) ends, and the open goes to a new one.
+async function openIn(group: string | undefined, space: Space, address: string, background: boolean, owned: boolean, isolated = false): Promise<TabInfo & { space: SpaceNote }> {
   let t: TabInfo;
   try {
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   } catch (e) {
-    if (!(e instanceof Error) || !/Window not found/i.test(e.message)) throw e;
+    if (!(e instanceof Error) || !/Window not found|is not an agent window/i.test(e.message)) throw e;
+    if (/is not an agent window/.test(e.message)) await refusedSpace(space);
     space = await spaceWindow(group, space, isolated);
     t = (await bridge.request("tabs.open", [address, background, space.window, owned])) as TabInfo;
   }
@@ -456,7 +457,7 @@ export async function restoreClosedTab(tab: number): Promise<TabInfo> {
   if (restoring) return restoring.opened;
   if (closed.to !== undefined) throw new Error("This page has already been reopened.");
   const opened = (async () => {
-    const page = await bridge.request("tabs.open", [url, false, undefined, false]) as TabInfo;
+    const page = await bridge.request("tabs.restore", [url]) as TabInfo;
     closed.to = page.id;
     delete closed.agent;
     save();
@@ -3941,9 +3942,9 @@ export const TOOLS: Record<string, Tool> = {
       unwalled(address, a.fresh);
       const visit = await paced(address);
       const group = a.group === undefined ? undefined : str(a.group, "group");
-      const space = daemonPage(address) ? heldSpace(group) : await spaceWindow(group);
+      const space = (daemonPage(address) ? heldSpace(group) : undefined) ?? await spaceWindow(group);
       const again = Array.isArray(a.again) ? new Set(a.again.map((x) => num(x, "again"))) : undefined;
-      const reused = space !== undefined && (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
+      const reused = (fromModel() || again !== undefined) && a.new !== true && !a.keep && a.site !== true ? await reuseTab(address, space, again) : undefined;
       if (reused) {
         const { tab: t, was } = reused;
         try {

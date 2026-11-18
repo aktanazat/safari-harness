@@ -76,6 +76,8 @@ export class SiteKit {
   private homes = new Map<string, string>();
   // The origin of every tab the kit opened, gone ones included.
   private origins = new Map<number, string>();
+  // The tab each of tabs settled on, for the session's list (held).
+  private settled = new WeakMap<Promise<number>, number>();
   // Tool calls for the sites. A call on a kit tab that is gone runs once
   // more in the tab that takes its place, unless it is part of an approved
   // send; gone again, the error stands.
@@ -113,7 +115,11 @@ export class SiteKit {
         const tab = Number(fresh[1]);
         this.origins.set(tab, origin);
         this.owned(tab);
-        if (this.tabs.has(origin)) this.tabs.set(origin, Promise.resolve(tab));
+        if (this.tabs.has(origin)) {
+          const now = Promise.resolve(tab);
+          this.settled.set(now, tab);
+          this.tabs.set(origin, now);
+        }
         onReopen?.(tab);
         return this.send(tool, { ...args, tab });
       }
@@ -131,17 +137,29 @@ export class SiteKit {
     if (url !== undefined) this.homes.set(origin, url);
     let tab = this.tabs.get(origin);
     if (!tab) {
-      tab = this.send("open", { url: this.homes.get(origin) ?? `${origin}/`, background: true, site: true }).then((t) => {
+      const opening = this.send("open", { url: this.homes.get(origin) ?? `${origin}/`, background: true, site: true }).then((t) => {
         // open answers with the tab it made: {id, url, title} (tools.ts).
         const opened = t as { id: number };
         this.origins.set(opened.id, origin);
         this.owned(opened.id);
+        this.settled.set(opening, opened.id);
         return opened.id;
       });
+      tab = opening;
       this.tabs.set(origin, tab);
       tab.catch(() => this.tabs.delete(origin));
     }
     return tab;
+  }
+
+  // The tabs the kit holds open now, at the address each opened on: a
+  // session's list counts them (repl-host.ts). On 11-18 safari repl --list
+  // showed six sessions with 0 tabs while each held a Slack tab.
+  held(): { id: number; url: string }[] {
+    return [...this.tabs].flatMap(([origin, tab]) => {
+      const id = this.settled.get(tab);
+      return id === undefined ? [] : [{ id, url: this.homes.get(origin) ?? `${origin}/` }];
+    });
   }
 
   // Whether the kit holds a tab on origin, so a page it shows may be left

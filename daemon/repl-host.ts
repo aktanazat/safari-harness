@@ -222,7 +222,9 @@ async function serve(id: string, endsWith: number | undefined): Promise<void> {
     async fetch(req) {
       const route = new URL(req.url).pathname;
       if (route === "/info") {
-        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs: session.tabs.map((p) => ({ id: p.id, url: p.url() })), root: ROOT, ...(owner === undefined ? {} : { owner }) };
+        const pages = session.tabs.map((p) => ({ id: p.id, url: p.url() }));
+        const tabs = [...pages, ...session.kit.held().filter((t) => !pages.some((p) => p.id === t.id))];
+        const sessionInfo: SessionInfo = { id, pid: process.pid, host, started, lastUsed, pwd: session.cwd, tabs, root: ROOT, ...(owner === undefined ? {} : { owner }) };
         return Response.json(sessionInfo);
       }
       if (route === "/close") {

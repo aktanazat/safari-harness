@@ -47,6 +47,9 @@ const extension = {
       } else if (op === "tabs.open") {
         const tab = { id: ++next, url: String(args[0]), windowId: Number(args[2]) };
         tabs.set(tab.id, tab); opened++; value = tab;
+      } else if (op === "tabs.restore") {
+        const tab = { id: ++next, url: String(args[0]), windowId: ++next };
+        tabs.set(tab.id, tab); opened++; value = tab;
       } else if (op === "tabs.close") {
         if (refused) value = { ok: false };
         else if (args[1] === "idle" && tabs.get(Number(args[0]))?.typed) value = { ok: false, protected: "form" };
@@ -287,7 +290,7 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
     const tab = await open("race");
     await endTurn(owner);
     opened = 0;
-    gate = { op: "tabs.open", entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    gate = { op: mode === "recovery-user-first" ? "tabs.restore" : "tabs.open", entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
     const user = () => restoreClosedTab(tab.id).then(() => true, () => false);
     const agent = () => invoke("extract", { tab: tab.id }).then(() => true, () => false);
     const first = mode === "recovery-user-first" ? user() : agent();
