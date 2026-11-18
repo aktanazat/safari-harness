@@ -537,15 +537,14 @@ export async function feedPages(tab: number, args: Record<string, unknown>, deps
     return answer(state, [], paged, maxBytes, String(args.continue), deps, []);
   }
 
-  const entries = await deps.entries(tab);
-  const refused: string[] = [];
+  let entries = await deps.entries(tab);
+  let refused: string[] = [];
   const allowed = (index: number, e: NetEntry) => {
     if (!basic(e)) return false;
     const why = feedRefusal(e.url, pageUrl);
     if (why) refused.push(`${index} ${URL.parse(e.url)?.pathname ?? "?"}: ${why}`);
     return why === undefined;
   };
-  const shown = textShownOn(await deps.pageText(tab));
   let picked: { index: number; entry: NetEntry }[];
   if (args.body !== undefined) {
     const which = args.body;
@@ -559,17 +558,31 @@ export async function feedPages(tab: number, args: Record<string, unknown>, deps
     picked = [{ index, entry }];
   } else picked = entries.flatMap((entry, index) => (allowed(index, entry) ? [{ index, entry }] : [])).slice(-MAX_BODIES);
 
-  const scored: Candidate[] = [];
-  for (const { index, entry } of picked) {
-    const body = await wholeBody(tab, entry, deps);
-    const found = body === undefined ? undefined : rowsIn(body, shown);
-    if (found) scored.push({ index, entry, body, ...found });
+  const scoredOf = async (shown: (text: string) => boolean) => {
+    const scored: Candidate[] = [];
+    for (const { index, entry } of picked) {
+      const body = await wholeBody(tab, entry, deps);
+      const found = body === undefined ? undefined : rowsIn(body, shown);
+      if (found) scored.push({ index, entry, body, ...found });
+    }
+    return scored.sort((a, b) => b.shown - a.shown || b.count - a.count || b.index - a.index);
+  };
+  let scored = await scoredOf(textShownOn(await deps.pageText(tab)));
+  const fits = (c: Candidate | undefined): c is Candidate => c !== undefined && (args.body !== undefined || c.shown > 0);
+  // A page drawn on the server shows its first page without a request; a
+  // scroll makes it ask for the next one, which then holds rows it shows.
+  if (!fits(scored[0]) && args.body === undefined) {
+    await deps.scroll(tab).catch(() => undefined);
+    entries = await deps.entries(tab);
+    refused = [];
+    picked = entries.flatMap((entry, index) => (allowed(index, entry) ? [{ index, entry }] : [])).slice(-MAX_BODIES);
+    scored = await scoredOf(textShownOn(await deps.pageText(tab)));
   }
-  scored.sort((a, b) => b.shown - a.shown || b.count - a.count || b.index - a.index);
   const best = scored[0];
-  if (!best || (args.body === undefined && best.shown === 0)) {
+  if (!fits(best)) {
     const refusals = refused.length ? ` Refused: ${refused.slice(0, 5).join("; ")}.` : "";
-    throw new Error(`none of the JSON the page fetched holds rows the page shows (${scored.length} JSON replies read).${refusals} Read the requests with net {tab, urls: true} and name one with body, or ${SCROLL}`);
+    const early = scored.length === 0 && picked.length > 0 ? " Its replies may still be arriving: wait for words of the list (wait {tab, text}) and ask again." : "";
+    throw new Error(`none of the JSON the page fetched holds rows the page shows, after a scroll to make it ask for more (${scored.length} JSON replies read).${refusals}${early} Read the requests with net {tab, urls: true} and name one with body, or ${SCROLL}`);
   }
 
   const point = endpoint(best.entry.url);

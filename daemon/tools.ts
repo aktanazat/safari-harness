@@ -4755,10 +4755,11 @@ export function formatResult(value: unknown, max = Infinity): string {
       return `${head}\n\n${fence(v.tables.map((t) => JSON.stringify(t)).join("\n"))}${note}${typeof next === "string" ? `\nnext: ${next}` : ""}`;
     }
     // net pages: what was read and how, then a row a line
-    const feed = value as { feed?: unknown; rows?: unknown[] };
+    const feed = value as { feed?: unknown; rows?: unknown[]; count?: unknown; saved?: unknown };
     if (feed.feed !== undefined && Array.isArray(feed.rows)) {
       const { rows, ...rest } = feed;
-      return `${warn}${JSON.stringify(rest)}\n\n${rows.length ? fence(rows.map((row) => JSON.stringify(row)).join("\n")) : "no rows"}`;
+      const none = typeof feed.saved === "string" ? `no row fits maxBytes; all ${String(feed.count)} are in ${feed.saved}` : "no rows";
+      return `${warn}${JSON.stringify(rest)}\n\n${rows.length ? fence(rows.map((row) => JSON.stringify(row)).join("\n")) : none}`;
     }
     // extract as images: a picture a line, its size and alt after it
     if (Array.isArray(v.images)) {
