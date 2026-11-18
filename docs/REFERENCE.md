@@ -377,6 +377,26 @@ A complete extraction can also carry `controls: [{role, label}]` for
 visible buttons and text fields. these are accessible labels, not field
 values. classification uses them when inline controls run together in
 the readable text; the returned text is unchanged.
+A JSON answer (by its content type, or a body that parses as JSON) is
+judged by its own fields: `requiresLogin: true`, `authenticated: false`,
+`authorized: false`, or `unauthorized: true` read `login_wall`;
+`loading: true` reads `loading`; an `error` that says something (words,
+a code other than 0, a non-empty record), an `errors` list without
+`data`, or `ok: false` / `success: false` with a `message` reads
+`error`; a GraphQL answer with `data` beside its `errors` is content;
+`ok: false` alone reads `unjudged`. `[]`, or an object whose one list is
+empty beside only pager counts (`{items: [], total: 0}`, also under one
+wrapping object) reads `empty`; any other JSON reads `content`. A wall
+needs one of those fields: thin JSON is never a wall. request_catalog
+refuses every answer that reads `login_wall`, `loading`, `error`, or that
+bare `ok: false`.
+`net` with `body`, `pdf` read of an address, and `harvest` are judged too
+(harvest by its items' words). A model's `eval` is judged by its page's
+title and address, as map's evals are, since its value says nothing of
+the page; only a wall or an error is added, with the page's `url`.
+`extract` as `table` or `images` without a selector or query is judged by
+the start of the page's text, which the answer does not carry, so a
+sign-in page's provider buttons read as cards still read `login_wall`.
 
 ## Tool and parameter names
 

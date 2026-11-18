@@ -146,6 +146,72 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
   return undefined;
 }
 
+// Whether a field holds something: words, a number other than 0, true, or
+// a list or record with entries. error: 0, {} and [] say nothing went wrong.
+function said(value: unknown): boolean {
+  if (typeof value === "string") return value.trim() !== "";
+  if (typeof value === "number") return value !== 0;
+  if (Array.isArray(value)) return value.length > 0;
+  const fields = record(value);
+  return value === true || (fields !== undefined && Object.keys(fields).length > 0);
+}
+
+// The error, sign-in, or loading state a JSON answer gives in its own
+// fields, which an HTTP 200 carries as often as not: {requiresLogin:
+// true}, {loading: true}, {error: "…"}. A GraphQL answer with data holds
+// what it could read beside the errors of the rest, so it is an answer;
+// {ok: false} that says no more is unjudged, as a "no" can be an answer.
+// request_catalog refuses to save or run an endpoint that answers any of
+// these (checkedJson).
+export function jsonWall(parsed: unknown): "error" | "login_wall" | "loading" | "unjudged" | undefined {
+  const envelope = record(parsed);
+  if (!envelope) return undefined;
+  if (envelope.requiresLogin === true || envelope.authenticated === false || envelope.authorized === false || envelope.unauthorized === true) return "login_wall";
+  if (envelope.loading === true) return "loading";
+  if (said(envelope.error) || (Array.isArray(envelope.errors) && envelope.errors.length > 0 && (envelope.data === undefined || envelope.data === null))) return "error";
+  if (envelope.ok === false || envelope.success === false) return said(envelope.message) ? "error" : "unjudged";
+  return undefined;
+}
+
+// A pager's count beside a list: {items: [], total: 0, page: 1}.
+const PAGER = /^(?:total(?:_?(?:count|results|pages))?|count|page(?:_?(?:size|count|number))?|per_?page|offset|limit|size)$/i;
+
+// A JSON answer whose list holds nothing: [], or an object whose one list
+// is empty beside nothing but pager counts, flags and nulls ({items: [],
+// total: 0}); the same under the one record that wraps it ({data: {search:
+// {edges: []}}}). Words or a record beside the list ({tags: [], name: "x"})
+// are the answer.
+function emptyJson(parsed: unknown): boolean {
+  if (Array.isArray(parsed)) return parsed.length === 0;
+  let body = record(parsed);
+  for (let depth = 0; body && depth < 4; depth++) {
+    const entries = Object.entries(body);
+    const lists = entries.filter(([, value]) => Array.isArray(value));
+    const others = entries.filter(([key, value]) => !Array.isArray(value) && typeof value !== "boolean" && !(PAGER.test(key) && typeof value === "number") && said(value));
+    const list = lists[0]?.[1];
+    if (lists.length === 1 && others.length === 0) return Array.isArray(list) && list.length === 0;
+    if (lists.length > 0 || others.length !== 1) return false;
+    body = record(others[0][1]);
+  }
+  return false;
+}
+
+const JSON_TYPE = /^(?:application\/(?:[a-z0-9!#$&^_.+-]+\+)?json|text\/json)\s*(?:;|$)/i;
+const EMPTY_JSON = "the JSON answer holds no items; check the address and its parameters before treating the list as empty.";
+const BARE_NO = "the JSON answer says ok: false without saying why; read its fields before treating it as an answer or an error.";
+
+// The parsed body of a JSON answer, by its type or by a body that parses
+// as one; undefined for any other text.
+function jsonOf(text: string, contentType: string | undefined): { parsed: unknown } | undefined {
+  const typed = contentType !== undefined && JSON_TYPE.test(contentType);
+  if (!typed && !((text[0] === "{" && text.at(-1) === "}") || (text[0] === "[" && text.at(-1) === "]"))) return undefined;
+  try {
+    return { parsed: JSON.parse(text) };
+  } catch {
+    return undefined;
+  }
+}
+
 export function classifyPage(facts: PageFacts): PageState {
   const state = (kind: PageKind): PageState => ({ kind, next: NEXT[kind] });
   const walled = (kind: PageKind, scope: Line[]): PageState => {
@@ -170,6 +236,12 @@ export function classifyPage(facts: PageFacts): PageState {
   const text = facts.text.replace(/[\u200b-\u200d\ufeff]/g, "").replace(/’/g, "'").trim();
   if (facts.partial === true || facts.truncated === true || text === "(no change)") return state("unjudged");
   if (!text || text === "(0 nodes)") return state(facts.ready === "loading" ? "loading" : "empty");
+  const json = jsonOf(text, facts.contentType);
+  if (json) {
+    const wall = jsonWall(json.parsed);
+    if (wall === "unjudged") return { kind: "unjudged", next: BARE_NO };
+    return wall ? state(wall) : emptyJson(json.parsed) ? { kind: "empty", next: EMPTY_JSON } : state("content");
+  }
   if ((facts.contentType && !/^text\/(?:plain|html)(?:;|$)/i.test(facts.contentType)) || /^<(?:!doctype|[a-z][\w:-]*(?:\s|>))/i.test(text)) return state("unjudged");
   const lines = linesOf(text);
   for (const control of facts.controls ?? []) lines.push({ ...control, indent: 0 });
@@ -220,13 +292,17 @@ function pageStateOf(value: unknown): PageState | undefined {
   return { kind: state.kind as PageKind, next: state.next };
 }
 
+// judgedText: a sample of the page's text that a read of rows or pictures
+// brings only to be judged (judgedSample in content.js); it goes no
+// further.
 function decorate(value: Record<string, unknown>, scope?: { partial?: boolean }): Record<string, unknown> {
-  if (pageStateOf(value.pageState) || typeof value.file === "string") return value;
+  const { judgedText, ...rest } = value;
+  if (pageStateOf(value.pageState) || typeof value.file === "string") return judgedText === undefined ? value : rest;
   const challenge = record(value.challenge);
   const pageState = classifyPage({
     url: typeof value.url === "string" ? value.url : "",
     title: typeof value.title === "string" ? value.title : "",
-    text: typeof value.snapshot === "string" ? value.snapshot : typeof value.text === "string" ? value.text : undefined,
+    text: typeof value.snapshot === "string" ? value.snapshot : typeof value.text === "string" ? value.text : typeof judgedText === "string" ? judgedText : undefined,
     status: typeof value.status === "number" ? value.status : undefined,
     loading: value.loading === true,
     ready: value.ready === "loading" || value.ready === "interactive" || value.ready === "complete" ? value.ready : undefined,
@@ -237,7 +313,7 @@ function decorate(value: Record<string, unknown>, scope?: { partial?: boolean })
     challenge: challenge && typeof challenge.kind === "string" && (challenge.where === "page" || challenge.where === "box" || challenge.where === "block")
       ? { kind: challenge.kind, where: challenge.where } : undefined,
   });
-  return { ...value, pageState };
+  return { ...rest, pageState };
 }
 
 function mappedPage(value: unknown): unknown {
@@ -257,6 +333,19 @@ function mappedPage(value: unknown): unknown {
 }
 
 const PAGE_TOOLS: Record<string, true> = { open: true, goto: true, snapshot: true, extract: true, fetch: true, info: true };
+
+// A read some of whose answers are of a page: net's body of one request
+// and pdf's read of an address, by their text; harvest's list, by its
+// items' words. An eval judges its own page (judgedEval in tools.ts).
+function pageReadOf(tool: string, value: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (Object.hasOwn(PAGE_TOOLS, tool)) return value;
+  if (typeof value.url !== "string") return undefined;
+  if ((tool === "net" || tool === "pdf") && typeof value.text === "string") return value;
+  if (tool === "harvest" && Array.isArray(value.items)) {
+    return { ...value, judgedText: value.items.map((item) => record(item)?.text).filter((text) => typeof text === "string").join("\n") };
+  }
+  return undefined;
+}
 const PAGE_WRAPPERS: Record<string, true> = { click: true, type: true, press: true, select: true, hover: true, upload: true, history: true, scroll: true, wait: true, real_input: true };
 
 // Whether a read's arguments take part of the page, which says nothing of
@@ -274,7 +363,8 @@ export function partialRead(args: Record<string, unknown>): boolean {
 export function withPageState(tool: string, value: unknown, scope?: { partial?: boolean }): unknown {
   const object = record(value);
   if (!object) return value;
-  let result = Object.hasOwn(PAGE_TOOLS, tool) ? decorate(object, scope) : object;
+  const read = pageReadOf(tool, object);
+  let result = read ? decorate(read, scope) : object;
   const page = record(object.page);
   if (page && (Object.hasOwn(PAGE_TOOLS, tool) || Object.hasOwn(PAGE_WRAPPERS, tool))) result = { ...result, page: decorate(page, scope) };
   if ((tool === "map" || tool === "follow") && Array.isArray(object.pages)) result = { ...result, pages: object.pages.map(mappedPage) };

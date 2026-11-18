@@ -39,7 +39,7 @@ import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
-import { partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
+import { classifyPage, partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
@@ -3627,6 +3627,19 @@ function readerHint(tab: unknown, result: unknown): unknown {
   return n === 3 ? beside(result, "hint", `a third eval on ${host}: save a script you run again as a reader, learn {site: "${host}", reader: "<name>", expression}, then eval {tab, reader: "<name>"}`) : result;
 }
 
+// An eval's value is its code's, which says nothing of the page it ran
+// on, so a model's eval has the page's title and address judged as map's
+// are (readTab in map.ts), and only a wall or an error goes with the
+// answer. A page that navigated under the eval may not answer tabInfo;
+// the eval's answer stands.
+async function judgedEval(tab: unknown, result: unknown): Promise<unknown> {
+  if (!fromModel() || !result || typeof result !== "object" || Array.isArray(result)) return result;
+  const info = await relay(await resolveTab(tab), "tabInfo").catch(() => undefined) as { url?: unknown; title?: unknown } | undefined;
+  if (typeof info?.url !== "string" || typeof info.title !== "string" || !info.title) return result;
+  const pageState = classifyPage({ url: info.url, title: info.title, text: info.title });
+  return pageState.kind === "content" || pageState.kind === "unjudged" ? result : { ...result, url: info.url, pageState };
+}
+
 // A model's third read of one kind of page in a task (scrapes.ts) is
 // offered, once, a faster way to the same data, beside a read of the page's
 // text: a snapshot, an extract, or the pages of a map. A page read again
@@ -4069,10 +4082,10 @@ export const TOOLS: Record<string, Tool> = {
       const given = [a.expression, a.file, a.reader].filter((v) => v !== undefined).length;
       if (given === 0) throw new Error("eval needs expression, file (the code's absolute path), or reader: a script saved with learn");
       if (given > 1) throw new Error("give one of expression, file, or reader");
-      if (a.reader !== undefined) return runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs);
+      if (a.reader !== undefined) return judgedEval(a.tab, await runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs));
       const expression = a.file === undefined ? str(a.expression, "expression") : await codeFrom(a.file);
       await slackSend(await resolveTab(a.tab), { tool: "eval", code: expression }, a);
-      return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => readerHint(a.tab, result));
+      return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => judgedEval(a.tab, readerHint(a.tab, result)));
     }),
   },
   fetch: {

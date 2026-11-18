@@ -4708,7 +4708,7 @@
       if (used > limit) { truncated = true; break; }
       images.push(image);
     }
-    return { url: location.href, title: document.title, images, truncated };
+    return { url: location.href, title: document.title, images, truncated, ...judgedSample(opts) };
   }
 
   // A query's parts: "a|b" is a or b. A leading (?i) is dropped: agents
@@ -4774,7 +4774,17 @@
         found.push(...cards);
       }
     }
-    return { url: location.href, title: document.title, ...withinLimit(found, opts) };
+    return { url: location.href, title: document.title, ...withinLimit(found, opts), ...judgedSample(opts) };
+  }
+
+  // A read of rows or pictures has no text, so the page's own start goes
+  // with it for the daemon to judge (page-state.ts), which drops it before
+  // the agent sees the answer: a sign-in page's provider buttons read as a
+  // list of three cards. A selector's or query's read says nothing of the
+  // whole page.
+  const JUDGED_CHARS = 2000;
+  function judgedSample(opts) {
+    return opts.selector || opts.query ? {} : { judgedText: tidyText(contentRoot().root ?? document.body).text.slice(0, JUDGED_CHARS) };
   }
 
   // query keeps the rows containing it; maxBytes (default 20000) bounds the

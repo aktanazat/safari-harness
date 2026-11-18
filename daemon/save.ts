@@ -131,7 +131,8 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
   const r = result as Record<string, unknown>;
   if (typeof r.error === "string") return r;
   const { pageState } = withPageState(kind, r, { partial }) as { pageState?: unknown };
-  const file = fileOf(kind, r);
+  const { judgedText: _, ...kept } = r;
+  const file = fileOf(kind, kept);
   const url = typeof r.url === "string" ? r.url : await pageUrl();
   const saved = await write(target, url, file);
   const text = typeof file.body === "string" ? file.body : "";

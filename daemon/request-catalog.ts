@@ -1,6 +1,7 @@
 import { chmodSync, closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { dataFile, readJson, writeJson } from "./phone.ts";
+import { jsonWall } from "./page-state.ts";
 import { gateOfStep, playbookUrl, publicLabel } from "./recordings.ts";
 import { rpc } from "./rpc.ts";
 import type { Tool } from "./tools.ts";
@@ -73,10 +74,7 @@ function checkedJson(text: unknown, check: Check): CheckedJson {
   try { parsed = JSON.parse(text); } catch { throw new Error("the response is not complete JSON"); }
   if (parsed === null || typeof parsed !== "object") throw new Error("the response must be a JSON object or array");
   const root = Array.isArray(parsed) ? "array" : "object";
-  const envelope = fields(parsed);
-  if (envelope.ok === false || envelope.success === false || envelope.authenticated === false || envelope.authorized === false
-    || envelope.requiresLogin === true || envelope.loading === true || (envelope.error !== undefined && envelope.error !== null && envelope.error !== false && envelope.error !== "")
-    || (Array.isArray(envelope.errors) && envelope.errors.length > 0)) throw new Error("the JSON response reports an error, sign-in requirement, or loading state");
+  if (jsonWall(parsed)) throw new Error("the JSON response reports an error, sign-in requirement, or loading state");
   let value: unknown = parsed;
   for (const part of check.field.split(".")) {
     if (value === null || typeof value !== "object" || !Object.hasOwn(value, part)
