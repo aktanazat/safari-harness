@@ -253,9 +253,7 @@ function onPage(page: string, words: Map<string, number[]>, text: string): boole
 // A root array has no field that holds every row, so it gives none. The
 // page is read once for all the bodies looked at against it.
 export function fieldsShownOn(page: string): (body: string) => { field: string; type: "array" | "object"; shown: number; chars: number }[] {
-  const text = folded(page);
-  const words = wordsAt(text);
-  const shows = new Map<string, boolean>();
+  const shownOn = textShownOn(page);
   return (body) => {
     let parsed: unknown;
     try { parsed = JSON.parse(body); } catch { return []; }
@@ -264,10 +262,7 @@ export function fieldsShownOn(page: string): (body: string) => { field: string; 
     const walk = (value: unknown, path: string[]): Set<string> => {
       if (typeof value === "string") {
         const t = textOf(value);
-        if (t === undefined) return new Set();
-        let shown = shows.get(t);
-        if (shown === undefined) shows.set(t, (shown = onPage(text, words, t)));
-        return shown ? new Set([t]) : new Set();
+        return t !== undefined && shownOn(value) ? new Set([t]) : new Set();
       }
       if (value === null || typeof value !== "object") return new Set();
       const shown = new Set<string>();
@@ -280,6 +275,21 @@ export function fieldsShownOn(page: string): (body: string) => { field: string; 
     };
     walk(parsed, []);
     return found.sort((a, b) => b.shown - a.shown || b.depth - a.depth).map(({ field, type, shown, chars }) => ({ field, type, shown, chars }));
+  };
+}
+
+// Whether the page's text has a JSON string as words of its own, as
+// fieldsShownOn counts them; false for a string too short or common to say.
+export function textShownOn(page: string): (value: string) => boolean {
+  const text = folded(page);
+  const words = wordsAt(text);
+  const shows = new Map<string, boolean>();
+  return (value) => {
+    const t = textOf(value);
+    if (t === undefined) return false;
+    let shown = shows.get(t);
+    if (shown === undefined) shows.set(t, (shown = onPage(text, words, t)));
+    return shown;
   };
 }
 

@@ -32,6 +32,7 @@ import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, re
 import { tabsView } from "./tabs-view.ts";
 import { recordingsTool } from "./recordings.ts";
 import { endpointOf, fieldsShownOn, savedAs } from "./request-catalog.ts";
+import { feedHint, feedPages, type FeedDeps, type Fetched } from "./feed.ts";
 import { deferred, pageKind, scraped } from "./scrapes.ts";
 import { replay } from "./replay.ts";
 import { afterStep, checkpoint, refill } from "./drafts.ts";
@@ -1877,8 +1878,9 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
     }
   }
   // as: "table" answers rows, not text
+  const rows = "tables" in page ? page.tables : undefined;
   const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page)
-    : fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields) : page;
+    : await withFeedHint(tab, fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields) : page, rows);
   return missed ? { ...out, note: missed } : out;
 }
 
@@ -1891,6 +1893,35 @@ function withFields(page: { url: string; title: string; tables: RowsSource[]; tr
   const next = !page.tables.length ? "no table or card list here; extract {tab} reads the page's text"
     : picked.missing ? 'a missing field takes one of unused\'s columns by name, as fields: {"seller": "<column>"}' : undefined;
   return { url: page.url, title: title.text, ...picked, ...(page.truncated ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}) };
+}
+
+// The net log and page the JSON feed reader (feed.ts) works from. Its
+// requests go from the page only: the extension's would carry no sign-in.
+const FEED_DEPS: FeedDeps = {
+  entries: async (tab) => ((await relay(tab, "netRead")) as { entries: NetEntry[] }).entries,
+  body: (tab, e) => bridge.tab(tab, "netBody", [{ url: e.url, t: e.t }], undefined, e.frame) as Promise<{ text: string; truncated: boolean; arriving: boolean }>,
+  pageUrl: async (tab) => ((await relay(tab, "tabInfo")) as { url?: string }).url ?? "",
+  pageText: async (tab) => ((await relay(tab, "extract", [{ maxBytes: 60_000 }])) as { text?: string }).text ?? "",
+  scroll: (tab) => gathering(tab, "extract", { scroll: true, maxBytes: 1000 }, 8000),
+  fetch: (tab, url) => pageFetch({ tab, url, maxBytes: 1_000_000, pageOnly: true }) as Promise<Fetched>,
+  save: saveAnswer,
+};
+
+// A table or list read whose rows the page got as JSON says so, and names
+// the net call that reads the pages after them. A hint that fails to form
+// leaves the read as it was.
+async function withFeedHint<T extends object>(tab: number, read: T, rows: unknown): Promise<T> {
+  const texts = new Set<string>();
+  const walk = (value: unknown) => {
+    if (texts.size >= 8) return;
+    if (typeof value === "string") texts.add(value.trim());
+    else if (value !== null && typeof value === "object") for (const child of Object.values(value)) walk(child);
+  };
+  walk(rows);
+  const next = await feedHint(tab, [...texts], FEED_DEPS).catch(() => undefined);
+  if (next === undefined) return read;
+  const own = "next" in read && typeof read.next === "string" ? `${read.next}; ` : "";
+  return { ...read, next: `${own}${next}` };
 }
 
 // Text read past the reply's limit: the reply keeps its first limit
@@ -4159,7 +4190,7 @@ export const TOOLS: Record<string, Tool> = {
       const ms = Math.min(a.ms === undefined ? GATHER_MS : num(a.ms, "ms"), 90_000);
       const tab = await resolveTab(a.tab);
       const list = await gathering(tab, "harvest", { selector: a.selector, item: a.item, key: a.key, expand: a.expand, scroll: a.scroll, max: a.max }, ms) as Harvest;
-      return shieldItems(withReader(list));
+      return withFeedHint(tab, shieldItems(withReader(list)), list.items.map((item) => item.text));
     },
   },
   map: {
@@ -4245,10 +4276,15 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => handoffWait(await resolveTab(a.tab), a.why === undefined ? undefined : str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }), ...(a.background === true ? { background: true as const } : {}) }),
   },
   net: {
-    desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends.",
-    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "url part (a|b: either), or /regex/" }, urls: { type: "boolean", description: "a line each, no bodies" }, body: { description: "index or url part: its whole body" } },
+    desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends. pages: the page's JSON list, next pages as rows.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "url part (a|b: either), or /regex/" }, urls: { type: "boolean", description: "a line each, no bodies" }, body: { description: "index or url part: its whole body; with pages, the request to page" }, pages: { type: "number", description: "next pages of the page's JSON list to read, max 20" }, continue: { type: "string", description: "a pages answer's handle, to read on" } },
+    unlisted: { maxBytes: { type: "number", description: "rows kept in the reply, default 20000; past it the whole is saved" } },
     required: ["tab"],
-    run: (a) => {
+    run: async (a) => {
+      if (a.pages !== undefined || a.continue !== undefined) {
+        if (a.do !== undefined && a.do !== "read") throw new Error("pages goes with do: read");
+        return feedPages(await resolveTab(a.tab), a, FEED_DEPS);
+      }
       if (a.body !== undefined) return netBody({ tab: a.tab as number | undefined, body: a.body, do: a.do });
       if (a.url === undefined && a.urls === undefined) return capture({ start: netStart, read: netReadOffering, stop: netStop }, a);
       if (a.do !== undefined && a.do !== "read") throw new Error("url and urls go with do: read");
@@ -4715,7 +4751,14 @@ export function formatResult(value: unknown, max = Infinity): string {
     // extract as table: each table as one line of JSON
     if (Array.isArray(v.tables)) {
       const note = v.truncated ? "\n…truncated: narrow with selector or query" : "";
-      return `${head}\n\n${fence(v.tables.map((t) => JSON.stringify(t)).join("\n"))}${note}`;
+      const { next } = value as { next?: unknown };
+      return `${head}\n\n${fence(v.tables.map((t) => JSON.stringify(t)).join("\n"))}${note}${typeof next === "string" ? `\nnext: ${next}` : ""}`;
+    }
+    // net pages: what was read and how, then a row a line
+    const feed = value as { feed?: unknown; rows?: unknown[] };
+    if (feed.feed !== undefined && Array.isArray(feed.rows)) {
+      const { rows, ...rest } = feed;
+      return `${warn}${JSON.stringify(rest)}\n\n${rows.length ? fence(rows.map((row) => JSON.stringify(row)).join("\n")) : "no rows"}`;
     }
     // extract as images: a picture a line, its size and alt after it
     if (Array.isArray(v.images)) {
