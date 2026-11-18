@@ -18,7 +18,8 @@ import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, owner
 import { uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
-import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
+import { addressedNote, cutFenced, defused, fence, markLines, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
+import { pickFields, type Fielded, type RowsSource } from "./fields.ts";
 import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
@@ -1849,14 +1850,17 @@ function withReader<T extends { url: string; incomplete?: Incomplete }>(page: T)
 // the addresses of its pictures. Text past maxBytes is read whole, up to
 // SAVED_CHARS, for the saved folder (fit); a secret's source and a read
 // with save: false keep only what the reply shows.
-export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; save?: unknown; expand?: boolean; scroll?: boolean }) {
+export async function extract(opts: { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; save?: unknown; expand?: boolean; scroll?: boolean; fields?: unknown }) {
   const tab = await resolveTab(opts.tab);
   const strict = "strict_selector" in opts && opts.strict_selector === true;
   const whole = strict || opts.save === false ? undefined : SAVED_CHARS;
   const limit = opts.maxBytes || 20000;
   const gathers = opts.expand === true || opts.scroll === true;
+  const fields = opts.fields;
+  const as = fields !== undefined && opts.as === undefined ? "table" : opts.as;
+  if (fields !== undefined && as !== "table") throw new Error(`fields reads the rows of tables and card lists: drop as: "${as}", or pass as: "table"`);
   const ask = (selector: string | undefined) => {
-    const args = { selector, query: opts.query, maxBytes: opts.maxBytes, whole, as: opts.as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true };
+    const args = { selector, query: opts.query, maxBytes: opts.maxBytes, whole, as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true, hints: fields !== undefined };
     return (gathers ? gathering(tab, "extract", args) : relay(tab, "extract", [args])) as Promise<Extract | Chat | { tables: unknown[] }>;
   };
   const read = (selector: string | undefined) => researchRead(tab, () => ask(selector));
@@ -1865,7 +1869,7 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   // GitHub's file page draws its code where extract does not read, so it
   // read as its line numbers: on 10-23 eight of 64 file pages kept under
   // 15% of the file (K7). Its raw file is read in its place.
-  if ("text" in page && opts.selector === undefined && opts.query === undefined && (opts.as ?? "text") === "text") {
+  if ("text" in page && opts.selector === undefined && opts.query === undefined && (as ?? "text") === "text") {
     const file = GITHUB_FILE.exec(page.url);
     if (file) {
       const raw = await rawFile(tab, `https://github.com/${file[1]}/raw/${file[2]}`, whole ?? limit);
@@ -1873,8 +1877,20 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
     }
   }
   // as: "table" answers rows, not text
-  const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page) : page;
+  const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page)
+    : fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields) : page;
   return missed ? { ...out, note: missed } : out;
+}
+
+// extract's fields (fields.ts): the rows of the table or card list that
+// fits them best, as objects with those keys, and where each key came from.
+function withFields(page: { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields: unknown) {
+  const title = markLines(page.title, false);
+  const { addressedToAI = 0, ...picked } = pickFields(page.tables, fields);
+  const places = title.places + addressedToAI;
+  const next = !page.tables.length ? "no table or card list here; extract {tab} reads the page's text"
+    : picked.missing ? 'a missing field takes one of unused\'s columns by name, as fields: {"seller": "<column>"}' : undefined;
+  return { url: page.url, title: title.text, ...picked, ...(page.truncated ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}) };
 }
 
 // Text read past the reply's limit: the reply keeps its first limit
@@ -3463,6 +3479,7 @@ export const Y: Param = { type: "number", description: "page y, without ref" };
 // query, a region, a diff, or a read after a wait.
 const PAGE: Param = { description: "also read: true, query, {query,root,diff,updates,since}" };
 const SAVE: Param = { description: "true or absolute path; returns path,size,500-char start" };
+const FIELDS: Param = { description: 'rows as objects with these keys: ["price","date"] or "price,date"; {"price": "span.price"} names a column; implies as: "table"' };
 
 // With snapshot an action also returns the page it led to, read as
 // snapshot reads it (with its bot-check probe; a whole page is the tab's
@@ -4113,10 +4130,10 @@ export const TOOLS: Record<string, Tool> = {
   },
   extract: {
     desc: "Main text, or a CSS selector's. expand clicks Load more; scroll gathers a feed.",
-    params: { tab: TAB, selector: { type: "string" }, query: { type: "string", description: "only lines with this text, page-wide" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table", "chat", "images"], description: "table: tables/cards as JSON rows; chat: who said what; images: full-size URLs" }, expand: { type: "boolean" }, scroll: { type: "boolean" }, save: SAVE },
+    params: { tab: TAB, selector: { type: "string" }, query: { type: "string", description: "only lines with this text, page-wide" }, maxBytes: { type: "number", description: "default 20000" }, as: { type: "string", enum: ["text", "table", "chat", "images"], description: "table: tables/cards as JSON rows; chat: who said what; images: full-size URLs" }, fields: FIELDS, expand: { type: "boolean" }, scroll: { type: "boolean" }, save: SAVE },
     unlisted: { strict_selector: { type: "boolean", description: "internal secret source: selector must match exactly one element" } },
     required: ["tab"],
-    run: saving("extract", async (a) => withSiteActions(await extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; expand?: boolean; scroll?: boolean }), a.tab)),
+    run: saving("extract", async (a) => withSiteActions(await extract(a as { tab?: number; selector?: string; query?: string; maxBytes?: number; as?: string; expand?: boolean; scroll?: boolean; fields?: unknown }), a.tab)),
   },
   // repl harvest(page, options): the items of the page's list, each once,
   // as extract's expand and scroll gather them (content.js harvestList).
@@ -4145,6 +4162,7 @@ export const TOOLS: Record<string, Tool> = {
       query: { type: "string", description: "only lines containing this" },
       maxBytes: { type: "number" },
       as: { type: "string", enum: ["text", "table", "images"] },
+      fields: FIELDS,
       concurrency: { type: "number", description: "default 4 (max), the agent's tab limit" },
       save: { description: "true or an absolute folder: a file per page" },
       follow: { type: "object", description: `links matching CSS or /regex/, max ${MAP_MAX_URLS}` },
@@ -4674,6 +4692,12 @@ export function formatResult(value: unknown, max = Infinity): string {
       return lines.join("\n");
     }
     if (Array.isArray(v.pages)) return mapText(value as MapAnswer, (x) => formatResult(x), max);
+    // extract with fields: where each field came from, then a row a line
+    if ("fields" in value && Array.isArray((value as Partial<Fielded>).rows)) {
+      const { fields, missing, unused, source, sources, rows, truncated, next } = value as Fielded & { truncated?: boolean; next?: string };
+      const report = JSON.stringify({ fields, ...(missing ? { missing } : {}), ...(unused ? { unused } : {}), ...(sources ? { source, sources } : {}) });
+      return `${head}\n${warn}\n${fence([report, ...rows.map((r) => JSON.stringify(r))].join("\n"))}${truncated ? "\n…truncated: narrow with selector or query" : ""}${next ? `\nnext: ${next}` : ""}`;
+    }
     // extract as table: each table as one line of JSON
     if (Array.isArray(v.tables)) {
       const note = v.truncated ? "\n…truncated: narrow with selector or query" : "";

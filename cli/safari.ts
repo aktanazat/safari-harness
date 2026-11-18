@@ -128,6 +128,9 @@ const USAGE = `safari — drive Safari from the terminal
   safari extract --tab N --expand|--scroll   all of a thread or feed: clicks its Load
                                              more, or scrolls and gathers its items
   safari extract --as table --tab N          tables and card lists as JSON rows
+  safari extract --fields price,date --tab N the rows of the best-fitting table or card list
+                                             as objects with those keys, and the column each
+                                             came from ('{"price":"span.price"}' names one)
   safari extract --as chat --tab N           a chat's messages, each with who wrote it
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)

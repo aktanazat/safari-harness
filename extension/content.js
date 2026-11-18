@@ -4769,7 +4769,7 @@
       const table = tableOf(el);
       if (table) found.push(table);
       else if (!lists.some((p) => p.contains(el))) {
-        const cards = cardsOf(el);
+        const cards = cardsOf(el, opts.hints === true);
         if (cards.length) lists.push(el);
         found.push(...cards);
       }
@@ -4848,13 +4848,13 @@
 
   // The card lists among el's children: 3 or more drawn children with the
   // same tag and first class, each with 2 or more text fields (a menu of
-  // bare links is not data).
-  function cardsOf(el) {
+  // bare links is not data). hints keeps what each field says it is.
+  function cardsOf(el, hints) {
     if (el.children.length < 3 || el.closest(`table,select,svg,${TABLE_ROLES}`)) return [];
     const lists = [];
     for (const alike of Map.groupBy(el.children, keyOf).values()) {
       if (alike.length < 3) continue;
-      const cards = alike.map((card) => (drawn(card) ? cardFields(card) : null))
+      const cards = alike.map((card) => (drawn(card) ? cardFields(card, hints) : null))
         .filter((fields) => fields && fields.filter((f) => !f.link).length >= 2);
       if (cards.length >= 3) lists.push(cardList(cards));
     }
@@ -4864,14 +4864,18 @@
   // One list for cards whose fields differ (one with an extra badge): its
   // headers are every field any card has, in page order, and a card without
   // a field has "" there. A key a card repeats is numbered ("span.spec",
-  // "span.spec 2"), so each value keeps a column.
+  // "span.spec 2"), so each value keeps a column. A column's hint is the
+  // first its cards give.
   function cardList(cards) {
+    const said = new Map();
     const keyed = cards.map((fields) => {
       const seen = new Map();
-      return fields.map(({ key, value }) => {
+      return fields.map(({ key, value, hint }) => {
         const n = (seen.get(key) ?? 0) + 1;
         seen.set(key, n);
-        return [n > 1 ? `${key} ${n}` : key, value];
+        const named = n > 1 ? `${key} ${n}` : key;
+        if (hint && !said.has(named)) said.set(named, hint);
+        return [named, value];
       });
     });
     const headers = [];
@@ -4883,7 +4887,7 @@
         else at = i + 1;
       }
     }
-    return { kind: "cards", headers, rows: keyed.map((fields) => {
+    return { kind: "cards", headers, ...(said.size ? { hints: headers.map((h) => said.get(h) ?? "") } : {}), rows: keyed.map((fields) => {
       const byKey = new Map(fields);
       return headers.map((h) => byKey.get(h) ?? "");
     }) };
@@ -4893,20 +4897,38 @@
   // (React's "$<!-- -->9" reads "$9"), keyed by its tag and first class
   // after its parent's (a price and a mileage in one class of span keep
   // apart), and each link's address after its text. null when it has too
-  // many.
-  function cardFields(card) {
+  // many. With hints each field also keeps what the page says it is
+  // (fieldHint), for extract's fields.
+  function cardFields(card, hints) {
     const fields = [];
+    let label = "";
     const add = (el) => {
       const up = el === card ? null : el.parentElement ?? el.getRootNode().host;
       const key = up && up !== card ? `${keyOf(up)} > ${keyOf(el)}` : keyOf(el);
       const own = norm([...el.childNodes].map((n) => (n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.nodeName === "BR" ? " " : "")).join(""));
-      if (own && drawn(el)) fields.push({ key, value: own });
+      if (own && drawn(el)) {
+        const hint = hints ? fieldHint(el, own, label) : "";
+        fields.push({ key, value: own, ...(hint ? { hint } : {}) });
+        label = /^[^:]{1,30}:$/.test(own) ? own.slice(0, -1) : "";
+      }
       if (el.tagName === "A" && el.href) fields.push({ key: `${key} href`, value: el.href, link: true });
       return fields.length <= CARD_FIELDS_MAX;
     };
     if (!add(card)) return null;
     for (const el of deepElements(card)) if (!add(el)) return null;
     return fields;
+  }
+
+  // What a field says it is, as words: its itemprop, data-testid,
+  // aria-label and title (each short, and not its own text), the "Label:"
+  // drawn before it or opening its text, and "struck" when it is drawn
+  // crossed out (a price before a sale).
+  function fieldHint(el, own, label) {
+    const short = (v) => (v && v.length <= 40 && v !== own ? v : "");
+    const opening = /^([A-Za-z][\w ]{0,24}):\s/.exec(own)?.[1] ?? "";
+    const struck = el.closest("s,del,strike") !== null || getComputedStyle(el).textDecorationLine.includes("line-through");
+    const words = [el.getAttribute("itemprop"), el.getAttribute("data-testid"), el.getAttribute("aria-label"), el.getAttribute("title")].map(short);
+    return [...words, label, opening, struck ? "struck" : ""].filter(Boolean).join(" ");
   }
 
   function tabInfo() {
