@@ -145,6 +145,8 @@ const USAGE = `safari — drive Safari from the terminal
   safari net read|start|stop --tab N         fetch/XHR since the page loaded
   safari net read --body I|URL-PART --tab N  one request's whole body: its index, or
                                              part of its url (the latest with it)
+  safari net pages N --tab N [--body URL-PART] the page's JSON list, its next N pages as
+                                             rows (max 20); --continue H reads on
   safari console start|read --tab N          console capture
   safari cookies --tab N                     cookies for the page
   safari cookies clear --tab N|--url U       forget the site (cookies, storage);
@@ -1154,7 +1156,8 @@ async function main() {
       break;
     }
     case "net": case "console": {
-      if (positional[0]) args.do = positional[0];
+      if (cmd === "net" && positional[0] === "pages") args.pages = Number(positional[1] ?? 5);
+      else if (positional[0]) args.do = positional[0];
       const body = flag("body", rest);
       if (cmd === "net" && body !== undefined) args.body = body;
       break;

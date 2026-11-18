@@ -2622,6 +2622,40 @@ query) lists those requests as `readers`, each with its `request` index and
 `observedAt` time: save one with `request_catalog` and later calls get the
 same data in one request, without loading or reading the page.
 
+`net {tab, pages: N}` reads the JSON list behind the page, and its next N
+pages (at most 20 a call), as rows. It picks, among the successful JSON GETs
+the top page made with fetch or XHR to its own site, the reply whose array
+of objects holds the most texts the page shows (an `edges[]` of `{node}`
+reads as its nodes); `body` (an index or url part) names one instead. The
+pager is learned by watching: two requests the page made to that address
+differ in one query key (a JSON value such as GraphQL's `variables` is read
+key by key), which is a page number when it went up by one, an offset when
+by the reply's row count, and a cursor when the earlier reply held its new
+value. A page that made one such request is scrolled once to make it ask for
+the next; with still none, a key named like a pager (page, offset, cursor,
+after, pageToken, max_id, a reply's next link) is used, and the answer's
+`pager.from` says `guessed`. The next pages go out from the page, with its
+cookies and the sign-in header its own requests carry, one a second, only
+the pager key changed. A request whose path or query may change something
+(mark, seen, read, ack, track, vote, like, follow, subscribe, confirm,
+delete, consume, redeem, logout, a GraphQL mutation), carries a signed or
+one-time value (sig, signature, token, nonce, expires, X-Amz-*), or goes to
+another site is never read again. Paging stops at the first reply unlike
+the page's own (another status, not JSON, an error envelope, a redirect),
+at an empty or repeated page, at the reply's last page, or after 50 s; it
+never retries, and a 429 says when the site allows the next ask. The
+answer names the request (its path only), the rows' path, the pager's kind
+and key (never its values), pages read, `of` when the reply gives a total,
+and the rows, de-duplicated by their id key when they have one; rows past
+maxBytes (default 20000) are saved whole to a file named in `saved`.
+`continue` is an opaque handle, good for 10 minutes to the agent and tab
+that got it: `net {tab, pages: N, continue}` reads on. A stop that says
+"scroll instead" means the site would not answer a copy of the page's
+request: `extract {tab, scroll: true}` lets the page ask itself. CLI:
+`safari net pages 5 --tab N [--body /api/items]`, then
+`safari net pages 5 --continue H --tab N`. A table read (`extract as:
+table`) whose rows came from such a request says so in `next`.
+
 ## console
 
 `console {tab, do: "start"}` records the page's console messages from that
