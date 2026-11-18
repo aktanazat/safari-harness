@@ -1479,18 +1479,19 @@ test.each([{ registered: false, port: 47356 }, { registered: true, port: 47357 }
   }
 });
 
-// On 10-23 each open of /agents from an agent made it a window of its own.
-test("an agent's open of the daemon's own page makes no window: a plain tab without one, else a tab in its window", async () => {
+// On 10-23 each open of /agents from an agent made it a window of its own;
+// the plain tab that replaced it opened in the user's window (11-18).
+test("an agent's opens of the daemon's own pages share one window of its own, never the user's", async () => {
   const s = safari();
   const a = agent();
   const windows = () => [...s.tabs.values()].filter((t) => t.url.includes("/space?")).length;
   try {
     const before = windows();
-    const plain = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/agents", background: true })) as { id: number };
-    expect({ windows: windows(), window: s.tabs.get(plain.id)?.windowId }).toEqual({ windows: before, window: 1 });
+    const agents = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/agents", background: true })) as { id: number };
     const work = await runAs(a.pid, () => openTab("https://work.example/", true));
     const memory = await runAs(a.pid, () => callTool("open", { url: "http://127.0.0.1:37334/memory", background: true })) as { id: number };
-    expect({ windows: windows(), window: s.tabs.get(memory.id)?.windowId }).toEqual({ windows: before + 1, window: work.windowId });
+    expect({ windows: windows(), agents: s.tabs.get(agents.id)?.windowId, memory: s.tabs.get(memory.id)?.windowId }).toEqual({ windows: before + 1, agents: work.windowId, memory: work.windowId });
+    expect(work.windowId).not.toBe(1);
   } finally {
     a.kill();
     await a.exited;

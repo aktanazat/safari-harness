@@ -34,6 +34,27 @@ test("a call on a site's tab that is gone runs once more in a new tab where the 
   expect(opened).toHaveLength(3);
 });
 
+// 11-18: safari repl --list showed six sessions with 0 tabs while each held
+// a Slack tab its site global opened.
+test("the kit lists the tabs it holds open, the one that replaced a gone tab in its place, and none once closed", async () => {
+  const gone = new Set<number>();
+  let opened = 0;
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: ++opened };
+    if (gone.has(Number(args.tab))) throw new Error("that tab is gone: it was closed");
+    return { result: args.tab };
+  };
+  const kit = new SiteKit(send);
+  await kit.tab(SITE, `${SITE}/park`);
+  await kit.tab("https://other.example");
+  expect(kit.held()).toEqual([{ id: 1, url: `${SITE}/park` }, { id: 2, url: "https://other.example/" }]);
+  gone.add(1);
+  await kit.eval(SITE, "1");
+  expect(kit.held()).toEqual([{ id: 2, url: "https://other.example/" }, { id: 3, url: `${SITE}/park` }]);
+  await kit.close();
+  expect(kit.held()).toEqual([]);
+});
+
 // On 10-31 an X read failed this way twice in a minute while Safari itself
 // stalled; asked again in the same tab, the daemon refuses an eval that may
 // already have run there until that tab is read.

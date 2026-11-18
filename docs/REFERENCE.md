@@ -244,7 +244,7 @@ Safari is the user's everyday browser, so treat his tabs as his.
   this does not keep those disposable tabs open. Recovery metadata expires
   after five minutes even when no harness window is open.
 - Recently closed on `/agents` lets the user reopen a retained safe
-  address in a regular user tab. It does not revive the ended task.
+  address in a window of its own, in front. It does not revive the ended task.
   During the same five-minute period, an agent's next call on its original
   tab id can reopen the page fresh under a new id; concurrent calls open
   it once. The answer carries a `note` and `replaced: {from, to}`. Old
@@ -1199,8 +1199,8 @@ have, use `safari goto <url> --tab N`.
   result. Load it again, or the address the site's guide gives.
 - `open` with `background: true` keeps his current tab in front.
 - The daemon's own pages (`/agents`, `/space`, `/memory` on
-  `127.0.0.1:37334`) open in your agent window if you have one, else as a
-  plain tab of yours: never a new agent window.
+  `127.0.0.1:37334`) open in your agent window, made as for any open if
+  you have none. No open puts a tab in a window of the user's.
 - `keep: true` (CLI `--keep`) leaves the tab open for the user past your
   turn (`safari guide keep`); `group` (CLI `--group trip`) names the project's
   shared window (`safari guide reference lifecycle`).

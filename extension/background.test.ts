@@ -276,9 +276,13 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       // that made it answers; here it always does, makeMs on.
       create: async ({ url, windowId = 1 }: { url: string; windowId?: number }) => {
         await made();
-        const tab = { id: nextTab++, doc: pages.get(url) ?? new Doc(url), window: windowId };
+        // A window Safari is turning into a tab group loses a tab made in
+        // it to the window focused last (work Mac, 11-18).
+        const window = grouping.has(windowId) || misplace ? focused : windowId;
+        misplace = false;
+        const tab = { id: nextTab++, doc: pages.get(url) ?? new Doc(url), window };
         tabs.set(tab.id, tab);
-        browser.tabs.onCreated.fire({ id: tab.id, windowId });
+        browser.tabs.onCreated.fire({ id: tab.id, windowId: window });
         if (!tab.doc.shut) copyIn(tab, tab.doc);
         return row(tab);
       },
@@ -437,6 +441,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
   // How long Safari takes to make a tab or window the harness asks for.
   let makeMs = 0;
   const made = () => new Promise<void>((resolve) => (makeMs ? clock.setTimeout(resolve, makeMs) : resolve()));
+  // Windows Safari is making a tab group of (the keeper pressed New Tab
+  // Group), and whether it puts the next tab made elsewhere than asked.
+  const grouping = new Set<number>();
+  let misplace = false;
   // A request as the daemon sends it (bridge.request).
   const request = (op: string, args: unknown[]): Promise<Answer> => {
     const id = `d${++seq}`;
@@ -456,6 +464,21 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     // Safari takes ms to make each tab or window the harness asks for.
     slowMakes(ms: number) {
       makeMs = ms;
+    },
+    // Safari begins or ends making window's tabs a tab group.
+    grouping(window: number, on: boolean) {
+      if (on) grouping.add(window);
+      else grouping.delete(window);
+    },
+    // Safari puts the next tab the harness makes in the window focused last.
+    misplaceNext() {
+      misplace = true;
+    },
+    // A window the harness made for an agent (windows.open), by its id.
+    async agentWindow(): Promise<number> {
+      const { value, error } = await request("windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }]);
+      if (!value || typeof value !== "object" || !("windowId" in value) || typeof value.windowId !== "number") throw new Error(`windows.open made no window: ${error}`);
+      return value.windowId;
     },
     // A tab showing a page whose script reported in to this background page,
     // or, reported false, to an earlier run of it (Safari stops an idle one).
@@ -831,9 +854,9 @@ test("an answer over what the daemon reads fails its own request alone, and the 
 });
 
 // open loads an address in a tab it makes, and goto in the tab it is given.
-type Loader = { request(op: string, args: unknown[]): Promise<Answer>; open(url: string): Tab };
+type Loader = { request(op: string, args: unknown[]): Promise<Answer>; open(url: string): Tab; agentWindow(): Promise<number> };
 const loads: [string, (b: Loader, url: string) => Promise<Answer>, number][] = [
-  ["open", (b, url) => b.request("tabs.open", [url]), 15000],
+  ["open", async (b, url) => b.request("tabs.open", [url, false, await b.agentWindow()]), 15000],
   ["goto", (b, url) => b.request("tabs.navigate", [b.open("https://example.com/").id, url]), 20000],
 ];
 
@@ -1071,7 +1094,8 @@ test.each([
   const url = "https://example.com/leaflet/latest";
   b.serveFile(url, headers);
   let opened: Answer | undefined;
-  b.request("tabs.open", [url, true]).then((a) => { opened = a; });
+  const window = await b.agentWindow();
+  b.request("tabs.open", [url, true, window]).then((a) => { opened = a; });
   // an owned tab first waits out its dialog setting (5 s), then FILE_WAIT_MS
   await b.clock.advance(7000);
   expect(opened?.value).toMatchObject({ url, file });
@@ -1088,7 +1112,8 @@ test("open of a page slow to load is not taken for a file", async () => {
   const url = "https://example.com/guide";
   b.serveFile(url, { "content-type": "text/html; charset=utf-8" });
   let opened: Answer | undefined;
-  b.request("tabs.open", [url, true]).then((a) => { opened = a; });
+  const window = await b.agentWindow();
+  b.request("tabs.open", [url, true, window]).then((a) => { opened = a; });
   await b.clock.advance(15_000);
   expect(opened?.value).not.toHaveProperty("file");
 });
@@ -1325,19 +1350,20 @@ test("a blank tab an owned page opens on its own answers a request at once once 
 // when the page said one was coming in the same second, and the page's own
 // tab then went to no one. A page's tab Safari tells of while the harness
 // still waits on its own goes to the page, as of when Safari made it.
-const harnessMakes: [string, string, unknown[], number][] = [
-  ["open", "tabs.open", ["https://example.com/other", true, 1], 0],
-  ["an agent's window", "windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 0],
-  ["an agent's window Safari takes a while to open", "windows.open", ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 1500],
+const harnessMakes: [string, string, (window: number) => unknown[], number][] = [
+  ["open", "tabs.open", (window) => ["https://example.com/other", true, window], 0],
+  ["an agent's window", "windows.open", () => ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 0],
+  ["an agent's window Safari takes a while to open", "windows.open", () => ["http://127.0.0.1:37334/space?id=1&name=agent", { width: 1001, height: 777 }], 1500],
 ];
 
 test.each(harnessMakes)("a tab the harness makes for %s is no page's popup, and the page's own tab still is", async (_what, op, args, ms) => {
   const b = await start();
+  const window = await b.agentWindow();
   const opener = b.open("https://example.com/");
   await b.own(opener);
   b.slowMakes(ms);
   b.announce(opener);
-  const made = b.request(op, args);
+  const made = b.request(op, args(window));
   await b.clock.advance(0);
   const popup = b.create();
   await b.clock.advance(10_000);
@@ -1374,6 +1400,77 @@ test("a window whose tab group step never ends takes a page's tab again a minute
   const popup = b.create();
   await b.clock.advance(10_000);
   expect(b.told.filter((m) => m.kind === "popup")).toEqual([{ op: "tab", kind: "popup", tab: popup.id, opener: opener.id, url: "https://example.com/popup" }]);
+});
+
+// The window each answer's tab is in, or its error.
+const placed = (answers: Answer[]) => answers.map((a) => a.error ?? (a.value && typeof a.value === "object" && "windowId" in a.value ? a.value.windowId : a.value));
+const windowsOf = async (b: { request(op: string, args: unknown[]): Promise<Answer> }) => {
+  const { value } = await b.request("tabs.list", []);
+  return Array.isArray(value) ? value.map((t: { windowId?: number }) => t.windowId) : value;
+};
+
+// 11-18, work Mac: six site-global tabs opened while the keeper made their
+// agent window a tab group went into the user's window, beside his X tab.
+test("opens into a window the keeper is making a tab group of wait for its step, and none lands in the user's window", async () => {
+  const b = await start();
+  b.open("https://x.com/home");
+  const window = await b.agentWindow();
+  await b.request("windows.regrouping", [window, true]);
+  b.grouping(window, true);
+  const opens = [1, 2, 3, 4, 5, 6].map((i) => b.request("tabs.open", [`https://app.slack.com/client/${i}`, true, window]));
+  await b.clock.advance(2000);
+  b.grouping(window, false);
+  await b.request("windows.regrouping", [window, false]);
+  await b.clock.advance(15_000);
+  expect(placed(await Promise.all(opens))).toEqual(Array(6).fill(window));
+  expect(await windowsOf(b)).toEqual([1, ...Array(7).fill(window)]);
+});
+
+test("the keeper's tab group step begins only once the opens under way in its window are made", async () => {
+  const b = await start();
+  const window = await b.agentWindow();
+  b.slowMakes(1000);
+  const open = b.request("tabs.open", ["https://app.slack.com/", true, window]);
+  await b.clock.advance(0);
+  let began = false;
+  b.request("windows.regrouping", [window, true]).then(() => { began = true; });
+  await b.clock.advance(500);
+  expect(began).toBe(false);
+  await b.clock.advance(600);
+  expect(began).toBe(true);
+  b.grouping(window, true);
+  await b.clock.advance(15_000);
+  expect(placed([await open])).toEqual([window]);
+});
+
+test("an open into a window whose group step never ends fails in words before the daemon gives up, and makes no tab", async () => {
+  const b = await start();
+  const window = await b.agentWindow();
+  await b.request("windows.regrouping", [window, true]);
+  let answer: Answer | undefined;
+  b.request("tabs.open", ["https://app.slack.com/", true, window]).then((a) => { answer = a; });
+  await b.clock.advance(25_000);
+  expect(answer?.error).toMatch(/is still becoming a tab group after 20 s/);
+  expect(await windowsOf(b)).toEqual([window]);
+});
+
+test("an open with no window or into one the harness did not make for an agent makes no tab", async () => {
+  const b = await start();
+  b.open("https://x.com/home");
+  const refused = await Promise.all([undefined, 1, 999].map((window) => b.request("tabs.open", ["https://app.slack.com/", true, window])));
+  expect(refused.map((a) => /is not an agent window/.test(a.error ?? ""))).toEqual([true, true, true]);
+  expect(await windowsOf(b)).toEqual([1]);
+});
+
+test("a tab Safari puts in another window than the agent's is closed, and the open fails", async () => {
+  const b = await start();
+  b.open("https://x.com/home");
+  const window = await b.agentWindow();
+  b.misplaceNext();
+  const open = b.request("tabs.open", ["https://app.slack.com/", true, window]);
+  await b.clock.advance(15_000);
+  expect((await open).error).toMatch(/^Safari put the new tab in window 1, not in agent window/);
+  expect(await windowsOf(b)).toEqual([1, window]);
 });
 
 // 09-30: a second page's word that a tab is coming, in the same second,

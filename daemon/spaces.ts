@@ -288,6 +288,15 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
   return made;
 }
 
+// The extension refused space's window as none it made for an agent
+// (background.js agentWindow): its page, which located followed, is in a
+// window Safari restored under a new id, or one the user moved it to. The
+// space ends as any other; the agent's next open makes a new window.
+export async function refusedSpace(space: Space): Promise<void> {
+  note("window refused", { name: space.name, window: space.window });
+  await end(space);
+}
+
 
 type Kept = Space;
 let spacesFile: string | undefined;
