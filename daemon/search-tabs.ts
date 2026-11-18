@@ -114,7 +114,12 @@ export async function searchPage(url: string, maxWait?: number): Promise<unknown
     engine.waiting--;
     if (maxWait !== undefined && engine.stalled !== undefined && asked < engine.stalled.found) return busy(Date.now());
     const t = turn(u.hostname, SEARCH_GAP_MS);
-    if ("resetAt" in t) throw rateLimited(t.host, t.resetAt, t.guessed);
+    // A hold that began while it waited (Google's check met by the search
+    // before it): one that can go elsewhere is told when the hold ends.
+    if ("resetAt" in t) {
+      if (maxWait !== undefined) return { busy: { at: t.resetAt } } satisfies Busy;
+      throw rateLimited(t.host, t.resetAt, t.guessed);
+    }
     if (t.at > Date.now()) await Bun.sleep(t.at - Date.now());
     const since = Date.now();
     engine.loading = since;

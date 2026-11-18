@@ -3,10 +3,11 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { watched } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
-import { SEARCH_GAP_MS } from "./pace.ts";
+import { hold, SEARCH_GAP_MS } from "./pace.ts";
 import { bingSearch, COLLECT as BING } from "./sites/bing-search.ts";
 import { COLLECT as GOOGLE, googleSearch, SearchBusy } from "./sites/google-search.ts";
 import { SiteKit } from "./sites/kit.ts";
+import { searchPage } from "./search-tabs.ts";
 import { callTool, endTurn } from "./tools.ts";
 
 type Tab = { id: number; url: string; windowId: number };
@@ -307,4 +308,20 @@ test("after Safari answers a Google results page it held, the next one loads a g
   await first;
   await googleSearch(kit()).search("Keel Infrastructure miners");
   expect(s.navigated[1] - released).toBeGreaterThanOrEqual(SEARCH_GAP_MS - 50);
+}));
+
+// On 11-18's live check, Google showed its check to the first of 12
+// searches, and the 5 queued behind it failed "google.com rate-limited
+// this" instead of going to Bing.
+test("a search in line when Google's rest begins is told busy, not failed", () => later(async () => {
+  const s = safari(17_000);
+  await google()("Bitfarms renamed Keel Infrastructure");
+  const held = s.hold();
+  const first = google()("Keel Infrastructure ticker");
+  await held.asked;
+  const queued = searchPage("https://www.google.com/search?q=Keel+Infrastructure+miners", 45_000);
+  hold("https://www.google.com", undefined, Date.now() + 10 * 60_000);
+  held.release();
+  await first;
+  expect(await queued).toMatchObject({ busy: { at: Date.now() + 10 * 60_000 } });
 }));
