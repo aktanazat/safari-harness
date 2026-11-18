@@ -207,9 +207,12 @@ async function refuse(h: Helper, window: number, outcome: Outcome): Promise<Outc
 
 // Deletes the tab group named name from the sidebar of window (a
 // CGWindowID), which then shows its own tabs. done once no group of that
-// name is left. pages: the group is stale, and a confirm sheet naming it
-// may close its pages.
-export async function deleteGroup(h: Helper, window: number, name: string, pages = false): Promise<Outcome> {
+// name is left. pages: the group is stale, or holds only its agent's
+// finished tabs, and a confirm sheet naming it may close its pages. finished:
+// for the latter, the daemon asked again just before the confirm, how many
+// tabs may go (undefined: none now, its agent took one up again); the
+// sheet must name that many, or the delete stops.
+export async function deleteGroup(h: Helper, window: number, name: string, pages = false, finished?: () => Promise<number | undefined>): Promise<Outcome> {
   const off = deletesOff();
   if (off) return stop(off);
   const start = await check(h);
@@ -262,6 +265,12 @@ export async function deleteGroup(h: Helper, window: number, name: string, pages
     // its tabs drawn there and not here (measured 11-15), and those may be
     // tabs he works in: its pages go only from a window that draws them.
     if (others && (((await h("state", { window })) as Answer & { tabs?: number }).tabs ?? 0) < 2) return refuse(h, window, stop(`${name} is not drawn in this window, so another may show it`));
+    if (finished) {
+      const may = await finished();
+      const more = /\band (\d+) other tabs?\b/.exec(closes);
+      const named = more ? Number(more[1]) + 1 : shown === undefined ? 0 : 1;
+      if (may === undefined || named !== may) return refuse(h, window, stop(`${name} no longer holds only its agent's finished tabs: ${closes}`));
+    }
     const confirmed = await h("confirm", { window, button: "Delete" });
     if (!confirmed.ok) return refuse(h, window, stop(confirmed.error ?? "the confirm sheet took no answer"));
   }

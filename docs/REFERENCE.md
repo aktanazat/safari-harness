@@ -123,10 +123,12 @@ Safari is the user's everyday browser, so treat his tabs as his.
   never saw) stays until its window has gone unused for 8 hours (a change
   to those pages counts as use), then goes with them. The ended agent's
   own finished tabs, which Safari sometimes will not let the extension
-  close, do not hold it: the group goes with them at once, unless its
-  window is shown to him or he moved it. An exited agent's
-  group whose window is gone and that three deletes could not remove stays
-  in his sidebar for him to delete.
+  close, do not hold it while Safari has listed them since the extension
+  last connected: the group goes with them at once, from its own window,
+  if just before the confirm they are still all it holds and the sheet
+  names that many tabs, unless its window is shown to him or he moved
+  it. An exited agent's group whose window is gone and that three
+  deletes could not remove stays in his sidebar for him to delete.
   `~/.local/share/safari-harness/groups-off.json` says why, and removing it
   turns them on sooner. `safari doctor` warns while it is there, and each
   agent is told why once, not on every open.
@@ -221,9 +223,10 @@ Safari is the user's everyday browser, so treat his tabs as his.
   page it cannot read), is asked again 1, 2 and 4 minutes later, then
   every 15 minutes, until the tab closes or Safari no longer shows it. A
   close the extension's reconnect cut off goes again once it connects. A
-  web search tab still on its engine's site (results or robot check) and
-  not in front closes after 2 minutes unused without the unreadable-page
-  check.
+  web search tab still at its engine's results or robot check (Google's
+  or Bing's /search, Google's /sorry/) and not in front closes after 2
+  minutes unused without the unreadable-page check; on any other page of
+  the engine's site the check stays.
 - Web searches (`web_search`, the REPL's `googleSearch`) load their
   results in one background tab per engine that the harness itself holds,
   in its own "web search" window: no agent's turn end or exit closes it,
