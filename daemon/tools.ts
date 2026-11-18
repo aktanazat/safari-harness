@@ -3510,7 +3510,7 @@ export const Y: Param = { type: "number", description: "page y, without ref" };
 // query, a region, a diff, or a read after a wait.
 const PAGE: Param = { description: "also read: true, query, {query,root,diff,updates,since}" };
 const SAVE: Param = { description: "true or absolute path; returns path,size,500-char start" };
-const FIELDS: Param = { description: 'rows as objects with these keys: ["price","date"] or "price,date"; {"price": "span.price"} names a column; implies as: "table"' };
+const FIELDS: Param = { description: 'row keys: ["price","date"]; {"price":"span.price"} picks a column' };
 
 // With snapshot an action also returns the page it led to, read as
 // snapshot reads it (with its bot-check probe; a whole page is the tab's
@@ -4210,7 +4210,7 @@ export const TOOLS: Record<string, Tool> = {
       concurrency: { type: "number", description: "default 4 (max), the agent's tab limit" },
       save: { description: "true or an absolute folder: a file per page" },
       follow: { type: "object", description: `links matching CSS or /regex/, max ${MAP_MAX_URLS}` },
-      pages: { type: "number", description: "each url a listing: read it and its next pages, up to this many each" },
+      pages: { type: "number", description: "listing pages to read, each" },
       fresh: { type: "boolean", description: "ignore this task's reads of the last 10 min" },
     },
     required: ["urls"],
@@ -4276,8 +4276,8 @@ export const TOOLS: Record<string, Tool> = {
     run: async (a) => handoffWait(await resolveTab(a.tab), a.why === undefined ? undefined : str(a.why, "why"), { ms: num(a.ms, "ms"), away: a.away === true, ...(a.alerted === undefined ? {} : { alerted: str(a.alerted, "alerted") }), ...(a.id === undefined ? {} : { id: num(a.id, "id") }), ...(a.until === undefined ? {} : { until: str(a.until, "until") }), ...(a.background === true ? { background: true as const } : {}) }),
   },
   net: {
-    desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends. pages: the page's JSON list, next pages as rows.",
-    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "url part (a|b: either), or /regex/" }, urls: { type: "boolean", description: "a line each, no bodies" }, body: { description: "index or url part: its whole body; with pages, the request to page" }, pages: { type: "number", description: "next pages of the page's JSON list to read, max 20" }, continue: { type: "string", description: "a pages answer's handle, to read on" } },
+    desc: "Fetch/XHR requests since page load, in all frames, each with its body's start. start clears; stop ends. pages: JSON list's next pages.",
+    params: { tab: TAB, do: { type: "string", enum: ["start", "read", "stop"], description: "default read" }, url: { type: "string", description: "url part (a|b: either), or /regex/" }, urls: { type: "boolean", description: "a line each, no bodies" }, body: { description: "index or url part: its whole body" }, pages: { type: "number", description: "max 20" }, continue: { type: "string", description: "handle to read on" } },
     unlisted: { maxBytes: { type: "number", description: "rows kept in the reply, default 20000; past it the whole is saved" } },
     required: ["tab"],
     run: async (a) => {

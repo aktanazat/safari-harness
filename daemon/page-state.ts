@@ -198,6 +198,17 @@ function emptyJson(parsed: unknown): boolean {
 
 const JSON_TYPE = /^(?:application\/(?:[a-z0-9!#$&^_.+-]+\+)?json|text\/json)\s*(?:;|$)/i;
 const EMPTY_JSON = "the JSON answer holds no items; check the address and its parameters before treating the list as empty.";
+const ONLY_MESSAGE = "the JSON answer is only a message, no data; read it before treating it as an answer, a sign-in, or an error.";
+
+// {"message": "Sign in"}: words that may be a wall or an answer, with no
+// data beside them.
+function onlyMessage(parsed: unknown): boolean {
+  const body = record(parsed);
+  if (!body) return false;
+  const kept = Object.entries(body).filter(([, value]) => said(value));
+  return kept.length > 0 && kept.every(([key, value]) => typeof value === "string" && /^(?:message|msg|detail|reason|status(?:_?text)?|description)$/i.test(key));
+}
+
 const BARE_NO = "the JSON answer says ok: false without saying why; read its fields before treating it as an answer or an error.";
 
 // The parsed body of a JSON answer, by its type or by a body that parses
@@ -240,7 +251,9 @@ export function classifyPage(facts: PageFacts): PageState {
   if (json) {
     const wall = jsonWall(json.parsed);
     if (wall === "unjudged") return { kind: "unjudged", next: BARE_NO };
-    return wall ? state(wall) : emptyJson(json.parsed) ? { kind: "empty", next: EMPTY_JSON } : state("content");
+    if (wall) return state(wall);
+    if (onlyMessage(json.parsed)) return { kind: "unjudged", next: ONLY_MESSAGE };
+    return emptyJson(json.parsed) ? { kind: "empty", next: EMPTY_JSON } : state("content");
   }
   if ((facts.contentType && !/^text\/(?:plain|html)(?:;|$)/i.test(facts.contentType)) || /^<(?:!doctype|[a-z][\w:-]*(?:\s|>))/i.test(text)) return state("unjudged");
   const lines = linesOf(text);

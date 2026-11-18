@@ -164,7 +164,11 @@ import { TOOLS } from "./tools.ts";
 // width, the window's points, gave pages 455 and 1038 CSS px for 390.
 // Merged with master on 11-17, the tool descriptions master added since
 // (145) brought it to 28,859.
-const TOOL_LIST_MAX_BYTES = 28_859;
+// net's pages and continue, map's pages, and extract's and map's fields
+// (415, trimmed from 699) brought it to 29,274 on 11-18: agents had no way
+// to read a listing's later pages or the JSON feed behind them, or to name
+// the fields they wanted as rows.
+const TOOL_LIST_MAX_BYTES = 29_274;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
