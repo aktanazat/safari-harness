@@ -38,7 +38,7 @@ import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
 import { agentWindows, toAgentScreen } from "./place.ts";
-import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
+import { closeTab, endUntrackedTurns, finishedTab, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -55,7 +55,14 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // activate, a handoff), each until its turn or the handoff ends
 // moved: he moved it off the Agents display himself; it stays where he put it
 // home: the id of the Agents display it was last seen on (place.ts)
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number };
+// page: the tab its page was last found in, and the extension connection
+// that listed it (bridge.extensionInfo), which knows it once Safari no
+// longer gives the page's address: a close Safari would not let the
+// extension make sends the tab to a blank page (background.js tabs.close),
+// and on 11-18 agent 99234's ended group so lost its page and was held for
+// it as for a page of the user's. A Safari that started again may give the
+// id to another tab, so it counts only on that connection.
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number; page?: { tab: number; link?: number } };
 export type Shown = { owner?: number; task?: string; handoff?: true };
 
 const spaces = new Map<string, Space>();
@@ -105,7 +112,7 @@ function spaceName(group: string | undefined, owner: number | undefined): string
   return `${base}, window ${n}`;
 }
 
-const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`) ?? false;
+const isPage = (t: TabInfo, s: Space) => (t.url ? t.url.startsWith(`${PAGE}?id=${s.id}&`) : t.id === s.page?.tab && s.page.link === bridge.extensionInfo?.connectedAt);
 
 // The tabs in s's window besides its page. Safari never lets a tab group
 // empty: closing its last page leaves a blank tab of Safari's own, no
@@ -114,6 +121,14 @@ const isPage = (t: TabInfo, s: Space) => t.url?.startsWith(`${PAGE}?id=${s.id}&`
 // page still loading.
 function pagesIn(inWindow: TabInfo[], s: Space): TabInfo[] {
   return inWindow.length === 1 && !inWindow[0].url ? [] : inWindow.filter((t) => !isPage(t, s));
+}
+
+// The pages in an ended group's window that hold the group: all but its
+// agent's finished tabs, which Safari may not let the extension close
+// (finishedTab in tools.ts) and the group's delete takes with it, unless
+// the window is on his screen for him.
+function holding(pages: TabInfo[], s: Space): TabInfo[] {
+  return s.moved || s.shownFor?.length ? pages : pages.filter((t) => !finishedTab(t.id));
 }
 
 // Requests no agent's own call makes (sweeps, the keeper's space tool, the
@@ -176,6 +191,11 @@ async function located(space: Space, tabs?: TabInfo[], options = quiet): Promise
   }
   const owned = all.filter(t => t.windowId === window);
   const page = owned.find(t => isPage(t, space) && pageAt(t) !== undefined);
+  const link = bridge.extensionInfo?.connectedAt;
+  if (page && (page.id !== space.page?.tab || link !== space.page.link)) {
+    space.page = { tab: page.id, link };
+    save();
+  }
   if (!space.proof && page) await identify(space, page.id);
   return owned;
 }
@@ -248,7 +268,7 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
       const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number; size?: Size };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}) };
+      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: { tab: w.tabId, link: bridge.extensionInfo?.connectedAt } };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
@@ -316,7 +336,7 @@ function watchExit(owner: number | undefined) {
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.seen === undefined ? {} : { seen: s.seen }), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.seen === undefined ? {} : { seen: s.seen }), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }), ...(s.page === undefined ? {} : { page: s.page }) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -458,12 +478,13 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
           save();
         }
       }
-      const left = pages.length;
-      const used = s.used === undefined ? {} : { used: s.used };
       // A kept, foreign, or newly added page is never moved to enable
       // deletion. The keeper leaves the group intact until it is truly empty
-      // or stale.
+      // or stale; its agent's finished tabs go with it (pages).
+      const left = holding(pages, s).length;
+      const used = s.used === undefined ? {} : { used: s.used };
       if (left) return { ok: true, tabs: now.length, left, ...used, ...s.size };
+      const finished = pages.length > 0 ? { pages: true } : {};
       // Safari hides the tab bar of a window as narrow as a phone's, and the
       // keeper counts a window's tabs in it: on 10-07 it waited for good on
       // agent 1431's groups, whose windows the agent had sized to 390
@@ -476,7 +497,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
         s.size = widened.size;
         save();
       }
-      return { ok: true, tabs: now.length, left, ...used, ...s.size };
+      return { ok: true, tabs: now.length, left, ...finished, ...used, ...s.size };
     }
     case "gone": {
       const ok = closing.delete(name);
@@ -712,7 +733,7 @@ async function sweepOnce() {
   for (const s of judged) {
     if (spaces.get(s.key) !== s) continue;
     const inWindow = await located(s, tabs);
-    if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && pagesIn(inWindow, s).length === 0)) await end(s);
+    if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && (s.group === "grouped" ? holding(pagesIn(inWindow, s), s) : pagesIn(inWindow, s)).length === 0)) await end(s);
   }
   await homeWindows(tabs).catch((e: unknown) => note("agent windows not checked for the agents' display", { error: e instanceof Error ? e.message : String(e) }));
 }
@@ -721,22 +742,26 @@ async function sweepOnce() {
 // the Agents display when it is found off it: one opened while the display
 // was down, one left on his screen by a display that went away and came
 // back under a new id, or one whose showing has ended. One that was on the
-// display, which is the same, has been moved off by him.
+// display, which is the same, has been moved off by him; one he moved that
+// is found on the display again is back home, his no more: on 11-18 the
+// daemon's search window, moved by another program and put back, stayed
+// marked as his.
 async function homeWindows(tabs: TabInfo[]) {
-  const away = [...spaces.values()].filter((s) => !s.moved && !s.shownFor?.length);
+  const away = [...spaces.values()].filter((s) => !s.shownFor?.length);
   if (away.length === 0) return;
   const { agents, at } = await agentWindows(away.map((s) => s.size));
   if (agents === undefined) return;
   let changed = false;
   for (const [i, s] of away.entries()) {
     if (at[i] === "agents") {
-      if (s.home !== agents) {
+      if (s.home !== agents || s.moved) {
         s.home = agents;
+        delete s.moved;
         changed = true;
       }
       continue;
     }
-    if (at[i] === undefined) continue;
+    if (at[i] === undefined || s.moved) continue;
     if (s.home === agents) {
       s.moved = true;
       changed = true;

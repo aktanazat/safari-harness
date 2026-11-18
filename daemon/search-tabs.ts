@@ -44,6 +44,14 @@ const READS: Record<string, () => Promise<{ COLLECT: string }>> = {
   "www.bing.com": () => import("./sites/bing-search.ts"),
 };
 
+// Whether url is a page a search loads on its engine's site: its results,
+// or its robot check. Another page there (Google's travel or shopping
+// pages) may hold a form the user typed in.
+export function onSearchEngine(url: string | undefined): boolean {
+  const u = url === undefined ? null : URL.parse(url);
+  return u !== null && Object.hasOwn(READS, u.hostname) && (u.pathname === "/search" || u.pathname.startsWith("/sorry/"));
+}
+
 // A failure of the tab, not of the search: the tab is gone, its page
 // stopped answering (background.js), or the extension's link went down
 // mid-call (bridge.ts).

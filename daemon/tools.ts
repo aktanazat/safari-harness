@@ -47,7 +47,7 @@ import { createVideoTool } from "./video-observation.ts";
 import { inputStateTool } from "./input-state.ts";
 import { PACE_TOOL } from "./pace.ts";
 import { PAGES_TOOL } from "./page-store.ts";
-import { searchPage } from "./search-tabs.ts";
+import { onSearchEngine, searchPage } from "./search-tabs.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -912,18 +912,36 @@ function idleClosable(tab: number, t: HarnessTab, now: number): boolean {
   return busyFree(tab, t, now) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
 }
 
+// Whether tab is one a sweep closes as finished: its agent's turn ended or
+// the agent exited, no handoff or call is on it, Safari listed it on the
+// extension's current connection (a Safari that started again may give its
+// id to a tab of the user's), and no close of it was refused or failed but
+// by Safari's own refusal. Safari may refuse the extension that close for
+// good: on 11-18 agent 99234's four tabs, in its window made a tab group,
+// failed it 29 times each over 7 hours, and held the group on the Agents
+// display (release in spaces.ts).
+export function finishedTab(tab: number): boolean {
+  const t = harnessTabs.get(tab);
+  if (!t || t.search || t.closing || t.calls?.size || reconnectedSince(t) || (t.retry !== undefined && !t.retry.stuck)) return false;
+  const handoff = handoffs.get(tab);
+  if (t.handoff || (handoff && !handoff.done && handoff.error === undefined)) return false;
+  return t.done === true || (t.orphan === true && t.owner !== undefined && !alive(t.owner));
+}
+
 async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reason?: string): Promise<void> {
   if (harnessTabs.get(tab) !== t || t.closing || reconnectedSince(t)) return;
   t.closing = true;
   const link = bridge.extensionInfo?.connectedAt;
   try {
-    // A search tab holds no one's work, but Google's results page has a
-    // frame the extension cannot read for unsent forms, so an idle close of
-    // one is refused (11-11). One the list shows at its results, and not in
-    // front, closes as a finished tab does; the extension checks any other
-    // as it does an idle one, a tab whose front it cannot tell counting as
-    // the user's (inFront in background.js).
-    const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && shown.url?.startsWith("https://www.google.com/search?") === true;
+    // A search tab holds no one's work, but the extension cannot read a
+    // frame of Google's or Bing's pages for unsent forms, so an idle close
+    // of one is refused (11-11; on 11-18 seven such tabs, Bing's and
+    // Google's robot check among them, held the daemon's search window on
+    // the Agents display for 7 hours). One the list shows on its engine's
+    // site, and not in front, closes as a finished tab does; the extension
+    // checks any other as it does an idle one, a tab whose front it cannot
+    // tell counting as the user's (inFront in background.js).
+    const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && onSearchEngine(shown.url);
     const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner)) || unread;
     const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string; windowId?: number } | null;
     if (res?.front) {

@@ -291,6 +291,36 @@ test("an ended task's group holding a page stays queued and untouched until it i
   expect([groups(), s.closed, Object.keys(readQueue())]).toEqual([[], [7], []]);
 });
 
+// 11-18: agent 99234's ended group held only its own tabs, which Safari
+// would not let the extension close; it stood on the Agents display for 7
+// hours, waiting to turn stale.
+test("an ended group whose only pages are its agent's finished tabs goes with them at once", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: "“about:blank” and 1 other tab will be closed immediately.", selected: true }]);
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() }], { tabs: 2, left: 0, pages: true });
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), s.closed, Object.keys(readQueue())]).toEqual([[], [7], []]);
+});
+
+// Review of 11-18: the delete's steps take seconds, while its agent may take
+// one of the tabs up again; and the sheet may name tabs the release never
+// counted.
+test.each([
+  ["its agent took a tab up again", [{ tabs: 2, left: 0, pages: true }, { tabs: 2, left: 1 }], "“about:blank” and 1 other tab will be closed immediately."],
+  ["the sheet names more tabs than the release counted", [{ tabs: 2, left: 0, pages: true }, { tabs: 2, left: 0, pages: true }], "“about:blank” and 3 other tabs will be closed immediately."],
+])("an ended group of finished tabs stays when, before the confirm, %s", async (_, answers, closes) => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: closes, selected: true }]);
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const releases = [...answers];
+  const d: Daemon = async (op) => {
+    if (op === "state") return { connected: true, spaces: [{ ...waiting, group: "grouped", ended: true, used: Date.now() }] };
+    if (op === "release") return { ok: true, width: 1003, height: 781, ...(releases.shift() ?? answers.at(-1)) };
+    return { ok: true };
+  };
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), s.asking, Object.keys(readQueue())]).toEqual([[TRIP], undefined, [TRIP]]);
+});
+
 // 10-30: a sheet naming tabs the daemon did not see holds the group in the
 // queue. Once stale, it goes with them from a window opened for it, which
 // draws them once it shows the group.

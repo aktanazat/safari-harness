@@ -159,9 +159,9 @@ function hold(s: SpaceState, given: Given, log: Log, why: string, scratches?: nu
 // whose step waits goes again after its wait (WAIT_MS on); anything else
 // leaves the group queued, for RETRY_MS. An exited agent's group a scratch
 // window failed SCRATCH_TRIES times is the user's.
-async function deleteFrom(h: Helper, daemon: Daemon, s: SpaceState, window: number | Outcome, scratch: boolean, pages: boolean, given: Given, log: Log): Promise<boolean> {
+async function deleteFrom(h: Helper, daemon: Daemon, s: SpaceState, window: number | Outcome, scratch: boolean, pages: boolean, given: Given, log: Log, finished?: () => Promise<number | undefined>): Promise<boolean> {
   const { name } = s;
-  const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}${pages ? " with its pages" : ""}`, log, () => deleteGroup(h, window, name, pages)) : window;
+  const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}${pages ? " with its pages" : ""}`, log, () => deleteGroup(h, window, name, pages, finished)) : window;
   if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
   const had = given.get(name);
   if (outcome.pages) {
@@ -197,19 +197,27 @@ async function fromScratch(h: Helper, daemon: Daemon, s: SpaceState, pages: bool
 
 // An ended task's group goes with its window's page, from a window opened
 // for it when its own is gone. Pages the daemon sees in it hold it until it
-// is stale, by the use the release reports: a change to them counts. pass:
+// is stale, by the use the release reports: a change to them counts. Its
+// agent's own finished tabs hold it not: the release says they may go with
+// it (pages), from its own window, and is asked again just before the
+// confirm, as its agent may take a tab up again during the steps. pass:
 // this keeper pass, whose releases share one list of Safari's tabs.
 async function clear(h: Helper, daemon: Daemon, ended: SpaceState, pass: string, given: Given, log: Log): Promise<boolean> {
-  const released = (await daemon("release", { name: ended.name, pass })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number; used?: number };
+  type Released = { ok: boolean; tabs?: number; left?: number; pages?: boolean; width?: number; height?: number; used?: number };
+  const released = (await daemon("release", { name: ended.name, pass })) as Released;
   if (!released.ok) return true;
   const s = { ...ended, used: released.used ?? ended.used };
-  const pages = Date.now() >= staleAt(s);
-  if (released.left && !pages) {
+  const stale = Date.now() >= staleAt(s);
+  if (released.left && !stale) {
     hold(s, given, log, `${released.left} pages in it`);
     return false;
   }
-  if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, s, pages, given, log);
-  return deleteFrom(h, daemon, s, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, pages, given, log);
+  if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, s, stale, given, log);
+  const finished = !stale && released.pages === true ? async () => {
+    const again = (await daemon("release", { name: ended.name })) as Released;
+    return again.ok && !again.left && again.pages === true ? again.tabs : undefined;
+  } : undefined;
+  return deleteFrom(h, daemon, s, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, stale || finished !== undefined, given, log, finished);
 }
 
 // given: when this keeper last left each group queued, which it tries
