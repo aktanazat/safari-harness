@@ -18,13 +18,10 @@ const tabs = new Map<number, { id: number; windowId: number; url: string; title:
 const windowWidth = new Map<number, number>();
 let nextId = 700;
 // Safari's page zoom, by which a page's CSS px are fewer or more than its
-// window's points; a window that stays at one width whatever it is asked;
-// how many shots in a row meet a page that loaded again; the tabs whose
-// page was waited on.
+// window's points, and a window that stays at one width whatever it is
+// asked.
 let zoom = 1;
 let stuckAt: number | undefined;
-let reloads = 0;
-const waited: number[] = [];
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
   if (op === "windows.open") {
@@ -57,10 +54,6 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "shot") {
     if (!tab) return { error: "no tab" };
-    if (reloads > 0) {
-      reloads--;
-      return { error: "screenshot privacy: the protected page is no longer available" };
-    }
     return { value: captureFixture(tab.url, windowWidth.get(tab.windowId), 2) };
   }
   if (op === "tabs.close") {
@@ -69,7 +62,6 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   // a relay: the quiet wait is met at once, and the page is as wide as its
   // window at its zoom
-  if (op === "relay" && args[1] === "wait") waited.push(Number(args[0]));
   if (op === "relay" && args[1] === "tabInfo" && tab) return { value: { url: tab.url, viewport: { w: Math.round((windowWidth.get(tab.windowId) ?? 1000) / zoom), h: 700 } } };
   if (op === "relay") return { value: args[1] === "wait" ? { found: true } : { ok: true } };
   return { value: { ok: true } };
@@ -185,26 +177,6 @@ test("raw screenshot consumers refuse missing protection metadata", async () => 
   await expect(captureTab(++nextId)).rejects.toMatchObject({ code: "privacy", effect: "none" });
 });
 
-// On 11-12 and 11-13 seven shots taken right after a script reloaded the
-// page failed "the protected page is no longer available", and each one
-// asked again 3 to 7 s later worked (LOCK#1135 to #1223).
-test("a shot whose page loaded again during the capture waits for the page and takes it once more", async () => {
-  const tab = { id: ++nextId, windowId: ++nextId, url: HOME, title: "Page" };
-  tabs.set(tab.id, tab);
-  waited.length = 0;
-  try {
-    reloads = 1;
-    const capture = await callTool("shot", { tab: tab.id, out: join(freshOut(), "reloaded.png") }) as CaptureResult;
-    expect((await verifyEvidence(capture.evidence.path)).evidence.url).toBe(HOME);
-    expect(waited).toEqual([tab.id]);
-    reloads = 2;
-    await expect(callTool("shot", { tab: tab.id })).rejects.toMatchObject({ code: "unavailable", effect: "none", retryable: true, message: expect.stringContaining("the page loaded again during the capture, twice") });
-  } finally {
-    reloads = 0;
-    tabs.delete(tab.id);
-  }
-});
-
 // On 11-11 window {width: 390} gave a page 455 CSS px wide at Safari's page
 // zoom 0.85 (LOCK#595), and on 11-16 390, 1200, and 1440 each gave 1038
 // (BERK#121 to #155).
@@ -222,6 +194,34 @@ test("window with cssWidth resizes until the page is that wide, and names the wi
   } finally {
     zoom = 1;
     stuckAt = undefined;
+    tabs.delete(tab.id);
+  }
+});
+
+// In the 11-16 work sessions 9 shots right after an eval that reloaded
+// the page failed on "the protected page is no longer available", and a
+// retry 3-7 s later worked each time. Safari here reloads the page under
+// the first `reloads` shots.
+test.each([1, 2])("a shot the page reloads under %i time(s) waits for the page and is taken once more", async (reloads) => {
+  const sent: string[] = [];
+  const tab = { id: ++nextId, windowId: ++nextId, url: CART, title: "Cart" };
+  tabs.set(tab.id, tab);
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      sent.push(op === "relay" ? String(args[1]) : op);
+      const shots = sent.filter((o) => o === "shot").length;
+      const reply = op === "shot" && shots <= reloads ? { error: "screenshot privacy: the protected page is no longer available" } : answer(op, args);
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
+    },
+    close() {},
+  });
+  try {
+    const shot = captureTab(tab.id);
+    if (reloads === 1) expect(await shot).toMatchObject({ source: { url: CART } });
+    else await expect(shot).rejects.toMatchObject({ code: "privacy", effect: "none", message: "screenshot privacy: the page changed or reloaded under the capture twice, so it was not captured" });
+    expect(sent.filter((o) => o === "shot" || o === "wait")).toEqual(["shot", "wait", "shot"]);
+  } finally {
     tabs.delete(tab.id);
   }
 });

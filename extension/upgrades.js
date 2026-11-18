@@ -168,12 +168,18 @@ async function upgradeParentPoint(tabId, frameId, initial, deadline, candidates,
   return { point: { x: point.x, y: point.y }, chain };
 }
 
+// A frame click's parent checks run before any event goes, so a blocker
+// they find sent nothing (UNSENT in content.js).
 async function upgradeFrameClick(tabId, op, args, deadline, frameId, kept) {
   if (frameId === 0 || !(op === "click" || op === "downloadClick" || op === "select" && args[1] !== undefined)) return;
   const candidates = [0, ...(await frameTokens(tabId)).values()];
   const probe = await toTab(tabId, "clickProbe", [args[0], op === "select" ? "select" : "click", op === "click" ? args[1] : undefined], deadline - Date.now(), frameId, kept);
   if (probe?.error) return probe;
-  await upgradeParentPoint(tabId, frameId, probe.value, deadline, candidates);
+  try {
+    await upgradeParentPoint(tabId, frameId, probe.value, deadline, candidates);
+  } catch (error) {
+    return { error: error.message, failure: { code: "stale_view", effect: "none" } };
+  }
   return probe;
 }
 

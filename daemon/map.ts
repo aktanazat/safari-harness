@@ -72,9 +72,11 @@ type Outcome = ({ ok: true; value: unknown; pageState?: PageState } | { ok: fals
 // title: the page's as it opened, which an eval or fetch read does not
 // carry, where the address may have led to a sign-in or a page not found;
 // finalUrl: where it opened, when not at url; retried: how many times it
-// was loaded again after its site's error page; from: whose read of this
-// task's it is (reads.ts). A failed page's value is what an error page read.
-export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; from?: string };
+// was loaded again after its site's error page; reopened: it was read in
+// a new tab after Safari barred the extension from the first; from: whose
+// read of this task's it is (reads.ts). A failed page's value is what an
+// error page read.
+export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
@@ -103,6 +105,8 @@ const DISCONNECTED = /^(?:the Safari extension (?:disconnected|restarted) before
 // 10-29 os.html, the longest of 20 python docs pages map read four at a
 // time, did not answer in 10 s (baseline).
 const STALLED = /^(?:the page (?:at \S+ )?did not answer\b|Safari did not answer \S+ in time\b|it gave the wait no answer in time\b)/;
+
+const BARRED = /\bSafari would not let the extension into the tab\b/;
 
 // A close the link dropped is asked again, each ask waiting for the
 // extension to connect again (bridge.ts): of the 61 map pages answered
@@ -429,9 +433,13 @@ function recalled(url: string, job: Job): Page | undefined {
 // opens as its site's error page is loaded again after each of RETRY_MS.
 // One that threw leaves its tab in a state not known, so the tab closes;
 // a read of the page the tab showed before is that page's, not url's, so
-// url loads again in a new tab.
-async function visit(url: string, job: Job, warm: Warm, recovering = false): Promise<Visit> {
-  const started = performance.now();
+// url loads again in a new tab. A page Safari barred the extension from
+// (background.js barredText, where nothing was done) loads once more in
+// a new tab: on 11-16 a map failed a Google Forms page so after 21.9 s,
+// and an open of it at once read it. barred: that first try's start and
+// its tab's close error, which the page keeps.
+async function visit(url: string, job: Job, warm: Warm, recovering = false, barred?: { started: number; closeError?: string }): Promise<Visit> {
+  const started = barred?.started ?? performance.now();
   const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
   let opened: Opened | undefined;
   let outcome: Outcome;
@@ -451,13 +459,14 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
     disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
     outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
     closeError = await drop(warm, job.call);
+    if (!barred && !effectful && BARRED.test(error)) return visit(url, job, warm, recovering, { started, ...(closeError === undefined ? {} : { closeError }) });
   }
   // extract and snapshot say the address of the document they read
   const v = outcome.value;
   const shown = v && typeof v === "object" && "url" in v && typeof v.url === "string" ? address(v.url) : undefined;
   if (warm.tab !== undefined && warm.at !== undefined && shown === warm.at && address(url) !== warm.at) {
     await shut(warm, job.call);
-    return visit(url, job, warm, recovering);
+    return visit(url, job, warm, recovering, barred);
   }
   // map has closed the tab by the time its answer is read, so a stalled
   // page's advice to reload it there becomes mapping it again
@@ -472,7 +481,8 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
   const ms = Math.round(performance.now() - started);
   const finalUrl = opened?.url && opened.url !== URL.parse(url)?.href ? opened.url : undefined;
   const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(opened?.title ? { title: opened.title } : {}) };
-  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(closeError === undefined ? {} : { closeError }) };
+  closeError ??= barred?.closeError;
+  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(barred ? { reopened: true } : {}), ...(closeError === undefined ? {} : { closeError }) };
   if (warm.tab !== undefined) warm.last = page;
   if (outcome.ok && job.key !== undefined && keeps(page)) keep(job.key, url, { ok: true, value: outcome.value, ...about });
   return { page, disconnected, stalled };
@@ -556,8 +566,12 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   }
   const pdfRead = async (): Promise<Outcome> => ({ ok: true, value: await call("pdf", { do: "read", url: opened.url ?? url, ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}) }) });
   if (wait) {
-    const missed = missOf(await call("wait", { ...wait, tab: opened.id }), waited);
-    if (missed) return check ? { ...missed, challenge: check } : missed;
+    const seen = await call("wait", { ...wait, tab: opened.id });
+    const missed = missOf(seen, waited, url);
+    if (missed) {
+      const outcome = (await signedOut(seen, url, waited, opened.id, call)) ?? missed;
+      return check ? { ...outcome, challenge: check } : outcome;
+    }
   }
   // fetch asks again for the address the tab opened, with its cookies: the
   // body as the server sends it, where the others read the page it drew.
@@ -649,15 +663,46 @@ async function indexed(target: Target | undefined, pages: Page[]): Promise<{ ind
 // A page that never showed what the wait asked for is most often another
 // page (a redirect, a page not found): the address and title say which. A
 // page that gave the wait no answer in time (unanswered, a loaded Safari)
-// may show it all the same.
-function missOf(seen: unknown, waited = "what wait asked for"): { ok: false; error: string; failure: Failure } | undefined {
+// may show it all the same. One sent to another address says it was
+// redirected.
+function missOf(seen: unknown, waited = "what wait asked for", asked?: string): { ok: false; error: string; failure: Failure } | undefined {
   if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
   const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
   const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
-  const error = "unanswered" in seen && seen.unanswered === true
-    ? `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`
-    : `${MISSED} ${waited}; the tab is at ${at}${title}`;
+  if ("unanswered" in seen && seen.unanswered === true) {
+    const error = `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`;
+    return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
+  }
+  const error = `${MISSED} ${waited}; ${redirectedTo(seen, asked) ? "it was redirected: " : ""}the tab is at ${at}${title}`;
   return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
+}
+
+// The address a missed wait ended on, when it is not the one asked for.
+function redirectedTo(seen: object, asked: string | undefined): URL | undefined {
+  const at = "url" in seen && typeof seen.url === "string" ? URL.parse(seen.url) : null;
+  const from = asked === undefined ? null : URL.parse(asked);
+  return at && from && at.origin + at.pathname !== from.origin + from.pathname ? at : undefined;
+}
+
+// A wait that ended on a sign-in page says so: in the 11-16 work sessions
+// ServiceNow, SAP and UKG doc pages missed their waits 6 times at 20-27 s
+// each, mostly on sign-in redirects the miss did not name. An address or
+// title only nominates the page, since docs pages about sign-on match
+// them too ("Configure single sign-on | ServiceNow", help.sap.com/.../sso);
+// it is a sign-in only when its read finds a sign-in form (page-state.ts
+// login_wall). The address is read without its query (?next=/login).
+const SIGN_IN_AT = /^https?:\/\/(?:(?:login|signin|sso|auth|accounts|idp)\.|[^/]*\.(?:okta|onelogin|microsoftonline)\.com\/)|\/(?:signin|sign-in|login|log-in|sso|saml2?|oauth2?|auth)(?:\/|$)/i;
+const SIGN_IN_TITLE = /\b(?:sign[ -]?in|log[ -]?in|login|single sign-on)\b/i;
+async function signedOut(seen: unknown, asked: string, waited = "what wait asked for", tab: number | undefined, call: Call): Promise<{ ok: false; error: string; failure: Failure } | undefined> {
+  if (!seen || typeof seen !== "object") return undefined;
+  const at = redirectedTo(seen, asked);
+  const named = "title" in seen && typeof seen.title === "string" ? seen.title : "";
+  if (!at || !(SIGN_IN_AT.test(at.origin + at.pathname) || SIGN_IN_TITLE.test(named))) return undefined;
+  const read = await call("extract", { tab, maxBytes: 2000 }).catch(() => undefined);
+  const state = read && typeof read === "object" && "pageState" in read && read.pageState && typeof read.pageState === "object" && "kind" in read.pageState ? read.pageState.kind : undefined;
+  if (state !== "login_wall") return undefined;
+  const error = `redirected to sign-in at ${at.href}${named ? ` ("${named}")` : ""}, so it shows no ${waited}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: "sign in to the site in a tab (handoff for a step only the user can do), then map it again" })) };
 }
 
 type Row = { page: Page | Listing; depth: number; head: string; body: string; sep: string; wall?: string };
@@ -673,9 +718,12 @@ const NOT_CONTENT: Partial<Record<PageKind, string>> = { login_wall: "sign-in", 
 // followed has the pages it links to under it. Past max, an index of every
 // page comes first, and each page keeps an even share of the rest: on
 // 10-23 seven map answers were cut at a reply's 30,000 characters, and
-// three of their pages did not show at all (K6).
+// three of their pages did not show at all (K6). A page the answer's urls
+// name again is not read, not failed: on 11-16 a map of 20 X profiles
+// answered "2 read, 18 failed" while its urls named pages to map again.
 export function mapText(answer: MapAnswer, format: (value: unknown) => string, max = Infinity): string {
   const rows: Row[] = [];
+  const left = new Set(answer.urls);
   const add = (list: (Page | Listing)[], level: string, depth: number) => list.forEach((p, i) => {
     const value = "value" in p ? p.value : undefined;
     const state = stateOf(p);
@@ -684,6 +732,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
       `${p.ms} ms`,
       ...("from" in p && p.from ? [p.from] : []),
       ...("retried" in p && p.retried ? [`loaded again ${p.retried === 1 ? "once" : `${p.retried} times`} after its error page`] : []),
+      ...("reopened" in p && p.reopened ? ["read in a new tab after Safari barred the first"] : []),
       ...("challenge" in p && p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []),
       ...(p.closeError ? [`not closed: ${p.closeError}`] : []),
       ...("unread" in p && p.unread ? [`${p.unread} more matching links past max`] : []),
@@ -693,24 +742,25 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     const titled = !!value && typeof value === "object" && "title" in value;
     const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${notes.join("; ")})`;
     const sep = i > 0 ? "\n\n" : depth > 0 ? "\n" : "";
-    if (!p.ok) return rows.push({ page: p, depth, head, body: `error: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
+    if (!p.ok) return rows.push({ page: p, depth, head, body: `${left.has(p.url) ? "not read" : "error"}: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
     if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep, ...(wall ? { wall } : {}) });
     rows.push({ page: p, depth, head, body: p.items.length ? "" : "no page of its own: its links were read above, or are past max", sep });
     add(p.items, `${level}#`, depth + 1);
   });
   add(answer.pages, "##", 0);
   const walls = rows.flatMap((r) => (r.wall === undefined ? [] : [r.wall]));
-  const failed = rows.filter((r) => !r.page.ok).length;
-  const read = rows.length - failed - walls.length;
+  const unread = rows.filter((r) => !r.page.ok && left.has(r.page.url)).length;
+  const failed = rows.filter((r) => !r.page.ok).length - unread;
+  const read = rows.length - failed - unread - walls.length;
   const apart = walls.length ? `${walls.length} not content (${[...new Set(walls)].map((w) => `${w} ${walls.filter((x) => x === w).length}`).join(", ")}), ` : "";
   const kept = rows.filter((r) => "from" in r.page && r.page.from).length;
   const top = [
     ...(rows.length > 1 || answer.urls?.length || answer.index
-      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${apart}${failed} failed${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
+      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${apart}${failed} failed${unread ? `, ${unread} not read` : ""}${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
       : []),
     ...(answer.index ? [`index: ${answer.index}`] : []),
     ...(answer.urls?.length
-      ? [`not read: ${answer.urls.length} (past max, or when map's ${BUDGET_MS / 1000} s ran out); map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next: ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
+      ? [`map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next (past max, no answer in time, or past map's ${BUDGET_MS / 1000} s): ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
       : []),
   ];
   const text = (bodies: string[], lines: string[]) => [...(lines.length ? [`${lines.join("\n")}\n\n`] : []), ...rows.map((r, i) => `${r.sep}${r.head}${bodies[i] ? `\n${bodies[i]}` : ""}`)].join("");
@@ -726,7 +776,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
   });
   const index = rows.map((r, i) => {
     const p = r.page;
-    const state = !p.ok ? `failed: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `${r.wall ? `${r.wall} page` : "read"}, ${sizes[i].of}${sizes[i].saved}`;
+    const state = !p.ok ? `${left.has(p.url) ? "not read" : "failed"}: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `${r.wall ? `${r.wall} page` : "read"}, ${sizes[i].of}${sizes[i].saved}`;
     return `${"  ".repeat(r.depth)}- ${p.url}: ${state}`;
   });
   const lines = [...top, `each page below is cut to its share of ${max} characters:`, ...index];

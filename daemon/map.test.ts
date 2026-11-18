@@ -116,6 +116,20 @@ let stuck: string | undefined;
 let nextTab = 0;
 const probes = new Map<number, number>();
 const loaded: [string, number][] = [];
+// A page whose sign-in sends it to SSO, a sign-in form; one moved to a
+// public docs page about sign-on, which is no sign-in; one Safari bars the
+// extension from in the first tab it opens in, as a Google Forms page was
+// on 11-16.
+const SIGNED_OUT = "https://docs.example/kb/42";
+const SSO = "https://login.example/sso?return=kb";
+const MOVED_DOCS = "https://docs.example/kb/43";
+const SSO_DOCS = "https://help.example/docs/sso?next=/login";
+const REDIRECTS: Record<string, { url: string; title: string }> = {
+  [SIGNED_OUT]: { url: SSO, title: "Sign In" },
+  [MOVED_DOCS]: { url: SSO_DOCS, title: "Configure single sign-on | ServiceNow" },
+};
+const BARRED_ONCE = "https://forms.example/form";
+const barredOnce = new Set<number>();
 
 const evaluate = historyFixture();
 function read(tab: number, op: string): { value?: unknown; error?: string } {
@@ -132,6 +146,7 @@ function read(tab: number, op: string): { value?: unknown; error?: string } {
   if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
+  if (url === SSO) return { value: { url, title: "Sign In", text: "Sign In\nPassword", truncated: false, pageState: { kind: "login_wall", next: "sign in" } } };
   if (url === SPLASH && (probes.get(tab) ?? 0) <= 3) return { value: { url, title: "One moment, please...", text: "Please wait while your request is being verified...", truncated: false } };
   if (Object.hasOwn(AUDITED, url)) return { value: { url, ...AUDITED[url], truncated: false } };
   if (url === QUIET) return { value: { url, title: "Page", text: "", truncated: false } };
@@ -155,7 +170,8 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const url = String(args[0]);
     const title = load(url);
     const file = url === FILE ? { file: "download", fileType: "text/csv", fileBytes: PRICES.length } : url === ARCHIVE ? { file: "download", fileType: "application/zip", fileBytes: 300 * 2 ** 20 } : undefined;
-    const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], url, title };
+    const at = REDIRECTS[url] ?? { url, title };
+    const tab = file ? { id: ++nextTab, windowId: args[2], url: "", title: "" } : { id: ++nextTab, windowId: args[2], ...at };
     tabs.set(tab.id, tab);
     opened.push(tab.id);
     const gate = [GATE, BUSY, WAF].find((g) => url.startsWith(g));
@@ -174,7 +190,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     if (url === UNLOADED) return { value: tab };
     const title = load(url);
     if (url === FILE) return { value: { ...tab, url, file: "download", fileType: "text/csv", fileBytes: PRICES.length } };
-    Object.assign(tab, { url, title });
+    Object.assign(tab, REDIRECTS[url] ?? { url, title });
     return { value: tab };
   }
   if (op === "fetchFile") {
@@ -184,7 +200,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   if (op === "tabs.close") {
     const tab = Number(args[0]);
-    if (tabs.get(tab)?.url === stuck) return { error: "a sheet on the tab kept Safari from closing it" };
+    if (tabs.get(tab)?.url === stuck || barredOnce.has(tab)) return { error: "a sheet on the tab kept Safari from closing it" };
     tabs.delete(tab);
     closed.push(tab);
     return { value: { ok: true } };
@@ -217,9 +233,12 @@ connect({
       const [selector, want] = args[2] as [string | null, { text?: string }];
       asked.push(`wait ${url} for ${want.text ?? selector}`);
       if (url === SILENT) return void unanswered.push(() => reply({ value: { found: true } }));
-      return reply({ value: { found: url !== LOST && want.text !== ABSENT } });
+      return reply({ value: { found: url !== LOST && url !== SSO && url !== SSO_DOCS && want.text !== ABSENT } });
     }
     if (args[1] === "waitStop") return reply({ value: { ok: true } });
+    // a missed wait's look at whether the page drew anything (tools.ts
+    // DRAWN) is the wait's, not a read
+    if (args[1] === "eval" && String((args[2] as unknown[])[0]).includes("innerText.trim()")) return reply({ value: { ok: true, result: true } });
     if (args[1] === "fetchFile") {
       const url = String((args[2] as unknown[])[0]);
       const page = tabs.get(Number(args[0]))?.url ?? "";
@@ -230,7 +249,10 @@ connect({
     }
     if (holding) held.push(() => reply(read(Number(args[0]), String(args[1]))));
     else if (tabs.get(Number(args[0]))?.url.startsWith(SLOW)) setTimeout(() => reply(read(Number(args[0]), String(args[1]))), SLOW_MS);
-    else reply(read(Number(args[0]), String(args[1])));
+    else if (tabs.get(Number(args[0]))?.url === BARRED_ONCE && barredOnce.size === 0) {
+      barredOnce.add(Number(args[0]));
+      reply({ error: `Safari would not let the extension into the tab at ${BARRED_ONCE}: it shows a page no extension may read. Nothing was done in the page` });
+    } else reply(read(Number(args[0]), String(args[1])));
   },
   close() {},
 });
@@ -663,6 +685,27 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
   expect(pages[1]).toMatchObject({ ok: false, error: `it did not show what wait asked for; the tab is at ${LOST} ("Page Not Found")` });
 });
 
+// In the 11-16 work sessions ServiceNow, SAP and UKG doc pages missed
+// their waits 6 times at 20-27 s each, mostly on sign-in redirects.
+test("with wait, a page sent to a sign-in page says it was redirected to sign-in, not that it lacks what wait asked for", async () => {
+  const [page] = await map({ urls: [SIGNED_OUT], wait: { text: "Price" } });
+  expect(page).toMatchObject({ ok: false, error: `redirected to sign-in at ${SSO} ("Sign In"), so it shows no what wait asked for`, failure: { code: "blocked" } });
+});
+
+test("with wait, a page sent to a docs page about sign-on is a redirected miss, not a sign-in", async () => {
+  const [page] = await map({ urls: [MOVED_DOCS], wait: { text: "Price" } });
+  expect(page).toMatchObject({ ok: false, error: `it did not show what wait asked for; it was redirected: the tab is at ${SSO_DOCS} ("Configure single sign-on | ServiceNow")`, failure: { code: "not_content" } });
+});
+
+// The barred tab here also fails to close, which the page still tells.
+test("a page Safari bars the extension from is read once more in a new tab, and says so", async () => {
+  const before = opened.length;
+  const answer = await mapPages({ urls: [BARRED_ONCE] }, callTool);
+  expect(answer.pages[0]).toMatchObject({ ok: true, value: { text: `text of ${BARRED_ONCE}` }, reopened: true, closeError: "a sheet on the tab kept Safari from closing it" });
+  expect(opened.length - before).toBe(2);
+  expect(formatResult(answer)).toContain("read in a new tab after Safari barred the first");
+});
+
 // On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for
 // words a page showed all along answered that it never showed them.
 test("with wait, a page that gives the wait no answer in time is not read, is not said to lack what wait asked for, and is waited on once more", async () => {
@@ -705,6 +748,8 @@ test("a map whose pages run long answers within 60 s with the pages it read, nam
   expect(pages.map((p) => [p.url, p.ok])).toEqual(slow.map((url, i) => [url, i < 3]));
   expect(pages.slice(3).map((p) => (p.ok ? "read" : p.error))).toEqual(Array(6).fill(expect.stringMatching(/unfinished.*again/)));
   expect(left).toEqual(slow.slice(3));
+  const text = formatResult({ pages, urls: left });
+  expect(text).toStartWith(`9 pages: 3 read, 0 failed, 6 not read\nmap them next (past max, no answer in time, or past map's 50 s): ${JSON.stringify({ urls: slow.slice(3) })}\n`);
   // The three still being read go on in the tabs the first three were read
   // in, each closing its tab as it ends; the three not begun never load.
   for (let i = 0; i < 40; i++) {
@@ -965,7 +1010,7 @@ test("with follow, wait holds each page followed, a note says so when none of th
   expect(answer.pages).toMatchObject([{ url: LISTING, ok: true, items: [{ ok: false }, { ok: false }], unread: 1 }]);
   expect(answer.note).toStartWith("wait holds each page followed, not the listing");
   expect(answer.urls).toEqual(["https://www.shop.example/item/3"]);
-  expect(formatResult(answer)).toContain('map them next: {"urls":["https://www.shop.example/item/3"]}');
+  expect(formatResult(answer)).toContain(`map them next (past max, no answer in time, or past map's 50 s): {"urls":["https://www.shop.example/item/3"]}`);
 });
 
 // On 10-23 seven map answers were cut at a reply's 30,000 characters, and

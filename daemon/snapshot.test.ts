@@ -90,6 +90,31 @@ test("an action's read that finds nothing reads again once the page goes quiet",
   expect(sent.filter((op) => op === "snapshot")).toHaveLength(2);
 });
 
+// In the 11-16 sessions 99 actions were followed by a shell sleep and a
+// read. Safari here has a search whose results come with a request the
+// click started, still out when the click answers, and drawn once the
+// daemon waits for the page to go quiet.
+test("an action's read waits for a request the action started and still has out", async () => {
+  const sent: string[] = [];
+  let drawn = false;
+  const receipt = { added: 1, removed: 0, changed: 0, url: null, focus: null, states: [], dialog: null, page: "https://shop.example/search", requests: [], pending: [{ method: "GET", url: "https://shop.example/api/search?q=boots" }], errors: [] };
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay") sent.push(args[1]);
+      if (op === "relay" && args[1] === "wait") drawn = true;
+      const page = drawn ? { nodes: 2, snapshot: '[1] button "Search"\n[2] link "Boots"' } : { nodes: 1, snapshot: '[1] button "Search"' };
+      const value = op !== "relay" ? [] : args[1] === "snapshot" ? { url: "https://shop.example/search", title: "Search", truncated: false, ...page } : args[1] === "wait" ? { found: true } : { ok: true, receipt };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  const got = await callTool("click", { tab: 7, ref: "Search", snapshot: true });
+  expect(got).toMatchObject({ page: { snapshot: '[1] button "Search"\n[2] link "Boots"' } });
+  expect(got).not.toHaveProperty("next");
+  expect(sent.filter((op) => ["click", "wait", "snapshot"].includes(op))).toEqual(["click", "wait", "snapshot"]);
+});
+
 test("invalid action snapshot options refuse before the page receives an action", async () => {
   const sent = cartSafari();
   await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toBeInstanceOf(Error);
