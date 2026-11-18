@@ -106,12 +106,16 @@ export function recentTabs(maxAgeMs: number, options: RequestOptions = {}): Prom
   return lastListed?.changes === tabChanges && Date.now() - lastListed.at < maxAgeMs ? Promise.resolve(lastListed.tabs) : listTabs(options);
 }
 
-// A page tool's tab: the id open returned, or "front", the tab the user has
-// in front, named on purpose. A call without one is an error, never a read
-// of his front tab: on 09-28 an agent that left it out read his MyChart
-// page. Tools that run in the caller pass their own way to list tabs.
+// A page tool's tab: the id open returned, "front", the tab the user has
+// in front, named on purpose, or "latest", the calling agent's tab it
+// opened or named last (used), as run's description words its default:
+// on 11-16 shot, eval and wait with tab "latest" failed 3 times in one
+// session (WorkMining). A call without one is an error, never a read of
+// his front tab: on 09-28 an agent that left it out read his MyChart
+// page. Tools that run in the caller ask the daemon (resolve_tab), which
+// alone knows the agent's tabs.
 export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = listTabs): Promise<number> {
-  if (tab === undefined || tab === null) throw new HarnessError("invalid_argument", 'tab is required: the id open returned (CLI --tab <id>), or "front" for the tab the user has in front (CLI --tab front)');
+  if (tab === undefined || tab === null) throw new HarnessError("invalid_argument", 'tab is required: the id open returned (CLI --tab <id>), "latest" for the tab you opened or named last, or "front" for the tab the user has in front (CLI --tab front)');
   let id: number;
   if (tab === "front") {
     const listed = await tabs();
@@ -120,14 +124,27 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
     // (partial), which is not Safari having none.
     if (!front) throw new Error(listed.some((t) => typeof t.partial === "string") ? "Safari did not say which tab is in front within 2.5 s; try again, or name the tab by its id" : "Safari has no front tab");
     id = front.id;
+  } else if (tab === "latest") {
+    const owner = currentOwner();
+    const task = currentTask();
+    const named = owner === undefined ? undefined : lastNamed.get(taskKey(owner, task));
+    if (named !== undefined && !harnessTabs.get(followTab(named))?.handoff) id = named;
+    else {
+      let latest: [number, HarnessTab] | undefined;
+      for (const held of harnessTabs) if (owner !== undefined && !held[1].closing && !held[1].handoff && matchesTask(held[1], owner, task) && (latest === undefined || held[1].used > latest[1].used)) latest = held;
+      if (latest === undefined) throw new HarnessError("invalid_argument", 'tab "latest" names your tab opened or named last, and you have none open: open one first');
+      id = latest[0];
+    }
   } else {
     id = typeof tab === "number" ? tab : Number(tab);
-    if (!Number.isFinite(id)) throw new HarnessError("invalid_argument", 'tab must be a tab id from open, or "front"');
+    if (!Number.isFinite(id)) throw new HarnessError("invalid_argument", 'tab must be a tab id from open, "latest", or "front"');
   }
   // a tab Safari swapped for another is reached under its new id
   const now = followTab(id);
   const mine = harnessTabs.get(now);
   if (mine) {
+    const owner = currentOwner();
+    if (owner !== undefined && !mine.handoff && matchesTask(mine, owner, currentTask())) nameLatest(taskKey(owner, currentTask()), now);
     const call = calling.getStore();
     if (call?.live) {
       (mine.calls ??= new Set()).add(call.pending);
@@ -310,6 +327,7 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
   if (res && typeof res === "object" && "ok" in res && res.ok === true) {
     const held = harnessTabs.get(id);
     recordClosed(id, why, resumeAddress(held?.url));
+    unname(id);
     forget(id);
     save();
     // the window the tab was in, for its agent's caller to look at (sheets.ts)
@@ -337,6 +355,22 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // daemon's own tab for a web search engine's results (search-tabs.ts).
 type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number; search?: true };
 const harnessTabs = new Map<number, HarnessTab>();
+// Each agent task's tab it opened or named last (taskKey), which tab
+// "latest" names (resolveTab) even once the harness closed it, so its
+// reopen or the note on why it is gone applies: a look at the open tabs
+// alone fell back to an older one, as a form tab an idle close had left,
+// and a click went there (review, 11-17). A close call forgets it.
+// A kept tab is the user's, and leaves it too. Kept as closedTabs is, the
+// newest CLOSED_KEPT.
+const lastNamed = new Map<number | string, number>();
+function nameLatest(key: number | string, tab: number): void {
+  lastNamed.delete(key);
+  lastNamed.set(key, tab);
+  if (lastNamed.size > CLOSED_KEPT) lastNamed.delete(lastNamed.keys().next().value!);
+}
+function unname(tab: number): void {
+  for (const [key, named] of lastNamed) if (named === tab) lastNamed.delete(key);
+}
 // the used time the file of tabs holds for each, as last written (save)
 const written = new WeakMap<HarnessTab, number>();
 const watches = new Map<number, () => void>();
@@ -551,6 +585,7 @@ const AGENT_TAB_CAP = 4;
 
 function own(tab: number, owner: number | undefined, task = currentTask()) {
   remember(tab, owner, Date.now(), task);
+  if (owner !== undefined) nameLatest(taskKey(owner, task), tab);
   tabChanges++;
   save();
   if (owner !== undefined) void capTabs(owner, task, tab).catch(() => {});
@@ -595,6 +630,7 @@ function orphan(owner: number) {
 // in 18 hours.
 function exited(owner: number) {
   watches.delete(owner);
+  for (const key of lastNamed.keys()) if (key === owner || (typeof key === "string" && key.startsWith(`[${owner},`))) lastNamed.delete(key);
   forgetPopups(owner);
   for (const [tab, t] of harnessTabs) {
     if (t.owner !== owner || !t.handoff) continue;
@@ -748,6 +784,7 @@ export function endUntrackedTurns(tracked: (owner: number) => boolean | undefine
 export function keepTab(tab: number): { ok: true } {
   const id = followTab(tab);
   forget(id);
+  unname(id);
   const keeper = currentOwner();
   if (keeper !== undefined) keptBy(id, keeper);
   handOver.set(id, { owner: keeper, task: currentTask() });
@@ -4536,7 +4573,10 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
 }
 
 async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean): Promise<unknown> {
-  const call = checkCall(TOOLS, name, args, model);
+  const checked = checkCall(TOOLS, name, args, model);
+  // "latest" names one tab for the whole call: its lane, a reopen of a
+  // closed tab and the note on a gone one all go by the number.
+  const call = checked.args.tab === "latest" ? { ...checked, args: { ...checked.args, tab: await resolveTab("latest") } } : checked;
   try {
     let back = await reopen(call.tool, call.args);
     const result = redacted(withPageState(call.tool, await guard(call, model, async () => {

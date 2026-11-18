@@ -543,3 +543,55 @@ test("keep of a tab Safari no longer shows fails and keeps nothing", async () =>
   showing = [];
   await expect(callTool("keep", { tab: 98765 })).rejects.toThrow(/^that tab is gone: .*; nothing was kept/);
 });
+
+// On 11-16 shot, eval and wait with tab "latest" failed 3 times in one
+// session, as run's description says a step without a tab takes the
+// latest opened or named (WorkMining).
+test('tab "latest" names the calling agent\'s tab it opened or named last, never another agent\'s', async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const as = (pid: number, tool: string, args: Record<string, unknown>) => runAs(pid, () => callTool(tool, args));
+  await as(agent.pid, "open", { url: "https://first.example/", background: true });
+  const first = nextTab;
+  await as(agent.pid, "open", { url: "https://second.example/", background: true });
+  const second = nextTab;
+  showing = [{ id: first, url: "https://first.example/" }, { id: second, url: "https://second.example/" }];
+  expect(await as(agent.pid, "resolve_tab", { tab: "latest" })).toEqual({ tab: second });
+  await as(agent.pid, "info", { tab: first });
+  relays.length = 0;
+  await as(agent.pid, "extract", { tab: "latest" });
+  expect(relays.map((r) => r[0])).toContain(first);
+  expect(relays.map((r) => r[0])).not.toContain(second);
+  await expect(as(other.pid, "resolve_tab", { tab: "latest" })).rejects.toThrow("you have none open");
+  agent.kill();
+  other.kill();
+  await endTurn(agent.pid);
+  await closedAs([first, second]);
+  showing = [];
+});
+
+// Review, 11-17: once an idle close took the newest tab, "latest" named
+// an older one an unsent form had kept open, and a click went there.
+test('tab "latest" still names the agent\'s newest tab after an idle close took it, never an older one left open', async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://form.example/", background: true });
+  const form = nextTab;
+  await as("type", { tab: form, ref: "1", text: "unsent" });
+  await as("open", { url: "https://newest.example/", background: true });
+  const newest = nextTab;
+  showing = [{ id: form, url: "https://form.example/" }, { id: newest, url: "https://newest.example/" }];
+  setSystemTime(new Date(Date.now() + 3 * 60_000));
+  try {
+    await endTurn(Bun.spawnSync(["true"]).pid);
+    expect([gone.has(form), gone.has(newest)]).toEqual([false, true]);
+    relays.length = 0;
+    await expect(as("click", { tab: "latest", ref: "1" })).rejects.toThrow("snapshot it, then act");
+    expect(relays.filter((r) => r[1] === "click")).toEqual([]);
+  } finally {
+    setSystemTime();
+    agent.kill();
+    forms.delete(form);
+    await endTurn(agent.pid);
+    showing = [];
+  }
+});

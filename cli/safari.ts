@@ -25,6 +25,7 @@ import { connectionRefused, daemonHttp, deployingFor, rpc } from "../daemon/rpc.
 import { alertHealth } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
+import { endLease, holdLease, ownerKey } from "../daemon/lease.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
@@ -93,11 +94,13 @@ const USAGE = `safari — drive Safari from the terminal
   safari scroll <dy> --tab N [--to top|bottom]
                                              scroll by dy, or all the way to the page's top or bottom
 
-  Page commands need --tab N, the id open printed, or --tab front for the
-  tab the user has in front. Tabs a command opens close when omp's turn
-  ends, once the program that ran safari exits, after 2 minutes unused,
-  or past 4 open tabs per agent session; --keep on open, or safari keep
-  <tab>, leaves one open for him.
+  Page commands need --tab N, the id open printed, --tab latest for your
+  tab opened or named last, or --tab front for the tab the user has in
+  front. Tabs a command opens close when omp's turn ends, once the
+  program that ran safari exits, after 2 minutes unused, or past 4 open
+  tabs per agent session; --keep on open, or safari keep <tab>, leaves
+  one open for him. Commands over ssh or from a script outside an agent
+  keep one set of tabs with a unique SAFARI_OWNER=<key> or --owner <key>.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
@@ -224,6 +227,11 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari host [list] | use <ssh-host|local> | status [host]
                                              drive another Mac's Safari through ssh
+  safari owner [--end]                       with SAFARI_OWNER=<key> (or --owner <key> on
+                                             any command), calls in separate processes or
+                                             over ssh share tabs that outlive each one;
+                                             they close after 30 min without a call, or
+                                             at --end; prints the lease's pid
   safari mcp                                 run the MCP stdio server (thin client)
   safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
   safari routine list | history <name> | run <name> [--dry] | pause|resume|remove <name>
@@ -303,6 +311,11 @@ const USAGE = `safari — drive Safari from the terminal
 `;
 
 const json = process.argv.includes("--json");
+
+// --owner <key> names the lease this command's calls work for, as
+// SAFARI_OWNER does (lease.ts).
+const ownerFlag = flag("owner", process.argv);
+if (ownerFlag !== undefined) process.env.SAFARI_OWNER = ownerFlag;
 
 // -q, or --quiet, on any command: nothing printed when it works, and one
 // line on stderr when it misses or fails. From 10-01 to 10-04 a 99point
@@ -401,7 +414,7 @@ function fileFlags(argv: string[]): string[] | undefined {
 function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
-  return { tab: t === "front" ? t : Number(t) };
+  return { tab: t === "front" || t === "latest" ? t : Number(t) };
 }
 
 // --save writes a read's whole output to a new file in the saved folder;
@@ -452,7 +465,7 @@ const toolsOf = (tool: string): Record<string, Tool> => (Object.hasOwn(TOOLS, to
 
 // Flags every command takes, and those a command reads beside its tool's
 // parameters (open --bg, snapshot --max).
-const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet"];
+const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet", "owner"];
 const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg", "id"], snapshot: ["max"], shot: ["full"], shots: ["full"], eval: ["file", "timeout", "raw"], wait: ["timeout"], window: ["size"], run: ["steps-file"] };
 // A parameter a command takes under another flag: tabs's host is --site,
 // since --host names another Mac. Its help said --host (10-04, 01a10737).
@@ -879,6 +892,13 @@ async function main() {
 
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
+
+  if (cmd === "owner") {
+    const key = ownerKey();
+    if (key === undefined) fail("usage: SAFARI_OWNER=<key> safari owner [--end], or safari owner --owner <key> [--end]", 2);
+    if (hasFlag("end", rest)) return print({ owner: key, pid: (await endLease(key)) ?? null });
+    return print({ owner: key, pid: await holdLease(key) });
+  }
 
   // replay prints one result whether or not it went through (--json: one
   // line, which watch.ts reads) and exits 0 only when every step did.

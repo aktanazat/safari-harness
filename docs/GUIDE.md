@@ -13,13 +13,16 @@ after a compaction. Details, one section at a time:
 ## Tabs
 - `open` returns a tab id; pass it as `tab` to every call. Your tabs open
   in your own Safari window, off his screen on the "Agents" display when
-  it exists, never in his windows. `tab: "front"` is his front tab, only
+  it exists, never in his windows. `tab: "latest"` is your tab opened or
+  named last. `tab: "front"` is his front tab, only
   when he asks about his page. Never navigate, type in, or close his tabs
   or windows; list his tabs only when the task is about a page he has open.
 - Your tabs close by themselves when your turn ends, and after 2 idle
   minutes; a fifth tab closes your least recently used one. A task's last
   call is never `close`. `keep` only a page he still needs, not a finished
   result he did not ask to see.
+- Over ssh or from a script outside an agent (never inside omp), give the
+  commands one unique `SAFARI_OWNER=<key>` so their tabs outlive each one.
 - A closed tab's id reopens the page under a new id: snapshot it before
   acting. When a call says he paused or stopped you, do what it says.
   After Give back, read a fresh snapshot before acting.
