@@ -88,6 +88,28 @@ test("errors the page threw come beside the effect, and do not make one", () => 
   expect(effectOf({ ...QUIET, added: 3, errors: ["boom"] })).toEqual({ effect: { added: 3 }, pageErrors: ["boom"] });
 });
 
+test("a click that did nothing, or changed an element or two in place, lists what failed on the page shortly before", () => {
+  const earlier = {
+    requests: [{ method: "GET", url: "https://api.shop.example.com/accounts/7/unified/", status: 404 }, { method: "GET", url: "https://ads.other.com/x", error: "Load failed" }],
+    errors: ["unhandled rejection: Unsuccessful HTTP response"],
+  };
+  const recent = ["failed: GET api.shop.example.com/accounts/7/unified/ 404", "page error: unhandled rejection: Unsuccessful HTTP response"];
+  expect(effectOf({ ...QUIET, earlier })).toEqual({ effect: "none", next: NO_EFFECT, recent });
+  const slight = effectOf({ ...QUIET, changed: 1, earlier });
+  expect([slight.effect, slight.recent, /likely ignored this; recent lists/.test(slight.next ?? "")]).toEqual([{ changed: 1 }, recent, true]);
+  expect(effectOf({ ...QUIET, changed: 1, earlier: { requests: [], errors: [] } }).next).toMatch(/likely ignored this; nothing failed/);
+  // an effect with more to it stands without them
+  expect(effectOf({ ...QUIET, changed: 1, added: 4, earlier })).toEqual({ effect: { added: 4, changed: 1 } });
+  expect(effectOf({ ...QUIET, changed: 9, earlier })).toEqual({ effect: { changed: 9 } });
+  // a section it showed (more lines than said quotes) is not little
+  const shown = effectOf({ ...QUIET, changed: 1, said: ["Review", "Amount", "From", "To"], earlier: { requests: [], errors: [] } });
+  expect([shown.effect, shown.next, shown.recent]).toEqual([{ changed: 1 }, undefined, undefined]);
+  // with no request log, or no word of what came before, "nothing failed" is not known
+  expect(effectOf({ ...QUIET, requests: null, pending: null, changed: 1, earlier: { requests: [], errors: [] } }).next).toBeUndefined();
+  const unknown = effectOf({ ...QUIET, changed: 1 }).next ?? "";
+  expect([/likely ignored this/.test(unknown), /nothing failed/.test(unknown)]).toEqual([true, false]);
+});
+
 test("a page that refused for want of focus or a real click says what the step needs: Safari in front and a real click, or the user", () => {
   const names = (next?: string) => ["activate", "real_input", "handoff"].filter((t) => new RegExp(`\\b${t}\\b`).test(next ?? ""));
   for (const error of ["unhandled rejection: The document is not focused.", "unhandled rejection: The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.", "NotAllowedError: denied"]) {

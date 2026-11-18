@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Invoke } from "../call.ts";
 import { PACE_TOOL } from "../pace.ts";
 import { HarnessError } from "../failures.ts";
-import { SiteKit } from "./kit.ts";
+import { draftOrSend, SiteKit } from "./kit.ts";
 import { slack } from "./slack.ts";
 
 // Safari as the slack global sees it: app.slack.com's store holds one
@@ -346,4 +346,49 @@ test("a call whose tab was opened again fresh after the turn ended runs there", 
   expect(await waited(kit.listWorkspaces())).toEqual([TEAM]);
   await waited(kit.listWorkspaces());
   expect(evalTabs).toEqual([1, 2, 2]);
+});
+
+// On 11-17 getClient("openfunnel") found no workspace, though Safari held
+// one named "OpenFunnel" (its domain is another word).
+test("getClient finds a workspace by its name, case aside", async () => {
+  const named = { ...TEAM, teamId: "T2", name: "OpenFunnel", domain: "openfunnel-hq", url: "https://openfunnel-hq.slack.com/" };
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool !== "eval") throw new Error(`no ${tool} in this Safari`);
+    return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM, named] } };
+  };
+  const kit = slack(new SiteKit(send, undefined, dir));
+  expect(await waited(kit.getClient("openfunnel"))).toBeDefined();
+  await expect(waited(kit.getClient("nobody"))).rejects.toThrow('no workspace "nobody"');
+});
+
+// On 11-16 a Slack upload refused before it left (CORS, effect none) used
+// its approved draft up, and the retry needed a new draft and the owner's
+// yes again. One that may have gone out, or whose earlier step went
+// through (Gmail's Send clicked, then a wait that met a restarting
+// daemon), still sends once.
+test("an approved send that failed before anything left can go again with the same draft; one that may have gone out cannot", async () => {
+  const kit = new SiteKit(async () => ({}), undefined, dir);
+  let fail: HarnessError | undefined = new HarnessError("command_failed", "Load failed (CORS)", { effect: "none" });
+  let clicks = false;
+  const post = (approved?: string) => draftOrSend(kit, { site: "slack", action: "post", to: "C1", text: "hello", approved, send: async () => {
+    if (clicks) await kit.invoke("click", { tab: 1, ref: "1" });
+    if (fail) throw fail;
+    return "ok";
+  } });
+  const draft = (await post()) as { draftId: string };
+  kit.run++;
+  await expect(post(draft.draftId)).rejects.toThrow("Load failed (CORS)");
+  fail = undefined;
+  expect(await post(draft.draftId)).toMatchObject({ status: "sent", result: "ok" });
+  for (const [failure, click] of [[new HarnessError("effect_unknown", "the tab closed while the post was out"), false], [new HarnessError("unavailable", "the daemon is restarting; try again in 2 s", { effect: "none" }), true]] as const) {
+    const next = (await post()) as { draftId: string };
+    kit.run++;
+    fail = failure;
+    clicks = click;
+    await expect(post(next.draftId)).rejects.toThrow(failure.message);
+    fail = undefined;
+    await expect(post(next.draftId)).rejects.toThrow("approved once already");
+  }
 });

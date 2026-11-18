@@ -642,9 +642,10 @@ func window(_ args: [String]) {
 }
 
 // Every app's windows on screen at the normal level, front to back, each
-// marked when it is Safari's, and every screen with the part of it the menu
-// bar and Dock leave free: daemon/place.ts finds in them a spot no window
-// covers. A window drawn fully transparent covers nothing and is left out.
+// marked when it is Safari's, and every screen with its display id, its
+// name and the part of it the menu bar and Dock leave free: daemon/place.ts
+// finds in them a spot no window covers, and the agents' display by its
+// name. A window drawn fully transparent covers nothing and is left out.
 func windows() {
     let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first?.processIdentifier
     let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
@@ -657,7 +658,9 @@ func windows() {
         w["safari"] = safari != nil && (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safari
         return w
     }
-    let screens = NSScreen.screens.map { ["frame": rectJSON(topDown($0.frame)), "visible": rectJSON(topDown($0.visibleFrame))] }
+    let screens = NSScreen.screens.map { s -> [String: Any] in
+        ["id": (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0, "name": s.localizedName, "frame": rectJSON(topDown(s.frame)), "visible": rectJSON(topDown(s.visibleFrame))]
+    }
     printJSON(["windows": shown, "screens": screens])
 }
 

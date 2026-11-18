@@ -11,6 +11,7 @@ import * as daemonRpc from "./rpc.ts";
 import * as telegram from "./telegram.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 import { runAs } from "./owner.ts";
+import * as spaces from "./spaces.ts";
 import { met, walled } from "./reads.ts";
 
 // handoff gives the user the tab for a step only they can take. The daemon's
@@ -24,8 +25,14 @@ import { met, walled } from "./reads.ts";
 type Page = { url: string; check?: "box" | "block" | "wall"; text?: string };
 // prompt: one holding the front, app behind it, with no Dock icon; the
 // helper's activate fails while it is up
-type Mac = { app: string; prompt?: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; use(tab: number): void };
+type Rect = { x: number; y: number; width: number; height: number };
+type Mac = { app: string; prompt?: string; activated: number[]; notices: string[]; texts: { line: string; picture: boolean }[]; closed: number[]; windows: Map<number, Rect>; use(tab: number): void };
 const MAIL = "com.apple.mail";
+// The main display, whose top 30 points the menu bar takes, and the Agents
+// display agent-display adds right of it.
+const MAIN = { name: "LG UltraFine", frame: { x: 0, y: 0, width: 3200, height: 1800 }, visible: { x: 0, y: 30, width: 3200, height: 1770 } };
+const AGENTS = { name: "Agents", frame: { x: 3200, y: 0, width: 2560, height: 1440 }, visible: { x: 3200, y: 0, width: 2560, height: 1440 } };
+const screenOf = (r: Rect) => (r.x >= AGENTS.frame.x ? AGENTS : MAIN);
 
 // Mail is in front. Safari's window shows the user's tab 3; the agent's tab
 // sits alone in an agent window behind it, which never holds the front tab,
@@ -34,11 +41,19 @@ const MAIL = "com.apple.mail";
 // at once whether page.text holds it.
 // Safari shows the window of the tab activated last. The Mac records the
 // tabs the harness activates, the app in front, the notices, and the
-// alerts, each with whether its picture was there to send.
-function mac(tab: number, page: Page): Mac {
+// alerts, each with whether its picture was there to send. With agents,
+// the agent window is the agent's own and sits on the Agents display; Safari
+// moves a window as WebKit's windows.update does, counting left and top
+// from the top-left of the display it is on.
+function mac(tab: number, page: Page, agents = false): Mac {
   const tabs = [{ id: 3, windowId: 1, url: "https://mail.example/", active: true }, { id: tab, windowId: 2, url: page.url, active: true }];
   let shown = 1;
-  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], closed: [], use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
+  const windows = new Map<number, Rect>([[1, { ...MAIN.visible }], [2, { x: AGENTS.frame.x, y: 0, width: 1000, height: 780 }]]);
+  const moveTo = (w: Rect, bounds: { left: number; top: number }) => {
+    const on = screenOf(w).frame;
+    Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top });
+  };
+  const m: Mac = { app: MAIL, activated: [], notices: [], texts: [], closed: [], windows, use: (id) => { shown = tabs.find((t) => t.id === id)!.windowId; } };
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data);
@@ -53,7 +68,14 @@ function mac(tab: number, page: Page): Mac {
       if (op === "tabs.activate") {
         m.activated.push(args[0]);
         m.use(args[0]);
-        return answer({ value: { ok: true } });
+        const w = windows.get(shown)!;
+        if (args[1]) moveTo(w, args[1]);
+        return answer({ value: { ok: true, windowId: shown, width: w.width, height: w.height } });
+      }
+      if (op === "windows.frame") {
+        const w = windows.get(tabs.find((t) => t.id === args[0])!.windowId)!;
+        if (args[1]) moveTo(w, args[1]);
+        return answer({ value: { width: w.width, height: w.height, state: "normal" } });
       }
       if (op === "probe") {
         const frames = page.check === "box" ? ["https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2"] : [];
@@ -70,10 +92,16 @@ function mac(tab: number, page: Page): Mac {
       m.app = args[1];
       if (m.prompt) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${m.prompt} is in front`);
     }
+    if (args[0] === "window") {
+      const w = [...windows.values()].find((r) => r.width === Number(args[1]) && r.height === Number(args[2]))!;
+      return { window: { ...w }, screen: screenOf(w).frame, visible: MAIN.visible };
+    }
+    if (args[0] === "windows") return { windows: [...windows.values()].map((r) => ({ ...r, safari: true })), screens: agents ? [MAIN, AGENTS] : [MAIN] };
     return args[0] === "front" ? (m.prompt ? { bundleId: m.prompt, under: m.app } : { bundleId: m.app }) : {};
   });
   spyOn(front, "notify").mockImplementation((text) => void m.notices.push(text));
   spyOn(telegram, "sendTelegram").mockImplementation(async (line, picture) => void m.texts.push({ line, picture: picture !== undefined && existsSync(picture) }));
+  if (agents) spyOn(spaces, "windowOwners").mockImplementation(() => new Map([[2, process.pid]]));
   return m;
 }
 
@@ -600,4 +628,33 @@ test("a background handoff checked by its id alone alerts a user who walked away
   expect(m.notices).toEqual(["Clear the check"]);
   page.check = undefined;
   await tick();
+});
+
+// On 11-17 the owner asked that agent windows stay off his screen, on the
+// Agents display, while he works; a handoff is the one time he must see one.
+test("a handoff shows an agent window on the main display, and puts it back on the Agents display once the user is done", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(81, page, true);
+  const t = taken(waits("Clear the check"));
+  const handed = handoff(81, "Clear the check");
+  await t;
+  const during = screenOf(m.windows.get(2)!).name;
+  page.check = undefined;
+  await tick();
+  expect(await handed).toMatchObject({ done: true });
+  expect([during, screenOf(m.windows.get(2)!).name]).toEqual([MAIN.name, AGENTS.name]);
+});
+
+test("a handoff no one answers puts its agent window back on the Agents display once it runs out", async () => {
+  const page: Page = { url: "https://shop.example/login", check: "box" };
+  const m = mac(82, page, true);
+  const t = taken(waits("Clear the check"));
+  const handed = handoff(82, "Clear the check", 1000);
+  await t;
+  await tick();
+  expect(await handed).toMatchObject({ done: false });
+  const during = screenOf(m.windows.get(2)!).name;
+  // the handoff waits 5 minutes with no call on it before it ends
+  await ticks(5 * 60);
+  expect([during, screenOf(m.windows.get(2)!).name]).toEqual([MAIN.name, AGENTS.name]);
 });

@@ -36,8 +36,9 @@ import { bridge, TimedOut, type RequestOptions } from "./bridge.ts";
 import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
-import { alive, currentOwner, currentTask, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { closeTab, endUntrackedTurns, linkDropped, windowPageClosed, type TabInfo } from "./tools.ts";
+import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
+import { agentWindows, toAgentScreen } from "./place.ts";
+import { closeTab, endUntrackedTurns, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -50,7 +51,12 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // nothing but its page, and its agent's next open clears it
 // seen: the addresses of the pages in an ended group's window, as release
 // last saw them
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string };
+// shownFor: the calls that brought it onto the user's screen for him (an
+// activate, a handoff), each until its turn or the handoff ends
+// moved: he moved it off the Agents display himself; it stays where he put it
+// home: the id of the Agents display it was last seen on (place.ts)
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number };
+export type Shown = { owner?: number; task?: string; handoff?: true };
 
 const spaces = new Map<string, Space>();
 const making = new Map<string, Promise<Space>>();
@@ -63,7 +69,7 @@ const closing = new Map<string, Space>();
 // and the extension's connect in tools.ts). Every 5 s, it was 12 lists a
 // minute while an agent ran (10-21 audit).
 const SWEEP_MS = 60_000;
-const IDLE_MS = 20 * 60_000;
+const IDLE_MS = 2 * 60_000;
 // How many of its agent's tabs a waiting window holds before the keeper
 // makes it a group (state).
 const GROUP_AT = 3;
@@ -248,6 +254,11 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       sweepSoon();
       save();
       await identify(space, w.tabId);
+      // A window left where Safari put it still works, only on his screen.
+      space.home = await toAgentScreen(w.tabId).catch((e: unknown) => {
+        note("window not moved to the agents' display", { name, error: e instanceof Error ? e.message : String(e) });
+        return undefined;
+      });
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();
@@ -298,13 +309,14 @@ function watchExit(owner: number | undefined) {
   exitWatched.add(owner);
   watchOwner(owner, () => {
     exitWatched.delete(owner);
+    unshow(owner, undefined);
     void turnEnded(owner).catch(() => {});
   });
 }
 
 function save() {
   if (!spacesFile) return;
-  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.seen === undefined ? {} : { seen: s.seen }) });
+  const kept = (s: Space): Kept => ({ key: s.key, id: s.id, window: s.window, name: s.name, size: s.size, owner: s.owner, ...(s.task === undefined ? {} : { task: s.task }), group: s.group, ...(s.done ? { done: true } : {}), ...(s.used === undefined ? {} : { used: s.used }), ...(s.proof === undefined ? {} : { proof: s.proof }), ...(s.why ? { why: s.why } : {}), ...(s.seen === undefined ? {} : { seen: s.seen }), ...(s.shownFor?.length ? { shownFor: s.shownFor } : {}), ...(s.moved ? { moved: true } : {}), ...(s.home === undefined ? {} : { home: s.home }) });
   try {
     const pending = `${spacesFile}.tmp`;
     writeFileSync(pending, JSON.stringify({ version: 2, spaces: [...spaces.values()].map(kept), closing: [...closing.values()].map(kept), ended: [...ended].map(kept) }), { mode: 0o600 });
@@ -319,8 +331,13 @@ function save() {
 // comes once per agent, not once per window: on 09-29 agent 21859's windows
 // 681333, 693176, and 801195 each repeated a day-old reason
 // (groups-off.json), 330 characters that only the user can act on. Calls
-// with no agent known share one list.
+// with no agent known share one list. A reason goes to any agent at most
+// once an hour: a CLI call is an agent of its own, and on 11-16 and 11-17
+// 31 opens repeated one day-old reason naming another task's site, which
+// agents cut with grep 12 times.
 const told = new Map<number | undefined, Set<string>>();
+const toldAt = new Map<string, number>();
+const TOLD_MS = 60 * 60_000;
 
 // What an open says of its window, with why it stays plain the first time
 // its agent meets that reason.
@@ -331,8 +348,12 @@ export function spaceNote(s: Space): SpaceNote {
     told.set(s.owner, reasons);
     if (s.owner !== undefined) watchOwner(s.owner, () => told.delete(s.owner));
   }
-  const why = s.why === undefined || reasons.has(s.why) ? undefined : s.why;
-  if (why) reasons.add(why);
+  const now = Date.now();
+  const why = s.why === undefined || reasons.has(s.why) || now - (toldAt.get(s.why) ?? -Infinity) < TOLD_MS ? undefined : s.why;
+  if (why) {
+    reasons.add(why);
+    toldAt.set(why, now);
+  }
   return { name: s.name, group: s.group, ...(why ? { why } : {}) };
 }
 
@@ -470,7 +491,7 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       const s = await runAs(undefined, () => spaceWindow("tab group cleanup", undefined, false, quiet));
       s.group = "plain";
       s.why = "a window to delete tab groups from";
-      // In use while the keeper deletes from it: unused 20 min, it ends.
+      // In use while the keeper deletes from it: unused IDLE_MS, it ends.
       s.used = Date.now();
       save();
       return { ok: true, ...s.size, tabs: (await located(s)).length };
@@ -490,8 +511,12 @@ export async function spaceTool(a: Record<string, unknown>): Promise<unknown> {
       if (a.cancelled === true && unclosed.delete(s)) void sweep().catch(() => {});
       return { ok: true };
     }
+    // The size of each agent window, for a caller cancelling a client
+    // certificate prompt on agent windows alone (sheets.ts).
+    case "windows":
+      return { windows: [...spaces.values(), ...closing.values()].map((s) => s.size) };
   }
-  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, or looked");
+  throw new Error("space op must be state, making, grouped, plain, waiting, release, gone, scratch, raised, sheets, looked, or windows");
 }
 
 // A print sheet a frame of a page raised stays on its window once the
@@ -556,6 +581,8 @@ async function end(space: Space) {
   const failed = unclosed.get(space);
   if (failed && Date.now() < failed.at) return;
   const inWindow = await located(space);
+  // a Safari that started again may not have restored a window from before
+  if (inWindow.length === 0 && stillFinding() && (space.used ?? 0) < (bridge.extensionInfo?.connectedAt ?? 0)) return;
   if (!space.done || (taskTracked?.(space.owner) !== false && pagesIn(inWindow, space).length > 0)) return;
   const page = inWindow.find(t => isPage(t, space));
   if (page) {
@@ -568,7 +595,7 @@ async function end(space: Space) {
       const tracked = taskTracked?.(space.owner);
       let why = "as its agent's turn ended";
       if (tracked === false) why = "as its agent's task ended";
-      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 20 minutes unused";
+      else if (Date.now() - (space.used ?? 0) >= IDLE_MS) why = "after 2 minutes unused";
       else if (taskTracked && tracked === undefined) why = "as no task record names its agent";
       windowPageClosed(page.id, `with its window, ${why}`, space.owner);
     } catch (e) {
@@ -687,6 +714,87 @@ async function sweepOnce() {
     const inWindow = await located(s, tabs);
     if (taskTracked?.(s.owner) === false || inWindow.length === 0 || (s.done && pagesIn(inWindow, s).length === 0)) await end(s);
   }
+  await homeWindows(tabs).catch((e: unknown) => note("agent windows not checked for the agents' display", { error: e instanceof Error ? e.message : String(e) }));
+}
+
+// An agent window neither shown to the user nor moved by him goes back to
+// the Agents display when it is found off it: one opened while the display
+// was down, one left on his screen by a display that went away and came
+// back under a new id, or one whose showing has ended. One that was on the
+// display, which is the same, has been moved off by him.
+async function homeWindows(tabs: TabInfo[]) {
+  const away = [...spaces.values()].filter((s) => !s.moved && !s.shownFor?.length);
+  if (away.length === 0) return;
+  const { agents, at } = await agentWindows(away.map((s) => s.size));
+  if (agents === undefined) return;
+  let changed = false;
+  for (const [i, s] of away.entries()) {
+    if (at[i] === "agents") {
+      if (s.home !== agents) {
+        s.home = agents;
+        changed = true;
+      }
+      continue;
+    }
+    if (at[i] === undefined) continue;
+    if (s.home === agents) {
+      s.moved = true;
+      changed = true;
+      continue;
+    }
+    const tab = tabs.find((t) => t.windowId === s.window);
+    const home = tab ? await toAgentScreen(tab.id) : undefined;
+    if (home !== undefined) {
+      s.home = home;
+      changed = true;
+    }
+  }
+  if (changed) save();
+}
+
+// The calling agent brings the window onto the user's screen: sweeps leave
+// it there until release, or its turn's end (unshow) for one not a handoff.
+// Answers what release takes.
+export function showing(window: number, handoff = false): Shown {
+  const shown: Shown = { owner: currentOwner(), task: currentTask(), ...(handoff ? { handoff: true } : {}) };
+  const s = [...spaces.values()].find((x) => x.window === window);
+  if (!s) return shown;
+  const had = s.shownFor?.find((x) => x.owner === shown.owner && x.task === shown.task && x.handoff === shown.handoff);
+  if (had && !handoff) return had;
+  s.shownFor = [...(s.shownFor ?? []), shown];
+  save();
+  return shown;
+}
+
+// A showing is over: once nothing else shows the window and he has not
+// moved it, it goes back to the Agents display, through tab. When the
+// display is missing, the next sweep that finds it does.
+export async function release(window: number, tab: number, shown: Shown): Promise<void> {
+  const s = [...spaces.values()].find((x) => x.window === window);
+  if (s) {
+    s.shownFor = s.shownFor?.filter((x) => x !== shown);
+    save();
+    if (s.moved || s.shownFor?.length) return;
+  }
+  const home = await toAgentScreen(tab).catch(() => undefined);
+  if (!s) return;
+  s.home = home;
+  save();
+}
+
+// At a turn's end its showings, but handoffs, are over; task as endTurn
+// reaches tabs (inTurn), undefined for the agent's exit. A window nothing
+// shows any more then goes back at the next sweep.
+export function unshow(owner: number | undefined, task: string | null | undefined): void {
+  let changed = false;
+  for (const s of spaces.values()) {
+    const left = s.shownFor?.filter((x) => x.handoff || !inTurn(x, owner, task));
+    if (!s.shownFor || left?.length === s.shownFor.length) continue;
+    s.shownFor = left;
+    if (!left?.length && !s.moved) delete s.home;
+    changed = true;
+  }
+  if (changed) save();
 }
 
 // When each window's task was first seen ended, for the journal's note of
@@ -753,9 +861,10 @@ export function spaceEnded(id: string): boolean {
 
 // The agent each window is for, read off the window pages in tabs: a
 // Safari that started again gave the windows new ids (restored, tools.ts).
+// A window that ended still holds its agent's tabs until they close.
 export function ownersByPage(tabs: TabInfo[]): Map<number, Pick<Space, "owner" | "task"> & { family?: true }> {
   const owners = new Map<number, Pick<Space, "owner" | "task"> & { family?: true }>();
-  const byId = new Map([...spaces.values()].map((space) => [space.id, space]));
+  const byId = new Map([...ended, ...closing.values(), ...spaces.values()].map((space) => [space.id, space]));
   for (const t of tabs) {
     const p = pageAt(t);
     const space = p === undefined ? undefined : byId.get(p.id);

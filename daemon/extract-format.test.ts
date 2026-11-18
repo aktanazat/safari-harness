@@ -56,3 +56,22 @@ test("eval prints the script's result without the envelope, and a failure whole"
   expect(JSON.parse(formatResult({ ok: false, error: "ReferenceError: x is not defined" }))).toEqual({ ok: false, error: "ReferenceError: x is not defined" });
   expect(JSON.parse(formatResult({ ok: true, result: { ok: false, error: "not signed in" } }))).toEqual({ ok: true, result: { ok: false, error: "not signed in" } });
 });
+
+// 11-17: five imessage_history answers headed "# undefined — undefined".
+test("a Messages history heads with its chat and keeps each message's time, rowid and file ids", () => {
+  const text = formatResult({
+    chat: "iMessage;-;fixture@example.com",
+    name: "Fixture Person",
+    service: "iMessage",
+    group: false,
+    participants: ["Fixture Person"],
+    messages: [
+      { rowid: 41, at: "2026-11-17T10:00:00.000Z", from: "Fixture Person", text: "see attached", files: [{ id: "local", name: "photo.jpg", downloaded: true, path: "/tmp/photo.jpg" }, { id: "cloud", name: "cloud.jpg", downloaded: false }] },
+      { rowid: 42, at: "2026-11-17T10:01:00.000Z", from: "me", text: "thanks" },
+    ],
+  });
+  expect(text).not.toContain("undefined");
+  expect(text.split("\n")[0]).toBe("# messages with Fixture Person (iMessage), chat iMessage;-;fixture@example.com");
+  expect(text).toContain("Fixture Person (2026-11-17T10:00:00.000Z, #41): see attached [photo.jpg: id local, /tmp/photo.jpg; cloud.jpg: id cloud, not downloaded]");
+  expect(text).toContain("me (2026-11-17T10:01:00.000Z, #42): thanks");
+});

@@ -19,7 +19,6 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { bridge } from "./bridge.ts";
 import { followTab } from "./continuity.ts";
@@ -32,7 +31,7 @@ import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { rexTabOf, rexTitle, showRexTab, type RexTab } from "./rex.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
+import { closeTabsOf, codeFrom, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 import { unsecret } from "./redact.ts";
 import { SAVED_CHARS } from "./save.ts";
@@ -562,19 +561,9 @@ function syncViews(agent: Agent): void {
   }
 }
 
-// The code an eval {file} runs is the file's contents (tools.ts codeFrom), so
-// an edited script is a new call. Agents renamed scripts to get past the
-// hold (BERK#46-50, LOCK#1500-1506). A file that cannot be read keeps its
-// path here, and the call fails where codeFrom does.
-async function sourceOf(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
-  if (tool !== "eval" || typeof args.file !== "string") return undefined;
-  return readFile(args.file, "utf8").catch(() => undefined);
-}
-
-function fingerprint(tool: string, args: Record<string, unknown>, source?: string): string {
+function fingerprint(tool: string, args: Record<string, unknown>): string {
   const definition = TOOLS[tool];
   const effect = Object.fromEntries(Object.entries(args).filter(([key]) => !Object.hasOwn(OUTPUT_OPTIONS, key) && (!definition || Object.hasOwn(definition.params, key) || definition.unlisted && Object.hasOwn(definition.unlisted, key))));
-  if (tool === "eval" && source !== undefined) { delete effect.file; effect.source = source; }
   if (tool === "press" && effect.ref === null) delete effect.ref;
   if (effect.ref !== undefined) effect.ref = String(effect.ref);
   if (tool === "click" && effect.ref !== undefined) { delete effect.x; delete effect.y; }
@@ -644,37 +633,56 @@ async function siteOf(tool: string, args: Record<string, unknown>, tab: number |
   return url && URL.canParse(url) ? new URL(url).origin : undefined;
 }
 
-function siteKey(tool: string, args: Record<string, unknown>, origin: string, source?: string): string {
-  return createHmac("sha256", KEY).update(origin).update(fingerprint(tool, { ...args, tab: undefined }, source)).digest("hex");
+function siteKey(tool: string, args: Record<string, unknown>, origin: string): string {
+  return createHmac("sha256", KEY).update(origin).update(fingerprint(tool, { ...args, tab: undefined })).digest("hex");
 }
 
 // A refusal sends nothing, but names an earlier identical action whose
 // effect is unknown, and says so as effect_unknown does: possibly
 // effected, not to be repeated until read. On 11-04 one said effect none
-// beside "may already have happened" (MineSessionD-7).
-const ALREADY = "that action may already have happened; this call was not sent";
+// beside "may already have happened" (MineSessionD-7). On 11-17 an agent
+// read "this call was not sent" without its why, so the refusal says it.
+const ALREADY = "the same action failed after it was sent and may already have happened, so this call was not sent";
 
-function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string, source?: string) {
+// eval and fetch take read: true for code or a request that only reads,
+// which the harness cannot tell by itself; such a call holds nothing. On
+// 11-17 an eval that only read script bundles was refused this way.
+const READS_AGAIN: Record<string, string> = {
+  eval: "if its code only reads, send it again with read: true",
+  fetch: "if the request only reads, send it again with read: true",
+};
+
+function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string) {
   if (agent.inspectionOnly && !inspectionAllowed(tool, args)) throw new HarnessError("blocked", "this task may only inspect its current pages; the user must allow actions from its task controls", { next: "continue reading current pages, or wait for the user to allow actions" });
   syncViews(agent);
   const rawTab = tabOf(args.tab).tab;
   const tab = rawTab === undefined ? undefined : followTab(rawTab);
   const effectful = affectsPage(tool, args);
   const guarded = effectful && tool !== "run" && tool !== "replay";
-  const key = guarded ? fingerprint(tool, args, source) : undefined;
-  const site = guarded && origin !== undefined && Object.hasOwn(SITE_WIDE, tool) ? siteKey(tool, args, origin, source) : undefined;
+  const key = guarded ? fingerprint(tool, args) : undefined;
+  const site = guarded && origin !== undefined && Object.hasOwn(SITE_WIDE, tool) ? siteKey(tool, args, origin) : undefined;
   const view = tab === undefined ? undefined : agent.views.get(tab);
   if (guarded && view?.stale) throw new HarnessError("stale_view", "the user changed this tab; snapshot or read it before acting", { next: "snapshot or extract this tab, then decide what to do" });
   if (effectful && view?.native?.size) {
     throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
   }
+  const reads = Object.hasOwn(READS_AGAIN, tool) ? `${READS_AGAIN[tool]}; otherwise ` : "";
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
-    throw new HarnessError("effect_unknown", `${ALREADY}; only a snapshot or extract of this tab releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: "snapshot or extract this tab with no query, root, selector or ref, not cut short, and check whether the action already happened" });
+    throw new HarnessError("effect_unknown", `${ALREADY}; ${reads}only a snapshot or extract of this tab releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract this tab with no query, root, selector or ref, not cut short, and check whether the action already happened` });
   }
   if (site !== undefined && agent.sites.has(site)) {
-    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; only a snapshot or extract of any tab on ${origin} releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `snapshot or extract a tab on ${origin} with no query, root, selector or ref, not cut short, and check whether the action already happened (tabs lists them)` });
+    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; ${reads}only a snapshot or extract of any tab on ${origin} releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract a tab on ${origin} with no query, root, selector or ref, not cut short, and check whether the action already happened (tabs lists them)` });
   }
   return { tab, effectful, key, site };
+}
+
+// eval {file} is compared by the code the file holds when sent: on 11-17
+// an agent rewrote its file after an eval that failed, and the new code
+// was refused as a repeat of the old, since only the path was compared.
+async function withCode(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (tool !== "eval" || args.file === undefined) return args;
+  const { file, ...rest } = args;
+  return codeFrom(file).then((expression) => ({ ...rest, expression }), () => args);
 }
 
 // An uncertain action holds its tab, and a site-wide one its site too.
@@ -688,8 +696,7 @@ function holdUncertain(agent: Agent, tab: number, key: string, site: string | un
 async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
   const rawTab = tabOf(args.tab).tab;
   const origin = Object.hasOwn(SITE_WIDE, tool) && affectsPage(tool, args) ? await siteOf(tool, args, rawTab === undefined ? undefined : followTab(rawTab)) : undefined;
-  const source = await sourceOf(tool, args);
-  const { tab, effectful, key, site } = checkAction(agent, tool, args, origin, source);
+  const { tab, effectful, key, site } = checkAction(agent, tool, await withCode(tool, args), origin);
   const revision = agent.revision;
   try {
     const value = await run();

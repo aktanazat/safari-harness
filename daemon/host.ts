@@ -90,11 +90,13 @@ function shellQuote(s: string): string {
 }
 
 // One of the tools that must run on the Mac itself (Messages, history,
-// real input), run there by its own CLI over ssh.
+// real input), run there by its own CLI over ssh, for the owner lease
+// this process's calls work for (lease.ts), if any.
 export async function remoteCall(host: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
   if (!/^[a-z_]+$/.test(tool)) throw new Error(`unknown tool ${tool}`);
   const safari = (await readHostConfig()).hosts?.[host]?.safari ?? REMOTE_SAFARI;
-  const proc = Bun.spawn(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `${safari} call ${tool} ${shellQuote(JSON.stringify(args))} --json --host local`], { stdout: "pipe", stderr: "pipe" });
+  const owner = process.env.SAFARI_OWNER ? ` --owner ${shellQuote(process.env.SAFARI_OWNER)}` : "";
+  const proc = Bun.spawn(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `${safari} call ${tool} ${shellQuote(JSON.stringify(args))} --json --host local${owner}`], { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) {
     let failure: Failure | undefined;
@@ -121,6 +123,19 @@ export async function remoteCall(host: string, tool: string, args: Record<string
     }
     throw e;
   }
+}
+
+// The pid of the owner lease key names on that Mac (lease.ts), which its
+// own CLI starts or renews there, or ends with end (undefined when none
+// ran): the daemon there sees only its own processes. The key is plain
+// (ownerKey), so it needs no quoting.
+export async function remoteLease(host: string, key: string, end = false): Promise<number | undefined> {
+  const safari = (await readHostConfig()).hosts?.[host]?.safari ?? REMOTE_SAFARI;
+  const proc = Bun.spawn(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `${safari} owner --owner ${key}${end ? " --end" : ""} --json --host local`], { stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const said: unknown = code === 0 ? JSON.parse(out) : undefined;
+  if (said && typeof said === "object" && "pid" in said && (typeof said.pid === "number" || (end && said.pid === null))) return said.pid ?? undefined;
+  throw new HarnessError("unavailable", `the owner lease ${key} on ${host} did not answer: ${err.trim() || `ssh ${host} exited ${code}`}`, { effect: "none", retryable: true });
 }
 
 // The hosts to choose from: this Mac, the hosts named in ~/.ssh/config

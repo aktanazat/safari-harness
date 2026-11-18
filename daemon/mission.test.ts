@@ -47,6 +47,11 @@ function safari() {
       closing.get(id as number)?.();
       return { ok: true };
     },
+    // to the window the user had in front last, his own
+    "tabs.toHis": ([id]) => {
+      tabs.get(id as number)!.windowId = USER_WINDOW;
+      return { windowId: USER_WINDOW };
+    },
     dialogs: () => ({ ok: true }),
     probe: () => [],
     relay: ([tab, op, args]) => {
@@ -519,23 +524,29 @@ test("a refused repeat of an uncertain action reports the earlier action's unkno
   await expect(observedCall(a.pid, "click", { tab, ref: 4 }, async () => ({ ok: true }))).rejects.toMatchObject({ code: "effect_unknown", effect: "possibly_effected", retryable: false });
 });
 
-// An eval {file} runs the file's code, so an edited script is a new call, not
-// the one that was refused (BERK#46-50, LOCK#1500-1506).
-test("an uncertain eval {file} is refused again only while its file's contents are unchanged", async () => {
+// On 11-17 an eval {file} that read a page's script bundles failed after
+// it was sent. The agent rewrote the file and sent it with a timeoutMs,
+// and the new code was refused as a repeat of the old, the path alone
+// compared, with "this call was not sent" and no why.
+test("an eval file rewritten after an uncertain run is sent; the same code is refused saying why, and read: true runs it", async () => {
   const a = agent();
-  const tab = await open(a.pid, "https://scripts.example/");
-  const directory = mkdtempSync("/private/var/tmp/safari-mission-eval-file-");
-  const file = `${directory}/geom.js`;
-  writeFileSync(file, "document.title");
+  const tab = await open(a.pid, "https://bundles.example/");
+  const dir = mkdtempSync("/private/var/tmp/safari-eval-file-");
+  const file = `${dir}/read.js`;
   let sent = 0;
-  const run = (fail: boolean) => observedCall(a.pid, "eval", { tab, file }, async () => { sent++; if (fail) throw new HarnessError("timeout", "reply lost after dispatch"); return { ok: true }; });
-  await expect(run(true)).rejects.toMatchObject({ code: "timeout", effect: "possibly_effected" });
-  await expect(run(false)).rejects.toMatchObject({ code: "effect_unknown" });
-  expect(sent).toBe(1);
-  writeFileSync(file, "document.title = 'edited'");
-  await run(false);
-  expect(sent).toBe(2);
-  rmSync(directory, { recursive: true, force: true });
+  const run = (args: Record<string, unknown> = {}) => observedCall(a.pid, "eval", { tab, file, ...args }, async () => { sent++; throw new HarnessError("timeout", "reply lost after dispatch"); });
+  try {
+    writeFileSync(file, "fetch('/a.js')");
+    await expect(run()).rejects.toMatchObject({ effect: "possibly_effected" });
+    await expect(run({ timeoutMs: 60000 })).rejects.toMatchObject({ code: "effect_unknown", message: expect.stringMatching(/^the same action failed after it was sent and may already have happened, so this call was not sent; if its code only reads, send it again with read: true/) });
+    expect(sent).toBe(1);
+    await expect(run({ read: true })).rejects.toMatchObject({ code: "timeout" });
+    writeFileSync(file, "Promise.allSettled([fetch('/a.js')])");
+    await expect(run()).rejects.toMatchObject({ code: "timeout" });
+    expect(sent).toBe(3);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 // A site kit's read (Slack's conversations.history goes out as a POST from

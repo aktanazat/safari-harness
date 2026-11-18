@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Transfer</title>
+<!-- A transfer dialog whose account lookup failed as it opened (11-17):
+     its Review button then changes only its own look. -->
+<h1>Transfer money</h1>
+<button onclick="this.classList.toggle('pressed')">Review transfer</button>
+<script>
+fetch("missing/unified/").then((r) => { if (!r.ok) throw new Error("Unsuccessful HTTP response"); }).catch(() => Promise.reject(new Error("Unsuccessful HTTP response")));
+</script>

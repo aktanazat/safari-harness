@@ -9,7 +9,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import type { Invoke } from "../call.ts";
-import { HarnessError, rateLimited } from "../failures.ts";
+import { failureOf, HarnessError, rateLimited } from "../failures.ts";
 import { affectsPage } from "../lanes.ts";
 import type { Limit } from "../pace.ts";
 
@@ -41,7 +41,7 @@ function resetOf(header: (name: string) => string | null | undefined): number | 
 }
 
 // The extension's answer for a tab that no longer exists (background.js):
-// the owner closed it, or it sat unused for 20 minutes (tools.ts).
+// the owner closed it, or it sat unused (IDLE_MS in tools.ts).
 const GONE = /that tab is gone/;
 // Its answer for a page that answered nothing for 5 s: a dialog or a stuck
 // load holds it, or Safari, short of memory, passed nothing on for that long
@@ -272,14 +272,20 @@ export async function draftOrSend<T>(kit: SiteKit, opts: { site: string; action:
   if (d.used) throw refused(`draft ${id} was approved once already, and a draft sends once; draft again for another send`);
   if (d.payload !== payload) throw refused(`this ${action} is not draft ${id}: its text, recipient, sender, or file differs; draft it again`);
   if (d.run === kit.run) throw refused(`draft ${id} was made in this same run, so the owner has not seen it; approve it in a later call`);
+  // A send that failed before any of its steps changed a page, its failure
+  // saying nothing left (effect none), leaves the draft approved: on 11-16
+  // a Slack upload refused by CORS used its draft up, and the retry needed
+  // a new draft and the owner's yes again. One with a step that went
+  // through (Gmail's Send clicked, then a wait that met a restarting
+  // daemon) keeps it used, so it never sends twice.
   d.used = true;
   const out = { action, wrote: false };
   try {
     return { status: "sent", draftId: id, ...shown, result: await sending.run(out, opts.send) };
   } catch (e) {
-    if (!out.wrote && e instanceof HarnessError && e.effect === "none") {
+    if (!out.wrote && failureOf(e).effect === "none") {
       delete d.used;
-      e.message += `; nothing of it reached ${site}, so draft ${id} can be approved again in a later call`;
+      if (e instanceof Error) e.message += `; nothing of it reached ${site}, so draft ${id} can be approved again in a later call`;
     }
     throw e;
   }

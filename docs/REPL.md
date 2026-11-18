@@ -32,7 +32,7 @@ session of its own, whose bindings and tabs end with it.
 A named session runs in the background, keeps its bindings between
 calls from any terminal or agent, and ends after 30 minutes unused. The tabs
 its code opens are the calling agent's: they open in its window and close
-when its turn ends or after 20 minutes unused. Starting a session prints a
+when its turn ends or after 2 minutes unused. Starting a session prints a
 `hint:` naming the other sessions your agent runs, with their sites: go on
 in one of those rather than start another.
 The MCP server has the same thing as the `repl` tool (`session` names one
@@ -291,7 +291,7 @@ and whose `exists()` says whether it is there.
 
 - One script per call, one session per goal: the same `--session` name in
   every call of a task. Keep what you learn in bindings, not in re-reads.
-- "that tab is gone" (closed at a turn's end or after 20 minutes unused):
+- "that tab is gone" (closed at a turn's end, after 2 minutes unused, or past the 4-tab limit):
   `openTab` again in the same session. A new session name starts over
   without your bindings, and leaves the old one running.
 - A click that should open a window: begin `waitForEvent('popup')` first,

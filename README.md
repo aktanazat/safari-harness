@@ -43,7 +43,8 @@ daemon/
   spaces.ts         each task's own Safari window, opened behind the user's;
                     named and default opens of one task share it
   place.ts          briefly moves a covered owned window for a screenshot,
-                    then restores its place
+                    then restores its place; puts agent windows on the
+                    "Agents" display when the Mac has one
   groups.ts         makes a window its task's Safari tab group, and deletes
                     the group after, only while the user is away from the keys
   keeper.ts         runs groups.ts from the agent's terminal, which has the
@@ -58,12 +59,6 @@ daemon/
   ask.ts            ask: an agent's question put on the user's phone when he
                     is away, for him to answer back at the Mac
   phone.ts          every alert to the user's phone: at most 6 an hour
-  passkey.ts        the approval page the user's iPhone opens over
-                    tailscale serve, and the daemon's check of each Face ID
-                    answer: a passkey's signature on a single-use challenge
-  phone-approvals.ts an omp agent's step he approves on his iPhone while
-                    away, on the same page with its own passkey; set up
-                    once with `safari passwords approvals-phone`
   telegram.ts       sends an alert, and its picture, to his Telegram through
                     ~/.local/bin/tell-aktan; says the alert is off when that
                     is missing (safari doctor and status check it)
@@ -165,13 +160,6 @@ omp/index.ts        omp extension: releases disposable pages only through
 omp/walls.ts        pages the web tools could not load: Safari's copy beside
                     a read, the map command beside a walled shell fetch, and
                     one nudge at a run's end for a page no Safari call tried
-omp/approvals.ts    the user's ok before an omp agent uses his secrets or
-                    acts in his name (a vault secret, a saved login, code or
-                    card, a text, a shortcut, a handoff): one popup on the
-                    Mac and the same card in the asking omp terminal,
-                    Touch ID to approve, reused 10 minutes by that
-                    session; on his phone too while he is away. A consent
-                    gate for agents that keep to their tools, not a wall
 scripts/
   pdfkit.swift      helper: renders HTML to paginated PDF (WebKit) and
                     reads PDF text (PDFKit); `bun run helpers` builds it
@@ -186,8 +174,6 @@ scripts/
                     Accessibility, Safari left in the background, and cancels
                     a print sheet a closed tab left; needs Accessibility
                     permission
-  approve.swift     helper: the approval popup omp/approvals.ts shows, one
-                    at a time across sessions; Approve asks for Touch ID
   bench.swift       test bench: content.js, start.js, and dialogs.js in a
                     WebKit view no window shows, sent what background.js sends
   dev-install.sh    deploy a commit: make it a release, switch to it, and
@@ -215,15 +201,12 @@ carry a password.
 |-------|------|
 | 37333 | WebSocket: `/` extension socket, `/passwords` Apple Passwords bridge, `/devtools/browser`, `/devtools/page/<tabId>` CDP shim |
 | 37334 | HTTP: `POST /rpc {tool,args,task?}`, `GET /health`, `GET /calls`, `POST /turn-end/prepare {owner,task?}`, `POST /turn-end {owner,task?,prepared}`, `POST /shutdown` |
-| 37335 | HTTP on 127.0.0.1, from the first phone approval: the page his iPhone opens to approve an agent's step, through `tailscale serve` |
 
 local clients on 37333 and 37334 must use `127.0.0.1` or `localhost`,
 without a page's `Origin` or cross-site fetch metadata. task pages use
 their own origin under the same loopback check. only the extension's
 `safari-web-extension://` origin may take the `/` extension socket, and only
-the bridge's extension origin may take `/passwords`. 37335 serves only the
-approval page: an answer must come from that page's own origin and carry
-the passkey's signature over that request's challenge.
+the bridge's extension origin may take `/passwords`.
 
 `GET /calls` sums the last 24 hours of the call log,
 `~/Library/Logs/safari-harness/calls-37334.jsonl`, and `safari status`
@@ -265,7 +248,8 @@ finished call alive. After Safari restarts, a restored tab is reattached
 only when its helper can be identified; identical addresses from different
 helpers stay open and unclaimed rather than crossing ownership.
 
-Ordinary idle cleanup is unchanged: unused pages close after 20 minutes,
+Idle cleanup is strict: unused pages close after 2 minutes, and each agent
+session keeps at most 4 tabs open, a fifth closing its least recently used,
 with the existing form, front-page, kept-page and handoff protections.
 Those form and front-page protections do not keep disposable agent tabs
 open after completion or owner exit.
@@ -298,8 +282,7 @@ These are task-owned tabs, including unkept `safari open` tabs; use
 `--keep` for a page that should outlive its task. Status-page closes use
 the same bounded retry limits as other agent-window cleanup.
 
-Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
-`SAFARI_HARNESS_PHONE_PORT` (daemon),
+Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` (daemon),
 `SAFARI_HARNESS_HTTP` (CLI/MCP). The extension reads `daemonPort` from
 `chrome.storage.local` if you need to move it.
 
@@ -334,14 +317,6 @@ Override with `SAFARI_HARNESS_WS` / `SAFARI_HARNESS_HTTP_PORT` /
 4. Run `safari doctor`. It checks every part, the extension connection
    and Accessibility and Full Disk Access for your terminal included, and
    prints the fix for each that fails.
-5. For an agent's steps the user approves with Face ID on his iPhone (iOS
-   18 or later, on the same tailnet) while away from the Mac, give the
-   approval page an HTTPS address on the tailnet once:
-   `tailscale serve --bg --https=8447 http://127.0.0.1:37335`. Never a
-   Funnel: the daemon refuses a page open to the internet. Then, at the
-   Mac with the phone, `safari passwords approvals-phone` sends the link
-   that reaches Telegram; opened in Safari on the phone, "Set up" makes
-   the passkey with Face ID.
 
 ## Deploys
 
@@ -407,8 +382,9 @@ and any that was in use in the past week.
 
 `safari guide` is the short card of rules: tabs, sign-in, bot checks, and
 waiting. `safari guide <tool>` prints one tool's section of the reference,
-`safari guide reference` lists its sections. The omp skill `safari` points
-agents at both.
+`safari guide reference` lists its sections, and `--query words` prints
+only the parts of a guide that hold the words. The omp skill `safari`
+points agents at both.
 
 ```
 safari open https://example.com --bg   # prints the new tab's id, say 7

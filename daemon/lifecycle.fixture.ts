@@ -70,8 +70,10 @@ const extension = {
   close() {},
 };
 connect(extension);
-const invoke = (tool: string, args: Record<string, unknown> = {}) => runAs(owner, () => callTool(tool, args));
-const open = async (path: string, more: Record<string, unknown> = {}) => (await invoke("open", { url: `https://fixture.example/${path}`, background: true, ...more })) as Tab;
+const invoke = (tool: string, args: Record<string, unknown> = {}, task?: string) => runAs(owner, () => callTool(tool, args), task);
+// task: a second task of the owner, whose tabs count apart from the first
+// task's toward the limit of 4 open tabs (AGENT_TAB_CAP in tools.ts).
+const open = async (path: string, more: Record<string, unknown> = {}, task?: string) => (await invoke("open", { url: `https://fixture.example/${path}`, background: true, ...more }, task)) as Tab;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
 if (mode === "helper-restart") {
@@ -189,7 +191,7 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
   const front = await open("live-front");
   tabs.get(front.id)!.front = true;
   const kept = await open("live-kept", { keep: true });
-  const handoff = await open("live-handoff");
+  const handoff = await open("live-handoff", {}, "fixture:handoff");
   const recent = await open("live-recent");
   const personal = ++next;
   tabs.set(personal, { id: personal, url: "https://personal.example/", windowId: 1 });
@@ -244,7 +246,7 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
     const site = await open("deferred-site", { site: true });
     const unsafe = await open("callback?token=credential-fixture");
     const kept = await open("deferred-kept", { keep: true, group: "kept" });
-    const handoff = await open("deferred-handoff", { group: "handoff" });
+    const handoff = await open("deferred-handoff", { group: "handoff" }, "fixture:handoff");
     const checkpoint = JSON.parse(readFileSync(state, "utf8")) as { tabs: Record<string, { handoff?: true }> };
     checkpoint.tabs[handoff.id].handoff = true;
     writeFileSync(state, JSON.stringify(checkpoint));
@@ -397,7 +399,7 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
     console.log(JSON.stringify({ plain: tabs.has(plain.id), form: tabs.has(form.id), kept: tabs.has(kept.id), front: tabs.has(front.id), recent: tabs.has(recent.id) }));
   } else if (mode === "aged" || mode === "cap" || mode === "stopped") {
     const plain = await open("unfinished");
-    if (mode === "cap") for (let n = 0; n < 8; n++) await open(`unfinished-${n}`);
+    if (mode === "cap") for (let n = 0; n < 8; n++) await open(`unfinished-${n}`, {}, `fixture:cap-${n % 3}`);
     if (mode === "stopped") closeTabsOf(owner);
     if (mode === "aged") {
       writeFileSync(state, JSON.stringify({ version: 2, tabs: { [plain.id]: { owner, used: 0, url: plain.url } } }));

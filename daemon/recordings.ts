@@ -55,7 +55,7 @@ function isRecording(v: unknown): v is Recording {
 export type Check = { text?: string; selector?: string };
 export type AgentStep = { kind: string; url: string; target?: Fingerprint; field?: Field; param?: string; key?: string; from?: string; gate?: string; href?: string };
 export type PlaybookOutput = { rows: string; fields: Record<string, string> };
-export type AppliedInput = { param: string; in: "hash"; prefix?: string };
+export type AppliedInput = { param: string; in: "hash"; prefix?: string } | { param: string; in: "query"; key: string };
 type PlaybookVersion = { tool: string; revision: number; previous?: string };
 export type AgentRecording = Recording & { source: "agent"; verified: true; goal: string; params: string[]; before: Check; verify: Check; resultSelector?: string; output?: PlaybookOutput; applied?: AppliedInput; version?: PlaybookVersion; steps: AgentStep[] };
 export type SavedPlaybook = { name: string; tool: string; revision: number; recording: AgentRecording };
@@ -94,11 +94,15 @@ export function outputOf(v: unknown): PlaybookOutput {
 }
 
 export function appliedOf(v: unknown, params: string[]): AppliedInput {
-  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("applied needs a parameter and a hash check");
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("applied needs a parameter and a hash or query check");
   const a = v as Record<string, unknown>;
-  if (Object.keys(a).some((key) => !["param", "in", "prefix"].includes(key)) || typeof a.param !== "string"
-    || !params.includes(a.param) || a.in !== "hash"
-    || (a.prefix !== undefined && (typeof a.prefix !== "string" || !/^[a-zA-Z][a-zA-Z0-9/_-]{0,79}$/.test(a.prefix)))) throw new Error("applied needs a declared parameter, in: hash, and an optional public hash prefix");
+  if (typeof a.param !== "string" || !params.includes(a.param)) throw new Error("applied needs a declared parameter");
+  if (a.in === "query") {
+    if (Object.keys(a).some((key) => !["param", "in", "key"].includes(key)) || typeof a.key !== "string" || !/^[a-zA-Z][\w.-]{0,63}$/.test(a.key)) throw new Error("applied in: query needs the public query key that carries the parameter, and no prefix");
+    return { param: a.param, in: "query", key: publicLabel(a.key) };
+  }
+  if (Object.keys(a).some((key) => !["param", "in", "prefix"].includes(key)) || a.in !== "hash"
+    || (a.prefix !== undefined && (typeof a.prefix !== "string" || !/^[a-zA-Z][a-zA-Z0-9/_-]{0,79}$/.test(a.prefix)))) throw new Error("applied needs in: hash with an optional public hash prefix, or in: query with a key");
   if (a.prefix !== undefined) publicLabel(a.prefix);
   return { param: a.param, in: "hash", ...(a.prefix === undefined ? {} : { prefix: String(a.prefix) }) };
 }
@@ -123,20 +127,24 @@ export function readOnlySearchSubmit(name: string, form: unknown, steps: AgentSt
   }));
 }
 
+const GATES: [string, RegExp][] = [
+  ["send", /\b(send|post|publish|reply|share|submit|message|invite)\b/i],
+  ["spend", /\b(buy|pay|purchase|order|checkout|subscribe|donate|book|transfer)\b/i],
+  ["delete", /\b(delete|remove|discard|trash|clear)\b/i],
+  ["stop", /\b(stop|cancel|unsubscribe|deactivate|disable)\b/i],
+  ["account settings", /\b(account|settings|password|security|billing)\b/i],
+  ["sign-in", /\b(sign[\s_-]?in|log[\s_-]?in|sign[\s_-]?up|verify|captcha|challenge)\b/i],
+];
+
+export function gateOfLabel(label: string): string | undefined {
+  return GATES.find(([, pattern]) => pattern.test(label))?.[0];
+}
+
 export function gateOfStep(s: AgentStep): string | undefined {
   if (s.gate) return s.gate;
   if (s.field && secretOfField(s.field)) return "sign-in or secret";
   if (s.kind === "press" && s.key === "Enter") return "approval";
-  const label = `${s.target?.name ?? ""} ${s.field?.label ?? ""} ${new URL(s.url).pathname}`;
-  const gates: [string, RegExp][] = [
-    ["send", /\b(send|post|publish|reply|share|submit|message|invite)\b/i],
-    ["spend", /\b(buy|pay|purchase|order|checkout|subscribe|donate|book|transfer)\b/i],
-    ["delete", /\b(delete|remove|discard|trash|clear)\b/i],
-    ["stop", /\b(stop|cancel|unsubscribe|deactivate|disable)\b/i],
-    ["account settings", /\b(account|settings|password|security|billing)\b/i],
-    ["sign-in", /\b(sign[\s_-]?in|log[\s_-]?in|sign[\s_-]?up|verify|captcha|challenge)\b/i],
-  ];
-  return gates.find(([, pattern]) => pattern.test(label))?.[0];
+  return gateOfLabel(`${s.target?.name ?? ""} ${s.field?.label ?? ""} ${new URL(s.url).pathname}`);
 }
 
 export function assertAgentRecording(raw: Recording): asserts raw is AgentRecording {
@@ -211,8 +219,9 @@ function assertRevisionContract(next: AgentRecording, previous: AgentRecording):
   if (previous.resultSelector !== undefined && next.resultSelector !== previous.resultSelector) throw new Error("a changed tool must retain its verified result selector");
   if (previous.output && (!next.output || next.output.rows !== previous.output.rows
     || Object.entries(previous.output.fields).some(([name, selector]) => next.output?.fields[name] !== selector))) throw new Error("a changed tool must retain its verified output rows and fields");
+  const marker = (applied: AppliedInput) => applied.in === "query" ? applied.key : applied.prefix ?? "";
   if (previous.applied && (!next.applied || next.applied.param !== previous.applied.param
-    || next.applied.in !== previous.applied.in || (next.applied.prefix ?? "") !== (previous.applied.prefix ?? ""))) throw new Error("a changed tool must retain its applied-input check");
+    || next.applied.in !== previous.applied.in || marker(next.applied) !== marker(previous.applied))) throw new Error("a changed tool must retain its applied-input check");
 }
 
 // Revisions are immutable recordings too. The catalog is derived from these

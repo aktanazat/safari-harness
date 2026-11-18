@@ -52,6 +52,11 @@
 //   cancelPrint {width, height}  cancels a print sheet on the one Safari
 //                             window of that size, at any level: {cancelled,
 //                             why}; any other sheet stays (daemon/sheets.ts)
+//   cancelCertificate {windows: [{width, height}]}  cancels the client
+//                             certificate prompt on each Safari window of
+//                             those sizes, the agents' own: {cancelled:
+//                             [its words]}; his windows keep theirs
+//                             (daemon/sheets.ts)
 // Needs Accessibility permission for the app that runs it (gate says).
 import AppKit
 import ApplicationServices
@@ -331,6 +336,21 @@ func handle(_ req: [String: Any]) throws -> [String: Any] {
         guard button(s, "Print") != nil, let cancel = button(s, "Cancel") else { return ["cancelled": false, "why": "the window's sheet is no print sheet"] }
         guard perform(cancel, kAXPressAction), poll(2000, { sheet(w) == nil ? true : nil }) != nil else { throw Failure(message: "the print sheet stayed open") }
         return ["cancelled": true]
+    case "cancelCertificate":
+        guard AXIsProcessTrusted() else { throw Failure(message: "the terminal the agent runs in has no Accessibility permission") }
+        var agents = Set<CGWindowID>()
+        for size in (req["windows"] as? [[String: Any]]) ?? [] {
+            guard let width = (size["width"] as? NSNumber)?.doubleValue, let height = (size["height"] as? NSNumber)?.doubleValue else { continue }
+            agents.formUnion(try windowsOfSize(width, height, anyLayer: true))
+        }
+        var cancelled: [String] = []
+        for w in (attr(try safari().el, kAXWindowsAttribute) as? [AXUIElement]) ?? [] where windowId(w).map(agents.contains) == true {
+            guard let prompt = sheet(w), button(prompt, "Show Certificate") != nil, let cancel = button(prompt, "Cancel") else { continue }
+            let words = findAll(prompt, depth: 4) { role($0) == "AXStaticText" }.compactMap { text($0, kAXValueAttribute) }.first ?? ""
+            guard perform(cancel, kAXPressAction), poll(2000, { sheet(w) == nil ? true : nil }) != nil else { throw Failure(message: "Safari's client certificate prompt stayed open") }
+            cancelled.append(words)
+        }
+        return ["cancelled": cancelled]
     case "lock":
         try lock((req["ms"] as? NSNumber)?.intValue ?? 60000)
         return [:]

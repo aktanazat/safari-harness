@@ -119,8 +119,26 @@ test.each([
   ["passwords", "account", "username"],
   ["map", "script", "expression"],
   ["download", "out_dir", "out"],
+  ["map", "do", "what"],
+  ["click", "query", "snapshot"],
+  ["type", "query", "snapshot"],
+  ["map", "eval", "expression"],
+  ["map", "out", "save"],
+  ["authenticated_read", "mode", "format"],
 ])("%s takes %s for %s, with a note saying so", (tool, alias, real) => {
   expect(checkCall(TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
+});
+
+test.each([
+  ["contacts", "query", "name"],
+  ["imessage_send", "approve", "approved"],
+])("%s, a Messages tool, takes %s for %s", (tool, alias, real) => {
+  expect(checkCall(CALLER_TOOLS, tool, { [alias]: "x" }, true)).toEqual({ tool, args: { [real]: "x" }, notes: [`used ${real} for ${alias}`] });
+});
+
+test("shot given an address and map given a read as a parameter say what to call instead", () => {
+  expect(() => checkCall(TOOLS, "shot", { url: "https://example.com" }, true)).toThrow("shot pictures the page a tab shows");
+  expect(() => checkCall(TOOLS, "map", { urls: ["https://example.com"], extract: {} }, true)).toThrow('map reads each page with what: "extract"');
 });
 
 // press's text is the key it presses, if anything, never the element.
@@ -143,9 +161,8 @@ test("map given max says what keeps each page short instead", () => {
   expect(() => checkCall(TOOLS, "map", { urls: ["https://shop.example"], max: 2500 }, true)).toThrow("map takes no max: to keep each page's text short pass query (only lines with it) or selector");
 });
 
-// On 11-12 shot {tab: "new", url} meant to capture an address (LOCK#1099).
-test("shot given an address names shots", () => {
-  expect(() => checkCall(TOOLS, "shot", { tab: "new", url: "http://127.0.0.1:8790/index.html" }, true)).toThrow("shots {urls, widths, out}");
+test("passwords given a selector says code finds the field itself", () => {
+  expect(() => checkCall(TOOLS, "passwords", { do: "code", tab: 7, selector: "input" }, true)).toThrow("passwords takes no selector: code finds the field itself");
 });
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
