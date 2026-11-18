@@ -264,6 +264,18 @@ test("a Google tab left at Google's robot check closes once unused for 20 minute
   expect(atGoogle(s.tabs)).toEqual([]);
 }));
 
+// Review of 11-18: a page of the engine's site other than its results or
+// check, as Google's flights search, may hold a form the user typed in.
+test("a search tab taken to another page of Google's site stays open past 20 minutes unused", () => later(async () => {
+  const s = safari(11_800);
+  await google()("Bitfarms renamed Keel Infrastructure");
+  const [held] = atGoogle(s.tabs);
+  held.url = "https://www.google.com/travel/flights";
+  setSystemTime(new Date(Date.now() + 21 * 60_000));
+  await endTurn(agent.pid);
+  expect(s.tabs.get(held.id)).toBe(held);
+}));
+
 // The human check's message sends the user to this tab (google-search.ts).
 // A list too slow to say which tab Safari shows counts it as the user's,
 // as the extension does (inFront in background.js).
