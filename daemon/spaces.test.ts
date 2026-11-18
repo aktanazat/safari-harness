@@ -788,6 +788,34 @@ test("an ended group holding only the blank tab Safari leaves releases as empty,
   await spaceTool({ op: "gone", name });
 });
 
+// 11-18: Safari would not let the extension close agent 99234's tabs in its
+// window made a tab group; each close sent the tab, and the window's page,
+// to a blank page with no address, and the group, held for those as for
+// pages of the user's, stood on the Agents display for 7 hours.
+test("an ended group holding only its agent's tabs Safari would not close releases them to go with it, and a page of the user's still holds it", async () => {
+  const s = safari();
+  const g = agent();
+  const t = await runAs(g.pid, () => callTool("open", { url: "https://stuck.example/", background: true })) as { id: number; windowId: number; space: { name: string } };
+  const { name } = t.space;
+  await spaceTool({ op: "grouped", name });
+  const page = pageIn(s.tabs, t.windowId)!;
+  const close = s.ops["tabs.close"];
+  s.ops["tabs.close"] = (args) => {
+    if (args[0] !== t.id && args[0] !== page.id) return close(args);
+    throw new Error("Safari did not close the tab: a native sheet (a sign-in or permission prompt) or a window off screen holds it. Tell the user; closing again will not help");
+  };
+  g.kill();
+  await g.exited;
+  await endTurn(g.pid);
+  // what the extension's close leaves of each (tabs.close in background.js)
+  for (const id of [t.id, page.id]) s.tabs.get(id)!.url = "";
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 2, left: 0, pages: true });
+  s.tabs.set(990004, { id: 990004, url: "https://his.example/", windowId: t.windowId!, active: false });
+  expect(await spaceTool({ op: "release", name })).toMatchObject({ ok: true, tabs: 3, left: 1 });
+  s.ops["tabs.close"] = close;
+  await spaceTool({ op: "gone", name });
+});
+
 // Review of 11-15: the keeper deletes an ended group with its pages once
 // its window has gone unused 8 hours, and the user's own browsing there
 // moved no agent's call.

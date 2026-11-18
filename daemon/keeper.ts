@@ -197,17 +197,20 @@ async function fromScratch(h: Helper, daemon: Daemon, s: SpaceState, pages: bool
 
 // An ended task's group goes with its window's page, from a window opened
 // for it when its own is gone. Pages the daemon sees in it hold it until it
-// is stale, by the use the release reports: a change to them counts. pass:
-// this keeper pass, whose releases share one list of Safari's tabs.
+// is stale, by the use the release reports: a change to them counts. Its
+// agent's own finished tabs hold it not: the release says they may go with
+// it (pages). pass: this keeper pass, whose releases share one list of
+// Safari's tabs.
 async function clear(h: Helper, daemon: Daemon, ended: SpaceState, pass: string, given: Given, log: Log): Promise<boolean> {
-  const released = (await daemon("release", { name: ended.name, pass })) as { ok: boolean; tabs?: number; left?: number; width?: number; height?: number; used?: number };
+  const released = (await daemon("release", { name: ended.name, pass })) as { ok: boolean; tabs?: number; left?: number; pages?: boolean; width?: number; height?: number; used?: number };
   if (!released.ok) return true;
   const s = { ...ended, used: released.used ?? ended.used };
-  const pages = Date.now() >= staleAt(s);
-  if (released.left && !pages) {
+  const stale = Date.now() >= staleAt(s);
+  if (released.left && !stale) {
     hold(s, given, log, `${released.left} pages in it`);
     return false;
   }
+  const pages = stale || released.pages === true;
   if (!released.tabs || released.width === undefined || released.height === undefined) return fromScratch(h, daemon, s, pages, given, log);
   return deleteFrom(h, daemon, s, await windowOf(h, { width: released.width, height: released.height, tabs: released.tabs }), false, pages, given, log);
 }

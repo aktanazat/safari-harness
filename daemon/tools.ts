@@ -912,6 +912,17 @@ function idleClosable(tab: number, t: HarnessTab, now: number): boolean {
   return busyFree(tab, t, now) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
 }
 
+// Whether tab is one a sweep closes as finished: its agent's turn ended or
+// the agent exited, and no handoff is open on it. Safari may refuse the
+// extension that close for good: on 11-18 agent 99234's four tabs, in its
+// window made a tab group, failed it 29 times each over 7 hours, and held
+// the group on the Agents display (release in spaces.ts).
+export function finishedTab(tab: number): boolean {
+  const t = harnessTabs.get(tab);
+  if (!t || t.search || !busyFree(tab, { ...t, closing: undefined, retry: undefined }, Date.now())) return false;
+  return t.done === true || (t.orphan === true && t.owner !== undefined && !alive(t.owner));
+}
+
 async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reason?: string): Promise<void> {
   if (harnessTabs.get(tab) !== t || t.closing || reconnectedSince(t)) return;
   t.closing = true;

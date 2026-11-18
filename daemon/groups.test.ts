@@ -291,6 +291,17 @@ test("an ended task's group holding a page stays queued and untouched until it i
   expect([groups(), s.closed, Object.keys(readQueue())]).toEqual([[], [7], []]);
 });
 
+// 11-18: agent 99234's ended group held only its own tabs, which Safari
+// would not let the extension close; it stood on the Agents display for 7
+// hours, waiting to turn stale.
+test("an ended group whose only pages are its agent's finished tabs goes with them at once", async () => {
+  const { s, h, groups } = safari([{ kind: "local" }, { kind: "group", name: TRIP, open: "“about:blank” and 1 other tab will be closed immediately.", selected: true }]);
+  changeQueue((q) => (q[TRIP] = { owner: process.pid, since: 0 }));
+  const { d } = daemon([{ ...waiting, group: "grouped", ended: true, used: Date.now() }], { tabs: 2, left: 0, pages: true });
+  await pass(h, d, new Map(), quiet);
+  expect([groups(), s.closed, Object.keys(readQueue())]).toEqual([[], [7], []]);
+});
+
 // 10-30: a sheet naming tabs the daemon did not see holds the group in the
 // queue. Once stale, it goes with them from a window opened for it, which
 // draws them once it shows the group.
