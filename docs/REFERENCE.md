@@ -1780,6 +1780,29 @@ order. The rules are fixed, so the same page always reads the same way.
   says rows were left out.
 - CLI: `safari extract --as table --tab N` prints one table per line of
   JSON.
+- `fields` answers rows as objects with exactly the keys named:
+  `fields: ["price", "date", "seller"]` (CLI `--fields price,date,seller`),
+  or an object naming a field's column, `fields: {"price":
+  "span.s-item__price"}` (a column's own key, or its full header). It
+  implies `as: "table"`, and reads the table or card list where the most
+  fields are found (then the most rows); `source` and `sources` say which
+  when there are several, and `selector` picks one. Each field's column is,
+  in order: the one asked for; the one whose name says it (a header, a CSS
+  key, a JSON key; case, separators, plurals and a few synonyms aside:
+  cost and amount for price, posted and time for date, vendor and shop
+  for seller, link and href for url); the one whose hint says it (a
+  card field's `itemprop`, `data-testid`, `aria-label`, `title`, or the
+  `Label:` drawn before it); the one whose values look like it (currency
+  for price, dates and "3 hours ago" for date, "4.5/5" or stars for
+  rating, addresses for url and link, numbers for count, comments,
+  points). A named column whose values cannot be the field (a `Price:`
+  label) is passed over, and a crossed-out value or one named old, was,
+  compare or strike yields to the current one. Two that fit: the named one,
+  else the one filled in more rows. `fields` says for each key its
+  `column`, `by` (`asked`, `name`, `hint`, `value`), 3 `samples`, and the
+  `runnerUp` column with 2 of its values; `missing` lists fields not found
+  (their value is `""`), and `unused` the columns left, to name one. A
+  column a field took is not given to another.
 
 ### A chat as who said what
 
