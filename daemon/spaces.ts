@@ -55,12 +55,14 @@ export type SpaceNote = { name: string; group: Group; why?: string };
 // activate, a handoff), each until its turn or the handoff ends
 // moved: he moved it off the Agents display himself; it stays where he put it
 // home: the id of the Agents display it was last seen on (place.ts)
-// page: the tab its page was last found in, which knows it once Safari no
+// page: the tab its page was last found in, and the extension connection
+// that listed it (bridge.extensionInfo), which knows it once Safari no
 // longer gives the page's address: a close Safari would not let the
 // extension make sends the tab to a blank page (background.js tabs.close),
 // and on 11-18 agent 99234's ended group so lost its page and was held for
-// it as for a page of the user's
-export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number; page?: number };
+// it as for a page of the user's. A Safari that started again may give the
+// id to another tab, so it counts only on that connection.
+export type Space = SpaceNote & { key: string; id: string; window: number; size: Size; owner?: number; task?: string; done?: true; used?: number; proof?: string; seen?: string; shownFor?: Shown[]; moved?: true; home?: number; page?: { tab: number; link?: number } };
 export type Shown = { owner?: number; task?: string; handoff?: true };
 
 const spaces = new Map<string, Space>();
@@ -110,7 +112,7 @@ function spaceName(group: string | undefined, owner: number | undefined): string
   return `${base}, window ${n}`;
 }
 
-const isPage = (t: TabInfo, s: Space) => (t.url ? t.url.startsWith(`${PAGE}?id=${s.id}&`) : t.id === s.page);
+const isPage = (t: TabInfo, s: Space) => (t.url ? t.url.startsWith(`${PAGE}?id=${s.id}&`) : t.id === s.page?.tab && s.page.link === bridge.extensionInfo?.connectedAt);
 
 // The tabs in s's window besides its page. Safari never lets a tab group
 // empty: closing its last page leaves a blank tab of Safari's own, no
@@ -189,8 +191,9 @@ async function located(space: Space, tabs?: TabInfo[], options = quiet): Promise
   }
   const owned = all.filter(t => t.windowId === window);
   const page = owned.find(t => isPage(t, space) && pageAt(t) !== undefined);
-  if (page && page.id !== space.page) {
-    space.page = page.id;
+  const link = bridge.extensionInfo?.connectedAt;
+  if (page && (page.id !== space.page?.tab || link !== space.page.link)) {
+    space.page = { tab: page.id, link };
     save();
   }
   if (!space.proof && page) await identify(space, page.id);
@@ -265,7 +268,7 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
       const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number; size?: Size };
       const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: w.tabId };
+      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: { tab: w.tabId, link: bridge.extensionInfo?.connectedAt } };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();
